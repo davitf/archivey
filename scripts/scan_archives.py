@@ -1,33 +1,37 @@
-"""Dry-run every archive under a directory and write one CSV row per archive.
+"""Dry-run every archive under a directory: statistics, and a list of files to check.
 
-The point is a corpus survey: which archives open and extract, what they are made of,
-which diagnostics they raise, and how close each one comes to every configurable
-resource limit, so the defaults can be tuned against real data. Nothing is written
-outside a temporary directory: each archive goes through
-``extract_all(dry_run=True)``, the real extraction pass with file bodies discarded.
+    python scripts/scan_archives.py ~/backups -o scan.csv [--password PW ...]
 
-    python scripts/scan_archives.py ~/backups -o scan.csv
+Each archive goes through ``extract_all(dry_run=True)``, the real extraction pass with
+file bodies discarded, so nothing is kept on disk. Files are found by content, not by
+extension; a file ``detect_format`` cannot place is skipped.
 
-Files are found by content, not by extension: a file ``detect_format`` cannot place is
-skipped (``--all`` gives it a row anyway). Unexpected exceptions, the ones that are not
-an ``ArchiveyError`` and so are archivey bugs, are counted in the ``open_result`` or
-``extract_result`` column as ``BUG:<type>`` and their tracebacks go to
-``<output>.bugs.txt``.
+Three outputs:
+
+- ``scan.csv``: one short row per archive. The ``flags`` column says why an archive is
+  worth a closer look (``bug``, ``open_error``, ``failed_members``, ``over:max_ratio``,
+  ``diag:archive_trailing_data``, ...); filter on it. Empty flags means nothing stood
+  out.
+- ``scan.log``: the detail for every flagged archive (error messages, the members
+  that failed, what declared the largest decoder allocation, tracebacks), then the
+  summary.
+- The summary, also printed at the end: counts by format and outcome, how many
+  archives carry each flag and diagnostic, and for every configurable limit the
+  largest value seen, the 99th percentile, and how many archives are over the default
+  or past half of it.
 
 **Limits.** By default the scan turns off the limits that only count something (bytes,
 entries, ratio, members, metadata, key-derivation rounds, spool), so the columns show
-the true peak rather than stopping at the cap. Every ``*_peak`` column has a matching
-default in the summary printed at the end, which counts the archives over it. The two
-limits that protect the scanning machine, ``max_decoder_memory`` and
-``max_ppmd_in_process_input``, stay at their defaults. ``--default-limits`` scans under
-the full default config instead.
+the true value rather than stopping at the cap. The two that protect the scanning
+machine, ``max_decoder_memory`` and ``max_ppmd_in_process_input``, stay at their
+defaults. ``--default-limits`` scans under the full default config instead.
 
-**Best-effort columns.** ``decoder_memory_peak``, ``kdf_rounds`` and ``spool_bytes``
-have no public API yet. The script reads them by wrapping three internal functions for
-the duration of the scan, so they can silently stop working when those internals
-change. ``decoder_memory_peak`` is the largest allocation an archive *declared* that
-archivey checks itself; xz and zstd hand the limit to liblzma / libzstd and are not
-counted. ``listing_metadata_bytes`` reads the reader's private listing tracker.
+**Best-effort columns.** ``decoder_memory``, ``kdf_rounds`` and ``spool_bytes`` have no
+public API yet. The script reads them by wrapping three internal functions for the
+duration of the scan, so they can silently stop working when those internals change.
+``decoder_memory`` is the largest allocation an archive *declared* that archivey checks
+itself; xz and zstd hand the limit to liblzma / libzstd and are not counted.
+``metadata_bytes`` reads the reader's private listing tracker.
 """
 
 from __future__ import annotations
@@ -49,10 +53,12 @@ from archivey import (
     ArchiveyConfig,
     ArchiveyError,
     DecoderLimits,
+    EncryptionError,
     ExtractionLimits,
     ExtractionStatus,
     FormatDetectionError,
     ListingLimits,
+    MemberType,
     PasswordInput,
     SpoolLimits,
 )
@@ -159,128 +165,148 @@ def _scan_config(default_limits: bool) -> ArchiveyConfig:
     )
 
 
-# Defaults the summary compares the peaks against, as (column, default).
-_DEFAULTS: tuple[tuple[str, float | None], ...] = (
-    ("bytes_written", ExtractionLimits().max_extracted_bytes),
-    ("entries_written", ExtractionLimits().max_entries),
-    ("archive_ratio", ExtractionLimits().max_ratio),
-    ("max_member_ratio", ExtractionLimits().max_ratio),
-    ("member_count", ListingLimits().max_members),
-    ("listing_metadata_bytes", ListingLimits().max_metadata_bytes),
-    ("decoder_memory_peak", DecoderLimits().max_decoder_memory),
-    ("kdf_rounds", DecoderLimits().max_key_derivation_rounds),
-    ("spool_bytes", SpoolLimits().max_bytes),
+# Each resource column and the default limit it is measured against.
+_LIMITS: tuple[tuple[str, str, float | None], ...] = (
+    ("bytes_written", "max_extracted_bytes", ExtractionLimits().max_extracted_bytes),
+    ("entries_written", "max_entries", ExtractionLimits().max_entries),
+    ("archive_ratio", "max_ratio", ExtractionLimits().max_ratio),
+    ("max_member_ratio", "max_ratio", ExtractionLimits().max_ratio),
+    ("members", "max_members", ListingLimits().max_members),
+    ("metadata_bytes", "max_metadata_bytes", ListingLimits().max_metadata_bytes),
+    ("decoder_memory", "max_decoder_memory", DecoderLimits().max_decoder_memory),
+    (
+        "kdf_rounds",
+        "max_key_derivation_rounds",
+        DecoderLimits().max_key_derivation_rounds,
+    ),
+    ("spool_bytes", "spool_max_bytes", SpoolLimits().max_bytes),
 )
+# A value past this share of its default gets a ``near:`` flag.
+_NEAR = 0.5
+# Diagnostics too common in ordinary archives to flag on their own.
+_ROUTINE_DIAGNOSTICS = frozenset(
+    {"member_name_normalized", "member_name_encoding_inferred"}
+)
+_SLOW_SECONDS = 60.0
+_LOGGED_MEMBER_ERRORS = 10
 
-_RESULT_STATUSES = tuple(s for s in ExtractionStatus)
+COLUMNS = (
+    "path file_size format version solid encrypted open extract flags seconds "
+    "members entries_written bytes_written archive_ratio max_member_ratio "
+    "metadata_bytes decoder_memory kdf_rounds spool_bytes codecs diagnostics error"
+).split()
 
 
 @dataclass
 class _Row:
     values: dict[str, object] = field(default_factory=dict)
     diagnostics: Counter[str] = field(default_factory=Counter)
+    flags: list[str] = field(default_factory=list)
+    log: list[str] = field(default_factory=list)
+
+    def flag(self, name: str) -> None:
+        if name not in self.flags:
+            self.flags.append(name)
+
+    def failure(self, stage: str, exc: BaseException) -> None:
+        """Record an exception that ended ``stage`` (detect, open or extract)."""
+        bug = not isinstance(exc, ArchiveyError)
+        label = f"BUG:{type(exc).__name__}" if bug else type(exc).__name__
+        self.values["open" if stage != "extract" else "extract"] = label
+        self.values.setdefault("error", str(exc)[:200])
+        self.log.append(f"{stage}: {type(exc).__name__}: {exc}")
+        if bug:
+            self.flag("bug")
+            self.log.append(traceback.format_exc().rstrip())
+        elif isinstance(exc, EncryptionError):
+            self.flag("needs_password")
+        else:
+            self.flag(f"{stage}_error")
 
 
 def _format_name(fmt: archivey.ArchiveFormat) -> str:
     """``tar.gz``, ``zip``, ``raw_stream.xz``: the pair, without the class name."""
     stream = fmt.stream.value
-    return (
-        fmt.container.value
-        if stream == "uncompressed"
-        else f"{fmt.container.value}.{stream}"
-    )
-
-
-def _error_label(exc: BaseException) -> str:
-    if isinstance(exc, ArchiveyError):
-        return type(exc).__name__
-    return f"BUG:{type(exc).__name__}"
+    if stream == "uncompressed":
+        return fmt.container.value
+    return f"{fmt.container.value}.{stream}"
 
 
 def _ratio(out: int, compressed: int | None) -> float | None:
-    if not compressed:
-        return None
-    return round(out / compressed, 2)
+    return round(out / compressed, 1) if compressed else None
 
 
 def scan_one(
-    path: Path, config: ArchiveyConfig, bugs: list[str], password: PasswordInput = None
+    path: Path, config: ArchiveyConfig, password: PasswordInput = None
 ) -> _Row | None:
     """Scan one file; ``None`` when it is not an archive."""
     row = _Row()
     v = row.values
     v["path"] = str(path)
-    try:
-        v["file_size"] = path.stat().st_size
-    except OSError as exc:
-        v["open_result"] = f"OSError:{exc.errno}"
-        return row
-
+    v["file_size"] = path.stat().st_size
     try:
         info = archivey.detect_format(path, config=config)
     except FormatDetectionError:
         return None
     except Exception as exc:  # noqa: BLE001 - every failure becomes a row
-        v["open_result"] = _error_label(exc)
-        v["error"] = str(exc)[:300]
-        if not isinstance(exc, ArchiveyError):
-            bugs.append(f"{path} (detect)\n{traceback.format_exc()}")
+        row.failure("detect", exc)
         return row
     v["format"] = _format_name(info.format)
-    v["detected_by"] = info.detected_by
-    v["confidence"] = info.confidence.value
-    v["payload_offset"] = info.payload_offset
-    if info.cost_receipt is not None:
-        v["detect_unique_bytes"] = info.cost_receipt.unique_bytes_read
-        v["detect_decode_input"] = info.cost_receipt.decode_input
-        v["detect_decode_output"] = info.cost_receipt.decode_output
+    if info.payload_offset:
+        row.flag("sfx")
+    if info.detected_by == "extension":
+        row.flag("extension_only")
 
     PROBE.reset()
     started = time.perf_counter()
     try:
-        _open_and_extract(path, config, row, bugs, password)
+        _open_and_extract(path, config, row, password)
     finally:
-        v["seconds"] = round(time.perf_counter() - started, 3)
-        v["decoder_memory_peak"] = PROBE.decoder_memory_peak or None
-        v["decoder_memory_what"] = PROBE.decoder_memory_what or None
+        seconds = time.perf_counter() - started
+        v["seconds"] = round(seconds, 2)
+        if seconds > _SLOW_SECONDS:
+            row.flag("slow")
+        v["decoder_memory"] = PROBE.decoder_memory_peak or None
         v["kdf_rounds"] = PROBE.kdf_rounds or None
         v["spool_bytes"] = PROBE.spool_bytes or None
+        if PROBE.decoder_memory_what:
+            row.log.append(
+                f"largest decoder allocation: {PROBE.decoder_memory_peak} bytes, "
+                f"{PROBE.decoder_memory_what}"
+            )
+    _flag_limits(row)
+    for code in sorted(row.diagnostics):
+        if code not in _ROUTINE_DIAGNOSTICS:
+            row.flag(f"diag:{code}")
+    v["flags"] = " ".join(row.flags)
+    v["diagnostics"] = " ".join(f"{c}={n}" for c, n in sorted(row.diagnostics.items()))
     return row
 
 
 def _open_and_extract(
-    path: Path,
-    config: ArchiveyConfig,
-    row: _Row,
-    bugs: list[str],
-    password: PasswordInput,
+    path: Path, config: ArchiveyConfig, row: _Row, password: PasswordInput
 ) -> None:
     v = row.values
     try:
         reader = archivey.open_archive(path, config=config, password=password)
     except Exception as exc:  # noqa: BLE001
-        v["open_result"] = _error_label(exc)
-        v["error"] = str(exc)[:300]
-        if not isinstance(exc, ArchiveyError):
-            bugs.append(f"{path} (open)\n{traceback.format_exc()}")
+        row.failure("open", exc)
         return
     with reader:
-        v["open_result"] = "ok"
+        v["open"] = "ok"
         ai = reader.info
         v["format"] = _format_name(ai.format)
-        v["format_version"] = ai.format_version
-        v["is_solid"] = ai.is_solid
-        v["is_encrypted"] = ai.is_encrypted
-        v["is_multivolume"] = ai.is_multivolume
-        v["solid_blocks"] = ai.cost.solid_block_count
-        v["listing_cost"] = ai.cost.listing_cost.value
+        v["version"] = ai.format_version
+        v["solid"] = ai.is_solid or None
+        v["encrypted"] = ai.is_encrypted or None
 
-        member_sizes: dict[int, int] = {}  # id(member) -> bytes written
+        member_bytes: dict[int, int] = {}  # id(member) -> bytes written
 
         def on_progress(p: archivey.ExtractionProgress) -> None:
-            member_sizes[id(p.member)] = p.member_bytes_written
+            member_bytes[id(p.member)] = p.member_bytes_written
             v["bytes_written"] = p.bytes_written
 
+        report = None
         try:
             with tempfile.TemporaryDirectory(prefix="archivey-scan-") as tmp:
                 report = reader.extract_all(
@@ -290,74 +316,91 @@ def _open_and_extract(
                     on_progress=on_progress,
                 )
         except Exception as exc:  # noqa: BLE001
-            v["extract_result"] = _error_label(exc)
-            v["error"] = str(exc)[:300]
-            if not isinstance(exc, ArchiveyError):
-                bugs.append(f"{path} (extract)\n{traceback.format_exc()}")
-            report = None
+            row.failure("extract", exc)
 
-        members = reader.members_report_if_available()
-        if members is not None:
-            _describe_members(members.members, v)
+        listed = reader.members_report_if_available()
+        members = listed.members if listed is not None else ()
+        if listed is not None:
+            v["members"] = len(members)
+            v["codecs"] = " ".join(
+                sorted(
+                    {
+                        "+".join(c.algo.value for c in m.compression)
+                        for m in members
+                        if m.compression
+                    }
+                )
+            )
+            if any(m.type is MemberType.OTHER for m in members):
+                row.flag("device_or_fifo")
         tracker = getattr(reader, "_listing_tracker", None)
         if tracker is not None:
-            v["listing_metadata_bytes"] = tracker.metadata_bytes
+            v["metadata_bytes"] = tracker.metadata_bytes
         for code, count in reader.diagnostics.counts.items():
             row.diagnostics[code.value] += count
 
-        if report is None:
-            return
-        statuses = Counter(r.status for r in report.results)
-        for status in _RESULT_STATUSES:
-            if statuses[status]:
-                v[f"results_{status.value}"] = statuses[status]
-        bad = statuses[ExtractionStatus.FAILED] + statuses[ExtractionStatus.BLOCKED]
-        v["extract_result"] = "ok" if not bad else "partial"
-        first_error = next((r.error for r in report.results if r.error), None)
-        if first_error is not None and "error" not in v:
-            v["error"] = f"{type(first_error).__name__}: {first_error}"[:300]
-        v["entries_written"] = statuses[ExtractionStatus.EXTRACTED]
-        v.setdefault("bytes_written", 0)
-        written = int(v["bytes_written"])  # type: ignore[call-overload]
-        # ``max_ratio`` only looks at output past ``ratio_activation_threshold``, so
-        # the ratio columns follow the same rule and compare with the limit.
-        # ``max_member_ratio_any`` includes the small members it never checks; the
-        # archive's own figure is ``bytes_written / file_size`` when it is under.
-        floor = config.extraction_limits.ratio_activation_threshold
-        if written > floor:
-            v["archive_ratio"] = _ratio(written, v.get("file_size"))  # type: ignore[arg-type]
-        best: tuple[float, str] | None = None
-        best_any: float | None = None
-        for r in report.results:
-            out = member_sizes.get(id(r.member), 0)
-            ratio = _ratio(out, r.member.compressed_size)
-            if ratio is None:
-                continue
-            best_any = ratio if best_any is None else max(best_any, ratio)
-            if out > floor and (best is None or ratio > best[0]):
-                best = (ratio, r.member.name)
-        v["max_member_ratio_any"] = best_any
-        if best is not None:
-            v["max_member_ratio"], v["max_member_ratio_name"] = best
+        if report is not None:
+            _read_report(report, members, member_bytes, config, row)
 
 
-def _describe_members(members: tuple[archivey.ArchiveMember, ...], v: dict) -> None:
-    v["member_count"] = len(members)
-    types = Counter(m.type.value for m in members)
-    for kind in ("file", "directory", "symlink", "hardlink", "other", "anti"):
-        if types[kind]:
-            v[f"members_{kind}"] = types[kind]
-    v["encrypted_members"] = sum(m.is_encrypted for m in members) or None
-    v["declared_size"] = sum(m.size or 0 for m in members)
-    v["largest_member"] = max((m.size or 0 for m in members), default=0)
-    codecs = sorted(
-        {
-            "+".join(c.algo.value for c in m.compression)
-            for m in members
-            if m.compression
-        }
-    )
-    v["codecs"] = " ".join(codecs) or None
+def _read_report(
+    report: archivey.ExtractionReport,
+    members: tuple[archivey.ArchiveMember, ...],
+    member_bytes: dict[int, int],
+    config: ArchiveyConfig,
+    row: _Row,
+) -> None:
+    v = row.values
+    statuses = Counter(r.status for r in report.results)
+    failed = [r for r in report.results if r.status is ExtractionStatus.FAILED]
+    blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    v["extract"] = "ok" if not failed and not blocked else "partial"
+    if failed:
+        row.flag("failed_members")
+    if blocked:
+        row.flag("blocked_members")
+    for r in (failed + blocked)[:_LOGGED_MEMBER_ERRORS]:
+        row.log.append(f"{r.status.value} {r.member.name!r}: {r.error}")
+        v.setdefault("error", f"{type(r.error).__name__}: {r.error}"[:200])
+    if any(isinstance(r.error, EncryptionError) for r in failed):
+        row.flag("needs_password")
+    v["entries_written"] = statuses[ExtractionStatus.EXTRACTED]
+    written = int(v.setdefault("bytes_written", 0))  # type: ignore[call-overload]
+
+    # A clean run writes exactly what the members declare; anything else is worth a
+    # look. Only checked when every file member declares a size.
+    files = [m for m in members if m.type is MemberType.FILE and m.is_current]
+    if v["extract"] == "ok" and files and all(m.size is not None for m in files):
+        declared = sum(m.size or 0 for m in files)
+        if declared != written:
+            row.flag("size_mismatch")
+            row.log.append(f"members declare {declared} bytes, {written} were written")
+
+    # ``max_ratio`` only looks at output past ``ratio_activation_threshold``, so the
+    # ratio columns follow the same rule and compare with the limit.
+    floor = config.extraction_limits.ratio_activation_threshold
+    if written > floor:
+        v["archive_ratio"] = _ratio(written, v.get("file_size"))  # type: ignore[arg-type]
+    best: tuple[float, str] | None = None
+    for r in report.results:
+        out = member_bytes.get(id(r.member), 0)
+        ratio = _ratio(out, r.member.compressed_size)
+        if ratio is not None and out > floor and (best is None or ratio > best[0]):
+            best = (ratio, r.member.name)
+    if best is not None:
+        v["max_member_ratio"] = best[0]
+        row.log.append(f"highest member ratio: {best[0]}:1, {best[1]!r}")
+
+
+def _flag_limits(row: _Row) -> None:
+    for column, limit, default in _LIMITS:
+        value = row.values.get(column)
+        if value is None or default is None:
+            continue
+        if float(value) > default:  # type: ignore[arg-type]
+            row.flag(f"over:{limit}")
+        elif float(value) > default * _NEAR:  # type: ignore[arg-type]
+            row.flag(f"near:{limit}")
 
 
 def _walk(root: Path) -> Iterator[Path]:
@@ -369,116 +412,101 @@ def _walk(root: Path) -> Iterator[Path]:
             yield path
 
 
-_FIXED_COLUMNS = (
-    "path file_size format format_version detected_by confidence payload_offset "
-    "is_solid is_encrypted is_multivolume solid_blocks listing_cost "
-    "open_result extract_result error seconds "
-    "member_count members_file members_directory members_symlink members_hardlink "
-    "members_other members_anti encrypted_members codecs declared_size largest_member "
-    "bytes_written entries_written archive_ratio max_member_ratio max_member_ratio_name max_member_ratio_any "
-    "listing_metadata_bytes decoder_memory_peak decoder_memory_what kdf_rounds "
-    "spool_bytes detect_unique_bytes detect_decode_input detect_decode_output"
-).split()
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("root", type=Path, help="file or directory to scan")
     parser.add_argument("-o", "--output", type=Path, default=Path("scan.csv"))
-    parser.add_argument(
-        "--all", action="store_true", help="give non-archives a row too"
-    )
-    parser.add_argument(
-        "--default-limits",
-        action="store_true",
-        help="scan under the default limits instead of turning the counting ones off",
-    )
     parser.add_argument(
         "--password",
         action="append",
         default=[],
         help="a password to try on encrypted archives; repeat for several",
     )
+    parser.add_argument(
+        "--default-limits",
+        action="store_true",
+        help="scan under the default limits instead of turning the counting ones off",
+    )
     args = parser.parse_args(argv)
     # Every warning archivey logs is also a diagnostic, which the CSV counts.
     logging.getLogger("archivey").setLevel(logging.ERROR)
-
     failed_probes = _install_probes()
     if failed_probes:
         print(f"warning: probes not installed: {failed_probes}", file=sys.stderr)
     config = _scan_config(args.default_limits)
+    log_path = args.output.with_suffix(".log")
 
     rows: list[_Row] = []
-    bugs: list[str] = []
-    for path in _walk(args.root):
-        row = scan_one(path, config, bugs, args.password or None)
-        if row is None:
-            if args.all:
-                rows.append(_Row({"path": str(path), "open_result": "not_archive"}))
-            continue
-        rows.append(row)
-        v = row.values
-        print(
-            f"{v.get('open_result', '?'):>10} {v.get('extract_result', '-'):>10} "
-            f"{v.get('format', '?'):>8}  {path}",
-            file=sys.stderr,
-        )
-
-    result_cols = [f"results_{s.value}" for s in _RESULT_STATUSES]
-    diag_codes = sorted({c for r in rows for c in r.diagnostics})
-    header = _FIXED_COLUMNS + result_cols + [f"diag_{c}" for c in diag_codes]
-    with args.output.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=header, extrasaction="raise")
+    with (
+        args.output.open("w", newline="", encoding="utf-8") as csv_file,
+        log_path.open("w", encoding="utf-8") as log,
+    ):
+        writer = csv.DictWriter(csv_file, fieldnames=COLUMNS)
         writer.writeheader()
-        for row in rows:
-            out = dict(row.values)
-            out.update({f"diag_{c}": n for c, n in row.diagnostics.items()})
-            writer.writerow(out)
-    if bugs:
-        args.output.with_suffix(".bugs.txt").write_text("\n\n".join(bugs))
-
-    _print_summary(rows, len(bugs), args.output)
+        for path in _walk(args.root):
+            try:
+                row = scan_one(path, config, args.password or None)
+            except OSError as exc:
+                print(f"skipped {path}: {exc}", file=sys.stderr)
+                continue
+            if row is None:
+                continue
+            rows.append(row)
+            writer.writerow(row.values)
+            csv_file.flush()
+            if row.flags:
+                log.write(f"== {path}\nflags: {' '.join(row.flags)}\n")
+                log.writelines(f"  {line}\n" for line in row.log)
+                log.write("\n")
+                log.flush()
+            print(
+                f"{len(rows):>6} {' '.join(row.flags) or 'ok':<40.40} {path}",
+                file=sys.stderr,
+            )
+        summary = _summary(rows)
+        log.write(summary)
+    print(f"\n{summary}\nwrote {args.output} and {log_path}", file=sys.stderr)
     return 0
 
 
-def _print_summary(rows: list[_Row], bug_count: int, output: Path) -> None:
-    archives = [r.values for r in rows if r.values.get("open_result") != "not_archive"]
-    print(f"\n{len(archives)} archives -> {output}", file=sys.stderr)
-    print(
-        "open:    "
-        + ", ".join(
-            f"{k}={n}"
-            for k, n in Counter(
-                str(v.get("open_result")) for v in archives
-            ).most_common()
-        ),
-        file=sys.stderr,
+def _counts(title: str, counter: Counter[str]) -> list[str]:
+    lines = [f"{title}:"]
+    lines += [f"  {n:>7}  {key}" for key, n in counter.most_common()]
+    return lines
+
+
+def _percentile(values: list[float], share: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(share * len(ordered)))]
+
+
+def _summary(rows: list[_Row]) -> str:
+    values = [r.values for r in rows]
+    lines = [f"== summary: {len(rows)} archives"]
+    lines += _counts("formats", Counter(str(v.get("format")) for v in values))
+    lines += _counts("open", Counter(str(v.get("open")) for v in values))
+    lines += _counts("extract", Counter(str(v.get("extract", "-")) for v in values))
+    lines += _counts("flags (archives)", Counter(f for r in rows for f in r.flags))
+    lines += _counts(
+        "diagnostics (archives)", Counter(c for r in rows for c in r.diagnostics)
     )
-    print(
-        "extract: "
-        + ", ".join(
-            f"{k}={n}"
-            for k, n in Counter(
-                str(v.get("extract_result")) for v in archives
-            ).most_common()
-        ),
-        file=sys.stderr,
+    lines.append(
+        f"{'limit':<26}{'default':>14}{'max':>14}{'p99':>14}{'p50':>12}"
+        f"{'>half':>7}{'over':>6}"
     )
-    if bug_count:
-        print(
-            f"bugs:    {bug_count} (tracebacks in {output.with_suffix('.bugs.txt')})",
-            file=sys.stderr,
-        )
-    print("\nlimit                      max seen     default  over", file=sys.stderr)
-    for column, default in _DEFAULTS:
-        seen = [float(v[column]) for v in archives if v.get(column) is not None]
-        peak = max(seen, default=0)
+    for column, limit, default in _LIMITS:
+        seen = [float(v[column]) for v in values if v.get(column) is not None]  # type: ignore[arg-type]
+        if not seen:
+            lines.append(f"{column:<26}{default!s:>14}  no values")
+            continue
         over = sum(1 for s in seen if default is not None and s > default)
-        print(
-            f"{column:<24} {peak:>12.0f} {default if default is not None else '-':>11}"
-            f"  {over}",
-            file=sys.stderr,
+        near = sum(1 for s in seen if default is not None and s > default * _NEAR)
+        lines.append(
+            f"{column:<26}{default!s:>14}{max(seen):>14.0f}"
+            f"{_percentile(seen, 0.99):>14.0f}{_percentile(seen, 0.5):>12.0f}"
+            f"{near:>7}{over:>6}"
         )
+    return "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":
