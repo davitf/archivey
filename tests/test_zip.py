@@ -973,6 +973,25 @@ def test_corrupt_member_data_raises_corruption_on_read() -> None:
             ar.read("data.txt")
 
 
+def test_non_utf8_local_header_name_is_reported_as_a_bad_name() -> None:
+    """A local header that sets the UTF-8 flag over a name that is not UTF-8 is a
+    corrupt entry name, and the error says so rather than blaming the offset."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("data.txt", b"A" * 200)
+    raw = bytearray(buf.getvalue())
+    raw[6:8] = struct.pack("<H", struct.unpack_from("<H", raw, 6)[0] | 0x800)
+    raw[30] = 0xFF  # first byte of the local name; the central name is untouched
+
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        assert ar.members()[0].name == "data.txt"
+        with raises_corruption_not_truncation(
+            match="Corrupt ZIP entry name in local header"
+        ) as excinfo:
+            ar.read("data.txt")
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
+
+
 def _overlapping_entries_zip() -> bytes:
     """A Fifield-style overlap bomb: many central-directory entries whose data spans
     overlap a single shared compressed kernel (https://www.bamsoftware.com/hacks/zipbomb/).

@@ -829,6 +829,12 @@ class ZipReader(BaseArchiveReader):
             # (zlib.error "invalid distance too far back", lzma.LZMAError "Corrupt input
             # data") rather than BadZipFile for a deflate/bzip2/LZMA member.
             return CorruptionError(f"Error decompressing ZIP member: {exc!r}")
+        if isinstance(exc, UnicodeDecodeError):
+            # The local-header check (_local_data_region) decodes the local name to
+            # compare it with the central directory's; name bytes that do not decode
+            # raise this. It is a bad-archive signal, not a caller/runtime error.
+            # Ahead of the ValueError arm, which would otherwise catch it (subclass).
+            return CorruptionError(f"Corrupt ZIP entry name in local header: {exc!r}")
         if isinstance(exc, ValueError):
             # A corrupt local-header offset makes stdlib zipfile seek to a bad position
             # ("negative seek value -N") before reading the member. That is archive
@@ -842,11 +848,6 @@ class ZipReader(BaseArchiveReader):
             # OSError("Invalid data stream") (a bz2 quirk). Message-scoped so a genuine I/O
             # OSError still propagates unchanged (error-handling: I/O is not reclassified).
             return CorruptionError(f"Corrupt bzip2 ZIP member: {exc!r}")
-        if isinstance(exc, UnicodeDecodeError):
-            # zipfile re-reads and re-decodes the member name from the local file header
-            # when opening a member; a corrupt local header with non-UTF-8 name bytes
-            # raises this. It is a bad-archive signal, not a caller/runtime error.
-            return CorruptionError(f"Corrupt ZIP entry name in local header: {exc!r}")
         if isinstance(exc, EOFError):
             # Short input, from any decoder a member read reaches. The codec layer maps
             # its own EOFError and no ZIP path is known to raise a bare one now; this
