@@ -473,7 +473,8 @@ class RarArchive:
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
-    #: one password.
+    #: one password, and merges it like the other fields: on the merged archive it
+    #: is set when any volume proved the password.
     password_proven: bool = False
 
 
@@ -613,6 +614,7 @@ def parse_rar_volumes(
                 part.damaged_service_headers_omitted
             )
             merged.truncated = merged.truncated or part.truncated
+            merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             for member in part.members:
                 if member.split_before and merged.members:
@@ -1702,12 +1704,11 @@ def _parse_rar3(
                 ):
                     truncated = _encrypted_header_cut(header_start)
                     break
-                if password_proven:
-                    raise
-                raise wrong_password_error(
-                    "Failed to decrypt RAR3 headers (wrong password?)"
-                ) from exc
-            if isinstance(exc, _RarHeaderCutError):
+                if not password_proven:
+                    raise wrong_password_error(
+                        "Failed to decrypt RAR3 headers (wrong password?)"
+                    ) from exc
+            elif isinstance(exc, _RarHeaderCutError):
                 # A plain header the file holds only part of: unrar lists the
                 # members before it and reports an unexpected end of archive.
                 truncated = _plain_header_cut(header_start)

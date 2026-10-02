@@ -380,19 +380,54 @@ def _rar3_reencrypt_header(
 _RAR4_HP_SECOND_HEADER = 124
 
 
+# The same damaged bytes with a wrong password: nothing proves that key, so the
+# failure is still a wrong password and a password list goes on to the next one.
+_WRONG_PASSWORD_CASE = pytest.param(
+    "nope", EncryptionError, r"wrong password\?", id="wrong-password"
+)
+
+
 @requires("cryptography")
-def test_rar4_header_encrypted_damage_after_a_proven_key_is_corruption() -> None:
+@pytest.mark.parametrize(
+    ("password", "error", "message"),
+    [
+        pytest.param(
+            _HP_PASSWORD,
+            CorruptionError,
+            "RAR3 FILE header CRC mismatch",
+            id="right-password",
+        ),
+        _WRONG_PASSWORD_CASE,
+    ],
+)
+def test_rar4_header_encrypted_damage_after_a_proven_key_is_corruption(
+    password: str, error: type[Exception], message: str
+) -> None:
     """Once a CRC16 match has proved the password, a later header whose CRC16 does
     not match is damage. Bit 0 of byte 164 is in the second FILE header's
     ciphertext, past the first encrypted header that proved the key."""
     data = bytearray(_hp_fixture("encrypted_header__rar4.rar"))
     data[164] ^= 1
-    with pytest.raises(CorruptionError, match="RAR3 FILE header CRC mismatch"):
-        parse_rar_archive(io.BytesIO(bytes(data)), password=_HP_PASSWORD)
+    with pytest.raises(error, match=message):
+        parse_rar_archive(io.BytesIO(bytes(data)), password=password)
 
 
 @requires("cryptography")
-def test_rar4_header_encrypted_bad_size_after_a_proven_key_is_corruption() -> None:
+@pytest.mark.parametrize(
+    ("password", "error", "message"),
+    [
+        pytest.param(
+            _HP_PASSWORD,
+            CorruptionError,
+            "Invalid RAR3 header size: 3",
+            id="right-password",
+        ),
+        _WRONG_PASSWORD_CASE,
+    ],
+)
+def test_rar4_header_encrypted_bad_size_after_a_proven_key_is_corruption(
+    password: str, error: type[Exception], message: str
+) -> None:
     """A proven password and a header size below the 7-byte minimum that does not
     run to the end of the file: the structural error, not a wrong password."""
 
@@ -405,8 +440,8 @@ def test_rar4_header_encrypted_bad_size_after_a_proven_key_is_corruption() -> No
         64,
         shrink,
     )
-    with pytest.raises(CorruptionError, match="Invalid RAR3 header size: 3"):
-        parse_rar_archive(io.BytesIO(data), password=_HP_PASSWORD)
+    with pytest.raises(error, match=message):
+        parse_rar_archive(io.BytesIO(data), password=password)
 
 
 @requires("cryptography")
@@ -434,7 +469,11 @@ def test_rar4_header_encrypted_later_volume_cut_in_its_first_header_is_truncated
     )
     assert len(archive.members) == 6
     assert archive.truncated is not None
-    assert "encrypted header that starts at byte 20" in archive.truncated
+    # Byte 20 of volume 2, not of the set: volume 1 is 588 bytes.
+    assert (
+        "encrypted header that starts at byte 20 (volume 2 of the set"
+        in archive.truncated
+    )
 
 
 @requires("cryptography")
