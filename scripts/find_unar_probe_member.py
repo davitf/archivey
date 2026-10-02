@@ -348,11 +348,13 @@ def _compress(rar: str, member: bytes, after: bytes | None, workdir: Path) -> by
 
 def _first_short(archive: bytes, count: int) -> int | None:
     """The index of the first member the model says a patched ``unar`` runs short
-    on, or ``count`` when it says none; ``None`` unless the archive holds exactly
-    ``count`` members, all compressed. ``ValueError`` when the model cannot decode
-    the packed data."""
+    on, or ``count`` when it says none; ``None`` when a member is stored.
+    ``ValueError`` when the archive does not hold exactly ``count`` members or the
+    model cannot decode the packed data: either way the model cannot judge it."""
     entries = members_data(archive)
-    if len(entries) != count or any(entry.method == 0 for entry in entries):
+    if len(entries) != count:
+        raise ValueError(f"{len(entries)} members, not {count}")
+    if any(entry.method == 0 for entry in entries):
         return None
     state = SolidState()
     for index, entry in enumerate(entries):
@@ -458,7 +460,10 @@ def _validation_cases(count: int) -> Iterator[tuple[bytes, bytes | None]]:
 
 
 def validate(rar: str, unar: str, count: int) -> int:
-    """Compare the model with ``unar`` on generated archives; the number that disagree.
+    """Compare the model with ``unar`` on generated archives; non-zero on a failure.
+
+    A failure is a case that disagrees, that ``unar`` exits non-zero on, or that the
+    model cannot judge, and a run that compares nothing: it has shown no agreement.
 
     ``unar`` agrees with "dropped" only with the patch's signature, nothing written and
     exit 0, as ``--check-unar`` and ``unar_rar5_probe_failure`` read it; a non-zero
@@ -466,13 +471,18 @@ def validate(rar: str, unar: str, count: int) -> int:
     runs short is decided by that member (``unar`` never reaches the second), so those
     pairs are counted apart as well.
     """
-    agree = disagree = stored = failed = by_first = 0
+    agree = disagree = stored = failed = by_first = unjudged = 0
     with tempfile.TemporaryDirectory() as td:
         for member, after in _validation_cases(count):
             # One archive for both verdicts, so they judge the same bytes.
             archive = _compress(rar, member, after, Path(td))
             members = 1 if after is None else 2
-            first = _first_short(archive, members)
+            try:
+                first = _first_short(archive, members)
+            except ValueError as exc:
+                unjudged += 1
+                print(f"model cannot judge ({exc}): member={member!r} after={after!r}")
+                continue
             if first is None:
                 stored += 1
                 continue
@@ -496,9 +506,13 @@ def validate(rar: str, unar: str, count: int) -> int:
     print(
         f"{agree} agree ({by_first} of them solid pairs decided by the first member), "
         f"{disagree} disagree, {failed} with a non-zero exit, "
-        f"{stored} skipped as stored"
+        f"{unjudged} the model cannot judge, {stored} skipped as stored"
     )
-    return disagree + failed
+    if agree + disagree == 0:
+        # Nothing was compared, so nothing was shown to agree.
+        print("no case was compared with unar", file=sys.stderr)
+        return 1
+    return disagree + failed + unjudged
 
 
 def main(argv: Sequence[str] | None = None) -> int:

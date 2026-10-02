@@ -58,3 +58,8 @@ def test_the_probe_member_is_the_one_embedded() -> None:
     assert entry.method != 0
     assert entry.size == len(unar._RAR5_PROBE_MEMBER)
     assert finder.patched_unar_runs_short(entry.packed, entry.size)
+
+
+def test_a_validation_that_compares_nothing_fails() -> None:
+    """No case reaches ``unar``, so the run has shown no agreement: it must not pass."""
+    assert finder.validate("/nonexistent/rar", "/nonexistent/unar", 0) != 0
