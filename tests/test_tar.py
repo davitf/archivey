@@ -1468,10 +1468,10 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
         ) -> None:
             super().__init__(ArchiveFormat.TAR, streaming=False, archive_name=None)
             self._payloads = payloads
-            by_name_lists: dict[str, list[ArchiveMember]] = {}
+            self._listed = members
             for m in members:
-                BaseArchiveReader._index_member_name(by_name_lists, m)
-            self._publish_materialized(members, by_name_lists, error=None)
+                BaseArchiveReader._index_member_name(self._listed_by_name, m)
+            self._publish_materialized(error=None)
 
         def _iter_members(self):
             materialized = self._materialized
