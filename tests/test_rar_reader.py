@@ -4767,6 +4767,36 @@ def test_password_with_a_line_break_is_refused_not_clamped() -> None:
             _password_stdin_bytes(bad)
 
 
+# 128 UTF-16 units: RAR keeps the first 127, which ends on half of the emoji's pair.
+_PASSWORD_CUT_INSIDE_A_PAIR = "a" * 126 + "\U0001f600"
+
+
+def test_password_cut_inside_a_surrogate_pair_is_a_wrong_password_for_unrar() -> None:
+    """The cut leaves no UTF-8 form to send, so it is the native path's wrong password.
+
+    The native RAR5 path rejects the same candidate with the wrong-password
+    ``EncryptionError`` (``test_a_rar5_password_cut_inside_a_surrogate_pair_is_a_wrong_
+    candidate``); the ``unrar`` path raised ``UnsupportedFeatureError`` instead.
+    """
+    from archivey.internal.backends.rar_unrar import _password_stdin_bytes
+    from archivey.internal.password import is_wrong_password
+
+    with pytest.raises(EncryptionError) as excinfo:
+        _password_stdin_bytes(_PASSWORD_CUT_INSIDE_A_PAIR)
+    assert is_wrong_password(excinfo.value)
+    # One unit shorter, the whole emoji is cut off and the rest is sent.
+    assert _password_stdin_bytes("a" * 127 + "\U0001f600") == b"a" * 127
+
+
+@requires_binary("unrar")
+def test_rar4_member_password_cut_inside_a_surrogate_pair_is_encryption_error() -> None:
+    """End to end on RAR4 data encryption, which is decrypted by ``unrar``."""
+    path = _fixture("encryption__rar4.rar")
+    with open_archive(path, password=_PASSWORD_CUT_INSIDE_A_PAIR) as archive:
+        with pytest.raises(EncryptionError):
+            archive.read("secret.txt")
+
+
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", ["rar15-comment.rar", "blake2sp.rar"])
 def test_unencrypted_archive_opens_with_a_line_break_password(name: str) -> None:

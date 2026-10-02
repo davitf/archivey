@@ -694,6 +694,8 @@ never starts `unrar` and is never asked for a password.
   and both processes waited. A password with a line break or a NUL is refused with
   `UnsupportedFeatureError`, because `unrar` ends the password there: measured,
   `"password\x00zz"` decrypts a RAR4 member whose password is `password`.
+  A password whose 127-unit cut falls inside a surrogate pair has no UTF-8 form to
+  write, so it is a wrong password (`EncryptionError`), as on the native RAR5 path.
 - **The mask is built from what `unrar` compares against.** An 8-bit RAR3 name (no
   Unicode flag) goes into argv as its **stored bytes**: `unrar` runs both the argv mask
   and the stored name through the C library's multibyte conversion, so the bytes match

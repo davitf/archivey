@@ -27,7 +27,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.rar_parser import _normalize_password_utf16le
+from archivey.internal.backends.rar_parser import _normalize_password_utf8
 from archivey.internal.external.cli import (
     spawn_for_stdout,
     stat_identity,
@@ -327,7 +327,7 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
     """Encode a password for ``unrar``'s stdin, refusing one it would silently cut.
 
     What is sent is the password the native path hashes
-    (:func:`rar_parser._normalize_password_utf16le`): its first 127 UTF-16 code
+    (:func:`rar_parser._normalize_password_utf8`): its first 127 UTF-16 code
     units. ``unrar`` truncates as well (measured on 7.00: a RAR5 archive whose
     password is 127 characters decrypts with 100 000 more appended), but its
     ``wchar_t`` is not UTF-16 on every platform, so its count may differ once a
@@ -335,8 +335,9 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
     string so the two paths cannot disagree. The truncation also
     bounds what goes into the pipe to a few hundred bytes, far below any pipe
     buffer, so :func:`open_unrar_p` can write it all before reading stdout without
-    a deadlock. A password with no Unicode form raises the wrong-password
-    ``EncryptionError`` the native path raises for it.
+    a deadlock. A password with no Unicode form, including one whose 127-unit cut
+    falls inside a surrogate pair, raises the wrong-password ``EncryptionError`` the
+    native path raises for it.
 
     ``unrar`` reads the password as a single line that ends at the first newline or
     NUL, and discards the rest. Measured against RARLAB ``rar`` 7.00: an archive
@@ -347,17 +348,10 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
     hashes past a newline or NUL, so the same argument would also mean two
     different things on the two paths. Refuse it instead of clamping it.
     """
-    wstr = _normalize_password_utf16le(password)
-    try:
-        text = wstr.decode("utf-16le")
-    except UnicodeDecodeError:
-        # The 127th unit is the first half of a surrogate pair, which has no
-        # UTF-8 form to send; dropping or completing it would change the password.
-        raise UnsupportedFeatureError(
-            "This password cannot be passed to unrar: RAR uses only its first 127 "
-            "UTF-16 code units, and that limit falls inside a character."
-        ) from None
-    raw = text.encode("utf-8")
+    # When the 127th unit is the first half of a surrogate pair, the cut password has
+    # no UTF-8 form to send, and dropping or completing that half would change it.
+    # The native RAR5 path calls that a wrong candidate, and so does this one.
+    raw = _normalize_password_utf8(password)
     if b"\n" in raw or b"\r" in raw:
         raise UnsupportedFeatureError(
             "A password containing a line break cannot be passed to unrar: it reads "
