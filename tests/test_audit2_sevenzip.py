@@ -1,8 +1,7 @@
-"""Second-round audit reproducers for the native 7z backend (findings S9 onwards).
+"""Regression tests for the second audit's native 7z findings (S9 onwards).
 
-Every test asserts the behaviour the backend should have. A test whose defect is still
-open is marked ``xfail(strict=True)`` with the finding's ID; the others are regression
-tests for fixed findings. Hand-built archives reuse the header builders of
+Every test asserts the behaviour the backend should have, and names the finding that
+broke it. Hand-built archives reuse the header builders of
 ``tests/test_audit_sevenzip.py``.
 """
 

@@ -256,8 +256,9 @@ def _unrar_next_volume_name(name: str, *, old_numbering: bool) -> str | None:
     counts as ``.rar``; the old scheme goes ``.rar`` -> ``.r00`` -> ``.r01`` ...
     ``.r99`` -> ``.s00``, and the new one increments ``N`` in ``name.partN.rar``.
     Any other shape is ``None``, and the caller then stages the set rather than
-    predict unrar's walk. unrar also retries an old-scheme name when a new-scheme
-    one is missing; that retry is not modelled, so such a set is staged too.
+    predict unrar's walk. When the predicted name is missing, unrar retries once
+    with the old-scheme name of the current volume; :func:`_unrar_finds_exactly`
+    accounts for that retry.
     """
     stem, dot, ext = name.rpartition(".")
     if not dot:
@@ -283,9 +284,13 @@ def _unrar_finds_exactly(
     scheme volume 1's MAIN header names (``old_numbering``), not under the names
     the files carry: an old-scheme set renamed ``x.part1.rar``, ``x.part2.rar`` is
     continued from ``x.part1.r00``. So each next name is predicted from that flag,
-    and must be the next given file; past the last one, no file may answer to the
-    next name, or unrar could read it as a further volume. A name the prediction
-    does not cover counts as not found, and the set is staged.
+    and must be the next given file. Past the last one, no file may answer to the
+    next name, nor to the old-scheme name unrar retries when that one is missing
+    (``OldSchemeTested`` in unrar's ``volume.cpp``: ``x.part2.rar`` is followed by
+    ``x.part2.r00``), or unrar could read it as a further volume. Before the last
+    one, a missing predicted name fails ``samefile``, so the retry cannot pick a
+    given file there unnoticed. A name the prediction does not cover counts as not
+    found, and the set is staged.
     """
     if not is_volume:
         # unrar never looks for another file beside a non-volume archive.
@@ -298,7 +303,10 @@ def _unrar_finds_exactly(
                 return False
             candidate = current.parent / name
             if index == len(paths):
-                return not os.path.lexists(candidate)
+                retry = _unrar_next_volume_name(current.name, old_numbering=True)
+                return not os.path.lexists(candidate) and (
+                    retry is not None and not os.path.lexists(current.parent / retry)
+                )
             if not os.path.samefile(candidate, paths[index]):
                 return False
             current = candidate
@@ -1372,11 +1380,11 @@ class RarReader(BaseArchiveReader):
 
         The files may sit in different directories, or carry names that unrar's
         rule for this set (:func:`_unrar_finds_exactly`) does not continue, and
-        unrar finds each later volume by name beside the one before. Each file is symlinked, or hard-linked where a
-        symlink is not allowed (Windows without the privilege), so nothing is
-        copied. Where neither works the set is copied, bounded by
-        ``SpoolLimits`` like any other copy this reader makes. Called under
-        ``_materialize_lock`` from :meth:`_ensure_archive_path`.
+        unrar finds each later volume by name beside the one before. Each file is
+        symlinked, or hard-linked where a symlink is not allowed (Windows without
+        the privilege), so nothing is copied. Where neither works the set is
+        copied, bounded by ``SpoolLimits`` like any other copy this reader makes.
+        Called under ``_materialize_lock`` from :meth:`_ensure_archive_path`.
         """
         temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
         self._temp_dir = temp_dir
@@ -2715,8 +2723,11 @@ class RarReader(BaseArchiveReader):
 
     def _direct_view(self, info: RarMemberInfo, length: int | None = None) -> BinaryIO:
         # Never past the packed span: whatever the unpacked size claims, the bytes
-        # after ``compress_size`` belong to the next header, not to this member. A
-        # stored member that declares more than it packs then ends short, and the
+        # after ``compress_size`` belong to the next header, not to this member.
+        # ``_open_member`` refuses a plaintext stored member whose two sizes differ
+        # before it gets here. The clamp covers the caller that check does not reach,
+        # the unsettled-plaintext path (``_confirm_unsettled_plaintext`` and the read
+        # after it): there a member declaring more than it packs ends short, and the
         # size check reports it as truncated.
         size = min(info.file_size, info.compress_size) if length is None else length
         return self._shared.view(info.data_offset, size)
