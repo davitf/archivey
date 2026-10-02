@@ -457,3 +457,16 @@ def test_parsed_dictionary_size_is_set_and_zero_for_directories(name: str) -> No
             # RAR3/4: 64 KiB << a 3-bit exponent, at most 4 MiB.
             assert 64 * 1024 <= info.dictionary_size <= 4 * 2**20
     assert any(not info.is_directory for info in archive.members)
+
+
+def test_volume_set_packed_data_past_end_names_the_volume() -> None:
+    """The walk's offsets are within one volume, so in a set the reason names it:
+    byte 832 of a set whose volume 1 is 917 bytes would point into volume 1."""
+    part1 = _fixture("tinyvol.part1.rar").read_bytes()
+    part2 = _fixture("tinyvol.part2.rar").read_bytes()[:100]
+    archive = parse_rar_volumes([io.BytesIO(part1), io.BytesIO(part2)], password=None)
+    assert archive.truncated is not None
+    assert "packed data ends at byte 832" in archive.truncated
+    assert "(volume 2 of the set; the offset is within that volume)" in (
+        archive.truncated
+    )

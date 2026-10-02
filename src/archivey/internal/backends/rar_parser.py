@@ -464,7 +464,8 @@ class RarArchive:
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
-    #: one password.
+    #: one password, and merges it like the other fields: on the merged archive it
+    #: is set when any volume proved the password.
     password_proven: bool = False
 
 
@@ -569,6 +570,12 @@ def parse_rar_volumes(
         for member in part.members:
             member.header_offset += base_offset
             member.data_offset += base_offset
+        if part.truncated is not None and len(volumes) > 1:
+            # The walk's byte offsets are within this volume, not the concatenated
+            # space the member offsets above use, so the message names the volume.
+            part.truncated += (
+                f" (volume {index + 1} of the set; the offset is within that volume)"
+            )
 
         if merged is None:
             merged = part
@@ -598,6 +605,7 @@ def parse_rar_volumes(
                 part.damaged_service_headers_omitted
             )
             merged.truncated = merged.truncated or part.truncated
+            merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             for member in part.members:
                 if member.split_before and merged.members:
@@ -1662,11 +1670,10 @@ def _parse_rar3(
                 ):
                     truncated = _encrypted_header_cut(header_start)
                     break
-                if password_proven:
-                    raise
-                raise wrong_password_error(
-                    "Failed to decrypt RAR3 headers (wrong password?)"
-                ) from exc
+                if not password_proven:
+                    raise wrong_password_error(
+                        "Failed to decrypt RAR3 headers (wrong password?)"
+                    ) from exc
             raise
         # HeaderDecryptStream.tell() reports the underlying ciphertext position
         # (including AES block padding), which is the correct data_offset.
