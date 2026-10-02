@@ -463,7 +463,10 @@ member type.
 The system SHALL read RAR5 link semantics from native `file_redir` metadata.
 Hardlinks (`RAR5_XREDIR_HARD_LINK`) SHALL be exposed as `MemberType.HARDLINK`
 with `link_target` set from the redirect, so `ArchiveReader` link following returns
-the target FILE's data. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`) SHALL be
+the target FILE's data. A RAR hardlink SHALL resolve only to a member before it, in
+random access as in a streaming pass, as `unrar` extracts it from what it has already
+written. A hardlink whose only same-named member comes after it has no
+`link_target_member`; opening it raises `LinkTargetNotFoundError`. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`) SHALL be
 exposed as `MemberType.FILE` with `extra["is_file_copy"] == True`, `link_target` set
 to the stored source path and `link_target_member` set to the source: the latest
 earlier `FILE` member that path names. Reading a copy SHALL return the source's bytes,

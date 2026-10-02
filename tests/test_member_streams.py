@@ -168,7 +168,8 @@ def test_streaming_plus_concurrent_rejected(tmp_path: Path) -> None:
 
 
 def test_extract_needs_no_capability(tmp_path: Path) -> None:
-    root = _two_file_dir(tmp_path)
+    (tmp_path / "src").mkdir()
+    root = _two_file_dir(tmp_path / "src")
     dest = tmp_path / "out"
     dest.mkdir()
     report = archivey.extract(root, dest)

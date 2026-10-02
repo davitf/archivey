@@ -220,7 +220,9 @@ they would over a tar. The format-shaped outcomes are these.
   (§2.3). The exception is a member listed at size 0, which the size check exempts: its
   bytes do reach the limits, where the per-member ratio does not apply (`compressed_size`
   is 0) and `max_extracted_bytes` is the bound that holds.
-- **A destination inside the root** is part of the tree being walked (§5).
+- **A destination inside the root** is refused with `ExtractionError` before anything is
+  written, since the walk would read the extraction's own output back as members. `cp -r`
+  refuses the same request.
 
 ### 2.5 Write
 
@@ -294,7 +296,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | `open()` or extraction fails with `OSError` "… since the directory was listed" (`ESTALE`) or "Too many levels of symbolic links" (`ELOOP`) | **archivey** | By design: the file at that path is no longer the one listed, or a symlink was put on its path (§2.3, [`threat-model.md`](../threat-model.md) O21) |
 | A file rewritten at the same size reads its new content | **format** | Nothing in a live tree records the content at listing time (§2.3) |
-| Extracting into a folder inside the root adds that folder to the output (`out/out/`); with `streaming=True` it nests `out/out/out/…` until the path is too long | **archivey** | The walk reads the live tree, including what the extraction writes. Tracked internally |
+| `extract_all()` into a folder inside the root raises `ExtractionError` "Cannot extract a directory into itself" | **archivey** | By design: the walk reads the live tree, so it would list what the extraction writes (§2.4) |
 | A symlink whose target exists on disk raises `LinkTargetNotFoundError` | **archivey** | By design: targets resolve inside the listed tree, as in an archive (§6) |
 | A permission error in one subdirectory fails the whole listing | **archivey** | By design: a listing with a hole would look complete (§6) |
 | A member vanished from the listing and a `SCAN_*_VANISHED` diagnostic says why | **format** | The tree changed during the walk (§1) |
@@ -350,20 +352,12 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Hardlinks: first name `FILE`, later `HARDLINK`; outside names and inode 0 stay `FILE`; the Windows identity `lstat` | `tests/test_directory.py::test_hardlinked_names_list_as_hardlink_to_the_first`, `::test_link_count_from_outside_the_tree_is_a_plain_file`, `::test_hardlinked_directory_extracts_both_names`, `::test_zero_inode_is_no_identity`, `::test_identity_stat_path_failure_keeps_the_file`, `::test_identity_stat_genuine_error_propagates` |
 | A read refuses a file replaced, resized, or swapped for a symlink or FIFO since listing; a directory swapped for a symlink; same-size rewrites and files listed empty still read | `::test_a_file_resized_after_listing_is_refused`, `::test_a_file_rewritten_at_the_same_size_reads_its_new_content`, `::test_a_file_listed_empty_reads_whatever_it_holds_at_open`, `::test_a_file_swapped_for_a_symlink_after_listing_is_refused`, `::test_a_directory_swapped_for_a_symlink_after_listing_is_refused`, `::test_a_file_replaced_after_listing_is_refused`, `::test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking`, `::test_hardlinks_and_symlinks_still_read_through_the_checked_open`, `::test_a_link_to_a_replaced_file_is_refused` |
 | A member listed with no identity is checked on type and size alone, and refused if it is now a reparse point (simulated through the `_identity_stat`, `_HAS_NOFOLLOW` and `_file_attributes` seams) | `::test_an_identityless_member_is_checked_on_type_and_size_alone`, `::test_an_identityless_member_that_is_now_a_reparse_point_is_refused` |
+| Extracting into a folder inside the root is refused, in both modes | `::test_extracting_into_the_root_is_refused` |
 | Streaming extraction fails a link whose first name was filtered out | `::test_streaming_extract_with_first_name_filtered_out_fails_the_link` |
 | Password dropped with a diagnostic | `::test_password_is_accepted_and_recorded` |
 | Same reader surface and streaming mode as the archive backends | `tests/test_review_simplicity_consistency.py::test_reader_surface_is_uniform_across_formats`, `::test_streaming_mode_is_uniform_across_formats` |
 | Concurrent reads | `tests/test_concurrent_multithread.py::test_multithread_directory_open_read` |
 | Cross-format equivalence, including `hardlinks-walk-order` | `tests/test_corpus_sweep.py` (`dir` cells from `tests/sample_archives.py`) |
-
-**Today's behaviour, pinned so that a fix fails it.** This test asserts what §5
-describes, not what is wanted, and says so in a comment.
-
-| Claim | Pinned by |
-| --- | --- |
-| Extracting into a folder inside the root lists that folder | `tests/test_directory.py::test_extracting_into_the_root_lists_the_destination` |
-
-The `streaming=True` nesting is not pinned: it runs until the path is too long.
 
 **Building fixtures.** The tests build trees in `tmp_path`; nothing is checked in. A
 hardlink is `os.link`, a FIFO `os.mkfifo`, a name that is not UTF-8 `open(os.path.join(

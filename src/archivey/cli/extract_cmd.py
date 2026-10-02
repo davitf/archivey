@@ -6,7 +6,7 @@ import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import TextIO
 
 from archivey import (
@@ -115,10 +115,14 @@ def smart_dest(
 
 @dataclass(frozen=True)
 class _SmartDestPlan:
-    """Where to extract, and whether a post-extract single-root hoist may run."""
+    """Where to extract, and whether a post-extract single-root hoist may run.
+
+    ``wrapper_existed`` is set when ``target`` is a wrapper that was already there: the
+    hoist then keeps its content in place and says so."""
 
     target: Path
     may_hoist: bool
+    wrapper_existed: bool = False
 
 
 def resolve_smart_dest(
@@ -141,9 +145,11 @@ def resolve_smart_dest(
 
     indexed = reader.members_report_if_available()
     if indexed is None:
+        wrapper = _enclosing_dir(archive, format=fmt, overwrite=overwrite)
+        # Only a wrapper this run creates may be hoisted out of: a directory that was
+        # already there is the operator's, and its only child may be their own file.
         return _SmartDestPlan(
-            _enclosing_dir(archive, format=fmt, overwrite=overwrite),
-            may_hoist=True,
+            wrapper, may_hoist=True, wrapper_existed=os.path.lexists(wrapper)
         )
 
     members = [m for m in indexed if pred is None or pred(m)]
@@ -237,13 +243,152 @@ def _merge_move(
     raise _HoistConflict(dest)
 
 
+_MAX_LINK_HOPS = 40  # the Linux ``MAXSYMLINKS``
+
+
+def _is_absolute_target(target: str) -> bool:
+    """Whether a symlink target is absolute, on either separator (a drive letter
+    counts)."""
+    return target[:1] in ("/", "\\") or target[1:2] == ":"
+
+
+def _readlink_on_disk(path: PurePath) -> str | None:
+    """``path``'s target when it is a symlink on disk, else ``None``."""
+    return os.readlink(path) if Path(path).is_symlink() else None
+
+
+def _walk_stays_inside(
+    start: PurePath,
+    target: str,
+    root: PurePath,
+    hops: list[int],
+    readlink: Callable[[PurePath], str | None] = _readlink_on_disk,
+) -> PurePath | None:
+    """Follow ``target`` from the directory ``start`` one component at a time, through
+    any symlink on the way, and return where it ends; ``None`` when a step leaves
+    ``root`` or reaches ``root``'s parent. ``hops`` is the symlink budget left, shared
+    by the nested walks. ``readlink`` says whether a path is a symlink and where it
+    points: the disk by default, a dry run's record of its scratch tree otherwise."""
+    if _is_absolute_target(target):
+        return None
+    current = start
+    for part in target.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if current == root:
+                return None
+            current = current.parent
+            continue
+        step = current / part
+        try:
+            inner = readlink(step)
+        except OSError:
+            return None
+        if inner is not None:
+            hops[0] -= 1
+            if hops[0] < 0:
+                return None
+            landed = _walk_stays_inside(current, inner, root, hops, readlink)
+            if landed is None:
+                return None
+            current = landed
+        else:
+            current = step
+    return current
+
+
+def _links_stay_inside(root: Path) -> bool:
+    """Whether every symlink under ``root`` reaches its target without leaving ``root``.
+
+    The hoist moves ``root`` one level up after extraction checked its links against
+    the wrapper. A link whose path stays inside ``root`` at every step means the same
+    thing after the move, because the whole tree moves together. A step above ``root``
+    is where the move changes the meaning: ``wrapper/top/k ->
+    ../../.ssh/authorized_keys`` stays inside the wrapper when the archive is named
+    ``.ssh.tar``, and names the operator's own ``.ssh`` once ``top`` is moved up. Even
+    one step up into the wrapper and back down can land on a name the working directory
+    has and the wrapper did not, so that blocks too.
+
+    The walk follows each symlink on the way, so a chain cannot hide a climb, and an
+    absolute target always blocks. A path that ends at nothing is walked by name. A
+    directory that cannot be listed blocks too: what is under it was not checked.
+    """
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        target = os.readlink(entry.path)
+                        if (
+                            _walk_stays_inside(
+                                directory, target, root, [_MAX_LINK_HOPS]
+                            )
+                            is None
+                        ):
+                            return False
+                    elif entry.is_dir():
+                        pending.append(Path(entry.path))
+        except OSError:
+            # A directory the walk cannot list could hold anything: keep the tree
+            # where it is rather than move what was not looked at.
+            return False
+    return True
+
+
+def _recorded_links_stay_inside(top: str, links: tuple[tuple[str, str], ...]) -> bool:
+    """:func:`_links_stay_inside` for a dry run, over the symlinks its scratch tree
+    held (``ExtractionReport._dry_run_links``) rather than a tree on disk: the same
+    walk, with a path a symlink exactly when the record lists it."""
+    targets: dict[PurePath, str] = {
+        PurePosixPath(name): target for name, target in links
+    }
+    root = PurePosixPath(top)
+    for path, target in targets.items():
+        if root not in path.parents:
+            continue
+        if (
+            _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS], targets.get)
+            is None
+        ):
+            return False
+    return True
+
+
+def _keep_reason(wrapper_existed: bool, block: str | None) -> str | None:
+    """Why the hoist leaves the wrapper's single entry in place, or ``None`` to move it.
+
+    ``block`` is what the tree itself says: ``"symlink"`` when the entry is a symlink,
+    ``"link_leaves"`` when a symlink in it leaves it on the way to its target
+    (:func:`_links_stay_inside`).
+    """
+    if wrapper_existed:
+        # The directory is the operator's, and its only entry may be their own file.
+        return "the folder was already there, so its content may be your own"
+    if block == "symlink":
+        # A link's relative target is read from its own directory, which the move
+        # changes from the wrapper to the working directory: `b -> passwd` would then
+        # name the operator's own `passwd`, and `b -> ../etc/passwd` one outside it.
+        return "its only entry is a symlink, which the move would repoint"
+    if block == "link_leaves":
+        return "a symlink in it points outside it, and would point elsewhere if moved"
+    return None
+
+
 def maybe_hoist_single_root(
     wrapper: Path,
     *,
     overwrite: OverwritePolicy,
     err: TextIO,
+    wrapper_existed: bool = False,
 ) -> _HoistResult:
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
+
+    The entry stays in the wrapper, and a line says why, when the wrapper was already
+    there (``wrapper_existed``), when the entry is a symlink, or when a symlink in the
+    entry leaves it on the way to its target (:func:`_links_stay_inside`).
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
     after an always-wrap extract, without a pre-extract metadata pass. The final
@@ -262,6 +407,17 @@ def maybe_hoist_single_root(
     if len(children) != 1:
         return _HoistResult(wrapper)
     child = children[0]
+    block = None
+    if wrapper_existed:
+        pass  # the reason is settled; walking the tree would not change it
+    elif child.is_symlink():
+        block = "symlink"
+    elif child.is_dir() and not _links_stay_inside(child):
+        block = "link_leaves"
+    reason = _keep_reason(wrapper_existed, block)
+    if reason is not None:
+        print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)
+        return _HoistResult(wrapper)
     dest = wrapper.parent / child.name
     result = _HoistResult(dest)
     try:
@@ -321,7 +477,11 @@ def maybe_hoist_single_root(
 
 
 def predict_hoist(
-    wrapper: Path, report: ExtractionReport, *, err: TextIO
+    wrapper: Path,
+    report: ExtractionReport,
+    *,
+    err: TextIO,
+    wrapper_existed: bool = False,
 ) -> _HoistResult:
     """What :func:`maybe_hoist_single_root` would do after a real run, for a dry run.
 
@@ -330,12 +490,29 @@ def predict_hoist(
     there, and the report carries the entries it left at the top. A single entry is
     lifted to the wrapper's parent under its own name, as the hoist lifts it. Where that
     name exists already, the hoist would merge into it, and the collisions that merge
-    could meet are not checked.
+    could meet are not checked. The entry stays in the wrapper for the reasons the hoist
+    has, judged from the symlinks the scratch tree held, and a line says why.
     """
     tops = _dry_run_top_level(report)
     if len(tops) != 1:
         return _HoistResult(wrapper)
     ((name, is_dir),) = tops
+    links = report._dry_run_links
+    block = None
+    if wrapper_existed:
+        pass  # the reason is settled, as in the hoist
+    elif links is None:
+        # Part of the scratch tree could not be read, and the hoist keeps a tree it
+        # cannot fully walk.
+        block = "link_leaves"
+    elif any(path == name for path, _ in links):
+        block = "symlink"
+    elif is_dir and not _recorded_links_stay_inside(name, links):
+        block = "link_leaves"
+    reason = _keep_reason(wrapper_existed, block)
+    if reason is not None:
+        print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
+        return _HoistResult(wrapper)
     dest = wrapper.parent / name
     label = f"{escape_path(dest)}{'/' if is_dir else ''}"
     if dest == wrapper:
@@ -447,6 +624,14 @@ def _report_extraction(
             elif verbose:
                 print(
                     f"extracted: {escape_member_name(result.member.name)}",
+                    file=err,
+                )
+            if result.kept_mode is not None:
+                # The directory was already there: it kept its own mode, not the
+                # archive's. Reported because the tree differs from the archive.
+                print(
+                    f"kept existing directory's mode {result.kept_mode:04o}: "
+                    f"{escape_member_name(_relative_name(result.path, target) or '.')}",
                     file=err,
                 )
             # A portable rewrite is a different event from a collision rename: the member
@@ -639,6 +824,7 @@ def run_extract(
                 return EXIT_FAIL
 
         may_hoist = False
+        wrapper_existed = False
         if dest is not None:
             target = Path(dest)
         else:
@@ -650,6 +836,7 @@ def run_extract(
             )
             target = plan.target
             may_hoist = plan.may_hoist
+            wrapper_existed = plan.wrapper_existed
             if target != Path("."):
                 verb = "would extract" if dry_run else "extracting"
                 print(f"{verb} into {escape_path(target)}/", file=err)
@@ -709,10 +896,15 @@ def run_extract(
             hoist = _HoistResult(target)
             if may_hoist and dry_run:
                 # The hoist moves what the extraction wrote; a dry run wrote nothing.
-                hoist = predict_hoist(target, report, err=err)
+                hoist = predict_hoist(
+                    target, report, err=err, wrapper_existed=wrapper_existed
+                )
             elif may_hoist:
                 hoist = maybe_hoist_single_root(
-                    target, overwrite=overwrite_enum, err=err
+                    target,
+                    overwrite=overwrite_enum,
+                    err=err,
+                    wrapper_existed=wrapper_existed,
                 )
             blocked, failed = _report_extraction(
                 report,

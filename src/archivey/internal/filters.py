@@ -25,7 +25,7 @@ import unicodedata
 from pathlib import Path
 from typing import Callable
 
-from archivey.exceptions import FilterRejectionError
+from archivey.exceptions import ExtractionError, FilterRejectionError
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
@@ -107,6 +107,15 @@ def _within(path: Path, root: Path) -> bool:
     return path == root or path.is_relative_to(root)
 
 
+def _resolve_or_none(path: Path) -> Path | None:
+    """``path.resolve()``, or ``None`` when a symlink loop stops it (Python before
+    3.13 raises ``RuntimeError`` for one)."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
 def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
     """Refuse a bidi override/isolate in a string that is about to become a path.
 
@@ -143,7 +152,9 @@ def check_universal(
 
     ``dest`` is the extraction root. Raises :class:`FilterRejectionError` on the first
     violation (an escaping path, an escaping symlink, a special file); returns ``None``
-    when the member is safe to extract. Applied to the member about to be written, after
+    when the member is safe to extract. Raises :class:`ExtractionError` when the member's
+    parent directory cannot be resolved in the destination (a symlink loop already on
+    disk): that is a failure, not a block. Applied to the member about to be written, after
     the policy transform and any caller filter, regardless of the active policy.
 
     ``link_target_on_disk`` is given by a dry run only. It maps a link target to the
@@ -204,7 +215,18 @@ def check_universal(
     # lands inside the root. A symlinked *parent* that escapes is still caught.
     dest_root = dest.resolve()
     if rel not in ("", "."):  # "" / "." is the root dir member itself
-        parent = (dest_root / rel).parent.resolve()
+        try:
+            parent = (dest_root / rel).parent.resolve()
+        except (OSError, RuntimeError) as exc:
+            # A symlink loop the destination already had (Python before 3.13 raises
+            # RuntimeError for one). Links this run creates never loop: one that
+            # would is removed as an escape. The member cannot be placed, and that is
+            # the destination's state, not a policy decision.
+            raise ExtractionError(
+                "Member's parent directory does not resolve in the destination "
+                f"(a symlink loop?): {exc}",
+                member_name=name,
+            ) from exc
         if not _within(parent, dest_root):
             raise FilterRejectionError(
                 "Member resolves outside the destination root",
@@ -239,16 +261,18 @@ def check_universal(
             target = link_target_on_disk(target)
         if member.type == MemberType.SYMLINK:
             link_parent = (dest_root / name).parent
-            resolved_target = (link_parent / target).resolve()
-            if not _within(resolved_target, dest_root):
+            # A target that cannot be resolved (a loop) counts as an escape, as it
+            # does in the check after the link is created.
+            resolved_target = _resolve_or_none(link_parent / target)
+            if resolved_target is None or not _within(resolved_target, dest_root):
                 raise FilterRejectionError(
                     "Symlink target escapes destination",
                     member_name=name,
                     link_target=member.link_target,
                 )
         elif member.type == MemberType.HARDLINK:
-            resolved_target = (dest_root / target).resolve()
-            if not _within(resolved_target, dest_root):
+            resolved_target = _resolve_or_none(dest_root / target)
+            if resolved_target is None or not _within(resolved_target, dest_root):
                 raise FilterRejectionError(
                     "Hardlink target escapes destination",
                     member_name=name,
