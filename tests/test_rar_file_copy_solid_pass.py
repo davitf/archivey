@@ -93,8 +93,9 @@ def _config(
     """Skip without ``rar``, and without a usable ``decompressor`` when the test reads.
 
     ``has_binary``, not ``shutil.which``: a unar that fails archivey's RAR5 check
-    (Ubuntu's 1.10.7) is on PATH but refused, so the unar rows would fail rather than
-    skip. ``spawns=False`` is for a test that stops before any process starts.
+    (Debian and Ubuntu packages before 1.10.8+ds1-10, see ``conftest.unar_refusal``)
+    is on PATH but refused, so the unar rows would fail rather than skip.
+    ``spawns=False`` is for a test that stops before any process starts.
     """
     if shutil.which("rar") is None:
         pytest.skip("needs rar")
