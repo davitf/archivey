@@ -5,6 +5,7 @@ Usage (from the repo root)::
 
     uv run python scripts/find_unar_probe_member.py
     uv run python scripts/find_unar_probe_member.py --check-unar /usr/bin/unar
+    uv run python scripts/find_unar_probe_member.py --validate 300 --check-unar /usr/bin/unar
 
 Requires the RARLAB ``rar`` binary on ``PATH``. The answer is the member of
 ``_RAR5_PROBE_ARCHIVE`` in ``src/archivey/internal/external/unar.py`` and of the
@@ -31,8 +32,10 @@ decode.
 
 :func:`patched_unar_runs_short` replays the bit reads of XADMaster's RAR5 decoder
 (``XADRAR50Handle.m``) without producing output, and reports whether one of them
-asks for bits past the end. It agreed with Ubuntu 24.04's ``unar`` 1.10.1 package on
-every one of 510 generated RAR5 members and 200 two-member solid archives.
+asks for bits past the end. ``--validate N`` measures that against a real patched
+``unar``: it compresses N generated members alone and N two-member solid archives, and
+reports every archive where the model and ``unar`` disagree. On 2026-10-02 it agreed
+with Ubuntu 24.04's ``unar`` 1.10.1 package on all of ``--validate 300``.
 
 The search
 ----------
@@ -44,7 +47,9 @@ returns the first compressed member the model says is dropped. With RAR 7.00 and
 default alphabet ``ab`` that is ``aaaaabababbabb``, 14 bytes; no string over ``ab``
 of 13 bytes or fewer is both compressed and dropped. ``--after hello`` searches for the
 second member of a solid archive instead, as ``unar_drop_solid__.rar`` needs: there the
-answer is ``ababbaa``. Another ``rar`` build may compress differently, so rerun this
+answer is ``ababbaa``, 7 bytes. That member reuses the Huffman tables of the member
+before it instead of storing its own, so it compresses at lengths a member alone cannot,
+and the floor above does not apply. Another ``rar`` build may compress differently, so rerun this
 after a ``rar`` upgrade and check the result with ``--check-unar`` on a patched build.
 """
 
@@ -53,6 +58,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -374,16 +380,81 @@ def find(
     return None
 
 
-def _unar_output(unar: str, rar: str, member: bytes, after: bytes | None) -> bytes:
+def _unar_output(
+    unar: str, rar: str, member: bytes, after: bytes | None, workdir: Path
+) -> tuple[bytes, int]:
+    """What ``unar`` writes for ``member``, and its exit status."""
+    archive = workdir / "archive.rar"
+    archive.write_bytes(_compress(rar, member, after, workdir))
+    index = "0" if after is None else "1"
+    proc = subprocess.run(
+        [unar, "-o", "-", "-q", "-i", "--", str(archive), index],
+        capture_output=True,
+        check=False,
+    )
+    return proc.stdout, proc.returncode
+
+
+def _model_drops(
+    rar: str, member: bytes, after: bytes | None, workdir: Path
+) -> bool | None:
+    """Whether the model says ``unar`` writes less than ``member``; ``None`` when a
+    member is stored. A dropped first member of a solid pair counts: ``unar`` then
+    never reaches the second."""
+    entries = members_data(_compress(rar, member, after, workdir))
+    sizes = [len(member)] if after is None else [len(after), len(member)]
+    if any(method == 0 for _, method in entries):
+        return None
+    state = SolidState()
+    return any(
+        patched_unar_runs_short(packed, size, state)
+        for (packed, _), size in zip(entries, sizes)
+    )
+
+
+def _validation_cases(count: int) -> Iterator[tuple[bytes, bytes | None]]:
+    """``count`` lone members, then ``count`` solid pairs, the same on every run."""
+    rnd = random.Random(0)
+    words = [b"alpha", b"beta", b"gamma", b"delta", b"el", b"lea", b"tag", b"ma", b"da"]
+    for index in range(count):
+        kind = index % 3
+        if kind == 0:
+            yield b" ".join(rnd.choice(words) for _ in range(rnd.randint(4, 40))), None
+        elif kind == 1:
+            yield (
+                bytes(rnd.choice(b"abc \nxyz") for _ in range(rnd.randint(20, 300))),
+                None,
+            )
+        else:
+            noise = bytes(rnd.randrange(256) for _ in range(rnd.randint(1, 50)))
+            yield noise + b"x" * rnd.randint(10, 100), None
+    for _ in range(count):
+        first = bytes(rnd.choice(b"abcde \n") for _ in range(rnd.randint(3, 60)))
+        second = bytes(rnd.choice(b"abxy \n") for _ in range(rnd.randint(5, 60)))
+        yield second, first
+
+
+def validate(rar: str, unar: str, count: int) -> int:
+    """Compare the model with ``unar`` on generated archives; the number that disagree."""
+    agree = disagree = stored = 0
     with tempfile.TemporaryDirectory() as td:
-        archive = Path(td) / "archive.rar"
-        archive.write_bytes(_compress(rar, member, after, Path(td)))
-        index = "0" if after is None else "1"
-        return subprocess.run(
-            [unar, "-o", "-", "-q", "-i", "--", str(archive), index],
-            capture_output=True,
-            check=False,
-        ).stdout
+        for member, after in _validation_cases(count):
+            predicted = _model_drops(rar, member, after, Path(td))
+            if predicted is None:
+                stored += 1
+                continue
+            out, _ = _unar_output(unar, rar, member, after, Path(td))
+            if predicted == (out != member):
+                agree += 1
+                continue
+            disagree += 1
+            print(
+                f"disagree: model says {'dropped' if predicted else 'decoded'}, "
+                f"{unar} wrote {len(out)} of {len(member)} bytes: "
+                f"member={member!r} after={after!r}"
+            )
+    print(f"{agree} agree, {disagree} disagree, {stored} skipped as stored")
+    return disagree
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -401,13 +472,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--check-unar",
         metavar="UNAR",
-        help="also run this unar on the result; a patched build should write nothing",
+        help="a patched unar: run it on the result, which must come out empty "
+        "with exit 0; with --validate, the unar to compare the model with",
+    )
+    parser.add_argument(
+        "--validate",
+        type=int,
+        metavar="N",
+        help="instead of searching, compare the model with --check-unar on N "
+        "generated members and N solid pairs; exit 1 on any disagreement",
     )
     args = parser.parse_args(argv)
     rar = shutil.which(args.rar)
     if rar is None:
         print(f"{args.rar}: not found", file=sys.stderr)
         return 2
+    if args.validate is not None:
+        if not args.check_unar:
+            print("--validate needs --check-unar", file=sys.stderr)
+            return 2
+        return 1 if validate(rar, args.check_unar, args.validate) else 0
     alphabet = bytes(sorted(set(args.alphabet.encode("latin-1"))))
     after = None if args.after is None else args.after.encode("latin-1")
     member = find(rar, alphabet, after, args.max_length, args.jobs)
@@ -416,8 +500,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     print(f"{len(member)} bytes: {member!r}")
     if args.check_unar:
-        out = _unar_output(args.check_unar, rar, member, after)
-        print(f"{args.check_unar} wrote {len(out)} bytes")
+        with tempfile.TemporaryDirectory() as td:
+            out, status = _unar_output(args.check_unar, rar, member, after, Path(td))
+        print(f"{args.check_unar} wrote {len(out)} bytes, exit status {status}")
+        # The patch's signature, as ``unar_rar5_probe_failure`` matches it.
+        if out or status != 0:
+            print("not the patched unar's signature (nothing, exit 0)", file=sys.stderr)
+            return 1
     return 0
 
 

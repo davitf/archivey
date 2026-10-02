@@ -457,9 +457,10 @@ def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
 # its end peeks past the last packed byte, and exits 0.
 # ``scripts/find_unar_probe_member.py`` explains why and found both ``f.txt`` members:
 # the shortest over ``ab`` that RAR 7.00 ``-m3`` compresses and unar drops, alone and
-# after ``a.txt`` in a solid archive (``--after hello``). In one run over the five-member solid archive, unar drops ``c.txt``, writes
-# stale window bytes of ``d.txt``'s length and drops ``e.txt``: read by offset, the stale
-# bytes fill ``c.txt``'s place. Another ``rar`` build may compress them differently;
+# after ``a.txt`` in a solid archive (``--after hello``). In one run over the
+# five-member solid archive, unar drops ``c.txt``, writes stale window bytes of
+# ``d.txt``'s length and drops ``e.txt``: read by offset, the stale bytes fill
+# ``c.txt``'s place. Another ``rar`` build may compress them differently;
 # rerun the search, and check ``unar -o - <archive>`` still shows the fault after a
 # regeneration.
 _UNAR_DROP_MEMBER = _File("f.txt", b"aaaaabababbabb")

@@ -85,8 +85,9 @@ Debian added in 1.10.1-2 and deleted in 1.10.8+ds1-10 (June 2026, for breaking i
 ZIP members, Debian bug #1134346). With it, the bit reader raises end of file when fewer
 bits remain than a Huffman lookup *peeks*, even when the code it uses is shorter; the
 error is swallowed and the member comes out empty. `scripts/find_unar_probe_member.py`
-models those reads, agrees with Ubuntu 24.04's package on 510 single members and 200
-solid pairs, and found the probe member. Measured on builds from source
+models those reads and found the probe member; its `--validate 300 --check-unar
+/usr/bin/unar` agreed with Ubuntu 24.04's package on all 563 compressed cases
+(2026-10-02). Measured on builds from source
 (2026-10-01): upstream 1.10.1, 1.10.7, 1.10.8 (Homebrew's version) and master decode all
 300 generated RAR5 archives and the `unar_drop*` / `unar_stale*` fixtures correctly; the
 Debian 1.10.1 package build reproduces the drops, the same build without that patch does
