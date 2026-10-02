@@ -103,7 +103,13 @@ _RAR_PART_RE = re.compile(
 # the breadth: opening a name of this shape pays one directory listing, where the fast
 # reject in ``discover_volume_siblings`` turns other names away before any filesystem
 # call. The explicit-sequence check classifies old-scheme parts with this same
-# pattern, so it reads the base discovery groups on.
+# pattern, so it reads the base discovery groups on. It has neither guard, though, so
+# there the breadth costs a false refusal: a stray of this shape (``readme.p12``,
+# ``notes.e01``) in an explicit sequence counts as an old-scheme part, so beside parts
+# of another scheme or another base the check refuses the sequence as two sets. No
+# narrower pattern is sound. The name alone cannot tell ``beta.s00`` from
+# ``readme.p12``, and the walk can reach any letter before ``_MAX_VOLUME_PART`` stops
+# it.
 _OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}$")
 _OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 
@@ -209,9 +215,11 @@ def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
     Volume 1 is ``<base>.rar``, else ``<base>.exe``, else ``<base>.sfx``. Every name,
     volume 1 included, is matched case-insensitively from one directory listing, as
     the other schemes group siblings, so ``ARCHIVE.RAR`` + ``ARCHIVE.R00`` is a set
-    on a case-sensitive filesystem too. Of two names that differ only in case, the
-    one spelling ``base`` as given wins, then the one spelling the predicted name as
-    given. The walk is bounded by ``_MAX_VOLUME_PART``, and by the listing: each step
+    on a case-sensitive filesystem too. That holds once this function runs: opened
+    from an SFX stub, ``discover_volume_siblings``' fast reject first needs
+    ``<stem>.r00`` or ``<stem>.R00`` with the stub's own base spelling. Of two names
+    that differ only in case, the one spelling ``base`` as given wins, then the one
+    spelling the predicted name as given. The walk is bounded by ``_MAX_VOLUME_PART``, and by the listing: each step
     needs a file in it.
     """
     by_name: dict[str, list[Path]] = {}
@@ -247,7 +255,11 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     # SFX first members (``*.exe.001``, ``*.part1.sfx``) match the patterns above.
     # A stub ``*.exe`` / ``*.sfx`` is maybe-volume only when ``<stem>.r00`` or
     # ``<stem>.R00`` exists (up to two ``is_file``, no ``iterdir``) so 7-Zip
-    # ``vol.exe`` + ``vol.exe.001`` still falls through to stub-follow.
+    # ``vol.exe`` + ``vol.exe.001`` still falls through to stub-follow. The probe
+    # matches the extension's case but spells the base as the stub does, so
+    # ``archive.exe`` beside ``ARCHIVE.R00`` is not an entry point (the set is still
+    # found from ``ARCHIVE.R00``). Closing that would cost an ``iterdir`` on every
+    # ``.exe`` / ``.sfx`` open.
     maybe_volume = (
         _NUMBERED_VOLUME_RE.match(name) is not None
         or _RAR_PART_RE.match(name) is not None
@@ -759,7 +771,13 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
 # sequence is held to the same grouping in all three.
 _NUMBERED_SCHEME, _RAR_PART_SCHEME, _OLD_RAR_SCHEME = range(3)
 _VOLUME_SCHEMES = (_NUMBERED_VOLUME_RE, _RAR_PART_RE, _OLD_RAR_CONTINUATION_RE)
-_SCHEME_NAMES = ("name.EXT.NNN", "name.partN.rar", "name.r00 (old scheme)")
+# Each entry describes the shape a name matched, not what the file is: the third
+# also matches ``notes.e01``, so it must not claim ``.r00``.
+_SCHEME_NAMES = (
+    "name.EXT.NNN",
+    "name.partN.rar",
+    "name.xNN (the old RAR scheme's shape: .r00, .s01, ...)",
+)
 
 
 def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
@@ -864,7 +882,11 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
     A name that is neither is passed over rather than ending the check — the globs
     above also return ``alpha.zip.bak`` and ``notes.zip.old``, and stopping at one
     would leave the parts around it unchecked depending only on where the stray
-    sorted.
+    sorted. A stray whose extension is one non-digit and two digits (``readme.p12``,
+    ``notes.e01``) is not passed over: it has the old-scheme part shape, so beside
+    parts of another scheme or another base, rule 1 or 2 refuses the sequence. That
+    false refusal is the recorded cost of classifying old-scheme parts with
+    discovery's own pattern (see the comment at ``_OLD_RAR_CONTINUATION_RE``).
 
     What this guarantees is still narrower than "the parts of one archive", and three
     residues stay.

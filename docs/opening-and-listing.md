@@ -167,11 +167,14 @@ The old RAR scheme needs a first volume either way: `<base>.rar`, or an SFX
 name from there, the way unrar finds them (`.r99` is followed by `.s00`, `.z99` by
 `.{00`), and the set ends at the first name that is missing. Names match in any
 letter case, the first volume's included, so `ARCHIVE.RAR` + `ARCHIVE.R00` is a set
-on Linux too. A later volume with no first volume beside it, or one past such a gap,
-is read as a lone file rather than as part of a set. A lone numbered part
-(`.7z.001` / `.zip.001` / `.exe.001` with no siblings) is an incomplete set,
-not a silent mis-parse. A part that does not exist at all raises
-`FileNotFoundError`, as any missing path does.
+on Linux too. One exception: opened from an SFX first volume, the set is found only
+when the later volumes spell the base the way the `.exe` / `.sfx` does, so
+`archive.exe` beside `ARCHIVE.R00` is found from `ARCHIVE.R00` and not from the stub.
+A later volume with no first volume beside it, or one past such a gap, is read as a
+lone file rather than as part of a set. A lone numbered part (`.7z.001` /
+`.zip.001` / `.exe.001` with no siblings) is an incomplete set, not a silent
+mis-parse. A part that does not exist at all raises `FileNotFoundError`, as any
+missing path does.
 
 You can also pass the volumes yourself, as an ordered sequence of paths or open
 streams — useful when they are not siblings on disk, or not on disk at all. Do that
@@ -219,6 +222,13 @@ through in the position you gave it, and the completeness check — which only t
 numbered scheme has, RAR volumes carrying their own order in their headers — is
 skipped for the whole sequence, so the order is yours to get right. Passing any part
 as an open stream skips the check entirely, since a stream has no name to compare.
+
+The old-scheme pattern is broad, because the walk past `.r99` can reach any letter:
+any extension of one non-digit and two digits counts as an old-scheme part. So an
+unrelated file of that shape is not passed through. `[alpha.rar, alpha.r00,
+readme.p12]` raises as two sets, and so does `[alpha.zip.001, alpha.zip.002,
+notes.e01]`, where `[alpha.rar, alpha.r00, readme.bak]` joins. Leave such files out
+of the sequence.
 
 ## Detection
 

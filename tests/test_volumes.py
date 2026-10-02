@@ -1718,6 +1718,53 @@ def test_old_scheme_volumes_past_r99_from_two_sets_are_refused(
         join_volumes([tmp_path / name for name in names])
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("alpha.rar", "alpha.r00", "readme.p12"),
+        ("Show.part1.rar", "Show.part2.rar", "Show.part1.e01"),
+        ("disk1.d64", "disk2.d64"),
+    ],
+)
+def test_stray_of_the_old_scheme_shape_is_refused_as_a_part(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """A letter-plus-two-digits stray counts as an old-scheme part: the recorded cost.
+
+    The check classifies old-scheme parts with discovery's own pattern, and the name
+    alone cannot tell ``readme.p12`` from ``beta.s00``, so such a stray is not passed
+    over the way ``readme.bak`` is.
+    """
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError, match="different sets"):
+        join_volumes([tmp_path / name for name in names])
+
+
+def test_stray_of_the_old_scheme_shape_is_named_by_shape(tmp_path: Path) -> None:
+    """The message describes the shape ``notes.e01`` matched; it does not say ``.r00``."""
+    names = ("alpha.zip.001", "alpha.zip.002", "notes.e01")
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / name for name in names])
+
+    message = str(excinfo.value)
+    assert "notes is named name.xNN (the old RAR scheme's shape" in message
+    assert "name.r00" not in message
+
+
+def test_stray_of_another_shape_is_passed_over(tmp_path: Path) -> None:
+    """``readme.bak`` matches no scheme, so it joins where ``readme.p12`` is refused."""
+    names = ("alpha.rar", "alpha.r00", "readme.bak")
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    assert join_volumes([tmp_path / name for name in names]).read() == b"AAA"
+
+
 def test_old_scheme_volumes_past_r99_of_one_set_still_join(tmp_path: Path) -> None:
     """The widened check must not refuse a set discovery accepts."""
     names = _old_scheme_names("alpha.rar", 103)
