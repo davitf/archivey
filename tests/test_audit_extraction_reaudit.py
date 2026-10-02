@@ -954,6 +954,16 @@ def _tree(root: Path) -> dict[str, str]:
 _SUB = [("sub", "dir", None), ("sub/x", "file", b"X")]
 
 
+def _link_follows_symlinks(tmp_path: Path) -> bool:
+    """Whether ``link(2)`` here links a symlink's target rather than the symlink."""
+    probe = tmp_path / "link-probe"
+    probe.mkdir()
+    (probe / "t").write_bytes(b"")
+    (probe / "s").symlink_to("t")
+    os.link(probe / "s", probe / "h")
+    return not (probe / "h").is_symlink()
+
+
 @posix_links
 @pytest.mark.parametrize(
     "entries",
@@ -997,7 +1007,7 @@ _SUB = [("sub", "dir", None), ("sub/x", "file", b"X")]
     ],
 )
 def test_rar_hard_links_extract_as_unrar_does_in_both_modes(
-    tmp_path: Path, entries: list[tuple]
+    tmp_path: Path, entries: list[tuple], request: pytest.FixtureRequest
 ) -> None:
     # unrar links to what it has already written: a hard link whose target comes later
     # fails, and a hard link to a symlink is a second name for the symlink. Both modes
@@ -1007,6 +1017,14 @@ def test_rar_hard_links_extract_as_unrar_does_in_both_modes(
 
     if shutil.which("unrar") is None:
         pytest.skip("requires external binary(ies): unrar")
+    if request.node.callspec.id in {
+        "to-a-symlink",
+        "chain-to-a-symlink",
+    } and _link_follows_symlinks(tmp_path):
+        # macOS: unrar calls link(), which follows the symlink there, so its tree
+        # depends on the platform. archivey writes a second symlink everywhere, as
+        # GNU tar does; that half is covered on Linux.
+        pytest.skip("link(2) follows symlinks on this platform, and unrar with it")
     archive = tmp_path / "a.rar"
     archive.write_bytes(_rar5_with(entries))
     expected_root = tmp_path / "unrar"

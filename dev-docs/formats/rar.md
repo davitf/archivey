@@ -767,7 +767,9 @@ because it hides decode work behind later reads (`VISION.md`; §6).
 **A RAR5 hard link resolves to an earlier member only, in both modes.**
 `unrar` extracts one from what it has already written: when the target comes later it
 fails with "You need to unpack the link target first" (exit 9), and a hard link to a
-symlink becomes a second name for the symlink. `RarReader._HARDLINK_FORWARD_FALLBACK =
+symlink becomes a second name for the symlink on Linux. On macOS `link(2)` follows the
+symlink, so `unrar` links its target file there; archivey writes the symlink everywhere,
+as GNU tar does. `RarReader._HARDLINK_FORWARD_FALLBACK =
 False` matches that, so random access and a streaming pass agree with each other and
 with `unrar`, as TAR does (`tar.md`). `unar` differs: it writes every RAR hard link as a
 symlink to the target name, which is why a forward one appears to work there. The six
