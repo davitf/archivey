@@ -1264,8 +1264,7 @@ class ExtractionCoordinator:
         ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
         lookups in total rather than O(N²). A lookup depends only on the node it starts
         at, so the links on one path share its end, and no answer changes during the
-        run: ``_hardlink_direct_target`` looks forward only once the listing is
-        complete.
+        run: ``_hardlink_direct_target`` only looks backward.
         """
         ends = self._hardlink_ends
         path: list[int] = []

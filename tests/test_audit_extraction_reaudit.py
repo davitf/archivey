@@ -688,7 +688,6 @@ def test_a_hardlink_to_a_symlink_is_a_second_symlink(
 
 
 @posix_links
-@pytest.mark.parametrize("forward_fallback", [False, True])
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("shape", ["fan-out", "chain"])
 def test_hard_links_cost_linear_work(
@@ -696,20 +695,12 @@ def test_hard_links_cost_linear_work(
     monkeypatch: pytest.MonkeyPatch,
     streaming: bool,
     shape: str,
-    forward_fallback: bool,
 ) -> None:
     # Counts rather than wall time. Every link names `base` (fan-out, what GNU tar
     # makes) or the link before it (chain). Each link should check one recorded path
     # before linking and look up one direct target; rechecking every earlier path, or
-    # walking the chain from scratch for each link, makes both grow as N². TAR and RAR
-    # never look forward for a hard link's target; the base default does, which
-    # `forward_fallback` stands in for.
+    # walking the chain from scratch for each link, makes both grow as N².
     from archivey.internal import base_reader, extraction
-    from archivey.internal.backends import tar_reader
-
-    monkeypatch.setattr(
-        tar_reader.TarReader, "_HARDLINK_FORWARD_FALLBACK", forward_fallback
-    )
 
     n = 300
     entries: list[tuple] = [("base", "file", b"AB")]
@@ -743,7 +734,6 @@ def test_hard_links_cost_linear_work(
     assert counts["lookups"] <= 2 * n
 
 
-@pytest.mark.parametrize("forward_fallback", [False, True])
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(
     "shape", ["bottom-names-nothing", "bottom-names-a-later-file", "forward-run"]
@@ -753,18 +743,12 @@ def test_a_chain_with_forward_names_costs_linear_lookups(
     monkeypatch: pytest.MonkeyPatch,
     streaming: bool,
     shape: str,
-    forward_fallback: bool,
 ) -> None:
-    # Chains whose links name members not listed before them. In a streaming walk a
-    # forward answer could still change, so it is not used, and every answer that is
-    # used can be memoized. "forward-run" is a run of links that each name the next,
-    # entered by many later links.
+    # Chains whose links name members not listed before them. Such a link resolves to
+    # nothing, and that answer is memoized like any other. "forward-run" is a run of
+    # links that each name the next, entered by many later links.
     from archivey.internal import base_reader
-    from archivey.internal.backends import tar_reader
 
-    monkeypatch.setattr(
-        tar_reader.TarReader, "_HARDLINK_FORWARD_FALLBACK", forward_fallback
-    )
     n = 300
     entries: list[tuple]
     if shape == "forward-run":
@@ -797,19 +781,13 @@ def test_a_chain_with_forward_names_costs_linear_lookups(
 
 
 @posix_links
-@pytest.mark.parametrize("forward_fallback", [False, True])
 @pytest.mark.parametrize("streaming", [False, True])
 def test_a_chain_through_a_later_symlink_extracts_the_same_in_every_mode(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    streaming: bool,
-    forward_fallback: bool,
+    tmp_path: Path, streaming: bool
 ) -> None:
     # `h0` names a symlink listed after it, and `h3` and `h4` reach it through `h0`
-    # after it is listed. A streaming walk does not use that forward answer, so the
-    # result must not depend on the mode or on the fallback.
-    from archivey.internal.backends import tar_reader
-
+    # after it is listed. A hard link never resolves forward, so the result must not
+    # depend on the mode.
     archive = _build_tar(
         tmp_path / "a.tar",
         [
@@ -841,9 +819,6 @@ def test_a_chain_through_a_later_symlink_extracts_the_same_in_every_mode(
         return kinds
 
     reference = outcome(tmp_path / "ref", streaming=False)
-    monkeypatch.setattr(
-        tar_reader.TarReader, "_HARDLINK_FORWARD_FALLBACK", forward_fallback
-    )
     assert outcome(tmp_path / "out", streaming) == reference
     assert reference["late"] == ("EXTRACTED", "symlink -> sub/x")
 

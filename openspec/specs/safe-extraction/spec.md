@@ -527,12 +527,14 @@ A HARDLINK whose target member is a SYMLINK, directly or through other hard link
 SHALL be written as a symlink with that member's target, read from the hardlink's own
 directory, and checked like any symlink: it is a second name for the symlink, as GNU tar
 creates it. The caller's filter SHALL see the HARDLINK as listed, and the member on its
-`ExtractionResult` stays that HARDLINK; only what is written is a symlink. During a
-streaming extraction, each link in the chain resolves only to a member listed before it.
-A member listed later can still change while the walk runs, so it does not make the link
-a symlink. A TAR or RAR hard link SHALL resolve only to a member listed before it in both
-modes, because `tar(1)` and `unrar` link to what they have already written: a link whose
-only target comes later fails in random access as in a streaming pass.
+`ExtractionResult` stays that HARDLINK; only what is written is a symlink.
+
+A HARDLINK SHALL resolve only to a member listed before it, in every format and in both
+modes: a link whose only target comes later fails in random access as in a streaming
+pass. This matches the format's own tool: `tar(1)` and `unrar` link to what they have
+already written, and `unrar` refuses a link whose target comes later. ZIP, 7z and ISO
+store no hard-link record (7-Zip writes two full copies to a `.7z`), so their readers
+list no HARDLINK.
 
 Where `REPLACE` removes an existing entry that a **member of this same run** wrote,
 and the replacing write then fails, that earlier member's content is gone. Its

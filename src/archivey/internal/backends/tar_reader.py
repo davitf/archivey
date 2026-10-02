@@ -554,12 +554,6 @@ class TarReader(BaseArchiveReader):
     # "available without scanning" (listing cost is REQUIRES_SCANNING / REQUIRES_DECOMPRESSION,
     # not INDEXED). Once iterated, the base serves the cached list anyway.
     _MEMBER_LIST_UPFRONT = False
-    # A TAR hardlink is a reference to a file already archived: ``tarfile`` looks for
-    # its target only among the members before it, taking the last match, and
-    # ``tar(1)`` extracts it by linking to what it has already written. Resolving it to
-    # a later member would give the link content the archive never put behind it, and
-    # would make random access disagree with a streaming pass, which cannot see ahead.
-    _HARDLINK_FORWARD_FALLBACK = False
 
     def __init__(
         self,

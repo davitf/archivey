@@ -769,9 +769,9 @@ because it hides decode work behind later reads (`VISION.md`; §6).
 fails with "You need to unpack the link target first" (exit 9), and a hard link to a
 symlink becomes a second name for the symlink on Linux. On macOS `link(2)` follows the
 symlink, so `unrar` links its target file there; archivey writes the symlink everywhere,
-as GNU tar does. `RarReader._HARDLINK_FORWARD_FALLBACK =
-False` matches that, so random access and a streaming pass agree with each other and
-with `unrar`, as TAR does (`tar.md`). `unar` differs: it writes every RAR hard link as a
+as GNU tar does. The base reader never looks forward for a hard link's target, so
+random access and a streaming pass agree with each other and with `unrar`, as TAR does
+(`tar.md`). `unar` differs: it writes every RAR hard link as a
 symlink to the target name, which is why a forward one appears to work there. The six
 shapes are pinned against `unrar` by
 `tests/test_audit_extraction_reaudit.py::test_rar_hard_links_extract_as_unrar_does_in_both_modes`.
