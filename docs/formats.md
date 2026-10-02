@@ -269,15 +269,17 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before the cut and then emits `ARCHIVE_EOF_MARKER_MISSING`
   (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
   A cut inside a member's data or inside a header lists the members before the cut and
-  is `TruncatedError` on the listing, with one exception: in an archive with encrypted
-  headers, a cut past a header's first 16-byte cipher block before anything has proved
-  the password reads like a wrong password. There the open raises `EncryptionError`
-  ("wrong password?") and lists nothing, even with the right password. It happens
-  inside the first encrypted header of a RAR 1.5-4 archive (a later header's cut is a
-  truncated listing, because an earlier header whose CRC16 matched proved the
-  password), and inside any header of a RAR5 archive whose encryption record has no
-  password check value. RAR 1.5-4 archives may legitimately lack the end block, so a
-  cut between their blocks still lists as complete.
+  is `TruncatedError` on the listing, and other damage to an encrypted header is
+  `CorruptionError`. In an encrypted header, both need the password proven first: by
+  RAR5's password check value, or in RAR 1.5-4 by an encrypted header whose checksum
+  matches, which in a volume set covers the later volumes too. Before that, a wrong
+  password looks the same as a cut past a header's first 16-byte block or a header whose
+  checksum does not match, so those still raise `EncryptionError` ("wrong password?") at
+  open and list nothing, even with the right password. That happens inside the first
+  encrypted header of a RAR 1.5-4 archive or volume set, and inside any header of a RAR5
+  archive whose encryption record has no password check value. RAR 1.5-4 archives may
+  legitimately lack the end block, so a cut between their blocks still lists as
+  complete.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.

@@ -167,19 +167,26 @@ nothing for a short last block, which the walk took as a clean end of file: cutt
 1-16 bytes off an `-hp` archive lost its end block and nothing more, and listed as
 complete (RAR3) or with only the warning above (RAR5); cutting into the salt or IV was
 `CorruptionError` at open, with no listing. A header that decrypts its first block and
-then runs out is a cut only once the password is proven. RAR5 proves it with the
-archive's password check value. RAR3 has none, so the first encrypted header whose
-CRC16 matches proves it: the walk already takes a mismatch there as a wrong password,
-and the same test acquits as well as convicts. Before that proof (a RAR5 archive with no
-check value, or a cut inside the first encrypted RAR3 header) a wrong key decrypts a
-garbage size that also reads to the end of the file, so that stays
-`EncryptionError("…wrong password?")`. Each RAR3 header has its own salt, so the proof
-covers the password and not a later header's key: a damaged later salt whose garbage
-size runs to the end of the file is reported as a cut too. The boundary cases keep
-their plain-walk meaning: an `-hp` RAR5 that ends exactly where the next IV would start
-gets the RAR5 warning above, and a skip past the end of the file is the packed-data
-`TruncatedError`. An `-hp` RAR3 that ends exactly where the next salt would start is a
-clean end, as in a plain RAR3 walk.
+then runs out is a cut only once the password is proven, and a header that fails its
+CRC or size checks is `CorruptionError` only then. RAR5 proves it with the archive's
+password check value. RAR3 has none, so the first encrypted header whose CRC16 matches
+proves it: the walk already takes a mismatch there as a wrong password, and the same
+test acquits as well as convicts. A set has one password, so `parse_rar_volumes`
+carries the proof into each later volume's walk. Before that proof (a RAR5 archive
+with no check value, or a cut or a CRC16 mismatch inside the first encrypted RAR3
+header of an archive or set) a wrong key decrypts a garbage size that also reads to the
+end of the file, or fails the CRC16, so that stays `EncryptionError("…wrong
+password?")`. RAR5
+does not take a CRC32 match as proof the way RAR3 takes a CRC16 one: RARLAB's `rar`
+writes the check value with `-hp`, so an archive without one is crafted, and the walk
+keeps one proof per format rather than add a second that only crafted input reaches.
+Each RAR3 header has its own salt, so the proof covers the password and not a later
+header's key: a damaged later salt decrypts a garbage header, which is
+`CorruptionError`, or a cut when its garbage size runs to the end of the file. The
+boundary cases keep their plain-walk meaning: an `-hp` RAR5 that ends exactly where
+the next IV would start gets the RAR5 warning above, and a skip past the end of the
+file is the packed-data `TruncatedError`. An `-hp` RAR3 that ends exactly where the
+next salt would start is a clean end, as in a plain RAR3 walk.
 
 **Why a cut exactly between RAR 1.5-4 headers is not reported** (measured 2026-10-01,
 unrar 7.00, on `basic_nonsolid__rar4.rar` and `encrypted_header__rar4.rar` cut at every

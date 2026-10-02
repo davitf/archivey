@@ -470,6 +470,11 @@ class RarArchive:
     #: ``truncated`` already reports the cut, nor for RAR 1.5-4, whose writers
     #: may omit the block.
     end_block_missing_volumes: list[int] = field(default_factory=list)
+    #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
+    #: of the set, decrypted with a matching CRC16, which proves the header password.
+    #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
+    #: one password.
+    password_proven: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +552,7 @@ def parse_rar_volumes(
 
     merged: RarArchive | None = None
     base_offset = 0
+    password_proven = False
     for index, volume in enumerate(volumes):
         part = _parse_rar_volume(
             volume,
@@ -557,7 +563,9 @@ def parse_rar_volumes(
             use_qo=use_qo,
             max_members=max_members,
             name_encoding=name_encoding,
+            password_proven=password_proven,
         )
+        password_proven = part.password_proven
         # Reject sets that do not start at volume 1.
         if index == 0 and (
             (part.members and part.members[0].split_before)
@@ -691,6 +699,7 @@ def _parse_rar_volume(
     use_qo: bool = True,
     max_members: int | None,
     name_encoding: str | None = None,
+    password_proven: bool = False,
 ) -> RarArchive:
     """Parse one volume — one seekable source — into a :class:`RarArchive`.
 
@@ -701,6 +710,8 @@ def _parse_rar_volume(
     ``allow_continuation`` is False on the first volume so a ``split_before``
     member is refused there ("Need first volume") rather than listed as a
     fragment.
+    ``password_proven`` carries an earlier RAR 1.5-4 volume's proof of the header
+    password into this volume's walk (:attr:`RarArchive.password_proven`).
     """
     start = source.tell()
     version, sfx_offset = _find_sfx_header(source, start)
@@ -724,6 +735,7 @@ def _parse_rar_volume(
             volume_index=volume_index,
             max_members=max_members,
             name_encoding=name_encoding,
+            password_proven=password_proven,
         )
     if (
         not allow_continuation
@@ -1599,6 +1611,7 @@ def _parse_rar3(
     volume_index: int = 0,
     max_members: int | None,
     name_encoding: str | None = None,
+    password_proven: bool = False,
 ) -> RarArchive:
     _require_exact(source, len(RAR_ID), "RAR3 signature")
 
@@ -1610,10 +1623,12 @@ def _parse_rar3(
     members: list[RarMemberInfo] = []
     needs_next_volume = False
     truncated: str | None = None
-    # Set once an encrypted header decrypted with a matching CRC16. The walk treats a
+    # Set once an encrypted header decrypted with a matching CRC16, in this volume or
+    # an earlier one of the set (the caller passes that in). The walk treats a
     # mismatch as proof of a wrong password, so a match proves the password the same
-    # way. Each header has its own salt, so it proves nothing about a later salt.
-    password_proven = False
+    # way. From then on a header that fails is damage or a cut, not a wrong password.
+    # Each header has its own salt, so the proof says nothing about a later salt: a
+    # damaged one decrypts a garbage header, which is reported as damage too.
 
     while True:
         header_fd: _Readable = source
@@ -1622,7 +1637,8 @@ def _parse_rar3(
         # corruption. When this block is encrypted, surface such failures as
         # EncryptionError so password candidates keep iterating (see _read_rar5_block).
         # Once ``password_proven`` is set, a header that runs out of bytes part-way
-        # is a cut instead, as in the RAR5 walk with a verified check value.
+        # is a cut instead, and any other failure is the CorruptionError it is, as in
+        # the RAR5 walk with a verified check value.
         block_encrypted = has_header_encryption
         header_start = source.tell()
         if has_header_encryption:
@@ -1686,6 +1702,8 @@ def _parse_rar3(
                 ):
                     truncated = _encrypted_header_cut(header_start)
                     break
+                if password_proven:
+                    raise
                 raise wrong_password_error(
                     "Failed to decrypt RAR3 headers (wrong password?)"
                 ) from exc
@@ -1722,7 +1740,7 @@ def _parse_rar3(
                     )
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
-                if block_encrypted:
+                if block_encrypted and not password_proven:
                     raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
@@ -1738,7 +1756,7 @@ def _parse_rar3(
         if block_type == _RAR3_ENDARC:
             calc = _crc32(hdata[2:header_size]) & 0xFFFF
             if header_crc != calc:
-                if block_encrypted:
+                if block_encrypted and not password_proven:
                     raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
@@ -1762,7 +1780,7 @@ def _parse_rar3(
             )
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
-                if block_encrypted:
+                if block_encrypted and not password_proven:
                     raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
@@ -1831,6 +1849,7 @@ def _parse_rar3(
         needs_next_volume=needs_next_volume,
         old_volume_naming=old_volume_naming,
         truncated=truncated,
+        password_proven=password_proven,
     )
 
 
