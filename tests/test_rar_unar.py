@@ -225,9 +225,10 @@ def _unrar_bytes(path: Path) -> dict[str, bytes]:
 def test_a_member_unar_drops_is_an_error_not_wrong_bytes(
     tmp_path: Path, name: str, how: str
 ) -> None:
-    """unar 1.10.1 drops a compressed RAR5 member whose last packed byte uses 6-8
-    bits, with exit 0. In one solid run over ``unar_stale_*``, ``c.txt`` is dropped
-    and stale window bytes follow, so the bytes at ``c.txt``'s offset are not its own.
+    """unar 1.10.1 drops a compressed RAR5 member when a Huffman lookup peeks past
+    its packed data, with exit 0. In one solid run over ``unar_stale_*``, ``c.txt`` is
+    dropped and stale window bytes follow, so the bytes at ``c.txt``'s offset are not
+    its own.
     ``unar_stale_nocrc_solid__.rar`` has ``c.txt``'s CRC32 removed: only a run of its
     own, which is exact or empty, keeps those bytes from being served as it."""
     path = _RAR / name

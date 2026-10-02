@@ -31,7 +31,7 @@ pipe to ``EncryptionError`` when the caller says the entry is encrypted. Measure
 :func:`unar_password_supported` rejects one before ``unar`` runs.
 
 A ``unar`` that identifies itself is also checked once for what it does: it must decode
-a 118-byte RAR5 archive (:data:`_RAR5_PROBE_ARCHIVE`) whose one member the Debian and
+an 85-byte RAR5 archive (:data:`_RAR5_PROBE_ARCHIVE`) whose one member the Debian and
 Ubuntu ``unar`` packages that carry ``CSInputBuffer-bit-string-reading.patch`` write
 as nothing, with exit 0. Those builds lose about one compressed RAR5 member in 25, and
 no version string tells them apart from a good build, so one that fails the check is
@@ -92,17 +92,17 @@ def parse_unar_banner(text: str) -> Banner:
 
 
 # ``tests/fixtures/rar/unar_drop__.rar`` (``scripts/gen_rar_fixtures.py``
-# ``_build_unar_drop``): RAR 7.00 ``-m3``, one 47-byte member ``f.txt`` whose last packed
-# byte uses 6-8 of its bits. A ``unar`` build with Debian's bit-reader patch writes
-# nothing for it and exits 0; upstream 1.10.1, 1.10.7, 1.10.8 and master write it
-# exactly.
+# ``_build_unar_drop``): RAR 7.00 ``-m3``, one 14-byte member ``f.txt`` whose last
+# Huffman lookup peeks past the end of its packed data. A ``unar`` build with Debian's
+# bit-reader patch writes nothing for it and exits 0; upstream 1.10.1, 1.10.7, 1.10.8
+# and master write it exactly. ``scripts/find_unar_probe_member.py`` found the member
+# and explains the condition.
 _RAR5_PROBE_ARCHIVE = bytes.fromhex(
-    "526172211a0701003392b5e50a01050600050101808000bc1fde622302030baf"
-    "0004af00a4830270062c1480030105662e7478740a03132b44be6a4888d312c7"
-    "b12c243334fa33be614f357e7c252e04a26ff641e448409655d676512915a6ac"
-    "c2c2200a247e75843cd0db87377c1d77565103050400"
+    "526172211a0701003392b5e50a010506000501018080004ef6e8102302030b8e"
+    "00048e00a4830245296e7180030105662e7478740a0313e8ecbf6a629e630fc7"
+    "960b022fe156f7f1087be6e96c1d77565103050400"
 )
-_RAR5_PROBE_MEMBER = b"ellaltagma\nlpa \n  gaa deta del beta ama \n bealp"
+_RAR5_PROBE_MEMBER = b"aaaaabababbabb"
 
 # Reserved for the signature measured on the patched builds: exit 0 and less than the
 # member. Any other failure says what happened instead.
@@ -189,7 +189,7 @@ def _run_rar5_probe(unar: str, archive: Path) -> str | None:
         )
     if killed.is_set():
         return (
-            f"did not decode a 118-byte test archive within {timeout:g} seconds. "
+            f"did not decode an 85-byte test archive within {timeout:g} seconds. "
             "archivey does not try an unchanged binary again in this process. "
             f"{UNAR_INSTALL_HINT}"
         )
