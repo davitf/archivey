@@ -7,7 +7,7 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -1430,15 +1430,13 @@ class BaseArchiveReader(ArchiveReader):
         self._listing_tracker.reset()
 
     def _drain_walk(self, *, enforce: bool) -> None:
-        """Pull to the end of the walk; with ``enforce``, check the running totals too.
+        """Pull to the end of the walk, each pull under ``enforce``.
 
-        The check covers members a non-enforcing pull (a ``stream_members`` pass)
-        already counted, which no enforcing pull saw cross a limit.
+        The caller re-checks the running totals afterwards: members a non-enforcing
+        pull (a ``stream_members`` pass) already counted were seen by no enforcing pull.
         """
         while self._pull_member(enforce=enforce) is not None:
             pass
-        if enforce:
-            self._listing_tracker.assert_within_limits()
 
     def _ensure_walked(self, *, enforce: bool) -> None:
         """Drain the walk under the first-touch election, without resolving links.
@@ -1449,19 +1447,14 @@ class BaseArchiveReader(ArchiveReader):
         overlap raises, as materialization does. The election is handed back unpublished
         afterwards, so ``members()`` can still resolve links and publish.
         """
-        if self._walk_done:
-            if enforce:
-                self._listing_tracker.assert_within_limits()
-            return
-        if not self._state.begin_materialization():
-            # Published while we waited: that walk has ended.
-            if enforce:
-                self._listing_tracker.assert_within_limits()
-            return
-        try:
-            self._drain_walk(enforce=enforce)
-        finally:
-            self._state.fail_materialization()
+        # A walk published while we waited on the election has ended too.
+        if not self._walk_done and self._state.begin_materialization():
+            try:
+                self._drain_walk(enforce=enforce)
+            finally:
+                self._state.fail_materialization()
+        if enforce:
+            self._listing_tracker.assert_within_limits()
 
     def _listed_members(self) -> Iterator[ArchiveMember]:
         """The listed members for a backend's own data pass, then the walk's damage.
@@ -1489,20 +1482,20 @@ class BaseArchiveReader(ArchiveReader):
         walk: the members may already have been handed out by a peek, and a retry
         resolves the links that were not finished.
         """
-        if self._materialized is not None:
-            if enforce_listing_limits:
-                self._listing_tracker.assert_within_limits()
-            return self._materialized
+        published = self._published(enforce=enforce_listing_limits)
+        if published is not None:
+            return published
 
         if not self._state.begin_materialization():
             # Another thread published while we waited (or cache was already ready).
-            assert self._materialized is not None
-            if enforce_listing_limits:
-                self._listing_tracker.assert_within_limits()
-            return self._materialized
+            published = self._published(enforce=enforce_listing_limits)
+            assert published is not None
+            return published
 
         try:
             self._drain_walk(enforce=enforce_listing_limits)
+            if enforce_listing_limits:
+                self._listing_tracker.assert_within_limits()
             # Prefer the original listing error on the report; leave unresolved links
             # as-is when a secondary link-target fault is swallowed.
             error = self._walk_error
@@ -1530,6 +1523,31 @@ class BaseArchiveReader(ArchiveReader):
             self._materialized = None
             self._state.fail_materialization()
             raise
+
+    def _published(self, *, enforce: bool) -> _Materialized | None:
+        """The published listing, or ``None``; under ``enforce``, re-check its totals.
+
+        A report a non-enforcing pass published (``stream_members``) may be over the
+        limits, so a caller that enforces them refuses it on the way out.
+        """
+        materialized = self._materialized
+        if materialized is not None and enforce:
+            self._listing_tracker.assert_within_limits()
+        return materialized
+
+    @contextmanager
+    def _enforcing_listing_limits(self) -> Iterator[None]:
+        """Have the forward pass enforce ``ListingLimits`` as it registers members.
+
+        ``members_report()`` and an extraction's one pass enforce them;
+        ``stream_members()`` does not. The previous setting comes back on exit.
+        """
+        previous = self._progressive_enforce_listing_limits
+        self._progressive_enforce_listing_limits = True
+        try:
+            yield
+        finally:
+            self._progressive_enforce_listing_limits = previous
 
     def _get_members_registered(
         self, *, enforce_listing_limits: bool = True
@@ -2366,14 +2384,11 @@ class BaseArchiveReader(ArchiveReader):
 
         token = self._state.acquire_pass(op)
         try:
-            if self._materialized is not None:
-                self._listing_tracker.assert_within_limits()
-                return self._materialized.report
-            # Enforce ListingLimits while draining; stream_members leaves this false.
-            self._progressive_enforce_listing_limits = True
-            try:
-                if not self._forward_pass_started:
-                    self._forward_pass_started = True
+            published = self._published(enforce=True)
+            if published is not None:
+                return published.report
+            with self._enforcing_listing_limits():
+                self._forward_pass_started = True
                 gen = self._begin_forward_pass()
                 while True:
                     try:
@@ -2383,11 +2398,9 @@ class BaseArchiveReader(ArchiveReader):
                     except CorruptionError:
                         assert self._materialized is not None
                         break
-                assert self._materialized is not None
-                self._listing_tracker.assert_within_limits()
-                return self._materialized.report
-            finally:
-                self._progressive_enforce_listing_limits = False
+                published = self._published(enforce=True)
+                assert published is not None
+                return published.report
         finally:
             self._state.release_pass(token)
 
@@ -2414,9 +2427,9 @@ class BaseArchiveReader(ArchiveReader):
         incomplete report (prefix plus ``error``), not raised.
         """
         self._state.require_open("members_report_if_available()")
-        if self._materialized is not None:
-            self._listing_tracker.assert_within_limits()
-            return self._materialized.report
+        published = self._published(enforce=True)
+        if published is not None:
+            return published.report
         if not self._MEMBER_LIST_UPFRONT:
             return None
         self._ensure_walked(enforce=True)

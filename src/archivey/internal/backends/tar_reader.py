@@ -33,7 +33,6 @@ from __future__ import annotations
 import stat
 import tarfile
 import threading
-from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import replace
 from datetime import datetime
@@ -989,16 +988,7 @@ class TarReader(BaseArchiveReader):
         """
         if self._walk_done:
             return super()._extraction_listing()
-        return self._pass_enforces_listing_limits()
-
-    @contextmanager
-    def _pass_enforces_listing_limits(self) -> Iterator[None]:
-        previous = self._progressive_enforce_listing_limits
-        self._progressive_enforce_listing_limits = True
-        try:
-            yield
-        finally:
-            self._progressive_enforce_listing_limits = previous
+        return self._enforcing_listing_limits()
 
     def _header_batch_size(self, listed: int) -> int:
         """How many headers the random-access walk may parse next: a full batch, or
