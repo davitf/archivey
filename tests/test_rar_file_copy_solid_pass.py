@@ -31,7 +31,7 @@ from archivey import (
 )
 from archivey.exceptions import CorruptionError, ResourceLimitError
 from archivey.internal.backends import rar_copy_sources, rar_reader
-from tests.conftest import has_binary
+from tests.conftest import binary_refusal
 
 _COPIES = 6
 _COPY_NAMES = [f"d_copy{i}.txt" for i in range(_COPIES)]
@@ -88,19 +88,20 @@ def _solid_with_copies(tmp_path: Path) -> tuple[Path, bytes]:
 
 
 def _config(
-    decompressor: str, *, spawns: bool = True, **kwargs: object
+    decompressor: str, *, needs_decompressor: bool = True, **kwargs: object
 ) -> ArchiveyConfig:
-    """Skip without ``rar``, and without a usable ``decompressor`` when the test reads.
+    """Skip without ``rar``, and without a ``decompressor`` archivey will use.
 
-    ``has_binary``, not ``shutil.which``: a unar that fails archivey's RAR5 check
-    (Debian and Ubuntu packages before 1.10.8+ds1-10, see ``conftest.unar_refusal``)
-    is on PATH but refused, so the unar rows would fail rather than skip.
-    ``spawns=False`` is for a test that stops before any process starts.
+    ``binary_refusal``, not ``shutil.which``: archivey refuses some binaries that are
+    on PATH (a ``unar`` that fails its RAR5 check, a lookalike or pre-6.0 ``unrar``),
+    and the rows would fail rather than skip. ``needs_decompressor=False`` is for a
+    test that stops before any process starts; such a test asserts ``spawns == []``,
+    which is what keeps the flag honest.
     """
     if shutil.which("rar") is None:
         pytest.skip("needs rar")
-    if spawns and not has_binary(decompressor):
-        pytest.skip(f"needs a {decompressor} archivey will use")
+    if needs_decompressor and (refusal := binary_refusal(decompressor)) is not None:
+        pytest.skip(f"needs a {decompressor} archivey will use: {refusal}")
     return ArchiveyConfig(rar_decompressor=decompressor, **kwargs)  # type: ignore[arg-type]
 
 
@@ -299,7 +300,9 @@ def test_a_copy_read_checks_its_source_dictionary(
     checked against ``max_decoder_memory`` before the pass's process starts, as the
     source's own read would be."""
     config = _config(
-        decompressor, spawns=False, decoder_limits=DecoderLimits(max_decoder_memory=1)
+        decompressor,
+        needs_decompressor=False,
+        decoder_limits=DecoderLimits(max_decoder_memory=1),
     )
     archive, _ = _solid_with_copies(tmp_path)
     with open_archive(archive, config=config) as reader:
