@@ -100,8 +100,9 @@ about threads × 4 MiB (compressed) ahead of the reader. Measured 2026-10-02 on 
 `Finally` lambda (GzipChunk.hpp:79) in `try`/`catch` and building 0.16.0 from source ended
 the aborts: parallel decoding then delivered every chunk before the cut, as one thread
 does, and raised `RuntimeError("std::exception")` (the "Unexpected end of file" detail
-goes only to stderr, so a report should ask for it in the exception too). This is the report worth filing upstream: a
-destructor must not throw, and the input is only short, not hostile.
+goes only to stderr, so a report should ask for it in the exception too). This is the
+report worth filing upstream: a destructor must not throw, and the input is only short,
+not hostile.
 
 | Related Archivey notes | |
 | --- | --- |

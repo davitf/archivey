@@ -175,10 +175,11 @@ the 32 KiB of output before it as its window, where the stream has seen one; oth
 start of the stream. A decode started at such a point that reaches the end of its DEFLATE
 stream cannot check the CRC-32 or Adler-32 that follows, so it SHALL start over from the start
 of the stream. A SIGKILL or other end that is not a fault signal is not a verdict on the data
-and SHALL reach the caller as above. A child that ends after the caller's source raised SHALL be `ReadError`, and the
-source's exception SHALL be raised first, unchanged. An exception that rapidgzip raised in the
-child SHALL reach the translator as the same built-in type, and any `RuntimeError` rapidgzip
-raised SHALL translate to `CorruptionError` when no listed message says truncation.
+and SHALL reach the caller as above. A child that ends after the caller's source raised
+SHALL be `ReadError`, and the source's exception SHALL be raised first, unchanged. An
+exception that rapidgzip raised in the child SHALL reach the translator as the same
+built-in type, and any `RuntimeError` rapidgzip raised SHALL translate to
+`CorruptionError` when no listed message says truncation.
 
 rapidgzip does not validate zlib's Adler-32 and returns a silent short read on some
 mid-stream DEFLATE truncations. For a zlib stream the system SHALL check the Adler-32 after
