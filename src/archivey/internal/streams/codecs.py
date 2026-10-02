@@ -37,7 +37,7 @@ import zlib
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn
+from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn, TypeVar
 
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
@@ -131,6 +131,8 @@ from archivey.types import (
     StreamFormat,
     crc32_digest,
 )
+
+_T = TypeVar("_T")
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -1237,22 +1239,19 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     def read(self, size: int = -1, /) -> bytes:
         try:
-            data = self._inner.read(size)
-        except ResumeReachedStreamEnd:
-            self._restart_without_resume()
-            data = self._inner.read(size)
+            data = self._restarting(lambda: self._inner.read(size))
         except Exception as exc:
             if not self._takes_over(exc):
                 raise
             self._switch(resume=True)
-            data = self._read_switched(size)
+            data = self._restarting(lambda: self._inner.read(size))
         if (
             self._limit is not None
             and not self.switched
             and self._position + len(data) > self._limit
         ):
             self._switch()
-            data = self._read_switched(size)
+            data = self._restarting(lambda: self._inner.read(size))
         self._position += len(data)
         return data
 
@@ -1264,29 +1263,26 @@ class _StdlibOnAcceleratorError(DelegatingStream):
             crashed_on_data(exc) or _translate_rapidgzip(exc, self._label) is not None
         )
 
-    def _read_switched(self, size: int) -> bytes:
+    def _restarting(self, op: Callable[[], _T]) -> _T:
+        """Run ``op`` on the inner stream, and once more, on a decoder that starts from
+        the start, if a resumed standard-library decode reached the end of its DEFLATE
+        stream."""
         try:
-            return self._inner.read(size)
+            return op()
         except ResumeReachedStreamEnd:
             self._restart_without_resume()
-            return self._inner.read(size)
+            return op()
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        inner_seek = functools.partial(super().seek, offset, whence)
         try:
-            self._position = super().seek(offset, whence)
-        except ResumeReachedStreamEnd:
-            self._restart_without_resume()
-            self._position = super().seek(offset, whence)
+            self._position = self._restarting(inner_seek)
         except Exception as exc:
             # A seek runs rapidgzip's decode too; a crash there ends the child.
             if self.switched or from_callers_source(exc) or not crashed_on_data(exc):
                 raise
             self._switch(resume=True)
-            try:
-                self._position = super().seek(offset, whence)
-            except ResumeReachedStreamEnd:
-                self._restart_without_resume()
-                self._position = super().seek(offset, whence)
+            self._position = self._restarting(inner_seek)
         return self._position
 
     def nearest_resume_offset(self, target: int) -> int | None:
