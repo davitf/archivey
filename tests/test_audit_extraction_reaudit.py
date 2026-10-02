@@ -188,6 +188,63 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
 
 
 @posix_links
+@pytest.mark.parametrize(
+    ("entries", "existing"),
+    [
+        ([("top", "sym", "passwd")], False),
+        ([("top", "dir", None), ("top/k", "sym", "../passwd")], False),
+        (
+            [
+                ("top", "dir", None),
+                ("top/sub", "dir", None),
+                ("top/sub/a", "sym", ".."),
+                ("top/sub/l", "sym", "a/../passwd"),
+            ],
+            False,
+        ),
+        ([("top", "dir", None), ("top/f", "file", b"x")], True),
+    ],
+    ids=[
+        "lone-symlink",
+        "link-leaves-the-entry",
+        "chain-hides-a-climb",
+        "wrapper-was-there",
+    ],
+)
+def test_a_dry_run_predicts_the_hoist_keeping_the_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entries: list,
+    existing: bool,
+) -> None:
+    # Each case is one the real hoist leaves in the wrapper. The dry run must say so
+    # too, not "would move", and name the same place in its summary.
+    runs = {}
+    for dry_run in (False, True):
+        cwd = tmp_path / ("dry" if dry_run else "real")
+        cwd.mkdir()
+        _build_tar(cwd / "bundle.tar", entries)
+        if existing:
+            (cwd / "bundle").mkdir()
+        monkeypatch.chdir(cwd)
+        out, err = io.StringIO(), io.StringIO()
+        # Any explicit --overwrite extracts into an existing wrapper.
+        argv = ["x", "--overwrite", "skip", "bundle.tar", "--hide-progress"]
+        code = main([*argv, "--dry-run"] if dry_run else argv, out=out, err=err)
+        runs[dry_run] = (code, err.getvalue())
+    (real_code, real_err), (dry_code, dry_err) = runs[False], runs[True]
+    assert "kept in bundle/: " in real_err
+    reason = real_err.split("kept in bundle/: ", 1)[1].splitlines()[0]
+    assert f"would keep in bundle/: {reason}" in dry_err
+    assert "would move" not in dry_err
+    assert dry_code == real_code
+    assert (
+        real_err.splitlines()[-1].split(" → ")[1]
+        == dry_err.splitlines()[-1].split(" → ")[1]
+    )
+
+
+@posix_links
 @pytest.mark.parametrize("top", ["pkg", "top"], ids=["flatten", "merge-move"])
 def test_hoist_moves_a_tree_whose_links_stay_inside_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, top: str

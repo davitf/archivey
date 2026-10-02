@@ -2782,6 +2782,7 @@ class BaseArchiveReader(ArchiveReader):
             results=tuple(results),
             diagnostics=collector.snapshot(since=wm),
             _dry_run_top_level=coordinator.dry_run_top_level,
+            _dry_run_links=coordinator.dry_run_links,
         )
 
     def close(self) -> None:

@@ -142,6 +142,21 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
+def _scratch_links(root: Path) -> tuple[tuple[str, str], ...]:
+    """Every symlink under ``root``, as (its path relative to ``root`` with ``/``
+    separators, its target), sorted. Directories are listed without following links;
+    one that cannot be listed is left out."""
+    links = []
+    for parent, dirnames, filenames in os.walk(root):
+        for name in (*dirnames, *filenames):
+            path = os.path.join(parent, name)
+            if os.path.islink(path):
+                with contextlib.suppress(OSError):
+                    rel = Path(path).relative_to(root).as_posix()
+                    links.append((rel, os.readlink(path)))
+    return tuple(sorted(links))
+
+
 def _remove_scratch(root: Path) -> None:
     """Remove a dry run's scratch directory, whatever modes the archive gave its entries.
 
@@ -524,6 +539,7 @@ class ExtractionCoordinator:
         self._sink: BinaryIO | None = None
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
+        self.dry_run_links: tuple[tuple[str, str], ...] | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -602,6 +618,9 @@ class ExtractionCoordinator:
                             for entry in entries
                         )
                     )
+                if len(self.dry_run_top_level) == 1:
+                    # What the CLI's hoist prediction walks; see ExtractionReport.
+                    self.dry_run_links = _scratch_links(work)
             return [self._rebase_result(result) for result in results]
         finally:
             self._sink = None

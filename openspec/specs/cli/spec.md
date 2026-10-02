@@ -137,7 +137,8 @@ wrapper and why. When it runs, the hoist SHALL produce the same final layout as
 extracting directly into the cwd: directories merge into existing directories, and
 per-file collisions resolve by the overwrite policy (`rename` derives the library's
 `name (N)` spelling; `replace` replaces only the individual files being extracted;
-`skip` keeps the existing file). The hoist MUST NOT delete pre-existing files or directories under any policy. A collision
+`skip` keeps the existing file). The hoist MUST NOT delete pre-existing files or
+directories under any policy. A collision
 the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
 under the wrapper, and exit nonzero — mirroring the failure a direct extraction
@@ -383,9 +384,10 @@ needs beyond `archivey.__all__` SHALL otherwise come from a public module, such 
 `archivey.terminal` for terminal-safe display. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
 without touching any public name. `extract --dry-run` also reads one private field,
-`ExtractionReport._dry_run_top_level`: the entries the dry run left at the top of its
-scratch copy of the destination. A dry run writes nothing the CLI could look at
-instead, and renaming the field breaks the dry run's hoist line and summary.
+`ExtractionReport._dry_run_top_level` and `ExtractionReport._dry_run_links`: the
+entries the dry run left at the top of its scratch copy of the destination, and the
+symlinks in that copy. A dry run writes nothing the CLI could look at instead, and
+renaming either field breaks the dry run's hoist line and summary.
 
 #### Scenario: CLI import boundary
 
@@ -403,8 +405,11 @@ without `--dry-run` would against an empty destination, and its closing summary 
 say that nothing was written. With no `-d`, it SHALL name the smart default destination
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,
-and use that place in the closing summary. It SHALL NOT check for collisions with
-entries already at that place.
+and use that place in the closing summary. Where a real run would keep that entry in
+the destination (the folder was already there, the entry is a symlink, or a symlink in
+it leaves it), it SHALL print `would keep in <stem>/:` with the same reason, judged
+from the symlinks the dry run created. It SHALL NOT check for collisions with entries
+already at that place.
 
 #### Scenario: extract dry-run matrix
 
@@ -414,3 +419,4 @@ entries already at that place.
 | `archivey extract <archive-with-traversal> --dry-run` | `blocked:` line; exit `3` |
 | `archivey extract <archive> -d out --dry-run` | `out` is not created |
 | `archivey extract <tar-with-single-root-src> --dry-run` | stderr names `would move to src/`; summary ends `→ src/`; nothing created in the cwd |
+| `archivey extract <tar-whose-single-root-has-a-link-leaving-it> --dry-run` | stderr names `would keep in <stem>/:` and the reason the real run prints; no `would move` |
