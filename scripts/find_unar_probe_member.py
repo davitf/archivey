@@ -466,10 +466,11 @@ def validate(rar: str, unar: str, count: int) -> int:
     model cannot judge, and a run that compares nothing: it has shown no agreement.
 
     ``unar`` agrees with "dropped" only with the patch's signature, nothing written and
-    exit 0, as ``--check-unar`` and ``unar_rar5_probe_failure`` read it; a non-zero
-    exit is counted apart, as neither. A solid pair whose first member the model says
-    runs short is decided by that member (``unar`` never reaches the second), so those
-    pairs are counted apart as well.
+    exit 0, as ``--check-unar`` and ``unar_rar5_probe_failure`` read it; a case with a
+    non-zero exit is neither an agreement nor a disagreement. A solid pair whose first
+    member the model says runs short is decided by that member (``unar`` never reaches
+    the second): it is scored as an agreement or a disagreement like any other, and
+    the agreements among them are also tallied on their own.
     """
     agree = disagree = stored = failed = by_first = unjudged = 0
     with tempfile.TemporaryDirectory() as td:
