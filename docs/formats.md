@@ -270,12 +270,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
   A cut inside a member's data or inside a header lists the members before the cut and
   is `TruncatedError` on the listing, with one exception: in an archive with encrypted
-  headers, a cut after a header's first 16-byte cipher block reads like a wrong
-  password unless a password check value proves the key. There the open raises
-  `EncryptionError` ("wrong password?") and lists nothing. RAR 1.5-4 has no check value,
-  so it always takes that branch; a RAR5 archive takes it only when its encryption
-  header has no check value. RAR 1.5-4 archives may legitimately lack the end block, so
-  a cut between their blocks still lists as complete.
+  headers, a cut past a header's first 16-byte cipher block before anything has proved
+  the password reads like a wrong password. There the open raises `EncryptionError`
+  ("wrong password?") and lists nothing, even with the right password. It happens
+  inside the first encrypted header of a RAR 1.5-4 archive (a later header's cut is a
+  truncated listing, because an earlier header whose CRC16 matched proved the
+  password), and inside any header of a RAR5 archive whose encryption record has no
+  password check value. RAR 1.5-4 archives may legitimately lack the end block, so a
+  cut between their blocks still lists as complete.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.
