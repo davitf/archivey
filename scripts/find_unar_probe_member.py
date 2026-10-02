@@ -67,6 +67,7 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 # XADPrefixCode.m ``TableMaxSize``: no lookup peeks more bits than this.
 _TABLE_MAX_SIZE = 10
@@ -282,8 +283,16 @@ def _vint(data: bytes, pos: int) -> tuple[int, int]:
             return value, pos
 
 
-def members_data(archive: bytes) -> list[tuple[bytes, int]]:
-    """The packed data and compression method of each FILE entry of a RAR5 archive."""
+class Entry(NamedTuple):
+    """One FILE entry of a RAR5 archive."""
+
+    packed: bytes
+    method: int  # 0 is stored
+    size: int  # unpacked size, as the header declares it
+
+
+def members_data(archive: bytes) -> list[Entry]:
+    """The FILE entries of a RAR5 archive, in archive order."""
     if not archive.startswith(b"Rar!\x1a\x07\x01\x00"):
         raise ValueError("not a RAR5 archive")
     found = []
@@ -301,7 +310,7 @@ def members_data(archive: bytes) -> list[tuple[bytes, int]]:
             data_size, body = _vint(archive, body)
         if header_type == 2:
             file_flags, body = _vint(archive, body)
-            _, body = _vint(archive, body)  # unpacked size
+            size, body = _vint(archive, body)
             _, body = _vint(archive, body)  # attributes
             if file_flags & 0x02:
                 body += 4  # mtime
@@ -309,7 +318,8 @@ def members_data(archive: bytes) -> list[tuple[bytes, int]]:
                 body += 4  # data CRC32
             compression, body = _vint(archive, body)
             method = (compression >> 7) & 7
-            found.append((archive[header_end : header_end + data_size], method))
+            packed = archive[header_end : header_end + data_size]
+            found.append(Entry(packed, method, size))
         pos = header_end + data_size
     return found
 
@@ -340,14 +350,20 @@ def is_dropped(rar: str, member: bytes, after: bytes | None, workdir: Path) -> b
     ``unar``; with ``after``, as the second member of a solid archive whose first
     member decodes."""
     entries = members_data(_compress(rar, member, after, workdir))
-    sizes = [len(member)] if after is None else [len(after), len(member)]
-    if len(entries) != len(sizes) or any(method == 0 for _, method in entries):
+    if len(entries) != (1 if after is None else 2):
+        return False
+    if any(entry.method == 0 for entry in entries):
         return False
     state = SolidState()
-    for (packed, _), size in zip(entries[:-1], sizes[:-1]):
-        if patched_unar_runs_short(packed, size, state):
-            return False  # the first member is dropped already
-    return patched_unar_runs_short(entries[-1][0], sizes[-1], state)
+    try:
+        for entry in entries[:-1]:
+            if patched_unar_runs_short(entry.packed, entry.size, state):
+                return False  # the first member is dropped already
+        return patched_unar_runs_short(entries[-1].packed, entries[-1].size, state)
+    except ValueError:
+        # Data the model cannot decode: not a member it can vouch for, so the
+        # search moves on instead of stopping.
+        return False
 
 
 def _candidates(alphabet: bytes, length: int) -> Iterator[bytes]:
@@ -402,13 +418,11 @@ def _model_drops(
     member is stored. A dropped first member of a solid pair counts: ``unar`` then
     never reaches the second."""
     entries = members_data(_compress(rar, member, after, workdir))
-    sizes = [len(member)] if after is None else [len(after), len(member)]
-    if any(method == 0 for _, method in entries):
+    if any(entry.method == 0 for entry in entries):
         return None
     state = SolidState()
     return any(
-        patched_unar_runs_short(packed, size, state)
-        for (packed, _), size in zip(entries, sizes)
+        patched_unar_runs_short(entry.packed, entry.size, state) for entry in entries
     )
 
 

@@ -28,35 +28,33 @@ sys.modules["find_unar_probe_member"] = finder
 _spec.loader.exec_module(finder)
 
 
-def _first_dropped(fixture: str, sizes: list[int]) -> int | None:
+def _first_dropped(fixture: str) -> int | None:
     """The index of the first member the model says is dropped, in archive order."""
-    entries = finder.members_data((_RAR / fixture).read_bytes())
-    assert len(entries) == len(sizes)
     state = finder.SolidState()
-    for index, ((packed, method), size) in enumerate(zip(entries, sizes)):
-        assert method != 0
-        if finder.patched_unar_runs_short(packed, size, state):
+    for index, entry in enumerate(finder.members_data((_RAR / fixture).read_bytes())):
+        assert entry.method != 0
+        if finder.patched_unar_runs_short(entry.packed, entry.size, state):
             return index
     return None
 
 
 @pytest.mark.parametrize(
-    ("fixture", "sizes", "dropped"),
+    ("fixture", "dropped"),
     [
-        ("unar_drop__.rar", [14], 0),
-        ("unar_drop_solid__.rar", [5, 7], 1),
+        ("unar_drop__.rar", 0),
+        ("unar_drop_solid__.rar", 1),
         # ``a.txt`` and ``b.txt`` decode; ``c.txt`` is the first member dropped.
-        ("unar_stale_solid__.rar", [31, 87, 28, 44, 65], 2),
+        ("unar_stale_solid__.rar", 2),
     ],
 )
 def test_the_model_drops_what_the_patched_unar_drops(
-    fixture: str, sizes: list[int], dropped: int
+    fixture: str, dropped: int
 ) -> None:
-    assert _first_dropped(fixture, sizes) == dropped
+    assert _first_dropped(fixture) == dropped
 
 
 def test_the_probe_member_is_the_one_embedded() -> None:
-    entries = finder.members_data(unar._RAR5_PROBE_ARCHIVE)
-    [(packed, method)] = entries
-    assert method != 0
-    assert finder.patched_unar_runs_short(packed, len(unar._RAR5_PROBE_MEMBER))
+    [entry] = finder.members_data(unar._RAR5_PROBE_ARCHIVE)
+    assert entry.method != 0
+    assert entry.size == len(unar._RAR5_PROBE_MEMBER)
+    assert finder.patched_unar_runs_short(entry.packed, entry.size)
