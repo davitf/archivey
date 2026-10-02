@@ -300,8 +300,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   file once and names the earlier member that holds the bytes. It is a `FILE` with
   `extra["is_file_copy"] = True`; `link_target` is the source's stored path and
   `link_target_member` the source member. Reading it gives the source's bytes, and
-  extraction writes an independent file, as `unrar` does. A copy whose source is not an
-  earlier file member raises `LinkTargetNotFoundError` when read.
+  extraction writes an independent file, as `unrar` does, by copying the source's file
+  when it has just written it. A copy whose source is not an earlier file member raises
+  `LinkTargetNotFoundError` when read. `stream_members(file_copy_streams=False)` yields
+  `None` for each copy; its bytes and digests are its source's.
 - **Compression:** M0 is `STORED`. M1–M5 is `CompressionAlgorithm.RAR` with `level` 1–5.
   Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
   `extra["rar.extract_version"]` on every member whose FILE header recorded one,

@@ -42,6 +42,7 @@ from archivey.exceptions import (
     NameRewrittenError,
     ResourceLimitError,
 )
+from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     apply_name_policy,
@@ -57,6 +58,7 @@ from archivey.internal.selection import (
 )
 from archivey.terminal import display_path, quoted
 from archivey.types import (
+    EXTRA_IS_FILE_COPY,
     AbortOn,
     ArchiveMember,
     ExtractionPolicy,
@@ -166,6 +168,11 @@ def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
     except OSError:
         return None
     return tuple(sorted(links))
+
+
+def _file_identity(st: os.stat_result) -> tuple[int, int, int, int]:
+    """What says a file is still the one this run wrote: its inode, size and mtime."""
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 def _remove_scratch(root: Path) -> None:
@@ -548,6 +555,16 @@ class ExtractionCoordinator:
         self._shown_targets: dict[str, str] = {}
         # Dry run only: where FILE bodies go instead of the file (``os.devnull``).
         self._sink: BinaryIO | None = None
+        # RAR file copies (``_open_written_source``). ``_streaming_now`` is ``id()`` of
+        # the member whose stream is being written; a file-copy source arriving then is
+        # not kept by the pass (``_keep_copy_source``), and goes in ``_declined``. Only
+        # a declined source's file gets its identity recorded after the write
+        # (``_file_identity``), by its member id and path, so a later member written
+        # to the same path never vouches for it, and no other file costs a stat. A
+        # copy is then copied from that file if it still matches. Reset per ``run()``.
+        self._streaming_now: int | None = None
+        self._declined: set[int] = set()
+        self._written_files: dict[tuple[int, Path], tuple[int, int, int, int]] = {}
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
@@ -717,6 +734,9 @@ class ExtractionCoordinator:
         self._rename_next = {}
         self._stale = {}
         self._unremoved = {}
+        self._streaming_now = None
+        self._declined = set()
+        self._written_files = {}
 
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -888,7 +908,8 @@ class ExtractionCoordinator:
         # ``tracker.start_member``: what a take-back refunds.
         counted: dict[int, int] = {}
 
-        for original, stream in reader.stream_members(stream_selector):
+        copies = FileCopyPass(keep_source=self._keep_copy_source)
+        for original, stream in reader._stream_members(stream_selector, copies):
             member_started = False
             recorded_index: int | None = None
             presented_name: str | None = None
@@ -1890,13 +1911,92 @@ class ExtractionCoordinator:
                 )
             with contextlib.closing(reader._lazy_member_stream(original)) as reopened:
                 self._write_file_atomic(reopened, dest_path, transformed, tracker)
+        elif (
+            written_source := self._open_written_source(
+                original, dest_path, source_paths
+            )
+        ) is not None:
+            # A file copy whose source this run wrote: its bytes come from that file,
+            # and ``stream`` is closed unread, so nothing decodes the source again.
+            # Read with no digest check, because none is needed: the source's write
+            # read its stream to the end through the source's digest and size checks,
+            # and a write that failed them recorded no identity to copy from.
+            with written_source:
+                self._write_file_atomic(written_source, dest_path, transformed, tracker)
         else:
-            self._write_file_atomic(stream, dest_path, transformed, tracker)
+            self._streaming_now = id(original) if stream is not None else None
+            try:
+                self._write_file_atomic(stream, dest_path, transformed, tracker)
+            finally:
+                self._streaming_now = None
+        if self._sink is None and id(original) in self._declined:
+            # A file that cannot be looked at now is simply not copied from.
+            with contextlib.suppress(OSError):
+                self._written_files[original.member_id, dest_path] = _file_identity(
+                    os.stat(dest_path, follow_symlinks=False)
+                )
 
         # Record this FILE's path under the ORIGINAL member id so later hardlinks whose
         # link_target_member is this member can os.link against it.
         source_paths.setdefault(original.member_id, []).append(dest_path)
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+
+    def _keep_copy_source(self, source: ArchiveMember) -> bool:
+        """Whether the pass keeps a RAR file copy's source for its copies.
+
+        Asked when the source's first byte is decoded. Not when this run is writing the
+        source from its stream: the copies then come from the file written
+        (``_open_written_source``). A dry run writes empty files, so it keeps every
+        source.
+        """
+        if self._sink is not None or id(source) != self._streaming_now:
+            return True
+        self._declined.add(id(source))
+        return False
+
+    def _open_written_source(
+        self,
+        original: ArchiveMember,
+        dest_path: Path,
+        source_paths: dict[int, list[Path]],
+    ) -> BinaryIO | None:
+        """The file this run wrote for a RAR file copy's source, opened, or ``None``.
+
+        ``None`` when ``original`` is not a file copy, its source was not written (a
+        selector or filter dropped it, its write failed, or a later member of its name
+        took its place), its sizes disagree, or the file no longer is the one written:
+        another inode, size or modification time than ``_written_files`` recorded for
+        the source's own write (a later member written to the same path does not
+        count). The check is made on the opened file, so a swap between check and read
+        is caught too. The caller then reads the copy's own stream, which serves the source's
+        bytes from the pass or decodes them again.
+        """
+        source = original.link_target_member
+        if (
+            self._sink is not None
+            or source is None
+            or not original.extra.get(EXTRA_IS_FILE_COPY)
+            or source.size != original.size
+        ):
+            return None
+        for path in source_paths.get(source.member_id, ()):
+            expected = self._written_files.get((source.member_id, path))
+            # Never the copy's own destination: the atomic write would replace the
+            # file it is reading.
+            if expected is None or path == dest_path:
+                continue
+            try:
+                f = open(path, "rb")  # noqa: SIM115 - returned open
+            except OSError:
+                continue
+            try:
+                found = _file_identity(os.fstat(f.fileno()))
+            except OSError:
+                found = None
+            if found is not None and found == expected and found[2] == original.size:
+                return f
+            f.close()
+        return None
 
     def _write_symlink(
         self,

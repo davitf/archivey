@@ -244,6 +244,16 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
         ]
 
+    for bad in (0, 1, None, "yes"):
+        rows.append(
+            _case(
+                "stream_members",
+                "file_copy_streams",
+                bad,
+                lambda b=bad: _stream_members(archive, None, file_copy_streams=b),
+            )
+        )
+
     for bad in (0, object(), [0], [None], 1.5):
         rows += [
             _case(
@@ -494,11 +504,11 @@ def _read_member(archive: Path, member: Any) -> Any:
         return reader.read(member)
 
 
-def _stream_members(archive: Path, members: Any) -> Any:
+def _stream_members(archive: Path, members: Any, **kwargs: Any) -> Any:
     with open_archive(archive) as reader:
         # Do not wrap in list(): a check left inside the generator would still
         # raise on first next() and look like a call-time refusal.
-        return reader.stream_members(members=members)
+        return reader.stream_members(members=members, **kwargs)
 
 
 def _with_config(archive: Path, dest: Path, **field: Any) -> Any:
