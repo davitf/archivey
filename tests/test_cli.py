@@ -123,6 +123,18 @@ def test_list_alias(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert "a.txt" in capsys.readouterr().out
 
 
+def test_list_digests_names_the_algorithm_by_value(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--digests`` prints ``crc32=<hex>``, not the enum's repr-like ``str()``."""
+    with zipfile.ZipFile(sample_zip) as zf:
+        crc = zf.getinfo("a.txt").CRC
+    assert main(["list", "--digests", str(sample_zip)]) == EXIT_OK
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.endswith("]"))
+    assert "a.txt" in line
+    assert line.endswith(f"[crc32={crc:08x}]")
+
+
 def test_list_incomplete_members_report_exits_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
