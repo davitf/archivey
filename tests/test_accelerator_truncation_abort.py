@@ -322,22 +322,62 @@ def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
     assert payload.startswith(got)
 
 
-@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB])
+# Runs the real worker with rapidgzip held to one thread. ``parallelization=1`` starts
+# no decoder threads: each chunk is decoded inside the ``read`` that needs it, in order,
+# so the chunk that holds the cut is decoded, and aborts, only after every chunk before
+# it has been read.
+_SERIAL_WORKER = """
+import importlib, runpy
+
+rapidgzip = importlib.import_module("rapidgzip")
+_open = rapidgzip.open
+
+
+def _serial_open(*args, **kwargs):
+    kwargs["parallelization"] = 1
+    return _open(*args, **kwargs)
+
+
+rapidgzip.open = _serial_open
+runpy.run_path({worker!r}, run_name="__main__")
+"""
+
+
+@pytest.mark.parametrize("decoder", ["serial", "parallel"])
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
 def test_a_large_cut_stream_delivers_a_correct_prefix_before_the_abort(
-    tmp_path: Path, codec: Codec
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, codec: Codec, decoder: str
 ) -> None:
-    """On a small cut stream rapidgzip usually aborts before any data comes back, which
-    leaves the prefix check above nothing to check. On about 32 MB it returned 22 to
-    31 MB first (4 CPUs), so the read-ahead's bookkeeping is exercised here."""
+    """Many READ round trips, then the abort: the read-ahead buffer's bookkeeping over
+    a long run.
+
+    How much the shipped decoder returns first is a race. Its threads decode chunks
+    ahead of the reader, the chunk that holds the cut among them, and the abort ends
+    the process wherever the reader is. Raw rapidgzip, with no archivey involved,
+    returned nothing on 7 of 60 runs of this gzip input on a 4-CPU Linux machine under
+    CPU load, and 0 to 28 MB on the others. So the ``parallel``
+    case (the shipped worker) checks only that what came back is a prefix, and the
+    ``serial`` case holds rapidgzip to one thread so that everything before the cut
+    chunk comes back first, on every run: more than a few full-size round trips."""
+    if decoder == "serial":
+        worker = tmp_path / "serial_worker.py"
+        worker.write_text(
+            _SERIAL_WORKER.format(worker=str(rapidgzip_child._WORKER)),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(rapidgzip_child, "_WORKER", worker)
     payload = base64.encodebytes(random.Random(32).randbytes(24_000_000))
     path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-500])
     got = bytearray()
     with open_codec_stream(codec, str(path), config=_ON) as stream:
+        assert _has_child_stream(stream)
         with pytest.raises(CorruptionError):
             while block := stream.read(4096 if codec is Codec.GZIP else 10_000):
                 got += block
-    assert got
+    assert len(got) < len(payload)
     assert payload.startswith(got)
+    if decoder == "serial":
+        assert len(got) > 4 * rapidgzip_child._CHUNK, len(got)
 
 
 @pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
