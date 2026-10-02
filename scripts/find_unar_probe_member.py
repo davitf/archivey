@@ -458,23 +458,34 @@ def _validation_cases(count: int) -> Iterator[tuple[bytes, bytes | None]]:
 
 
 def validate(rar: str, unar: str, count: int) -> int:
-    """Compare the model with ``unar`` on generated archives; the number that disagree."""
-    agree = disagree = stored = 0
+    """Compare the model with ``unar`` on generated archives; the number that disagree.
+
+    ``unar`` agrees with "dropped" only with the patch's signature, nothing written and
+    exit 0, as ``--check-unar`` and ``unar_rar5_probe_failure`` read it; a non-zero
+    exit is counted apart, as neither. A solid pair whose first member the model says
+    runs short is decided by that member (``unar`` never reaches the second), so those
+    pairs are counted apart as well.
+    """
+    agree = disagree = stored = failed = by_first = 0
     with tempfile.TemporaryDirectory() as td:
         for member, after in _validation_cases(count):
             # One archive for both verdicts, so they judge the same bytes.
             archive = _compress(rar, member, after, Path(td))
-            count = 1 if after is None else 2
-            first = _first_short(archive, count)
+            members = 1 if after is None else 2
+            first = _first_short(archive, members)
             if first is None:
                 stored += 1
                 continue
-            # A dropped first member of a solid pair counts: ``unar`` then never
-            # reaches the second.
-            predicted = first < count
-            out, _ = _unar_output(unar, archive, count - 1, Path(td))
+            predicted = first < members
+            out, status = _unar_output(unar, archive, members - 1, Path(td))
+            if status != 0:
+                failed += 1
+                print(f"{unar} exited {status}: member={member!r} after={after!r}")
+                continue
             if predicted == (out != member):
                 agree += 1
+                if first < members - 1:
+                    by_first += 1
                 continue
             disagree += 1
             print(
@@ -482,8 +493,12 @@ def validate(rar: str, unar: str, count: int) -> int:
                 f"{unar} wrote {len(out)} of {len(member)} bytes: "
                 f"member={member!r} after={after!r}"
             )
-    print(f"{agree} agree, {disagree} disagree, {stored} skipped as stored")
-    return disagree
+    print(
+        f"{agree} agree ({by_first} of them solid pairs decided by the first member), "
+        f"{disagree} disagree, {failed} with a non-zero exit, "
+        f"{stored} skipped as stored"
+    )
+    return disagree + failed
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -509,7 +524,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         metavar="N",
         help="instead of searching, compare the model with --check-unar on N "
-        "generated members and N solid pairs; exit 1 on any disagreement",
+        "generated members and N solid pairs; exit 1 on any disagreement or "
+        "non-zero exit",
     )
     args = parser.parse_args(argv)
     rar = shutil.which(args.rar)
