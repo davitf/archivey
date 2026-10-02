@@ -207,11 +207,25 @@ ignores a tail that fails to decode, re-raises it, because the checksum covers m
 already handed out. A stream never read to its end is not checked, and the standard library
 does not check one either: it verifies the trailer only when it consumes the end.
 
-**What of a cut stream a caller gets back.** The standard library engine delivers
-everything up to the last complete block before the cut. `rapidgzip` decodes ahead in
-parallel, so it can reach the cut and abort while the parent is still waiting for earlier
-bytes: measured under `ON`, a cut 2 or 8 MB gzip gave no data before the error, and a cut
-32 MB one gave 22 to 31 MB. What it does deliver is correct.
+**What of a cut stream a caller gets back.** The same bytes with `rapidgzip` as without it.
+The standard library engine delivers everything up to the last complete block before the
+cut. `rapidgzip` decodes ahead in parallel, so it can reach the cut and abort while the
+parent is still waiting for earlier bytes: measured on 4 cores, a cut 154 MB gzip gave
+nothing before the abort where the standard library gave 20 MB, and the loss grows with the
+thread count. So a crash of the child, like a data error it reports, hands the read to the
+standard library (`_StdlibOnAcceleratorError`), which starts at the child's `resume_point`
+rather than at the start of the stream: a DEFLATE block boundary from `rapidgzip`'s index
+at or before what the caller has read, with the 32 KiB of output before it. The child keeps
+the last four such points, because the newest can be ahead of the caller: by the read-ahead
+buffer, or after a seek back. `deflate_resume.py` makes zlib start there: the window goes
+in as a preset dictionary, and the block's bit offset is reached by starting the input with
+empty blocks whose length ends that many bits into a byte. The second decode then costs the
+distance from that point to the cut, not the file: at most `rapidgzip`'s read-ahead, plus
+the spacing of the index queries, plus the spacing of the points. The child queries its
+index once the output has passed the point the last query named and run on by 16 KiB per
+point it holds (4 MiB at least), which keeps the queries' cost a small share of the decode.
+A resumed decode that reaches the end of its DEFLATE stream cannot check the CRC-32 or
+Adler-32 after it, so it starts over from the start of the stream, which checks it.
 
 **The first member's header is checked before `rapidgzip`.** `rapidgzip` accepts a header
 CRC (`FHCRC`) that does not match and reserved `FLG` bits, which RFC 1952 §2.3.1.2 says a
@@ -323,9 +337,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this |
 | `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3). Found by `tests/test_nested_archives.py` |
 | Several zlib streams one after another read as one under `use_rapidgzip=ON`, and as the first alone on the standard library, which reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. The Adler-32 check accepts the `rapidgzip` reading when the standard library reproduces it stream by stream |
-| A cut `.gz` delivers less before the error under `rapidgzip` than without it | **library** | It decodes ahead and aborts early (§2.3). Use `OFF` to salvage the most |
 | Trailing junk after a `.gz` is a warning, where `GzipFile` raises | **archivey** | The rule is shared by every codec ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
-| A `.gz` with bytes after it under `rapidgzip` decodes part of the file twice | **archivey** | The switch to the standard library replays up to where `rapidgzip` failed (§2.3) |
+| A `.gz` with bytes after it under `rapidgzip` decodes part of the file twice | **archivey** | The switch to the standard library replays up to where `rapidgzip` failed (§2.3); a resumed replay that reaches a member's end starts over to check its CRC-32 |
 | One warning on `archivey.streams` that `rapidgzip` cannot run | **archivey** | No child process can start here; `AUTO` used the standard library. `use_rapidgzip=OFF` silences it |
 | A zlib stream with a preset dictionary is not detected, and fails when opened by name | **format** | archivey holds no dictionary |
 | A large `.gz` opened without `seekable_members=True` is no faster with `[seekable]` installed | **archivey** | `AUTO` uses `rapidgzip` only on declared seeking (§2.3). Declare seeking, or set `use_rapidgzip=ON` |
@@ -387,7 +400,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `AUTO` needs declared seeking; `ON` does not. A large `.gz` opened without `seekable_members=True` stays on the standard library | `tests/test_seekable_streams.py::test_accelerator_mode_auto_resolution`, `tests/test_rapidgzip_deflate_zlib.py::test_auto_on_a_large_gz_file_follows_declared_seeking` |
 | `AUTO` threshold and size condition; `ON` below it | `tests/test_rapidgzip_deflate_zlib.py::test_the_auto_threshold_is_past_the_child_break_even`, `::test_auto_selects_rapidgzip_above_threshold`, `::test_auto_without_decompressed_size_uses_stdlib_even_when_large`, `::test_on_forces_rapidgzip_below_threshold` |
 | The abort happens in-process, and not through archivey | `tests/test_accelerator_truncation_abort.py::test_raw_rapidgzip_aborts_on_truncated_gzip` (canary), `::test_truncated_gzip_with_seekable_members_raises_truncated`, `::test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix` |
-| How the child's death is reported; no child → fallback and one warning | `::test_a_child_death_is_reported_by_how_it_ended`, `::test_without_a_child_auto_uses_stdlib_and_on_refuses`, `::test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto`, `::test_an_auto_fallback_warns_once_per_process` |
+| A cut stream under `rapidgzip` delivers the standard library's bytes; the takeover resumes at a checkpoint, and starts over at a member's end | `tests/test_rapidgzip_resume.py`, `tests/test_deflate_resume.py`, `tests/test_accelerator_truncation_abort.py::test_after_a_child_crash_the_standard_library_reads_on` |
+| How the child's death is reported; no child → fallback and one warning | `::test_a_child_death_is_reported_by_how_it_ended`, `::test_a_child_killed_from_outside_ends_the_stream`, `::test_without_a_child_auto_uses_stdlib_and_on_refuses`, `::test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto`, `::test_an_auto_fallback_warns_once_per_process` |
 | The caller's source exception reaches the caller | `::test_an_exception_from_the_callers_source_reaches_the_caller_unchanged` |
 | The ISIZE backstop and the empty-end fallback | `tests/test_accelerator_corruption.py::test_rapidgzip_truncation_is_reported`, `::test_rapidgzip_silent_empty_fallback_recovers_prefix`, `::test_rapidgzip_isize_soft_short_raises_on_readall`, `::test_rapidgzip_multimember_not_flagged`, `::test_gzip_backstop_keeps_raising_after_its_own_truncation` |
 | A cut bare zlib stream under `ON` without a size raises | `tests/test_rapidgzip_deflate_zlib.py::test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size` |

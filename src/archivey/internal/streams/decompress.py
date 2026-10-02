@@ -23,9 +23,14 @@ from archivey.internal.streams.arm64 import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
+    Decoder,
     DecompressorStream,
     SeekPoint,
     gzip_corruption,
+)
+from archivey.internal.streams.deflate_resume import (
+    DeflateResume,
+    DeflateResumeDecoder,
 )
 from archivey.internal.streams.ppmd_child import (
     PpmdChildAllocationError,
@@ -45,8 +50,12 @@ class ZlibDecoder(BaseDecoder):
         self._wbits = wbits
         self._decomp = zlib.decompressobj(wbits)
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> ZlibDecoder:
-        del point, inner
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
+        del inner
+        if isinstance(point.state, DeflateResume):
+            return DeflateResumeDecoder(
+                point.state, self, corruption=None, truncated="File is truncated"
+            )
         return ZlibDecoder(self._wbits)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -110,8 +119,15 @@ class GzipDecoder(BaseDecoder):
         self._between_members = False
         self._finished = False
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> GzipDecoder:
-        del point, inner
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
+        del inner
+        if isinstance(point.state, DeflateResume):
+            return DeflateResumeDecoder(
+                point.state,
+                self,
+                corruption=gzip_corruption,
+                truncated="gzip stream is truncated",
+            )
         return GzipDecoder()
 
     def _arm_trailing_junk(self, data: bytes) -> None:
