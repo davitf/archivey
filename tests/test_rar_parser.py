@@ -279,9 +279,9 @@ def test_rar3_sha1_short_seed_is_not_mutated() -> None:
     assert bytes(seed) == original
 
 
-def test_rar3_s2k_matches_rarfile_for_a_long_password() -> None:
-    """Long password+salt (> 64 bytes) exercises the mutation path; the
-    derived key/IV must still match rarfile's ``rar3_s2k``.
+def test_rar3_s2k_matches_the_pinned_rarfile_key_for_a_long_password() -> None:
+    """A long password+salt (> 64 bytes), which exercises the mutation path, must
+    derive the key/IV that rarfile's ``rar3_s2k`` recorded for it.
 
     The expected pair is what ``rarfile.rar3_s2k(password, salt)`` returns (rarfile
     4.2). It is pinned rather than recomputed because rarfile's pure-Python KDF took

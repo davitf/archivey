@@ -89,7 +89,7 @@ def test_read_n_is_full_count_until_eof(
     expected = b"".join(bytes([b]) * factor for b in source)
     with _stream(factor, honour_max_length=honour_max_length) as stream:
         pieces: list[bytes] = []
-        delivered = 0  # a running total: re-summing every piece made n=1 quadratic
+        delivered = 0  # re-summing every piece here would make the n=1 rows quadratic
         while True:
             piece = stream.read(n)
             if not piece:
