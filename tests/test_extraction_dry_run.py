@@ -566,6 +566,8 @@ def test_cli_dry_run_writes_nothing(
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
+_SAME_AS_REAL = "same as the real run"  # the hoist line the real run printed, predicted
+
 _TOO_LONG = "x" * 300  # longer than any filesystem's name limit: fails at write time
 
 
@@ -591,11 +593,13 @@ def _files(*names: str) -> list[tuple[str, str, object]]:
         (_files(f"{_TOO_LONG}/f"), None, None),
         # ...so the one root a real run moves is the other one.
         (_files("good/f", f"{_TOO_LONG}/f"), None, "would move to good/\n"),
-        # Blocked only once it exists: the escape recheck removes the link and leaves
-        # the directory made for it. Not skipped on Windows on purpose: without the
-        # symlink privilege the link fails to be created instead, which leaves the same
-        # directory, and the dry run still has to agree with the real one.
-        ([("root/a", "sym", "a")], None, "would move to root/\n"),
+        # A link to itself. Before Python 3.13 the loop is refused as an escape and the
+        # directory made for it is left, which is moved. From 3.13 the link is
+        # created, and the hoist keeps the entry: its walk of a loop runs out of hops.
+        # Not skipped on Windows on purpose: without the symlink privilege the link
+        # fails to be created instead. Whichever happens, the dry run has to say what
+        # the real one did.
+        ([("root/a", "sym", "a")], None, _SAME_AS_REAL),
     ],
     ids=[
         "moved",
@@ -630,6 +634,16 @@ def test_cli_dry_run_names_where_a_single_root_lands(
     if expected is None:
         assert "would move" not in dry_err
         assert "would remove wrapper" not in dry_err
+    elif expected is _SAME_AS_REAL:
+        predicted = [
+            f"would move to {line[len('moved to ') :]}"
+            if line.startswith("moved to ")
+            else f"would keep in {line[len('kept in ') :]}"
+            for line in real_err.splitlines()
+            if line.startswith(("moved to ", "kept in "))
+        ]
+        assert len(predicted) == 1, real_err
+        assert predicted[0] in dry_err.splitlines()
     else:
         assert expected in dry_err
     assert dry_code == real_code
