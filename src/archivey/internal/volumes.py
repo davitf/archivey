@@ -7,6 +7,7 @@ import io
 import os
 import re
 import stat
+import sys
 from bisect import bisect_right
 from collections import Counter, OrderedDict
 from collections.abc import Sequence
@@ -45,10 +46,11 @@ SourceSequence = Sequence[SourceItem]
 # follows that stub to the split first volume beside it (``first_volume_for_stub``).
 # ``.sfx`` is not in this pattern: 7-Zip does not emit
 # ``name.sfx.001``, and arbitrary ``name.foo.001`` is not a 7-Zip split. Info-ZIP's
-# ``name.z01 … name.zip`` deliberately does not match: that is a true spanned set
-# addressed by (disk, offset). A linear join of one lists correctly and then reads
-# only whichever members happen to sit on the last disk, so it is refused in the ZIP
-# backend instead.
+# ``name.z01 … name.zip`` deliberately does not match this pattern: that is a true
+# spanned set addressed by (disk, offset). A linear join of one lists correctly and
+# then reads only whichever members happen to sit on the last disk, so it is refused
+# in the ZIP backend instead. ``name.z01`` does match the broad old-scheme RAR shape
+# below, and what keeps it out of a RAR set there is stated beside that pattern.
 #
 # **Three digits minimum, not ``\d+``.** 7-Zip numbers from ``.001`` and widens past
 # part 999, so nothing it emits needs fewer. Accepting one or two would swallow
@@ -87,7 +89,58 @@ _NUMBERED_VOLUME_RE = re.compile(
 _RAR_PART_RE = re.compile(
     r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)$", re.IGNORECASE
 )
-_RAR_RNN_RE = re.compile(r"^(?P<base>.+)\.r(?P<part>\d{2})$", re.IGNORECASE)
+# Any old-scheme continuation name. WinRAR and unrar go ``.rar``, ``.r00`` … ``.r99``,
+# then ``.s00`` … ``.z99`` and on past ``z`` (``.{00``, ``.|00`` …): the next name adds
+# one to the letter's character code (:func:`next_old_rar_volume_name`).
+#
+# The shape is deliberately broad. It also matches Info-ZIP's ``backup.z01`` and
+# unrelated extensions such as ``cert.p12`` or ``image.e01``, so it only makes a name
+# a candidate, and two guards in discovery decide. First, volume 1 (``<base>.rar`` /
+# ``.exe`` / ``.sfx``) must sit beside the name: an Info-ZIP spanned set has none, so
+# ``backup.z01`` is not a RAR volume and still reaches the ZIP backend's spanned-set
+# refusal. Second, the walk of the names unrar would look for from volume 1 must reach
+# the name, so ``notes.a01`` beside ``notes.rar`` is not a volume either. The cost of
+# the breadth: opening a name of this shape pays one directory listing, where the fast
+# reject in ``discover_volume_siblings`` turns other names away before any filesystem
+# call. The explicit-sequence check classifies old-scheme parts with this same
+# pattern, so it reads the base discovery groups on. It has neither guard, though, so
+# there the breadth costs a false refusal: a stray of this shape (``readme.p12``,
+# ``notes.e01``) in an explicit sequence counts as an old-scheme part, so beside parts
+# of another scheme or another base the check refuses the sequence as two sets. No
+# narrower pattern is sound. The name alone cannot tell ``beta.s00`` from
+# ``readme.p12``, and the walk can reach any letter before ``_MAX_VOLUME_PART`` stops
+# it.
+_OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}$")
+_OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
+
+
+def next_old_rar_volume_name(name: str) -> str | None:
+    """The old-scheme name unrar looks for after ``name``, or ``None``.
+
+    ``.rar`` (or an SFX ``.exe`` / ``.sfx``) is followed by ``.r00``; ``.r99`` by
+    ``.s00``; ``.z99`` by ``.{00``. The ``r`` of a ``.RAR`` keeps its case, as in
+    unrar's ``NextVolumeName``. Shared with the RAR backend, which predicts the names
+    unrar will walk.
+    """
+    stem, dot, ext = name.rpartition(".")
+    if not dot:
+        return None
+    lower = ext.lower()
+    if lower == "rar":
+        return f"{stem}.{ext[0]}00"
+    if lower in ("exe", "sfx"):
+        return f"{stem}.r00"
+    match = _OLD_RAR_EXT_RE.fullmatch(ext)
+    if match is None:
+        return None
+    letter, number = match["letter"], int(match["num"]) + 1
+    if number == 100:
+        code = ord(letter) + 1
+        if code > sys.maxunicode:
+            # No character follows U+10FFFF, so there is no next name to look for.
+            return None
+        letter, number = chr(code), 0
+    return f"{stem}.{letter}{number:02d}"
 
 
 # Each ordering key reads the part number back out of the pattern that classified the
@@ -118,11 +171,6 @@ def _pick_rar_part(candidates: list[Path], named_part: int, named_lower: str) ->
     return candidates[0]
 
 
-def _rnn_part_number(name: str) -> int:
-    match = _RAR_RNN_RE.match(name)
-    return int(match.group("part")) if match is not None else 0
-
-
 def _is_old_scheme_first_volume_name(name: str) -> bool:
     """``<base>.rar`` / ``.exe`` / ``.sfx`` as old-scheme volume 1, not a partN/NNN name."""
     if (
@@ -134,32 +182,68 @@ def _is_old_scheme_first_volume_name(name: str) -> bool:
     return lower.endswith(".rar") or lower.endswith(".exe") or lower.endswith(".sfx")
 
 
-def _old_rar_rnn_first_volume(parent: Path, base: str) -> Path | None:
-    """Volume 1 of an old-scheme set: ``.rar``, else ``.exe``, else ``.sfx``."""
-    for suffix in (".rar", ".exe", ".sfx"):
-        candidate = parent / f"{base}{suffix}"
-        if candidate.is_file():
-            return candidate
-    return None
+# Volume 1 of an old-scheme set, in order of preference.
+_OLD_RAR_FIRST_VOLUME_SUFFIXES = (".rar", ".exe", ".sfx")
 
 
-def _collect_old_rar_rnn_volumes(parent: Path, base: str) -> list[Path] | None:
-    first = _old_rar_rnn_first_volume(parent, base)
-    if first is None:
-        return None
-    continuations = sorted(
+def _old_rar_listed_file(
+    by_name: dict[str, list[Path]], wanted: str, base: str
+) -> Path | None:
+    """The file in the listing named ``wanted`` in any case, or ``None``.
+
+    Of several that differ only in case, a name starting with ``base`` as spelled
+    wins, then ``wanted`` as spelled, then the first by name.
+    """
+    candidates = sorted(
         (
             candidate
-            for candidate in parent.iterdir()
+            for candidate in by_name.get(wanted.lower(), ())
             if candidate.is_file()
-            and (rnn_match := _RAR_RNN_RE.match(candidate.name)) is not None
-            and rnn_match.group("base").lower() == base.lower()
         ),
-        key=lambda candidate: _rnn_part_number(candidate.name),
+        key=lambda candidate: (
+            not candidate.name.startswith(base),
+            candidate.name != wanted,
+            candidate.name,
+        ),
     )
-    if not continuations:
+    return candidates[0] if candidates else None
+
+
+def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
+    """Volume 1, then each name unrar would look for next, until one is missing.
+
+    Volume 1 is ``<base>.rar``, else ``<base>.exe``, else ``<base>.sfx``. Every name,
+    volume 1 included, is matched case-insensitively from one directory listing, as
+    the other schemes group siblings, so ``ARCHIVE.RAR`` + ``ARCHIVE.R00`` is a set
+    on a case-sensitive filesystem too. That holds once this function runs: opened
+    from an SFX stub, ``discover_volume_siblings``' fast reject first needs
+    ``<stem>.r00`` or ``<stem>.R00`` with the stub's own base spelling. Of two names
+    that differ only in case, the one spelling ``base`` as given wins, then the one
+    spelling the predicted name as given. The walk is bounded by ``_MAX_VOLUME_PART``, and by the listing: each step
+    needs a file in it.
+    """
+    by_name: dict[str, list[Path]] = {}
+    for candidate in parent.iterdir():
+        by_name.setdefault(candidate.name.lower(), []).append(candidate)
+    first = None
+    for suffix in _OLD_RAR_FIRST_VOLUME_SUFFIXES:
+        first = _old_rar_listed_file(by_name, f"{base}{suffix}", base)
+        if first is not None:
+            break
+    if first is None:
         return None
-    return [first, *continuations]
+    volumes = [first]
+    current = first.name
+    while len(volumes) < _MAX_VOLUME_PART:
+        predicted = next_old_rar_volume_name(current)
+        if predicted is None:
+            break
+        following = _old_rar_listed_file(by_name, predicted, base)
+        if following is None:
+            break
+        volumes.append(following)
+        current = following.name
+    return volumes if len(volumes) > 1 else None
 
 
 def discover_volume_siblings(path: Path) -> list[Path] | None:
@@ -169,19 +253,25 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
     # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
     # SFX first members (``*.exe.001``, ``*.part1.sfx``) match the patterns above.
-    # A stub ``*.exe`` / ``*.sfx`` is maybe-volume only when ``<stem>.r00`` exists
-    # (one ``is_file``, no ``iterdir``) so 7-Zip ``vol.exe`` + ``vol.exe.001``
-    # still falls through to stub-follow.
+    # A stub ``*.exe`` / ``*.sfx`` is maybe-volume only when ``<stem>.r00`` or
+    # ``<stem>.R00`` exists (up to two ``is_file``, no ``iterdir``) so 7-Zip
+    # ``vol.exe`` + ``vol.exe.001`` still falls through to stub-follow. The probe
+    # matches the extension's case but spells the base as the stub does, so
+    # ``archive.exe`` beside ``ARCHIVE.R00`` is not an entry point (the set is still
+    # found from ``ARCHIVE.R00``). Closing that would cost an ``iterdir`` on every
+    # ``.exe`` / ``.sfx`` open.
     maybe_volume = (
         _NUMBERED_VOLUME_RE.match(name) is not None
         or _RAR_PART_RE.match(name) is not None
-        or _RAR_RNN_RE.match(name) is not None
+        or _OLD_RAR_CONTINUATION_RE.match(name) is not None
         or lower.endswith(".rar")
     )
     if (
         not maybe_volume
         and _is_old_scheme_first_volume_name(name)
-        and (path.parent / f"{path.stem}.r00").is_file()
+        and any(
+            (path.parent / f"{path.stem}.{letter}00").is_file() for letter in ("r", "R")
+        )
     ):
         maybe_volume = True
     if not maybe_volume:
@@ -225,17 +315,21 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
             for part in sorted(grouped)
         ]
 
-    rnn_base: str | None = None
-    rnn_match = _RAR_RNN_RE.match(name)
-    if rnn_match is not None:
-        rnn_base = rnn_match.group("base")
-    elif _is_old_scheme_first_volume_name(name):
-        rnn_base = name[: name.rfind(".")]
-    if rnn_base is not None:
+    if _is_old_scheme_first_volume_name(name):
         # Volume 1 is `<base>.rar`, or an SFX `<base>.exe` / `<base>.sfx` when no
-        # `.rar` is beside the `.rNN` files. A bare `.rNN` with none of those is
-        # a lone file — siblings[0] must be volume 1.
-        return _collect_old_rar_rnn_volumes(parent, rnn_base)
+        # `.rar` is beside the continuations.
+        return _collect_old_rar_volumes(parent, name[: name.rfind(".")])
+    continuation = _OLD_RAR_CONTINUATION_RE.match(name)
+    if continuation is not None:
+        # A continuation with no volume 1 beside it is a lone file — siblings[0]
+        # must be volume 1. So is one the walk from volume 1 does not reach, behind
+        # a gap or not an old-scheme name at all (`notes.a01` beside `notes.rar`).
+        volumes = _collect_old_rar_volumes(parent, continuation.group("base"))
+        if volumes is None:
+            return None
+        if any(volume.name.lower() == lower for volume in volumes):
+            return volumes
+        return None
 
     return None
 
@@ -675,9 +769,15 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
 # The three volume naming schemes, each with a ``base`` group. All three branches of
 # ``discover_volume_siblings`` group candidates on ``base.lower()``, so an explicit
 # sequence is held to the same grouping in all three.
-_NUMBERED_SCHEME, _RAR_PART_SCHEME, _RAR_RNN_SCHEME = range(3)
-_VOLUME_SCHEMES = (_NUMBERED_VOLUME_RE, _RAR_PART_RE, _RAR_RNN_RE)
-_SCHEME_NAMES = ("name.EXT.NNN", "name.partN.rar", "name.rNN")
+_NUMBERED_SCHEME, _RAR_PART_SCHEME, _OLD_RAR_SCHEME = range(3)
+_VOLUME_SCHEMES = (_NUMBERED_VOLUME_RE, _RAR_PART_RE, _OLD_RAR_CONTINUATION_RE)
+# Each entry describes the shape a name matched, not what the file is: the third
+# also matches ``notes.e01``, so it must not claim ``.r00``.
+_SCHEME_NAMES = (
+    "name.EXT.NNN",
+    "name.partN.rar",
+    "name.xNN (the old RAR scheme's shape: .r00, .s01, ...)",
+)
 
 
 def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
@@ -696,24 +796,24 @@ def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
     return None
 
 
-def _rar_rnn_bases(paths: Sequence[Path]) -> frozenset[str]:
-    """The case-folded bases of every ``name.rNN`` continuation in the sequence."""
+def _old_rar_bases(paths: Sequence[Path]) -> frozenset[str]:
+    """The case-folded bases of every old-scheme continuation in the sequence."""
     return frozenset(
         match.group("base").lower()
-        for match in (_RAR_RNN_RE.match(path.name) for path in paths)
+        for match in (_OLD_RAR_CONTINUATION_RE.match(path.name) for path in paths)
         if match is not None
     )
 
 
-def _is_rnn_first_volume_name_in(name: str, rnn_bases: frozenset[str]) -> bool:
-    """Is this ``.partN.rar`` really volume 1 of a ``.rNN`` set whose base ends in it?
+def _is_old_rar_first_volume_name_in(name: str, old_rar_bases: frozenset[str]) -> bool:
+    """Is this ``.partN.rar`` really volume 1 of an old-scheme set based on its stem?
 
     ``Show.part1.rar`` reads two ways, and neither the name nor the order the patterns
     are tried in can settle it: part 1 of the ``.partN`` set based on ``Show``, or
     volume 1 of the old-scheme set based on ``Show.part1``. Only the rest of the
     sequence knows — if ``Show.part1.r00`` is in it, the second reading is the one
     that makes the sequence a single archive, and it is the one
-    :func:`discover_volume_siblings` produces from any of its ``.rNN`` names. Not
+    :func:`discover_volume_siblings` produces from any of its continuation names. Not
     from ``Show.part1.rar`` itself: ``_RAR_PART_RE`` claims that name first there
     too, the grouping finds a single part number and discovery returns ``None``, so
     volume 1 of such a set is not an entry point. That gap is discovery's, not this
@@ -725,14 +825,14 @@ def _is_rnn_first_volume_name_in(name: str, rnn_bases: frozenset[str]) -> bool:
     """
     if _RAR_PART_RE.match(name) is None:
         return False
-    return name[: name.rfind(".")].lower() in rnn_bases
+    return name[: name.rfind(".")].lower() in old_rar_bases
 
 
 def _sequence_scheme_and_base(
-    name: str, rnn_bases: frozenset[str]
+    name: str, old_rar_bases: frozenset[str]
 ) -> tuple[int, str] | None:
-    """:func:`_volume_scheme_and_base`, with the sequence's ``.rNN`` bases to consult."""
-    if _is_rnn_first_volume_name_in(name, rnn_bases):
+    """:func:`_volume_scheme_and_base`, with the sequence's old-scheme bases."""
+    if _is_old_rar_first_volume_name_in(name, old_rar_bases):
         return None
     return _volume_scheme_and_base(name)
 
@@ -764,24 +864,29 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
        across them is meaningless, and a sequence populating two of them is two sets.
        One name reads two ways and is settled by the sequence rather than by itself:
        ``Show.part1.rar`` beside ``Show.part1.r00`` is that set's volume 1, not a
-       ``.partN`` part — see :func:`_is_rnn_first_volume_name_in`.
+       ``.partN`` part — see :func:`_is_old_rar_first_volume_name_in`.
     2. Within that scheme the bases must agree, compared case-folded the way
        ``discover_volume_siblings`` groups siblings, so this never refuses a set
        discovery would have accepted.
     3. A name with no part marker that is nonetheless volume-shaped — ``<base>.rar``,
        or ``<base>.exe`` / ``.sfx`` for an SFX — is volume 1 of an old-scheme set and
-       only belongs beside ``.rNN`` parts sharing its stem. Beside a ``.partN`` set it
-       has no role at all, since that scheme spells its own volume 1
-       ``alpha.part1.rar``. Beside a numbered set only the executable spellings make
-       sense, as the stub 7-Zip writes next to ``vol.exe.001``; a ``.rar`` there is a
-       second archive. Without this the sequences the first two checks do catch are
-       trivially reachable in the shapes they do not: ``[alpha.part1.rar,
-       alpha.part2.rar, beta.rar]`` is one ``sorted(glob("*.rar"))`` away.
+       only belongs beside old-scheme parts (``.r00`` … ``.s00`` …) sharing its stem.
+       Beside a ``.partN`` set it has no role at all, since that scheme spells its own
+       volume 1 ``alpha.part1.rar``. Beside a numbered set only the executable
+       spellings make sense, as the stub 7-Zip writes next to ``vol.exe.001``; a
+       ``.rar`` there is a second archive. Without this the sequences the first two
+       checks do catch are trivially reachable in the shapes they do not:
+       ``[alpha.part1.rar, alpha.part2.rar, beta.rar]`` is one ``sorted(glob("*.rar"))``
+       away.
 
     A name that is neither is passed over rather than ending the check — the globs
     above also return ``alpha.zip.bak`` and ``notes.zip.old``, and stopping at one
     would leave the parts around it unchecked depending only on where the stray
-    sorted.
+    sorted. A stray whose extension is one non-digit and two digits (``readme.p12``,
+    ``notes.e01``) is not passed over: it has the old-scheme part shape, so beside
+    parts of another scheme or another base, rule 1 or 2 refuses the sequence. That
+    false refusal is the recorded cost of classifying old-scheme parts with
+    discovery's own pattern (see the comment at ``_OLD_RAR_CONTINUATION_RE``).
 
     What this guarantees is still narrower than "the parts of one archive", and three
     residues stay.
@@ -802,13 +907,13 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
     marked_scheme: int | None = None
     marked_base = ""
     unmarked: list[str] = []
-    rnn_bases = _rar_rnn_bases(paths)
+    old_rar_bases = _old_rar_bases(paths)
     for path in paths:
-        classified = _sequence_scheme_and_base(path.name, rnn_bases)
+        classified = _sequence_scheme_and_base(path.name, old_rar_bases)
         if classified is None:
             if _is_old_scheme_first_volume_name(
                 path.name
-            ) or _is_rnn_first_volume_name_in(path.name, rnn_bases):
+            ) or _is_old_rar_first_volume_name_in(path.name, old_rar_bases):
                 unmarked.append(path.name)
             continue
         scheme, part_base = classified
@@ -836,9 +941,9 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
 
     for name in unmarked:
         stem = name[: name.rfind(".")]
-        if marked_scheme == _RAR_RNN_SCHEME:
-            # Volume 1 of the old scheme. `_old_rar_rnn_first_volume` builds this name
-            # as the `.rNN` base plus a suffix, so the stem is that base verbatim.
+        if marked_scheme == _OLD_RAR_SCHEME:
+            # Volume 1 of the old scheme. `_collect_old_rar_volumes` looks this name
+            # up as the continuations' base plus a suffix, so the stem is that base.
             if stem.lower() != marked_base.lower():
                 raise _different_sets_error(marked_base, stem)
         elif marked_scheme == _NUMBERED_SCHEME and name.lower().endswith(

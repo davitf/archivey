@@ -114,7 +114,7 @@ Three things about this path are worth knowing before you debug it:
 | A format's parsing or metadata | `internal/backends/<fmt>_{reader,parser}.py`; spec `openspec/specs/format-<fmt>/` |
 | ZIP internals | `zip_reader.py` (stdlib central directory + archivey member data) · `zip_detect.py` (scan-hit validator) · `zipcrypto.py` · `zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
-| RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
+| RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_copy_sources.py` (a solid pass keeps file-copy sources) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
 | ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal, the `pycdlib` cycle guard); handbook [`formats/iso.md`](formats/iso.md) |
 | Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
@@ -133,6 +133,7 @@ Three things about this path are worth knowing before you debug it:
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `terminal.py`; threat-model O9 |
 | Test-suite leak oracle (live children, owning streams; pipe fds as context) | `tests/leak_oracle.py` (autouse plugin); `tests/test_leak_oracle.py`; the shutdown-only accelerator diagnostic is still `scripts/accel_leak_trace.py` |
+| How close real archives come to the limits; which archives in a corpus fail or look odd | `scripts/scan_archives.py` (dry-runs a directory tree: CSV with a `flags` column, a log, and per-limit max/p99 against the defaults); `tests/test_scan_archives.py` |
 
 ---
 

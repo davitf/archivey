@@ -526,6 +526,16 @@
   materialize-the-target, guarded so it can't reintroduce a path escape). Its own change +
   exploration — the safe default lands first.
 
+- **Resource usage against the limits, as data** — a caller cannot ask how close an
+  archive came to any configurable limit (bytes, entries, ratio, members, metadata,
+  decoder memory, key-derivation rounds, spool). `scripts/scan_archives.py` reads most of
+  it from public results, but decoder memory, KDF rounds, spool bytes and listing
+  metadata only by wrapping internals. A design (a usage record on the reader and the
+  `ExtractionReport`, peaks recorded beside the existing checks, roughly 150 to 250 lines
+  plus tests) was explored on 2026-10-02 for tuning the defaults against a real corpus.
+  The open question is whether the record is public; xz and zstd decoder memory are
+  decided inside liblzma / libzstd and would need their headers read to be counted.
+
 ## Performance & robustness
 
 - **Keep the member checksum running through seeks that decode the bytes anyway** —

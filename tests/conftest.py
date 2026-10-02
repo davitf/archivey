@@ -64,18 +64,48 @@ def requires(*packages: str) -> pytest.MarkDecorator:
     )
 
 
+def unar_refusal() -> str | None:
+    """Why archivey will not use the ``unar`` on ``PATH``, or ``None`` when it will.
+
+    A ``unar`` that fails archivey's RAR5 check (Debian and Ubuntu packages before
+    1.10.8+ds1-10, see ``dev-docs/known-issues.md``) is on ``PATH`` but unusable, so
+    a test that needs ``unar`` skips there, as it does where ``unar`` is missing.
+    """
+    from archivey.exceptions import PackageNotInstalledError
+    from archivey.internal.external.unar import find_unar
+
+    if shutil.which("unar") is None:
+        return "unar is not on PATH"
+    try:
+        find_unar(purpose="for the test suite")
+    except PackageNotInstalledError as exc:
+        return str(exc)
+    return None
+
+
+def has_binary(name: str) -> bool:
+    """Whether ``name`` is on ``PATH``; for ``unar``, whether archivey will use it."""
+    if name == "unar":
+        return unar_refusal() is None
+    return shutil.which(name) is not None
+
+
 def requires_binary(*names: str) -> pytest.MarkDecorator:
     """Skip a test when an external tool (e.g. the ``7z`` or ``unrar`` CLI) is not on PATH.
 
     The oracle-availability rule (``testing-contract`` spec): a test that shells out to an external
     binary must *skip*, not fail, where that binary is absent, so CI legs and dev
-    machines without it stay green.
+    machines without it stay green. ``unar`` also skips where archivey refuses the one
+    on ``PATH`` (:func:`unar_refusal`), and the reason says why.
     """
     missing = [n for n in names if shutil.which(n) is None]
-    return pytest.mark.skipif(
-        bool(missing),
-        reason=f"requires external binary(ies): {', '.join(missing)}",
-    )
+    reason = f"requires external binary(ies): {', '.join(missing)}"
+    if not missing and "unar" in names:
+        refusal = unar_refusal()
+        if refusal is not None:
+            missing = ["unar"]
+            reason = f"requires a unar archivey will use: {refusal}"
+    return pytest.mark.skipif(bool(missing), reason=reason)
 
 
 def requires_zstd() -> pytest.MarkDecorator:

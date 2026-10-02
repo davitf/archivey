@@ -40,7 +40,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     UnsupportedFeatureError,
 )
-from tests.conftest import requires_binary
+from tests.conftest import has_binary, requires_binary
 from tests.test_audit_rar_iso_dir import (
     _fixture,
     _hostile_argv_payloads,
@@ -153,7 +153,7 @@ _COPY_CASES = [
 
 
 def _copy_reader_config(decompressor: str) -> ArchiveyConfig:
-    if shutil.which("rar") is None or shutil.which(decompressor) is None:
+    if shutil.which("rar") is None or not has_binary(decompressor):
         pytest.skip(f"needs rar and {decompressor}")
     if decompressor == "unar":
         return ArchiveyConfig(rar_decompressor="unar")
@@ -495,7 +495,7 @@ def test_externally_killed_decompressor_is_not_reported_as_truncation(
     so the child is still blocked writing when it is killed after the first read.
     ``unrar`` catches SIGTERM and exits 255 (user break) instead of dying on it.
     """
-    if shutil.which(decompressor) is None:
+    if not has_binary(decompressor):
         pytest.skip(f"requires {decompressor}")
     from archivey.internal.backends import rar_unrar
     from archivey.internal.external import unar as unar_module

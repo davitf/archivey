@@ -546,7 +546,7 @@ DecoderLimits.UNLIMITED = DecoderLimits(
 
 @dataclass(frozen=True)
 class SpoolLimits:
-    """Caps on copying the archive source to temporary storage.
+    """Caps on what a reader writes to temporary storage, mostly copies of its source.
 
     Some reads need the archive as a file on disk even when the caller passed a stream.
     Today that is RAR: ``unrar`` and ``unar``, the programs that decode member data, take
@@ -567,20 +567,31 @@ class SpoolLimits:
     """
 
     max_bytes: int | None = 2**30
-    """Most bytes one reader may write to temporary storage as a copy of its source. 1 GiB.
+    """Most bytes one reader may write to temporary storage. 1 GiB.
 
-    A volume set counts as one copy: the limit applies to the total across its
-    volumes. When the size is known before the copy starts, an archive over the limit
-    raises :class:`~archivey.exceptions.ResourceLimitError` before anything is written.
-    Otherwise the copy stops before it passes the limit. Either way the partial copy is
-    removed, and the error names this field. The limit holds for the reader, not per
-    attempt: once a copy is refused, later reads that need it are refused without
-    copying again.
+    That is the copy of its source, and the sources a solid RAR pass keeps for file
+    copies. A volume set counts as one copy: the limit applies to the total across its
+    volumes. When the size is known before the copy starts, an
+    archive over the limit raises :class:`~archivey.exceptions.ResourceLimitError`
+    before anything is written. Otherwise the copy stops before it passes the limit.
+    Either way the partial copy is removed, and the error names this field. The limit
+    holds for the reader, not per attempt: once a copy is refused, later reads that
+    need it are refused without copying again.
 
     ``0`` refuses every copy: a stream source then reads only the members archivey can
     read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
     to the platform temporary directory (``tempfile.gettempdir()``); where that is
     memory-backed, such as ``tmpfs``, this limit is a memory limit.
+
+    The same allowance holds the sources of RAR5 file copies (``rar -oi``) in a solid
+    pass (``stream_members``, extraction): the pass keeps each source as it decodes
+    it, up to 8 MiB in memory and the rest in a temporary file within this limit, so
+    a copy does not decode the solid stream again. That file counts only from the
+    source's first decoded byte, after any copy of the archive the pass needs, until
+    the pass ends and deletes it. Unlike a copy's bytes, which keep counting after the
+    copy is removed, the kept file's bytes then stop counting. A source the limit has
+    no room for is not kept, and its copies decode it again from the archive; that is
+    never refused.
     """
 
     UNLIMITED: ClassVar[SpoolLimits]
@@ -675,7 +686,7 @@ class ArchiveyConfig:
     """
 
     spool_limits: SpoolLimits = SpoolLimits()
-    """Caps on copying a stream source to temporary storage. See :class:`SpoolLimits`."""
+    """Caps on what a reader writes to temporary storage. See :class:`SpoolLimits`."""
 
     detection_budget: DetectionBudget = BALANCED_BUDGET
     """Upper bounds on what format detection may read and decode.

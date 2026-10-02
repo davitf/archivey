@@ -107,6 +107,13 @@ and the same build without the patch drops none. That patch is also why apt 1.10
 `FILE1.TXT` in the RAR 1.5 fixture. The empty-member failure below is a separate, upstream
 bug and is unrelated.
 
+Which packages carry the patch, from the `debian/patches/series` of each source package in
+Ubuntu's archive (2026-10-01): Ubuntu 22.04 (1.10.1-2build11), 24.04
+(1.10.7+ds1+really1.10.1-3build1) and 26.04 (1.10.8+ds1-9build1), and Debian 1.10.8+ds1-2
+to -9. Debian 1.10.8+ds1-10 (unstable, June 2026) deleted it. Upstream 1.10.8 built with
+the patch applied writes 0 bytes for the repro. archivey now runs this repro once per
+`unar` binary and does not use one that fails it (`known-issues.md`).
+
 A run of one entry (`-i k`) writes the member exactly or not at all. A run of several
 entries of a solid archive loses the dropped member and can go on to lose later ones,
 or write stale window bytes for one: the bytes at the dropped member's offset in the

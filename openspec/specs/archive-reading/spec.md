@@ -220,21 +220,26 @@ by three rules:
 - within that scheme their bases SHALL agree, compared case-insensitively against the
   base that scheme reads;
 - a name carrying no part number but shaped like a first volume (`<base>.rar` /
-  `.exe` / `.sfx`) SHALL be required to share its stem with the `.rNN` parts present,
+  `.exe` / `.sfx`) SHALL be required to share its stem with the old-scheme parts
+  present (any name ending in one non-digit and two digits, the shape discovery
+  walks: `.r00` … `.r99`, `.s00` … and on),
   and SHALL be refused beside parts of another scheme — except that an `.exe` /
   `.sfx` beside a numbered set is the 7-Zip stub, whose name is not derived from
   theirs, and is allowed.
 
 A `<base>.partN.rar` names both a `.partN` part and an old-scheme first volume based
-on `<base>.partN`, so it SHALL be read as the latter when the sequence carries `.rNN`
-parts on that base, which is the reading discovery produces from those `.rNN` names.
+on `<base>.partN`, so it SHALL be read as the latter when the sequence carries
+old-scheme parts on that base, which is the reading discovery produces from those
+names.
 
 A sequence in which no name carries a part number SHALL NOT be subject to these rules,
 nothing in it saying that any of the names is a volume.
 
 The check is on names only: parts of one set in different directories remain valid, an
 item whose name matches none of the above is passed through in the position given (and
-suspends the completeness check for that sequence), and a sequence containing an open
+suspends the completeness check for that sequence), an unrelated item whose extension
+is one non-digit and two digits (`readme.p12`) SHALL count as an old-scheme part, the
+name alone not separating it from `beta.s00`, and a sequence containing an open
 stream is not checked, a stream having no name to compare. Completeness (numbered
 `1..N` with no gaps) applies to the numbered scheme only, RAR volumes being
 self-describing.
@@ -254,9 +259,12 @@ self-describing.
 | `open_archive([vol1, vol2, vol3])` in order | One archive in that order |
 | `open_archive([alpha.zip.001, beta.zip.002])` | `ArchiveyUsageError` naming both bases |
 | `open_archive([alpha.part1.rar, beta.part2.rar])`, or `[alpha.rar, beta.r00]` | `ArchiveyUsageError` naming both bases |
+| `open_archive([alpha.rar, alpha.r00, …, alpha.r99, beta.s00])` | `ArchiveyUsageError` naming both bases; the old scheme is checked past `.r99` |
+| `open_archive([alpha.rar, alpha.r00, readme.p12])`, or `[alpha.zip.001, alpha.zip.002, notes.e01]` | `ArchiveyUsageError`: the stray has the old-scheme part shape |
+| `open_archive([alpha.rar, alpha.r00, readme.bak])` | Joins in that order; `readme.bak` matches no scheme and is passed through |
 | `open_archive([movie.part1.rar, movie.part2.rar, readme.rar])`, or `[alpha.zip.001, beta.part1.rar]` | `ArchiveyUsageError`: two sets |
 | `open_archive([stub.exe, vol.7z.001, vol.7z.002])` | One archive in that order; the stub is not a second set |
-| `open_archive([Show.part1.rar, Show.part1.r00, Show.part1.r01])` | One archive in that order; volume 1 of the `.rNN` set |
+| `open_archive([Show.part1.rar, Show.part1.r00, Show.part1.r01])` | One archive in that order; volume 1 of the old-scheme set |
 | `open_archive([Show.part1.rar, Show.part2.rar, Show.part1.r00])` | `ArchiveyUsageError`: two sets |
 | `open_archive([alpha.rar, beta.rar])` | One stream over both; no part number, so no set to check |
 | `open_archive([a/alpha.zip.001, b/alpha.zip.002])` across directories | One archive in that order |
@@ -943,8 +951,13 @@ spooling plaintext to a temp file is forbidden. A per-format strategy that
 inherently needs proportional temp storage (e.g. `format-rar`'s documented copy of
 a non-path archive source to disk, so `unrar` can seek it) is allowed only when
 declared in that format's capability spec, and a strategy that copies the archive
-source SHALL be bounded by `ArchiveyConfig.spool_limits`. Caller's own buffering of a
-returned stream is unrestricted.
+source SHALL be bounded by `ArchiveyConfig.spool_limits`. A declared strategy that keeps
+decoded member data to spare a decode it would otherwise repeat (`format-rar`: a solid
+pass keeping the sources of file copies) SHALL keep it in memory only up to a constant
+the format spec states, and SHALL charge anything written to temporary storage to the
+same `spool_limits` budget. Such a keep is optional: when the budget has no room it SHALL
+be declined, the read SHALL fall back to decoding again, and nothing SHALL be refused.
+Caller's own buffering of a returned stream is unrestricted.
 
 #### Scenario: bounded storage matrix
 
@@ -953,6 +966,7 @@ returned stream is unrestricted.
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
 | Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `ResourceLimitError` |
+| Declared keep of decoded member data, over the memory constant | Written within `SpoolLimits.max_bytes`; with no room left, not kept and decoded again; never `ResourceLimitError` |
 
 ### Requirement: Explicit configuration object
 
@@ -1040,13 +1054,18 @@ always holds a budget.
 `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set and across attempts: a copy refused once SHALL stay refused for that reader
-without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to
-`None`. A copy over the limit SHALL raise `ResourceLimitError`, naming
-`SpoolLimits.max_bytes`, before any byte is written when the size is known, and otherwise
-before the written total passes the limit, with the partial copy removed. A path source
-that is read in place is not copied and SHALL NOT be refused by it; a path source that
-has to be copied (`format-rar`: a prefixed archive read with `unar`, or explicit volume
-files that cannot be linked side by side) is bounded like a stream source.
+without writing again. The same limit SHALL bound the decoded member data a declared
+strategy keeps on disk (today, `format-rar`'s kept file-copy sources in a solid pass),
+counted while the data is on disk: kept data SHALL count from its first written byte
+until it is deleted, and SHALL NOT count after that. A keep over the limit SHALL be
+declined, not refused: the read falls back to decoding again. `None` SHALL disable the
+guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the limit SHALL raise
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
+size is known, and otherwise before the written total passes the limit, with the partial
+copy removed. A path source that is read in place is not copied and SHALL NOT be refused
+by it; a path source that has to be copied (`format-rar`: a prefixed archive read with
+`unar`, or explicit volume files that cannot be linked side by side) is bounded like a
+stream source.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.

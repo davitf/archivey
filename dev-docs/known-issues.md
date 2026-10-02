@@ -44,32 +44,63 @@ RAR5 member whose last compressed byte uses 6–8 of its bits, solid or not, and
 under `-o -` stderr is empty too. About 1–6% of `-m3` members measured do this. In a
 solid run over several entries, later members are lost as well, or come out as stale
 window bytes, so the bytes found where the dropped member should be belong to something
-else.
+else. Debian's 1.10.8 packages before 1.10.8+ds1-10 do the same (see Cause).
 
-**What archivey does.** RARLAB `unrar` is the default under `"auto"` whenever it is
-installed. With `unar`, every member is checked against its declared size and its stored
-CRC32 or BLAKE2sp: a dropped member is reported as truncated, and misplaced bytes in a
-solid run fail the digest. The solid pass reads a member that has no digest through a
-`unar` run of its own, which writes it exactly or not at all. Pinned by
+**What archivey does.** `find_unar` runs each `unar` it finds once, after the banner
+check, on a 118-byte RAR5 archive embedded in `internal/external/unar.py` (the
+`unar_drop__.rar` fixture), and requires the member's exact 47 bytes back. A build that
+writes anything else, exits non-zero, or runs out of time is not used, and the answer
+is cached per binary like the banner's. Under `"auto"` that `unar` counts as absent;
+with `rar_decompressor="unar"` a read raises `PackageNotInstalledError`. For the
+patch's signature (exit 0, less than the member) it names the patch and says to install
+RARLAB `unrar` or a `unar` without the patch; any other failure says what the run did
+(its exit status, a signal, the wrong bytes). A check that cannot run at all, such as a
+temporary directory with no space, is reported as that and is not cached.
+`unar_rar5_probe_failure(path)` runs the check on any binary. Before the check existed,
+and still as a second line for a build that passes it: every member read with `unar` is
+checked against its declared size and its stored CRC32 or BLAKE2sp, so a dropped member
+is reported as truncated and misplaced bytes in a solid run fail the digest; the solid
+pass reads a member that has no digest through a `unar` run of its own, which writes it
+exactly or not at all. Pinned by `tests/test_unar_probe.py`, and by
 `tests/test_rar_unar.py` on the `unar_drop*` and `unar_stale*` fixtures.
 
-**What remains.** An affected member cannot be read with `unar` at all: it raises
-`TruncatedError` or `CorruptionError`, and RARLAB `unrar` reads it.
+**CI.** The Linux test legs install Ubuntu's `unar`, build upstream XADMaster 1.10.8
+from source (`scripts/install-unar-from-source.sh`) and put it first on `PATH`, so the
+`unar` tests run against a build archivey uses. A separate step *expects* Ubuntu's
+`/usr/bin/unar` to fail the check
+(`test_distro_unar_matches_the_ci_expectation`, with `ARCHIVEY_DISTRO_UNAR_EXPECT=patched`).
+The `unar-distro-packages` job does the same in containers for `debian:stable`
+(expected patched), `debian:unstable` (expected clean) and `fedora:latest` (expected
+clean); Alpine does not package `unar`. When one of these fails, the package changed:
+flip the row's expectation, and, if Ubuntu's package passes, consider dropping the source
+build. The test's failure message and the workflow comments say the same.
+
+**What remains.** With a patched build and no other program, RAR member data cannot be
+read with `unar` at all. A local dev box with Ubuntu's package skips the `unar` tests
+unless a 1.10.8 build comes first on `PATH`; `scripts/setup-dev-env.sh` reports
+`REFUSED unar` when that is the case.
 
 **Cause.** Not upstream: it comes from `CSInputBuffer-bit-string-reading.patch`, which
-only Debian and Ubuntu apply to their 1.10.1 package. With it, the bit reader raises end of
-file when fewer bits remain than a Huffman lookup *peeks*, even when the code it uses is
-shorter; the error is swallowed and the member comes out empty. Measured on builds from
-source (2026-10-01): upstream 1.10.1, 1.10.7, 1.10.8 (Homebrew's version) and master
-decode all 300 generated RAR5 archives and the `unar_drop*` / `unar_stale*` fixtures
-correctly; the Debian package build reproduces the drops, and the same build without that
-patch does not. The RAR 1.5 refusal (`rar15-comment.rar` missing `FILE1.TXT`) has the same
-cause. Debian kept the patch on 1.10.8+ds1 until 1.10.8+ds1-10 (Debian unstable, June
-2026), so Ubuntu 22.04, 24.04 and 26.04 all carry it, read from their source packages'
-patch series. Banners cannot tell: Debian's 1.10.8 packages print `v1.10.8` with or without
-the patch, and upstream 1.10.8 and master still print `v1.10.7`.
+Debian added in 1.10.1-2 and deleted in 1.10.8+ds1-10 (June 2026, for breaking imploded
+ZIP members, Debian bug #1134346). With it, the bit reader raises end of file when fewer
+bits remain than a Huffman lookup *peeks*, even when the code it uses is shorter; the
+error is swallowed and the member comes out empty. Measured on builds from source
+(2026-10-01): upstream 1.10.1, 1.10.7, 1.10.8 (Homebrew's version) and master decode all
+300 generated RAR5 archives and the `unar_drop*` / `unar_stale*` fixtures correctly; the
+Debian 1.10.1 package build reproduces the drops, the same build without that patch does
+not, and upstream 1.10.8 with the patch applied drops the probe member too. The RAR 1.5
+refusal (`rar15-comment.rar` missing `FILE1.TXT`) has the same cause.
 
-**Upstream.** Nothing to file with XADMaster; the patch is Debian's.
+Which packages carry it (patch series read from the source packages in Ubuntu's archive,
+2026-10-01): Ubuntu 22.04 (1.10.1-2build11), 24.04 (1.10.7+ds1+really1.10.1-3build1) and
+26.04 (1.10.8+ds1-9build1) do; Debian 1.10.8+ds1-9 does, and is expected to be what
+Debian 13 ships (not confirmed: no Debian mirror was reachable); Debian unstable's
+1.10.8+ds1-10 does not. So no version string identifies an affected build: Debian's
+1.10.8 packages print `unar v1.10.8` with or without the patch, and upstream 1.10.8 and
+master still print `v1.10.7`. That is why archivey checks behaviour, not the banner.
+
+**Upstream.** Nothing to file with XADMaster; the patch is Debian's, and Debian has
+dropped it. Ubuntu picks that up with its next sync from Debian.
 
 **Evidence.** [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md)
 §Compressed RAR5 member dropped. Handbook: [`formats/rar.md`](formats/rar.md) §3.

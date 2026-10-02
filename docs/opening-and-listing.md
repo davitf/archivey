@@ -152,7 +152,7 @@ finds the rest**, in the naming schemes those tools produce:
 |---|---|
 | `backup.7z.001` / `backup.exe.001` / `backup.zip.001`, `.002`, … | Any numbered part, or the stub `backup.exe` |
 | `backup.part1.rar` / `backup.part1.sfx`, `.part2.rar`, … | Any part |
-| `backup.rar` / `backup.exe` / `backup.sfx` + `backup.r00`, `.r01`, … | The `.rar`, the SFX stub, or any `.rNN` |
+| `backup.rar` / `backup.exe` / `backup.sfx` + `backup.r00`, `.r01`, … `.r99`, `.s00`, … | The `.rar`, the SFX stub, or any later volume |
 
 A 7z set is checked for completeness, so a missing middle part is an error rather
 than a silent short read. The stub executable beside an SFX numbered set is not
@@ -163,11 +163,18 @@ for Linux 7-Zip and Windows 7-Zip, including when you pass `format=` after
 (magic behind the stub) still opens as that archive, even if numbered parts sit
 beside it.
 The old RAR scheme needs a first volume either way: `<base>.rar`, or an SFX
-`<base>.exe` / `<base>.sfx` beside the `.rNN` files. A `.rNN` on its own is read
-as a lone file rather than as part of a set. A lone numbered part
-(`.7z.001` / `.zip.001` / `.exe.001` with no siblings) is an incomplete set,
-not a silent mis-parse. A part that does not exist at all raises
-`FileNotFoundError`, as any missing path does.
+`<base>.exe` / `<base>.sfx` beside the later volumes. The later volumes are found by
+name from there, the way unrar finds them (`.r99` is followed by `.s00`, `.z99` by
+`.{00`), and the set ends at the first name that is missing. Names match in any
+letter case, the first volume's included, so `ARCHIVE.RAR` + `ARCHIVE.R00` is a set
+on Linux too. One exception: opened from an SFX first volume, the set is found only
+when the later volumes spell the base the way the `.exe` / `.sfx` does, so
+`archive.exe` beside `ARCHIVE.R00` is found from `ARCHIVE.R00` and not from the stub.
+A later volume with no first volume beside it, or one past such a gap, is read as a
+lone file rather than as part of a set. A lone numbered part (`.7z.001` /
+`.zip.001` / `.exe.001` with no siblings) is an incomplete set, not a silent
+mis-parse. A part that does not exist at all raises `FileNotFoundError`, as any
+missing path does.
 
 You can also pass the volumes yourself, as an ordered sequence of paths or open
 streams — useful when they are not siblings on disk, or not on disk at all. Do that
@@ -193,13 +200,14 @@ raises.
 
 And a name that carries no part number but is shaped like a first volume
 (`backup.rar`, `backup.exe`, `backup.sfx`) only belongs beside the marked parts
-around it, and which parts those are decides what is checked. Beside `.rNN` parts it
-is their volume 1 and must share their stem, so `[alpha.rar, alpha.r00]` joins and
-`[beta.rar, alpha.r00]` raises. Beside a `.partN` set it has no role at all, that
-scheme spelling its own volume 1 `movie.part1.rar`, so `[movie.part1.rar,
-movie.part2.rar, readme.rar]` raises. Beside a numbered set only the stub executable
-7-Zip writes there makes sense, which has no part number and need not share their
-name, so an `.exe` or `.sfx` is let through — a `.rar` in the same position is not.
+around it, and which parts those are decides what is checked. Beside old-scheme parts
+(`.r00` … `.r99`, `.s00` …) it is their volume 1 and must share their stem, so
+`[alpha.rar, alpha.r00]` joins and `[beta.rar, alpha.r00]` raises. Beside a `.partN`
+set it has no role at all, that scheme spelling its own volume 1 `movie.part1.rar`, so
+`[movie.part1.rar, movie.part2.rar, readme.rar]` raises. Beside a numbered set only the
+stub executable 7-Zip writes there makes sense, which has no part number and need not
+share their name, so an `.exe` or `.sfx` is let through — a `.rar` in the same position
+is not.
 
 When *no* name in the sequence carries a part number, nothing in it says any of them
 is a volume and none of this applies: `[alpha.rar, beta.rar]` joins, giving you bytes
@@ -214,6 +222,13 @@ through in the position you gave it, and the completeness check — which only t
 numbered scheme has, RAR volumes carrying their own order in their headers — is
 skipped for the whole sequence, so the order is yours to get right. Passing any part
 as an open stream skips the check entirely, since a stream has no name to compare.
+
+The old-scheme pattern is broad, because the walk past `.r99` can reach any letter:
+any extension of one non-digit and two digits counts as an old-scheme part. So an
+unrelated file of that shape is not passed through. `[alpha.rar, alpha.r00,
+readme.p12]` raises as two sets, and so does `[alpha.zip.001, alpha.zip.002,
+notes.e01]`, where `[alpha.rar, alpha.r00, readme.bak]` joins. Leave such files out
+of the sequence.
 
 ## Detection
 
