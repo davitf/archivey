@@ -1440,7 +1440,6 @@ class ExtractionCoordinator:
         dest_path, prior, collided_with = self._resolve_collision(
             original, transformed, requested, collision_map, dest
         )
-        redirected = prior is not None
         # Stashed for the failure handler: an ERROR-policy collision becomes a FAILED
         # result built there, and it has to carry the collision too.
         self._collided_with = collided_with
@@ -1471,10 +1470,36 @@ class ExtractionCoordinator:
                 self._mark_overwritten(results, prior)
             raise
 
+        return self._settle_placement(
+            result,
+            requested,
+            prior,
+            collided_with,
+            transformed,
+            results,
+            result_index,
+            collision_map,
+            dest,
+        )
+
+    def _settle_placement(
+        self,
+        result: ExtractionResult,
+        requested: Path,
+        prior: _Claim | None,
+        collided_with: Path | None,
+        transformed: ArchiveMember,
+        results: list[ExtractionResult],
+        result_index: int,
+        collision_map: dict[str, _Claim],
+        dest: Path,
+    ) -> ExtractionResult:
+        """``result`` with its collision recorded, once the claims and earlier results
+        it affects are updated. Both passes; the caller records what it returns."""
         # Record the intended destination. A REPLACE merge into a prior path is not a
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
-        if redirected and result.status is ExtractionStatus.EXTRACTED:
+        if prior is not None and result.status is ExtractionStatus.EXTRACTED:
             result = replace(
                 result, requested_path=result.path, collided_with=collided_with
             )
@@ -1541,17 +1566,7 @@ class ExtractionCoordinator:
 
         if transformed.type == MemberType.SYMLINK:
             result = self._write_symlink(original, transformed, dest_root, dest_path)
-            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
-                written_paths.add(result.path)
-                if self._links is not None and transformed.link_target is not None:
-                    self._links.track(
-                        result.path,
-                        self._link_target_on_disk(transformed.link_target),
-                        result_index,
-                    )
-            return result
-
-        if transformed.type == MemberType.HARDLINK:
+        elif transformed.type == MemberType.HARDLINK:
             result = self._write_hardlink(
                 original,
                 transformed,
@@ -1562,23 +1577,48 @@ class ExtractionCoordinator:
                 forward_only,
                 result_index,
             )
-            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
-                written_paths.add(result.path)
-            return result
-
-        if transformed.type == MemberType.FILE:
+        elif transformed.type == MemberType.FILE:
             result = self._write_file(
                 original, transformed, stream, dest_path, tracker, source_paths
             )
-            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
-                written_paths.add(result.path)
-            return result
+        else:
+            # MemberType.OTHER is rejected by check_universal; nothing else should
+            # reach here.
+            raise ExtractionError(
+                f"Unsupported member type {transformed.type!r}",
+                member_name=transformed.name,
+            )
+        if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
+            written_paths.add(result.path)
+            if (
+                transformed.type == MemberType.SYMLINK
+                and self._links is not None
+                and transformed.link_target is not None
+            ):
+                self._links.track(
+                    result.path,
+                    self._link_target_on_disk(transformed.link_target),
+                    result_index,
+                )
+        return result
 
-        # MemberType.OTHER is rejected by check_universal; nothing else should reach here.
-        raise ExtractionError(
-            f"Unsupported member type {transformed.type!r}",
-            member_name=transformed.name,
-        )
+    def _make_room(
+        self,
+        original: ArchiveMember,
+        transformed: ArchiveMember,
+        dest_path: Path,
+        *,
+        atomic: bool,
+    ) -> ExtractionResult | None:
+        """Apply the OverwritePolicy at ``dest_path`` and create its parents; the
+        result if the policy declines, else ``None``. A check that skips the member
+        comes first, so it cannot remove an entry under ``OverwritePolicy.REPLACE``."""
+        if not self._prepare_destination(transformed, dest_path, atomic=atomic):
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
+        self._makedirs(dest_path.parent, transformed)
+        return None
 
     def _resolve_collision(
         self,
@@ -1621,11 +1661,11 @@ class ExtractionCoordinator:
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
             else None
         )
+        if collided is not None:
+            assert prior is not None
+            self._check_collision_abort(original, transformed, prior)
         if self._overwrite is OverwritePolicy.RENAME:
             if prior is not None or self._occupied(requested):
-                if collided is not None:
-                    assert prior is not None
-                    self._check_collision_abort(original, transformed, prior)
                 return (
                     self._derive_free_name(requested, transformed, collision_map, dest),
                     None,
@@ -1634,7 +1674,6 @@ class ExtractionCoordinator:
             return requested, None, None
         if collided is not None:
             assert prior is not None
-            self._check_collision_abort(original, transformed, prior)
             return prior.physical, prior, collided
         return requested, None, None
 
@@ -1902,12 +1941,9 @@ class ExtractionCoordinator:
         tracker: BombTracker,
         source_paths: dict[int, list[Path]],
     ) -> ExtractionResult:
-        if not self._prepare_destination(transformed, dest_path, atomic=True):
-            return ExtractionResult(
-                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-            )
-
-        self._makedirs(dest_path.parent, transformed)
+        declined = self._make_room(original, transformed, dest_path, atomic=True)
+        if declined is not None:
+            return declined
         if stream is None and self._retyped:
             # The pass yielded this member as a link, with no data stream, before its
             # data showed it is a file. Random access opens it now. A forward-only pass
@@ -2043,12 +2079,9 @@ class ExtractionCoordinator:
                 member_name=transformed.name,
             )
 
-        if not self._prepare_destination(transformed, dest_path):
-            return ExtractionResult(
-                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-            )
-
-        self._makedirs(dest_path.parent, transformed)
+        declined = self._make_room(original, transformed, dest_path, atomic=False)
+        if declined is not None:
+            return declined
         # A symlink is target-independent: create it even if the target was filtered out,
         # appears later, or lies outside the archive — it may dangle. Only the escape
         # check below constrains it. An os.symlink failure (unsupported FS) propagates as
@@ -2127,11 +2160,9 @@ class ExtractionCoordinator:
             )
 
         if source.member_id in source_paths:
-            if not self._prepare_destination(transformed, dest_path, atomic=True):
-                return ExtractionResult(
-                    original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-                )
-            self._makedirs(dest_path.parent, transformed)
+            declined = self._make_room(original, transformed, dest_path, atomic=True)
+            if declined is not None:
+                return declined
             self._place_link(
                 source_paths, source.member_id, dest_path, transformed, tracker
             )
@@ -2315,15 +2346,12 @@ class ExtractionCoordinator:
         # inode, so the metadata must be applied to the file that carries the content. Each
         # link's destination is O2-collision-resolved against the map the main pass built
         # (a deferred link's key may have been claimed after it was orphaned).
-        writer: _Orphan | None = None
-        writer_path: Path | None = None
-        writer_prior: _Claim | None = None
-        writer_collided: Path | None = None
-        remaining: list[_Orphan] = []
-        for orphan in group:
-            if writer is not None:
-                remaining.append(orphan)
-                continue
+        #
+        # Unlike the main pass, neither orphan path adds what it writes to
+        # ``written_paths``; this keeps it that way.
+        remaining = list(group)
+        while remaining:
+            orphan = remaining.pop(0)
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original,
                 orphan.transformed,
@@ -2331,44 +2359,31 @@ class ExtractionCoordinator:
                 collision_map,
                 dest,
             )
-            if self._prepare_destination(orphan.transformed, resolved, atomic=True):
-                writer, writer_path, writer_prior = orphan, resolved, prior
-                writer_collided = collided_with
-            else:
-                self._revise_result(
-                    results,
-                    orphan.result_index,
-                    ExtractionResult(
-                        orphan.original,
-                        None,
-                        ExtractionStatus.NOT_OVERWRITTEN,
-                        None,
-                        requested_path=orphan.dest_path,
-                        collided_with=collided_with,
-                    ),
+            result = self._make_room(
+                orphan.original, orphan.transformed, resolved, atomic=True
+            )
+            if result is None:
+                self._write_file_atomic(stream, resolved, orphan.transformed, tracker)
+                source_paths.setdefault(source_member.member_id, []).append(resolved)
+                result = ExtractionResult(
+                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
                 )
-        if writer is None or writer_path is None:
-            return  # every link's destination already exists under SKIP: nothing to write
-
-        self._makedirs(writer_path.parent, writer.transformed)
-        self._write_file_atomic(stream, writer_path, writer.transformed, tracker)
-        source_paths.setdefault(source_member.member_id, []).append(writer_path)
-        result = ExtractionResult(
-            writer.original,
-            writer_path,
-            ExtractionStatus.EXTRACTED,
-            None,
-            requested_path=(
-                writer_path if writer_prior is not None else writer.dest_path
-            ),
-            collided_with=writer_collided,
-        )
-        self._revise_result(results, writer.result_index, result)
-        if result.status is ExtractionStatus.EXTRACTED:
-            self._mark_overwritten(results, writer_prior)
-        self._register_collision_key(
-            collision_map, dest, writer.transformed, result, writer.result_index
-        )
+            result = self._settle_placement(
+                result,
+                orphan.dest_path,
+                prior,
+                collided_with,
+                orphan.transformed,
+                results,
+                orphan.result_index,
+                collision_map,
+                dest,
+            )
+            self._revise_result(results, orphan.result_index, result)
+            if result.status is ExtractionStatus.EXTRACTED:
+                break
+        # Nothing remains when every link's destination already exists under SKIP:
+        # then nothing was written either.
         self._link_orphan_group(
             remaining,
             source_paths,
@@ -2429,24 +2444,16 @@ class ExtractionCoordinator:
             dest,
         )
         try:
-            if not self._prepare_destination(orphan.transformed, resolved, atomic=True):
-                self._revise_result(
-                    results,
-                    orphan.result_index,
-                    ExtractionResult(
-                        orphan.original,
-                        None,
-                        ExtractionStatus.NOT_OVERWRITTEN,
-                        None,
-                        requested_path=orphan.dest_path,
-                        collided_with=collided_with,
-                    ),
-                )
-                return
-            self._makedirs(resolved.parent, orphan.transformed)
-            self._place_link(
-                source_paths, source_id, resolved, orphan.transformed, tracker
+            result = self._make_room(
+                orphan.original, orphan.transformed, resolved, atomic=True
             )
+            if result is None:
+                self._place_link(
+                    source_paths, source_id, resolved, orphan.transformed, tracker
+                )
+                result = ExtractionResult(
+                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                )
         except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
@@ -2468,20 +2475,19 @@ class ExtractionCoordinator:
             name = orphan.original.name
             self._stop_or_log(exc, error, ExtractionStatus.FAILED, "hardlink", name)
             return
-        result = ExtractionResult(
-            orphan.original,
-            resolved,
-            ExtractionStatus.EXTRACTED,
-            None,
-            requested_path=resolved if prior is not None else orphan.dest_path,
-            collided_with=collided_with,
+        # Not added to ``written_paths``: see ``_materialize_orphan_source``.
+        result = self._settle_placement(
+            result,
+            orphan.dest_path,
+            prior,
+            collided_with,
+            orphan.transformed,
+            results,
+            orphan.result_index,
+            collision_map,
+            dest,
         )
         self._revise_result(results, orphan.result_index, result)
-        if result.status is ExtractionStatus.EXTRACTED:
-            self._mark_overwritten(results, prior)
-        self._register_collision_key(
-            collision_map, dest, orphan.transformed, result, orphan.result_index
-        )
 
     def _forget_source_path(self, path: Path) -> None:
         """Stop offering ``path`` as a hardlink source: something else is going there.
