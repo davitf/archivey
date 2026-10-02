@@ -449,6 +449,44 @@ def test_extract_falls_back_when_the_written_source_was_replaced(
     assert spawns == ["unrar"] * (1 + _COPIES)
 
 
+def test_extract_falls_back_when_a_later_member_took_the_source_path(
+    tmp_path: Path,
+) -> None:
+    """A later member of the same size lands on the source's path (a filter renames
+    it, REPLACE lets it in). The copies must not take that member's bytes."""
+    config = _config("unrar")
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = _text(7, 4000)
+    impostor = _text(8, 4000)
+    copies = ["d_copy0.txt", "d_copy1.txt"]
+    (src / "b_source.txt").write_bytes(payload)
+    (src / "c_same.txt").write_bytes(impostor)
+    for name in copies:
+        (src / name).write_bytes(payload)
+    archive = tmp_path / "clash.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-s", "-oi:1000", str(archive)]
+        + ["b_source.txt", "c_same.txt", *copies],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    dest = tmp_path / "out"
+    with open_archive(archive, config=config) as reader:
+        assert all(reader.get(name).extra.get("is_file_copy") for name in copies)
+        reader.extract_all(
+            dest,
+            filter=lambda m: (
+                m.replace(name="b_source.txt") if m.name == "c_same.txt" else m
+            ),
+            overwrite="replace",
+        )
+    assert (dest / "b_source.txt").read_bytes() == impostor
+    for name in copies:
+        assert (dest / name).read_bytes() == payload, name
+
+
 def test_dry_run_still_serves_copies_from_one_decode(
     tmp_path: Path, spawns: list[str]
 ) -> None:

@@ -556,12 +556,14 @@ class ExtractionCoordinator:
         # Dry run only: where FILE bodies go instead of the file (``os.devnull``).
         self._sink: BinaryIO | None = None
         # ``id()`` of each member whose stream this run started writing to disk, and
-        # what each FILE written looked like on disk just after (``_file_identity``).
-        # A RAR file copy's source in the first set is not kept by the pass; the copy
-        # is copied from the source's file instead, if that file still matches the
-        # second (``_open_written_source``). Reset per ``run()``.
+        # what each FILE written looked like on disk just after (``_file_identity``),
+        # by the writing member's id and the path. A RAR file copy's source in the
+        # first set is not kept by the pass; the copy is copied from the source's file
+        # instead, if that file still matches the second (``_open_written_source``).
+        # Keyed by member as well as path, so a later member written to the same path
+        # never vouches for the earlier one's file. Reset per ``run()``.
         self._streamed: set[int] = set()
-        self._written_files: dict[Path, tuple[int, int, int, int]] = {}
+        self._written_files: dict[tuple[int, Path], tuple[int, int, int, int]] = {}
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
@@ -1924,7 +1926,7 @@ class ExtractionCoordinator:
             # Only for a later file copy's sake; a file that cannot be looked at now
             # is simply not copied from.
             with contextlib.suppress(OSError):
-                self._written_files[dest_path] = _file_identity(
+                self._written_files[original.member_id, dest_path] = _file_identity(
                     os.stat(dest_path, follow_symlinks=False)
                 )
 
@@ -1954,9 +1956,10 @@ class ExtractionCoordinator:
         ``None`` when ``original`` is not a file copy, its source was not written (a
         selector or filter dropped it, its write failed, or a later member of its name
         took its place), its sizes disagree, or the file no longer is the one written:
-        another inode, size or modification time than ``_written_files`` recorded. The
-        check is made on the opened file, so a swap between check and read is caught
-        too. The caller then reads the copy's own stream, which serves the source's
+        another inode, size or modification time than ``_written_files`` recorded for
+        the source's own write (a later member written to the same path does not
+        count). The check is made on the opened file, so a swap between check and read
+        is caught too. The caller then reads the copy's own stream, which serves the source's
         bytes from the pass or decodes them again.
         """
         source = original.link_target_member
@@ -1968,7 +1971,7 @@ class ExtractionCoordinator:
         ):
             return None
         for path in source_paths.get(source.member_id, ()):
-            expected = self._written_files.get(path)
+            expected = self._written_files.get((source.member_id, path))
             # Never the copy's own destination: the atomic write would replace the
             # file it is reading.
             if expected is None or path == dest_path:
