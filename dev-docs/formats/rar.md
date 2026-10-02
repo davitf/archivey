@@ -502,7 +502,12 @@ tried as UTF-16LE: almost any even-length byte string decodes that way, so `caf\
 used to list as `慣琮瑸`. `raw_name` is always the stored bytes, and the decoding never
 changes which member a read returns, because the `unrar` mask is built from the stored
 name (§2.3). `USES_ENCODING` is true, so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`.
-Comments still use the old candidate list (UTF-8, UTF-16LE, windows-1252).
+Comments follow `unrar`: a RAR 2.9-4 `CMT` SERVICE header whose attribute field has bit 0
+set (`SUBHEAD_FLAGS_CMT_UNICODE`) is UTF-16LE, cut at the first U+0000. Every other
+RAR 1.5-4 comment (an unflagged `CMT`, an old-style COMMENT subblock, stored or
+compressed) is 8-bit text cut at the first NUL, decoded as strict UTF-8 and then
+windows-1252. It is never guessed as UTF-16LE, for the reason names are not: an
+even-length `caf\xe9 ok!` used to list as CJK. `encoding=` does not apply to comments.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.

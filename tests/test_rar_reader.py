@@ -1592,6 +1592,58 @@ def test_rar3_service_comment_maps_to_member_comment() -> None:
         assert member.comment == comment.decode()
 
 
+# unrar reads a RAR 2.9-4 ``CMT`` as UTF-16LE only when bit 0 of the SERVICE
+# header's attribute field (``SUBHEAD_FLAGS_CMT_UNICODE``) is set, and as 8-bit
+# text cut at the first NUL otherwise (``Archive::ReadCommentData``). Checked with
+# ``unrar l`` 7.00 on archives built like these.
+@pytest.mark.parametrize(
+    ("stored", "attributes", "expected"),
+    [
+        pytest.param(b"caf\xe9 ok", 0, "caf\xe9 ok", id="ansi-odd-length"),
+        # An even length used to decode as UTF-16LE: '\u6163\u6166\u20e9\u6b6f'.
+        pytest.param(b"caf\xe9 ok!", 0, "caf\xe9 ok!", id="ansi-even-length"),
+        pytest.param("caf\xe9 ok!".encode(), 0, "caf\xe9 ok!", id="utf8"),
+        pytest.param(b"\x81\x81\x81", 0, "\ufffd" * 3, id="undefined-cp1252"),
+        pytest.param(
+            "caf\xe9 ok!".encode("utf-16le"), 1, "caf\xe9 ok!", id="unicode-flag"
+        ),
+        pytest.param(
+            "a\U0001f600".encode("utf-16le") + b"\0\0junk",
+            1,
+            "a\U0001f600",
+            id="unicode-flag-cut-at-nul",
+        ),
+        # Without the flag the UTF-16LE bytes are 8-bit text up to the first NUL.
+        pytest.param("caf\xe9".encode("utf-16le"), 0, "c", id="utf16-no-flag"),
+    ],
+)
+def test_rar3_service_comment_text_encoding(
+    stored: bytes, attributes: int, expected: str
+) -> None:
+    main_hdr, end_hdr = _rar3_main_and_end()
+    service_hdr = _rar3_file_block(
+        b"CMT",
+        flags=0,
+        pack_lo=len(stored),
+        unp_lo=len(stored),
+        block_type=0x7A,
+        attributes=attributes,
+    )
+    with open_archive(
+        io.BytesIO(RAR_ID + main_hdr + service_hdr + stored + end_hdr)
+    ) as archive:
+        assert archive.info.comment == expected
+
+
+def test_rar3_old_style_comment_is_not_guessed_as_utf16() -> None:
+    """A RAR 1.5-2.x COMMENT subblock is always 8-bit text (``DoGetComment``)."""
+    from archivey.internal.backends.rar_parser import _parse_rar3_old_comment_subblocks
+
+    text = b"caf\xe9 ok!"
+    block = _rar3_old_comment_subblock(text)
+    assert _parse_rar3_old_comment_subblocks(block, 0) == "caf\xe9 ok!"
+
+
 def test_rar5_comment_service_stays_archive_only() -> None:
     """RAR5 CMT is an archive comment, never an invented member comment."""
     with open_archive(_fixture("comment__.rar")) as archive:
@@ -1662,6 +1714,7 @@ def _rar3_file_block(
     block_type: int = 0x74,
     extract_version: int = 20,
     trailing_subblock: bytes = b"",
+    attributes: int = 0o100644,
 ) -> bytes:
     """Build one RAR3 FILE block with a valid 16-bit header CRC.
 
@@ -1684,7 +1737,7 @@ def _rar3_file_block(
         extract_version,
         method,
         len(name),
-        0o100644,
+        attributes,
     )
     if flags & _RAR3_FILE_LARGE:
         file_fields += struct.pack("<LL", pack_hi, unp_hi)
