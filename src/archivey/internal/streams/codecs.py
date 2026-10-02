@@ -34,6 +34,8 @@ import struct
 import threading
 import weakref
 import zlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import ModuleType
@@ -775,6 +777,49 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
     return VerifyingStream(stream, {}, expected_size=size)
 
 
+@contextmanager
+def _peeking(source: CodecSource) -> Iterator[BinaryIO]:
+    """Read ``source`` without moving it: a path is opened afresh, and a stream's position
+    is put back on exit."""
+    if isinstance(source, (str, os.PathLike)):
+        with open(os.fspath(source), "rb") as f:
+            yield f
+        return
+    start = source.tell()
+    try:
+        yield source
+    finally:
+        source.seek(start)
+
+
+def _source_tail(
+    source: CodecSource, size: int, min_length: int
+) -> tuple[int | None, bytes | None]:
+    """``(source_byte_length, last size bytes)`` of ``source``, without moving it.
+
+    ``(length, None)`` when the source is shorter than ``min_length``, and
+    ``(None, None)`` when it cannot be read: a stream without ``seek``, ``tell`` or
+    ``read``, one that says it cannot seek, or a read that fails.
+    """
+    try:
+        if not isinstance(source, (str, os.PathLike)):
+            seekable = getattr(source, "seekable", None)
+            if any(
+                getattr(source, name, None) is None for name in ("seek", "tell", "read")
+            ):
+                return None, None
+            if seekable is not None and not seekable():
+                return None, None
+        with _peeking(source) as f:
+            length = f.seek(0, io.SEEK_END)
+            if length < min_length:
+                return length, None
+            f.seek(-size, io.SEEK_END)
+            return length, f.read(size)
+    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+        return None, None
+
+
 def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]:
     """Capture ``(source_byte_length, ISIZE_trailer)`` for the truncation backstop in one pass.
 
@@ -791,33 +836,10 @@ def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]
     file; callers needing a hard bound still prefer a container-declared size. Restores the
     source position for a caller-owned stream.
     """
-    try:
-        if isinstance(source, (str, os.PathLike)):
-            with open(os.fspath(source), "rb") as f:
-                length = f.seek(0, io.SEEK_END)
-                if length < 18:
-                    return length, None
-                f.seek(-4, io.SEEK_END)
-                return length, int.from_bytes(f.read(4), "little")
-        seek = getattr(source, "seek", None)
-        tell = getattr(source, "tell", None)
-        read = getattr(source, "read", None)
-        seekable = getattr(source, "seekable", None)
-        if seek is None or tell is None or read is None:
-            return None, None
-        if seekable is not None and not seekable():
-            return None, None
-        pos = tell()
-        try:
-            length = seek(0, io.SEEK_END)
-            if length < 18:
-                return length, None
-            seek(-4, io.SEEK_END)
-            return length, int.from_bytes(read(4), "little")
-        finally:
-            seek(pos)
-    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
-        return None, None
+    length, trailer = _source_tail(source, 4, 18)
+    if trailer is None:
+        return length, None
+    return length, int.from_bytes(trailer, "little")
 
 
 def _gzip_header_refused(source: CodecSource) -> bool:
@@ -843,15 +865,9 @@ def _gzip_header_refused(source: CodecSource) -> bool:
                 return True
         return False
 
-    if isinstance(source, (str, os.PathLike)):
-        with open(os.fspath(source), "rb") as f:
-            return refused(f)
-    start = source.tell()
-    try:
-        source.seek(0)
-        return refused(source)
-    finally:
-        source.seek(start)
+    with _peeking(source) as f:
+        f.seek(0)
+        return refused(f)
 
 
 def _gzip_isize_from_source(source: CodecSource) -> int | None:
@@ -1545,23 +1561,10 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
     the four-byte trailer) or cannot be read; :class:`_ZlibAdlerCheckStream` then goes
     straight to its standard-library confirmation. Restores a stream source's position.
     """
-    try:
-        if isinstance(source, (str, os.PathLike)):
-            with open(os.fspath(source), "rb") as f:
-                if f.seek(0, io.SEEK_END) < 6:
-                    return None
-                f.seek(-4, io.SEEK_END)
-                return int.from_bytes(f.read(4), "big")
-        pos = source.tell()
-        try:
-            if source.seek(0, io.SEEK_END) < 6:
-                return None
-            source.seek(-4, io.SEEK_END)
-            return int.from_bytes(source.read(4), "big")
-        finally:
-            source.seek(pos)
-    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+    trailer = _source_tail(source, 4, 6)[1]
+    if trailer is None:
         return None
+    return int.from_bytes(trailer, "big")
 
 
 class _ZlibAdlerCheckStream(DelegatingStream):
@@ -3072,9 +3075,8 @@ class ZlibCodec(_ZlibErrorCodec):
         if isinstance(source, (str, os.PathLike)):
             trailer = _zlib_adler_trailer(accel_source)
         else:
-            start = source.tell()
-            trailer = _zlib_adler_trailer(accel_source)
-            source.seek(start)
+            with _peeking(source):
+                trailer = _zlib_adler_trailer(accel_source)
         return lambda stream: _ZlibAdlerCheckStream(
             stream, reopen=reopen, trailer=trailer
         )
