@@ -1340,6 +1340,24 @@ def test_a_zisofs_member_seeks_across_blocks() -> None:
                 assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
 
 
+def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
+    """``SEEK_CUR`` and ``SEEK_END`` land where they say, and a relative seek to
+    before the start clamps to 0 as every member stream does; it is the caller's
+    seek, not damage in the image."""
+    data = _zisofs_image(_ZISOFS_PLAIN)
+    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
+        with ar.open("zzz") as stream:
+            assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
+            assert stream.read() == b"tail"
+            stream.seek(70_000)
+            assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
+            assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
+            assert stream.seek(-(10**7), io.SEEK_CUR) == 0
+            assert stream.read(10) == _ZISOFS_PLAIN[:10]
+            assert stream.seek(-(10**7), io.SEEK_END) == 0
+            assert stream.read(10) == _ZISOFS_PLAIN[:10]
+
+
 @pytest.mark.parametrize(
     "zf",
     [
