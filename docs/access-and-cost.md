@@ -226,7 +226,10 @@ the pass keeps each copy's source as it decodes it, so the copy does not decode 
 solid stream again. Up to 8 MiB per pass stays in memory; the rest goes to a temporary
 file that counts against the limit from the source's first decoded byte until the pass
 ends, after any copy of the archive the pass needs. A source the limit has no room for
-is decoded again instead of being refused.
+is decoded again instead of being refused. Extraction keeps nothing for a source it
+writes: it copies each copy from the file it just wrote. If you only need the copies'
+digests, `stream_members(file_copy_streams=False)` yields `None` for each copy and keeps
+nothing; the copy's digests are its source's (`link_target_member`).
 
 ## Streaming mode is one pass
 

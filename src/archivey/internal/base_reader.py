@@ -63,6 +63,7 @@ from archivey.internal.diagnostics_collector import (
     collector_from_config,
 )
 from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
+from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
@@ -106,6 +107,7 @@ from archivey.internal.windows_reparse import (
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
+    EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
     AbortOn,
     AbortOnStr,
@@ -676,7 +678,9 @@ class BaseArchiveReader(ArchiveReader):
             if cleanup is not None:
                 cleanup()
 
-    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    def _iter_with_data(
+        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs in archive order; backs ``stream_members``.
 
         This default is for **random-access / fully-indexed** backends only (ZIP,
@@ -700,6 +704,9 @@ class BaseArchiveReader(ArchiveReader):
         a filtered extraction) therefore pays nothing for it — no seek to its data, no
         decompressor setup — and an open-time error (e.g. a wrong password) surfaces only
         if the member is actually read, not merely iterated past.
+
+        ``copies`` matters only to a backend with file copies (RAR, which overrides
+        this); ``_iter_stream_members`` applies ``copies.streams`` for every backend.
         """
         report: MemberListReport | None = None
         members = self._begin_forward_pass() if self._streaming else None
@@ -2608,6 +2615,8 @@ class BaseArchiveReader(ArchiveReader):
     def stream_members(
         self,
         members: MemberSelector = None,
+        *,
+        file_copy_streams: bool = True,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
@@ -2615,6 +2624,20 @@ class BaseArchiveReader(ArchiveReader):
         previous stream before the next pair is produced. It never seeks, on any
         format and whatever ``seekable_members`` says (``_iter_stream_members`` makes
         each handle forward-only); ``tell()`` works.
+        """
+        if not isinstance(file_copy_streams, bool):
+            raise ArchiveyUsageError(
+                "stream_members(file_copy_streams=…) takes True or False, but got "
+                f"{describe_value(file_copy_streams)}."
+            )
+        return self._stream_members(members, FileCopyPass(streams=file_copy_streams))
+
+    def _stream_members(
+        self, members: MemberSelector, copies: FileCopyPass
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        """``stream_members()`` with the file-copy handling given whole.
+
+        The extraction coordinator calls this directly, to pass ``keep_source``.
         """
         self._state.require_open("stream_members()")
         # Validate here rather than inside the generator: a generator body does not
@@ -2629,22 +2652,31 @@ class BaseArchiveReader(ArchiveReader):
             if isinstance(selector, CollectionSelector) and selector is not members
             else None
         )
-        return self._iter_stream_members(selector, report)
+        return self._iter_stream_members(selector, report, copies)
 
     def _iter_stream_members(
         self,
         selector: Callable[[ArchiveMember], bool] | None,
         report: CollectionSelector | None = None,
+        copies: FileCopyPass = DEFAULT_FILE_COPY_PASS,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
-            for m, stream in self._iter_with_data():
+            for m, stream in self._iter_with_data(copies):
                 if current is not None:
                     current.close()
                     current = None
+                if (
+                    not copies.streams
+                    and stream is not None
+                    and m.extra.get(EXTRA_IS_FILE_COPY)
+                ):
+                    # Never opened, so closing it reads and decodes nothing.
+                    stream.close()
+                    stream = None
                 if selector is None or selector(m):
                     if stream is not None:
                         # One rule for every backend, here rather than in each

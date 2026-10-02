@@ -119,6 +119,7 @@ from archivey.internal.external.unar import (
     open_unar_stdout,
     unar_password_supported,
 )
+from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import check_metadata_budget
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
@@ -2284,18 +2285,27 @@ class RarReader(BaseArchiveReader):
             verify_member=verify_member,
         )
 
-    def _file_copy_sources(self) -> FileCopySources | None:
-        """What a solid pass keeps for its file copies, or ``None`` when it has none."""
-        ids = frozenset(
-            id(m.link_target_member)
+    def _file_copy_sources(self, copies: FileCopyPass) -> FileCopySources | None:
+        """What a solid pass keeps for its file copies, or ``None`` when it keeps nothing:
+        it has no copies, or it yields none of their streams."""
+        if not copies.streams:
+            return None
+        sources = {
+            id(source): source
             for m in self._members
             if isinstance(m._raw, RarMemberInfo)
             and m._raw.is_file_copy()
-            and m.link_target_member is not None
-        )
-        if not ids:
+            and (source := m.link_target_member) is not None
+        }
+        if not sources:
             return None
-        return FileCopySources(ids, self._try_spool, self._release_spool)
+        keep_source = copies.keep_source
+        return FileCopySources(
+            frozenset(sources),
+            self._try_spool,
+            self._release_spool,
+            keep=None if keep_source is None else lambda key: keep_source(sources[key]),
+        )
 
     def _pass_file_copy_stream(
         self,
@@ -2341,13 +2351,15 @@ class RarReader(BaseArchiveReader):
             return MemberType.SYMLINK
         return MemberType.FILE
 
-    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    def _iter_with_data(
+        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         if not self._archive.is_solid:
             # Nonsolid: default lazy per-member named opens (never ALL-pipe demux).
-            yield from super()._iter_with_data()
+            yield from super()._iter_with_data(copies)
             return
         if self._unar_policy is not None:
-            yield from self._iter_solid_with_unar(self._unar_policy)
+            yield from self._iter_solid_with_unar(self._unar_policy, copies)
             return
 
         # Bare ``unrar p`` omits ``-ver`` history from the ALL pipe; pass ``-ver``
@@ -2359,7 +2371,7 @@ class RarReader(BaseArchiveReader):
             for m in self._members
         )
         solid: SolidBlockReader | None = None
-        copies = self._file_copy_sources()
+        sources = self._file_copy_sources(copies)
         pass_costs = self._pass_dictionary_costs()
 
         def _pipe() -> SolidBlockReader:
@@ -2396,7 +2408,7 @@ class RarReader(BaseArchiveReader):
                     tracked = self._track_decompressed(owned)
                 with _close_on_error(tracked):
                     solid = SolidBlockReader(
-                        tracked if copies is None else copies.tee(tracked)
+                        tracked if sources is None else sources.tee(tracked)
                     )
             return solid
 
@@ -2411,7 +2423,7 @@ class RarReader(BaseArchiveReader):
                 # passed them, so the solid stream is not decoded again for it.
                 return self._pass_file_copy_stream(
                     member,
-                    copies,
+                    sources,
                     lambda end: _pipe().open_member(end, 0),
                     pass_costs,
                 )
@@ -2425,8 +2437,8 @@ class RarReader(BaseArchiveReader):
             # solid positioning, and no ``unrar``, for unread members).
             member_offset = pipe_offset
             pipe_offset += size
-            if copies is not None and copies.is_source(id(member)):
-                copies.register(id(member), member_offset, size)
+            if sources is not None and sources.is_source(id(member)):
+                sources.register(id(member), member_offset, size)
             cost = pass_costs[id(member)]
 
             def open_fn() -> BinaryIO:
@@ -2460,8 +2472,8 @@ class RarReader(BaseArchiveReader):
                 if solid is not None:
                     solid.close()
             finally:
-                if copies is not None:
-                    copies.close()
+                if sources is not None:
+                    sources.close()
 
         yield from self._drive_pass_streams(
             self._listed_members(),
@@ -3508,7 +3520,7 @@ class RarReader(BaseArchiveReader):
         return _spawn
 
     def _iter_solid_with_unar(
-        self, policy: UnarRarPolicy
+        self, policy: UnarRarPolicy, copies: FileCopyPass
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """The solid pass over one all-entries ``unar`` run.
 
@@ -3528,7 +3540,7 @@ class RarReader(BaseArchiveReader):
         catches.
         """
         solid: SolidBlockReader | None = None
-        copies = self._file_copy_sources()
+        sources = self._file_copy_sources(copies)
         pass_costs = self._pass_dictionary_costs()
 
         def _pipe() -> SolidBlockReader:
@@ -3563,7 +3575,7 @@ class RarReader(BaseArchiveReader):
                     tracked = self._track_decompressed(owned)
                 with _close_on_error(tracked):
                     solid = SolidBlockReader(
-                        tracked if copies is None else copies.tee(tracked)
+                        tracked if sources is None else sources.tee(tracked)
                     )
             return solid
 
@@ -3586,7 +3598,7 @@ class RarReader(BaseArchiveReader):
                 # As in the ``unrar`` pass: not in the pipe, read from its kept source.
                 return self._pass_file_copy_stream(
                     member,
-                    copies,
+                    sources,
                     lambda end: _pipe().open_member(end, 0),
                     pass_costs,
                 )
@@ -3605,8 +3617,8 @@ class RarReader(BaseArchiveReader):
                 )
             else:
                 offset = policy.solid_pass_offset(raw)
-                if copies is not None and copies.is_source(id(member)):
-                    copies.register(id(member), offset, size)
+                if sources is not None and sources.is_source(id(member)):
+                    sources.register(id(member), offset, size)
                 cost = pass_costs[id(member)]
                 open_fn = lambda: _read(member, offset, size, cost)  # noqa: E731
             # Registered for the live-stream gate, as in the ``unrar`` pass.
@@ -3630,8 +3642,8 @@ class RarReader(BaseArchiveReader):
                 if solid is not None:
                     solid.close()
             finally:
-                if copies is not None:
-                    copies.close()
+                if sources is not None:
+                    sources.close()
 
         yield from self._drive_pass_streams(
             self._listed_members(),

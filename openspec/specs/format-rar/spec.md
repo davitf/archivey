@@ -1100,6 +1100,20 @@ for SHALL NOT be kept, and its copies SHALL read the source with a named open, a
 `open()` does; that SHALL NOT raise `ResourceLimitError`. A source that the pass does not
 emit (a `unar` refusal) SHALL fall back the same way.
 
+Extraction SHALL NOT have the pass keep a source that it is writing to disk from the
+pass's stream. It SHALL write each later copy of that source by copying the file it
+wrote, when that file is still the one it wrote (same device, inode, size and
+modification time, checked on the opened file) and the copy declares the source's size.
+Those bytes SHALL count toward extraction limits as the copy's own, as bytes read from
+the pass do. Otherwise (a selector or filter dropped the source, its write failed, a
+later member took its path, or the file changed) the copy SHALL be read from the pass:
+from the kept bytes when the extraction did not write the source, and with a named open
+when it did. A dry run writes empty files, so it SHALL keep sources as `stream_members()`
+does.
+
+`stream_members(file_copy_streams=False)` SHALL yield every file copy with a `None`
+stream, solid or not, and a solid pass SHALL then keep no source.
+
 #### Scenario: kept file-copy source matrix
 
 | Case | Expected |
@@ -1114,3 +1128,9 @@ emit (a `unar` refusal) SHALL fall back the same way.
 | `SpoolLimits.max_bytes=0`, path source, source over the memory constant | Not kept; each copy decodes it again; nothing is refused |
 | Kept bytes that do not match the source's digest | `CorruptionError` on the copy's read |
 | `max_extracted_bytes` below the total with copies | `ResourceLimitError`; each copy counts its bytes |
+| `extract_all()`, source written from the pass, `SpoolLimits.max_bytes=0`, source over the memory constant | One decompressor run; nothing kept; each copy copied from the source's file |
+| `extract_all()`, `streaming=True`, source written | The same: one decompressor run; each copy copied from the source's file |
+| `extract_all()`, the source's file replaced before its copies are written | Each copy gets the source's bytes from the archive, not the replacement's; it decodes the source again |
+| `extract_all(dry_run=True)` | Sources kept; one decompressor run |
+| `stream_members(file_copy_streams=False)`, solid, under `unrar` and `unar` | Copies yielded with `None`; nothing kept; one decompressor run |
+| `stream_members(file_copy_streams=False)`, nonsolid | Copies yielded with `None` |

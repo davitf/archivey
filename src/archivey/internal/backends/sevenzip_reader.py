@@ -76,12 +76,16 @@ from archivey.internal.backends.sevenzip_pipeline import (
     open_folder_pipeline,
     parse_decoded_header,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+)
 from archivey.internal.config import (
     KeyDerivationBudget,
     stream_config_from_archivey,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
@@ -522,7 +526,9 @@ class SevenZipReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
 
-    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    def _iter_with_data(
+        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         current_folder: int | None = None
         solid: SolidBlockReader | None = None
 
