@@ -49,8 +49,9 @@ of 13 bytes or fewer is both compressed and dropped. ``--after hello`` searches 
 second member of a solid archive instead, as ``unar_drop_solid__.rar`` needs: there the
 answer is ``ababbaa``, 7 bytes. That member reuses the Huffman tables of the member
 before it instead of storing its own, so it compresses at lengths a member alone cannot,
-and the floor above does not apply. Another ``rar`` build may compress differently, so rerun this
-after a ``rar`` upgrade and check the result with ``--check-unar`` on a patched build.
+and the floor above does not apply. Another ``rar`` build may compress differently, so
+rerun this after a ``rar`` upgrade and check the result with ``--check-unar`` on a
+patched build.
 """
 
 from __future__ import annotations
@@ -345,23 +346,31 @@ def _compress(rar: str, member: bytes, after: bytes | None, workdir: Path) -> by
     return archive.read_bytes()
 
 
+def _first_short(archive: bytes, count: int) -> int | None:
+    """The index of the first member the model says a patched ``unar`` runs short
+    on, or ``count`` when it says none; ``None`` unless the archive holds exactly
+    ``count`` members, all compressed. ``ValueError`` when the model cannot decode
+    the packed data."""
+    entries = members_data(archive)
+    if len(entries) != count or any(entry.method == 0 for entry in entries):
+        return None
+    state = SolidState()
+    for index, entry in enumerate(entries):
+        if patched_unar_runs_short(entry.packed, entry.size, state):
+            return index
+    return count
+
+
 def is_dropped(
     rar: str, member: bytes, after: bytes | None, workdir: Path
 ) -> bool | None:
     """``member`` is compressed by ``rar`` and, by the model, dropped by a patched
     ``unar``; with ``after``, as the second member of a solid archive whose first
     member decodes. ``None`` when the model cannot decode the packed data."""
-    entries = members_data(_compress(rar, member, after, workdir))
-    if len(entries) != (1 if after is None else 2):
-        return False
-    if any(entry.method == 0 for entry in entries):
-        return False
-    state = SolidState()
+    count = 1 if after is None else 2
     try:
-        for entry in entries[:-1]:
-            if patched_unar_runs_short(entry.packed, entry.size, state):
-                return False  # the first member is dropped already
-        return patched_unar_runs_short(entries[-1].packed, entries[-1].size, state)
+        # A first member dropped already is not the member being searched for.
+        return _first_short(_compress(rar, member, after, workdir), count) == count - 1
     except ValueError:
         # Data the model cannot decode: not a member it can vouch for. The search
         # counts it and moves on instead of stopping.
@@ -412,33 +421,18 @@ def find(
 
 
 def _unar_output(
-    unar: str, rar: str, member: bytes, after: bytes | None, workdir: Path
+    unar: str, archive: bytes, index: int, workdir: Path
 ) -> tuple[bytes, int]:
-    """What ``unar`` writes for ``member``, and its exit status."""
-    archive = workdir / "archive.rar"
-    archive.write_bytes(_compress(rar, member, after, workdir))
-    index = "0" if after is None else "1"
+    """What ``unar`` writes for the member at ``index`` of ``archive``, and its exit
+    status."""
+    path = workdir / "archive.rar"
+    path.write_bytes(archive)
     proc = subprocess.run(
-        [unar, "-o", "-", "-q", "-i", "--", str(archive), index],
+        [unar, "-o", "-", "-q", "-i", "--", str(path), str(index)],
         capture_output=True,
         check=False,
     )
     return proc.stdout, proc.returncode
-
-
-def _model_drops(
-    rar: str, member: bytes, after: bytes | None, workdir: Path
-) -> bool | None:
-    """Whether the model says ``unar`` writes less than ``member``; ``None`` when a
-    member is stored. A dropped first member of a solid pair counts: ``unar`` then
-    never reaches the second."""
-    entries = members_data(_compress(rar, member, after, workdir))
-    if any(entry.method == 0 for entry in entries):
-        return None
-    state = SolidState()
-    return any(
-        patched_unar_runs_short(entry.packed, entry.size, state) for entry in entries
-    )
 
 
 def _validation_cases(count: int) -> Iterator[tuple[bytes, bytes | None]]:
@@ -468,11 +462,17 @@ def validate(rar: str, unar: str, count: int) -> int:
     agree = disagree = stored = 0
     with tempfile.TemporaryDirectory() as td:
         for member, after in _validation_cases(count):
-            predicted = _model_drops(rar, member, after, Path(td))
-            if predicted is None:
+            # One archive for both verdicts, so they judge the same bytes.
+            archive = _compress(rar, member, after, Path(td))
+            count = 1 if after is None else 2
+            first = _first_short(archive, count)
+            if first is None:
                 stored += 1
                 continue
-            out, _ = _unar_output(unar, rar, member, after, Path(td))
+            # A dropped first member of a solid pair counts: ``unar`` then never
+            # reaches the second.
+            predicted = first < count
+            out, _ = _unar_output(unar, archive, count - 1, Path(td))
             if predicted == (out != member):
                 agree += 1
                 continue
@@ -536,7 +536,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"{len(member)} bytes: {member!r}")
     if args.check_unar:
         with tempfile.TemporaryDirectory() as td:
-            out, status = _unar_output(args.check_unar, rar, member, after, Path(td))
+            archive = _compress(rar, member, after, Path(td))
+            index = 0 if after is None else 1
+            out, status = _unar_output(args.check_unar, archive, index, Path(td))
         print(f"{args.check_unar} wrote {len(out)} bytes, exit status {status}")
         # The patch's signature, as ``unar_rar5_probe_failure`` matches it.
         if out or status != 0:
