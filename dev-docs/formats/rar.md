@@ -529,8 +529,18 @@ archivey lists it as `MemberType.FILE` with `extra["is_file_copy"] = True`,
 `link_target` set to the stored source path and `link_target_member` set to the source
 member. Reading it (`open()`, `stream_members()`, `extract`, on `unrar` and `unar`,
 solid or not) returns the source's bytes, verified by the source's digest; `unrar p` with
-no member names and `unar` emit nothing for a copy, so its bytes come from a named open
-of the source, and a solid pass does not move for it. The source is the latest
+no member names and `unar` emit nothing for a copy, so the copy has no place in a solid
+pass's pipe. A solid pass (`stream_members()`, extraction) keeps each source a later copy
+reads as its pipe passes it, read by the caller or not, and serves the copies from that
+(`rar_copy_sources.py`): a named open of the source would decode the solid stream again
+from its start, so fifty copies of a 1 KiB file behind 100 MiB of solid data decoded
+about 5 GiB in 51 decompressor runs, and now decode 100 MiB in one. Up to 8 MiB per pass
+is kept in memory (a tuning constant, not a caller limit) and the rest in a temporary
+file charged to `SpoolLimits.max_bytes` from the source's first decoded byte until the
+pass ends, so a pass that reads nothing writes nothing and the pass's own copy of a
+stream source is charged first. A source with no room left, or one the pass does not
+emit (a `unar` refusal), falls back to the named open, which is also what `open()` and a
+non-solid archive use (there a named open decodes only the source). The source is the latest
 **earlier** member whose name the target names (archive-root relative, like a hard link
 target) and it must be a `FILE`; a copy of a copy stands for the first source. A copy
 with no such source still lists, and reading it raises `LinkTargetNotFoundError`; a copy
@@ -1377,6 +1387,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Solid symlink / hardlink demux does not consume pipe bytes | `tests/test_rar_reader.py::test_solid_symlink_demux_and_link_targets`, `::test_solid_hardlink_demux_and_targets` |
 | Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False | `::test_solid_symlink_demux_and_link_targets` (the `symlinks_solid__` pair; `__rar4` links are stored M0), `::test_solid_hardlink_demux_and_targets` (RAR5 hardlinks), `::test_named_unrar_p_bytes_rejects_no_match`. No RAR 1.5/2.x solid-symlink fixture. Unfixtured existing kinds: Windows symlink, junction |
 | A RAR5 file copy lists as `FILE` with `is_file_copy` and its source, reads and extracts as an independent file (both programs, solid and not); a dangling or wrong-size copy raises; a hard link stays `HARDLINK` | `tests/test_audit2_rar.py::test_file_copy_redirect_extracts_as_an_independent_file`, `::test_file_copy_lists_as_a_file_that_names_its_source`, `::test_file_copy_yields_its_bytes_in_stream_members_order`, `::test_file_copy_extracts_as_an_independent_file_on_every_path`, `::test_file_copy_without_a_matching_source_is_a_typed_error`, `::test_rar5_hard_link_stays_a_hardlink` |
+| A solid pass decodes a file copy's source once for all its copies (both programs; the source read or skipped, extracted or filtered out); kept in the spool past the memory allowance, decoded again when the spool limit has no room; the spool charge starts at the first kept byte, after a stream source's own copy, and ends with the pass; a pass that reads nothing writes nothing; the kept bytes are checked against the source's digest and count toward extraction limits | `tests/test_rar_file_copy_solid_pass.py`, `tests/test_rar_reader.py::test_solid_stream_members_of_a_stream_source_writes_nothing_until_read`, `tests/test_rar_spool_limit.py::test_budget_release_gives_a_reservation_back` |
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` | `tests/test_rar_reader.py::test_member_reports_exact_compression_and_extract_version`, `::test_rar3_unp_ver_byte_is_reported_unvalidated`, `::test_unknown_method_byte_omits_level`, `::test_stored_m0_direct_read`, `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes` |
 | Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |

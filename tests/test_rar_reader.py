@@ -10,6 +10,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -237,17 +238,42 @@ def test_solid_pass_spawns_unrar_only_on_the_first_read(
     assert len(spawns) == 1
 
 
-def test_solid_stream_members_of_a_stream_source_writes_nothing_until_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A solid pass nobody reads from must not spool a stream source.
+def _solid_with_a_large_file_copy_source(tmp_path: Path) -> bytes:
+    """A solid RAR5 whose one source of a file copy (``rar -oi``) is larger than the
+    8 MiB a solid pass keeps in memory, so keeping it would need the temporary file."""
+    if shutil.which("rar") is None:
+        pytest.skip("needs rar")
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = b"".join(b"%08d\n" % i for i in range(1_000_000))
+    assert len(payload) > 8 << 20
+    (src / "a_source.txt").write_bytes(payload)
+    (src / "b_copy.txt").write_bytes(payload)
+    archive = tmp_path / "large_copy.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-s", "-oi:1000", str(archive)]
+        + ["a_source.txt", "b_copy.txt"],
+        cwd=src,
+        check=True,
+        timeout=120,
+    )
+    return archive.read_bytes()
 
-    ``_iter_with_data`` used to call ``_ensure_archive_path()`` at pass start,
-    before the lazy ``_pipe()``. Listing through ``stream_members`` then wrote
-    the whole archive even though no member was read and no ``unrar`` spawned.
+
+@pytest.mark.parametrize("shape", ["basic_solid", "large_file_copy_source"])
+def test_solid_stream_members_of_a_stream_source_writes_nothing_until_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shape: str
+) -> None:
+    """A solid pass nobody reads from writes nothing to temporary storage.
+
+    Neither the copy of the stream source that ``unrar`` needs nor the file a pass
+    keeps a large file-copy source in may appear before a member is read.
     """
+    if shape == "basic_solid":
+        data = _fixture("basic_solid__.rar").read_bytes()
+    else:
+        data = _solid_with_a_large_file_copy_source(tmp_path)
     created = _rar_temp_artifacts(monkeypatch)
-    data = _fixture("basic_solid__.rar").read_bytes()
     with open_archive(io.BytesIO(data)) as archive:
         assert archive.info.is_solid is True
         for _member, _stream in archive.stream_members():
@@ -1221,15 +1247,18 @@ def _rar_volume_temp_dirs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
 
 def _rar_temp_artifacts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-    """Record every temp file *and* directory the reader creates for ``unrar``.
+    """Record every temp file *and* directory the reader creates.
 
     ``_rar_volume_temp_dirs`` covers the volume-set shape only; a single stream
-    source spools through ``mkstemp`` instead, so a test that must prove nothing
-    was written needs both.
+    source spools through ``mkstemp``, and a solid pass keeps a large file-copy
+    source in a ``tempfile.TemporaryFile``, so a test that must prove nothing was
+    written needs all three. ``tempfile`` is the shared module, so the spies see
+    calls from every backend module.
     """
     created: list[Path] = []
     real_mkdtemp = rar_reader.tempfile.mkdtemp
     real_mkstemp = rar_reader.tempfile.mkstemp
+    real_temporary_file = rar_reader.tempfile.TemporaryFile
 
     def spy_mkdtemp(*args: object, **kwargs: object) -> str:
         made = real_mkdtemp(*args, **kwargs)  # type: ignore[arg-type]
@@ -1241,8 +1270,15 @@ def _rar_temp_artifacts(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
         created.append(Path(made))
         return fd, made
 
+    def spy_temporary_file(*args: object, **kwargs: object) -> object:
+        made = real_temporary_file(*args, **kwargs)  # type: ignore[arg-type]
+        # Unnamed on POSIX (``name`` is the descriptor), so the entry is a label.
+        created.append(Path(tempfile.gettempdir(), f"<TemporaryFile {made.name}>"))
+        return made
+
     monkeypatch.setattr(rar_reader.tempfile, "mkdtemp", spy_mkdtemp)
     monkeypatch.setattr(rar_reader.tempfile, "mkstemp", spy_mkstemp)
+    monkeypatch.setattr(rar_reader.tempfile, "TemporaryFile", spy_temporary_file)
     return created
 
 

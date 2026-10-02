@@ -221,6 +221,50 @@ def test_budget_refuses_everything_after_its_first_refusal() -> None:
     assert src.tell() == 0
 
 
+def test_budget_try_reserve_charges_or_declines_without_refusing() -> None:
+    """A write with a fallback (a solid pass keeping a file copy's source) is charged
+    when it fits; when it does not, nothing is charged and nothing later is refused."""
+    budget = _budget(100)
+    assert budget.try_reserve(60)
+    assert not budget.try_reserve(41)
+    budget.check_total(40)
+    with pytest.raises(ResourceLimitError, match="41 bytes on top of 60 bytes"):
+        budget.check_total(41)
+    assert not budget.try_reserve(1)
+
+
+def test_budget_release_gives_a_reservation_back() -> None:
+    """A kept file deleted at the end of a pass no longer counts: the next copy has
+    the whole allowance again. A refusal already made stays."""
+    budget = _budget(100)
+    assert budget.try_reserve(60)
+    budget.release(60)
+    budget.check_total(100)
+    assert budget.try_reserve(100)
+    with pytest.raises(ValueError, match="only 100 are charged"):
+        budget.release(101)
+    budget.release(100)
+    with pytest.raises(ResourceLimitError):
+        budget.check_total(101)
+    budget.release(0)
+    with pytest.raises(ResourceLimitError):
+        budget.check_total(1)
+
+
+def test_budget_made_by_a_reservation_takes_the_first_copys_name() -> None:
+    budget = SpoolBudget(
+        SpoolLimits(max_bytes=10),
+        what=None,
+        archive_name="a.rar",
+        source_format=ArchiveFormat.RAR,
+    )
+    assert budget.try_reserve(5)
+    budget.describe("the whole stream source")
+    budget.describe("a later name")
+    with pytest.raises(ResourceLimitError, match="the whole stream source"):
+        budget.check_total(6)
+
+
 def test_budget_without_a_limit_copies_everything() -> None:
     out = io.BytesIO()
     budget = _budget(None)
