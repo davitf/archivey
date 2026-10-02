@@ -967,7 +967,10 @@ class ZipReader(BaseArchiveReader):
         # matches the stored bytes is named by the field, ahead of the sniff and of an
         # explicit encoding=, as 7-Zip, Info-ZIP unzip and stdlib zipfile 3.12+ do. The
         # field's UTF-8 bytes become raw_name, so name stays raw_name decoded, and the
-        # header's bytes are kept in extra. Only the central directory's field is read:
+        # header's bytes are kept in extra. The field is authoritative, not a guess, so
+        # no member_name_encoding_inferred diagnostic is emitted for a name taken from
+        # it; the header's spelling stays visible as extra["alternate_raw_name"].
+        # Only the central directory's field is read:
         # the listing comes from there, and the local header's name is only checked
         # against the central one.
         alternate_raw_name: bytes | None = None

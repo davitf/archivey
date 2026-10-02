@@ -992,6 +992,37 @@ def test_stream_volume_names_are_the_names_unrar_walks(old_style: bool) -> None:
         ) == rar_reader._stream_volume_name("a", index + 1, old_style=old_style)
 
 
+@pytest.mark.parametrize(
+    ("extra", "old_numbering", "in_place"),
+    [
+        (None, False, True),
+        ("x.part3.rar", False, False),
+        # unrar retries the old-scheme name of the last volume when the
+        # new-scheme one is missing (``OldSchemeTested`` in ``volume.cpp``).
+        ("x.part2.r00", False, False),
+        (None, True, False),
+    ],
+)
+def test_unrar_in_place_check_covers_the_old_scheme_retry(
+    tmp_path: Path, extra: str | None, old_numbering: bool, in_place: bool
+) -> None:
+    """unrar is pointed at the given files only when no file beside the last one
+    answers to a name it would try next, under either scheme. A new-numbering
+    header on ``partN`` names otherwise reads in place; an old-numbering one looks
+    for ``x.part1.r00`` after volume 1, so it is staged."""
+    paths = [tmp_path / "x.part1.rar", tmp_path / "x.part2.rar"]
+    for path in paths:
+        path.write_bytes(b"")
+    if extra is not None:
+        (tmp_path / extra).write_bytes(b"")
+    assert (
+        rar_reader._unrar_finds_exactly(
+            paths, is_volume=True, old_numbering=old_numbering
+        )
+        is in_place
+    )
+
+
 @requires_binary("unar")
 @pytest.mark.parametrize("streamed", [False, True])
 def test_unar_is_refused_past_its_old_style_volume_limit(

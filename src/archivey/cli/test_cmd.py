@@ -20,7 +20,12 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    LinkTargetNotFoundError,
+    ReadError,
+)
 from archivey.types import ArchiveMember, MemberType
 
 # Codes saying a digest went unchecked: the bytes were read but nothing confirmed them,
@@ -234,13 +239,32 @@ def _verify_link(reader: ArchiveReader, member: ArchiveMember) -> None:
     the fault that listing only reported. Once the target is read, the rest is about
     where the link points, not about this member's data: a target outside the archive,
     a directory or a link cycle is not a fault, and a target inside it is verified as
-    a member of its own.
+    a member of its own. Those three are the only errors ignored; any other error is
+    raised, such as a target member that cannot be opened or a usage error.
     """
     try:
         reader.open(member).close()
-    except (ArchiveyError, ArchiveyUsageError):
-        if member.link_target is None:
+    except (ReadError, ArchiveyUsageError) as exc:
+        # ``open()`` sets ``link_target`` once it has read the stored target, so a
+        # target still ``None`` means the error came from this member's own data.
+        if member.link_target is None or not _is_link_destination_error(exc):
             raise
+
+
+def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
+    """Whether ``exc`` is one of the errors link following raises about where a link
+    points (``_open_with_link_follow`` in ``base_reader``), not about any data.
+
+    The cycle and the directory have no exception type of their own, so they are told
+    apart by the message that function writes.
+    """
+    if isinstance(exc, LinkTargetNotFoundError):
+        return True
+    if type(exc) is ReadError:
+        return exc.raw_message.startswith("Link cycle detected at ")
+    # A link to a directory, an anti-item or an OTHER member: ``open()`` refuses to
+    # return bytes for it, as a usage error, after following the link.
+    return isinstance(exc, ArchiveyUsageError) and str(exc).endswith("(not a file)")
 
 
 def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
