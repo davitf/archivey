@@ -861,6 +861,7 @@ def extract(
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     config: ArchiveyConfig | None = None,
     limits: ExtractionLimits | None = None,
+    dry_run: bool = False,
 ) -> ExtractionReport:
     """Open ``source``, apply safety checks, and write **all** members to ``dest``.
 
@@ -881,6 +882,9 @@ def extract(
     blocked member, a name collision, a portable-name rewrite — raising instead of
     returning a report. It is independent of ``on_error``; see
     :class:`~archivey.AbortOn`.
+
+    ``dry_run=True`` does everything but write: see
+    :meth:`ForwardArchiveReader.extract_all`.
 
     Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
     detection, open, and extraction for this call.
@@ -924,10 +928,8 @@ def extract(
             abort_on=abort_on,
             on_progress=on_progress,
             limits=limits,
+            dry_run=dry_run,
         )
         # extract_all's report.diagnostics is extraction-only. This reader was opened
         # fresh for this call, so reader.diagnostics already spans detect+open+extract.
-        return ExtractionReport(
-            results=report.results,
-            diagnostics=reader.diagnostics,
-        )
+        return replace(report, diagnostics=reader.diagnostics)
