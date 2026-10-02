@@ -35,7 +35,11 @@ from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveMember,
+    ContainerFormat,
+)
 
 
 def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
@@ -316,14 +320,51 @@ def maybe_hoist_single_root(
     return result
 
 
-def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
+def predict_hoist(
+    wrapper: Path, report: ExtractionReport, *, err: TextIO
+) -> _HoistResult:
+    """What :func:`maybe_hoist_single_root` would do after a real run, for a dry run.
+
+    A dry run writes nothing, so there is no wrapper to look into. Its scratch tree is
+    the next best thing: the run created the same directories, links and (empty) files
+    there, and the report carries the entries it left at the top. A single entry is
+    lifted to the wrapper's parent under its own name, as the hoist lifts it. Where that
+    name exists already, the hoist would merge into it, and the collisions that merge
+    could meet are not checked.
+    """
+    tops = _dry_run_top_level(report)
+    if len(tops) != 1:
+        return _HoistResult(wrapper)
+    ((name, is_dir),) = tops
+    dest = wrapper.parent / name
+    label = f"{escape_path(dest)}{'/' if is_dir else ''}"
+    if dest == wrapper:
+        print(f"would remove wrapper; content at {label}", file=err)
+    elif os.path.lexists(dest):
+        print(
+            f"would move to {label}, which exists already: "
+            "collisions with its contents are not checked",
+            file=err,
+        )
+    else:
+        print(f"would move to {label}", file=err)
+    return _HoistResult(dest, dest_label=label)
+
+
+def _summary_dest_label(
+    target: Path, report: ExtractionReport, *, dry_run: bool = False
+) -> str:
     """Closing summary destination; prefer the single extracted top when dest is cwd.
 
     Returned terminal-safe. The single top is a member's own name, and the target is
     either the operator's ``-d`` or a wrapper named after the archive file — any of
-    which can carry control bytes, and this is the last line the operator reads."""
+    which can carry control bytes, and this is the last line the operator reads.
+
+    A dry run wrote nothing to look at, so it answers from what its scratch tree held:
+    the target is a directory the run would create, and the single top's kind is the
+    one the scratch tree gave it."""
     if target != Path("."):
-        if target.is_dir():
+        if dry_run or target.is_dir():
             return f"{escape_path(target)}/"
         return escape_path(target)
     tops: set[str] = set()
@@ -335,11 +376,22 @@ def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
             tops.add(name.split("/", 1)[0])
     if len(tops) == 1:
         only = next(iter(tops))
-        on_disk = Path(only)
-        if on_disk.is_dir() and not on_disk.is_symlink():
-            return f"{escape_member_name(only)}/"
-        return escape_member_name(only)
+        if dry_run:
+            is_dir = dict(_dry_run_top_level(report)).get(only, False)
+        else:
+            on_disk = Path(only)
+            is_dir = on_disk.is_dir() and not on_disk.is_symlink()
+        return f"{escape_member_name(only)}/" if is_dir else escape_member_name(only)
     return "."
+
+
+def _dry_run_top_level(report: ExtractionReport) -> tuple[tuple[str, bool], ...]:
+    """A dry run's top-level entries, from the report's private field.
+
+    The one place the CLI reads a private library name; the ``cli`` spec's public-API
+    requirement records it as an exception. A dry run writes nothing, so nothing else
+    can say what a real run would leave at the top of ``dest``."""
+    return report._dry_run_top_level or ()
 
 
 def _report_extraction(
@@ -351,6 +403,7 @@ def _report_extraction(
     extra_renamed: int = 0,
     extra_skipped: int = 0,
     dest_label: str | None = None,
+    dry_run: bool = False,
 ) -> tuple[int, int]:
     """Print rename notices + a closing summary from the library report (F3/D2).
 
@@ -360,6 +413,10 @@ def _report_extraction(
     ``extracted``: the report counted that file before the hoist discarded it. ``dest_label`` is the hoist's own
     account of where the content landed, which the report — written before the hoist
     moved anything — cannot know.
+
+    Under ``dry_run`` the per-member lines are the same, since they say what the
+    extraction decided, and the summary says that nothing was written. Its destination
+    is the target as named: the disk cannot say more, because nothing landed there.
 
     Returns ``(blocked_count, failed_count)`` for exit-code selection (Q1).
     """
@@ -474,8 +531,9 @@ def _report_extraction(
             file=err,
         )
     if dest_label is None:
-        dest_label = _summary_dest_label(target, report)
+        dest_label = _summary_dest_label(target, report, dry_run=dry_run)
     print(
+        f"{'dry run, nothing written: ' if dry_run else ''}"
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
         f"{f', {blocked} blocked' if blocked else ''}"
         f"{f', {failed} failed' if failed else ''}"
@@ -555,6 +613,7 @@ def run_extract(
     verbose: bool,
     stop_on_error: bool = False,
     abort_on: list[str] | None = None,
+    dry_run: bool = False,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -592,7 +651,8 @@ def run_extract(
             target = plan.target
             may_hoist = plan.may_hoist
             if target != Path("."):
-                print(f"extracting into {escape_path(target)}/", file=err)
+                verb = "would extract" if dry_run else "extracting"
+                print(f"{verb} into {escape_path(target)}/", file=err)
 
         base_progress: ProgressCallback | None = make_progress_callback(
             hide_progress=hide_progress, stream=err
@@ -619,6 +679,7 @@ def run_extract(
                     on_error=on_error,
                     abort_on=abort_on_enum,
                     on_progress=on_progress,
+                    dry_run=dry_run,
                 )
             except (ArchiveyError, OSError) as exc:
                 # STOP-path member failure / always-stop (bomb guards,
@@ -638,13 +699,18 @@ def run_extract(
                     "extraction stopped; remaining members were not extracted",
                     file=err,
                 )
+                if dry_run:
+                    print("dry run: nothing was written", file=err)
                 return EXIT_FAIL
             # Streaming + patterns: empty report means nothing matched (no pre-scan).
             if patterns and members_for_filter is None and len(report) == 0:
                 warn_unmatched_includes(patterns, err=err, dest_hint=True)
                 return EXIT_FAIL
             hoist = _HoistResult(target)
-            if may_hoist:
+            if may_hoist and dry_run:
+                # The hoist moves what the extraction wrote; a dry run wrote nothing.
+                hoist = predict_hoist(target, report, err=err)
+            elif may_hoist:
                 hoist = maybe_hoist_single_root(
                     target, overwrite=overwrite_enum, err=err
                 )
@@ -656,6 +722,7 @@ def run_extract(
                 extra_renamed=hoist.renamed,
                 extra_skipped=hoist.skipped,
                 dest_label=hoist.dest_label,
+                dry_run=dry_run,
             )
             return _exit_for_outcomes(blocked=blocked, failed=failed, hoist_ok=hoist.ok)
         finally:

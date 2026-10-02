@@ -1,8 +1,7 @@
-"""Second-round audit reproducers for the RAR backend (findings R15 onwards).
+"""Regression tests for the second audit's RAR findings (R15 onwards).
 
-Each test states the promised behaviour. A test marked ``xfail(strict=True)`` fails
-today for the reason in its marker; it turns green (and so strict-fails) when the bug
-is fixed, and the marker must then be removed.
+Each test states the promised behaviour that the finding named in its section heading
+broke.
 
 Most archives are derived from committed fixtures by rewriting headers with the
 helpers in ``tests/test_audit_rar_iso_dir.py``, so only ``unrar`` is needed at
@@ -393,7 +392,7 @@ def test_surrogate_escaped_password_raises_no_bare_unicode_error() -> None:
 
     Either the password is encoded back with ``surrogateescape`` (the bytes the
     user typed) and judged like any other, or it is refused with a typed error.
-    ``archivey list --password $'\\xe9' archive.rar`` prints a traceback today.
+    ``archivey list --password $'\\xe9' archive.rar`` must not end in a traceback.
     """
     try:
         with open_archive(

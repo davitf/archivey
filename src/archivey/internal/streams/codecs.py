@@ -1179,6 +1179,14 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     is either that or a stream too long for both decoders, and the standard library
     decides which, from the position before that read. Up to the end of the first
     stream the two decoders agree, so a caller sees what the standard library gives.
+
+    The stream that sets ``limit`` is wrapped by ``_wrap_accelerated_length``, whose
+    ``VerifyingStream`` has the same size as its ``expected_size`` and bounds each of
+    its reads to what remains of it. So the only read that reaches past ``limit`` is
+    that verifier's one-byte over-run probe at the declared size
+    (``_probe_past_declared``): this branch is what decides an over-run on the
+    accelerated path. A switch there decodes the member again with the standard
+    library from its start, up to the position already delivered.
     """
 
     readinto_passthrough = False

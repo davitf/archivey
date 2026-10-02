@@ -1,8 +1,6 @@
-"""Second-round audit reproducers: ISO, directory sources, detection and sources.
+"""Regression tests for the second audit: ISO, directory sources, detection and sources.
 
-Each test states the promised behaviour. A test marked ``xfail(strict=True)`` fails
-today for the reason in its marker; it turns green (and so strict-fails) when the bug
-is fixed, and the marker must then be removed.
+Each test states the promised behaviour that a finding of that audit broke.
 
 Finding ids: ``I<n>`` for the ISO backend, ``D<n>`` for detection, sources and the
 directory backend. Every fixture is built in the test; nothing is committed.
