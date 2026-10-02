@@ -1030,19 +1030,7 @@ class ExtractionCoordinator:
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
-                # A name the universal filter accepted but that the *destination
-                # filesystem* refuses at write time (EILSEQ on a UTF-8-only filesystem,
-                # ENAMETOOLONG for a name or link target over the limit) is caused by
-                # the archive, not the filesystem's state: see ``_typed_os_error``.
-                if isinstance(exc, OSError):
-                    # Before it is recorded or logged: a dry run's error names dest.
-                    self._rebase_os_error(exc)
-                error = _typed_os_error(exc, original.name)
-                status = (
-                    ExtractionStatus.BLOCKED
-                    if isinstance(error, FilterRejectionError)
-                    else ExtractionStatus.FAILED
-                )
+                error, status = self._classify(exc, original.name)
                 result = ExtractionResult(
                     original,
                     None,
@@ -1057,24 +1045,8 @@ class ExtractionCoordinator:
                 else:
                     recorded_index = len(results)
                     results.append(result)
-                # OnError governs failures only; a policy BLOCKED is always continued.
-                if self._stops_on_failure() and status is ExtractionStatus.FAILED:
-                    raise error
-                # ...unless the caller asked to be stopped by an unsafe member. This is
-                # the fail-closed strict-security opt-in; it applies under either OnError
-                # value, and propagates the original rejection unchanged. The BLOCKED
-                # result recorded just above is discarded with the rest of the report.
-                if (
-                    status is ExtractionStatus.BLOCKED
-                    and AbortOn.BLOCKED_MEMBER in self._abort_on
-                ):
-                    raise error
-                # No diagnostic: the result recorded above is the whole record of this
-                # outcome (the placement clause in ``diagnostics``). The WARNING log line
-                # that used to be the emission's projection goes out directly.
-                logger.warning(
-                    "Skipping %s %r: %s", original.type.value, original.name, error
-                )
+                kind = original.type.value
+                self._stop_or_log(exc, error, status, kind, original.name)
             finally:
                 self._emit_progress = None
                 self._close(stream)
@@ -1678,6 +1650,45 @@ class ExtractionCoordinator:
             return False
         assert_never(self._on_error)
 
+    def _classify(
+        self, exc: ArchiveyError | OSError, member_name: str
+    ) -> tuple[ArchiveyError | OSError, ExtractionStatus]:
+        """The error to record for a member's failed work, and its status.
+
+        EILSEQ and ENAMETOOLONG come from the archive's name, not the filesystem's
+        state, so they become typed failures: see ``_typed_os_error``.
+        """
+        if isinstance(exc, OSError):
+            # Before it is recorded or logged: a dry run's error names dest.
+            self._rebase_os_error(exc)
+        error = _typed_os_error(exc, member_name)
+        if isinstance(error, FilterRejectionError):
+            return error, ExtractionStatus.BLOCKED
+        return error, ExtractionStatus.FAILED
+
+    def _stop_or_log(
+        self,
+        exc: ArchiveyError | OSError,
+        error: ArchiveyError | OSError,
+        status: ExtractionStatus,
+        kind: str,
+        name: str,
+    ) -> None:
+        """Raise ``error`` (``exc`` as caught) if the run stops on it, else log it."""
+        # OnError governs failures only. A BLOCKED stops the run only under the
+        # fail-closed AbortOn.BLOCKED_MEMBER opt-in, under either OnError value; its
+        # recorded result is discarded with the rest of the report.
+        if (self._stops_on_failure() and status is ExtractionStatus.FAILED) or (
+            status is ExtractionStatus.BLOCKED
+            and AbortOn.BLOCKED_MEMBER in self._abort_on
+        ):
+            if error is exc:
+                raise error
+            raise error from exc
+        # No diagnostic: the recorded result is the whole record of this outcome (the
+        # placement clause in ``diagnostics``).
+        logger.warning("Skipping %s %r: %s", kind, name, error)
+
     def _check_collision_abort(
         self, original: ArchiveMember, transformed: ArchiveMember, prior: _Claim
     ) -> None:
@@ -2209,19 +2220,15 @@ class ExtractionCoordinator:
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
-                if isinstance(exc, OSError):
-                    self._rebase_os_error(exc)
                 # One failed source, N failed links: the fan-out is recorded on the
                 # results themselves, so a caller can tell N separate failures from one
-                # failure seen N times without joining against a diagnostic.
-                error = _typed_os_error(exc, member.name)
+                # failure seen N times without joining against a diagnostic. The second
+                # pass records FAILED whatever the error, so only OnError can stop it.
+                error, _ = self._classify(exc, member.name)
                 self._record_failure_group(results, group, error)
-                if self._stops_on_failure():
-                    if error is exc:
-                        raise
-                    raise error from exc
-                logger.warning(
-                    "Skipping orphaned hardlink source %r: %s", member.name, error
+                kind = "orphaned hardlink source"
+                self._stop_or_log(
+                    exc, error, ExtractionStatus.FAILED, kind, member.name
                 )
             finally:
                 self._close(stream)
@@ -2443,9 +2450,8 @@ class ExtractionCoordinator:
         except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
-            if isinstance(exc, OSError):
-                self._rebase_os_error(exc)
-            error = _typed_os_error(exc, orphan.original.name)
+            # FAILED whatever the error, as for an orphaned source.
+            error, _ = self._classify(exc, orphan.original.name)
             self._revise_result(
                 results,
                 orphan.result_index,
@@ -2458,12 +2464,9 @@ class ExtractionCoordinator:
                     collided_with=collided_with,
                 ),
             )
-            if self._stops_on_failure():
-                if error is exc:
-                    raise
-                raise error from exc
             # A single link's failure, not a source fan-out: no group id.
-            logger.warning("Skipping hardlink %r: %s", orphan.original.name, error)
+            name = orphan.original.name
+            self._stop_or_log(exc, error, ExtractionStatus.FAILED, "hardlink", name)
             return
         result = ExtractionResult(
             orphan.original,
