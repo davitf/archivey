@@ -98,25 +98,46 @@ def test_rar3_wrong_header_password_is_encryption_error() -> None:
 
 @requires("cryptography")
 @pytest.mark.parametrize(
-    ("name", "cut", "what"),
+    ("name", "cut", "start"),
     [
-        # Cut inside the first header's 16-byte IV (RAR5) / 8-byte salt (RAR3).
-        ("encrypted_header__.rar", 46, "RAR5 header IV"),
-        ("encrypted_header__rar4.rar", 20, "RAR3 header salt"),
+        # Cut inside the first encrypted header's 16-byte IV (RAR5) / 8-byte salt
+        # (RAR3), which start at bytes 46 and 20.
+        ("encrypted_header__.rar", 50, 46),
+        ("encrypted_header__rar4.rar", 24, 20),
     ],
 )
-def test_short_header_salt_or_iv_is_corruption_not_a_wrong_password(
-    name: str, cut: int, what: str
+def test_short_header_salt_or_iv_is_a_cut_not_a_wrong_password(
+    name: str, cut: int, start: int
 ) -> None:
     """The salt/IV read does not depend on the password, so running out of bytes there
     is damage. It used to be re-wrapped as ``EncryptionError``, which sent the reader
     through every password candidate and reported a truncated archive as a wrong
-    password, even with the right one.
+    password, even with the right one. A salt or IV the file holds only part of ends
+    the walk as a cut, which the reader reports as ``TruncatedError`` after the
+    members listed.
     """
     data = _fixture(name).read_bytes()[:cut]
-    with raises_corruption_not_truncation(match=what) as info:
-        parse_rar_archive(io.BytesIO(data), password="header_password")
-    assert not isinstance(info.value, EncryptionError)
+    archive = parse_rar_archive(io.BytesIO(data), password="header_password")
+    assert archive.members == []
+    assert archive.truncated is not None
+    assert f"encrypted header that starts at byte {start}" in archive.truncated
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(("cut", "expected"), [(436, 4), (492, 5), (564, 6)])
+def test_rar3_file_ending_where_a_header_salt_starts_is_a_clean_end(
+    cut: int, expected: int
+) -> None:
+    """RAR3 with encrypted headers ending exactly where the next salt would start
+    lists the members before it, as a plain RAR3 walk does and as unrar does (exit 0
+    for ``l`` and ``t``). RAR 1.5-4 writers may omit the end block, so nothing tells
+    this from an archive that ended there. 564 drops only the 24-byte end block."""
+    full = _fixture("encrypted_header__rar4.rar").read_bytes()
+    complete = parse_rar_archive(io.BytesIO(full), password="header_password")
+    archive = parse_rar_archive(io.BytesIO(full[:cut]), password="header_password")
+    assert archive.truncated is None
+    names = [m.filename for m in archive.members]
+    assert names == [m.filename for m in complete.members][:expected]
 
 
 @requires("cryptography")
@@ -186,14 +207,20 @@ def test_encrypted_header_data_offset_skips_aes_block_padding(name: str) -> None
 
 @requires("cryptography")
 @pytest.mark.parametrize(
-    "name",
-    ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
+    ("name", "expected_names"),
+    # None: the walk raises. A list: the walk lists those members and reports a cut.
+    [("encrypted_header__.rar", None), ("encrypted_header__rar4.rar", ["file1.txt"])],
 )
 def test_encrypted_header_plaintext_tell_breaks_the_walk(
-    name: str, monkeypatch: pytest.MonkeyPatch
+    name: str, expected_names: list[str] | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Red-green for thread 1: if ``tell`` subtracted leftover ``_buf``, listing
     these fixtures fails — the next salt/IV is read from inside AES padding.
+
+    The misread IV decrypts a garbage RAR5 header size, which raises. In RAR3 the
+    misread salt decrypts a garbage header after file1.txt's header has proved the key
+    by its CRC16, and its size runs to the end of the file, so the walk lists
+    file1.txt and reports a cut in the header that starts at byte 114.
     """
     import archivey.internal.backends.rar_parser as rar_parser
 
@@ -204,8 +231,15 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
 
     monkeypatch.setattr(rar_parser._HeaderDecryptStream, "tell", plaintext_tell)
     path = _fixture(name)
-    with path.open("rb") as handle, pytest.raises((CorruptionError, EncryptionError)):
-        parse_rar_archive(handle, password="header_password")
+    with path.open("rb") as handle:
+        if expected_names is None:
+            with pytest.raises(CorruptionError, match="RAR5 header too large"):
+                parse_rar_archive(handle, password="header_password")
+            return
+        archive = parse_rar_archive(handle, password="header_password")
+    assert [m.filename for m in archive.members] == expected_names
+    assert archive.truncated is not None
+    assert "encrypted header that starts at byte 114" in archive.truncated
 
 
 def test_rar3_sha1_hashes_then_mutates_bytearray_seed() -> None:
@@ -423,3 +457,16 @@ def test_parsed_dictionary_size_is_set_and_zero_for_directories(name: str) -> No
             # RAR3/4: 64 KiB << a 3-bit exponent, at most 4 MiB.
             assert 64 * 1024 <= info.dictionary_size <= 4 * 2**20
     assert any(not info.is_directory for info in archive.members)
+
+
+def test_volume_set_packed_data_past_end_names_the_volume() -> None:
+    """The walk's offsets are within one volume, so in a set the reason names it:
+    byte 832 of a set whose volume 1 is 917 bytes would point into volume 1."""
+    part1 = _fixture("tinyvol.part1.rar").read_bytes()
+    part2 = _fixture("tinyvol.part2.rar").read_bytes()[:100]
+    archive = parse_rar_volumes([io.BytesIO(part1), io.BytesIO(part2)], password=None)
+    assert archive.truncated is not None
+    assert "packed data ends at byte 832" in archive.truncated
+    assert "(volume 2 of the set; the offset is within that volume)" in (
+        archive.truncated
+    )

@@ -38,9 +38,15 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     DiagnosticRaisedError,
+    EncryptionError,
     LinkTargetNotFoundError,
     PackageNotInstalledError,
     ReadError,
+    TruncatedError,
+)
+from archivey.internal.backends.rar_parser import (
+    parse_rar_archive,
+    parse_rar_volumes,
 )
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
@@ -225,6 +231,262 @@ def test_rar5_volume_set_endarc(tmp_path: Path) -> None:
         diagnostics = _eof_marker_diagnostics(reader.diagnostics)
     assert len(diagnostics) == 1
     assert "volume(s) 1 " in diagnostics[0].message
+
+
+# With header encryption (``rar a -hp``) every header is a salt (RAR3, 8 bytes) or IV
+# (RAR5, 16 bytes) and then whole 16-byte AES blocks. The last block of both
+# fixtures is the end-of-archive header: RAR5 16 + 16 bytes, RAR3 8 + 16 bytes.
+# Cutting 1-16 bytes left a partial AES block that the walk took as a clean end.
+_HP_PASSWORD = "header_password"
+
+
+def _hp_fixture(name: str) -> bytes:
+    return (_RAR_FIXTURES / name).read_bytes()
+
+
+def _assert_truncated_listing(data: bytes, members: int, streaming: bool) -> None:
+    with open_archive(
+        io.BytesIO(data), password=_HP_PASSWORD, streaming=streaming
+    ) as reader:
+        report = reader.members_report()
+        assert len(report.members) == members
+        assert isinstance(report.error, TruncatedError)
+        assert "encrypted header" in str(report.error)
+        assert not _eof_marker_diagnostics(reader.diagnostics)
+    with open_archive(
+        io.BytesIO(data), password=_HP_PASSWORD, streaming=streaming
+    ) as reader:
+        # members() is random-access only; scan_members() is the streaming listing.
+        with pytest.raises(TruncatedError):
+            reader.scan_members() if streaming else reader.members()
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    "cut",
+    # 1-16: inside the end block's ciphertext; 17-31: inside its IV.
+    [1, 2, 8, 15, 16, 17, 24, 31],
+)
+def test_rar5_header_encrypted_cut_in_last_header_is_truncated(
+    cut: int, streaming: bool
+) -> None:
+    data = _hp_fixture("encrypted_header__.rar")
+    _assert_truncated_listing(data[:-cut], members=6, streaming=streaming)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("cut", [33, 40, 48, 63])
+def test_rar5_header_encrypted_cut_inside_a_verified_member_header_is_truncated(
+    cut: int,
+) -> None:
+    """Past the end block, the cut lands in the last directory's 64-byte header. The
+    fixture's password check value proves the key, so a header that runs out of
+    bytes part-way is a cut, not a wrong password."""
+    data = _hp_fixture("encrypted_header__.rar")
+    _assert_truncated_listing(data[:-cut], members=5, streaming=False)
+
+
+@requires("cryptography")
+def test_rar5_header_encrypted_cut_at_a_header_boundary_warns() -> None:
+    """Without any of the end block's 32 bytes, the walk ends at a header boundary:
+    the same warning as a plain RAR5 without its end block."""
+    data = _hp_fixture("encrypted_header__.rar")
+    with open_archive(io.BytesIO(data[:-32]), password=_HP_PASSWORD) as reader:
+        report = reader.members_report()
+        assert report.error is None
+        assert len(report.members) == 6
+        assert len(_eof_marker_diagnostics(reader.diagnostics)) == 1
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    "cut",
+    # 1-16: inside the end block's ciphertext; 17-23: inside its salt.
+    [1, 8, 16, 17, 23],
+)
+def test_rar4_header_encrypted_cut_in_last_header_is_truncated(
+    cut: int, streaming: bool
+) -> None:
+    data = _hp_fixture("encrypted_header__rar4.rar")
+    _assert_truncated_listing(data[:-cut], members=6, streaming=streaming)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    ("length", "members"),
+    # Both lengths end inside a FILE header past its first cipher block, after
+    # encrypted headers whose CRC16 matched.
+    [(250, 2), (480, 4)],
+)
+def test_rar4_header_encrypted_cut_after_a_proven_key_is_truncated(
+    length: int, members: int, streaming: bool
+) -> None:
+    """RAR3 has no password check value, but a decrypted header whose CRC16 matches
+    proves the key: the walk already takes a mismatch as a wrong password. From then
+    on, a header that runs out of bytes part-way is a cut, as in RAR5 with a verified
+    check value."""
+    data = _hp_fixture("encrypted_header__rar4.rar")
+    _assert_truncated_listing(data[:length], members=members, streaming=streaming)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("length", [44, 60, 91])
+def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_is_a_wrong_password(
+    length: int,
+) -> None:
+    """Inside the first encrypted header (bytes 44-91 of the fixture) no header has
+    decrypted yet, so nothing proves the key, and a garbage header size from a wrong
+    key also runs to the end of the file. That stays a wrong-password error."""
+    data = _hp_fixture("encrypted_header__rar4.rar")
+    with pytest.raises(EncryptionError, match="wrong password"):
+        with open_archive(io.BytesIO(data[:length]), password=_HP_PASSWORD) as reader:
+            reader.members()
+
+
+def _rar3_reencrypt_header(
+    data: bytes, salt_at: int, length: int, edit: Callable[[bytearray], None]
+) -> bytes:
+    """Decrypt the ``length`` ciphertext bytes of the RAR3 header whose salt starts at
+    ``salt_at``, apply ``edit`` to the plaintext and encrypt it again with the same
+    key, so a test can change a field the cipher would otherwise scramble."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    from archivey.internal.backends.rar_parser import RarKdfCache
+
+    salt = data[salt_at : salt_at + 8]
+    start = salt_at + 8
+    key, iv = RarKdfCache().rar3(_HP_PASSWORD, salt)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    plain = bytearray(cipher.decryptor().update(data[start : start + length]))
+    edit(plain)
+    encrypted = cipher.encryptor().update(bytes(plain))
+    return data[:start] + encrypted + data[start + length :]
+
+
+# encrypted_header__rar4.rar: the first encrypted header (file1.txt) is its salt at
+# 20 and 64 ciphertext bytes; the second (empty_file.txt) is its salt at 124 and 64
+# ciphertext bytes; the end block is the last 24 bytes.
+_RAR4_HP_SECOND_HEADER = 124
+
+
+# The same damaged bytes with a wrong password: nothing proves that key, so the
+# failure is still a wrong password and a password list goes on to the next one.
+_WRONG_PASSWORD_CASE = pytest.param(
+    "nope", EncryptionError, r"wrong password\?", id="wrong-password"
+)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    ("password", "error", "message"),
+    [
+        pytest.param(
+            _HP_PASSWORD,
+            CorruptionError,
+            "RAR3 FILE header CRC mismatch",
+            id="right-password",
+        ),
+        _WRONG_PASSWORD_CASE,
+    ],
+)
+def test_rar4_header_encrypted_damage_after_a_proven_key_is_corruption(
+    password: str, error: type[Exception], message: str
+) -> None:
+    """Once a CRC16 match has proved the password, a later header whose CRC16 does
+    not match is damage. Bit 0 of byte 164 is in the second FILE header's
+    ciphertext, past the first encrypted header that proved the key."""
+    data = bytearray(_hp_fixture("encrypted_header__rar4.rar"))
+    data[164] ^= 1
+    with pytest.raises(error, match=message):
+        parse_rar_archive(io.BytesIO(bytes(data)), password=password)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    ("password", "error", "message"),
+    [
+        pytest.param(
+            _HP_PASSWORD,
+            CorruptionError,
+            "Invalid RAR3 header size: 3",
+            id="right-password",
+        ),
+        _WRONG_PASSWORD_CASE,
+    ],
+)
+def test_rar4_header_encrypted_bad_size_after_a_proven_key_is_corruption(
+    password: str, error: type[Exception], message: str
+) -> None:
+    """A proven password and a header size below the 7-byte minimum that does not
+    run to the end of the file: the structural error, not a wrong password."""
+
+    def shrink(plain: bytearray) -> None:
+        struct.pack_into("<H", plain, 5, 3)
+
+    data = _rar3_reencrypt_header(
+        _hp_fixture("encrypted_header__rar4.rar"),
+        _RAR4_HP_SECOND_HEADER,
+        64,
+        shrink,
+    )
+    with pytest.raises(error, match=message):
+        parse_rar_archive(io.BytesIO(data), password=password)
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_later_volume_cut_in_its_first_header_is_truncated() -> (
+    None
+):
+    """A set has one password, so a CRC16 match in volume 1 proves it for volume 2.
+    Volume 2 cut inside its own first encrypted header is then a cut, after volume
+    1's members.
+
+    The set is built from the single-volume fixture: volume 1 is that archive with its
+    end block re-encrypted to carry the next-volume flag, and volume 2 is the same
+    archive cut at byte 60. ``rar`` 7 cannot write RAR 1.5-4 (no ``-ma4``), so no
+    committed RAR 1.5-4 ``-hp`` volume set exists."""
+    complete = _hp_fixture("encrypted_header__rar4.rar")
+
+    def next_volume(plain: bytearray) -> None:
+        flags = struct.unpack_from("<H", plain, 3)[0] | 0x0001  # ENDARC_NEXT_VOLUME
+        struct.pack_into("<H", plain, 3, flags)
+        struct.pack_into("<H", plain, 0, zlib.crc32(plain[2:7]) & 0xFFFF)
+
+    volume1 = _rar3_reencrypt_header(complete, len(complete) - 24, 16, next_volume)
+    archive = parse_rar_volumes(
+        [io.BytesIO(volume1), io.BytesIO(complete[:60])], password=_HP_PASSWORD
+    )
+    assert len(archive.members) == 6
+    assert archive.truncated is not None
+    # Byte 20 of volume 2, not of the set: volume 1 is 588 bytes.
+    assert (
+        "encrypted header that starts at byte 20 (volume 2 of the set"
+        in archive.truncated
+    )
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
+)
+def test_header_encrypted_cut_inside_packed_data_is_truncated(name: str) -> None:
+    """A cut inside the first member's packed data leaves the walk past the end of
+    the file where the next header's salt or IV should be: the truncated listing
+    a plain RAR gives, not an error at open."""
+    data = _hp_fixture(name)
+    with open_archive(io.BytesIO(data), password=_HP_PASSWORD) as reader:
+        first = reader.members()[0]
+    # The fixtures' first member, file1.txt, has 32 bytes of packed data; keep 10.
+    assert first.name == "file1.txt"
+    offset = {"encrypted_header__.rar": 190, "encrypted_header__rar4.rar": 92}[name]
+    with open_archive(io.BytesIO(data[: offset + 10]), password=_HP_PASSWORD) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == ["file1.txt"]
+        assert isinstance(report.error, TruncatedError)
+        assert "packed data" in str(report.error)
 
 
 # ---------------------------------------------------------------------------
