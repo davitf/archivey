@@ -2717,6 +2717,62 @@ def test_rename_resume_skips_a_name_already_on_disk(tmp_path: Path) -> None:
     assert (dest / "aB (2).txt").read_bytes() == b"pre-existing"
 
 
+@pytest.mark.parametrize("obstacle", ["file", "symlink"])
+def test_rename_directory_over_a_non_directory_keeps_it(
+    tmp_path: Path, obstacle: str
+) -> None:
+    """A directory member landing on a file or symlink is renamed, never deletes it.
+
+    RENAME used to fall through to REPLACE's unlink for directory members, so the
+    caller's file was removed and the directory reported EXTRACTED with no rename.
+    The derived name appends to the whole segment, and the members inside the
+    directory follow it there.
+    """
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if obstacle == "file":
+        (dest / "dd.d").write_bytes(b"keep")
+    else:
+        (dest / "target").write_bytes(b"keep")
+        (dest / "dd.d").symlink_to("target")
+    archive = _tar_bytes(
+        [("dir", "dd.d", None), ("file", "dd.d/f", b"inner"), ("dir", "dd.d/s", None)]
+    )
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    if obstacle == "file":
+        assert (dest / "dd.d").read_bytes() == b"keep"
+    else:
+        assert os.readlink(dest / "dd.d") == "target"
+        assert (dest / "target").read_bytes() == b"keep"
+    renamed = dest / "dd.d (1)"
+    assert renamed.is_dir()
+    assert (renamed / "f").read_bytes() == b"inner"
+    assert (renamed / "s").is_dir()
+    directory, inner, subdir = report.results
+    assert directory.path == renamed
+    assert directory.requested_path == dest / "dd.d"
+    assert directory.collided_with is None  # a pre-existing obstacle, not this run's
+    assert inner.path == renamed / "f"
+    assert inner.requested_path == dest / "dd.d" / "f"
+    assert subdir.path == renamed / "s"
+
+
+def test_rename_directory_over_a_file_this_run_wrote(tmp_path: Path) -> None:
+    """A directory member colliding with a file this run wrote is a collision event."""
+    archive = _tar_bytes([("file", "x", b"first"), ("dir", "x", None)])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    first, directory = report.results
+    assert first.status is ExtractionStatus.EXTRACTED
+    assert (dest / "x").read_bytes() == b"first"
+    assert directory.status is ExtractionStatus.EXTRACTED
+    assert directory.path == dest / "x (1)"
+    assert directory.path.is_dir()
+    assert directory.collided_with == dest / "x"
+
+
 def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:
     archive = _tar_bytes([("file", "a.txt", b"x")])
     dest = tmp_path / "out"

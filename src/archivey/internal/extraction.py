@@ -493,6 +493,10 @@ class ExtractionCoordinator:
         # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
         # name may be the first free one again).
         self._rename_next: dict[str, int] = {}
+        # Directories RENAME wrote under a derived name: the path the member asked for ->
+        # the path it was written to. Members inside such a directory follow it there
+        # (``_follow_renamed_dirs``). Reset per ``run()``.
+        self._renamed_dirs: dict[Path, Path] = {}
         # A streaming pass's superseded copies, left in place while the later copy of the
         # same name is handled so that copy can replace one atomically: path -> index of
         # the superseded result. Only for the length of one member; see
@@ -732,6 +736,7 @@ class ExtractionCoordinator:
     def _run(self, reader: "BaseArchiveReader", dest: Path) -> list[ExtractionResult]:
         forward_only = reader._streaming
         self._rename_next = {}
+        self._renamed_dirs = {}
         self._stale = {}
         self._unremoved = {}
         self._streaming_now = None
@@ -1456,17 +1461,18 @@ class ExtractionCoordinator:
     ) -> ExtractionResult:
         requested = dest / transformed.name
         self._requested_path = requested
+        target = self._follow_renamed_dirs(requested)
 
         if original.is_anti:
             return replace(
                 self._apply_anti_item(
-                    original, requested, written_paths, collision_map, dest
+                    original, target, written_paths, collision_map, dest
                 ),
                 requested_path=requested,
             )
 
         dest_path, prior, collided_with = self._resolve_collision(
-            original, transformed, requested, collision_map, dest
+            original, transformed, target, collision_map, dest
         )
         redirected = prior is not None
         # Stashed for the failure handler: an ERROR-policy collision becomes a FAILED
@@ -1516,6 +1522,8 @@ class ExtractionCoordinator:
         # ``results`` instead of two members both reporting EXTRACTED at one path.
         if result.status is ExtractionStatus.EXTRACTED:
             self._mark_overwritten(results, prior)
+            if transformed.type == MemberType.DIRECTORY and result.path != target:
+                self._renamed_dirs[requested] = dest_path
 
         self._register_collision_key(
             collision_map, dest, transformed, result, result_index
@@ -1632,7 +1640,10 @@ class ExtractionCoordinator:
         ``None``, as the diagnostic was also silent for it.
 
         Directories are structural (parents recur, entries merge) and are not tracked as
-        content collisions. For a tracked member whose key is already claimed THIS run, a
+        content collisions. The one exception is RENAME over an entry that is not a real
+        directory (a file or a symlink, the caller's or this run's): the directory gets a
+        ``name (N)`` too, as removing that entry would lose it, and the members inside
+        it follow it there (``_follow_renamed_dirs``). For a tracked member whose key is already claimed THIS run, a
         collision is deterministic on every OS: route ERROR/SKIP/REPLACE to the prior path
         so the existing OverwritePolicy machinery handles it uniformly, or derive a fresh
         ``name (N)`` under RENAME. TRUSTED keys on the exact name and defers to the local
@@ -1640,7 +1651,10 @@ class ExtractionCoordinator:
         names). Shared by the main pass and the orphan second pass so deferred hardlinks
         honour the map too.
         """
-        if transformed.type == MemberType.DIRECTORY:
+        if transformed.type == MemberType.DIRECTORY and not (
+            self._overwrite is OverwritePolicy.RENAME
+            and self._blocks_directory(requested)
+        ):
             return requested, None, None
         key = self._collision_key(dest, requested)
         prior = collision_map.get(key)
@@ -1665,6 +1679,28 @@ class ExtractionCoordinator:
             self._check_collision_abort(original, transformed, prior)
             return prior.physical, prior, collided
         return requested, None, None
+
+    def _blocks_directory(self, path: Path) -> bool:
+        """Whether ``path`` holds an entry that is not a real directory: a file or a
+        symlink (to a directory too, as it is never written through), which a directory
+        member under RENAME goes around rather than removing."""
+        if not self._occupied(path):
+            return False
+        try:
+            return not stat.S_ISDIR(os.lstat(path).st_mode)
+        except (OSError, ValueError):
+            return False
+
+    def _follow_renamed_dirs(self, requested: Path) -> Path:
+        """``requested`` moved under the derived name of the nearest directory RENAME
+        wrote elsewhere (``dd/f`` -> ``dd (1)/f``), or unchanged when none contains it."""
+        if not self._renamed_dirs:
+            return requested
+        for ancestor in (requested, *requested.parents):
+            renamed = self._renamed_dirs.get(ancestor)
+            if renamed is not None:
+                return renamed / requested.relative_to(ancestor)
+        return requested
 
     def _stops_on_failure(self) -> bool:
         """Whether ``OnError`` halts on a member failure.
@@ -2784,9 +2820,10 @@ class ExtractionCoordinator:
             self._overwrite is OverwritePolicy.REPLACE
             or self._overwrite is OverwritePolicy.RENAME
         ):
-            # REPLACE (and RENAME for the residual directory case — non-directory RENAME
-            # members are pre-resolved to a free path, so they never reach an existing
-            # entry here): never write-through a symlink. For an atomic FILE write,
+            # REPLACE (RENAME members are pre-resolved to a free path, a directory
+            # member too when a file or symlink holds its name, so they reach an
+            # existing entry here only if it appeared after that check): never
+            # write-through a symlink. For an atomic FILE write,
             # os.replace handles a file/symlink target atomically, so only a real
             # directory must be removed up front. Otherwise unlink a symlink/file (bytes
             # never follow the link). A directory is removed only when it is empty.
