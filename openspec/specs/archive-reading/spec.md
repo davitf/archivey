@@ -638,12 +638,20 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 def stream_members(
     self,
     members: MemberSelector | None = None,
+    *,
+    file_copy_streams: bool = True,
 ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]: ...
 ```
 
 Yields `(member, stream)` in archive order with bounded memory. Solid blocks
 decompress progressively (never buffered whole); peak = decoder working set + one
 in-flight chunk. Non-file members yield `None`.
+
+`file_copy_streams=False` SHALL also yield `None` for a `FILE` member that the archive
+stores as a copy of an earlier member (`extra["is_file_copy"]`; only `format-rar` has
+them), and the pass SHALL keep nothing for such copies. The copy's bytes and digests are
+those of its source, `link_target_member`. The default yields the copy's bytes. A value
+that is not a `bool` SHALL raise `ArchiveyUsageError` at the call.
 
 `members` is a selector (names/identities or predicate), not a transform. Streams
 are lazy: unselected/unread members are not opened/decompressed and do not request
@@ -689,6 +697,8 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
 | Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config) | The link's target is resolved; its folder is decoded up to the link once |
 | Encrypted solid 7z `[a.txt, link, b.txt]`, `read_link_targets=False`, `stream_members(lambda m: False)` to the end | Nothing decoded; provider never consulted; `link_target` unset; no `SYMLINK_TARGET_UNAVAILABLE` |
+| `stream_members(file_copy_streams=False)`, RAR5 file copy | The copy is yielded with stream `None`; its source with its bytes |
+| `stream_members(file_copy_streams=0)` | `ArchiveyUsageError` at the call |
 
 ### Requirement: Transparent link following
 

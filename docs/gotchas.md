@@ -105,12 +105,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   more bytes or EOF. Close the sending side when the tar is done.
 - **The rapidgzip accelerator starts a child process for gzip, zlib and deflate.**
   rapidgzip aborts the process on a stream that ends early, so archivey decodes these
-  codecs with it in a child Python process, one per open stream, and a cut file raises
-  `TruncatedError` instead, often before any data of the cut stream is returned (the
-  standard library reads up to the cut). Each accelerated stream costs about 45 ms more to
-  open, so under `AUTO` only streams of 16 MiB compressed or more use it. Set
-  `use_rapidgzip=OFF` to keep everything in your process and read the most of a cut
-  stream.
+  codecs with it in a child Python process, one per open stream. When the child aborts,
+  the standard library takes over, so a cut file returns the same bytes and the same
+  `TruncatedError` as without the accelerator. Each accelerated stream costs about 45 ms
+  more to open, so under `AUTO` only streams of 16 MiB compressed or more use it. Set
+  `use_rapidgzip=OFF` to keep everything in your process.
   → [Accelerators and source lifetime](access-and-cost.md#accelerators-and-source-lifetime)
 - **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
   Upstream soft-EOFs by design and Archivey backstops it, but a residual hole

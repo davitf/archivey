@@ -68,6 +68,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
@@ -1074,7 +1075,9 @@ class TarReader(BaseArchiveReader):
                     f"{data_end}, but the archive ends at byte {position}"
                 )
 
-    def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    def _iter_with_data(
+        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         if not self._streaming:
             yield from self._iter_with_data_random_access()
             return
