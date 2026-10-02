@@ -44,6 +44,10 @@ from archivey.exceptions import (
     ReadError,
     TruncatedError,
 )
+from archivey.internal.backends.rar_parser import (
+    parse_rar_archive,
+    parse_rar_volumes,
+)
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
 from tests.sample_archives import CORPUS, corpus_archive_path
@@ -340,6 +344,89 @@ def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_is_a_wrong_
     with pytest.raises(EncryptionError, match="wrong password"):
         with open_archive(io.BytesIO(data[:length]), password=_HP_PASSWORD) as reader:
             reader.members()
+
+
+def _rar3_reencrypt_header(
+    data: bytes, salt_at: int, length: int, edit: Callable[[bytearray], None]
+) -> bytes:
+    """Decrypt the ``length`` ciphertext bytes of the RAR3 header whose salt starts at
+    ``salt_at``, apply ``edit`` to the plaintext and encrypt it again with the same
+    key, so a test can change a field the cipher would otherwise scramble."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    from archivey.internal.backends.rar_parser import RarKdfCache
+
+    salt = data[salt_at : salt_at + 8]
+    start = salt_at + 8
+    key, iv = RarKdfCache().rar3(_HP_PASSWORD, salt)
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    plain = bytearray(cipher.decryptor().update(data[start : start + length]))
+    edit(plain)
+    encrypted = cipher.encryptor().update(bytes(plain))
+    return data[:start] + encrypted + data[start + length :]
+
+
+# encrypted_header__rar4.rar: the first encrypted header (file1.txt) is its salt at
+# 20 and 64 ciphertext bytes; the second (empty_file.txt) is its salt at 124 and 64
+# ciphertext bytes; the end block is the last 24 bytes.
+_RAR4_HP_SECOND_HEADER = 124
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_damage_after_a_proven_key_is_corruption() -> None:
+    """Once a CRC16 match has proved the password, a later header whose CRC16 does
+    not match is damage. Bit 0 of byte 164 is in the second FILE header's
+    ciphertext, past the first encrypted header that proved the key."""
+    data = bytearray(_hp_fixture("encrypted_header__rar4.rar"))
+    data[164] ^= 1
+    with pytest.raises(CorruptionError, match="RAR3 FILE header CRC mismatch"):
+        parse_rar_archive(io.BytesIO(bytes(data)), password=_HP_PASSWORD)
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_bad_size_after_a_proven_key_is_corruption() -> None:
+    """A proven password and a header size below the 7-byte minimum that does not
+    run to the end of the file: the structural error, not a wrong password."""
+
+    def shrink(plain: bytearray) -> None:
+        struct.pack_into("<H", plain, 5, 3)
+
+    data = _rar3_reencrypt_header(
+        _hp_fixture("encrypted_header__rar4.rar"),
+        _RAR4_HP_SECOND_HEADER,
+        64,
+        shrink,
+    )
+    with pytest.raises(CorruptionError, match="Invalid RAR3 header size: 3"):
+        parse_rar_archive(io.BytesIO(data), password=_HP_PASSWORD)
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_later_volume_cut_in_its_first_header_is_truncated() -> (
+    None
+):
+    """A set has one password, so a CRC16 match in volume 1 proves it for volume 2.
+    Volume 2 cut inside its own first encrypted header is then a cut, after volume
+    1's members.
+
+    The set is built from the single-volume fixture: volume 1 is that archive with its
+    end block re-encrypted to carry the next-volume flag, and volume 2 is the same
+    archive cut at byte 60. ``rar`` 7 cannot write RAR 1.5-4 (no ``-ma4``), so no
+    committed RAR 1.5-4 ``-hp`` volume set exists."""
+    complete = _hp_fixture("encrypted_header__rar4.rar")
+
+    def next_volume(plain: bytearray) -> None:
+        flags = struct.unpack_from("<H", plain, 3)[0] | 0x0001  # ENDARC_NEXT_VOLUME
+        struct.pack_into("<H", plain, 3, flags)
+        struct.pack_into("<H", plain, 0, zlib.crc32(plain[2:7]) & 0xFFFF)
+
+    volume1 = _rar3_reencrypt_header(complete, len(complete) - 24, 16, next_volume)
+    archive = parse_rar_volumes(
+        [io.BytesIO(volume1), io.BytesIO(complete[:60])], password=_HP_PASSWORD
+    )
+    assert len(archive.members) == 6
+    assert archive.truncated is not None
+    assert "encrypted header that starts at byte 20" in archive.truncated
 
 
 @requires("cryptography")
