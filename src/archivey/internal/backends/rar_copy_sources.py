@@ -35,8 +35,9 @@ from archivey.internal.streams.streamtools.slice import SlicingStream
 # where a kept source waits, and both places are bounded already. The bytes kept in
 # memory are at most this much per live pass, and the file is charged to
 # ``SpoolLimits.max_bytes``, which callers set. A source the file has no room for is not
-# kept, and its copies decode it again with a named open. A caller who wants no kept
-# file at all sets ``max_bytes=0``. ``format-rar``'s spec states the value.
+# kept, and its copies decode it again with a named open. A caller reading from a path
+# who wants no kept file sets ``max_bytes=0``; on a stream source that also refuses the
+# archive copy ``unrar`` needs. ``format-rar``'s spec states the value.
 _MEMORY_LIMIT = 8 << 20
 
 _State = Literal["memory", "file", "dropped"]

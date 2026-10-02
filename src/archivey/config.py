@@ -567,11 +567,11 @@ class SpoolLimits:
     """
 
     max_bytes: int | None = 2**30
-    """Most bytes one reader may hold in temporary storage. 1 GiB.
+    """Most bytes one reader may write to temporary storage. 1 GiB.
 
-    That is the copy of its source, and what a solid RAR pass keeps for file copies
-    (the last paragraph). A volume set counts as one copy: the limit applies to the
-    total across its volumes. When the size is known before the copy starts, an
+    That is the copy of its source, and the sources a solid RAR pass keeps for file
+    copies. A volume set counts as one copy: the limit applies to the total across its
+    volumes. When the size is known before the copy starts, an
     archive over the limit raises :class:`~archivey.exceptions.ResourceLimitError`
     before anything is written. Otherwise the copy stops before it passes the limit.
     Either way the partial copy is removed, and the error names this field. The limit
@@ -588,8 +588,10 @@ class SpoolLimits:
     it, up to 8 MiB in memory and the rest in a temporary file within this limit, so
     a copy does not decode the solid stream again. That file counts only from the
     source's first decoded byte, after any copy of the archive the pass needs, until
-    the pass ends. A source the limit has no room for is not kept, and its copies
-    decode it again from the archive; that is never refused.
+    the pass ends and deletes it. Unlike a copy's bytes, which keep counting after the
+    copy is removed, the kept file's bytes then stop counting. A source the limit has
+    no room for is not kept, and its copies decode it again from the archive; that is
+    never refused.
     """
 
     UNLIMITED: ClassVar[SpoolLimits]

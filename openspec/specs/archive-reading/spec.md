@@ -1054,10 +1054,10 @@ declined, not refused: the read falls back to decoding again. `None` SHALL disab
 guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the limit SHALL raise
 `ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
 size is known, and otherwise before the written total passes the limit, with the partial
-copy removed. A path source
-that is read in place is not copied and SHALL NOT be refused by it; a path source that
-has to be copied (`format-rar`: a prefixed archive read with `unar`, or explicit volume
-files that cannot be linked side by side) is bounded like a stream source.
+copy removed. A path source that is read in place is not copied and SHALL NOT be refused
+by it; a path source that has to be copied (`format-rar`: a prefixed archive read with
+`unar`, or explicit volume files that cannot be linked side by side) is bounded like a
+stream source.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.
