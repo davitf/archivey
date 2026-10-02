@@ -953,20 +953,20 @@ class ExtractionCoordinator:
                     # (same as a selector exclusion). Still counts as processed for progress.
                     pass
                 elif not original.is_current:
-                    recorded_index = len(results)
-                    results.append(
+                    recorded_index = self._append_result(
+                        results,
                         ExtractionResult(
                             original, None, ExtractionStatus.SUPERSEDED, None
-                        )
+                        ),
                     )
                 else:
-                    result_index = recorded_index = len(results)
-                    current_by_name[original.name] = result_index
-                    results.append(
-                        ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+                    result_index = recorded_index = self._append_result(
+                        results,
+                        ExtractionResult(original, None, ExtractionStatus.FAILED, None),
                     )
+                    current_by_name[original.name] = result_index
                     if original.is_anti:
-                        results[result_index] = self._write_member(
+                        written = self._write_member(
                             original,
                             transformed,
                             stream,
@@ -981,6 +981,7 @@ class ExtractionCoordinator:
                             result_index,
                             results,
                         )
+                        self._set_result(results, result_index, written)
                     else:
                         # Entry-count guard + ratio bookkeeping. Counted only once the
                         # selector and user filter have accepted the member (and the
@@ -1012,7 +1013,7 @@ class ExtractionCoordinator:
 
                             self._emit_progress = emit_progress
 
-                        results[result_index] = self._write_member(
+                        written = self._write_member(
                             original,
                             transformed,
                             stream,
@@ -1027,6 +1028,7 @@ class ExtractionCoordinator:
                             result_index,
                             results,
                         )
+                        self._set_result(results, result_index, written)
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
@@ -1041,10 +1043,9 @@ class ExtractionCoordinator:
                 )
                 if results and results[-1].member is original:
                     recorded_index = len(results) - 1
-                    results[-1] = result
+                    self._set_result(results, recorded_index, result)
                 else:
-                    recorded_index = len(results)
-                    results.append(result)
+                    recorded_index = self._append_result(results, result)
                 kind = original.type.value
                 self._stop_or_log(exc, error, status, kind, original.name)
             finally:
@@ -1064,16 +1065,12 @@ class ExtractionCoordinator:
             # A portable rewrite is recorded on whatever result this member ended up with,
             # including a BLOCKED/FAILED one: the rewrite happened before the outcome.
             if presented_name is not None and recorded_index is not None:
-                results[recorded_index] = replace(
-                    results[recorded_index], presented_name=presented_name
+                self._set_result(
+                    results,
+                    recorded_index,
+                    replace(results[recorded_index], presented_name=presented_name),
                 )
 
-            if results and results[-1].member is original:
-                status = results[-1].status
-                if status is ExtractionStatus.EXTRACTED:
-                    self._members_extracted += 1
-                elif status is ExtractionStatus.BLOCKED:
-                    self._members_blocked += 1
             members_done += 1
             self._report_progress(
                 original,
@@ -1157,19 +1154,17 @@ class ExtractionCoordinator:
         if index in counted:
             member_bytes = counted.pop(index)
             tracker.refund(0 if content_kept else member_bytes)
-        # Progress tallies results, so they follow the revision (as in
-        # ``_mark_overwritten``).
-        if prior.status is ExtractionStatus.EXTRACTED:
-            self._members_extracted -= 1
-        elif prior.status is ExtractionStatus.BLOCKED:
-            self._members_blocked -= 1
         orphans[:] = [o for o in orphans if o.result_index != index]
-        results[index] = ExtractionResult(
-            prior.member,
-            None,
-            ExtractionStatus.SUPERSEDED,
-            None,
-            presented_name=prior.presented_name,
+        self._set_result(
+            results,
+            index,
+            ExtractionResult(
+                prior.member,
+                None,
+                ExtractionStatus.SUPERSEDED,
+                None,
+                presented_name=prior.presented_name,
+            ),
         )
 
     def _drop_stale_copies(
@@ -2316,6 +2311,8 @@ class ExtractionCoordinator:
         ``presented_name`` rewrite, and the ``requested_path`` the member asked for. A
         rebuild that does not supply them must not erase them — results are the sole
         record, so a dropped field is a fact lost rather than a fact reported elsewhere.
+        Unlike ``_set_result`` it moves no progress tally: no progress report follows
+        the second pass.
         """
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
@@ -2323,6 +2320,31 @@ class ExtractionCoordinator:
         if prior.requested_path is not None and new.requested_path is None:
             new = replace(new, requested_path=prior.requested_path)
         results[index] = new
+
+    def _append_result(
+        self, results: list[ExtractionResult], new: ExtractionResult
+    ) -> int:
+        """Record ``new`` as the next result, tallied, and return its index."""
+        self._tally(None, new.status)
+        results.append(new)
+        return len(results) - 1
+
+    def _set_result(
+        self, results: list[ExtractionResult], index: int, new: ExtractionResult
+    ) -> None:
+        """Replace recorded result ``index`` with ``new``. The progress tallies count
+        the results, so they follow the change; a report already sent is not resent."""
+        self._tally(results[index].status, new.status)
+        results[index] = new
+
+    def _tally(
+        self, old: ExtractionStatus | None, new: ExtractionStatus | None
+    ) -> None:
+        for status, step in ((old, -1), (new, 1)):
+            if status is ExtractionStatus.EXTRACTED:
+                self._members_extracted += step
+            elif status is ExtractionStatus.BLOCKED:
+                self._members_blocked += step
 
     def _materialize_orphan_source(
         self,
@@ -2525,8 +2547,7 @@ class ExtractionCoordinator:
 
         Called once per member, before the next one is handled, so no later member
         (or a progress callback) sees an escaping link. A removed link's result
-        becomes ``BLOCKED`` in place, and the progress tallies follow, as they do for
-        ``_mark_overwritten``: a report already sent for that member is not sent again.
+        becomes ``BLOCKED`` in place (``_set_result``).
 
         It runs in a ``finally``, so it returns the error that must end the run
         instead of raising it, which would replace the member's own error: the
@@ -2564,11 +2585,13 @@ class ExtractionCoordinator:
             self._written_paths.discard(link.dest_path)
             self._release_claim(collision_map, dest, link.dest_path)
             if prior.status is ExtractionStatus.EXTRACTED:
-                results[link.result_index] = replace(
-                    prior, path=None, status=ExtractionStatus.BLOCKED, error=error
+                self._set_result(
+                    results,
+                    link.result_index,
+                    replace(
+                        prior, path=None, status=ExtractionStatus.BLOCKED, error=error
+                    ),
                 )
-                self._members_extracted -= 1
-                self._members_blocked += 1
             logger.warning("Removed symlink %r: %s", prior.member.name, error)
         if outcome.unchecked:
             return _AlwaysStopResourceLimitError(
@@ -2596,22 +2619,23 @@ class ExtractionCoordinator:
         if clobbered.status is ExtractionStatus.SUPERSEDED:
             # A superseded copy the filesystem would not remove: it keeps its status.
             return
-        results[prior.result_index] = replace(
-            clobbered,
-            path=None,
-            status=ExtractionStatus.OVERWRITTEN,
-            requested_path=(
-                clobbered.requested_path
-                if clobbered.requested_path is not None
-                else clobbered.path
+        # The clobbered member was tallied as EXTRACTED when it completed, and is
+        # no longer: ``_set_result`` moves the tally, or the final report would claim
+        # more extracted members than ``results`` contains.
+        self._set_result(
+            results,
+            prior.result_index,
+            replace(
+                clobbered,
+                path=None,
+                status=ExtractionStatus.OVERWRITTEN,
+                requested_path=(
+                    clobbered.requested_path
+                    if clobbered.requested_path is not None
+                    else clobbered.path
+                ),
             ),
         )
-        # The clobbered member was tallied as EXTRACTED when it completed. It is no
-        # longer an EXTRACTED result, and ``members_extracted`` is defined as a tally of
-        # results — so the progress counter has to follow the revision, or the final
-        # report would claim more extracted members than ``results`` contains.
-        if clobbered.status is ExtractionStatus.EXTRACTED:
-            self._members_extracted -= 1
 
     # --- filesystem helpers --------------------------------------------------------
 
