@@ -337,6 +337,19 @@ security fixes one line each, other bug fixes summarized in one line).
   helpers any front end needs), or do without: the library's enum-spelling helpers are
   internal, so the CLI derives its option choices from the enums and maps a parsed
   choice back to its member itself (`src/archivey/cli/choices.py`).
+- **Report from what the run left behind, not a re-derivation of it.** When code has to
+  report what an operation did or would do (a dry run, a preview, a summary line), read
+  the answer from what the operation left behind, such as the tree it wrote, rather than
+  re-deriving it from its per-item results. Where the operation tears that state down,
+  capture it before it does and hand it to whatever reports. That hand-off is a
+  public-surface question: a public field, a public module, or an exception recorded in
+  the spec, per "The CLI uses only public API" above. A re-derivation is a second
+  implementation, and it drifts: the CLI's dry-run line naming where a single top-level
+  folder would land was re-derived from per-member results and broke in a new way in
+  four review rounds running, until it read the top-level entries the dry run recorded
+  before removing its scratch tree (#531). Where nothing usable is left behind, the
+  re-derivation needs the comparison test in "A parity promise gets its comparison test
+  first" below.
 - **Cost signals stay honest, and nothing silently re-decompresses.** `ListingCost` and
   `AccessCost` are promises a caller plans against, so a change that makes a path more
   expensive updates them. Reading two members out of one solid block must not decode the
@@ -404,6 +417,18 @@ security fixes one line each, other bug fixes summarized in one line).
   reach the path it named. For a test the PR says fails on `main`,
   `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
+- **A parity promise gets its comparison test first.** When a feature promises to behave
+  like another archivey path (a dry run like a real extraction), write the test that
+  runs both and compares them first, before the feature itself. This generalises the
+  oracle cross-validation above from third-party libraries to archivey's own paths. Run
+  it over every surface the promise covers: each entry point, the CLI as well as the
+  library, and each spelling of the inputs (a relative path, one through a symlink, one
+  with `..`). Where the promise has stated exceptions, the test asserts each one
+  explicitly rather than skipping the case. Like any guard test, the comparison has to
+  be shown to fail, and the environment is one of its surfaces: two runs that agree
+  because both took another path (a missing symlink privilege, a skipped backend, an
+  absent extra) compare nothing. A surface you don't compare is where a divergence
+  ships, and in practice where review finds it.
 
 ### Coverage-guided fuzz (Atheris)
 
