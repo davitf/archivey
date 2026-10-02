@@ -268,10 +268,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   always ends each volume with an end-of-archive block, so archivey lists the members
   before the cut and then emits `ARCHIVE_EOF_MARKER_MISSING`
   (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
-  A cut inside a member's data or inside any header, encrypted or not, lists the
-  members before the cut and is `TruncatedError` on the listing. RAR 1.5-4 archives
-  may legitimately lack the end block, so a cut between their blocks still lists as
-  complete.
+  A cut inside a member's data or inside a header lists the members before the cut and
+  is `TruncatedError` on the listing, with one exception: in an archive with encrypted
+  headers, a cut after a header's first 16-byte cipher block reads like a wrong
+  password unless a password check value proves the key. There the open raises
+  `EncryptionError` ("wrong password?") and lists nothing. RAR 1.5-4 has no check value,
+  so it always takes that branch; a RAR5 archive takes it only when its encryption
+  header has no check value. RAR 1.5-4 archives may legitimately lack the end block, so
+  a cut between their blocks still lists as complete.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.

@@ -433,6 +433,17 @@ def test_plain_header_cut_is_truncated(name: str, cut: int, start: int) -> None:
     assert archive.end_block_missing_volumes == []
 
 
+def test_volume_set_header_cut_names_the_volume() -> None:
+    """The walk's byte offset is within the cut volume, not the concatenated space
+    the member offsets use, so the message says which volume it is in. Volume 2's
+    first FILE header starts at byte 25."""
+    part1 = _fixture("tinyvol.part1.rar").read_bytes()
+    part2 = _fixture("tinyvol.part2.rar").read_bytes()[:30]
+    archive = parse_rar_volumes([io.BytesIO(part1), io.BytesIO(part2)], password=None)
+    assert archive.truncated is not None
+    assert "header that starts at byte 25 (volume 2 of the set" in archive.truncated
+
+
 def test_rar5_cut_inside_a_multibyte_header_size_is_truncated() -> None:
     """The fixture's size vints are one byte, so this writes the first byte of a
     two-byte one and ends the file there."""

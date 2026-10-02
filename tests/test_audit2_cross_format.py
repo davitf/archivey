@@ -39,6 +39,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     DiagnosticRaisedError,
+    EncryptionError,
     TruncatedError,
 )
 from tests.conftest import requires, requires_binary
@@ -236,16 +237,23 @@ def _hp_fixture(name: str) -> bytes:
     return (_RAR_FIXTURES / name).read_bytes()
 
 
-def _assert_truncated_listing(data: bytes, members: int, streaming: bool) -> None:
+def _assert_truncated_listing(
+    data: bytes,
+    members: int,
+    streaming: bool,
+    *,
+    password: str | None = _HP_PASSWORD,
+    message: str = "encrypted header",
+) -> None:
     with open_archive(
-        io.BytesIO(data), password=_HP_PASSWORD, streaming=streaming
+        io.BytesIO(data), password=password, streaming=streaming
     ) as reader:
         report = reader.members_report()
         assert len(report.members) == members
         assert isinstance(report.error, TruncatedError)
-        assert "encrypted header" in str(report.error)
+        assert message in str(report.error)
         assert not _eof_marker_diagnostics(reader.diagnostics)
-    with open_archive(io.BytesIO(data), password=_HP_PASSWORD) as reader:
+    with open_archive(io.BytesIO(data), password=password) as reader:
         with pytest.raises(TruncatedError):
             reader.members()
 
@@ -297,6 +305,21 @@ def test_rar5_header_encrypted_cut_at_a_header_boundary_warns() -> None:
 def test_rar4_header_encrypted_cut_in_last_header_is_truncated(cut: int) -> None:
     data = _hp_fixture("encrypted_header__rar4.rar")
     _assert_truncated_listing(data[:-cut], members=6, streaming=False)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("length", [50, 160])
+def test_rar4_header_encrypted_cut_past_a_cipher_block_is_a_wrong_password(
+    length: int,
+) -> None:
+    """RAR 1.5-4 has no password check value. A header that decrypts its first
+    cipher block and then runs out reads the same as a wrong key, so the open
+    reports a wrong password, with the right one. ``docs/formats.md`` names this
+    exception to the truncated listing. MAIN is plaintext here; 50 and 160 bytes end
+    past the first cipher block of the first and second FILE headers."""
+    data = _hp_fixture("encrypted_header__rar4.rar")[:length]
+    with pytest.raises(EncryptionError, match="wrong password"):
+        open_archive(io.BytesIO(data), password=_HP_PASSWORD)
 
 
 @requires("cryptography")
@@ -359,6 +382,32 @@ def test_rar_plain_cut_inside_any_header_lists_the_prefix(
     assert checked > 100
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    ("fixture", "walker"),
+    [
+        pytest.param("basic_nonsolid__.rar", _rar5_blocks, id="rar5"),
+        pytest.param("basic_nonsolid__rar4.rar", _rar4_blocks, id="rar4"),
+    ],
+)
+def test_rar_plain_cut_inside_a_header_raises_from_members(
+    fixture: str,
+    walker: Callable[[bytes], list[tuple[int, int, int, int]]],
+    streaming: bool,
+) -> None:
+    """One cut through the shared helper: inside the fourth FILE header, after
+    three whole members, so ``members()`` raises and streaming lists the same."""
+    data = (_RAR_FIXTURES / fixture).read_bytes()
+    block_pos, _type, header_end, _size = walker(data)[4]  # MAIN, then FILE blocks
+    _assert_truncated_listing(
+        data[: (block_pos + header_end) // 2],
+        members=3,
+        streaming=streaming,
+        password=None,
+        message=f"header that starts at byte {block_pos}",
+    )
+
+
 @pytest.mark.parametrize(
     ("fixture", "walker", "file_type", "warns"),
     [
@@ -378,7 +427,8 @@ def test_rar_plain_cut_at_a_header_boundary_is_not_a_cut(
     with open_archive(io.BytesIO(data)) as reader:
         full = [m.name for m in reader.members()]
     blocks = walker(data)
-    for block_pos, _type, _end, _size in blocks[1:]:
+    # blocks[0] is MAIN, so the first cut leaves only the signature.
+    for block_pos, _type, _end, _size in blocks:
         listed = full[
             : sum(1 for b in blocks if b[1] == file_type and b[0] < block_pos)
         ]

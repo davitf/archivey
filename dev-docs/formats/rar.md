@@ -152,10 +152,11 @@ stays `CorruptionError`. A cut exactly at a header boundary lists the members be
 the cut, then warns: RAR5 writers always close a volume with `ENDARC`, so a RAR5 walk
 that reaches end of file without one emits `ARCHIVE_EOF_MARKER_MISSING`
 (`expected_marker="end_of_archive_block"`, `format="rar"`, `observed_kind="absent"`)
-once per archive after the members, naming the volumes that lacked it. That is TAR's missing-trailer rule: the listing completes, and
-`DiagnosticPolicy.strict()` refuses it after delivery. A volume in a set needs the block
-too — its flags are what say another volume follows — so a set whose volumes all end
-in `ENDARC` emits nothing. RAR 1.5-4 is left alone: old writers may omit the end block,
+once per archive after the members, naming the volumes that lacked it. That is TAR's
+missing-trailer rule: the listing completes, and `DiagnosticPolicy.strict()` refuses it
+after delivery. A volume in a set needs the block too — its flags are what say another
+volume follows — so a set whose volumes all end in `ENDARC` emits nothing. RAR 1.5-4 is
+left alone: old writers may omit the end block,
 so its absence there is not evidence of a cut. **With header encryption (`-hp`) a cut
 inside a header is a truncated listing too.** Each header there is a salt (RAR3, 8 bytes)
 or IV (RAR5, 16 bytes) and then whole 16-byte cipher blocks, and a writer never stops
