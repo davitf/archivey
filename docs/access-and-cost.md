@@ -282,11 +282,12 @@ temporary file the OS refuses), `AUTO` reads these codecs with the standard libr
 about your archive. Set `use_rapidgzip=OFF` to never start a child, and to silence that
 warning.
 
-The abort costs the rest of the stream, and often more: rapidgzip decodes ahead in
-parallel, so it can reach the cut before your first read returns. On a cut gzip of 2 or
-8 MB the error came before any data; on 32 MB, 1 to 10 MB short of the cut. What you do
-read is correct. To read as much of a cut stream as the data allows, open it with
-`use_rapidgzip=OFF`: the standard library decodes up to the cut before it raises.
+rapidgzip decodes ahead in parallel, so it can reach the cut and abort before your
+reads get there. When the child aborts, the standard library takes over from the last
+point rapidgzip's index gave for what you have read, so you get the same bytes and the
+same `TruncatedError` as with `use_rapidgzip=OFF`. The standard library decodes again
+only from that point, so the extra work grows with how far rapidgzip had read ahead
+(more threads read further), not with the size of the file.
 
 bzip2 runs in your process. It did not abort on cut or damaged input in the tests behind
 this page (cuts, bit flips, CRC damage, as path and as file object), but that is testing,

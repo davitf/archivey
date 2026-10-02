@@ -1184,6 +1184,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     is either that or a stream too long for both decoders, and the standard library
     decides which, from the position before that read. Up to the end of the first
     stream the two decoders agree, so a caller sees what the standard library gives.
+    Only the raw DEFLATE path sets ``limit``, even where gzip and zlib have a declared
+    size: their streams end where the standard library ends them, so the
+    ``VerifyingStream`` alone checks the size there.
 
     The stream that sets ``limit`` is wrapped by ``_wrap_accelerated_length``, whose
     ``VerifyingStream`` has the same size as its ``expected_size`` and bounds each of
@@ -1198,16 +1201,17 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     threads decode ahead of the reader, so the reader can be megabytes short of the cut
     when the child dies (with every core decoding, a cut file of tens of MB can deliver
     nothing). A child crash (``crashed_on_data``) and a truncation rapidgzip reports
-    switch here too, and the standard library starts at the child's
-    ``resume_point``: a DEFLATE block boundary the reader passed, with the 32 KiB of
-    output before it (``deflate_resume``). That bounds the second decode by rapidgzip's
-    read-ahead and the spacing of the points rather than by the file. Every data error
-    starts there: damage after the point raises from the resumed decode as it would
-    from a full one, and a resumed decode that reaches the end of its DEFLATE stream
-    (appended bytes, or damage only a checksum shows) cannot check the stream's
-    checksum, so it raises ``ResumeReachedStreamEnd`` and the standard library decodes
-    from the start after all (``_restart_without_resume``). The two switches that know
-    the stream is whole (``limit`` and ``switch_to_stdlib``) start from the start.
+    switch here too, and the standard library starts at the child's ``resume_point``: a
+    DEFLATE block boundary the reader passed, with the 32 KiB of output before it
+    (``deflate_resume``). That bounds the second decode by rapidgzip's read-ahead, the
+    spacing of the index queries (``_query_after`` in ``rapidgzip_child.py``) and the
+    spacing of the points, rather than by the file. Every data error starts there:
+    damage after the point raises from the resumed decode as it would from a full one,
+    and a resumed decode that reaches the end of its DEFLATE stream (appended bytes, or
+    damage only a checksum shows) cannot check the stream's checksum, so it raises
+    ``ResumeReachedStreamEnd`` and the standard library decodes from the start after all
+    (``_restart_without_resume``). The two switches that know the stream is whole
+    (``limit`` and ``switch_to_stdlib``) start from the start.
     """
 
     readinto_passthrough = False
@@ -1297,7 +1301,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         old = self._inner
         point = None
         if resume and isinstance(old, RapidgzipChildStream):
-            point = old.resume_point()
+            point = old.resume_point(self._position)
         stdlib = self._open_stdlib_at(point)
         self._replace_inner(stdlib)
         self.switched = True
@@ -1308,7 +1312,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     def _open_stdlib_at(self, point: SeekPoint | None) -> BinaryIO:
         """The standard-library decoder at the position delivered so far, starting from
-        ``point`` when one is given and it lies at or before that position."""
+        ``point`` when one is given. ``point`` must lie at or before that position
+        (``resume_point`` picks it so): the seek ignores a point past it."""
         fallback: CodecSource = (
             self._fallback_path if self._fallback_path is not None else self._reopen()
         )

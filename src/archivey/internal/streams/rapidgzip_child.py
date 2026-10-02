@@ -98,6 +98,10 @@ _CHUNK = 1 << 20
 # reached the point the last one named. See ``_note_received``.
 _MIN_QUERY_SPACING = 4 << 20
 _QUERY_SPACING_PER_POINT = 16 << 10
+# How many checkpoints a stream keeps (each holds a 32 KiB window). The newest can be
+# ahead of the reader, by the read-ahead buffer or after a backward seek, so a takeover
+# uses the newest one at or before the reader, and needs the ones before it.
+_CHECKPOINTS_KEPT = 4
 
 
 def _check_arg(arg: int) -> None:
@@ -329,9 +333,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._source: BinaryIO | None = None
         # Whether the child's death was a crash on the data (``crashed_on_data``).
         self._crashed = False
-        # Where a standard-library decoder can take over (``resume_point``): an index
-        # point the child reported, and the output before it, from what it sent.
-        self._checkpoint: SeekPoint | None = None
+        # Where a standard-library decoder can take over (``resume_point``): index
+        # points the child reported, each with the output before it from what it sent,
+        # by decompressed offset, oldest capture first.
+        self._checkpoints: dict[int, SeekPoint] = {}
         # The decompressed offset the child is at: the end of what it sent last.
         self._received_end = 0
         # The last bytes the child sent, up to WINDOW_SIZE, ending at _received_end
@@ -620,9 +625,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         """Keep what ``resume_point`` needs from ``data``, which the child just sent.
 
         When the output passes the index point the last ``POINTS`` query named as the
-        next one, the 32 KiB before it become the checkpoint's window. The next query
+        next one, the 32 KiB before it become a new checkpoint's window. The next query
         comes only after that, once the output has run on by ``_query_after``, which
-        grows with the index; so the checkpoint can lag the reader by that distance
+        grows with the index; so a checkpoint can lag the reader by that distance
         plus the spacing of the points, and a takeover decodes that much again, which
         is bounded and paid only by a damaged stream.
         """
@@ -641,13 +646,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._recent = (self._recent + data[-WINDOW_SIZE:])[-WINDOW_SIZE:]
 
     def _capture(self, point: tuple[int, int], data: bytes, start: int) -> None:
-        """Make ``point`` the checkpoint, if the output before it is at hand: in
+        """Keep ``point`` as a checkpoint, if the output before it is at hand: in
         ``data`` (from decompressed offset ``start``) and the ``_recent`` before it."""
         decoded, bit = point
-        if (
-            self._checkpoint is not None
-            and decoded <= self._checkpoint.decompressed_offset
-        ):
+        if decoded in self._checkpoints:
             return
         low = max(0, decoded - WINDOW_SIZE)
         recent_start = start - len(self._recent)
@@ -657,9 +659,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         window = self._recent[low - recent_start : decoded - recent_start]
         if decoded > start:
             window += data[max(0, low - start) : decoded - start]
-        self._checkpoint = SeekPoint(
+        self._checkpoints[decoded] = SeekPoint(
             decoded, bit // 8, DeflateResume(bit % 8, bytes(window))
         )
+        if len(self._checkpoints) > _CHECKPOINTS_KEPT:
+            del self._checkpoints[next(iter(self._checkpoints))]
 
     def _query_points(self, data: bytes, start: int) -> None:
         """Ask the child for the index points around the end of ``data``.
@@ -678,16 +682,22 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             self._capture((before_dec, before_bit), data, start)
         self._next_point = (after_dec, after_bit) if after_dec > 0 else None
 
-    def resume_point(self) -> SeekPoint | None:
-        """A point from which a standard-library decoder can take over this stream.
+    def resume_point(self, at: int) -> SeekPoint | None:
+        """A point from which a standard-library decoder can take over this stream at
+        decompressed offset ``at``.
 
-        A DEFLATE block boundary from rapidgzip's index that the output has passed,
-        with the 32 KiB of output before it (:class:`DeflateResume`); ``None`` when no
-        such point has been seen. It stays valid after the child has died, which is
-        when it is needed: rapidgzip decodes ahead of the reader, and on a stream
+        The closest DEFLATE block boundary from rapidgzip's index at or before ``at``
+        that has been kept, with the 32 KiB of output before it (:class:`DeflateResume`);
+        ``None`` when there is none. Points stay valid after the child has died, which
+        is when they are needed: rapidgzip decodes ahead of the reader, and on a stream
         that ends early it dies with output the reader never got.
+
+        The newest point can be past ``at``: the child's output runs ahead of the
+        caller by the read-ahead buffer, and a seek can move the caller back. A point
+        past ``at`` would make the standard library start from the stream's start.
         """
-        return self._checkpoint
+        usable = [offset for offset in self._checkpoints if offset <= at]
+        return self._checkpoints[max(usable)] if usable else None
 
     def read(self, n: int | None = -1, /) -> bytes:
         # Before the buffer: a closed or dead stream raises even with read-ahead left.

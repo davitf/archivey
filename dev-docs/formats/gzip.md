@@ -207,24 +207,25 @@ ignores a tail that fails to decode, re-raises it, because the checksum covers m
 already handed out. A stream never read to its end is not checked, and the standard library
 does not check one either: it verifies the trailer only when it consumes the end.
 
-**What of a cut stream a caller gets back.** The same bytes with `rapidgzip` as without
-it. The standard library engine delivers everything up to the last complete block before
-the cut. `rapidgzip` decodes ahead in parallel, so it can reach the cut and abort while the
+**What of a cut stream a caller gets back.** The same bytes with `rapidgzip` as without it.
+The standard library engine delivers everything up to the last complete block before the
+cut. `rapidgzip` decodes ahead in parallel, so it can reach the cut and abort while the
 parent is still waiting for earlier bytes: measured on 4 cores, a cut 154 MB gzip gave
-nothing before the abort where the standard library gave 20 MB, and the loss grows with
-the thread count. So a crash of the child, like a data error it reports, hands the read to
-the standard library (`_StdlibOnAcceleratorError`), which starts at the child's
-`resume_point` rather than at the start of the stream: a DEFLATE block boundary from
-`rapidgzip`'s index that the output passed, with the 32 KiB of output before it.
-`deflate_resume.py` makes zlib start there: the window goes in as a preset dictionary, and
-the block's bit offset is reached by starting the input with empty blocks whose length
-ends that many bits into a byte. The second decode then costs the distance from that point
-to the cut, at most `rapidgzip`'s read-ahead plus the spacing of the points, not the file.
-The child queries its index once the output has passed the point the last query named and
-run on by 16 KiB per point it holds (4 MiB at least), which keeps the queries' cost a small
-share of the decode. A resumed
-decode that reaches the end of its DEFLATE stream cannot check the CRC-32 or Adler-32
-after it, so it starts over from the start of the stream, which checks it.
+nothing before the abort where the standard library gave 20 MB, and the loss grows with the
+thread count. So a crash of the child, like a data error it reports, hands the read to the
+standard library (`_StdlibOnAcceleratorError`), which starts at the child's `resume_point`
+rather than at the start of the stream: a DEFLATE block boundary from `rapidgzip`'s index
+at or before what the caller has read, with the 32 KiB of output before it. The child keeps
+the last four such points, because the newest can be ahead of the caller: by the read-ahead
+buffer, or after a seek back. `deflate_resume.py` makes zlib start there: the window goes
+in as a preset dictionary, and the block's bit offset is reached by starting the input with
+empty blocks whose length ends that many bits into a byte. The second decode then costs the
+distance from that point to the cut, not the file: at most `rapidgzip`'s read-ahead, plus
+the spacing of the index queries, plus the spacing of the points. The child queries its
+index once the output has passed the point the last query named and run on by 16 KiB per
+point it holds (4 MiB at least), which keeps the queries' cost a small share of the decode.
+A resumed decode that reaches the end of its DEFLATE stream cannot check the CRC-32 or
+Adler-32 after it, so it starts over from the start of the stream, which checks it.
 
 **The first member's header is checked before `rapidgzip`.** `rapidgzip` accepts a header
 CRC (`FHCRC`) that does not match and reserved `FLG` bits, which RFC 1952 §2.3.1.2 says a

@@ -58,7 +58,14 @@ class DeflateResume:
 class ResumeReachedStreamEnd(Exception):
     """A decode resumed at a :class:`DeflateResume` point reached the end of its
     DEFLATE stream. The stream's checksum covers output from before the point, which
-    this decode cannot check, so the caller decodes again from the start."""
+    this decode cannot check, so the caller decodes again from the start.
+
+    It is control flow, not an error a caller may see: it is not an ``ArchiveyError``.
+    Only ``_StdlibOnAcceleratorError`` in ``codecs.py`` adds resume points to a
+    decoder, and every call of its that can decode (``read`` and ``seek``; ``readinto``
+    and ``readall`` go through ``read``) catches it. A new caller of
+    ``DeflateResumeDecoder`` must catch it the same way.
+    """
 
 
 class _Bits:

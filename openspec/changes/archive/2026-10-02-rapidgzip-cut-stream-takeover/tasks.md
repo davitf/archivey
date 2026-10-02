@@ -5,3 +5,7 @@
 - [x] 1.3 `_StdlibOnAcceleratorError` takes over on a child crash, starting at the checkpoint
 - [x] 1.4 A resumed decode that reaches a stream end starts over from the start
 - [x] 1.5 Tests: `tests/test_deflate_resume.py`, `tests/test_rapidgzip_resume.py`
+- [x] 1.6 Docs: `dev-docs/formats/gzip.md` §2.3, `dev-docs/known-issues.md` Bug 4,
+      `dev-docs/investigations/rapidgzip-upstream-report.md` §2
+- [x] 1.7 `openspec validate --strict rapidgzip-cut-stream-takeover`
+- [x] 1.8 `openspec archive rapidgzip-cut-stream-takeover --yes`
