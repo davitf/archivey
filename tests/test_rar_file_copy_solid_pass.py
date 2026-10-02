@@ -35,7 +35,7 @@ from archivey.exceptions import (
     ResourceLimitError,
 )
 from archivey.internal.backends import rar_copy_sources, rar_reader
-from tests.conftest import has_binary
+from tests.conftest import missing_binary_reason
 
 _COPIES = 6
 _COPY_NAMES = [f"d_copy{i}.txt" for i in range(_COPIES)]
@@ -92,8 +92,9 @@ def _solid_with_copies(tmp_path: Path) -> tuple[Path, bytes]:
 
 
 def _config(decompressor: str, **kwargs: object) -> ArchiveyConfig:
-    if not (has_binary("rar") and has_binary(decompressor)):
-        pytest.skip(f"needs rar and a {decompressor} archivey will use")
+    reason = missing_binary_reason("rar", decompressor)
+    if reason is not None:
+        pytest.skip(reason)
     return ArchiveyConfig(rar_decompressor=decompressor, **kwargs)  # type: ignore[arg-type]
 
 
