@@ -138,15 +138,25 @@ because the table is cached at open. With a usable `QO`, listing reads those cop
 first, seeks back to after MAIN, and skips matching FILE headers on the walk (§1.1).
 A walk whose last skip lands past the end of the file lists what it found and then
 reports `TruncatedError` as `members_report().error` (`members()` raises it), as TAR
-does for a member whose data runs past the end. A cut exactly at a header boundary
-lists the members before the cut, then warns: RAR5 writers always close a volume with
-`ENDARC`, so a RAR5 walk that reaches end of file without one emits
-`ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="end_of_archive_block"`, `format="rar"`,
-`observed_kind="absent"`) once per archive after the members, naming the volumes that
-lacked it. That is TAR's missing-trailer rule: the listing completes, and
-`DiagnosticPolicy.strict()` refuses it after delivery. A volume in a set needs the block
-too — its flags are what say another volume follows — so a set whose volumes all end
-in `ENDARC` emits nothing. RAR 1.5-4 is left alone: old writers may omit the end block,
+does for a member whose data runs past the end. **A file that ends part-way through a
+plain header is the same**: after the header's first byte and before its last, which
+for RAR5 includes its CRC and its size vint, the walk lists the members before that
+header and reports `TruncatedError`. Measured 2026-10-01 on unrar 7.00 with
+`basic_nonsolid__rar4.rar` cut to 140 or 190 bytes: `unrar` lists the members before the
+cut, prints "Unexpected end of archive" and exits nonzero. Until then archivey raised
+`CorruptionError` at open ("Unexpected EOF while reading RAR3 block header" or "… header
+body", and the RAR5 equivalents) and listed nothing. Only a file that ends before the
+header's declared bytes counts as a cut: a declared size that is invalid while the bytes
+are present (a RAR3 size below 7, a RAR5 size over 2 MiB, a size vint over 10 bytes)
+stays `CorruptionError`. A cut exactly at a header boundary lists the members before
+the cut, then warns: RAR5 writers always close a volume with `ENDARC`, so a RAR5 walk
+that reaches end of file without one emits `ARCHIVE_EOF_MARKER_MISSING`
+(`expected_marker="end_of_archive_block"`, `format="rar"`, `observed_kind="absent"`)
+once per archive after the members, naming the volumes that lacked it. That is TAR's
+missing-trailer rule: the listing completes, and `DiagnosticPolicy.strict()` refuses it
+after delivery. A volume in a set needs the block too — its flags are what say another
+volume follows — so a set whose volumes all end in `ENDARC` emits nothing. RAR 1.5-4 is
+left alone: old writers may omit the end block,
 so its absence there is not evidence of a cut. **With header encryption (`-hp`) a cut
 inside a header is a truncated listing too.** Each header there is a salt (RAR3, 8 bytes)
 or IV (RAR5, 16 bytes) and then whole 16-byte cipher blocks, and a writer never stops

@@ -99,10 +99,13 @@ def test_main_writes_csv_and_log(
 
 
 def test_detection_diagnostics_survive_a_failed_open(tmp_path: Path) -> None:
-    # RAR content under a .zip name: detection reports the conflict, and a cut-short
-    # copy makes the open fail, so no reader carries the diagnostic.
+    # RAR content under a .zip name: detection reports the conflict, and a damaged
+    # main header makes the open fail, so no reader carries the diagnostic. (A cut
+    # inside a header no longer fails the open: it lists what precedes the cut.)
+    data = bytearray(FIXTURE.read_bytes())
+    data[8] ^= 0xFF  # the main header's CRC32, just after the signature
     path = tmp_path / "misnamed.zip"
-    path.write_bytes(FIXTURE.read_bytes()[:100])
+    path.write_bytes(bytes(data))
     row = scan.scan_one(path, scan._scan_config(False))
     assert row is not None
     out = row.csv_row()
