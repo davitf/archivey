@@ -39,6 +39,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     DiagnosticRaisedError,
+    EncryptionError,
     TruncatedError,
 )
 from tests.conftest import requires, requires_binary
@@ -245,9 +246,12 @@ def _assert_truncated_listing(data: bytes, members: int, streaming: bool) -> Non
         assert isinstance(report.error, TruncatedError)
         assert "encrypted header" in str(report.error)
         assert not _eof_marker_diagnostics(reader.diagnostics)
-    with open_archive(io.BytesIO(data), password=_HP_PASSWORD) as reader:
+    with open_archive(
+        io.BytesIO(data), password=_HP_PASSWORD, streaming=streaming
+    ) as reader:
+        # members() is random-access only; scan_members() is the streaming listing.
         with pytest.raises(TruncatedError):
-            reader.members()
+            reader.scan_members() if streaming else reader.members()
 
 
 @requires("cryptography")
@@ -289,14 +293,50 @@ def test_rar5_header_encrypted_cut_at_a_header_boundary_warns() -> None:
 
 
 @requires("cryptography")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 @pytest.mark.parametrize(
     "cut",
     # 1-16: inside the end block's ciphertext; 17-23: inside its salt.
     [1, 8, 16, 17, 23],
 )
-def test_rar4_header_encrypted_cut_in_last_header_is_truncated(cut: int) -> None:
+def test_rar4_header_encrypted_cut_in_last_header_is_truncated(
+    cut: int, streaming: bool
+) -> None:
     data = _hp_fixture("encrypted_header__rar4.rar")
-    _assert_truncated_listing(data[:-cut], members=6, streaming=False)
+    _assert_truncated_listing(data[:-cut], members=6, streaming=streaming)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    ("length", "members"),
+    # Both lengths end inside a FILE header past its first cipher block, after
+    # encrypted headers whose CRC16 matched.
+    [(250, 2), (480, 4)],
+)
+def test_rar4_header_encrypted_cut_after_a_proven_key_is_truncated(
+    length: int, members: int, streaming: bool
+) -> None:
+    """RAR3 has no password check value, but a decrypted header whose CRC16 matches
+    proves the key: the walk already takes a mismatch as a wrong password. From then
+    on, a header that runs out of bytes part-way is a cut, as in RAR5 with a verified
+    check value."""
+    data = _hp_fixture("encrypted_header__rar4.rar")
+    _assert_truncated_listing(data[:length], members=members, streaming=streaming)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("length", [44, 60, 91])
+def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_is_a_wrong_password(
+    length: int,
+) -> None:
+    """Inside the first encrypted header (bytes 44-91 of the fixture) no header has
+    decrypted yet, so nothing proves the key, and a garbage header size from a wrong
+    key also runs to the end of the file. That stays a wrong-password error."""
+    data = _hp_fixture("encrypted_header__rar4.rar")
+    with pytest.raises(EncryptionError, match="wrong password"):
+        with open_archive(io.BytesIO(data[:length]), password=_HP_PASSWORD) as reader:
+            reader.members()
 
 
 @requires("cryptography")

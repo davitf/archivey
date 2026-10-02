@@ -124,8 +124,10 @@ def test_short_header_salt_or_iv_is_a_cut_not_a_wrong_password(
 
 
 @requires("cryptography")
-@pytest.mark.parametrize("cut", [436, 492, 564])
-def test_rar3_file_ending_where_a_header_salt_starts_is_a_clean_end(cut: int) -> None:
+@pytest.mark.parametrize(("cut", "expected"), [(436, 4), (492, 5), (564, 6)])
+def test_rar3_file_ending_where_a_header_salt_starts_is_a_clean_end(
+    cut: int, expected: int
+) -> None:
     """RAR3 with encrypted headers ending exactly where the next salt would start
     lists the members before it, as a plain RAR3 walk does and as unrar does (exit 0
     for ``l`` and ``t``). RAR 1.5-4 writers may omit the end block, so nothing tells
@@ -135,8 +137,7 @@ def test_rar3_file_ending_where_a_header_salt_starts_is_a_clean_end(cut: int) ->
     archive = parse_rar_archive(io.BytesIO(full[:cut]), password="header_password")
     assert archive.truncated is None
     names = [m.filename for m in archive.members]
-    assert names == [m.filename for m in complete.members][: len(names)]
-    assert names
+    assert names == [m.filename for m in complete.members][:expected]
 
 
 @requires("cryptography")
@@ -214,6 +215,10 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
 ) -> None:
     """Red-green for thread 1: if ``tell`` subtracted leftover ``_buf``, listing
     these fixtures fails — the next salt/IV is read from inside AES padding.
+
+    The misread salt decrypts a garbage header. In RAR3, once an earlier header's
+    CRC16 has proved the key, a garbage size that runs to the end of the file is
+    reported as a cut, so the failure there is a truncated listing, not a raise.
     """
     import archivey.internal.backends.rar_parser as rar_parser
 
@@ -224,8 +229,12 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
 
     monkeypatch.setattr(rar_parser._HeaderDecryptStream, "tell", plaintext_tell)
     path = _fixture(name)
-    with path.open("rb") as handle, pytest.raises((CorruptionError, EncryptionError)):
-        parse_rar_archive(handle, password="header_password")
+    with path.open("rb") as handle:
+        try:
+            archive = parse_rar_archive(handle, password="header_password")
+        except (CorruptionError, EncryptionError):
+            return
+    assert archive.truncated is not None
 
 
 def test_rar3_sha1_hashes_then_mutates_bytearray_seed() -> None:

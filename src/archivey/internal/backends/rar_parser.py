@@ -1125,8 +1125,10 @@ class _HeaderDecryptStream:
         self._source = source
         self._stage = open_aes_decrypt_stage(AesParams(key=key, iv=iv))
         self._buf = bytearray()
-        #: Set once a read found fewer than 16 ciphertext bytes left: the file ends
-        #: inside this header (a salt or IV is only written in front of a header).
+        #: Set once a read found fewer than 16 ciphertext bytes left. Whether that
+        #: means the file was cut inside this header is the caller's to judge: an
+        #: unproved key decrypts a garbage header size that reads to the end of
+        #: the file as well.
         self.hit_eof = False
 
     def tell(self) -> int:
@@ -1570,6 +1572,10 @@ def _parse_rar3(
     members: list[RarMemberInfo] = []
     needs_next_volume = False
     truncated: str | None = None
+    # Set once an encrypted header decrypted with a matching CRC16. The walk treats a
+    # mismatch as proof of a wrong password, so a match proves the password the same
+    # way. Each header has its own salt, so it proves nothing about a later salt.
+    password_proven = False
 
     while True:
         header_fd: _Readable = source
@@ -1577,6 +1583,8 @@ def _parse_rar3(
         # header is garbage that fails the size/CRC checks below, indistinguishable from
         # corruption. When this block is encrypted, surface such failures as
         # EncryptionError so password candidates keep iterating (see _read_rar5_block).
+        # Once ``password_proven`` is set, a header that runs out of bytes part-way
+        # is a cut instead, as in the RAR5 walk with a verified check value.
         block_encrypted = has_header_encryption
         header_start = source.tell()
         if has_header_encryption:
@@ -1587,8 +1595,9 @@ def _parse_rar3(
             # Nothing here depends on the password being right: the salt read and the
             # key derivation fail the same way for every candidate, so their errors
             # (a spent derivation budget) propagate as they are. A wrong password
-            # shows up later, when the decrypted header does not parse. A salt the
-            # file holds only part of is a cut, reported after the members listed.
+            # shows up later, when the decrypted header does not parse or its CRC16
+            # does not match. A salt the file holds only part of is a cut, reported
+            # after the members listed.
             # No salt at all is a clean end, as in a plain walk: RAR 1.5-4 writers may
             # omit ENDARC, and unrar lists such a file and exits 0 (rar.md §1).
             salt = read_exact(source, 8)
@@ -1630,6 +1639,13 @@ def _parse_rar3(
                 hdata = buf
         except CorruptionError as exc:
             if block_encrypted:
+                if (
+                    password_proven
+                    and isinstance(header_fd, _HeaderDecryptStream)
+                    and header_fd.hit_eof
+                ):
+                    truncated = _encrypted_header_cut(header_start)
+                    break
                 raise wrong_password_error(
                     "Failed to decrypt RAR3 headers (wrong password?)"
                 ) from exc
@@ -1668,6 +1684,7 @@ def _parse_rar3(
                 raise CorruptionError(
                     f"RAR3 MAIN header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
                 )
+            password_proven = password_proven or block_encrypted
             if flags & _RAR3_MAIN_COMMENT:
                 comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
             _seek_after_packed(source, data_offset, add_size)
@@ -1707,6 +1724,7 @@ def _parse_rar3(
                 raise CorruptionError(
                     f"RAR3 FILE header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
                 )
+            password_proven = password_proven or block_encrypted
 
             if block_type == _RAR3_FILE:
                 # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we

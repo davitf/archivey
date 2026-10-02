@@ -269,8 +269,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before the cut and then emits `ARCHIVE_EOF_MARKER_MISSING`
   (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
   A cut inside a member's data, or inside a header of an archive with encrypted headers,
-  is `TruncatedError` on the listing. RAR 1.5-4 archives
-  may legitimately lack the end block, so a cut between their blocks still lists as
+  is `TruncatedError` on the listing, after the members before it. The exception is a
+  cut past an encrypted header's first 16-byte block before anything has proved the
+  password: a wrong password looks the same, so that still raises `EncryptionError`
+  ("wrong password?") at open, even with the right password. It happens inside the
+  first encrypted header of a RAR 1.5-4 archive, and inside any header of a RAR5
+  archive whose encryption record has no password check value. RAR 1.5-4 archives may
+  legitimately lack the end block, so a cut between their blocks still lists as
   complete.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
