@@ -1,9 +1,8 @@
 """Second cross-format audit: the public reading API, parity between backends, and the
 ``list`` / ``info`` / ``test`` CLI verbs.
 
-Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` with the
-defect it pins, so a fix turns it into an XPASS failure and the marker has to go. A
-fixed finding's test stays unmarked as a regression test.
+These are regression tests for the second audit's findings: each test asserts the
+promised behaviour, and the section headings name the finding (``C<n>``, ``X<n>``).
 Fixtures are built in the test from bytes, from the declarative corpus, or from the
 committed RAR fixtures; nothing new is committed.
 """
@@ -40,8 +39,12 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     EncryptionError,
+    LinkTargetNotFoundError,
+    PackageNotInstalledError,
+    ReadError,
     TruncatedError,
 )
+from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
 from tests.sample_archives import CORPUS, corpus_archive_path
 
@@ -735,6 +738,56 @@ def test_cli_test_7z_symlink_cycle_is_not_a_failure(tmp_path: Path) -> None:
     assert main(["test", str(archive)], out=io.StringIO(), err=err) == EXIT_OK, (
         err.getvalue()
     )
+
+
+class _LinkOpenStub:
+    """A reader whose ``open()`` reads the link's target, then raises ``exc``."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def open(self, member: ArchiveMember) -> None:
+        member.link_target = "target.txt"
+        raise self.exc
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(LinkTargetNotFoundError("Link target not found"), id="absent"),
+        pytest.param(ReadError("Link cycle detected at 'a'"), id="cycle"),
+        pytest.param(
+            ArchiveyUsageError(
+                "Cannot open member 'd': type is 'directory' (not a file)"
+            ),
+            id="directory",
+        ),
+    ],
+)
+def test_cli_test_ignores_where_a_link_points(exc: Exception) -> None:
+    from archivey.cli.test_cmd import _verify_link
+
+    link = ArchiveMember(type=MemberType.SYMLINK, name="l")
+    _verify_link(_LinkOpenStub(exc), link)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(PackageNotInstalledError("pyppmd is not installed"), id="pkg"),
+        pytest.param(CorruptionError("CRC mismatch"), id="corrupt"),
+        pytest.param(ReadError("some other read error"), id="read"),
+        pytest.param(ArchiveyUsageError("The reader is closed"), id="usage"),
+    ],
+)
+def test_cli_test_raises_other_errors_from_a_link_open(exc: Exception) -> None:
+    """Only the three errors about where a link points are ignored once its target
+    is read; a target that cannot be opened, or a usage error, is not a clean link."""
+    from archivey.cli.test_cmd import _verify_link
+
+    link = ArchiveMember(type=MemberType.SYMLINK, name="l")
+    with pytest.raises(type(exc)):
+        _verify_link(_LinkOpenStub(exc), link)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

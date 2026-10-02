@@ -286,9 +286,10 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
 
     A member's verifier forfeits its checksum on a seek off the read frontier (ADR
     0014), so by default any position-changing seek means the digest can no longer be
-    reached, until a seek back to 0 re-arms it. Pass ``seek_forfeits=False`` for a digest that survives seeks (the
-    WinZip AES HMAC, which the decrypt stage completes over the ciphertext at the
-    end): only a read that reaches ``size`` counts there, wherever it started.
+    reached, until a seek back to 0 re-arms it. Pass ``seek_forfeits=False`` for a
+    digest that survives seeks (the WinZip AES HMAC, which the decrypt stage
+    completes over the ciphertext at the end): only a read that reaches ``size``
+    counts there, wherever it started.
     """
 
     readinto_passthrough = False

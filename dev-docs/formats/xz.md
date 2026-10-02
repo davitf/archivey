@@ -190,14 +190,14 @@ valid block naming a filter this liblzma lacks is therefore unsupported, not dam
 
 **A check liblzma cannot compute is a warning, not an error.** liblzma decodes a stream
 whose header names such a check ID without verifying it, and reports that only through
-`LZMA_TELL_UNSUPPORTED_CHECK`, which CPython never sets; its "Unsupported integrity
-check" error is therefore never raised. `streams/xz.py` reads the check ID from each
-stream header (or, for a block resume after a seek, from the footer the seek point was read from)
-and emits `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`, `algorithm="xz
-check N"`) when `lzma.is_check_supported` says no, then keeps reading, as `xz -d` does (it
-warns, decompresses, and exits 2). Once per check ID per decompressor stream, so re-decoding after a seek does not
-repeat it; a single-file archive reports it at open too, from the one-byte probe. Check
-ID 0 declares no check and is not reported.
+`LZMA_TELL_UNSUPPORTED_CHECK`, which CPython never sets; its "Unsupported integrity check"
+error is therefore never raised. `streams/xz.py` reads the check ID from each stream header
+(or, for a block resume after a seek, from the footer the seek point was read from) and
+emits `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`, `algorithm="xz check
+N"`) when `lzma.is_check_supported` says no, then keeps reading, as `xz -d` does (it warns,
+decompresses, and exits 2). Once per check ID per decompressor stream, so re-decoding after
+a seek does not repeat it; a single-file archive reports it at open too, from the one-byte
+probe. Check ID 0 declares no check and is not reported.
 
 ### 2.4 Extract
 
