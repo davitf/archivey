@@ -8,7 +8,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import NoReturn, TextIO
+from typing import NoReturn, TextIO, cast
 
 import archivey
 from archivey import (
@@ -537,7 +537,12 @@ def main(
     ``out`` and ``err`` carry the operation's own output. argparse's usage errors
     (unknown flags, a missing archive) still print to the process ``sys.stderr``.
     """
-    out_stream = out if out is not None else sys.stdout
+    # Archive text (member names, comments) is printable but may not be encodable: a
+    # cp1252 console, PYTHONIOENCODING=ascii. The interpreter's stderr already escapes
+    # what it cannot encode; stdout raises, so it gets the same errors handler here.
+    out_stream = cast(
+        TextIO, _BackslashReplacingWriter(out if out is not None else sys.stdout)
+    )
     err_stream = err if err is not None else sys.stderr
     raw = list(sys.argv[1:] if argv is None else argv)
 
@@ -580,6 +585,32 @@ def main(
     except KeyboardInterrupt:
         print("interrupted", file=err_stream)
         return 130
+
+
+class _BackslashReplacingWriter:
+    """A text stream's ``write`` with ``errors="backslashreplace"``, as on ``sys.stderr``.
+
+    Wraps rather than reconfigures, so a stream the caller passed as ``out=`` is left as
+    it was. ``TextIOWrapper.write`` encodes the whole string before buffering any of it,
+    so a write that raises ``UnicodeEncodeError`` has written nothing, and is retried
+    with what the stream cannot encode escaped.
+    """
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            encoding = getattr(self._stream, "encoding", None)
+            if not encoding:
+                raise
+            escaped = text.encode(encoding, "backslashreplace").decode(encoding)
+            return self._stream.write(escaped)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
 
 
 def _silence_broken_pipe() -> None:

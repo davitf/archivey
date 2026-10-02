@@ -194,7 +194,7 @@ class EncryptionError(ReadError):
 
 
 class LinkTargetNotFoundError(ReadError):
-    """A symlink/hardlink target is absent from the archive."""
+    """A symlink/hardlink target, or a file copy's source, is absent from the archive."""
 
 
 class ExtractionError(ArchiveyError):
@@ -238,7 +238,7 @@ class ResourceLimitError(ArchiveyError):
     """A configured listing, extraction, decoder or spool resource limit was exceeded.
 
     Covers :class:`~archivey.config.ListingLimits` materialization caps,
-    parse-time ``max_members`` on 7z and RAR,
+    parse-time ``max_members`` on 7z, RAR and ISO,
     :class:`~archivey.config.ExtractionLimits` bomb guards,
     :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
     and key-derivation work, and :class:`~archivey.config.SpoolLimits`, the cap on

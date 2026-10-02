@@ -24,7 +24,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
 
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
 
@@ -220,10 +221,15 @@ class ScanRaceContext(_JsonSafeContext):
 class ArchiveEofContext(_JsonSafeContext):
     """The end of the archive did not look the way the format says it should.
 
-    Three checks share this shape, told apart by ``expected_marker``:
+    Four checks share this shape, told apart by ``expected_marker``:
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing, short, or a non-null block.
+    - ``"end_of_archive_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a RAR5 archive, or
+      a volume of a RAR5 set, ends without the end-of-archive block its writers always
+      put last, so the file was most likely cut at a header boundary. ``format`` is
+      ``"rar"``, ``observed_kind`` is ``"absent"`` and both byte counts are 0: the
+      block has no fixed size.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — the trailer was complete but a
       non-zero byte follows it within the first MiB past it, so the file carries
       something the listing did not account for. ``observed_bytes`` is that byte's
@@ -525,7 +531,7 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
             ),
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: (
                 "expected_marker",
-                frozenset({"two_zero_blocks"}),
+                frozenset({"two_zero_blocks", "end_of_archive_block"}),
             ),
             DiagnosticCode.ARCHIVE_TRAILING_DATA: (
                 "expected_marker",
@@ -645,7 +651,33 @@ class DiagnosticPolicy:
     )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "overrides", _freeze_mapping(self.overrides))
+        # Converted, not only checked, as ``ArchiveyConfig`` converts its enum fields:
+        # ``resolve`` answers by lookup and the collector tests the answer with ``is``,
+        # so ``default="raise"`` or a code spelled as its name would construct fine and
+        # then never raise. After this the fields always hold members.
+        call = "DiagnosticPolicy()"
+        object.__setattr__(
+            self,
+            "default",
+            coerce_enum(
+                self.default, DiagnosticDisposition, call=call, param="default="
+            ),
+        )
+        overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
+        for key, value in _freeze_mapping(self.overrides).items():
+            code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
+            disposition = coerce_enum(
+                value, DiagnosticDisposition, call=call, param="overrides= value"
+            )
+            if overrides.setdefault(code, disposition) is not disposition:
+                # Two spellings of one code (its name and the member) that disagree:
+                # keeping either would silently drop what the other asked for.
+                raise ArchiveyUsageError(
+                    f"{call} got two dispositions for overrides= key "
+                    f"{code.value!r}: {overrides[code].value!r} and "
+                    f"{disposition.value!r}."
+                )
+        object.__setattr__(self, "overrides", MappingProxyType(overrides))
 
     def __hash__(self) -> int:
         # The generated frozen-dataclass hash would hash ``overrides``, and a

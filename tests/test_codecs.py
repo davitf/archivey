@@ -22,6 +22,7 @@ import pytest
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -1662,10 +1663,39 @@ def test_verify_seek_forfeits_checksum_keeps_length() -> None:
         expected_size=len(CONTENT) + 4,
     )
     assert stream.read(10) == CONTENT[:10]
-    stream.seek(0)
+    stream.seek(5)
     assert not stream._verifier.digests_enabled
     with pytest.raises(TruncatedError):
         stream.read(-1)
+    stream.close()
+
+
+@pytest.mark.parametrize("first_seek", [5, len(CONTENT)])
+def test_verify_rewind_to_start_rearms_checksum(first_seek: int) -> None:
+    """A seek to 0 re-arms the CRC: a read from there to the end is fully verified."""
+    stream = VerifyingStream(
+        io.BytesIO(CONTENT),
+        {HashAlgorithm.CRC32: _crc32(CONTENT + b"x")},  # mismatches when checked
+        expected_size=len(CONTENT),
+    )
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(first_seek)
+    assert not stream._verifier.digests_enabled
+    stream.seek(0)
+    assert stream._verifier.digests_enabled
+    with pytest.raises(CorruptionError):
+        stream.read(-1)
+    stream.close()
+
+    stream = VerifyingStream(
+        io.BytesIO(CONTENT),
+        {HashAlgorithm.CRC32: _crc32(CONTENT)},
+        expected_size=len(CONTENT),
+    )
+    assert stream.read(-1) == CONTENT
+    stream.seek(first_seek)
+    stream.seek(0)
+    assert stream.read(-1) == CONTENT  # hashers start again, so no false mismatch
     stream.close()
 
 

@@ -244,7 +244,8 @@ end, in encode order, in its only LZMA1/LZMA2 filter.
 
 Every decoder of a folder runs at once: the stages of a chain are stacked streams, and
 a BCJ2 folder's branches run side by side. When a folder has more than one decoder
-that declares memory (LZMA dictionary sizes and PPMd memory sizes), their sum SHALL be
+that declares memory (LZMA dictionary sizes, PPMd memory sizes, and the window of a zstd
+frame read directly from a pack stream), their sum SHALL be
 checked against `DecoderLimits.max_decoder_memory` before any of them is built, and
 exceeding it SHALL raise `ResourceLimitError`.
 
@@ -596,7 +597,7 @@ input and SHALL NOT drain an input. It SHALL NOT allocate from a declared size: 
 is produced in bounded blocks, and each input is read in bounded blocks.
 
 The decoders of a BCJ2 folder's branches run at once, so the memory they declare (LZMA
-dictionary sizes and PPMd memory sizes) SHALL be checked together against
+dictionary sizes, PPMd memory sizes and zstd windows) SHALL be checked together against
 `DecoderLimits.max_decoder_memory`, before any branch decoder is built, and exceeding it
 SHALL raise `ResourceLimitError`. This is one case of the folder-wide sum in "Decode
 folder coder chains through compressed-streams".

@@ -80,8 +80,40 @@ rarfile’s probe order is `unrar` → `unar` → `7z`/`7zz` → `bsdtar`, with
 ## `unar`
 
 `unar -o -` concatenates selected members to stdout (no framing). Matches
-`unrar p` on stored/nonsolid, solid **without** empty files, solid RAR4 **with**
-empty files, volumes, correct-password encryption, hostile names (by `-i` index).
+`unrar p` on the committed fixtures that are stored/nonsolid, solid **without** empty
+files, solid RAR4 **with** empty files, volumes, correct-password encryption, hostile
+names (by `-i` index). It does not match on every compressed RAR5 member: 1.10.1 drops
+some, below.
+
+### Compressed RAR5 member dropped — exit 0
+
+apt 1.10.1 writes nothing for a compressed RAR5 member whose last compressed byte uses
+6–8 of its bits, solid or not, and exits 0
+with empty stderr under `-o -`. About 1–6% of `-m3` members of small random text did
+this. The 47-byte repro, with RAR 7.00:
+
+```sh
+printf 'ellaltagma\nlpa \n  gaa deta del beta ama \n bealp' > f.txt
+rar a -ma5 t.rar f.txt
+unar -o - t.rar | wc -c    # 0; unrar p writes 47
+```
+
+The cause is Debian's `CSInputBuffer-bit-string-reading.patch`, applied only to the
+Debian/Ubuntu 1.10.1 package: its bit reader raises end of file when fewer bits remain
+than a Huffman lookup peeks, though the code it uses is shorter. Built from source
+(2026-10-01), upstream 1.10.1, 1.10.7, 1.10.8 and master decode the repro, the fixtures and
+300 generated RAR5 archives correctly; the Debian build drops 27 of 300 archives' members,
+and the same build without the patch drops none. That patch is also why apt 1.10.1 loses
+`FILE1.TXT` in the RAR 1.5 fixture. The empty-member failure below is a separate, upstream
+bug and is unrelated.
+
+A run of one entry (`-i k`) writes the member exactly or not at all. A run of several
+entries of a solid archive loses the dropped member and can go on to lose later ones,
+or write stale window bytes for one: the bytes at the dropped member's offset in the
+concatenation are then someone else's, and often as many as its declared size. Only
+the member's CRC32 or BLAKE2sp tells them apart, so archivey's `unar` solid pass reads a
+member with neither through a run of its own. Fixtures: `tests/fixtures/rar/unar_drop*`
+and `unar_stale*`. The 1.10.8 lineage was not measured for this.
 
 ### Solid RAR5 + empty FILE — stdout **and** disk
 

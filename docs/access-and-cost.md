@@ -113,9 +113,9 @@ does it varies:
 Encrypted members seek like any other when `seekable_members=True`; the cost is the
 codec's. ZipCrypto restarts decryption from the member's start on a backward seek.
 WinZip AES and encrypted 7z restart at the target's cipher block. A seek that moves
-the position gives up a CRC check, but not WinZip AES's HMAC: the HMAC covers the
-ciphertext, so the read that reaches the member's end first reads, without decrypting,
-whatever ciphertext your seeks skipped, and then checks it.
+the position gives up a CRC check until a seek back to 0, but not WinZip AES's HMAC:
+the HMAC covers the ciphertext, so the read that reaches the member's end first reads,
+without decrypting, whatever ciphertext your seeks skipped, and then checks it.
 
 A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
 seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
@@ -165,6 +165,13 @@ raises `PackageNotInstalledError` naming `[seekable]` — even without
 `AUTO` treats the accelerator as an enhancement and falls back to the stdlib decoder
 without raising. The stream is still seekable, but a backward seek may re-decode from
 the start. `use_indexed_bzip2` behaves the same way for bzip2.
+
+An accelerator raises on the same corrupt input as the stdlib decoder, with one kind of
+exception: crafted stream boundaries that the data's own checksums cannot see. Inside a
+ZIP member, a second compressed stream or bytes after the first stream's end end the
+member on the stdlib path, while the accelerator reads on; the member's declared size and
+CRC then decide. In a multi-member `.gz`, rapidgzip does not check the length field
+(ISIZE) of a member before the last, but it does check every member's CRC.
 
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 

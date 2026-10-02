@@ -35,10 +35,12 @@ from archivey import (
 )
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unar
@@ -74,6 +76,21 @@ _REFUSED: dict[tuple[str, str], str] = {
     },
     ("rar15-comment.rar", "FILE1.TXT"): "RAR 1.5",
 }
+# Members unar 1.10.1 drops, and the members after them in a solid run, whose bytes
+# then go missing or are stale: ``scripts/gen_rar_fixtures.py`` ``_build_unar_drop``.
+# Each must read back exactly or fail as truncated or corrupt, never as wrong bytes.
+_UNAR_DROPS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("unar_drop__.rar", "f.txt"),
+        ("unar_drop_solid__.rar", "f.txt"),
+        *(
+            (fixture, name)
+            for fixture in ("unar_stale_solid__.rar", "unar_stale_nocrc_solid__.rar")
+            for name in ("c.txt", "d.txt", "e.txt")
+        ),
+    }
+)
+_DROP_ERRORS = ("TruncatedError", "CorruptionError")
 # The password each encrypted fixture was written with.
 _PASSWORDS = {
     "encryption__.rar": "password",
@@ -183,7 +200,71 @@ def test_unar_matches_unrar_or_refuses(
             # Without a password, unrar's solid pass reports a later member of the
             # same pipe as truncated; unar's pipe is empty, which says why.
             continue
+        if (path.name, name) in _UNAR_DROPS and got.startswith(_DROP_ERRORS):
+            continue
         assert got == with_unrar[name], name
+
+
+def _unrar_bytes(path: Path) -> dict[str, bytes]:
+    with open_archive(path, config=_UNRAR) as archive:
+        return {m.name: archive.read(m) for m in archive.members() if m.is_file}
+
+
+@requires_binary("unar", "unrar")
+@pytest.mark.parametrize("how", ["read", "stream", "extract"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "unar_drop__.rar",
+        "unar_drop_solid__.rar",
+        "unar_stale_solid__.rar",
+        "unar_stale_nocrc_solid__.rar",
+    ],
+)
+def test_a_member_unar_drops_is_an_error_not_wrong_bytes(
+    tmp_path: Path, name: str, how: str
+) -> None:
+    """unar 1.10.1 drops a compressed RAR5 member whose last packed byte uses 6-8
+    bits, with exit 0. In one solid run over ``unar_stale_*``, ``c.txt`` is dropped
+    and stale window bytes follow, so the bytes at ``c.txt``'s offset are not its own.
+    ``unar_stale_nocrc_solid__.rar`` has ``c.txt``'s CRC32 removed: only a run of its
+    own, which is exact or empty, keeps those bytes from being served as it."""
+    path = _RAR / name
+    expected = _unrar_bytes(path)
+    got: dict[str, bytes | ArchiveyError] = {}
+    with open_archive(path, config=_UNAR) as archive:
+        if "nocrc" in name:
+            assert not archive.get("c.txt").hashes
+        if how == "read":
+            for member in archive.members():
+                if member.is_file:
+                    try:
+                        got[member.name] = archive.read(member)
+                    except ArchiveyError as exc:
+                        got[member.name] = exc
+        elif how == "stream":
+            for member, stream in archive.stream_members():
+                if stream is not None:
+                    try:
+                        got[member.name] = stream.read()
+                    except ArchiveyError as exc:
+                        got[member.name] = exc
+        else:
+            report = archive.extract_all(tmp_path / "out", on_error="continue")
+            for result in report:
+                if result.error is not None:
+                    assert isinstance(result.error, ArchiveyError), result
+                    got[result.member.name] = result.error
+                else:
+                    assert result.path is not None
+                    got[result.member.name] = result.path.read_bytes()
+    assert got.keys() == expected.keys()
+    for member_name, outcome in got.items():
+        if isinstance(outcome, ArchiveyError):
+            assert (name, member_name) in _UNAR_DROPS, (member_name, outcome)
+            assert isinstance(outcome, (TruncatedError, CorruptionError)), outcome
+        else:
+            assert outcome == expected[member_name], member_name
 
 
 @requires_binary("unar")
@@ -888,10 +969,76 @@ def test_stream_volume_set_reads_with_unar(names: tuple[str, ...]) -> None:
         (101, True, "a.r99"),
         (102, True, "a.s00"),
         (901, True, "a.z99"),
-        (902, True, "a.part902.rar"),
+        (902, True, "a.{00"),
+        (1001, True, "a.{99"),
+        (1002, True, "a.|00"),
     ],
 )
 def test_stream_volume_names_follow_the_set_scheme(
     index: int, old_style: bool, expected: str
 ) -> None:
     assert rar_reader._stream_volume_name("a", index, old_style=old_style) == expected
+
+
+@pytest.mark.parametrize("old_style", [False, True])
+def test_stream_volume_names_are_the_names_unrar_walks(old_style: bool) -> None:
+    """Every staged name is the one unrar looks for after the one before it, so a
+    staged set of any length reads to its end (unrar stopped at 901 old-style
+    volumes when the 902nd was named ``partN``)."""
+    for index in range(1, 1500):
+        current = rar_reader._stream_volume_name("a", index, old_style=old_style)
+        assert rar_reader._unrar_next_volume_name(
+            current, old_numbering=old_style
+        ) == rar_reader._stream_volume_name("a", index + 1, old_style=old_style)
+
+
+@pytest.mark.parametrize(
+    ("extra", "old_numbering", "in_place"),
+    [
+        (None, False, True),
+        ("x.part3.rar", False, False),
+        # unrar retries the old-scheme name of the last volume when the
+        # new-scheme one is missing (``OldSchemeTested`` in ``volume.cpp``).
+        ("x.part2.r00", False, False),
+        (None, True, False),
+    ],
+)
+def test_unrar_in_place_check_covers_the_old_scheme_retry(
+    tmp_path: Path, extra: str | None, old_numbering: bool, in_place: bool
+) -> None:
+    """unrar is pointed at the given files only when no file beside the last one
+    answers to a name it would try next, under either scheme. A new-numbering
+    header on ``partN`` names otherwise reads in place; an old-numbering one looks
+    for ``x.part1.r00`` after volume 1, so it is staged."""
+    paths = [tmp_path / "x.part1.rar", tmp_path / "x.part2.rar"]
+    for path in paths:
+        path.write_bytes(b"")
+    if extra is not None:
+        (tmp_path / extra).write_bytes(b"")
+    assert (
+        rar_reader._unrar_finds_exactly(
+            paths, is_volume=True, old_numbering=old_numbering
+        )
+        is in_place
+    )
+
+
+@requires_binary("unar")
+@pytest.mark.parametrize("streamed", [False, True])
+def test_unar_is_refused_past_its_old_style_volume_limit(
+    monkeypatch: pytest.MonkeyPatch, streamed: bool
+) -> None:
+    """unar stops after ``.z99`` (901 volumes) and calls the member damaged, so a
+    longer old-style set is refused before unar runs. The limit is lowered to one
+    so the two-volume fixture stands in for a 902-volume set."""
+    monkeypatch.setattr(rar_reader, "_UNAR_MAX_OLD_STYLE_VOLUMES", 1)
+    names = ("tinyvol_rnn.rar", "tinyvol_rnn.r00")
+    source: object = (
+        [io.BytesIO((_RAR / name).read_bytes()) for name in names]
+        if streamed
+        else _RAR / names[0]
+    )
+    with open_archive(source, config=_UNAR) as archive:  # type: ignore[arg-type]
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(UnsupportedFeatureError, match="old-style"):
+            archive.read(member)

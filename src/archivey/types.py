@@ -185,13 +185,17 @@ class ArchiveFormat:
     def display_name(self) -> str:
         """Human-readable name for this format, e.g. ``"ZIP"``, ``"TAR_GZ"``.
 
-        Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …);
-        falls back to ``repr()`` for an ad-hoc combination not in the named set.
-        ``_FORMAT_NAMES`` is populated just after the class definition — safe at
-        runtime because this property is never called before the module is fully loaded.
+        Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …).
+        A pair with no named constant, such as ``tar.lz``, gets
+        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``); its
+        ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
+        populated just after the class definition — safe at runtime because this
+        property is never called before the module is fully loaded.
         """
         name = _FORMAT_NAMES.get(self)
-        return name if name is not None else repr(self)
+        if name is not None:
+            return name
+        return f"{self.container.name}_{self.stream.name}"
 
     def __repr__(self) -> str:
         name = _FORMAT_NAMES.get(self)
@@ -433,6 +437,20 @@ EXTRA_IS_JUNCTION: Final = "is_junction"
 # point. So a junction written by 7-Zip carries this key and not that one.
 EXTRA_IS_REPARSE_POINT: Final = "is_reparse_point"
 
+# Key in ArchiveMember.extra marking a FILE member whose bytes the archive stores once,
+# under an earlier member: a RAR5 "file reference" (``rar -oi``). The member reads and
+# extracts as an independent file; ``link_target`` names the source as stored and
+# ``link_target_member`` is the source member. Only RAR sets it today; not namespaced,
+# as the idea is not RAR's alone.
+EXTRA_IS_FILE_COPY: Final = "is_file_copy"
+
+# Key in ArchiveMember.extra holding the other stored spelling of a member's name, as
+# bytes, when the archive stores the name twice and ``raw_name`` is the spelling
+# ``name`` was decoded from. ZIP sets it when an Info-ZIP Unicode Path extra field
+# (0x7075) names the member: the field's UTF-8 bytes are ``raw_name`` and the header's
+# legacy bytes are here. Not namespaced, as other formats store a name twice too.
+EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
+
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which carries the method-byte offset instead.
@@ -460,6 +478,13 @@ class MemberExtra(dict[str, object]):
     * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
       metadata-only sibling of ``is_junction``: a Windows symlink or junction
       rather than a POSIX one.
+    * ``is_file_copy`` (``bool``) — RAR. A ``FILE`` member whose bytes the archive
+      stores once under an earlier member (a RAR5 file reference, ``rar -oi``).
+      ``link_target`` names that source and ``link_target_member`` is it.
+    * ``alternate_raw_name`` (``bytes``) — ZIP. The other stored spelling of the
+      name, when the archive stores two and ``raw_name`` is the one ``name`` was
+      decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra
+      field (0x7075), the header's legacy bytes.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
@@ -494,6 +519,10 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["is_junction"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["is_file_copy"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["alternate_raw_name"], /) -> bytes: ...
     @overload
     def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
     @overload
@@ -575,7 +604,14 @@ class ArchiveMember:
 
     raw_name: bytes | None = None
     """The member name exactly as stored in the archive, undecoded, or ``None`` when
-    the format stores no name or the bytes cannot be recovered from the decoded one."""
+    the format stores no name or the bytes cannot be recovered from the decoded one.
+
+    ``name`` is ``raw_name`` decoded and normalized. Where the archive stores the
+    name twice, ``raw_name`` is the spelling the name was decoded from: a ZIP name
+    taken from its Info-ZIP Unicode Path extra field (0x7075) has that field's UTF-8
+    bytes here, and the header's bytes in ``extra["alternate_raw_name"]``. One
+    exception remains: an ISO Rock Ridge name that is not UTF-8 and takes its Joliet
+    name keeps the Rock Ridge bytes here."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""
@@ -634,12 +670,16 @@ class ArchiveMember:
     """Owner group name, if recorded."""
 
     link_target: str | None = None
-    """For a symlink/hardlink, the raw target path string as stored."""
+    """For a symlink/hardlink, the raw target path string as stored. For a ``FILE``
+    that is a stored copy of an earlier member (``extra["is_file_copy"]``), the
+    source's path as stored."""
 
     # compare=False: identity is path/type/metadata, not the resolved peer object
     # (resolution is late-bound and would make equality order-dependent).
     link_target_member: "ArchiveMember | None" = field(default=None, compare=False)
-    """For a link, the resolved target member within this archive, if found."""
+    """For a link, the resolved target member within this archive, if found. For a
+    ``FILE`` that is a stored copy (``extra["is_file_copy"]``), the member whose bytes
+    it repeats."""
 
     compression: tuple[CompressionMethod, ...] = field(default_factory=tuple)
     """Codec chain in compress order — pre-filters first, packing codec last."""

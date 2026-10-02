@@ -111,12 +111,21 @@ than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
 `pycdlib` sizes from a header field lands on archivey's bounded read (threat-model O16).
 `open_fp` then reads every volume descriptor, checks that the little- and big-endian path
 tables agree, and walks every tree the image has: the PVD tree, the Joliet tree, and UDF
-descriptors when present. That is where the cost is. After it, listing touches only
-records already in memory (`test_listing_reads_nothing_from_the_image`), which is what
-lets the member walk run without the handle lock. Two exceptions read a directory's
-extent once more, under the handle lock (§2.3): a directory holding a repeated
-identifier, to check the multi-extent flags as written, and a directory holding a file
-whose data ends at the end of the image, to recover its declared length.
+descriptors when present. That is where the cost is, so `ListingLimits` are checked there,
+as `pycdlib` parses, rather than only when members are registered: a hook on
+`DirectoryRecord.parse` counts each record but `.` and `..` against `max_members`, per
+volume descriptor tree, and weighs the bytes of each record, plus each Rock Ridge
+continuation area every time `pycdlib` parses it, against `max_metadata_bytes`. Crossing
+either raises `ResourceLimitError` from `open_archive`, before any member is listed or
+streamed. The counts are a superset of the listing's (a multi-extent file's extra records
+and `rr_moved` count), so an image right at a cap can be refused at open;
+`ListingLimits.UNLIMITED` turns the hook off. UDF descriptors are not counted. After it,
+listing touches only records already in memory
+(`test_listing_reads_nothing_from_the_image`), which is what lets the member walk run
+without the handle lock. Two exceptions read a directory's extent once more, under the
+handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent
+flags as written, and a directory holding a file whose data ends at the end of the image,
+to recover its declared length.
 
 **The namespace is picked once for the image: Rock Ridge, then Joliet, then plain.**
 `ArchiveInfo.extra["iso.namespace"]` reports which. Rock Ridge counts as present when
@@ -212,11 +221,11 @@ What is ISO-specific in turning a record into a member:
   the record's 7-byte date; `TF` also supplies `accessed`. `TF` long-form dates (17 bytes,
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
   that is all zeros is unset and `None`. Any other date that is not a date (a month of
-  13) is `None` plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z, rather than an
-  error. `created` is set only from
-  a `TF` creation time, which few writers record; the `TF` attribute-change time (POSIX
-  `st_ctime`) goes to `ctime` and never to `created`. That is the rule after
-  PR #470; before it, `created` fell back to the attribute-change time.
+  13, or 0001-01-01 at a positive GMT offset, whose UTC form is before year 1) is `None`
+  plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z, rather than an error.
+  `created` is set only from a `TF` creation time, which few writers record; the `TF`
+  attribute-change time (POSIX `st_ctime`) goes to `ctime` and never to `created`. That
+  is the rule after PR #470; before it, `created` fell back to the attribute-change time.
 - **POSIX fields.** `mode` (permission bits only), `uid` and `gid` come from `PX`, and
   are `None` outside Rock Ridge. `link_target` is the `SL` path.
 - **Archive info.** `comment` is the volume identifier. `format_version` is `None`:
@@ -341,7 +350,14 @@ ISO-specific only. General extraction and name hazards are §2.4.
   replaces `pycdlib.rockridge.RockRidge.parse` with the System Use filter (§2.2), but that
   wrapper acts only inside `IsoReader`'s own `open_fp` call, where a `ContextVar` is set,
   so other callers are untouched (`test_pycdlib_used_directly_is_not_filtered`). The
+  `ListingLimits` hook on `pycdlib.dr.DirectoryRecord.parse` (§2.2) is gated the same
+  way (`test_the_record_counter_is_inert_outside_archivey_opens`). The
   mutation-harness finding is in [`threat-model.md`](../threat-model.md).
+- **Records multiply what `pycdlib` builds at open.** Every record costs `pycdlib` about
+  0.8 KB of Python objects, 15 to 20 times its size on disc, and records whose Rock Ridge
+  `CE` entries name one shared continuation area each parse it again (1000 records over
+  one 2 KiB area peaked at about 60 times the image). Bounded by the `ListingLimits`
+  hook (§2.2), so an over-limit image costs about the budget, not the image.
 - **A directory's length sizes `pycdlib`'s read.** `pycdlib` clamps a file's length to the
   image but not a directory's, so a root record declaring 4 GiB asked for 4 GiB inside
   `open_archive()`. Closed by routing every read through the source's bound (O16).
@@ -409,6 +425,15 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 - **Whether UDF should be read.** `pycdlib` parses UDF already, so listing from it is
   reachable; the question is whether DVD and Blu-ray images are in scope for 0.2.x.
+- **What `raw_name` holds when a path borrows Joliet names.** ZIP follows the rule that
+  `name` is `raw_name` decoded and normalized: a member named by its 0x7075 Unicode Path
+  field gets those bytes as `raw_name` and keeps the header bytes in
+  `extra["alternate_raw_name"]`. ISO does not yet. Its `raw_name` is a path of
+  per-record names, and the Joliet fallback can borrow a single component, so taking
+  each component "as stored" would mix UTF-16BE and Rock Ridge bytes in one value. The
+  candidate fix is to make the whole path UTF-16BE whenever any component is borrowed,
+  with the Rock Ridge path in `alternate_raw_name`. For now `raw_name` stays the Rock
+  Ridge path bytes, a documented exception (maintainer, 2026-10-01).
 
 ## 8. Verify
 

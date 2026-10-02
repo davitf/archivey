@@ -2578,17 +2578,21 @@ class ExtractionCoordinator:
         even when root calls it, so a ``chmod`` before it would lose exactly the bits
         TRUSTED promises to keep. GNU tar orders the two the same way for this reason.
         """
-        # Ownership only under TRUSTED as root (STRICT/STANDARD never chown).
+        # Ownership only under TRUSTED as root (STRICT/STANDARD never chown). A
+        # negative id is skipped (-1 means "leave unchanged" to chown), and one past
+        # uid_t raises OverflowError before any syscall: both are archive content.
         if (
             self._policy is ExtractionPolicy.TRUSTED
             and member.uid is not None
             and member.gid is not None
+            and member.uid >= 0
+            and member.gid >= 0
             and hasattr(os, "geteuid")
             and os.geteuid() == 0
         ):
             try:
                 os.chown(path, member.uid, member.gid)
-            except OSError:
+            except (OSError, OverflowError):
                 pass
         mode = self._effective_mode(member)
         if mode is not None:

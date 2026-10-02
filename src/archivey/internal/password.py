@@ -69,7 +69,23 @@ def is_wrong_password(error: BaseException | None) -> TypeGuard[EncryptionError]
 
 
 def _to_bytes(password: str | bytes) -> bytes:
-    return password.encode() if isinstance(password, str) else password
+    """``password`` as the bytes every backend consumes.
+
+    A ``str`` from ``sys.argv`` or ``os.fsdecode`` carries each byte that was not
+    UTF-8 as a lone surrogate (``--password $'\\xe9'`` is ``'\\udce9'``);
+    ``surrogateescape`` gives back the bytes the user typed, as ``os.fsencode``
+    does, and a backend then judges them like any other ``bytes`` password. A lone
+    surrogate outside that range stands for no byte and no character.
+    """
+    if isinstance(password, bytes):
+        return password
+    try:
+        return password.encode("utf-8", errors="surrogateescape")
+    except UnicodeEncodeError:
+        raise ArchiveyUsageError(
+            "The password contains a lone surrogate code point, which is neither "
+            "text nor an escaped byte, so it cannot be encoded for any archive format."
+        ) from None
 
 
 class _PasswordCandidates:

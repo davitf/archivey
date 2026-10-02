@@ -80,8 +80,10 @@ def _rarfile_expect_type(info: object) -> MemberType:
         return MemberType.DIRECTORY
     if redir is not None:
         redir_type = redir[0]
-        if redir_type in (4, 5):  # HARD_LINK / FILE_COPY
+        if redir_type == 4:  # HARD_LINK
             return MemberType.HARDLINK
+        if redir_type == 5:  # FILE_COPY: an independent file, its bytes stored once
+            return MemberType.FILE
         if redir_type in (1, 2, 3):  # unix/win symlink / junction
             return MemberType.SYMLINK
     if is_symlink:

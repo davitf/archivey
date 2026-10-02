@@ -332,7 +332,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z, RAR and ISO): `open_archive` itself raises. ISO also weighs the directory records `pycdlib` parses at open against `max_metadata_bytes`. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -348,11 +348,15 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   does not list first: it checks the limits as each member arrives in its one pass, so
   members before the one that crosses a cap are already written when it raises. A
   damaged TAR behaves the same way (see above). `stream_members()` / `streaming=True`
-  stay unguarded by design, except on 7z and RAR where `max_members` is checked at
-  `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or RAR. That
-  parse bound is a member count, not a byte budget: `max_metadata_bytes` still fires
-  when the list is materialized. RAR also checks it at `open_archive` against the
-  declared sizes of compressed RAR 1.5/2.x comments, before decoding them.
+  stay unguarded by design, except on 7z, RAR and ISO where `max_members` is checked
+  at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z, RAR or
+  ISO. For 7z and RAR that parse bound is a member count, not a byte budget:
+  `max_metadata_bytes` still fires when the list is materialized. RAR also checks it at
+  `open_archive` against the declared sizes of compressed RAR 1.5/2.x comments, before
+  decoding them. ISO checks it at `open_archive` against the bytes of the directory
+  records `pycdlib` parses, which are more than the text a listing keeps; and ISO
+  counts every directory record of one tree, so an image right at a cap may need a
+  slightly higher one.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
@@ -408,7 +412,7 @@ open the archive again with a new `ArchiveyConfig`.
 
 Bomb guards apply during **extraction**. Listing caps apply when a full member list is
 materialized — prefer `stream_members()` for huge untrusted archives when you only need
-a sequential subset, except on 7z and RAR where `max_members` is already checked at
+a sequential subset, except on 7z, RAR and ISO where `max_members` is already checked at
 open (`stream_members()` / `streaming=True` included). Encrypted 7z folders
 confirm the password by decoding on the first
 member read, which is neither listing nor extract: peak memory is a 64 KiB chunk plus

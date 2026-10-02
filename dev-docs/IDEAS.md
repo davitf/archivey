@@ -230,7 +230,8 @@
   stream.verify()` would spin. Pair the level with the most it could ever reach. The
   ceiling is not static, which is why it is worth exposing rather than deriving: it drops
   when no digest exists, when a decode error abandons verification, and — per ADR 0014 —
-  when a seek off the frontier forfeits the checksum while keeping the length check.
+  when a seek off the frontier forfeits the checksum while keeping the length check
+  (until a seek to 0 re-arms it).
   `CostReceipt`-reports-capability / diagnostics-report-events is the existing shape to
   copy.
 
@@ -527,6 +528,19 @@
 
 ## Performance & robustness
 
+- **Keep the member checksum running through seeks that decode the bytes anyway** —
+  today any seek other than one to position 0 turns the digest off until the next seek
+  to 0 (`MemberVerifier.note_seek`; a rewind to 0 re-arms it, decided 2026-10-01, audit
+  finding C4). In davitf's words: forward seeks in most formats consume the bytes in
+  between, and backward seeks restart the decode from 0, so the CRC could keep being
+  computed through those seeks. Verification is only really lost on formats with true
+  random access (index-based seeks, e.g. xz blocks, lzip members, seekable zstd, 7z/ZIP
+  direct slices) or under an accelerator's index. Investigate when the digest does not
+  actually need to be disabled: the verifier would need to see the bytes a forward seek
+  skips (or the inner to report that its seek decoded them), and a backward seek that
+  restarts from 0 is a rewind to 0 followed by a forward seek. Raised by davitf,
+  2026-10-01.
+
 - **bzip2 accelerator and the standard library disagree past the end of a stream** —
   two cases, found 2026-09-29 while fixing the empty-trailing-stream report.
   - **A stream after zero padding.** For `bzip2 -c a; head -c 100 /dev/zero; bzip2 -c b`,
@@ -612,6 +626,12 @@
   256 MiB and `2**24`; only the name is left. (The LZMA dictionary cap landed on the same field
   rather than a new one, and 256 MiB also covers it: xz `-9` and 7-Zip's presets declare
   64 MiB at most.) Adding a class attribute later is purely additive.
+  **It may also lower `ListingLimits.max_members`** (davitf, 2026-10-01): a 315-byte 7z
+  declaring a million entries costs about 858 MB at open under the 1 048 576 default.
+  262 144 would cost about 220 MB and still covers a Linux kernel tree (~90 000 files)
+  about three times; Android source trees and dataset archives can exceed it.
+  `max_metadata_bytes` cannot stand in: it counts text, and the cost is a fixed
+  per-member object; charging that cost against 64 MiB would cap at about 78 000 members.
   **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on
   the table: `STRICT` is taken in spirit by `DiagnosticPolicy.strict()` and by
   archivey's use of "strict" for how harshly corruption is treated, while `UNTRUSTED`
@@ -867,6 +887,13 @@
   0.2.0** when deciding debt-ledger Q2 (2026-07-20): bands are aspirational;
   measured ratios are good enough for everyday use. Same story for 7z and RAR
   listing against their ~1.25× band.
+  **It is also the memory lever** (davitf, 2026-10-01, parked): a 7z member costs
+  about 1.0 KB at open and 1.2 KB after `members()` (tracemalloc, 100 000 entries) —
+  `ArchiveMember` 280 B, the retained `SevenZipFileRecord` 150 B, the by-name index
+  125 B, two near-always-empty dicts (`extra`, `hashes`) 130 B, `_MemberRaw` 100 B,
+  the rest names, a datetime and boxed ints. Sharing the empty dicts, a by-name list
+  only on repeats and dropping the duplicate record gets to ~600 B; only lazy members
+  would change what `max_members` costs (858 MB for a 315-byte million-entry 7z).
 
 ## Strategy & adoption (2026-07 review backlog)
 

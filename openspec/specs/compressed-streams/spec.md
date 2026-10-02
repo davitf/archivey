@@ -263,21 +263,24 @@ short) so `read(); close()` cannot silently accept bad content. `finish_on_close
 SHALL close the inner and MUST NOT introduce a first content `TruncatedError` /
 `CorruptionError` solely because the caller is closing.
 
-A seek off the sequential frontier SHALL forfeit digest verification for the rest
-of the handle's life. Length / truncation / over-run checks SHALL remain active and
-SHALL key off bytes actually read (not a seek-updated logical position alone). When a
-seek jumps the logical position to/past the declared size without reading the
-intervening bytes, concluding SHALL read that skipped gap (bounded by the declared
-size) **and probe one byte past the declared size**, reproducing the same length +
-over-run verdict a sequential reaching read runs, rather than returning `b""` blind.
-So a past-EOF `seek(declared_size)` on a **truncated** member MUST NOT silence
-`TruncatedError`, and on an **over-long** member (one that decodes past its declared
-size) MUST NOT silence `CorruptionError`. Symmetrically, the same jump on a
-**complete** member MUST NOT fabricate either fault: a seek to/past the declared size
-followed by `read` returns `b""` (standard `BinaryIO` past-EOF semantics), and the
-`seek(member.size); read(1)` completeness idiom works.
-A member already read to its declared size is length-verified, so a later seek past
-the end concludes with no extra reads.
+A seek off the sequential frontier SHALL forfeit digest verification until a seek to
+position 0, which SHALL re-arm every check: the digests start again and the read
+frontier is cleared, so a read from position 0 to the end after any seeks is
+verified as a first read is, for every format. Length / truncation / over-run checks
+SHALL remain active and SHALL key off bytes actually read (not a seek-updated
+logical position alone). When a seek jumps the logical position to/past the declared
+size without reading the intervening bytes, concluding SHALL read that skipped gap
+(bounded by the declared size) **and probe one byte past the declared size**,
+reproducing the same length + over-run verdict a sequential reaching read runs,
+rather than returning `b""` blind. So a past-EOF `seek(declared_size)` on a
+**truncated** member MUST NOT silence `TruncatedError`, and on an **over-long**
+member (one that decodes past its declared size) MUST NOT silence `CorruptionError`.
+Symmetrically, the same jump on a **complete** member MUST NOT fabricate either
+fault: a seek to/past the declared size followed by `read` returns `b""` (standard
+`BinaryIO` past-EOF semantics), and the `seek(member.size); read(1)` completeness
+idiom works. A member already read to its declared size is length-verified, so a
+later seek past the end concludes with no extra reads, unless a seek to 0 has
+re-armed the checks since.
 
 Deliberate partial read then close before clean EOF remains quiet for
 digest/length verification (abandon before verdict), modulo the length checks
@@ -303,8 +306,9 @@ Once the public `ArchiveStream` has raised a content verdict (`CorruptionError` 
 again until the caller seeks, with the traceback it was first raised with rather than
 one that grows per call. A seek SHALL succeed and restart the decode, so the prefix
 reads again, as a truncated `DecompressorStream` does; the read that then reaches the
-end SHALL raise the verdict again and return no bytes, although the seek forfeited the
-digest check. A read reaches the end when it returns short or empty, is `read(-1)`, or
+end SHALL raise the verdict again and return no bytes, whether or not the seek forfeited
+the digest check (a seek to 0 re-arms it, and the damage found again raises the same
+error object). A read reaches the end when it returns short or empty, is `read(-1)`, or
 leaves the stream at or past the member's declared size; a full-length
 `read(member.size)` after `seek(0)` is one. A caller who catches the verdict and seeks
 back SHALL NOT read the damaged member as complete, clean data. `tell()`, `seekable()`
@@ -342,6 +346,7 @@ fresh stream.
 | Bounded `read(n)` over a short-reading inner | Full-count: returns `n` or short only at terminal boundary |
 | `read(-1)` over an over-long inner with a declared size | Stopped at the declared size; `CorruptionError`; inner not read unbounded past the cap |
 | Seek off frontier then short of declared size | Checksum forfeited; `TruncatedError` still raises on completing/empty read |
+| Any seeks, then `seek(0)` and a read to the end over a digest mismatch | Checksum re-armed by the seek to 0; `CorruptionError` |
 | Seek to/past declared size on a **complete** member, then `read` (incl. `seek(size); read(1)`) | Returns `b""`; no fabricated `TruncatedError` (checksum forfeited by the seek) |
 | Seek to/past declared size on a **truncated** member, then `read` | Concluding reads the skipped gap; `TruncatedError` with the true recoverable length |
 | Seek to/past declared size on an **over-long** member, then `read` | Concluding reads the gap and probes past the declared size; `CorruptionError` (over-run), not a silent `b""` |
@@ -374,7 +379,9 @@ stream.
 When an expected digest cannot be computed because the algorithm is genuinely unknown
 or a backend is missing, the system SHALL emit `DIGEST_UNVERIFIABLE` with algorithm,
 non-secret reason, and member identity when available. Diagnostic policy controls
-collection, logging/callback delivery, member attachment, and escalation.
+collection, logging/callback delivery, member attachment, and escalation. An xz stream
+whose header names a check liblzma cannot compute SHALL likewise emit
+`DIGEST_UNVERIFIABLE` and keep decoding; a stream declaring no check (ID 0) SHALL NOT.
 
 #### Scenario: digest matrix
 
@@ -385,6 +392,7 @@ collection, logging/callback delivery, member attachment, and escalation.
 | Full member read reaches EOF with computable digest mismatch | `CorruptionError` naming the algorithm |
 | Chunked read reaches EOF with mismatch | All valid chunks delivered; following terminal read raises |
 | Caller abandons stream before clean EOF | No digest verdict or mismatch exception |
+| xz stream header names check ID 2 (liblzma cannot compute it) | `DIGEST_UNVERIFIABLE`; bytes still returned unverified |
 | Unverifiable digest resolves to `RAISE` | `DiagnosticRaisedError` halts open/read |
 
 ### Requirement: Public ArchiveStream exposes bounded operation diagnostics
@@ -519,7 +527,17 @@ output SHALL be re-decoded by the non-accelerated decoder over a fresh view of t
 source, which raises or confirms the empty stream. A seek before that first read does not
 bypass the check: on such a stream the accelerator clamps the seek to 0. Accelerator mode
 is a performance choice and SHALL NOT be observable as a difference in whether a corrupt
-source raises.
+source raises, with one exception. Where every byte of output is covered by checks the
+data itself declares, those checks give the verdict, and an accelerator MAY differ from
+the standard-library decoder on stream-boundary malformations they cannot see:
+
+- for a container member that declares its size and CRC (ZIP), a second stream or
+  trailing bytes inside the member's compressed data, which the accelerator MAY read as
+  content where the standard-library decoder stops at the first stream's end; the
+  declared size and CRC then decide, so output that matches both reads and output that
+  breaks either raises;
+- for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
+  when every member's CRC-32 is still checked.
 
 #### Scenario: accelerator error parity
 
@@ -536,4 +554,12 @@ source raises.
 | Case | Expected |
 | --- | --- |
 | `open_archive(corrupt.bz2, seekable_members=True).read(member)` | Raises, matching `seekable_members=False` |
-| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises |
+| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformations listed above |
+
+#### Scenario: a ZIP member with a second stream inside its compressed data
+
+| Member | Accelerator `OFF` | Accelerator `ON` |
+| --- | --- | --- |
+| Two DEFLATE or bzip2 streams; declared size and CRC cover both | `TruncatedError` (decoder stops after the first) | Both streams' content |
+| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `TruncatedError` | `CorruptionError` (CRC) |
+| Two bzip2 streams; declared size and CRC cover the first | First stream's content | `CorruptionError` (output past the declared size) |

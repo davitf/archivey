@@ -605,10 +605,10 @@ same shape as the gzip empty→stdlib fallback. Original write-up below.
   (M0). The RARLAB writer does not emit a compressed (LZ-data) RAR3 symlink
   target, so that case is not in the fixtures. `is_payload_file()` is the
   predictor (`test_solid_symlink_demux_and_link_targets`, RAR5 hardlinks in
-  `test_solid_hardlink_demux_and_targets`). Residual is unfixtured existing
-  kinds — `FILE_COPY` (RAR5 redirect type 5), Windows symlink, Windows
-  junction — and future kinds. A later reader must not conclude the current
-  kinds are all pinned: a kind whose emission `is_payload_file()` gets wrong
+  `test_solid_hardlink_demux_and_targets`; `FILE_COPY`, RAR5 redirect type 5, in
+  `tests/test_audit2_rar.py`). Residual is unfixtured existing kinds — Windows
+  symlink, Windows junction — and future kinds. A later reader must not conclude
+  the current kinds are all pinned: a kind whose emission `is_payload_file()` gets wrong
   still shifts every later member. There is no RAR 1.5/2.x solid-symlink
   fixture.
 - **Why fixable:** Spec’d hardening / shared emission table, as a future change (same

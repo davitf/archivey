@@ -26,14 +26,14 @@ React to specific cases with the subtypes:
 | [`ReadError`][archivey.ReadError] | the archive's data is bad or cannot be read, whether at open (a damaged header) or later; the parent of the next three rows, and the thing to catch when you do not care which. A damaged header raises one of these from `open_archive()`, not `OpenError` |
 | [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
 | [`CorruptionError`][archivey.CorruptionError] | the archive's bytes are damaged: a checksum mismatch, a malformed header or data block, or data cut short. [`TruncatedError`][archivey.TruncatedError], its subclass, marks damage that looks like the data ending early, as a best-effort label (see [The integrity guarantee](#the-integrity-guarantee)) |
-| [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain |
+| [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain, or a RAR file copy names a source it does not contain |
 | [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent — for the whole format at open (ISO without `pycdlib`) or for one member when you read it (PPMd without `pyppmd`) — or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
 | [`ExtractionError`][archivey.ExtractionError] | writing a member to disk failed; the parent of the next two rows |
 | [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member: a path that escapes the destination, a symlink that resolves outside it, a device node, FIFO or socket, a name the destination OS cannot store safely (such as a Windows-reserved name), or a name built to display as something it is not (such as a bidi override). The message says which |
 | [`NameCollisionError`][archivey.NameCollisionError] / [`NameRewrittenError`][archivey.NameRewrittenError] | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
 | [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is recognized but this archive uses something archivey cannot handle: a variant or layout (a raw CD sector image, a 7z coder graph that is not a tree of chains, multi-volume where the format has none) or a request the backend cannot serve (a RAR password with a line break, which `unrar` cannot be given) |
 | [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] | a diagnostic whose disposition you set to `RAISE` fired; carries the `Diagnostic` (see [Diagnostics](#diagnostics)) |
-| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)) |
+| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and comment bytes at open, compressed RAR 1.5/2.x comments by their declared size), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)). So does an `unrar` or `unar` process the system kills with SIGKILL while it reads a RAR member |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
 overlapping stream without `concurrent_members=True`, using a closed reader, calling
@@ -181,6 +181,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | Code | Means |
 | --- | --- |
 | `EMPTY_ARCHIVE` | The listing finished, with no error, and there were no members. Not an error: an empty tar is a real thing (`tar cf empty.tar --files-from /dev/null`), and it is byte-identical to a zero-filled junk file of the same size. |
+| `ARCHIVE_EOF_MARKER_MISSING` | The archive ended without the end marker its format writes, so it may have been cut exactly between two members, which leaves bytes that otherwise read as a complete, shorter archive. The listing still completes; the code fires once, after the members. `context.expected_marker` names the marker: `"two_zero_blocks"` for TAR's two-block null trailer, `"end_of_archive_block"` for the end-of-archive block RAR5 writes at the end of every volume. A trailer-less tar made with `cat` looks the same as a cut one, so this is a warning; `DiagnosticPolicy.strict()` raises it. |
 | `EXTENSION_FORMAT_UNCONFIRMED` | The format came from the **filename**, nothing in the bytes confirmed it, and either the listing came back empty or a read failed. The classic shapes are 32 KiB of zeros called `z.tar` (empty listing) and zeros called `backup.gz` (a read error). On a read error the exception also has `format_unconfirmed=True`, as for `PROBE_FORMAT_UNCONFIRMED`. |
 | `PROBE_FORMAT_UNCONFIRMED` | A single-file format came from a content probe with nothing corroborating it (no matching extension, no inner-TAR upgrade), and a decode failed (at `open_archive`, which decodes the first byte of a seekable single-file source, or on a later read) or a limit refused the read (`ResourceLimitError`, such as a declared LZMA dictionary over `DecoderLimits.max_decoder_memory`) — at any detection confidence. The matching exception also has `format_unconfirmed=True`. After a decode failure, partial output may already have been produced. |
 | `EXPLICIT_FORMAT_LISTED_EMPTY` | You passed `format=`, the listing came back empty, and detection disagrees. `format=` stays an override — wrong extensions are exactly what it is for — so this tells you rather than refusing. |
@@ -271,8 +272,10 @@ when listing ends in terminal damage.
 
 **Read a member from its start to its end, with no seek, and Archivey checks it.**
 Where the archive stores a checksum or an authentication tag, that read verifies it and
-raises if it does not match. Stop early and nothing is checked. Errors always come from `read()`, never from
-`close()` — so a `finally` block can't mask one.
+raises if it does not match. A seek back to the start counts as a fresh start: whatever
+seeks came before, a read from position 0 to the end is checked in full. Stop early and
+nothing is checked. Errors always come from `read()`, never from `close()` — so a
+`finally` block can't mask one.
 
 "To its end" means `read(-1)`, reading until `read()` returns `b""`, or — for a member
 with a declared size — reading that many bytes.
@@ -291,12 +294,15 @@ What that does and does not promise:
   can't tell you which part, or how much. Treat the prefix as unverified: not
   known-good, not known-bad.
 - **A full-length return from a read with no seek means the checksum matched.** Trust
-  it as far as you trust that digest.
-- **After a seek, checking is best effort.** Whatever is decoded is still checked, and
-  damage it reaches still raises. But a seek into a `.xz` or `.lz` file jumps by the
-  file's own index, and a crafted index can send it to the wrong bytes with no error.
-  Checking that would mean decoding everything before the target, which is the cost a
-  seek exists to avoid. When the bytes must be right, read from the start.
+  it as far as you trust that digest. A seek to position 0 does not count against
+  this: it starts the check again.
+- **After a seek elsewhere, checking is best effort.** The member's stored checksum is
+  no longer checked (a WinZip AES HMAC still is), but the length is, and damage that
+  the codec's own checks reach still raises. A seek into a `.xz` or `.lz` file jumps
+  by the file's own index, and a crafted index can send it to the wrong bytes with no
+  error. Checking that would mean decoding everything before the target, which is the
+  cost a seek exists to avoid. When the bytes must be right, seek back to 0 and read to the
+  end.
 - **Once a stream has raised, it keeps raising.** Every later `read()` raises the same
   error. A seek back works and the bytes before the damage read again, but the read
   that reaches the end raises the error again, so seeking back cannot hand you the

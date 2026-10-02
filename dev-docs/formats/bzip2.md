@@ -16,7 +16,7 @@ Registers keep the status; this page states the behaviour and links the row.
 | Backends | The standard library's `bz2.open`. `rapidgzip.IndexedBzip2File` from `[seekable]`, used when `use_indexed_bzip2` selects it (§2.3) |
 | Seeking | Without the accelerator, a backward seek decodes again from the start. With it, from the nearest block of the index it builds while decoding |
 | Size | `None`. bzip2 has no size field |
-| Digests | None listed. Every block's CRC and the stream's combined CRC are checked on read |
+| Digests | None listed. Every block's CRC and the stream's combined CRC are checked on read, the combined one when the read reaches the end of the stream (§2.3) |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised: `TruncatedError` from the standard library, `CorruptionError` through the accelerator (§5) |
 | Refuses | Nothing bzip2-specific |
@@ -103,10 +103,14 @@ default:
 | `ON` | `rapidgzip.IndexedBzip2File`, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
 | `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable and `rapidgzip` is installed. Otherwise the standard library, silently |
 
+The same rules hold for a bzip2 ZIP member. There the standard library stops at the first
+stream's end and the accelerator reads a second stream as content; the member's declared
+size and CRC decide, so the two differ only on a crafted member ([`zip.md`](zip.md) §2.3).
+
 There is no size threshold and no child process, unlike the DEFLATE family
 ([`gzip.md`](gzip.md) §2.3). The in-process decoder has not been seen to abort on a cut or
 corrupt stream: 40 runs of the truncation sweep and the corpus mutation harness produced
-Python exceptions only. So it runs in the caller's process, with three guards around it.
+Python exceptions only. So it runs in the caller's process, with these guards around it.
 
 - **A corrupt source must not read as empty.** The bundled decoder returns no output and no
   error for input that is not bzip2 at all: 40 000 zero bytes, a zero-byte file, a bare
@@ -117,6 +121,15 @@ Python exceptions only. So it runs in the caller's process, with three guards ar
   raises for garbage and reads a genuinely empty stream as `b""`. A seek away from 0 before
   the first read disarms the check, but the decoder clamps every seek to 0 on such input, so
   garbage cannot slip past that way.
+- **The combined CRC must be checked.** The decoder checks each block's CRC against its
+  data, but not the stream's combined CRC, the one check that covers the sequence of
+  blocks: a `.bz2` with a whole block cut out read short with no error. At the end of
+  data, `_Bzip2EmptyStreamCheck` takes the decoder's index (`block_offsets()`: the bit
+  offset of each block and of each end-of-stream marker of a stream with data), reads the
+  80 bits of magic and CRC at each from a fresh view of the source, combines the block
+  CRCs as bzip2 does (rotate left by one, then XOR) and raises `CorruptionError` where an
+  end-of-stream marker disagrees. Nothing is decoded again. A read that stops before the
+  end checks nothing, as with the standard library, which checks at the end marker.
 - **Bytes after the last stream must be reported the same way.** The decoder skips them
   and prints a warning to standard error, which archivey cannot catch. At the end of data,
   `_Bzip2EmptyStreamCheck` asks the decoder for its compressed position

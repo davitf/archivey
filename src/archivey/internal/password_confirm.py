@@ -286,9 +286,10 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
 
     A member's verifier forfeits its checksum on a seek off the read frontier (ADR
     0014), so by default any position-changing seek means the digest can no longer be
-    reached. Pass ``seek_forfeits=False`` for a digest that survives seeks (the
-    WinZip AES HMAC, which the decrypt stage completes over the ciphertext at the
-    end): only a read that reaches ``size`` counts there, wherever it started.
+    reached, until a seek back to 0 re-arms it. Pass ``seek_forfeits=False`` for a
+    digest that survives seeks (the WinZip AES HMAC, which the decrypt stage
+    completes over the ciphertext at the end): only a read that reaches ``size``
+    counts there, wherever it started.
     """
 
     readinto_passthrough = False
@@ -348,10 +349,16 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             # can catch it and read on, so the report stays armed.
             self._note_failed_seek()
             raise
-        if position != self._watch_pos:
+        self._note_moved(position)
+        return position
+
+    def _note_moved(self, position: int) -> None:
+        """Track a seek: a rewind to 0 re-arms the digest, as the member's verifier does."""
+        if position == 0:
+            self._forfeited = False
+        elif position != self._watch_pos:
             self._forfeited = self._seek_forfeits
         self._watch_pos = position
-        return position
 
     def _note_failed_seek(self) -> None:
         """Keep the position true to where a seek that raised left the stream.
@@ -369,8 +376,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             return
         if position == self._watch_pos:
             return
-        self._forfeited = self._seek_forfeits
-        self._watch_pos = position
+        self._note_moved(position)
 
     def close(self) -> None:
         if self.closed:

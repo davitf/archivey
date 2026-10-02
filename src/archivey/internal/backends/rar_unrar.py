@@ -1019,7 +1019,10 @@ def unrar_mask_selects(mask_view: str, name_view: str) -> bool:
 
     ``CommandData::CheckArgs`` for a file: both strings go through ``ConvertPath``
     and are compared with ``CmpName``. A mask ending in a separator selects
-    whole directories and is never built here.
+    whole directories and is never built here. A name that ``ConvertPath``
+    reduces to nothing (``./``, ``../``) is never selected, though ``CmpName``
+    alone would let the mask ``...`` match it: ``unrar p -n...`` emits only the
+    members named ``...``.
     """
     if sys.platform == "win32":
         # Both sides as Windows unrar holds them: ``CheckArgs`` turns ``/`` into
@@ -1032,6 +1035,8 @@ def unrar_mask_selects(mask_view: str, name_view: str) -> bool:
         raise AssertionError("a mask ending in a separator is never passed to unrar")
     mask = mask_view[_unrar_convert_path_offset(mask_view) :]
     name = name_view[_unrar_convert_path_offset(name_view) :]
+    if not name:
+        return False
     if sys.platform == "win32":
         mask, name = _as_utf16_units(mask), _as_utf16_units(name)
     return _unrar_cmp_name(mask, name)

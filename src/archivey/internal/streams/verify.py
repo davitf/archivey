@@ -18,8 +18,10 @@ Per ADR 0014 / ``compressed-streams``:
   non-empty return is terminal, never "ask again" (ADR 0014).
 - Verification runs on a read that **reaches the end** (declared size, or decoder
   EOS). A partial read is never verified. ``read(0)`` is a no-op (not EOF).
-- A seek off the sequential frontier forfeits the **checksum** only (incremental
-  hashing needs linear consumption). Length / truncation / over-run stay on and key
+- A seek to position 0 re-arms every check (fresh hashers, no frontier), so a read
+  from 0 to the end after any seeks is verified in full. Any other seek off the
+  sequential frontier forfeits the **checksum** only (incremental hashing needs
+  linear consumption). Length / truncation / over-run stay on and key
   off bytes **actually read** (``_furthest_read_pos``). If a seek jumps to/past the
   declared size without reading the intervening bytes, concluding reads the skipped
   gap and probes one byte past the declared size (``_verify_reaches_declared``)
@@ -176,6 +178,8 @@ class MemberVerifier:
         if digest_transforms:
             for key, transform in digest_transforms.items():
                 self._digest_transforms[_algo_key(key)] = transform
+        # Kept so a rewind to the start can begin each digest again (``note_seek``).
+        self._hasher_factories: dict[str, Callable[[], _IncrementalHasher]] = {}
         for algorithm, value in expected.items():
             key = _algo_key(algorithm)
             factory = _make_hasher(key)
@@ -199,8 +203,8 @@ class MemberVerifier:
                     logger=logger,
                 )
                 continue
-            hasher = factory()
-            self._hashers[key] = hasher
+            self._hasher_factories[key] = factory
+            self._hashers[key] = factory()
             self._expected[key] = value
         self._verified = False
         self._pos = 0  # logical position (updated by read and seek)
@@ -211,7 +215,23 @@ class MemberVerifier:
         self._furthest_read_pos = 0
         # Decode-error abandon: skip all end-of-stream checks on later reads.
         self._abandoned = False
-        # Seek off the frontier forfeits checksum only (ADR 0014); length stays on.
+        # Seek off the frontier forfeits checksum only (ADR 0014); length stays on. A
+        # seek back to 0 re-arms it (``_rearm``).
+        self._digests_enabled = True
+
+    def _rearm(self) -> None:
+        """Put every check back to its state before the first read.
+
+        Runs on a seek to position 0 (``note_seek``): the hashers start again and the
+        frontier, verified, abandoned and forfeited state is cleared, so a read from
+        the start to the end after a rewind is verified as a first one is.
+        """
+        for key, factory in self._hasher_factories.items():
+            self._hashers[key] = factory()
+        self._verified = False
+        self._pos = 0
+        self._furthest_read_pos = 0
+        self._abandoned = False
         self._digests_enabled = True
 
     @property
@@ -476,6 +496,12 @@ class MemberVerifier:
         if self._expected_size is not None:
             remaining = self._expected_size - self._pos
             if remaining <= 0:
+                if self._pos == self._furthest_read_pos:
+                    # Declared size 0, read from the start: this read reaches the
+                    # declared size, so it is the verifying event — over-run probe
+                    # and digests, as a sequential reaching read runs them.
+                    self._finish(inner)
+                    return b""
                 # Logical position already at/past the declared size — only a seek
                 # gets here (a sequential read reaching the size verifies inline).
                 # Verify completeness (reading any seek-skipped gap) instead of
@@ -514,14 +540,20 @@ class MemberVerifier:
     def note_seek(self, result: int) -> None:
         """Update the frontier after a successful inner seek.
 
-        A seek off the sequential frontier forfeits the **checksum** (incremental
-        hashing assumes linear consumption). Length / truncation / over-run checks
-        stay enabled and key off bytes actually read (``_furthest_read_pos``); a seek
-        that jumps to/past the declared size has the skipped gap read back and a byte
+        A seek to position 0 re-arms every check (``_rearm``): the hashers start
+        again and the furthest-read and verified state is cleared, so a read from 0
+        to the end is verified as a first read is, digests included. Any other seek
+        off the sequential frontier forfeits the **checksum** (incremental hashing
+        assumes linear consumption). Length / truncation / over-run checks stay
+        enabled and key off bytes actually read (``_furthest_read_pos``); a seek that
+        jumps to/past the declared size has the skipped gap read back and a byte
         probed past the size at conclusion (``_verify_reaches_declared``), so
         ``seek(declared_size)`` cannot silence truncation (short) or over-run (long)
         (ADR 0014).
         """
+        if result == 0:
+            self._rearm()
+            return
         if result != self._pos:
             self._digests_enabled = False
         self._pos = result

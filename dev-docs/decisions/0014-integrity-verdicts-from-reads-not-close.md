@@ -27,8 +27,9 @@ asked for a verdict at all.
 - **A verdict sticks to its stream.** Once a read has raised a content verdict
   (`CorruptionError`, `TruncatedError`, or an error raised from one), every later read
   raises it again until the caller seeks. A seek restarts the decode, so the prefix
-  reads again, and the read that reaches the end raises the verdict again although the
-  seek forfeited the digest check. Reaching the end is a position, not a short return:
+  reads again, and the read that reaches the end raises the verdict again, even after a
+  seek that forfeited the digest check. (Since 2026-10-01 a seek to 0 re-arms the
+  digest instead of forfeiting it; the same error object is still the one raised.) Reaching the end is a position, not a short return:
   a full `read(member.size)` reaches it too. Without this, a caller who caught the
   verdict and seeked back re-read the damaged member with no error, because a verifier
   checks a member once. The maintainer chose to keep raising on 2026-09-26 (sweep

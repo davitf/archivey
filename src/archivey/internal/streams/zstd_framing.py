@@ -59,3 +59,36 @@ def regular_frame_behind_skippable_frames(prefix: bytes) -> bool:
     if offset is None or offset == 0:
         return False
     return prefix[offset : offset + len(FRAME_MAGIC)] == FRAME_MAGIC
+
+
+# Magic, frame header descriptor, window descriptor, 4-byte dictionary id, 8-byte
+# frame content size: the longest a frame header can be (RFC 8878 §3.1.1.1).
+MAX_FRAME_HEADER_SIZE = 18
+
+
+def frame_window_size(header: bytes) -> int | None:
+    """The window a regular zstd frame at offset 0 of ``header`` declares.
+
+    RFC 8878 §3.1.1.1: the window descriptor gives it, or, for a single-segment frame,
+    the frame content size does. ``None`` when ``header`` does not start with a regular
+    frame whose header it holds in full, or when the descriptor's reserved bit is set.
+    """
+    if header[: len(FRAME_MAGIC)] != FRAME_MAGIC or len(header) < 5:
+        return None
+    descriptor = header[4]
+    if descriptor & 0x08:
+        return None
+    single_segment = bool(descriptor & 0x20)
+    if not single_segment:
+        if len(header) < 6:
+            return None
+        exponent, mantissa = header[5] >> 3, header[5] & 0x07
+        base = 1 << (10 + exponent)
+        return base + (base >> 3) * mantissa
+    offset = 5 + (0, 1, 2, 4)[descriptor & 0x03]
+    size_bytes = (1, 2, 4, 8)[descriptor >> 6]
+    field = header[offset : offset + size_bytes]
+    if len(field) < size_bytes:
+        return None
+    content_size = int.from_bytes(field, "little")
+    return content_size + 256 if size_bytes == 2 else content_size

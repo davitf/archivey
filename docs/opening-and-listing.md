@@ -67,7 +67,7 @@ do the job.
 |---|---|---|
 | Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then `stream_members()` or `extract_all()` (`for member in reader` walks the members without their data) | No random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. `scan_members()` and `members_report()` still list the archive, but they use up the pass to do it. [More below](#streaming-for-one-pass) |
 | Read one member, or a few, by name; list the archive and then read from it | Nothing (the defaults) | One member stream open at a time. On a solid archive, opening members out of archive order can decode the same block again ([details](access-and-cost.md#solid-archives-prefer-one-forward-pass)) |
-| Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True` | Some extra work as you read, which depends on the codec: the stream may read the format's own index (xz, lzip), keep track of points it can seek back to, or hand a gzip or bzip2 member of 16 MiB compressed or more to the `[seekable]` accelerator when it is installed. A seek backwards may decompress the member again from its start; how far back it has to go depends on those same mechanisms, and the `[seekable]` extra only helps a large gzip or bzip2 member unless you force it on. Any seek that moves the position gives up the check of the member's stored checksum. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
+| Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True` | Some extra work as you read, which depends on the codec: the stream may read the format's own index (xz, lzip), keep track of points it can seek back to, or hand a gzip or bzip2 member of 16 MiB compressed or more to the `[seekable]` accelerator when it is installed. A seek backwards may decompress the member again from its start; how far back it has to go depends on those same mechanisms, and the `[seekable]` extra only helps a large gzip or bzip2 member unless you force it on. Any seek that moves the position gives up the check of the member's stored checksum, until a seek back to the start re-arms it. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
 | Several member streams open at once, for example a thread pool that reads different members | `concurrent_members=True`; call `members()` once before you fan out | A second overlapping `open()` no longer raises, so the check that catches an accidental overlap is gone. Reads from several members at once can make the reader seek back and forth in the archive, and decompress data again: on a solid archive, each stream decodes its block from the start. Reads are correct but not always faster: on formats that share one file handle, each read takes a lock, and workers can wait on it. Opening the archive several times, one reader per worker without this option, can be cheaper; it can also cost more, because each reader parses the archive's index again. Cannot be combined with `streaming=True`. [Details](access-and-cost.md#concurrent-member-streams) |
 | Read from a pipe, a socket or an HTTP response | `streaming=True` | The same as the first row. Only TAR and the single-file compressors can be read this way; see [below](#what-you-can-open) |
 
@@ -92,7 +92,7 @@ Its other limitations:
 - **Listing limits on the pass.** On a streaming reader, `stream_members()`,
   `for member in reader` and `extract_all()` are deliberately outside `ListingLimits`.
   `scan_members()` and `members_report()` enforce the limits as `members()` does, and
-  7z and RAR check `max_members` when the archive is opened. See
+  7z, RAR and ISO check `max_members` when the archive is opened. See
   [Limits](extracting.md#limits).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption
@@ -322,6 +322,7 @@ not valid UTF-8.
 | --- | --- |
 | ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8 |
 | ZIP, a name without the flag | Decodes the name, and turns off the UTF-8 guess |
+| ZIP, a name without the flag that has a matching Unicode Path extra field | Ignored; the name is the field's UTF-8 copy |
 | TAR, the name in the header block | Decodes every name |
 | TAR, a PAX `path` or `linkpath` record | Used only when the bytes are not valid UTF-8 |
 | ISO, a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target | Used only when the bytes are not valid UTF-8; without it, see below |
@@ -330,7 +331,11 @@ not valid UTF-8.
 | RAR 1.5-4, a name with the Unicode flag and no UTF-16 copy | Used only when the bytes are not valid UTF-8 |
 | RAR5, or a RAR 1.5-4 name with a UTF-16 copy | Ignored; the name is UTF-8 or UTF-16 |
 
-The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. An ISO image never says which
+The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. So does a ZIP
+Unicode Path extra field, which Info-ZIP's `zip` writes: a second copy of the name in
+UTF-8, with a checksum of the stored bytes that shows it still describes them. Its UTF-8
+bytes are then `member.raw_name`, and the stored bytes are in
+`member.extra["alternate_raw_name"]`. An ISO image never says which
 encoding its Rock Ridge names are in. Most tools write UTF-8, and older ones write
 whatever encoding the author's system used. Trying UTF-8 first means a legacy
 `encoding=` fixes the old names without turning the UTF-8 names in the same image, or

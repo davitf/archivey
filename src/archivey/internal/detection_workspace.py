@@ -13,6 +13,7 @@ The access-shape rule and the seeks it allows: ``dev-docs/topics/detection.md`` 
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import BinaryIO, Callable
 
@@ -73,6 +74,15 @@ class PrefixWorkspace:
         # from source EOF: the scan records ``BUDGET_EXHAUSTED`` from this, because
         # the validator's ``NOT_THIS_FORMAT`` cannot tell the two apart.
         self._clamped_view_read = False
+        self._owned_source: ArchiveSource | None = None
+        if isinstance(source, (str, Path)):
+            # Classify the path as ``open_archive`` does: a pipe, character device or
+            # socket cannot seek, so it is read forward once through a source this
+            # workspace owns instead of as a random-access file handle.
+            path_source = ArchiveSource.for_path(Path(source))
+            if not path_source.seekable():
+                self._owned_source = path_source
+                source = path_source
         if isinstance(source, ArchiveSource) and source.path is not None:
             # Detection keeps its own handle on a file and closes it on exit, so the
             # source's handle opens only when a backend reads, and a backend that never
@@ -97,9 +107,13 @@ class PrefixWorkspace:
             self._entry_pos = 0
             if self._total_size is None:
                 try:
-                    self._total_size = os.fstat(self._path_handle.fileno()).st_size
+                    st = os.fstat(self._path_handle.fileno())
                 except (OSError, AttributeError):
                     pass
+                else:
+                    # A device's st_size is 0, not its length.
+                    if stat.S_ISREG(st.st_mode):
+                        self._total_size = st.st_size
         elif isinstance(source, ArchiveSource) and not source.seekable():
             self._peekable = source
             # The source's own replay prefix — the backend drains it, so never a copy.
@@ -339,6 +353,9 @@ class PrefixWorkspace:
             if self._owned_path and self._path_handle is not None:
                 self._path_handle.close()
                 self._path_handle = None
+            if self._owned_source is not None:
+                self._owned_source.close()
+                self._owned_source = None
 
     def __enter__(self) -> PrefixWorkspace:
         return self

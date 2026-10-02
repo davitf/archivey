@@ -510,7 +510,9 @@ def source_byte_size(source: object) -> int | None:
 
     Cheap means no data is read or decompressed. Probe order:
 
-    1. a path-like is ``stat``-ed;
+    1. a path-like is ``stat``-ed: a regular file's ``st_size``, a block device's
+       ``SEEK_END`` offset, and ``None`` for anything else (a pipe, a character
+       device, whose ``st_size`` is 0);
     2. an integer ``size`` attribute is trusted — the fsspec convention, also exposed
        by archivey's own wrappers (``ArchiveStream``, ``SlicingStream``) when they
        know their length;
@@ -537,9 +539,21 @@ def source_byte_size(source: object) -> int | None:
     """
     if is_filename(source):
         try:
-            return os.stat(source).st_size
+            st = os.stat(source)
         except OSError:
             return None
+        if stat.S_ISREG(st.st_mode):
+            return st.st_size
+        if stat.S_ISBLK(st.st_mode):
+            # A block device reports st_size 0; its end offset is its length. Opening
+            # it reads nothing, and the kernel answers SEEK_END from the device size.
+            try:
+                with open(source, "rb", buffering=0) as device:
+                    return device.seek(0, io.SEEK_END)
+            except OSError:
+                return None
+        # A pipe, character device or socket has no length to measure.
+        return None
     outer = source
     peeled = _peel_passthrough(source)
     metadata_source = _under_buffer(peeled)

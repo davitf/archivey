@@ -392,6 +392,8 @@ class DirectoryReader(BaseArchiveReader):
         listed with no identity (``st_ino`` 0: some FUSE and network mounts) has
         nothing to compare, so it is opened one component at a time from the root
         instead, each with ``O_NOFOLLOW``, and a symlink anywhere on the path fails.
+        So is a path too long to open whole (``ENAMETOOLONG``, deeper than
+        ``PATH_MAX``), which then still gets the identity check.
 
         A symlink in the way fails in the kernel (``ENOTDIR`` on Linux, ``ELOOP``
         elsewhere); that is reported like a replaced directory, with the kernel's
@@ -405,9 +407,18 @@ class DirectoryReader(BaseArchiveReader):
         try:
             if expected is None:
                 return self._open_directory_nofollow(name)
-            fd = os.open(
-                directory, os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-            )
+            try:
+                fd = os.open(
+                    directory,
+                    os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                )
+            except OSError as exc:
+                if exc.errno != errno.ENAMETOOLONG:
+                    raise
+                # Past PATH_MAX the whole path cannot be opened; walk it one component
+                # at a time instead, as reading a member does. The identity check
+                # below still applies.
+                fd = self._open_directory_nofollow(name)
         except OSError as exc:
             if exc.errno in (errno.ENOTDIR, errno.ELOOP):
                 raise _changed_since_listing(name, "was replaced", "scanning") from exc

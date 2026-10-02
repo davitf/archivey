@@ -456,8 +456,8 @@ class ListingLimits:
 Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
 limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
 at parse/open for nonsensical or hostile headers and are complementary, not a
-substitute. 7z and RAR apply `listing_limits.max_members` at parse
-(`format-7z`, `format-rar`); `None` disables that bound. Other formats that
+substitute. 7z, RAR and ISO apply `listing_limits.max_members` at parse
+(`format-7z`, `format-rar`, `format-iso`); `None` disables that bound. Other formats that
 build an internal member table during `open_archive()` MAY still allocate up
 to their own parser ceilings before spine `ListingLimits` are evaluated on
 materialization (`members()` / extract-prep). Being indexed (ZIP central
@@ -466,7 +466,7 @@ directory) is not the same as applying `max_members` at parse.
 **Unguarded by design:** `stream_members()` / `streaming=True` / forward-only
 iteration MUST NOT enforce `ListingLimits` (O(1) escape hatch). Callers that
 need a full resolved list use `members()` / `scan_members()` and accept the
-caps. Formats that apply `max_members` at parse (7z and RAR) fail at
+caps. Formats that apply `max_members` at parse (7z, RAR and ISO) fail at
 `open_archive` instead, so `stream_members()` / `streaming=True` are not an
 escape hatch there.
 
@@ -475,11 +475,11 @@ escape hatch there.
 | Case | Expected |
 | --- | --- |
 | Default config, archive with ≤1_048_576 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
-| Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`); no full cache published |
+| Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z and RAR), which raise at `open_archive`, RAR's compressed-comment budget, which also raises there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records it parses against `max_metadata_bytes`, which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting

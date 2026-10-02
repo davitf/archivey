@@ -453,6 +453,17 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), on_diagnostic=b),
             )
         )
+    # Guard switches: "false" is truthy, so a string would turn a refusal off.
+    for field_name in ("rar_allow_glob_member_concatenation", "read_link_targets"):
+        for bad in ("false", 0, 1, None):
+            rows.append(
+                _case(
+                    "ArchiveyConfig",
+                    field_name,
+                    bad,
+                    lambda b=bad, f=field_name: _with_config(archive, out(), **{f: b}),
+                )
+            )
     for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
         rows.append(
             _case(
@@ -596,11 +607,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_archive", "concurrent_members"): "truthiness flag",
     ("open_stream", "seekable"): "truthiness flag",
     ("detect_format", "follow_stub_volumes"): "truthiness flag",
-    (
-        "ArchiveyConfig",
-        "rar_allow_glob_member_concatenation",
-    ): "truthiness flag",
-    ("ArchiveyConfig", "read_link_targets"): "truthiness flag",
     ("extract", "dry_run"): "truthiness flag",
     ("extract_all", "dry_run"): "truthiness flag",
     # ``get`` is mapping-shaped on purpose: like ``dict.get`` it answers with the

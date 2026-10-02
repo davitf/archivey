@@ -98,7 +98,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   to a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`,
   default `cp437`). When UTF-8 is inferred for an unflagged name, a
   `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
-  `open_archive` is authoritative — it is used verbatim and disables the sniff.
+  `open_archive` is authoritative — it is used verbatim and disables the sniff. One signal
+  outranks it: an Info-ZIP Unicode Path extra field (`0x7075`) whose checksum matches the
+  stored bytes names the member in UTF-8. `raw_name` is then the field's UTF-8 bytes and
+  `extra["alternate_raw_name"]` holds the stored ones.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
   bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
   parsing the central directory, so the failure is archive-wide rather than confined to
@@ -261,6 +264,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
   tweaked values are not exposed as plain `member.hashes`.
+- **A RAR5 archive cut exactly between two blocks is warned about, not raised.** RAR5
+  always ends each volume with an end-of-archive block, so archivey lists the members
+  before the cut and then emits `ARCHIVE_EOF_MARKER_MISSING`
+  (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
+  A cut inside a member's data is `TruncatedError` on the listing. RAR 1.5-4 archives
+  may legitimately lack the end block, so a cut between their blocks still lists as
+  complete.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.
@@ -273,6 +283,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.
+- **Links and file copies.** A RAR5 hard link (`rar -oh`) is a `HARDLINK`. A RAR5
+  file copy (`rar -oi`, which `unrar` lists as "File reference") stores a duplicate
+  file once and names the earlier member that holds the bytes. It is a `FILE` with
+  `extra["is_file_copy"] = True`; `link_target` is the source's stored path and
+  `link_target_member` the source member. Reading it gives the source's bytes, and
+  extraction writes an independent file, as `unrar` does. A copy whose source is not an
+  earlier file member raises `LinkTargetNotFoundError` when read.
 - **Compression:** M0 is `STORED`. M1–M5 is `CompressionAlgorithm.RAR` with `level` 1–5.
   Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
   `extra["rar.extract_version"]` on every member whose FILE header recorded one,

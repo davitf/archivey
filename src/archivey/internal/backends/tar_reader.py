@@ -302,11 +302,21 @@ def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
     entry makes the read go backwards. ``tar(1)`` refuses both. The stored size is
     known only rounded up to whole blocks, so up to 511 bytes of the member's own
     zero padding can still be read as data; nothing past its data area can.
+
+    The logical size (the GNU ``realsize`` field or ``GNU.sparse.realsize``) is held
+    to the same bound as a plain size: past ``_MAX_SEEK_OFFSET`` it is no file's size,
+    and tarfile's fill of the trailing hole would raise a raw ``OverflowError`` or
+    ``MemoryError``.
     """
     sparse = _sparse_map(info)
     stored_end = getattr(info, "stored_end", None)
     if not sparse or stored_end is None:
         return None
+    if info.size > _MAX_SEEK_OFFSET:
+        return CorruptionError(
+            f"TAR archive is corrupt: sparse member {quoted(info.name)} declares a "
+            f"size of {info.size} bytes, past the largest offset any file can have"
+        )
     stored = stored_end - info.offset_data
     total = 0
     for offset, numbytes in sparse:

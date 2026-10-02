@@ -18,11 +18,12 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   `STREAM_REWIND_REDECOMPRESSES`, but it still costs.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't expect a CRC verdict after seeking.** A seek that moves the position
-  gives up the member's CRC check; read from the start to the end without seeking
-  when you need it. A WinZip AES member's HMAC is the exception: it is still checked
-  when a read reaches the end, and that read first re-reads, without decrypting, the
-  ciphertext your seeks skipped. A short read at the end of a large AES member can
-  therefore read the whole member from the archive.
+  gives up the member's CRC check until you seek back to 0; a read from 0 to the end
+  with no seek in between is checked again. A WinZip AES member's HMAC is the
+  exception: it is still checked when a read reaches the end, and that read first
+  re-reads, without decrypting, the ciphertext your seeks skipped. A short read at
+  the end of a large AES member can therefore read the whole member from the
+  archive.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
@@ -43,7 +44,7 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   → [Names change on disk](extracting.md#names-change-on-disk)
 - **Don't `read()` a member from an untrusted archive without a size guard.**
   `read()` is unbounded, and `stream_members()` / `streaming=True` are
-  deliberately outside `ListingLimits` except on 7z and RAR, which still
+  deliberately outside `ListingLimits` except on 7z, RAR and ISO, which still
   enforce `max_members` at open. Chunk
   untrusted payloads.
   → [Limits](extracting.md#limits)

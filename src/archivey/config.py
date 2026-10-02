@@ -292,15 +292,22 @@ class ListingLimits:
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
     ``stream_members`` / ``streaming=True`` / forward-only iteration do not
-    enforce these caps. 7z and RAR apply ``max_members`` at parse, and RAR weighs the
-    declared sizes of its compressed RAR 1.5/2.x comments against ``max_metadata_bytes``
-    before decoding them, so ``open_archive`` raises and neither is an escape hatch.
+    enforce these caps. 7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its
+    comments against ``max_metadata_bytes`` (the declared sizes of compressed RAR
+    1.5/2.x comments before decoding them), and ISO the directory records ``pycdlib``
+    parses, so ``open_archive`` raises and none is an escape hatch.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than the whole ``max_metadata_bytes``, before reading it.
     """
 
     max_members: int | None = 1_048_576
-    """Most members a listing may hold."""
+    """Most members a listing may hold.
+
+    Each listed member costs roughly 1 KB of memory whatever its name, so the default
+    allows about 1 GB at open on 7z, RAR and ISO, where a tiny compressed header can
+    declare that many members. A current Linux kernel source tree has about 90 000 files;
+    lower this when opening untrusted archives.
+    """
 
     max_metadata_bytes: int | None = 64 * 2**20
     """Most bytes of text a listing may retain across its members. 64 MiB.
@@ -398,8 +405,9 @@ class DecoderLimits:
             decoder may allocate. The default is 2 GiB. A 7z folder runs all its
             decoders at once (the stages of a coder chain, and a BCJ2 folder's
             ``main``, ``call`` and ``jump`` branches), so when it has more than
-            one, their LZMA dictionaries and PPMd memory sizes count together
-            against it.
+            one, their LZMA dictionaries, PPMd memory sizes and zstd windows
+            count together against it. A zstd window counts as the first frame
+            declares it, when the zstd coder reads a packed stream directly.
 
             That number is a policy choice, not a limit of the format, so here
             is what it was chosen against. Measured on 7-Zip 23.01, a writer
@@ -773,6 +781,15 @@ class ArchiveyConfig:
             )
             object.__setattr__(
                 self, "detection_budget", DetectionBudget.for_preset(preset)
+            )
+        # Guard switches: a string such as "false" is truthy, so it would silently
+        # turn a refusal off. Only a real bool is accepted.
+        for field_name in ("rar_allow_glob_member_concatenation", "read_link_targets"):
+            check_instance(
+                getattr(self, field_name),
+                bool,
+                call=f"ArchiveyConfig({field_name}=…)",
+                allow_none=False,
             )
         check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
         check_encoding(
