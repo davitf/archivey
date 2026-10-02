@@ -244,17 +244,24 @@ def _hp_fixture(name: str) -> bytes:
     return (_RAR_FIXTURES / name).read_bytes()
 
 
-def _assert_truncated_listing(data: bytes, members: int, streaming: bool) -> None:
+def _assert_truncated_listing(
+    data: bytes,
+    members: int,
+    streaming: bool,
+    *,
+    password: str | None = _HP_PASSWORD,
+    message: str = "encrypted header",
+) -> None:
     with open_archive(
-        io.BytesIO(data), password=_HP_PASSWORD, streaming=streaming
+        io.BytesIO(data), password=password, streaming=streaming
     ) as reader:
         report = reader.members_report()
         assert len(report.members) == members
         assert isinstance(report.error, TruncatedError)
-        assert "encrypted header" in str(report.error)
+        assert message in str(report.error)
         assert not _eof_marker_diagnostics(reader.diagnostics)
     with open_archive(
-        io.BytesIO(data), password=_HP_PASSWORD, streaming=streaming
+        io.BytesIO(data), password=password, streaming=streaming
     ) as reader:
         # members() is random-access only; scan_members() is the streaming listing.
         with pytest.raises(TruncatedError):
@@ -317,9 +324,10 @@ def test_rar4_header_encrypted_cut_in_last_header_is_truncated(
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 @pytest.mark.parametrize(
     ("length", "members"),
-    # Both lengths end inside a FILE header past its first cipher block, after
-    # encrypted headers whose CRC16 matched.
-    [(250, 2), (480, 4)],
+    # Each length ends inside a FILE header past its first cipher block, after
+    # encrypted headers whose CRC16 matched. 160 is in the second FILE header, the
+    # first one after the key is proven.
+    [(160, 1), (250, 2), (480, 4)],
 )
 def test_rar4_header_encrypted_cut_after_a_proven_key_is_truncated(
     length: int, members: int, streaming: bool
@@ -487,6 +495,102 @@ def test_header_encrypted_cut_inside_packed_data_is_truncated(name: str) -> None
         assert [m.name for m in report.members] == ["file1.txt"]
         assert isinstance(report.error, TruncatedError)
         assert "packed data" in str(report.error)
+
+
+# A plain (unencrypted) RAR cut part-way through a header used to raise
+# CorruptionError at open, with no listing. unrar 7.00 lists the members before the
+# cut and then reports "Unexpected end of archive" (measured on
+# basic_nonsolid__rar4.rar cut to 140 and 190 bytes).
+@pytest.mark.parametrize(
+    ("fixture", "walker", "file_type"),
+    [
+        pytest.param("basic_nonsolid__.rar", _rar5_blocks, 2, id="rar5"),
+        pytest.param("basic_nonsolid__rar4.rar", _rar4_blocks, 0x74, id="rar4"),
+    ],
+)
+def test_rar_plain_cut_inside_any_header_lists_the_prefix(
+    fixture: str,
+    walker: Callable[[bytes], list[tuple[int, int, int, int]]],
+    file_type: int,
+) -> None:
+    data = (_RAR_FIXTURES / fixture).read_bytes()
+    with open_archive(io.BytesIO(data)) as reader:
+        full = [m.name for m in reader.members()]
+    blocks = walker(data)
+    assert len(blocks) > len(full)  # precondition: MAIN, every FILE, the end block
+    checked = 0
+    for block_pos, _type, header_end, _size in blocks:
+        listed = full[
+            : sum(1 for b in blocks if b[1] == file_type and b[0] < block_pos)
+        ]
+        # Every byte after the header's first and before its last: for RAR5 that
+        # includes the CRC and the header-size vint.
+        for cut in range(block_pos + 1, header_end):
+            with open_archive(io.BytesIO(data[:cut])) as reader:
+                report = reader.members_report()
+                assert [m.name for m in report.members] == listed, cut
+                assert isinstance(report.error, TruncatedError), cut
+                assert f"header that starts at byte {block_pos}" in str(report.error)
+                assert not _eof_marker_diagnostics(reader.diagnostics), cut
+            checked += 1
+    assert checked > 100
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    ("fixture", "walker"),
+    [
+        pytest.param("basic_nonsolid__.rar", _rar5_blocks, id="rar5"),
+        pytest.param("basic_nonsolid__rar4.rar", _rar4_blocks, id="rar4"),
+    ],
+)
+def test_rar_plain_cut_inside_a_header_raises_from_members(
+    fixture: str,
+    walker: Callable[[bytes], list[tuple[int, int, int, int]]],
+    streaming: bool,
+) -> None:
+    """One cut through the shared helper: inside the fourth FILE header, after
+    three whole members, so ``members()`` raises and streaming lists the same."""
+    data = (_RAR_FIXTURES / fixture).read_bytes()
+    block_pos, _type, header_end, _size = walker(data)[4]  # MAIN, then FILE blocks
+    _assert_truncated_listing(
+        data[: (block_pos + header_end) // 2],
+        members=3,
+        streaming=streaming,
+        password=None,
+        message=f"header that starts at byte {block_pos}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "walker", "file_type", "warns"),
+    [
+        pytest.param("basic_nonsolid__.rar", _rar5_blocks, 2, True, id="rar5"),
+        pytest.param("basic_nonsolid__rar4.rar", _rar4_blocks, 0x74, False, id="rar4"),
+    ],
+)
+def test_rar_plain_cut_at_a_header_boundary_is_not_a_cut(
+    fixture: str,
+    walker: Callable[[bytes], list[tuple[int, int, int, int]]],
+    file_type: int,
+    warns: bool,
+) -> None:
+    """Unchanged: a cut exactly where a header starts is a clean end for RAR 1.5-4,
+    and for RAR5 the missing end block is a warning, not an error."""
+    data = (_RAR_FIXTURES / fixture).read_bytes()
+    with open_archive(io.BytesIO(data)) as reader:
+        full = [m.name for m in reader.members()]
+    blocks = walker(data)
+    # blocks[0] is MAIN, so the first cut leaves only the signature.
+    for block_pos, _type, _end, _size in blocks:
+        listed = full[
+            : sum(1 for b in blocks if b[1] == file_type and b[0] < block_pos)
+        ]
+        with open_archive(io.BytesIO(data[:block_pos])) as reader:
+            report = reader.members_report()
+            assert [m.name for m in report.members] == listed, block_pos
+            assert report.error is None, block_pos
+            assert bool(_eof_marker_diagnostics(reader.diagnostics)) is warns
 
 
 # ---------------------------------------------------------------------------

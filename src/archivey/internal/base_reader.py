@@ -390,10 +390,6 @@ class BaseArchiveReader(ArchiveReader):
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
-    # May a hardlink whose name has no earlier match resolve to the last member of that
-    # name after it? A backend whose format defines hardlinks as backward references
-    # (TAR) sets False.
-    _HARDLINK_FORWARD_FALLBACK: bool = True
 
     def __init__(
         self,
@@ -2002,10 +1998,16 @@ class BaseArchiveReader(ArchiveReader):
     def _lookup_hardlink_target(
         member: ArchiveMember,
         by_name_lists: Mapping[str, list[ArchiveMember]],
-        *,
-        allow_forward_fallback: bool,
     ) -> ArchiveMember | None:
-        """Positional hardlink resolution: latest same-named member strictly before ``member``."""
+        """Positional hardlink resolution: latest same-named member strictly before ``member``.
+
+        Never a member listed after it, in any format or mode: a hard link names a file
+        already archived. ``tar(1)`` and ``unrar`` extract one by linking to what they
+        have already written, and ``unrar`` fails a link whose target comes later ("You
+        need to unpack the link target first"). The other formats store no hard-link
+        record. A backward answer also never changes as a streaming walk lists more
+        members, so it can be memoized.
+        """
         if not member.link_target:
             return None
         target_name = resolve_link_target_name(
@@ -2016,14 +2018,21 @@ class BaseArchiveReader(ArchiveReader):
         before_id = member._member_id
         if before_id is None:
             return None
-        found = BaseArchiveReader._latest_prior_named_member(
+        return BaseArchiveReader._latest_prior_named_member(
             target_name, before_id, by_name_lists
         )
-        if found is not None:
-            return found
-        if allow_forward_fallback:
-            return BaseArchiveReader._last_named_member(target_name, by_name_lists)
-        return None
+
+    def _hardlink_direct_target(self, member: ArchiveMember) -> ArchiveMember | None:
+        """The member a HARDLINK names, before following any link.
+
+        The member is the latest one with that name listed before it
+        (``_lookup_hardlink_target``). Extraction uses it to tell a hard link to a
+        symlink from one to a file, which ``link_target_member`` (the end of the chain)
+        cannot.
+        """
+        if member.type is not MemberType.HARDLINK:
+            return None
+        return self._lookup_hardlink_target(member, self._listed_by_name)
 
     def _lookup_link_target_for_member(
         self,
@@ -2031,11 +2040,7 @@ class BaseArchiveReader(ArchiveReader):
         by_name_lists: Mapping[str, list[ArchiveMember]],
     ) -> ArchiveMember | None:
         if member.type == MemberType.HARDLINK:
-            return self._lookup_hardlink_target(
-                member,
-                by_name_lists,
-                allow_forward_fallback=self._HARDLINK_FORWARD_FALLBACK,
-            )
+            return self._lookup_hardlink_target(member, by_name_lists)
         return self._lookup_link_target(member, by_name_lists)
 
     def _resolve_link(
@@ -2672,6 +2677,13 @@ class BaseArchiveReader(ArchiveReader):
                 current.close()
             self._state.release_pass(token)
 
+    def _check_extraction_dest(self, dest: Path) -> None:
+        """Refuse a destination this reader's own source would read back.
+
+        No-op here; ``DirectoryReader`` refuses a destination inside its root.
+        Called before anything is created.
+        """
+
     def extract_all(
         self,
         dest: str | Path,
@@ -2712,6 +2724,7 @@ class BaseArchiveReader(ArchiveReader):
         # created. Same reason as filter: a refusal that has already touched the disk
         # is a side effect of a call the caller got wrong.
         normalize_member_selector(members)
+        self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.
@@ -2753,6 +2766,7 @@ class BaseArchiveReader(ArchiveReader):
             results=tuple(results),
             diagnostics=collector.snapshot(since=wm),
             _dry_run_top_level=coordinator.dry_run_top_level,
+            _dry_run_links=coordinator.dry_run_links,
         )
 
     def close(self) -> None:

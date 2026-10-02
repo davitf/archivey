@@ -463,7 +463,10 @@ member type.
 The system SHALL read RAR5 link semantics from native `file_redir` metadata.
 Hardlinks (`RAR5_XREDIR_HARD_LINK`) SHALL be exposed as `MemberType.HARDLINK`
 with `link_target` set from the redirect, so `ArchiveReader` link following returns
-the target FILE's data. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`) SHALL be
+the target FILE's data. A RAR hardlink SHALL resolve only to a member before it, in
+random access as in a streaming pass, as `unrar` extracts it from what it has already
+written. A hardlink whose only same-named member comes after it has no
+`link_target_member`; opening it raises `LinkTargetNotFoundError`. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`) SHALL be
 exposed as `MemberType.FILE` with `extra["is_file_copy"] == True`, `link_target` set
 to the stored source path and `link_target_member` set to the source: the latest
 earlier `FILE` member that path names. Reading a copy SHALL return the source's bytes,
@@ -919,11 +922,17 @@ refused.
 When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
 `unrar` or `rar` on `PATH`, the system SHALL read compressed
 member data by invoking `unar` 1.10 or later, identified on `PATH` by its `unar -h`
-banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. Stored,
+banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. An
+identified `unar` SHALL also decode a small embedded RAR5 archive once, under the same
+timeout and cache, and SHALL NOT be used unless it writes that archive's one member
+exactly and exits 0: Debian and Ubuntu `unar` packages before 1.10.8+ds1-10 write
+nothing for such members, and their version string does not tell them apart. A
+refused `unar` SHALL count as absent under `auto`, and the refusal SHALL say what the
+check saw; it names the Debian patch only for exit 0 with a short member. Stored,
 unencrypted, unsplit members SHALL still be read directly. The system MUST NOT use
-`unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing or
-unidentified `unar` SHALL raise `PackageNotInstalledError` naming `unar`. `auto` SHALL
-choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
+`unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing,
+unidentified or refused `unar` SHALL raise `PackageNotInstalledError` naming `unar`.
+`auto` SHALL choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
 retried with `unrar`, and with neither program present `auto` SHALL raise the
 `PackageNotInstalledError` that names RARLAB `unrar` or `rar`. When `auto` chooses
 `unar`, `ar.cost.notes` SHALL say so at open, naming the password exposure and the
@@ -972,11 +981,12 @@ missing, the comment SHALL be `None`, as it is with `unrar`.
 | Case | Expected |
 | --- | --- |
 | Default config (`auto`), RARLAB `unrar` present, compressed member | `unrar` is spawned; `unar` is not |
-| Default config (`auto`), only `unar` present, compressed member | `unar` is spawned; `ar.cost.notes` says why at open |
+| Default config (`auto`), only a `unar` that passes the RAR5 check, compressed member | `unar` is spawned; `ar.cost.notes` says why at open |
 | `rar_decompressor="unrar"`, only `unar` present | `PackageNotInstalledError` names RARLAB `unrar` or `rar`; `unar` is not used |
 | `rar_decompressor="unar"`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
 | `rar_decompressor="auto"`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |
-| `rar_decompressor="auto"`, only `unar` present | `unar` is spawned |
+| `rar_decompressor="auto"`, only a `unar` that passes the RAR5 check | `unar` is spawned |
+| Only a `unar` that fails the RAR5 check (`tests/test_unar_probe.py`), `auto` or `"unar"` | `auto`: as with neither present; `"unar"`: `PackageNotInstalledError` saying what the check saw |
 | `rar_decompressor="auto"`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | `unar` selected, member name contains `*` | Read by index; no `rar_allow_glob_member_concatenation` needed |
 | `unar` selected, encrypted RAR5 member, right password | Read correctly; the password is passed with `-p` |
@@ -1030,3 +1040,77 @@ SHALL give the declared size when the count is smaller.
 | `unrar`, a stored solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError` naming the earlier member; `unar` counts it 0 |
 | `unrar`, a duplicate name whose earlier entry declares 4 GiB and 3 GiB unpacked | `ResourceLimitError` when the later, small entry is read |
 | `rar_decompressor="auto"` | The count of the program `auto` picked |
+
+### Requirement: A RAR file cut inside a header SHALL list the members before the cut
+
+When a RAR file ends after the first byte of a header and before its last, the archive
+SHALL open and list the members whose headers precede that header. The cut SHALL then be
+reported as `TruncatedError`: as `members_report().error`, and raised by `members()` and
+`stream_members()` after the listed members. This SHALL hold for RAR 1.5-4 and RAR5, in
+both access modes, and for a RAR5 header cut inside its CRC or its size field. It is the
+same rule as a walk whose skip over packed data lands past the end of the file. In a
+multi-volume set the message SHALL name the volume, because its byte offset is within
+that volume.
+
+Only a file that ends before the bytes a header declares is a cut. A declared size that
+is invalid while its bytes are present SHALL stay `CorruptionError` at open.
+
+With encrypted headers (`-hp`), a cut inside a salt or IV, or before a header's first
+whole cipher block, is a cut as above. A cut after that block is a cut only once the
+password is proven: in RAR5 by the archive's password check value, in RAR 1.5-4 by an
+earlier encrypted header whose CRC16 matched. Before that proof, a wrong key also
+decrypts a size that reads to the end of the file, so the open SHALL raise
+`EncryptionError`. That happens inside the first encrypted header of a RAR 1.5-4
+archive, and inside any header of a RAR5 archive whose encryption record has no check
+value.
+
+A file that ends exactly at a header boundary is not a cut: RAR 1.5-4 lists as complete,
+and RAR5 lists and then emits `ARCHIVE_EOF_MARKER_MISSING`.
+
+#### Scenario: header cut matrix
+
+| Case | Expected |
+| --- | --- |
+| Plain RAR 1.5-4 or RAR5, cut inside any header | Members before it listed; `TruncatedError` after them |
+| Plain, cut exactly at a header boundary | RAR 1.5-4: complete listing; RAR5: listing, then `ARCHIVE_EOF_MARKER_MISSING` |
+| RAR3 size below 7, RAR5 size over 2 MiB, RAR5 size field over 10 bytes | `CorruptionError` at open |
+| `-hp` RAR5 with a check value, cut inside any header | Members before it listed; `TruncatedError` after them |
+| `-hp` RAR 1.5-4, cut inside a header after one whose CRC16 matched | Members before it listed; `TruncatedError` after them |
+| `-hp` RAR 1.5-4, cut after the first encrypted header's first cipher block | `EncryptionError` at open |
+| `-hp` RAR5 without a check value, cut after a header's first cipher block | `EncryptionError` at open |
+| Later volume of a set cut inside a header | `TruncatedError` naming that volume |
+
+### Requirement: Serve a solid pass's file copies from the source it decoded
+
+A solid `stream_members()` pass, and the extraction built on it, SHALL keep the bytes of
+each member that a later RAR5 file copy (`rar -oi`) in the pass reads, as its pipe passes
+them, whether the caller reads that member or skips it, under `unrar` and `unar`. It
+SHALL serve the copies from the kept bytes, so a kept source is decoded once for all its
+copies. Kept bytes SHALL pass the source's digest check and declared size as the pipe's
+own bytes do, and SHALL count toward extraction limits once per copy.
+
+The pass SHALL keep up to 8 MiB of sources in memory. This constant is a tuning value: it
+SHALL NOT refuse a read or change the bytes a read returns, and it is not a field of
+`ArchiveyConfig`. A source past it SHALL go to a temporary file charged to
+`SpoolLimits.max_bytes` (`archive-reading`). The file SHALL be created, and the source
+charged, only when the source's first byte is decoded, so a pass that reads nothing writes
+nothing and any copy of the archive source the pass needs is charged before the kept
+source. The charge SHALL be given back when the pass ends. A source the limit has no room
+for SHALL NOT be kept, and its copies SHALL read the source with a named open, as
+`open()` does; that SHALL NOT raise `ResourceLimitError`. A source that the pass does not
+emit (a `unar` refusal) SHALL fall back the same way.
+
+#### Scenario: kept file-copy source matrix
+
+| Case | Expected |
+| --- | --- |
+| Solid pass, source read, copies read | One decompressor run; every copy reads the source's bytes |
+| Solid pass, source skipped, copies read | One decompressor run; the pass moves through the source and keeps it |
+| `extract_all()` with a filter that drops the source | One decompressor run; the copies are written |
+| Source over 8 MiB, no member read, stream source | Nothing is written: no temporary file, no copy of the archive |
+| Source over the memory constant, within `SpoolLimits.max_bytes` | Kept in the temporary file; one decompressor run |
+| Two passes on one reader, room for the source once | Each pass keeps it; one decompressor run per pass |
+| Stream source, first member a source; the archive copy and the source each fit the limit, not both | The archive copy is made; the source is not kept; each copy decodes it again; no `ResourceLimitError` |
+| `SpoolLimits.max_bytes=0`, path source, source over the memory constant | Not kept; each copy decodes it again; nothing is refused |
+| Kept bytes that do not match the source's digest | `CorruptionError` on the copy's read |
+| `max_extracted_bytes` below the total with copies | `ResourceLimitError`; each copy counts its bytes |

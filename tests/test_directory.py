@@ -533,7 +533,7 @@ def test_tree_deeper_than_recursion_limit_lists(tmp_path: Path) -> None:
 def test_extract_all_writes_members(simple_dir: Path, tmp_path: Path) -> None:
     from archivey import ExtractionStatus
 
-    dest = tmp_path / "out"
+    dest = tmp_path.parent / f"{tmp_path.name}-out"
     with open_archive(simple_dir) as reader:
         results = reader.extract_all(dest).results
     assert (dest / "a.txt").read_bytes() == b"hello"
@@ -1121,13 +1121,16 @@ def test_a_link_to_a_replaced_file_is_refused(tmp_path: Path) -> None:
                 reader.read(name)
 
 
-def test_extracting_into_the_root_lists_the_destination(tmp_path: Path) -> None:
-    # Documented, not desired (directory.md §5): the walk reads the live tree, so the
-    # destination the extraction created is listed as a member.
+@pytest.mark.parametrize("streaming", [False, True])
+def test_extracting_into_the_root_is_refused(tmp_path: Path, streaming: bool) -> None:
+    # The walk reads the live tree, so a destination inside the root would be read back
+    # as members (and, streaming, nest until the path is too long). ``cp -r`` refuses
+    # the same request.
+    from archivey import ExtractionError
+
     (tmp_path / "a").write_bytes(b"x")
     dest = tmp_path / "out"
-    with open_archive(tmp_path) as reader:
-        reader.extract_all(dest)
-    assert (dest / "a").read_bytes() == b"x"
-    assert (dest / "out").is_dir()
-    assert list((dest / "out").iterdir()) == []
+    with open_archive(tmp_path, streaming=streaming) as reader:
+        with pytest.raises(ExtractionError, match="into itself"):
+            reader.extract_all(dest)
+    assert not dest.exists()

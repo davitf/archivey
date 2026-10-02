@@ -739,7 +739,7 @@ that one `open()` operation.
 | Hardlink → `/../a` | Unresolved (escapes after the `/` is set aside) |
 | Duplicate names, hardlink | Most recent occurrence strictly before the link |
 | Duplicate names, symlink (RA) | Last occurrence overall |
-| Hardlink source only later | TAR: no target in either mode (`LinkTargetNotFoundError`), since a TAR hardlink refers to an earlier member (`format-tar`). Other formats: RA falls back to the later member; streaming cannot resolve |
+| Hardlink source only later | No target in either mode, in every format (`LinkTargetNotFoundError`): a hardlink refers to an earlier member, as `tar(1)` and `unrar` treat it (`format-tar`, `format-rar`) |
 | Two distinct same-named members on one chain | Not a cycle (id-based tracking) |
 
 ### Requirement: Context-manager and close lifecycle
@@ -951,8 +951,13 @@ spooling plaintext to a temp file is forbidden. A per-format strategy that
 inherently needs proportional temp storage (e.g. `format-rar`'s documented copy of
 a non-path archive source to disk, so `unrar` can seek it) is allowed only when
 declared in that format's capability spec, and a strategy that copies the archive
-source SHALL be bounded by `ArchiveyConfig.spool_limits`. Caller's own buffering of a
-returned stream is unrestricted.
+source SHALL be bounded by `ArchiveyConfig.spool_limits`. A declared strategy that keeps
+decoded member data to spare a decode it would otherwise repeat (`format-rar`: a solid
+pass keeping the sources of file copies) SHALL keep it in memory only up to a constant
+the format spec states, and SHALL charge anything written to temporary storage to the
+same `spool_limits` budget. Such a keep is optional: when the budget has no room it SHALL
+be declined, the read SHALL fall back to decoding again, and nothing SHALL be refused.
+Caller's own buffering of a returned stream is unrestricted.
 
 #### Scenario: bounded storage matrix
 
@@ -961,6 +966,7 @@ returned stream is unrestricted.
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
 | Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `ResourceLimitError` |
+| Declared keep of decoded member data, over the memory constant | Written within `SpoolLimits.max_bytes`; with no room left, not kept and decoded again; never `ResourceLimitError` |
 
 ### Requirement: Explicit configuration object
 
@@ -1048,13 +1054,18 @@ always holds a budget.
 `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set and across attempts: a copy refused once SHALL stay refused for that reader
-without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to
-`None`. A copy over the limit SHALL raise `ResourceLimitError`, naming
-`SpoolLimits.max_bytes`, before any byte is written when the size is known, and otherwise
-before the written total passes the limit, with the partial copy removed. A path source
-that is read in place is not copied and SHALL NOT be refused by it; a path source that
-has to be copied (`format-rar`: a prefixed archive read with `unar`, or explicit volume
-files that cannot be linked side by side) is bounded like a stream source.
+without writing again. The same limit SHALL bound the decoded member data a declared
+strategy keeps on disk (today, `format-rar`'s kept file-copy sources in a solid pass),
+counted while the data is on disk: kept data SHALL count from its first written byte
+until it is deleted, and SHALL NOT count after that. A keep over the limit SHALL be
+declined, not refused: the read falls back to decoding again. `None` SHALL disable the
+guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the limit SHALL raise
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
+size is known, and otherwise before the written total passes the limit, with the partial
+copy removed. A path source that is read in place is not copied and SHALL NOT be refused
+by it; a path source that has to be copied (`format-rar`: a prefixed archive read with
+`unar`, or explicit volume files that cannot be linked side by side) is bounded like a
+stream source.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.

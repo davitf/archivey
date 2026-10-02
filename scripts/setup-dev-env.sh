@@ -59,7 +59,10 @@ install_linux_packages() {
   #   tests/fixtures/rar/README.md. The corpus RAR column itself does not skip
   #   without it. macOS / CI install unrar only.
   # p7zip-full: encrypted ZIP fixtures built by shelling out to `7z`.
-  # unar: the opt-in second RAR data program (tests/test_rar_unar.py skips without it).
+  # unar: the second RAR data program (tests/test_rar_unar.py skips without it). The
+  #   Ubuntu 22.04-26.04 package fails archivey's RAR5 check and is refused, so those
+  #   tests skip with it too; the verification below says so and names
+  #   scripts/install-unar-from-source.sh, which builds one that passes.
   ${SUDO} apt-get install -y unrar rar p7zip-full unar
 }
 
@@ -167,6 +170,22 @@ for tool in ("unrar", "7z", "unar"):
     if not found:
         print(f"MISSING {tool}")
         continue
+    if tool == "unar":
+        from archivey.exceptions import PackageNotInstalledError
+        from archivey.internal.external.unar import find_unar
+
+        try:
+            find_unar(purpose="for the test suite")
+        except PackageNotInstalledError:
+            # Debian and Ubuntu packages before 1.10.8+ds1-10 drop some RAR5 members
+            # (dev-docs/known-issues.md); archivey refuses them, so unar tests skip.
+            print(
+                f"REFUSED {tool}: {found} fails archivey's RAR5 check, so unar tests "
+                "skip. Build 1.10.8: scripts/install-unar-from-source.sh --dest "
+                "~/.local/bin (build deps: gnustep-make libgnustep-base-dev gobjc "
+                "libbz2-dev zlib1g-dev libicu-dev libwavpack-dev)"
+            )
+            continue
     if _on_login_path(found):
         print(f"ok   {tool}: {found}")
     else:

@@ -87,16 +87,23 @@ some, below.
 
 ### Compressed RAR5 member dropped — exit 0
 
-apt 1.10.1 writes nothing for a compressed RAR5 member whose last compressed byte uses
-6–8 of its bits, solid or not, and exits 0
-with empty stderr under `-o -`. About 1–6% of `-m3` members of small random text did
-this. The 47-byte repro, with RAR 7.00:
+apt 1.10.1 writes nothing for a compressed RAR5 member when a Huffman lookup near its
+end peeks past the last packed byte, solid or not, and exits 0 with empty stderr under
+`-o -`. About 1–6% of `-m3` members of small random text did this. The 14-byte repro,
+with RAR 7.00, is the shortest over `ab` that `rar` compresses and `unar` drops;
+`scripts/find_unar_probe_member.py` finds it and explains the condition:
 
 ```sh
-printf 'ellaltagma\nlpa \n  gaa deta del beta ama \n bealp' > f.txt
+printf 'aaaaabababbabb' > f.txt
 rar a -ma5 t.rar f.txt
-unar -o - t.rar | wc -c    # 0; unrar p writes 47
+unar -o - t.rar | wc -c    # 0; unrar p writes 14
 ```
+
+Earlier notes said the member's last packed byte uses 6–8 of its bits. That is a
+correlation, not the condition: XADMaster peeks as many bits as the longest code in the
+table (at most 10) before it decodes a symbol, so the last symbol fails when its code is
+shorter than that by more than the last byte's unused bits. Many members with 7 or 8
+bits used decode.
 
 The cause is Debian's `CSInputBuffer-bit-string-reading.patch`, applied only to the
 Debian/Ubuntu 1.10.1 package: its bit reader raises end of file when fewer bits remain
@@ -106,6 +113,13 @@ than a Huffman lookup peeks, though the code it uses is shorter. Built from sour
 and the same build without the patch drops none. That patch is also why apt 1.10.1 loses
 `FILE1.TXT` in the RAR 1.5 fixture. The empty-member failure below is a separate, upstream
 bug and is unrelated.
+
+Which packages carry the patch, from the `debian/patches/series` of each source package in
+Ubuntu's archive (2026-10-01): Ubuntu 22.04 (1.10.1-2build11), 24.04
+(1.10.7+ds1+really1.10.1-3build1) and 26.04 (1.10.8+ds1-9build1), and Debian 1.10.8+ds1-2
+to -9. Debian 1.10.8+ds1-10 (unstable, June 2026) deleted it. Upstream 1.10.8 built with
+the patch applied writes 0 bytes for the repro. archivey now runs this repro once per
+`unar` binary and does not use one that fails it (`known-issues.md`).
 
 A run of one entry (`-i k`) writes the member exactly or not at all. A run of several
 entries of a solid archive loses the dropped member and can go on to lose later ones,

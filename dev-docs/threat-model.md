@@ -492,7 +492,11 @@ of that CRC tells a wrong key. That is time, not memory, and is an
 
 **Mechanism.** RAR member data goes through a program that reads only files, so a RAR
 opened from a stream is spooled (`internal/spool.py`), capped by `SpoolLimits.max_bytes`
-(1 GiB) and checked before anything is written. A path source is never copied.
+(1 GiB) and checked before anything is written. A path source is read in place, except
+the prefixed and unlinkable cases the `SpoolLimits` docstring lists, which are capped the
+same way. The same cap holds the file a solid RAR pass keeps file-copy sources in
+(`rar_copy_sources.py`); that keep is charged from its first written byte to the end of
+the pass, and declined rather than refused when the cap has no room.
 
 #### Extraction bombs
 

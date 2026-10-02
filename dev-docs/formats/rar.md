@@ -138,15 +138,25 @@ because the table is cached at open. With a usable `QO`, listing reads those cop
 first, seeks back to after MAIN, and skips matching FILE headers on the walk (§1.1).
 A walk whose last skip lands past the end of the file lists what it found and then
 reports `TruncatedError` as `members_report().error` (`members()` raises it), as TAR
-does for a member whose data runs past the end. A cut exactly at a header boundary
-lists the members before the cut, then warns: RAR5 writers always close a volume with
-`ENDARC`, so a RAR5 walk that reaches end of file without one emits
-`ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="end_of_archive_block"`, `format="rar"`,
-`observed_kind="absent"`) once per archive after the members, naming the volumes that
-lacked it. That is TAR's missing-trailer rule: the listing completes, and
-`DiagnosticPolicy.strict()` refuses it after delivery. A volume in a set needs the block
-too — its flags are what say another volume follows — so a set whose volumes all end
-in `ENDARC` emits nothing. RAR 1.5-4 is left alone: old writers may omit the end block,
+does for a member whose data runs past the end. **A file that ends part-way through a
+plain header is the same**: after the header's first byte and before its last, which
+for RAR5 includes its CRC and its size vint, the walk lists the members before that
+header and reports `TruncatedError`. Measured 2026-10-01 on unrar 7.00 with
+`basic_nonsolid__rar4.rar` cut to 140 or 190 bytes: `unrar` lists the members before the
+cut, prints "Unexpected end of archive" and exits nonzero. Until then archivey raised
+`CorruptionError` at open ("Unexpected EOF while reading RAR3 block header" or "… header
+body", and the RAR5 equivalents) and listed nothing. Only a file that ends before the
+header's declared bytes counts as a cut: a declared size that is invalid while the bytes
+are present (a RAR3 size below 7, a RAR5 size over 2 MiB, a size vint over 10 bytes)
+stays `CorruptionError`. A cut exactly at a header boundary lists the members before
+the cut, then warns: RAR5 writers always close a volume with `ENDARC`, so a RAR5 walk
+that reaches end of file without one emits `ARCHIVE_EOF_MARKER_MISSING`
+(`expected_marker="end_of_archive_block"`, `format="rar"`, `observed_kind="absent"`)
+once per archive after the members, naming the volumes that lacked it. That is TAR's
+missing-trailer rule: the listing completes, and `DiagnosticPolicy.strict()` refuses it
+after delivery. A volume in a set needs the block too — its flags are what say another
+volume follows — so a set whose volumes all end in `ENDARC` emits nothing. RAR 1.5-4 is
+left alone: old writers may omit the end block,
 so its absence there is not evidence of a cut. **With header encryption (`-hp`) a cut
 inside a header is a truncated listing too.** Each header there is a salt (RAR3, 8 bytes)
 or IV (RAR5, 16 bytes) and then whole 16-byte cipher blocks, and a writer never stops
@@ -529,8 +539,18 @@ archivey lists it as `MemberType.FILE` with `extra["is_file_copy"] = True`,
 `link_target` set to the stored source path and `link_target_member` set to the source
 member. Reading it (`open()`, `stream_members()`, `extract`, on `unrar` and `unar`,
 solid or not) returns the source's bytes, verified by the source's digest; `unrar p` with
-no member names and `unar` emit nothing for a copy, so its bytes come from a named open
-of the source, and a solid pass does not move for it. The source is the latest
+no member names and `unar` emit nothing for a copy, so the copy has no place in a solid
+pass's pipe. A solid pass (`stream_members()`, extraction) keeps each source a later copy
+reads as its pipe passes it, read by the caller or not, and serves the copies from that
+(`rar_copy_sources.py`): a named open of the source would decode the solid stream again
+from its start, so fifty copies of a 1 KiB file behind 100 MiB of solid data decoded
+about 5 GiB in 51 decompressor runs, and now decode 100 MiB in one. Up to 8 MiB per pass
+is kept in memory (a tuning constant, not a caller limit) and the rest in a temporary
+file charged to `SpoolLimits.max_bytes` from the source's first decoded byte until the
+pass ends, so a pass that reads nothing writes nothing and the pass's own copy of a
+stream source is charged first. A source with no room left, or one the pass does not
+emit (a `unar` refusal), falls back to the named open, which is also what `open()` and a
+non-solid archive use (there a named open decodes only the source). The source is the latest
 **earlier** member whose name the target names (archive-root relative, like a hard link
 target) and it must be a `FILE`; a copy of a copy stands for the first source. A copy
 with no such source still lists, and reading it raises `LinkTargetNotFoundError`; a copy
@@ -764,6 +784,18 @@ random `open()` of a solid member is a fresh whole-archive decode each time — 
 not a gap: amortizing via `unrar x` into a temp directory was considered and rejected
 because it hides decode work behind later reads (`VISION.md`; §6).
 
+**A RAR5 hard link resolves to an earlier member only, in both modes.**
+`unrar` extracts one from what it has already written: when the target comes later it
+fails with "You need to unpack the link target first" (exit 9), and a hard link to a
+symlink becomes a second name for the symlink on Linux. On macOS `link(2)` follows the
+symlink, so `unrar` links its target file there; archivey writes the symlink everywhere,
+as GNU tar does. The base reader never looks forward for a hard link's target, so
+random access and a streaming pass agree with each other and with `unrar`, as TAR does
+(`tar.md`). `unar` differs: it writes every RAR hard link as a
+symlink to the target name, which is why a forward one appears to work there. The six
+shapes are pinned against `unrar` by
+`tests/test_audit_extraction_reaudit.py::test_rar_hard_links_extract_as_unrar_does_in_both_modes`.
+
 ### 2.5 Write
 
 Not shipped, and not RAR-specific: no format has a writer. RAR would be the least likely
@@ -790,7 +822,7 @@ unmeasured. Measured across the other candidates
 
 | Candidate | Verdict |
 | --- | --- |
-| **`unar` / MacPaw XADMaster** | **Shipped as the second program (default `"auto"` uses it when no RARLAB binary is found), gated** — see the paragraph after this table. Before the gate: **silently wrong**. On a RAR5 **solid** archive containing any empty FILE, reading a *non-empty* member fails — Debian's 1.10.1 SIGSEGVs with 0 bytes, and the newer 1.10.7/1.10.8 lineage (what Homebrew ships) exits **0 with empty output**, on stdout *and* on extract-to-disk. The newer behaviour is the dangerous one, and skipping the empty members in the argv does not help; the solid decoder still walks that slot. Debian's 1.10.1 also drops a compressed RAR5 member whose last packed byte uses 6–8 bits, solid or not, with exit 0; archivey's per-member size and digest check turns that into an error, and the solid pass reads a member with no digest through a run of its own. Apart from those it matches `unrar p` on what was measured, which is why it is not closed — see below. [`known-issues.md`](../known-issues.md) |
+| **`unar` / MacPaw XADMaster** | **Shipped as the second program (default `"auto"` uses it when no RARLAB binary is found), gated** — see the paragraph after this table. Before the gate: **silently wrong**. On a RAR5 **solid** archive containing any empty FILE, reading a *non-empty* member fails — Debian's 1.10.1 SIGSEGVs with 0 bytes, and the newer 1.10.7/1.10.8 lineage (what Homebrew ships) exits **0 with empty output**, on stdout *and* on extract-to-disk. The newer behaviour is the dangerous one, and skipping the empty members in the argv does not help; the solid decoder still walks that slot. Debian's 1.10.1 also drops a compressed RAR5 member when a Huffman lookup peeks past its packed data, solid or not, with exit 0 (a Debian patch, also in Debian's 1.10.8 packages before 1.10.8+ds1-10). `find_unar` runs every `unar` once on such a member and does not use a build that drops it; for a build that passes, the per-member size and digest check still turns a short member into an error, and the solid pass reads a member with no digest through a run of its own. Apart from those it matches `unrar p` on what was measured, which is why it is not closed — see below. [`known-issues.md`](../known-issues.md) |
 | **`7z`** | A codec lottery, and short of what this backend needs even when it wins. Ubuntu's `7zip` advertises RAR under *Formats* while the *Codecs* list has no `Rar5` until `7zip-rar` is installed — so it lists and extracts stored members, then says `Unsupported Method` on anything solid or typically compressed. With the plugin the ALL-pipe matches `unrar p` on our fixtures, but it takes the password **on argv**, reports a **missing member as rc=0**, and cannot address **`path;n`** — the three things §2.3, §4 and file-version reads depend on. And it is still a RARLAB-derived non-free codec under another name. Homebrew's `7zz` compiles it out entirely |
 | **`bsdtar`** | No solid, no password — and on a stored non-solid fixture, `--to-stdout` wrote **~7 GB** before the probe harness capped it, from an archive of a few KiB |
 | **`unrar-free` 0.1.3** | Extract-to-disk only; no stdout at all |
@@ -1377,6 +1409,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Solid symlink / hardlink demux does not consume pipe bytes | `tests/test_rar_reader.py::test_solid_symlink_demux_and_link_targets`, `::test_solid_hardlink_demux_and_targets` |
 | Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False | `::test_solid_symlink_demux_and_link_targets` (the `symlinks_solid__` pair; `__rar4` links are stored M0), `::test_solid_hardlink_demux_and_targets` (RAR5 hardlinks), `::test_named_unrar_p_bytes_rejects_no_match`. No RAR 1.5/2.x solid-symlink fixture. Unfixtured existing kinds: Windows symlink, junction |
 | A RAR5 file copy lists as `FILE` with `is_file_copy` and its source, reads and extracts as an independent file (both programs, solid and not); a dangling or wrong-size copy raises; a hard link stays `HARDLINK` | `tests/test_audit2_rar.py::test_file_copy_redirect_extracts_as_an_independent_file`, `::test_file_copy_lists_as_a_file_that_names_its_source`, `::test_file_copy_yields_its_bytes_in_stream_members_order`, `::test_file_copy_extracts_as_an_independent_file_on_every_path`, `::test_file_copy_without_a_matching_source_is_a_typed_error`, `::test_rar5_hard_link_stays_a_hardlink` |
+| A solid pass decodes a file copy's source once for all its copies (both programs; the source read or skipped, extracted or filtered out); kept in the spool past the memory allowance, decoded again when the spool limit has no room; the spool charge starts at the first kept byte, after a stream source's own copy, and ends with the pass; a pass that reads nothing writes nothing; the kept bytes are checked against the source's digest and count toward extraction limits | `tests/test_rar_file_copy_solid_pass.py`, `tests/test_rar_reader.py::test_solid_stream_members_of_a_stream_source_writes_nothing_until_read`, `tests/test_rar_spool_limit.py::test_budget_release_gives_a_reservation_back` |
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` | `tests/test_rar_reader.py::test_member_reports_exact_compression_and_extract_version`, `::test_rar3_unp_ver_byte_is_reported_unvalidated`, `::test_unknown_method_byte_omits_level`, `::test_stored_m0_direct_read`, `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes` |
 | Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |

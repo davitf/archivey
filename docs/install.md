@@ -83,7 +83,10 @@ from inside `UNRAR`. Run the binary with no arguments to check. An older RARLAB 
 is refused at identification, not per member. `7z` and `unrar-free` are never used,
 even if they sit on `PATH` under another name. `unar` 1.10 or later (`brew install unar`
 on macOS, `sudo apt install unar` on Debian and Ubuntu) is used when no RARLAB program
-is found, or always with `ArchiveyConfig(rar_decompressor="unar")`.
+is found, or always with `ArchiveyConfig(rar_decompressor="unar")`. A `unar` that fails
+archivey's one-time RAR5 check is not used: the Debian and Ubuntu packages before
+1.10.8+ds1-10, which includes Ubuntu 22.04 to 26.04, drop some RAR5 members. On those,
+install `unrar`.
 
 ### Linux
 

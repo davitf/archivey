@@ -24,6 +24,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import DiagnosticCode, ScanRaceContext
+from archivey.exceptions import ExtractionError
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
@@ -38,7 +39,7 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.timestamps import unix_to_datetime
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
-from archivey.terminal import quoted
+from archivey.terminal import display_path, quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
@@ -181,6 +182,19 @@ class DirectoryReader(BaseArchiveReader):
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
         self._uname_cache: dict[int, str | None] = {}
         self._gname_cache: dict[int, str | None] = {}
+
+    def _check_extraction_dest(self, dest: Path) -> None:
+        # Extracting a tree into a directory inside it reads its own output: a
+        # streaming walk descends into what it just wrote (`copy/copy/copy/...`)
+        # until a path is too long, and a listing taken later includes it. `cp -r`
+        # refuses the same request.
+        root = self._root.resolve()
+        target = dest.resolve()
+        if target == root or target.is_relative_to(root):
+            raise ExtractionError(
+                f"Cannot extract a directory into itself: {display_path(dest)} is "
+                f"inside the source {display_path(self._root)}"
+            )
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # An explicit stack rather than recursion: a tree deeper than the interpreter's

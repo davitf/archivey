@@ -122,12 +122,23 @@ single-file/single-stream archive. When no cheap index is available (plain TAR,
 future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
-the cwd and remove the wrapper. The hoist SHALL produce the same final layout
-as extracting directly into the cwd: directories merge into existing
-directories, and per-file collisions resolve by the overwrite policy (`rename`
-derives the library's `name (N)` spelling; `replace` replaces only the
-individual files being extracted; `skip` keeps the existing file). The hoist
-MUST NOT delete pre-existing files or directories under any policy. A collision
+the cwd and remove the wrapper. The hoist SHALL NOT run when the wrapper was
+already there before the extraction (its only entry may be the operator's own),
+when the only entry is a symlink (the move changes the directory its target is
+read from), or when a symlink in the entry leaves the entry on the way to its target.
+Extraction checked those links against the wrapper, and a path that climbs above the
+hoisted entry and back down through the wrapper's name (`top/k ->
+../../.ssh/authorized_keys`, from `.ssh.tar`) climbs out of the cwd after the move. The
+check SHALL follow the path one component at a time, through every symlink on the way,
+so a chain cannot hide a climb; an absolute target always blocks. A path that stays
+inside the entry (`pkg/bin/a -> ../lib/a.so`) means the same thing after the move, and
+does not block it. In each of these cases a line says the content was kept in the
+wrapper and why. When it runs, the hoist SHALL produce the same final layout as
+extracting directly into the cwd: directories merge into existing directories, and
+per-file collisions resolve by the overwrite policy (`rename` derives the library's
+`name (N)` spelling; `replace` replaces only the individual files being extracted;
+`skip` keeps the existing file). The hoist MUST NOT delete pre-existing files or
+directories under any policy. A collision
 the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
 under the wrapper, and exit nonzero — mirroring the failure a direct extraction
@@ -373,9 +384,10 @@ needs beyond `archivey.__all__` SHALL otherwise come from a public module, such 
 `archivey.terminal` for terminal-safe display. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
 without touching any public name. `extract --dry-run` also reads one private field,
-`ExtractionReport._dry_run_top_level`: the entries the dry run left at the top of its
-scratch copy of the destination. A dry run writes nothing the CLI could look at
-instead, and renaming the field breaks the dry run's hoist line and summary.
+`ExtractionReport._dry_run_top_level` and `ExtractionReport._dry_run_links`: the
+entries the dry run left at the top of its scratch copy of the destination, and the
+symlinks in that copy. A dry run writes nothing the CLI could look at instead, and
+renaming either field breaks the dry run's hoist line and summary.
 
 #### Scenario: CLI import boundary
 
@@ -393,8 +405,11 @@ without `--dry-run` would against an empty destination, and its closing summary 
 say that nothing was written. With no `-d`, it SHALL name the smart default destination
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,
-and use that place in the closing summary. It SHALL NOT check for collisions with
-entries already at that place.
+and use that place in the closing summary. Where a real run would keep that entry in
+the destination (the folder was already there, the entry is a symlink, or a symlink in
+it leaves it), it SHALL print `would keep in <stem>/:` with the same reason, judged
+from the symlinks the dry run created. It SHALL NOT check for collisions with entries
+already at that place.
 
 #### Scenario: extract dry-run matrix
 
@@ -404,3 +419,4 @@ entries already at that place.
 | `archivey extract <archive-with-traversal> --dry-run` | `blocked:` line; exit `3` |
 | `archivey extract <archive> -d out --dry-run` | `out` is not created |
 | `archivey extract <tar-with-single-root-src> --dry-run` | stderr names `would move to src/`; summary ends `→ src/`; nothing created in the cwd |
+| `archivey extract <tar-whose-single-root-has-a-link-leaving-it> --dry-run` | stderr names `would keep in <stem>/:` and the reason the real run prints; no `would move` |

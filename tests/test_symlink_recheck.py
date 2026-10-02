@@ -193,10 +193,10 @@ def test_a_link_through_a_removed_link_is_rechecked(
 def test_replace_swapping_a_directory_for_a_symlink_rechecks(
     tmp_path: Path, streaming: bool
 ) -> None:
-    # ``a`` is a real directory with content when ``l`` is made. REPLACE removes the
-    # whole tree and puts a symlink in its place.
+    # ``a`` is a real directory when ``l`` is made. REPLACE removes it (only an empty
+    # directory can be replaced) and puts a symlink in its place.
     dest = tmp_path / "out"
-    (dest / "a" / "sub").mkdir(parents=True)
+    (dest / "a").mkdir(parents=True)
     dest, results = _extract(
         tmp_path,
         [("l", "sym", "a/../secret"), ("a", "sym", ".")],

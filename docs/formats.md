@@ -229,7 +229,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
   so at open. `"unrar"` and `"unar"` use only that program.
   `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
-  easy to install on macOS, but it reads less than `unrar`. Archivey refuses these reads with
+  easy to install on macOS, but it reads less than `unrar`. Archivey runs each `unar`
+  once on a small RAR5 archive and does not use one that decodes it wrong, as the
+  Debian and Ubuntu packages before 1.10.8+ds1-10 do (Ubuntu 22.04 to 26.04 among
+  them); `"auto"` then treats `unar` as absent. Archivey refuses these reads with
   `UnsupportedFeatureError` before `unar` runs, because `unar` gets them wrong,
   sometimes with a success exit:
   - encrypted data in a RAR 2.x-4.x archive, and every member of a solid one that has
@@ -258,7 +261,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   Stored members still need neither program. A member whose stored name contains `*` or
   `?` needs no `rar_allow_glob_member_concatenation`: `unar` selects members by index,
   not by name. With `"unrar"` or `"unar"` selected, archivey never switches between the
-  two programs; with `unar` selected and missing, a read raises
+  two programs; with `unar` selected and missing or refused, a read raises
   `PackageNotInstalledError`.
 - `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
@@ -268,18 +271,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   always ends each volume with an end-of-archive block, so archivey lists the members
   before the cut and then emits `ARCHIVE_EOF_MARKER_MISSING`
   (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
-  A cut inside a member's data, or inside a header of an archive with encrypted headers,
-  is `TruncatedError` on the listing, after the members before it, and other damage to
-  an encrypted header is `CorruptionError`. In an encrypted header, both need the
-  password proven first: by RAR5's password check value, or in RAR 1.5-4 by an encrypted
-  header whose checksum matches, which in a volume set covers the later volumes too.
-  Before that, a wrong password looks the same as a cut past a header's first 16-byte
-  block or a header whose checksum does not match, so those still raise
-  `EncryptionError` ("wrong password?") at open, even with the right password. That
-  happens inside the first encrypted header of a RAR 1.5-4 archive or volume set, and
-  inside any header of a RAR5 archive whose encryption record has no password check
-  value. RAR 1.5-4 archives may legitimately lack the end block, so a cut between their
-  blocks still lists as complete.
+  A cut inside a member's data or inside a header lists the members before the cut and
+  is `TruncatedError` on the listing, and other damage to an encrypted header is
+  `CorruptionError`. In an encrypted header, both need the password proven first: by
+  RAR5's password check value, or in RAR 1.5-4 by an encrypted header whose checksum
+  matches, which in a volume set covers the later volumes too. Before that, a wrong
+  password looks the same as a cut past a header's first 16-byte block or a header whose
+  checksum does not match, so those still raise `EncryptionError` ("wrong password?") at
+  open and list nothing, even with the right password. That happens inside the first
+  encrypted header of a RAR 1.5-4 archive or volume set, and inside any header of a RAR5
+  archive whose encryption record has no password check value. RAR 1.5-4 archives may
+  legitimately lack the end block, so a cut between their blocks still lists as
+  complete.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.

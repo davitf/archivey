@@ -47,6 +47,7 @@ from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.test_unar_probe import GOOD_UNAR_EXTRACT
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
@@ -224,9 +225,10 @@ def _unrar_bytes(path: Path) -> dict[str, bytes]:
 def test_a_member_unar_drops_is_an_error_not_wrong_bytes(
     tmp_path: Path, name: str, how: str
 ) -> None:
-    """unar 1.10.1 drops a compressed RAR5 member whose last packed byte uses 6-8
-    bits, with exit 0. In one solid run over ``unar_stale_*``, ``c.txt`` is dropped
-    and stale window bytes follow, so the bytes at ``c.txt``'s offset are not its own.
+    """unar 1.10.1 drops a compressed RAR5 member when a Huffman lookup peeks past
+    its packed data, with exit 0. In one solid run over ``unar_stale_*``, ``c.txt`` is
+    dropped and stale window bytes follow, so the bytes at ``c.txt``'s offset are not
+    its own.
     ``unar_stale_nocrc_solid__.rar`` has ``c.txt``'s CRC32 removed: only a run of its
     own, which is exact or empty, keeps those bytes from being served as it."""
     path = _RAR / name
@@ -275,7 +277,7 @@ def test_glob_named_member_needs_no_escape_hatch() -> None:
         assert archive.read("a*.txt")
 
 
-@requires_binary("unar")
+@requires_binary("unar", "unrar")
 def test_member_before_the_first_empty_entry_still_streams() -> None:
     """The solid pass names only readable members, so unar never reaches the crash.
 
@@ -760,8 +762,13 @@ def test_replaced_binary_is_probed_again(
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(PackageNotInstalledError):
         unar.find_unar(purpose="for a test")
+    # Past the banner, ``find_unar`` checks that the program decodes a RAR5 member
+    # (``tests/test_unar_probe.py``); this one prints that member for any other argv.
     binary = _stand_in(
-        tmp_path, 'echo "unar v1.10.8, a tool for extracting the contents of"\n'
+        tmp_path,
+        'if [ "$1" = "-h" ]; then\n'
+        '  echo "unar v1.10.8, a tool for extracting the contents of"; exit 0\n'
+        "fi\n" + GOOD_UNAR_EXTRACT,
     )
     assert unar.find_unar(purpose="for a test") == os.path.abspath(binary)
 

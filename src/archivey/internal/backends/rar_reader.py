@@ -65,6 +65,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     raw_message_of,
 )
+from archivey.internal.backends.rar_copy_sources import FileCopySources
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
@@ -192,7 +193,10 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
 
     Neither found resolves to ``UNRAR``, so a data read raises the ``unrar``
     refusal it always has. Probing costs one identification run per binary per
-    process; the finders cache the answer.
+    process, and a ``unar`` that identifies costs a second: a decode of a small RAR5
+    archive written to a temp directory (``unar_rar5_probe_failure``). Each run is
+    bounded by ``cli.PROBE_TIMEOUT_SECONDS``, so one ``unar`` can take up to twice
+    that. The finders cache the answers.
     """
     if choice is not RarDecompressor.AUTO:
         return choice
@@ -1420,19 +1424,21 @@ class RarReader(BaseArchiveReader):
             return "unar"
         return "RARLAB unrar or rar"
 
-    def _spool_budget(self, what: str) -> SpoolBudget:
+    def _spool_budget(self, what: str | None) -> SpoolBudget:
         """This reader's spool budget, made on first use and kept for its lifetime.
 
         One budget per reader, not per attempt: a copy that was refused, or failed
         part-way, is not given a fresh allowance by the next read. Called under
         ``_materialize_lock``. ``what`` names the copy in the refusal; the first call
-        fixes it. Only a path source's files are ever linked for ``unar``, so the
-        link-fallback copy never follows a stream source's copy on one reader.
+        that passes one fixes it (``None`` is a file-copy source kept by a solid pass,
+        :meth:`_try_spool`, which never refuses). Only a path source's files are ever
+        linked for ``unar``, so the link-fallback copy never follows a stream source's
+        copy on one reader.
         """
+        program = (
+            "unar" if self._decompressor is RarDecompressor.UNAR else "RARLAB unrar"
+        )
         if self._spool is None:
-            program = (
-                "unar" if self._decompressor is RarDecompressor.UNAR else "RARLAB unrar"
-            )
             remedy: dict[str, str] = {}
             source = self._source
             if source is None:
@@ -1461,15 +1467,32 @@ class RarReader(BaseArchiveReader):
                 )
             self._spool = SpoolBudget(
                 self._config.spool_limits,
-                what=(
-                    f"reading this member needs {program}, which reads only files, "
-                    f"so {what} must be copied to a temporary location"
-                ),
+                what=None,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
                 **remedy,
             )
+        if what is not None:
+            self._spool.describe(
+                f"reading this member needs {program}, which reads only files, "
+                f"so {what} must be copied to a temporary location"
+            )
         return self._spool
+
+    def _try_spool(self, size: int) -> bool:
+        """Charge ``size`` bytes of a kept file-copy source to the spool budget, if they fit.
+
+        ``False`` when they do not: the copy then reads its source as it would without
+        the solid pass (:meth:`_open_file_copy`), and the budget is left open.
+        """
+        with self._materialize_lock:
+            return self._spool_budget(None).try_reserve(size)
+
+    def _release_spool(self, size: int) -> None:
+        """Give back what :meth:`_try_spool` charged, once the kept file is deleted."""
+        with self._materialize_lock:
+            assert self._spool is not None
+            self._spool.release(size)
 
     def _unar_copy_size(self) -> int | None:
         """Bytes :meth:`_unar_archive_path` copies from where the RAR starts, if known."""
@@ -2209,7 +2232,11 @@ class RarReader(BaseArchiveReader):
                     )
             latest[member.name] = member
 
-    def _open_file_copy(self, member: ArchiveMember) -> ArchiveStream:
+    def _open_file_copy(
+        self,
+        member: ArchiveMember,
+        kept: Callable[[ArchiveMember], BinaryIO | None] | None = None,
+    ) -> ArchiveStream:
         """Serve a RAR5 file copy from its source member.
 
         A copy carries no data stream: ``unrar p`` emits nothing for it in a full run
@@ -2217,6 +2244,11 @@ class RarReader(BaseArchiveReader):
         verified as the source. The copy's own CRC32 covers zero bytes
         (``_member_hashes``); its declared size must match the source's, or the copy
         would read as a different length than it lists.
+
+        A solid pass passes ``kept``, which returns the source's bytes as the pass
+        decoded them (:class:`FileCopySources`), or ``None`` when it did not keep
+        them; only then is the source opened by name, which decodes the solid stream
+        again up to it.
         """
         source = member.link_target_member
         if source is None:
@@ -2235,7 +2267,66 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
-        return self._open_member(source)
+        stream = kept(source) if kept is not None else None
+        if stream is None:
+            return self._open_member(source)
+        # Checked as the source's bytes from the pipe are; not counted as decoded
+        # output, since the pass already counted them once.
+        hashes, vsize, transforms, verify_member = self._payload_verify_args(source)
+        return self._wrap_member_stream(
+            self._watch_unverified(stream, source),
+            member.name,
+            size=member.size,
+            track_output=False,
+            expected_hashes=hashes,
+            expected_size=vsize,
+            digest_transforms=transforms,
+            verify_member=verify_member,
+        )
+
+    def _file_copy_sources(self) -> FileCopySources | None:
+        """What a solid pass keeps for its file copies, or ``None`` when it has none."""
+        ids = frozenset(
+            id(m.link_target_member)
+            for m in self._members
+            if isinstance(m._raw, RarMemberInfo)
+            and m._raw.is_file_copy()
+            and m.link_target_member is not None
+        )
+        if not ids:
+            return None
+        return FileCopySources(ids, self._try_spool, self._release_spool)
+
+    def _pass_file_copy_stream(
+        self,
+        member: ArchiveMember,
+        sources: FileCopySources | None,
+        advance_past: Callable[[int], object],
+        pass_costs: dict[int, _DictionaryCost],
+    ) -> ArchiveStream:
+        """A solid pass's lazy stream for a file copy, served from its kept source."""
+
+        def kept(source: ArchiveMember) -> BinaryIO | None:
+            if sources is None:
+                return None
+            # Reaching the source may start the pass's process or decode through
+            # it, so the source's dictionary is checked as its own read would be.
+            cost = pass_costs.get(id(source))
+            if cost is not None:
+                self._check_dictionary_memory(source, cost)
+            return sources.open(id(source), advance_past)
+
+        return self._register_public_stream(
+            self._wrap_member_stream(
+                None,
+                member.name,
+                open_fn=lambda: self._open_file_copy(member, kept),
+                size=member.size,
+                # ``_open_file_copy`` returns an ArchiveStream; see _lazy_member_stream.
+                track_output=False,
+                seekable=self._seek_declared(),
+            )
+        )
 
     @staticmethod
     def _member_type(info: RarMemberInfo) -> MemberType:
@@ -2268,6 +2359,7 @@ class RarReader(BaseArchiveReader):
             for m in self._members
         )
         solid: SolidBlockReader | None = None
+        copies = self._file_copy_sources()
         pass_costs = self._pass_dictionary_costs()
 
         def _pipe() -> SolidBlockReader:
@@ -2303,7 +2395,9 @@ class RarReader(BaseArchiveReader):
                 with _close_on_error(owned):
                     tracked = self._track_decompressed(owned)
                 with _close_on_error(tracked):
-                    solid = SolidBlockReader(tracked)
+                    solid = SolidBlockReader(
+                        tracked if copies is None else copies.tee(tracked)
+                    )
             return solid
 
         pipe_offset = 0
@@ -2313,8 +2407,14 @@ class RarReader(BaseArchiveReader):
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_copy():
-                # Not in the pipe; its source's bytes come from a named open.
-                return self._lazy_member_stream(member)
+                # Not in the pipe; served from its source's bytes, kept as the pipe
+                # passed them, so the solid stream is not decoded again for it.
+                return self._pass_file_copy_stream(
+                    member,
+                    copies,
+                    lambda end: _pipe().open_member(end, 0),
+                    pass_costs,
+                )
             if not raw.is_payload_file() or not member.is_file:
                 return None
             size = _member_stream_size(member)
@@ -2325,6 +2425,8 @@ class RarReader(BaseArchiveReader):
             # solid positioning, and no ``unrar``, for unread members).
             member_offset = pipe_offset
             pipe_offset += size
+            if copies is not None and copies.is_source(id(member)):
+                copies.register(id(member), member_offset, size)
             cost = pass_costs[id(member)]
 
             def open_fn() -> BinaryIO:
@@ -2354,8 +2456,12 @@ class RarReader(BaseArchiveReader):
             )
 
         def _cleanup() -> None:
-            if solid is not None:
-                solid.close()
+            try:
+                if solid is not None:
+                    solid.close()
+            finally:
+                if copies is not None:
+                    copies.close()
 
         yield from self._drive_pass_streams(
             self._listed_members(),
@@ -3422,6 +3528,7 @@ class RarReader(BaseArchiveReader):
         catches.
         """
         solid: SolidBlockReader | None = None
+        copies = self._file_copy_sources()
         pass_costs = self._pass_dictionary_costs()
 
         def _pipe() -> SolidBlockReader:
@@ -3438,7 +3545,8 @@ class RarReader(BaseArchiveReader):
                 # Every member read from this pipe is checked against its declared
                 # size and its stored CRC32 or BLAKE2sp; a member without one is read
                 # by its own run instead (``_open``). unar 1.10.1 drops a compressed
-                # RAR5 member whose last packed byte uses 6-8 bits, exit 0; the bytes
+                # RAR5 member when a Huffman lookup peeks past its packed data, exit 0
+                # (``scripts/find_unar_probe_member.py``); the bytes
                 # then read in its place are later members' or stale window bytes,
                 # which the digest catches and the size check often does not. The
                 # exit status adds nothing. A wrong password gives no output at all,
@@ -3454,7 +3562,9 @@ class RarReader(BaseArchiveReader):
                 with _close_on_error(owned):
                     tracked = self._track_decompressed(owned)
                 with _close_on_error(tracked):
-                    solid = SolidBlockReader(tracked)
+                    solid = SolidBlockReader(
+                        tracked if copies is None else copies.tee(tracked)
+                    )
             return solid
 
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:
@@ -3473,8 +3583,13 @@ class RarReader(BaseArchiveReader):
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_copy():
-                # As in the ``unrar`` pass: not in the pipe, read from its source.
-                return self._lazy_member_stream(member)
+                # As in the ``unrar`` pass: not in the pipe, read from its kept source.
+                return self._pass_file_copy_stream(
+                    member,
+                    copies,
+                    lambda end: _pipe().open_member(end, 0),
+                    pass_costs,
+                )
             if not raw.is_payload_file() or not member.is_file:
                 return None
             size = _member_stream_size(member)
@@ -3490,6 +3605,8 @@ class RarReader(BaseArchiveReader):
                 )
             else:
                 offset = policy.solid_pass_offset(raw)
+                if copies is not None and copies.is_source(id(member)):
+                    copies.register(id(member), offset, size)
                 cost = pass_costs[id(member)]
                 open_fn = lambda: _read(member, offset, size, cost)  # noqa: E731
             # Registered for the live-stream gate, as in the ``unrar`` pass.
@@ -3509,8 +3626,12 @@ class RarReader(BaseArchiveReader):
             )
 
         def _cleanup() -> None:
-            if solid is not None:
-                solid.close()
+            try:
+                if solid is not None:
+                    solid.close()
+            finally:
+                if copies is not None:
+                    copies.close()
 
         yield from self._drive_pass_streams(
             self._listed_members(),

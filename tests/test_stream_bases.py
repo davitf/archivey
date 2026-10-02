@@ -356,6 +356,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     _import_all_archivey_modules()
 
     import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_copy_sources as rar_copy_sources
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
     import archivey.internal.backends.tar_reader as tar_reader
@@ -434,6 +435,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # Sits under tarfile, which hands out member data through its own
         # ExFileObject: nothing above it can ask it for a resume offset.
         tar_reader._EofProbeStream,
+        # Under a solid RAR pass's SolidBlockReader, which only reads forward.
+        rar_copy_sources._TeeBlock,
     }
 
     found = _readonly_stream_subclasses()
@@ -549,6 +552,7 @@ def test_delegating_stream_close_inventory() -> None:
     _import_all_archivey_modules()
 
     import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_copy_sources as rar_copy_sources
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
     import archivey.internal.backends.zip_reader as zip_reader
@@ -573,6 +577,7 @@ def test_delegating_stream_close_inventory() -> None:
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
+        rar_copy_sources._TeeBlock,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,
