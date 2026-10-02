@@ -192,7 +192,10 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
 
     Neither found resolves to ``UNRAR``, so a data read raises the ``unrar``
     refusal it always has. Probing costs one identification run per binary per
-    process; the finders cache the answer.
+    process, and a ``unar`` that identifies costs a second: a decode of a small RAR5
+    archive written to a temp directory (``unar_rar5_probe_failure``). Each run is
+    bounded by ``cli.PROBE_TIMEOUT_SECONDS``, so one ``unar`` can take up to twice
+    that. The finders cache the answers.
     """
     if choice is not RarDecompressor.AUTO:
         return choice

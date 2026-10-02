@@ -47,6 +47,7 @@ from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.test_unar_probe import GOOD_UNAR_EXTRACT
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
@@ -275,7 +276,7 @@ def test_glob_named_member_needs_no_escape_hatch() -> None:
         assert archive.read("a*.txt")
 
 
-@requires_binary("unar")
+@requires_binary("unar", "unrar")
 def test_member_before_the_first_empty_entry_still_streams() -> None:
     """The solid pass names only readable members, so unar never reaches the crash.
 
@@ -760,8 +761,13 @@ def test_replaced_binary_is_probed_again(
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(PackageNotInstalledError):
         unar.find_unar(purpose="for a test")
+    # Past the banner, ``find_unar`` checks that the program decodes a RAR5 member
+    # (``tests/test_unar_probe.py``); this one prints that member for any other argv.
     binary = _stand_in(
-        tmp_path, 'echo "unar v1.10.8, a tool for extracting the contents of"\n'
+        tmp_path,
+        'if [ "$1" = "-h" ]; then\n'
+        '  echo "unar v1.10.8, a tool for extracting the contents of"; exit 0\n'
+        "fi\n" + GOOD_UNAR_EXTRACT,
     )
     assert unar.find_unar(purpose="for a test") == os.path.abspath(binary)
 

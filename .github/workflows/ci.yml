@@ -257,12 +257,49 @@ jobs:
       # unar (The Unarchiver's XADMaster) is the second RAR data program: the default
       # rar_decompressor="auto" uses it when no RARLAB program is installed, and
       # rar_decompressor="unar" selects it. tests/test_rar_unar.py compares it
-      # with unrar on every committed fixture and skips without it. Linux gets
-      # Ubuntu's 1.10.1; macOS gets the Homebrew bottle (XADMaster 1.10.8), which is
-      # the build macOS users install. Windows has no packaged unar.
+      # with unrar on every committed fixture and skips without it. macOS gets the
+      # Homebrew bottle (XADMaster 1.10.8), which is the build macOS users install.
+      # Windows has no packaged unar.
+      #
+      # Linux: Ubuntu's package is installed, but archivey refuses it. Debian and Ubuntu
+      # unar packages before 1.10.8+ds1-10 carry CSInputBuffer-bit-string-reading.patch,
+      # which makes unar write nothing, with exit 0, for about one compressed RAR5 member
+      # in 25. find_unar runs every unar once on a small archive with such a member and
+      # does not use one that drops it (dev-docs/known-issues.md, "Debian/Ubuntu unar
+      # 1.10.1"). So the Linux legs build upstream XADMaster 1.10.8 from source and put
+      # it first on PATH, and a separate step below EXPECTS Ubuntu's /usr/bin/unar to
+      # fail the check. The apt package stays installed for that step and for the
+      # shared libraries the source build links against.
       - name: Install unrar and unar (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y unrar unar
+      # The built binary links against the image's libgnustep-base and libicu, whose
+      # sonames change between Ubuntu releases, so the key names the image as well as
+      # the pinned sources (the script's hash).
+      - name: Name the image for the unar build cache (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        id: unar-image
+        run: echo "image=$(. /etc/os-release && echo "${ID}${VERSION_ID}")" >> "$GITHUB_OUTPUT"
+      - name: Cache unar 1.10.8 built from source (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        id: unar-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/unar-1.10.8
+          key: unar-xadmaster-v1.10.8-ud1.1-${{ hashFiles('scripts/install-unar-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
+      # Installed on a cache hit too: the script rebuilds over a cached binary that does
+      # not print its banner (a cache saved after a failed step), and that needs these.
+      - name: Install unar build dependencies (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        run: >
+          sudo apt-get install -y gnustep-make libgnustep-base-dev gobjc
+          libbz2-dev zlib1g-dev libicu-dev libwavpack-dev
+      - name: Build unar 1.10.8 and put it first on PATH (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        run: |
+          DEST="${RUNNER_TEMP}/unar-1.10.8"
+          ./scripts/install-unar-from-source.sh --dest "$DEST"
+          echo "$DEST" >> "$GITHUB_PATH"
       # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
       # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned git commit
       # of the pmachapman/unrar GitHub mirror (not rarlab, not GitHub's generated
@@ -353,6 +390,34 @@ jobs:
           uv run --python ${{ matrix.python-version }} --no-sync python -c \
             "from archivey.internal.backends.rar_unrar import find_rarlab_unrar; print(find_rarlab_unrar())"
 
+      # The unar tests must not skip quietly: fail here if archivey would not use the
+      # unar on PATH (the source build on Linux, Homebrew's on macOS).
+      - name: Verify archivey uses the unar on PATH (Linux, macOS)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os != 'Windows'
+        run: |
+          command -v unar
+          uv run --python ${{ matrix.python-version }} --no-sync python -c \
+            "from archivey.internal.external.unar import find_unar; print(find_unar(purpose='in CI'))"
+
+      # EXPECTED TO FAIL THE CHECK. Ubuntu's unar (24.04: 1.10.7+ds1+really1.10.1)
+      # carries Debian's CSInputBuffer-bit-string-reading.patch and drops some
+      # compressed RAR5 members; this step asserts that archivey's unar check still
+      # catches it. If it starts failing because the check PASSES, Ubuntu's unar now
+      # decodes correctly: set ARCHIVEY_DISTRO_UNAR_EXPECT to "clean" here, consider
+      # dropping the source build above so Linux tests the distribution's unar again,
+      # and update dev-docs/known-issues.md with the package version that fixed it. The
+      # test's failure message says the same. The unar-distro-packages job does this
+      # for other distributions.
+      - name: Expect Ubuntu's unar to fail archivey's RAR5 check (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        env:
+          ARCHIVEY_DISTRO_UNAR: /usr/bin/unar
+          ARCHIVEY_DISTRO_UNAR_EXPECT: patched
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          pytest tests/test_unar_probe.py::test_distro_unar_matches_the_ci_expectation
+          -q --no-cov -rs
+
       - name: Assert synced venv Python matches matrix
         # Catch regressions where `.python-version` silently overrides the matrix again.
         run: >
@@ -411,6 +476,71 @@ jobs:
         run: >
           uv run --python ${{ matrix.python-version }} --no-sync
           pytest tests/test_property_safety.py -q
+
+  # Each distribution's packaged unar against archivey's unar RAR5 check, and the unar
+  # tests against it. Kept apart from the test matrix and cheap: a container per
+  # distribution, core install, two test files.
+  #
+  # Debian and Ubuntu unar packages before 1.10.8+ds1-10 carry Debian's
+  # CSInputBuffer-bit-string-reading.patch, which makes unar write nothing, with exit
+  # 0, for about one compressed RAR5 member in 25 (dev-docs/known-issues.md,
+  # "Debian/Ubuntu unar 1.10.1"). archivey refuses a unar that does this. Each row
+  # declares what its package is expected to do: "patched" (the check must fail;
+  # the unar tests then skip) or "clean" (it must pass; the unar tests run against
+  # it). When a row fails, the distribution changed its package: the test's failure
+  # message says what to update. Ubuntu's own package is checked in the test job.
+  #
+  # Expectations, 2026-10-01 (no container runtime was available to run them, so the
+  # first run of this job confirms them):
+  #   debian:stable  patched  INFERRED: Debian 13 should ship 1.10.8+ds1-9, whose
+  #                           patch series (read from Ubuntu's copy of the source)
+  #                           has the patch; 1.10.8 built with it drops the member.
+  #   debian:unstable clean   1.10.8+ds1-10 deleted the patch (changelog and series).
+  #   fedora:latest  clean    INFERRED: the patch is Debian's; Fedora's spec was not
+  #                           reachable to confirm Fedora does not carry it.
+  # Alpine does not package unar (no unar in aports main, community or testing), so
+  # it has no row.
+  unar-distro-packages:
+    name: unar package / ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:stable
+            expect: patched
+            install: apt-get update && apt-get install -y --no-install-recommends unar ca-certificates
+          - image: debian:unstable
+            expect: clean
+            install: apt-get update && apt-get install -y --no-install-recommends unar ca-certificates
+          - image: fedora:latest
+            expect: clean
+            install: dnf install -y unar
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the distribution's unar
+        run: ${{ matrix.install }}
+      - name: Show the package
+        run: |
+          command -v unar
+          unar -h | head -n 1
+          (dpkg-query -W unar || rpm -q unar) 2>/dev/null || true
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install core only
+        run: uv sync --python 3.12 --no-dev
+      - name: Check the package against its expectation, then run the unar tests
+        env:
+          ARCHIVEY_DISTRO_UNAR: /usr/bin/unar
+          ARCHIVEY_DISTRO_UNAR_EXPECT: ${{ matrix.expect }}
+        run: >
+          uv run --python 3.12 --no-sync
+          --with pytest --with pytest-cov --with pytest-timeout
+          pytest tests/test_unar_probe.py tests/test_rar_unar.py -q --no-cov -rs
 
   # Free-threaded correctness. Two stages: the zero-dep core, then the subset of extras
   # that actually keep the GIL disabled. An extra whose C extension has not declared
