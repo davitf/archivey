@@ -110,6 +110,11 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     gives at most a few candidate ends, however long it is, and at most
     :data:`TRAILING_DATA_CANDIDATES` of them are tried in all. The forward decoder
     reports the appended bytes when a read reaches them.
+
+    A member followed by the lzip magic is not the last one: the forward decoder starts
+    a member there, so the later member's trailer is damaged. That is corruption, not
+    appended data, and is raised so the last member is never dropped from the size and
+    the seek range.
     """
     if _member_ends_at(stream, file_size, stop_at):
         return file_size
@@ -128,6 +133,11 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
 
     for end in itertools.islice(candidate_ends(), TRAILING_DATA_CANDIDATES):
         if _member_ends_at(stream, base + end, stop_at, window, base):
+            if window[end : end + len(_MAGIC)] == _MAGIC:
+                raise CorruptionError(
+                    f"Lzip member starting at offset {base + end} has no valid "
+                    "trailer at the end of the file"
+                )
             return base + end
     raise CorruptionError(
         "Lzip trailer not found at the end of the file or in the "

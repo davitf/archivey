@@ -24,7 +24,7 @@ import pytest
 
 from archivey import AcceleratorMode, ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
-from archivey.exceptions import DiagnosticRaisedError
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
@@ -381,6 +381,52 @@ def test_lzip_keeps_its_size_and_crc_through_appended_bytes(tmp_path: Path) -> N
             4, "big"
         )
         assert DiagnosticCode.SEEK_INDEX_DEGRADED not in reader.diagnostics.counts
+
+
+def _damage_last_xz_footer(blob: bytearray) -> None:
+    blob[-1] ^= 0xFF  # the footer magic's last byte
+
+
+def _damage_last_lzip_trailer(blob: bytearray) -> None:
+    blob[-_LZIP_SIZE_FIELD:] = (10).to_bytes(_LZIP_SIZE_FIELD, "little")
+
+
+_LZIP_SIZE_FIELD = 8
+
+
+@pytest.mark.parametrize(
+    ("suffix", "damage"),
+    [
+        pytest.param(".xz", _damage_last_xz_footer, id="xz"),
+        pytest.param(".lz", _damage_last_lzip_trailer, id="lz"),
+    ],
+)
+def test_a_damaged_last_footer_is_not_taken_for_appended_bytes(
+    tmp_path: Path, suffix: str, damage: Callable[[bytearray], None]
+) -> None:
+    """The footer search must not stop at the previous stream's footer: the bytes
+    after it start a stream, so the seekable path reports the damage as the
+    sequential read does, instead of a clean stream of half the size."""
+    _name, compress, _marks = _CODECS[suffix]
+    half = _PAYLOAD[:50_000]
+    blob = bytearray(compress(half) * 2)
+    damage(blob)
+    path = _write(tmp_path, suffix, bytes(blob))
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        # Unknown, not the first stream's size (nor, for lzip, its CRC).
+        assert member.size is None
+        assert HashAlgorithm.CRC32 not in member.hashes
+        with reader.open(member) as stream, pytest.raises(CorruptionError):
+            stream.seek(0, io.SEEK_END)
+        with reader.open(member) as stream:
+            # The last stream's data is there; only its end is damaged.
+            stream.seek(len(half) + 10_000)
+            assert stream.read(10) == half[10_000:10_010]
+            with pytest.raises(CorruptionError):
+                stream.read()
+    with open_archive(path) as reader, pytest.raises(CorruptionError):
+        reader.read(reader.members()[0])
 
 
 @pytest.mark.parametrize("suffix", [".xz", ".lz"])
