@@ -304,6 +304,7 @@ def test_each_pass_keeps_its_source_within_the_same_spool_limit(
     """A pass gives back the spool allowance its kept file held when it ends, so a
     second pass on the same reader can keep the source again."""
     monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    _config("unrar")  # skips without rar and unrar
     archive, payload = _solid_with_copies(tmp_path)
     # Room for the source once, not twice.
     config = _config(
