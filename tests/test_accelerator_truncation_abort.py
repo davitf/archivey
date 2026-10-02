@@ -551,14 +551,66 @@ def test_a_child_death_is_reported_by_how_it_ended(
         os.kill(child._proc.pid, getattr(signal, sig))
         child._proc.wait()
         with pytest.raises(expected) as first:
-            stream.seek(0)
+            child.seek(0)
         assert type(first.value) is expected
         assert sig in str(first.value)
+        assert rapidgzip_child.crashed_on_data(first.value) is (
+            expected is CorruptionError
+        )
         # Every later call raises the same error again.
         with pytest.raises(expected) as second:
-            stream.read(1)
+            child.read(1)
         assert type(second.value) is expected
         assert str(second.value) == str(first.value)
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    ("sig", "expected"),
+    [("SIGKILL", ResourceLimitError), ("SIGTERM", ReadError)],
+)
+def test_a_child_killed_from_outside_ends_the_stream(
+    tmp_path: Path, sig: str, expected: type[Exception]
+) -> None:
+    """A death that is no verdict on the data reaches the caller, every time."""
+    payload = _payload()
+    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
+    with open_codec_stream(Codec.GZIP, str(path), config=_ON) as stream:
+        child = _child_stream(stream)
+        assert stream.read(10) == payload[:10]
+        assert child._proc is not None
+        os.kill(child._proc.pid, getattr(signal, sig))
+        child._proc.wait()
+        with pytest.raises(expected) as first:
+            stream.seek(0)
+        assert type(first.value) is expected
+        with pytest.raises(expected) as second:
+            stream.read(1)
+        assert str(second.value) == str(first.value)
+
+
+@_POSIX
+@pytest.mark.parametrize("sig", ["SIGSEGV", "SIGABRT"])
+@pytest.mark.parametrize("then", ["read", "seek"])
+def test_after_a_child_crash_the_standard_library_reads_on(
+    tmp_path: Path, sig: str, then: str
+) -> None:
+    """A crash is a verdict on the data, and the standard library gives it: on a valid
+    stream it reads on from where the caller was, so the caller loses nothing."""
+    payload = _payload()
+    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
+    with open_codec_stream(Codec.GZIP, str(path), config=_ON) as stream:
+        child = _child_stream(stream)
+        assert stream.read(10) == payload[:10]
+        assert child._proc is not None
+        os.kill(child._proc.pid, getattr(signal, sig))
+        child._proc.wait()
+        if then == "seek":
+            assert stream.seek(5) == 5
+            assert stream.read() == payload[5:]
+        else:
+            assert stream.read() == payload[10:]
+        assert not _has_child_stream(stream)
 
 
 @pytest.mark.parametrize("where", ["before", "after"])

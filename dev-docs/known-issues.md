@@ -178,12 +178,20 @@ else `ReadError`. `tests/test_accelerator_truncation_abort.py` pins the reportin
 keeps a canary that raw rapidgzip still aborts on Linux; when the canary fails, rapidgzip
 may be safe in-process again.
 
-**What remains.** A cut stream delivers a shorter correct prefix than the stdlib engine,
-because rapidgzip decodes ahead and aborts early. bzip2 still runs in-process, so an input
+A crash hands the read to the standard library, which starts at the last index point the
+reader passed, so a cut stream delivers the same bytes as without rapidgzip
+([`formats/gzip.md`](formats/gzip.md) §2.3). Before that, rapidgzip's read-ahead lost
+everything it had decoded past the reader: up to the whole stream for a cut file of tens
+of MB with every core decoding.
+
+**What remains.** bzip2 still runs in-process, so an input
 that aborts the bzip2 decoder would end the caller's process; none has been found.
 
 **Upstream.** Not filed. It is the one worth filing: a destructor must not throw, and the
-input is only short, not hostile.
+input is only short, not hostile. The throw is the `Finally` guard's `bitReader.seekTo()`
+in `GzipChunk::determineUsedWindowSymbolsForLastSubchunk`; wrapping that call in
+`try`/`catch` and building 0.16.0 from source ended the aborts, and a cut stream then
+raised a catchable `RuntimeError` after every chunk before the cut.
 
 **Evidence.** [`rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §2; the design and costs are in [`formats/gzip.md`](formats/gzip.md) §2.3.

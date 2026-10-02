@@ -20,7 +20,11 @@ Parent to child:
   frames (below).
 - ``READ`` (argument: at most this many bytes), ``SEEK`` (argument: offset; payload: one
   byte, ``whence``), ``RESUME`` (argument: a decompressed offset; the reply's argument is
-  the largest index point at or before it, or -1).
+  the largest index point at or before it, or -1), ``POINTS`` (argument: a
+  decompressed offset; the reply's argument is how many index points there are, and its
+  payload is ``POINTS_REPLY``: the decompressed and compressed bit offsets of the
+  largest point after 0 at or before the offset, then of the smallest point after it,
+  each -1 when there is none; every point is the start of a DEFLATE block).
 - ``SRC_DATA`` (payload: bytes read), ``SRC_VALUE`` (argument: a position),
   ``SRC_FAIL``: the answers to the child's ``SRC_*`` requests. ``SRC_FAIL`` means the
   parent's source raised; the parent keeps that exception and raises it to its caller.
@@ -53,7 +57,8 @@ FRAME = struct.Struct("<BqI")
 # The range of FRAME's integer argument, its signed 64-bit ``q``.
 ARG_MIN, ARG_MAX = -(1 << 63), (1 << 63) - 1
 
-OPEN, READ, SEEK, RESUME = 1, 2, 3, 4
+OPEN, READ, SEEK, RESUME, POINTS = 1, 2, 3, 4, 5
+POINTS_REPLY = struct.Struct("<qqqq")
 SRC_DATA, SRC_VALUE, SRC_FAIL = 10, 11, 12
 OK, ERR = 1, 2
 SRC_READ, SRC_SEEK, SRC_TELL = 10, 11, 12
@@ -179,6 +184,23 @@ def _error_payload(exc: BaseException) -> bytes:
     return text.encode("utf-8", "replace")
 
 
+def _points_around(stream: Any, offset: int) -> tuple[int, bytes]:
+    """The reply to ``POINTS``: the index points either side of ``offset``."""
+    before = after = (-1, -1)
+    points = stream.available_block_offsets()  # compressed bit offset: decompressed
+    # A complete index ends with the end of the data, where no block starts.
+    end = max(points.values()) if points and stream.block_offsets_complete() else -1
+    for bit, decoded in points.items():
+        if decoded == end:
+            continue
+        if 0 < decoded <= offset:
+            if decoded > before[0]:
+                before = (decoded, bit)
+        elif decoded > offset and (after[0] < 0 or decoded < after[0]):
+            after = (decoded, bit)
+    return len(points), POINTS_REPLY.pack(*before, *after)
+
+
 def _serve(channel: _Channel, stream: Any) -> None:
     while True:
         tag, arg, payload = channel.requests.get()
@@ -194,6 +216,8 @@ def _serve(channel: _Channel, stream: Any) -> None:
                 offsets = stream.available_block_offsets().values()
                 preceding = [value for value in offsets if value <= arg]
                 ok = channel.send(OK, max(preceding) if preceding else -1)
+            elif tag == POINTS:
+                ok = channel.send(OK, *_points_around(stream, arg))
             else:
                 ok = channel.send(ERR, 0, _error_payload(ValueError(f"bad tag {tag}")))
         except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises

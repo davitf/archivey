@@ -53,6 +53,8 @@ from archivey.internal.streams.child_process import (
     reap,
     spawn,
 )
+from archivey.internal.streams.decompressor_stream import SeekPoint
+from archivey.internal.streams.deflate_resume import WINDOW_SIZE, DeflateResume
 from archivey.internal.streams.rapidgzip_worker import (
     ARG_MAX,
     ARG_MIN,
@@ -62,6 +64,8 @@ from archivey.internal.streams.rapidgzip_worker import (
     OPEN,
     OPEN_PATH,
     OPEN_STREAM,
+    POINTS,
+    POINTS_REPLY,
     READ,
     RESUME,
     SEEK,
@@ -85,6 +89,15 @@ _MIN_AHEAD = 64 << 10
 # bounds the child's buffer; measured, 64 KiB and 1 MiB round trips read a large stream
 # equally fast, and 4 MiB ones more slowly.
 _CHUNK = 1 << 20
+
+# How far the decoded output runs between two ``POINTS`` queries: at least
+# _MIN_QUERY_SPACING, and _QUERY_SPACING_PER_POINT per index point the child holds. A
+# query is a round trip, and costs the child time in proportion to its index (it builds
+# rapidgzip's whole offset map), so spacing the queries by the index size keeps their
+# cost a small, fixed share of the decode. No query is made while the output has not
+# reached the point the last one named. See ``_note_received``.
+_MIN_QUERY_SPACING = 4 << 20
+_QUERY_SPACING_PER_POINT = 16 << 10
 
 
 def _check_arg(arg: int) -> None:
@@ -162,6 +175,19 @@ def rapidgzip_child_unavailable_reason() -> str | None:
 
 
 _FROM_CHILD = "_archivey_reported_by_rapidgzip_child"
+_CRASHED = "_archivey_rapidgzip_child_crashed"
+
+
+def crashed_on_data(exc: BaseException) -> bool:
+    """Whether ``exc`` reports a rapidgzip child that crashed while decoding.
+
+    rapidgzip 0.16 aborts on a stream that ends early, so a crash is a verdict on the
+    data (``TruncatedError``, or ``CorruptionError`` when the abort gave no reason)
+    that the standard-library decoder can give more precisely, and it can read the
+    data before the fault that rapidgzip's read-ahead lost. A child killed from
+    outside, or one that ended after the caller's source failed, is not marked.
+    """
+    return getattr(exc, _CRASHED, False) is True
 
 
 def reported_by_child(exc: BaseException) -> bool:
@@ -301,6 +327,23 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # ended there, so a later death may be that, and is not a verdict on the data.
         self._source_fault: Exception | None = None
         self._source: BinaryIO | None = None
+        # Whether the child's death was a crash on the data (``crashed_on_data``).
+        self._crashed = False
+        # Where a standard-library decoder can take over (``resume_point``): an index
+        # point the child reported, and the output before it, from what it sent.
+        self._checkpoint: SeekPoint | None = None
+        # The decompressed offset the child is at: the end of what it sent last.
+        self._received_end = 0
+        # The last bytes the child sent, up to WINDOW_SIZE, ending at _received_end
+        # and all from one run of reads (a seek empties it).
+        self._recent = b""
+        # An index point past _received_end, as (decompressed offset, bit offset),
+        # whose window is taken when the output reaches it.
+        self._next_point: tuple[int, int] | None = None
+        # Output received since the last POINTS query, and how much there must be
+        # before the next one.
+        self._since_query = 0
+        self._query_after = _MIN_QUERY_SPACING
         if isinstance(source, (str, os.PathLike)):
             open_kind, open_payload = OPEN_PATH, os.fsencode(os.fspath(source))
         else:
@@ -451,10 +494,17 @@ class RapidgzipChildStream(ReadOnlyIOStream):
 
     def _raise_if_unusable(self) -> None:
         if self._death is not None:
-            cls, message = self._death
-            raise cls(message)
+            raise self._death_error()
         if self._proc is None:
             raise ValueError("I/O operation on closed file.")
+
+    def _death_error(self) -> Exception:
+        assert self._death is not None
+        cls, message = self._death
+        exc = cls(message)
+        if self._crashed:
+            setattr(exc, _CRASHED, True)
+        return exc
 
     def _abandon(self) -> None:
         self._death = (
@@ -537,7 +587,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 "be valid; try reading it again."
             )
         self._death = (cls, message)
-        return cls(message)
+        self._crashed = caused_by_source is None and is_crash(returncode)
+        return self._death_error()
 
     # --- the stream -----------------------------------------------------------------
 
@@ -554,7 +605,89 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             self._drop_buffer()
             self._pos = None
             raise
+        self._note_received(data)
         return data
+
+    # --- the resume point -------------------------------------------------------------
+
+    def _moved_to(self, position: int) -> None:
+        """The child is at ``position`` after a seek; what it sends next starts there."""
+        self._received_end = position
+        self._recent = b""
+        self._next_point = None
+
+    def _note_received(self, data: bytes) -> None:
+        """Keep what ``resume_point`` needs from ``data``, which the child just sent.
+
+        When the output passes the index point the last ``POINTS`` query named as the
+        next one, the 32 KiB before it become the checkpoint's window. The next query
+        comes only after that, once the output has run on by ``_query_after``, which
+        grows with the index; so the checkpoint can lag the reader by that distance
+        plus the spacing of the points, and a takeover decodes that much again, which
+        is bounded and paid only by a damaged stream.
+        """
+        if not data:
+            return
+        start = self._received_end
+        end = start + len(data)
+        point = self._next_point
+        if point is not None and point[0] <= end:
+            self._next_point = None
+            self._capture(point, data, start)
+        self._since_query += len(data)
+        if self._next_point is None and self._since_query >= self._query_after:
+            self._query_points(data, start)
+        self._received_end = end
+        self._recent = (self._recent + data[-WINDOW_SIZE:])[-WINDOW_SIZE:]
+
+    def _capture(self, point: tuple[int, int], data: bytes, start: int) -> None:
+        """Make ``point`` the checkpoint, if the output before it is at hand: in
+        ``data`` (from decompressed offset ``start``) and the ``_recent`` before it."""
+        decoded, bit = point
+        if (
+            self._checkpoint is not None
+            and decoded <= self._checkpoint.decompressed_offset
+        ):
+            return
+        low = max(0, decoded - WINDOW_SIZE)
+        recent_start = start - len(self._recent)
+        if low < recent_start or decoded > start + len(data):
+            return
+        # Only the window is copied: ``data`` can be a MiB.
+        window = self._recent[low - recent_start : decoded - recent_start]
+        if decoded > start:
+            window += data[max(0, low - start) : decoded - start]
+        self._checkpoint = SeekPoint(
+            decoded, bit // 8, DeflateResume(bit % 8, bytes(window))
+        )
+
+    def _query_points(self, data: bytes, start: int) -> None:
+        """Ask the child for the index points around the end of ``data``.
+
+        A failure here is left to the next read: the data already received is the
+        caller's, and a dead child raises again on the next call.
+        """
+        self._since_query = 0
+        try:
+            count, reply = self._call(POINTS, start + len(data), keep_parked=True)
+            before_dec, before_bit, after_dec, after_bit = POINTS_REPLY.unpack(reply)
+        except Exception:  # noqa: BLE001 - see the docstring
+            return
+        self._query_after = max(_MIN_QUERY_SPACING, count * _QUERY_SPACING_PER_POINT)
+        if before_dec > 0:
+            self._capture((before_dec, before_bit), data, start)
+        self._next_point = (after_dec, after_bit) if after_dec > 0 else None
+
+    def resume_point(self) -> SeekPoint | None:
+        """A point from which a standard-library decoder can take over this stream.
+
+        A DEFLATE block boundary from rapidgzip's index that the output has passed,
+        with the 32 KiB of output before it (:class:`DeflateResume`); ``None`` when no
+        such point has been seen. It stays valid after the child has died, which is
+        when it is needed: rapidgzip decodes ahead of the reader, and on a stream
+        that ends early it dies with output the reader never got.
+        """
+        return self._checkpoint
 
     def read(self, n: int | None = -1, /) -> bytes:
         # Before the buffer: a closed or dead stream raises even with read-ahead left.
@@ -598,6 +731,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._drop_buffer()
         self._sequential = False
         self._pos = position
+        self._moved_to(position)
 
     def _read_into(self, want: int) -> bytes:
         """The body of :meth:`read`."""
@@ -684,6 +818,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._drop_buffer()
         self._sequential = False
         self._pos = position
+        self._moved_to(position)
         return position
 
     def tell(self) -> int:
@@ -691,6 +826,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if self._pos is None:
             self._drop_buffer()
             self._pos, _ = self._call(SEEK, 0, bytes([io.SEEK_CUR]))
+            self._moved_to(self._pos)
         return self._pos
 
     def nearest_resume_offset(self, target: int) -> int | None:
