@@ -31,6 +31,7 @@ from archivey import (
 )
 from archivey.exceptions import CorruptionError, ResourceLimitError
 from archivey.internal.backends import rar_copy_sources, rar_reader
+from tests.conftest import has_binary
 
 _COPIES = 6
 _COPY_NAMES = [f"d_copy{i}.txt" for i in range(_COPIES)]
@@ -86,9 +87,19 @@ def _solid_with_copies(tmp_path: Path) -> tuple[Path, bytes]:
     return archive, payload
 
 
-def _config(decompressor: str, **kwargs: object) -> ArchiveyConfig:
-    if shutil.which("rar") is None or shutil.which(decompressor) is None:
-        pytest.skip(f"needs rar and {decompressor}")
+def _config(
+    decompressor: str, *, spawns: bool = True, **kwargs: object
+) -> ArchiveyConfig:
+    """Skip without ``rar``, and without a usable ``decompressor`` when the test reads.
+
+    ``has_binary``, not ``shutil.which``: a unar that fails archivey's RAR5 check
+    (Ubuntu's 1.10.7) is on PATH but refused, so the unar rows would fail rather than
+    skip. ``spawns=False`` is for a test that stops before any process starts.
+    """
+    if shutil.which("rar") is None:
+        pytest.skip("needs rar")
+    if spawns and not has_binary(decompressor):
+        pytest.skip(f"needs a {decompressor} archivey will use")
     return ArchiveyConfig(rar_decompressor=decompressor, **kwargs)  # type: ignore[arg-type]
 
 
@@ -286,7 +297,9 @@ def test_a_copy_read_checks_its_source_dictionary(
     """Serving a copy decodes through its source, so the source's dictionary is
     checked against ``max_decoder_memory`` before the pass's process starts, as the
     source's own read would be."""
-    config = _config(decompressor, decoder_limits=DecoderLimits(max_decoder_memory=1))
+    config = _config(
+        decompressor, spawns=False, decoder_limits=DecoderLimits(max_decoder_memory=1)
+    )
     archive, _ = _solid_with_copies(tmp_path)
     with open_archive(archive, config=config) as reader:
         for member, stream in reader.stream_members():
