@@ -345,10 +345,12 @@ def _compress(rar: str, member: bytes, after: bytes | None, workdir: Path) -> by
     return archive.read_bytes()
 
 
-def is_dropped(rar: str, member: bytes, after: bytes | None, workdir: Path) -> bool:
+def is_dropped(
+    rar: str, member: bytes, after: bytes | None, workdir: Path
+) -> bool | None:
     """``member`` is compressed by ``rar`` and, by the model, dropped by a patched
     ``unar``; with ``after``, as the second member of a solid archive whose first
-    member decodes."""
+    member decodes. ``None`` when the model cannot decode the packed data."""
     entries = members_data(_compress(rar, member, after, workdir))
     if len(entries) != (1 if after is None else 2):
         return False
@@ -361,9 +363,9 @@ def is_dropped(rar: str, member: bytes, after: bytes | None, workdir: Path) -> b
                 return False  # the first member is dropped already
         return patched_unar_runs_short(entries[-1].packed, entries[-1].size, state)
     except ValueError:
-        # Data the model cannot decode: not a member it can vouch for, so the
-        # search moves on instead of stopping.
-        return False
+        # Data the model cannot decode: not a member it can vouch for. The search
+        # counts it and moves on instead of stopping.
+        return None
 
 
 def _candidates(alphabet: bytes, length: int) -> Iterator[bytes]:
@@ -371,29 +373,42 @@ def _candidates(alphabet: bytes, length: int) -> Iterator[bytes]:
         yield bytes(letters)
 
 
-def _first_dropped(args: tuple[str, bytes | None, list[bytes]]) -> bytes | None:
+def _first_dropped(
+    args: tuple[str, bytes | None, list[bytes]],
+) -> tuple[bytes | None, int]:
+    """The first dropped member of a chunk, and how many before it the model could
+    not decode."""
     rar, after, members = args
+    unmodelled = 0
     with tempfile.TemporaryDirectory() as td:
         for member in members:
-            if is_dropped(rar, member, after, Path(td)):
-                return member
-    return None
+            dropped = is_dropped(rar, member, after, Path(td))
+            if dropped is None:
+                unmodelled += 1
+            elif dropped:
+                return member, unmodelled
+    return None, unmodelled
 
 
 def find(
     rar: str, alphabet: bytes, after: bytes | None, max_length: int, jobs: int
-) -> bytes | None:
-    """The first dropped member, by length then lexicographically; ``None`` if none."""
+) -> tuple[bytes | None, int]:
+    """The first dropped member, by length then lexicographically, or ``None``; and
+    how many candidates before it the model could not decode."""
+    unmodelled = 0
     with ProcessPoolExecutor(jobs) as pool:
         for length in range(1, max_length + 1):
             members = list(_candidates(alphabet, length))
             chunk = max(1, len(members) // (jobs * 8))
             chunks = [members[i : i + chunk] for i in range(0, len(members), chunk)]
             # ``map`` keeps the chunks in order, so the first hit is the first member.
-            for hit in pool.map(_first_dropped, [(rar, after, c) for c in chunks]):
+            for hit, skipped in pool.map(
+                _first_dropped, [(rar, after, c) for c in chunks]
+            ):
+                unmodelled += skipped
                 if hit is not None:
-                    return hit
-    return None
+                    return hit, unmodelled
+    return None, unmodelled
 
 
 def _unar_output(
@@ -508,7 +523,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1 if validate(rar, args.check_unar, args.validate) else 0
     alphabet = bytes(sorted(set(args.alphabet.encode("latin-1"))))
     after = None if args.after is None else args.after.encode("latin-1")
-    member = find(rar, alphabet, after, args.max_length, args.jobs)
+    member, unmodelled = find(rar, alphabet, after, args.max_length, args.jobs)
+    if unmodelled:
+        # Each is a candidate the answer might have been: the model needs work.
+        print(
+            f"warning: the model could not decode {unmodelled} compressed candidates",
+            file=sys.stderr,
+        )
     if member is None:
         print(f"no member up to {args.max_length} bytes", file=sys.stderr)
         return 1
