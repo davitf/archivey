@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""Find the shortest member that Debian's patched ``unar`` writes as nothing.
+
+Usage (from the repo root)::
+
+    uv run python scripts/find_unar_probe_member.py
+    uv run python scripts/find_unar_probe_member.py --check-unar /usr/bin/unar
+
+Requires the RARLAB ``rar`` binary on ``PATH``. The answer is the member of
+``_RAR5_PROBE_ARCHIVE`` in ``src/archivey/internal/external/unar.py`` and of the
+``unar_drop*`` fixtures (``scripts/gen_rar_fixtures.py``).
+
+Why a member is dropped
+-----------------------
+
+Debian's ``CSInputBuffer-bit-string-reading.patch`` makes XADMaster's bit reader raise
+end of file when a read asks for more bits than are left in the member's packed data.
+XADMaster decodes each Huffman symbol by first peeking a fixed number of bits, the
+code's table size: the length of the longest code in that table, at most 10
+(``CSInputNextSymbolUsingCode`` in ``XADPrefixCode.m``). It then consumes only as many
+bits as the code it found. Near the end of the data the peek can run past the last
+byte although the code itself fits. The RAR5 decoder swallows the error and the member
+comes out empty, with exit 0.
+
+So a member is dropped when, at some symbol, the bits left are fewer than that table's
+size. The bits used in the last packed byte only matter through this: a last symbol
+whose code is ``L`` bits long, read from a table of size ``T``, fails when ``T - L`` is
+more than the unused bits of the last byte. That is why the dropped members measured
+before mostly had 7 or 8 bits used in that byte, and why many such members still
+decode.
+
+:func:`patched_unar_runs_short` replays the bit reads of XADMaster's RAR5 decoder
+(``XADRAR50Handle.m``) without producing output, and reports whether one of them
+asks for bits past the end. It agreed with Ubuntu 24.04's ``unar`` 1.10.1 package on
+every one of 510 generated RAR5 members and 200 two-member solid archives.
+
+The search
+----------
+
+``rar`` stores a member when compressing does not make it smaller, so very short
+members are never compressed. The search tries every string over ``--alphabet`` in
+order of length, then lexicographically, compresses each with ``rar a -ma5 -m3``, and
+returns the first compressed member the model says is dropped. With RAR 7.00 and the
+default alphabet ``ab`` that is ``aaaaabababbabb``, 14 bytes; no string over ``ab``
+of 13 bytes or fewer is both compressed and dropped. ``--after hello`` searches for the
+second member of a solid archive instead, as ``unar_drop_solid__.rar`` needs: there the
+answer is ``ababbaa``. Another ``rar`` build may compress differently, so rerun this
+after a ``rar`` upgrade and check the result with ``--check-unar`` on a patched build.
+"""
+
+from __future__ import annotations
+
+import argparse
+import itertools
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections.abc import Iterator, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+
+# XADPrefixCode.m ``TableMaxSize``: no lookup peeks more bits than this.
+_TABLE_MAX_SIZE = 10
+_MAX_CODE_LENGTH = 15
+# Main, offset, low-offset and length tables, in the order RAR5 stores their lengths.
+_TABLE_SIZES = (306, 64, 16, 44)
+
+
+class _BitReader:
+    """MSB-first reader over the packed data that records any read past its end."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.pos = 0
+        self.end = len(data) * 8
+        self.ran_out = False
+
+    def need(self, count: int) -> None:
+        if self.pos + count > self.end:
+            self.ran_out = True
+
+    def bit(self) -> int:
+        self.need(1)
+        pos = self.pos
+        self.pos += 1
+        if pos >= self.end:
+            return 0
+        return (self.data[pos >> 3] >> (7 - (pos & 7))) & 1
+
+    def bits(self, count: int) -> int:
+        self.need(count)
+        value = 0
+        for _ in range(count):
+            value = (value << 1) | self.bit()
+        return value
+
+    def align(self) -> None:
+        self.pos = (self.pos + 7) & ~7
+
+
+class _PrefixCode:
+    """A canonical RAR5 Huffman code, decoded the way XADMaster peeks for it."""
+
+    def __init__(self, lengths: Sequence[int]) -> None:
+        used = [length for length in lengths if length]
+        # XADPrefixCode ``_makeTable``: the longest code, capped; an empty table peeks
+        # the cap.
+        self.table_size = min(max(used), _TABLE_MAX_SIZE) if used else _TABLE_MAX_SIZE
+        self.codes: dict[tuple[int, int], int] = {}
+        code = 0
+        for length in range(1, _MAX_CODE_LENGTH + 1):
+            for symbol, symbol_length in enumerate(lengths):
+                if symbol_length == length:
+                    self.codes[(length, code)] = symbol
+                    code += 1
+            code <<= 1
+
+    def symbol(self, reader: _BitReader) -> int:
+        # ``CSInputPeekBitString(buf, tablesize)`` comes first, whatever the code's
+        # length; that peek is what the patch turns into end of file.
+        reader.need(self.table_size)
+        code = 0
+        for length in range(1, _MAX_CODE_LENGTH + 1):
+            code = (code << 1) | reader.bit()
+            symbol = self.codes.get((length, code))
+            if symbol is not None:
+                return symbol
+        raise ValueError("invalid prefix code in the packed data")
+
+
+def _read_tables(reader: _BitReader) -> tuple[_PrefixCode, ...]:
+    """``allocAndParseCodes``: the precode, then the four tables' code lengths."""
+    pre: list[int] = []
+    while len(pre) < 20:
+        length = reader.bits(4)
+        if length == 15:
+            count = reader.bits(4) + 2
+            pre += [15] if count == 2 else [0] * min(count, 20 - len(pre))
+        else:
+            pre.append(length)
+    precode = _PrefixCode(pre)
+    total = sum(_TABLE_SIZES)
+    lengths: list[int] = []
+    while len(lengths) < total:
+        value = precode.symbol(reader)
+        if value < 16:
+            lengths.append(value)
+            continue
+        if value in (16, 18):
+            count = reader.bits(3) + 3
+        else:
+            count = reader.bits(7) + 11
+        if value < 18:
+            if not lengths:
+                raise ValueError("a repeat before the first code length")
+            fill = lengths[-1]
+        else:
+            fill = 0
+        lengths += [fill] * min(count, total - len(lengths))
+    tables = []
+    start = 0
+    for size in _TABLE_SIZES:
+        tables.append(_PrefixCode(lengths[start : start + size]))
+        start += size
+    return tuple(tables)
+
+
+def _match_length(reader: _BitReader, symbol: int) -> int:
+    """``ReadLengthWithSymbol``."""
+    if symbol < 8:
+        return symbol + 2
+    extra = symbol // 4 - 1
+    return ((4 + (symbol & 3)) << extra) + 2 + reader.bits(extra)
+
+
+@dataclass
+class SolidState:
+    """What a solid member inherits from the one before: its tables, the last length."""
+
+    tables: tuple[_PrefixCode, ...] = ()
+    last_length: int = 0
+
+
+def patched_unar_runs_short(
+    packed: bytes, size: int, state: SolidState | None = None
+) -> bool:
+    """Whether Debian's patched ``unar`` stops before writing ``size`` bytes.
+
+    ``packed`` is one RAR5 member's compressed data (method 1-5, not stored). This
+    follows ``expandToPosition`` and ``readBlockHeader`` in ``XADRAR50Handle.m`` read
+    for read, counting output bytes instead of producing them, and answers true as soon
+    as a read asks for bits past the end of ``packed``. It also answers true when the
+    blocks end before ``size`` bytes are out.
+
+    For the members of a solid archive, pass one ``state`` to each in turn: a solid
+    member's first block may reuse the tables of the member before it.
+    """
+    if state is None:
+        state = SolidState()
+    reader = _BitReader(packed)
+    tables = state.tables
+    block_end = 0
+    last_block = False
+
+    def block_header() -> None:
+        nonlocal tables, block_end, last_block
+        reader.align()
+        flags = reader.bits(8)
+        reader.bits(8)  # header checksum
+        size_bytes = ((flags >> 3) & 3) + 1
+        block_size = 0
+        for index in range(size_bytes):
+            block_size |= reader.bits(8) << (8 * index)
+        # The low three flag bits: how many bits of the block's last byte are used,
+        # less one.
+        block_end = reader.pos + block_size * 8 + (flags & 7) + 1 - 8
+        last_block = bool(flags & 0x40)
+        if flags & 0x80:
+            tables = _read_tables(reader)
+
+    block_header()
+    out = 0
+    last_length = state.last_length
+    while out < size and not reader.ran_out:
+        while reader.pos >= block_end:
+            if last_block:
+                return True
+            block_header()
+        main, offsets, low_offsets, lengths = tables
+        symbol = main.symbol(reader)
+        if symbol < 256:
+            out += 1
+        elif symbol == 256:  # a filter: two filter integers, the type, maybe channels
+            for _ in range(2):
+                reader.bits(8 * (reader.bits(2) + 1))
+            if reader.bits(3) == 0:
+                reader.bits(5)
+        elif symbol == 257:
+            out += last_length
+        elif symbol < 262:
+            last_length = _match_length(reader, lengths.symbol(reader))
+            out += last_length
+        else:
+            length = _match_length(reader, symbol - 262)
+            slot = offsets.symbol(reader)
+            if slot < 4:
+                distance = slot + 1
+            else:
+                extra = slot // 2 - 1
+                if extra >= 4:
+                    low = reader.bits(extra - 4) << 4 if extra > 4 else 0
+                    low += low_offsets.symbol(reader)
+                else:
+                    low = reader.bits(extra)
+                distance = ((2 + (slot & 1)) << extra) + low + 1
+            length += (distance > 0x100) + (distance > 0x2000) + (distance > 0x40000)
+            last_length = length
+            out += length
+    state.tables = tables
+    state.last_length = last_length
+    return reader.ran_out
+
+
+def _vint(data: bytes, pos: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while True:
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, pos
+
+
+def members_data(archive: bytes) -> list[tuple[bytes, int]]:
+    """The packed data and compression method of each FILE entry of a RAR5 archive."""
+    if not archive.startswith(b"Rar!\x1a\x07\x01\x00"):
+        raise ValueError("not a RAR5 archive")
+    found = []
+    pos = 8
+    while pos < len(archive):
+        pos += 4  # header CRC32
+        header_size, body = _vint(archive, pos)
+        header_end = body + header_size
+        header_type, body = _vint(archive, body)
+        header_flags, body = _vint(archive, body)
+        if header_flags & 0x01:
+            _, body = _vint(archive, body)  # extra area size
+        data_size = 0
+        if header_flags & 0x02:
+            data_size, body = _vint(archive, body)
+        if header_type == 2:
+            file_flags, body = _vint(archive, body)
+            _, body = _vint(archive, body)  # unpacked size
+            _, body = _vint(archive, body)  # attributes
+            if file_flags & 0x02:
+                body += 4  # mtime
+            if file_flags & 0x04:
+                body += 4  # data CRC32
+            compression, body = _vint(archive, body)
+            method = (compression >> 7) & 7
+            found.append((archive[header_end : header_end + data_size], method))
+        pos = header_end + data_size
+    return found
+
+
+def _compress(rar: str, member: bytes, after: bytes | None, workdir: Path) -> bytes:
+    """``f.txt`` holding ``member``; with ``after``, a solid archive with ``a.txt``
+    holding ``after`` first, as ``gen_rar_fixtures.py`` builds them."""
+    names = []
+    extra = []
+    if after is not None:
+        (workdir / "a.txt").write_bytes(after)
+        names.append("a.txt")
+        extra.append("-s")
+    (workdir / "f.txt").write_bytes(member)
+    names.append("f.txt")
+    archive = workdir / "probe.rar"
+    archive.unlink(missing_ok=True)
+    subprocess.run(
+        [rar, "a", "-idq", "-ma5", "-m3", *extra, str(archive), *names],
+        cwd=workdir,
+        check=True,
+    )
+    return archive.read_bytes()
+
+
+def is_dropped(rar: str, member: bytes, after: bytes | None, workdir: Path) -> bool:
+    """``member`` is compressed by ``rar`` and, by the model, dropped by a patched
+    ``unar``; with ``after``, as the second member of a solid archive whose first
+    member decodes."""
+    entries = members_data(_compress(rar, member, after, workdir))
+    sizes = [len(member)] if after is None else [len(after), len(member)]
+    if len(entries) != len(sizes) or any(method == 0 for _, method in entries):
+        return False
+    state = SolidState()
+    for (packed, _), size in zip(entries[:-1], sizes[:-1]):
+        if patched_unar_runs_short(packed, size, state):
+            return False  # the first member is dropped already
+    return patched_unar_runs_short(entries[-1][0], sizes[-1], state)
+
+
+def _candidates(alphabet: bytes, length: int) -> Iterator[bytes]:
+    for letters in itertools.product(alphabet, repeat=length):
+        yield bytes(letters)
+
+
+def _first_dropped(args: tuple[str, bytes | None, list[bytes]]) -> bytes | None:
+    rar, after, members = args
+    with tempfile.TemporaryDirectory() as td:
+        for member in members:
+            if is_dropped(rar, member, after, Path(td)):
+                return member
+    return None
+
+
+def find(
+    rar: str, alphabet: bytes, after: bytes | None, max_length: int, jobs: int
+) -> bytes | None:
+    """The first dropped member, by length then lexicographically; ``None`` if none."""
+    with ProcessPoolExecutor(jobs) as pool:
+        for length in range(1, max_length + 1):
+            members = list(_candidates(alphabet, length))
+            chunk = max(1, len(members) // (jobs * 8))
+            chunks = [members[i : i + chunk] for i in range(0, len(members), chunk)]
+            # ``map`` keeps the chunks in order, so the first hit is the first member.
+            for hit in pool.map(_first_dropped, [(rar, after, c) for c in chunks]):
+                if hit is not None:
+                    return hit
+    return None
+
+
+def _unar_output(unar: str, rar: str, member: bytes, after: bytes | None) -> bytes:
+    with tempfile.TemporaryDirectory() as td:
+        archive = Path(td) / "archive.rar"
+        archive.write_bytes(_compress(rar, member, after, Path(td)))
+        index = "0" if after is None else "1"
+        return subprocess.run(
+            [unar, "-o", "-", "-q", "-i", "--", str(archive), index],
+            capture_output=True,
+            check=False,
+        ).stdout
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--rar", default="rar", help="RARLAB rar binary")
+    parser.add_argument("--alphabet", default="ab", help="bytes to build members from")
+    parser.add_argument(
+        "--after",
+        help="search for the second member of a solid archive whose first is this text",
+    )
+    parser.add_argument("--max-length", type=int, default=16)
+    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
+    parser.add_argument(
+        "--check-unar",
+        metavar="UNAR",
+        help="also run this unar on the result; a patched build should write nothing",
+    )
+    args = parser.parse_args(argv)
+    rar = shutil.which(args.rar)
+    if rar is None:
+        print(f"{args.rar}: not found", file=sys.stderr)
+        return 2
+    alphabet = bytes(sorted(set(args.alphabet.encode("latin-1"))))
+    after = None if args.after is None else args.after.encode("latin-1")
+    member = find(rar, alphabet, after, args.max_length, args.jobs)
+    if member is None:
+        print(f"no member up to {args.max_length} bytes", file=sys.stderr)
+        return 1
+    print(f"{len(member)} bytes: {member!r}")
+    if args.check_unar:
+        out = _unar_output(args.check_unar, rar, member, after)
+        print(f"{args.check_unar} wrote {len(out)} bytes")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

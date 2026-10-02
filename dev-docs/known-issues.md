@@ -40,15 +40,15 @@ is the net.
 ## Debian/Ubuntu `unar` 1.10.1: some compressed RAR5 members come out empty (open)
 
 **Symptom.** `unar` 1.10.1 (Debian and Ubuntu's package) writes nothing for a compressed
-RAR5 member whose last compressed byte uses 6–8 of its bits, solid or not, and exits 0;
-under `-o -` stderr is empty too. About 1–6% of `-m3` members measured do this. In a
-solid run over several entries, later members are lost as well, or come out as stale
-window bytes, so the bytes found where the dropped member should be belong to something
-else. Debian's 1.10.8 packages before 1.10.8+ds1-10 do the same (see Cause).
+RAR5 member when a Huffman lookup near its end peeks past the last packed byte, solid or
+not, and exits 0; under `-o -` stderr is empty too. About 1–6% of `-m3` members measured
+do this. In a solid run over several entries, later members are lost as well, or come
+out as stale window bytes, so the bytes found where the dropped member should be belong
+to something else. Debian's 1.10.8 packages before 1.10.8+ds1-10 do the same (see Cause).
 
 **What archivey does.** `find_unar` runs each `unar` it finds once, after the banner
-check, on a 118-byte RAR5 archive embedded in `internal/external/unar.py` (the
-`unar_drop__.rar` fixture), and requires the member's exact 47 bytes back. A build that
+check, on an 85-byte RAR5 archive embedded in `internal/external/unar.py` (the
+`unar_drop__.rar` fixture), and requires the member's exact 14 bytes back. A build that
 writes anything else, exits non-zero, or runs out of time is not used, and the answer
 is cached per binary like the banner's. Under `"auto"` that `unar` counts as absent;
 with `rar_decompressor="unar"` a read raises `PackageNotInstalledError`. For the
@@ -84,7 +84,9 @@ unless a 1.10.8 build comes first on `PATH`; `scripts/setup-dev-env.sh` reports
 Debian added in 1.10.1-2 and deleted in 1.10.8+ds1-10 (June 2026, for breaking imploded
 ZIP members, Debian bug #1134346). With it, the bit reader raises end of file when fewer
 bits remain than a Huffman lookup *peeks*, even when the code it uses is shorter; the
-error is swallowed and the member comes out empty. Measured on builds from source
+error is swallowed and the member comes out empty. `scripts/find_unar_probe_member.py`
+models those reads, agrees with Ubuntu 24.04's package on 510 single members and 200
+solid pairs, and found the probe member. Measured on builds from source
 (2026-10-01): upstream 1.10.1, 1.10.7, 1.10.8 (Homebrew's version) and master decode all
 300 generated RAR5 archives and the `unar_drop*` / `unar_stale*` fixtures correctly; the
 Debian 1.10.1 package build reproduces the drops, the same build without that patch does

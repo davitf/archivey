@@ -87,16 +87,23 @@ some, below.
 
 ### Compressed RAR5 member dropped — exit 0
 
-apt 1.10.1 writes nothing for a compressed RAR5 member whose last compressed byte uses
-6–8 of its bits, solid or not, and exits 0
-with empty stderr under `-o -`. About 1–6% of `-m3` members of small random text did
-this. The 47-byte repro, with RAR 7.00:
+apt 1.10.1 writes nothing for a compressed RAR5 member when a Huffman lookup near its
+end peeks past the last packed byte, solid or not, and exits 0 with empty stderr under
+`-o -`. About 1–6% of `-m3` members of small random text did this. The 14-byte repro,
+with RAR 7.00, is the shortest over `ab` that `rar` compresses and `unar` drops;
+`scripts/find_unar_probe_member.py` finds it and explains the condition:
 
 ```sh
-printf 'ellaltagma\nlpa \n  gaa deta del beta ama \n bealp' > f.txt
+printf 'aaaaabababbabb' > f.txt
 rar a -ma5 t.rar f.txt
-unar -o - t.rar | wc -c    # 0; unrar p writes 47
+unar -o - t.rar | wc -c    # 0; unrar p writes 14
 ```
+
+Earlier notes said the member's last packed byte uses 6–8 of its bits. That is a
+correlation, not the condition: XADMaster peeks as many bits as the longest code in the
+table (at most 10) before it decodes a symbol, so the last symbol fails when its code is
+shorter than that by more than the last byte's unused bits. Many members with 7 or 8
+bits used decode.
 
 The cause is Debian's `CSInputBuffer-bit-string-reading.patch`, applied only to the
 Debian/Ubuntu 1.10.1 package: its bit reader raises end of file when fewer bits remain

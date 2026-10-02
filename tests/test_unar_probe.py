@@ -27,7 +27,7 @@ from archivey.internal.external import cli, unar
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "rar" / "unar_drop__.rar"
 _COMPRESSED = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "compressed.rar"
-_MEMBER = b"ellaltagma\nlpa \n  gaa deta del beta ama \n bealp"
+_MEMBER = b"aaaaabababbabb"
 _BANNER = "unar v1.10.8, a tool for extracting the contents of archive files."
 _DROPS = "drops some compressed RAR5 members"
 
@@ -75,7 +75,7 @@ def test_embedded_archive_is_the_fixture() -> None:
     """The probe archive is ``unar_drop__.rar``, whose one member is ``_MEMBER``."""
     assert unar._RAR5_PROBE_ARCHIVE == _FIXTURE.read_bytes()
     assert unar._RAR5_PROBE_MEMBER == _MEMBER
-    assert len(_MEMBER) == 47
+    assert len(_MEMBER) == 14
 
 
 def test_a_unar_that_decodes_the_member_is_used_and_checked_once(
@@ -105,7 +105,7 @@ def test_a_unar_that_drops_the_member_is_refused_and_checked_once(
             unar.find_unar(purpose="for a test")
         message = str(info.value)
         assert _DROPS in message
-        assert "wrote 0 bytes, not 47" in message
+        assert "wrote 0 bytes, not 14" in message
         assert "CSInputBuffer-bit-string-reading.patch" in message
         assert "RARLAB unrar" in message
         assert "1.10.8" in message
@@ -115,26 +115,26 @@ def test_a_unar_that_drops_the_member_is_refused_and_checked_once(
 def test_wrong_bytes_are_a_failure_too(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _stand_in(tmp_path, "printf 'ellaltagma'\n")
+    _stand_in(tmp_path, "printf 'aaaaa'\n")
     monkeypatch.setenv("PATH", str(tmp_path))
-    with pytest.raises(PackageNotInstalledError, match="wrote 10 bytes, not 47"):
+    with pytest.raises(PackageNotInstalledError, match="wrote 5 bytes, not 14"):
         unar.find_unar(purpose="for a test")
 
 
-def test_47_wrong_bytes_say_so_without_naming_the_patch(
+def test_wrong_bytes_of_the_right_length_say_so_without_naming_the_patch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The member's length with other bytes, as stale window bytes would give."""
-    _stand_in(tmp_path, f"printf '%s' '{'x' * 47}'\n")
+    _stand_in(tmp_path, f"printf '%s' '{'x' * 14}'\n")
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(PackageNotInstalledError) as info:
         unar.find_unar(purpose="for a test")
     message = str(info.value)
     assert (
-        "wrote 47 bytes for a test archive's 47-byte member, but not the member's"
+        "wrote 14 bytes for a test archive's 14-byte member, but not the member's"
         in (message)
     )
-    assert "not 47" not in message
+    assert "not 14" not in message
     assert "CSInputBuffer" not in message
 
 
@@ -148,7 +148,7 @@ def test_a_failed_exit_is_reported_as_such_not_as_the_patch(
     with pytest.raises(PackageNotInstalledError) as info:
         unar.find_unar(purpose="for a test")
     message = str(info.value)
-    assert "failed on a test archive (exit status 3) after writing 47 of its 47" in (
+    assert "failed on a test archive (exit status 3) after writing 14 of its 14" in (
         message
     )
     assert "CSInputBuffer" not in message
@@ -163,7 +163,7 @@ def test_a_crash_is_reported_as_a_signal_not_as_the_patch(
         unar.find_unar(purpose="for a test")
     message = str(info.value)
     assert "stopped on a signal (killed by SIGSEGV)" in message
-    assert "after writing 0 of its 47 bytes" in message
+    assert "after writing 0 of its 14 bytes" in message
     assert "CSInputBuffer" not in message
 
 
@@ -176,7 +176,7 @@ def test_output_past_the_member_is_not_read_to_the_end(
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(cli, "PROBE_TIMEOUT_SECONDS", 60)
     start = time.monotonic()
-    with pytest.raises(PackageNotInstalledError, match="wrote more than 47 bytes"):
+    with pytest.raises(PackageNotInstalledError, match="wrote more than 14 bytes"):
         unar.find_unar(purpose="for a test")
     assert time.monotonic() - start < 30
 
@@ -286,7 +286,7 @@ version that fixed it.
 
 If the job expected "clean" and the check now fails: the distribution ships a unar that drops
 RAR5 members (the patch came back, or a new bug). Confirm with
-tests/fixtures/rar/unar_drop__.rar (unar -o - should write 47 bytes), change that job's
+tests/fixtures/rar/unar_drop__.rar (unar -o - should write 14 bytes), change that job's
 expectation to "patched", and record the package version in dev-docs/known-issues.md.
 """
 

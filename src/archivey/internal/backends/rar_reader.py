@@ -3441,7 +3441,8 @@ class RarReader(BaseArchiveReader):
                 # Every member read from this pipe is checked against its declared
                 # size and its stored CRC32 or BLAKE2sp; a member without one is read
                 # by its own run instead (``_open``). unar 1.10.1 drops a compressed
-                # RAR5 member whose last packed byte uses 6-8 bits, exit 0; the bytes
+                # RAR5 member when a Huffman lookup peeks past its packed data, exit 0
+                # (``scripts/find_unar_probe_member.py``); the bytes
                 # then read in its place are later members' or stale window bytes,
                 # which the digest catches and the size check often does not. The
                 # exit status adds nothing. A wrong password gives no output at all,

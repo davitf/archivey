@@ -453,15 +453,19 @@ def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
     print(f"wrote {out.relative_to(REPO_ROOT)}")
 
 
-# unar 1.10.1 writes nothing for a compressed RAR5 member whose last packed byte uses
-# 6-8 bits, and exits 0. ``f.txt`` is a 47-byte member that does that with RAR 7.00
-# ``-m3``. In one run over the five-member solid archive, unar drops ``c.txt``, writes
-# stale window bytes of ``d.txt``'s length and drops ``e.txt``: read by offset, the
-# stale bytes fill ``c.txt``'s place. Another ``rar`` build may compress
-# them differently; check ``unar -o - <archive>`` still shows the fault after a
+# unar 1.10.1 writes nothing for a compressed RAR5 member when a Huffman lookup near
+# its end peeks past the last packed byte, and exits 0.
+# ``scripts/find_unar_probe_member.py`` explains why and found both ``f.txt`` members:
+# the shortest over ``ab`` that RAR 7.00 ``-m3`` compresses and unar drops, alone and
+# after ``a.txt`` in a solid archive (``--after hello``). In one run over the five-member solid archive, unar drops ``c.txt``, writes
+# stale window bytes of ``d.txt``'s length and drops ``e.txt``: read by offset, the stale
+# bytes fill ``c.txt``'s place. Another ``rar`` build may compress them differently;
+# rerun the search, and check ``unar -o - <archive>`` still shows the fault after a
 # regeneration.
-_UNAR_DROP_MEMBER = _File(
-    "f.txt", b"ellaltagma\nlpa \n  gaa deta del beta ama \n bealp"
+_UNAR_DROP_MEMBER = _File("f.txt", b"aaaaabababbabb")
+_UNAR_DROP_SOLID: tuple[_File, ...] = (
+    _File("a.txt", b"hello"),
+    _File("f.txt", b"ababbaa"),
 )
 _UNAR_STALE: tuple[_File, ...] = (
     _File("a.txt", b"alpha alpha delta tag alpha tag"),
@@ -555,7 +559,7 @@ def _build_unar_drop(rar5_bin: Path, out_dir: Path) -> None:
         ("unar_drop__.rar", (_UNAR_DROP_MEMBER,), ("-m3",), None),
         (
             "unar_drop_solid__.rar",
-            (_File("a.txt", b"hello"), _UNAR_DROP_MEMBER),
+            _UNAR_DROP_SOLID,
             ("-s", "-m3"),
             None,
         ),
