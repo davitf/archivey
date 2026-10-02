@@ -76,10 +76,7 @@ from archivey.internal.backends.sevenzip_pipeline import (
     open_folder_pipeline,
     parse_decoded_header,
 )
-from archivey.internal.base_reader import (
-    BaseArchiveReader,
-    ReadBackend,
-)
+from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import (
     KeyDerivationBudget,
     stream_config_from_archivey,

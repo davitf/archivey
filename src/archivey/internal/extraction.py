@@ -555,14 +555,15 @@ class ExtractionCoordinator:
         self._shown_targets: dict[str, str] = {}
         # Dry run only: where FILE bodies go instead of the file (``os.devnull``).
         self._sink: BinaryIO | None = None
-        # ``id()`` of each member whose stream this run started writing to disk, and
-        # what each FILE written looked like on disk just after (``_file_identity``),
-        # by the writing member's id and the path. A RAR file copy's source in the
-        # first set is not kept by the pass; the copy is copied from the source's file
-        # instead, if that file still matches the second (``_open_written_source``).
-        # Keyed by member as well as path, so a later member written to the same path
-        # never vouches for the earlier one's file. Reset per ``run()``.
-        self._streamed: set[int] = set()
+        # RAR file copies (``_open_written_source``). ``_streaming_now`` is ``id()`` of
+        # the member whose stream is being written; a file-copy source arriving then is
+        # not kept by the pass (``_keep_copy_source``), and goes in ``_declined``. Only
+        # a declined source's file gets its identity recorded after the write
+        # (``_file_identity``), by its member id and path, so a later member written
+        # to the same path never vouches for it, and no other file costs a stat. A
+        # copy is then copied from that file if it still matches. Reset per ``run()``.
+        self._streaming_now: int | None = None
+        self._declined: set[int] = set()
         self._written_files: dict[tuple[int, Path], tuple[int, int, int, int]] = {}
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
@@ -733,7 +734,8 @@ class ExtractionCoordinator:
         self._rename_next = {}
         self._stale = {}
         self._unremoved = {}
-        self._streamed = set()
+        self._streaming_now = None
+        self._declined = set()
         self._written_files = {}
 
         tracker = BombTracker(
@@ -1916,15 +1918,19 @@ class ExtractionCoordinator:
         ) is not None:
             # A file copy whose source this run wrote: its bytes come from that file,
             # and ``stream`` is closed unread, so nothing decodes the source again.
+            # Read with no digest check, because none is needed: the source's write
+            # read its stream to the end through the source's digest and size checks,
+            # and a write that failed them recorded no identity to copy from.
             with written_source:
                 self._write_file_atomic(written_source, dest_path, transformed, tracker)
         else:
-            if stream is not None:
-                self._streamed.add(id(original))
-            self._write_file_atomic(stream, dest_path, transformed, tracker)
-        if self._sink is None:
-            # Only for a later file copy's sake; a file that cannot be looked at now
-            # is simply not copied from.
+            self._streaming_now = id(original) if stream is not None else None
+            try:
+                self._write_file_atomic(stream, dest_path, transformed, tracker)
+            finally:
+                self._streaming_now = None
+        if self._sink is None and id(original) in self._declined:
+            # A file that cannot be looked at now is simply not copied from.
             with contextlib.suppress(OSError):
                 self._written_files[original.member_id, dest_path] = _file_identity(
                     os.stat(dest_path, follow_symlinks=False)
@@ -1943,7 +1949,10 @@ class ExtractionCoordinator:
         (``_open_written_source``). A dry run writes empty files, so it keeps every
         source.
         """
-        return self._sink is not None or id(source) not in self._streamed
+        if self._sink is not None or id(source) != self._streaming_now:
+            return True
+        self._declined.add(id(source))
+        return False
 
     def _open_written_source(
         self,

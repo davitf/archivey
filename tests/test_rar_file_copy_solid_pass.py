@@ -408,7 +408,7 @@ def test_extract_copies_each_copy_from_the_written_source(
 
 
 def test_extract_copy_counts_toward_the_byte_cap_when_copied_from_disk(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _no_temp_file(monkeypatch)
     config = _config("unrar")
@@ -419,6 +419,8 @@ def test_extract_copy_counts_toward_the_byte_cap_when_copied_from_disk(
     )
     with pytest.raises(ResourceLimitError, match="max_extracted_bytes"):
         extract(archive, tmp_path / "out", config=config, limits=limits)
+    # The copies came from the source's file: a re-decode would spawn again.
+    assert spawns == ["unrar"]
 
 
 def test_extract_falls_back_when_the_written_source_was_replaced(
