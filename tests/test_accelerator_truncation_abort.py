@@ -307,10 +307,10 @@ def test_truncated_deflate_family_with_accelerator_on_raises_truncated(
 def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
     tmp_path: Path, codec: Codec, cut: int, chunk: int
 ) -> None:
-    """The bytes read before the child aborts are the payload's own: the read-ahead
-    buffer never serves data from past the cut or out of order. How many there are is
-    rapidgzip's to decide (it can abort before the first read returns), so this pins
-    only that they are right, and that the error is a truncation or corruption."""
+    """The bytes read before the error are the payload's own: neither the read-ahead
+    buffer nor the standard library's takeover after the abort serves data from past
+    the cut or out of order. The test below compares a large cut stream with the
+    standard library byte for byte."""
     payload = _payload()
     path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-cut])
     got = bytearray()
@@ -322,22 +322,30 @@ def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
     assert payload.startswith(got)
 
 
-@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB])
-def test_a_large_cut_stream_delivers_a_correct_prefix_before_the_abort(
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+def test_a_large_cut_stream_delivers_what_the_standard_library_delivers(
     tmp_path: Path, codec: Codec
 ) -> None:
-    """On a small cut stream rapidgzip usually aborts before any data comes back, which
-    leaves the prefix check above nothing to check. On about 32 MB it returned 22 to
-    31 MB first (4 CPUs), so the read-ahead's bookkeeping is exercised here."""
+    """About 32 MB cut near the end. How much the child returns before it aborts is a
+    race between rapidgzip's decoder threads (it returned nothing on some runs), and
+    after the abort the standard library takes over from what the child delivered. So
+    the caller always gets the standard library's bytes. Any byte the read-ahead buffer
+    served wrongly, or a takeover from the wrong place, shows up as a difference. Two
+    read sizes split the buffer both ways: 4096 uses up each power-of-two refill
+    exactly, and 10,000 straddles refills."""
     payload = base64.encodebytes(random.Random(32).randbytes(24_000_000))
-    path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-500])
+    cut = _compress(codec, payload)[:-500]
+    path = _write(tmp_path, f"cut.{codec.value}", cut)
+    wbits = {Codec.GZIP: 31, Codec.ZLIB: 15, Codec.DEFLATE: -15}[codec]
+    expected = zlib.decompressobj(wbits).decompress(cut)
     got = bytearray()
     with open_codec_stream(codec, str(path), config=_ON) as stream:
-        with pytest.raises(CorruptionError):
+        assert _has_child_stream(stream)
+        with pytest.raises(TruncatedError):
             while block := stream.read(4096 if codec is Codec.GZIP else 10_000):
                 got += block
-    assert got
-    assert payload.startswith(got)
+    assert len(got) == len(expected)
+    assert got == expected
 
 
 @pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
