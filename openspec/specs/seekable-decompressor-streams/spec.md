@@ -170,9 +170,9 @@ A fault signal, like a data error rapidgzip reports, SHALL hand the read to the 
 library decoder, which delivers what it would have delivered with the accelerator off: the
 same bytes before the error, and the same error. rapidgzip decodes ahead of the reader, so
 when it dies the reader can be far short of the fault. The standard library SHALL start at
-the last DEFLATE block boundary from rapidgzip's index that the delivered output passed, with
-the 32 KiB of output before it as its window, where the stream has seen one; otherwise at the
-start of the stream. A decode started at such a point that reaches the end of its DEFLATE
+the last DEFLATE block boundary from rapidgzip's index at or before the position delivered to
+the caller, among the boundaries the stream still keeps, with the 32 KiB of output before it
+as its window; where it keeps none there, at the start of the stream. A decode started at such a point that reaches the end of its DEFLATE
 stream cannot check the CRC-32 or Adler-32 that follows, so it SHALL start over from the start
 of the stream. A SIGKILL or other end that is not a fault signal is not a verdict on the data
 and SHALL reach the caller as above. A child that ends after the caller's source raised

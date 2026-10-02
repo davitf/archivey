@@ -286,8 +286,8 @@ rapidgzip decodes ahead in parallel, so it can reach the cut and abort before yo
 reads get there. When the child aborts, the standard library takes over from the last
 point rapidgzip's index gave for what you have read, so you get the same bytes and the
 same `TruncatedError` as with `use_rapidgzip=OFF`. The standard library decodes again
-only from that point, so the extra work grows with how far rapidgzip had read ahead
-(more threads read further), not with the size of the file.
+only from that index point to where you had read: a few MiB on most files, and a few
+percent of a very large one, never the whole file.
 
 bzip2 runs in your process. It did not abort on cut or damaged input in the tests behind
 this page (cuts, bit flips, CRC damage, as path and as file object), but that is testing,

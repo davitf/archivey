@@ -95,16 +95,15 @@ def _read_cut(
     return bytes(got), None
 
 
-@functools.cache
 def _cut(codec: Codec, keep: float) -> bytes:
     data = _compressed(codec)
     return data[: int(len(data) * keep)]
 
 
-@functools.cache
+@functools.lru_cache(maxsize=1)
 def _stdlib_reads_cut(codec: Codec, keep: float) -> bytes:
     """What the standard library delivers from the cut stream: the same for every
-    source kind, so it is decoded once."""
+    source kind (the innermost parameter), so one is kept while they run."""
     wbits = {Codec.GZIP: 31, Codec.ZLIB: 15, Codec.DEFLATE: -15}[codec]
     return zlib.decompressobj(wbits).decompress(_cut(codec, keep))
 
