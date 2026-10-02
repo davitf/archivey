@@ -26,8 +26,8 @@ wrote, when that file is still the one it wrote (same device, inode, size and
 modification time, checked on the opened file) and the copy declares the source's size.
 Those bytes SHALL count toward extraction limits as the copy's own, as bytes read from
 the pass do. They need no second digest check: the source's write passed them through
-the source's digest and size checks, and a write that failed them leaves no file to copy
-from. Otherwise (a selector or filter dropped the source, its write failed, a
+the source's digest and size checks, and a write that failed them records no identity for
+the copy to check against, so the copy falls back to the pass. Otherwise (a selector or filter dropped the source, its write failed, a
 later member took its path, or the file changed) the copy SHALL be read from the pass:
 from the kept bytes when the extraction did not write the source, and with a named open
 when it did. A dry run writes empty files, so it SHALL keep sources as `stream_members()`
