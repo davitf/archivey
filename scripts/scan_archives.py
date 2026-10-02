@@ -57,7 +57,7 @@ import tempfile
 import time
 import traceback
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -67,6 +67,7 @@ from archivey import (
     ArchiveyConfig,
     ArchiveyError,
     DecoderLimits,
+    DiagnosticCode,
     EncryptionError,
     ExtractionLimits,
     ExtractionStatus,
@@ -232,7 +233,7 @@ _SLOW_SECONDS = 60.0
 _LOGGED_MEMBER_ERRORS = 10
 
 COLUMNS = (
-    "path file_size format version solid encrypted open extract flags seconds "
+    "path file_size format detected version solid encrypted open extract flags seconds "
     "members entries_written bytes_written archive_ratio max_member_ratio "
     "metadata_bytes decoder_memory kdf_rounds spool_bytes codecs diagnostics error"
 ).split()
@@ -309,6 +310,7 @@ def scan_one(
         row.failure("detect", exc)
         return _finish(row)
     row.text["format"] = _format_name(info.format)
+    row.text["detected"] = f"{info.detected_by}/{info.confidence.value}"
     if info.payload_offset:
         row.flag("sfx")
     if info.detected_by == "extension":
@@ -316,7 +318,7 @@ def scan_one(
 
     started = time.perf_counter()
     try:
-        _open_and_extract(path, config, row, password)
+        _open_and_extract(path, config, row, password, info.diagnostics.counts)
     except Exception as exc:  # noqa: BLE001 - e.g. the reader's close() raising
         row.failure("scan", exc)
     seconds = time.perf_counter() - started
@@ -352,12 +354,21 @@ def _finish(row: _Row) -> _Row:
 
 
 def _open_and_extract(
-    path: Path, config: ArchiveyConfig, row: _Row, password: PasswordInput
+    path: Path,
+    config: ArchiveyConfig,
+    row: _Row,
+    password: PasswordInput,
+    detection_diagnostics: Mapping[DiagnosticCode, int],
 ) -> None:
     try:
         reader = archivey.open_archive(path, config=config, password=password)
     except Exception as exc:  # noqa: BLE001
         row.failure("open", exc)
+        # An open reader repeats detection's diagnostics in its own; without one,
+        # they are only on the detection result, and a misdetection that made the
+        # open fail is exactly where they matter.
+        for code, count in detection_diagnostics.items():
+            row.diagnostics[code.value] += count
         return
     with reader:
         row.text["open"] = "ok"

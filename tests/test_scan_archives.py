@@ -96,3 +96,16 @@ def test_main_writes_csv_and_log(
     assert rows
     assert all(row["open"] for row in rows)
     assert "== summary:" in out.with_suffix(".log").read_text(encoding="utf-8")
+
+
+def test_detection_diagnostics_survive_a_failed_open(tmp_path: Path) -> None:
+    # RAR content under a .zip name: detection reports the conflict, and a cut-short
+    # copy makes the open fail, so no reader carries the diagnostic.
+    path = tmp_path / "misnamed.zip"
+    path.write_bytes(FIXTURE.read_bytes()[:100])
+    row = scan.scan_one(path, scan._scan_config(False))
+    assert row is not None
+    out = row.csv_row()
+    assert out["open"] == "CorruptionError"
+    assert out["detected"] == "magic/certain"
+    assert "diag:format_extension_conflict" in str(out["flags"]).split()
