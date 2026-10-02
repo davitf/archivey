@@ -5,11 +5,13 @@ from __future__ import annotations
 import io
 import os
 import random
+import shutil
 import struct
 import subprocess
 import sys
 import types
 import zlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
@@ -1962,8 +1964,14 @@ def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
 
 
 @pytest.fixture(scope="module")
-def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """A tree of ``_MAX_NUM_STREAMS + 1`` one-byte files, built once.
+
+    The tree is removed when the module finishes. pytest keeps the temporary
+    directories of the last three sessions and deletes older ones when a session
+    starts or ends, so a tree left behind is unlinked file by file by some later
+    run, a single-test run included: measured on a slow container disk, that later
+    run spent about 100 s in the cleanup.
 
     Both shapes below need the same 65 537 files and nothing mutates them, so
     the tree is shared rather than rebuilt per shape.
@@ -2001,7 +2009,8 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
         directory = src / f"d{i // 1000:03d}"
         directory.mkdir(exist_ok=True)
         (directory / f"f{i:05d}.txt").write_bytes(b"x")
-    return src
+    yield src
+    shutil.rmtree(src, ignore_errors=True)
 
 
 @pytest.mark.timeout(120)

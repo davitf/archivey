@@ -89,12 +89,14 @@ def test_read_n_is_full_count_until_eof(
     expected = b"".join(bytes([b]) * factor for b in source)
     with _stream(factor, honour_max_length=honour_max_length) as stream:
         pieces: list[bytes] = []
+        delivered = 0  # a running total: re-summing every piece made n=1 quadratic
         while True:
             piece = stream.read(n)
             if not piece:
                 break
             pieces.append(piece)
-            assert stream.tell() == sum(map(len, pieces))
+            delivered += len(piece)
+            assert stream.tell() == delivered
         assert b"".join(pieces) == expected
         # Every piece but the last is exactly n bytes.
         assert all(len(p) == n for p in pieces[:-1])
