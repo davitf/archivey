@@ -764,6 +764,16 @@ random `open()` of a solid member is a fresh whole-archive decode each time — 
 not a gap: amortizing via `unrar x` into a temp directory was considered and rejected
 because it hides decode work behind later reads (`VISION.md`; §6).
 
+**A RAR5 hard link resolves to an earlier member only, in both modes.**
+`unrar` extracts one from what it has already written: when the target comes later it
+fails with "You need to unpack the link target first" (exit 9), and a hard link to a
+symlink becomes a second name for the symlink. `RarReader._HARDLINK_FORWARD_FALLBACK =
+False` matches that, so random access and a streaming pass agree with each other and
+with `unrar`, as TAR does (`tar.md`). `unar` differs: it writes every RAR hard link as a
+symlink to the target name, which is why a forward one appears to work there. The six
+shapes are pinned against `unrar` by
+`tests/test_audit_extraction_reaudit.py::test_rar_hard_links_extract_as_unrar_does_in_both_modes`.
+
 ### 2.5 Write
 
 Not shipped, and not RAR-specific: no format has a writer. RAR would be the least likely

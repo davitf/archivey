@@ -1065,6 +1065,12 @@ class RarReader(BaseArchiveReader):
 
     _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
+    # A RAR5 hard link names a member already archived, and ``unrar``
+    # extracts it from what it has already written: a link whose target comes later
+    # fails with "You need to unpack the link target first". Resolving it to a later
+    # member would make random access write what ``unrar`` refuses, and disagree with a
+    # streaming pass, which cannot see ahead. TAR reasons the same way.
+    _HARDLINK_FORWARD_FALLBACK = False
 
     def __init__(
         self,

@@ -530,7 +530,9 @@ creates it. The caller's filter SHALL see the HARDLINK as listed, and the member
 `ExtractionResult` stays that HARDLINK; only what is written is a symlink. During a
 streaming extraction, each link in the chain resolves only to a member listed before it.
 A member listed later can still change while the walk runs, so it does not make the link
-a symlink.
+a symlink. A TAR or RAR hard link SHALL resolve only to a member listed before it in both
+modes, because `tar(1)` and `unrar` link to what they have already written: a link whose
+only target comes later fails in random access as in a streaming pass.
 
 Where `REPLACE` removes an existing entry that a **member of this same run** wrote,
 and the replacing write then fails, that earlier member's content is gone. Its

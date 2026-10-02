@@ -644,8 +644,8 @@ def test_hard_links_cost_linear_work(
     # Counts rather than wall time. Every link names `base` (fan-out, what GNU tar
     # makes) or the link before it (chain). Each link should check one recorded path
     # before linking and look up one direct target; rechecking every earlier path, or
-    # walking the chain from scratch for each link, makes both grow as N². TAR never
-    # looks forward for a hard link's target; the other backends (RAR) do, which
+    # walking the chain from scratch for each link, makes both grow as N². TAR and RAR
+    # never look forward for a hard link's target; the base default does, which
     # `forward_fallback` stands in for.
     from archivey.internal import base_reader, extraction
     from archivey.internal.backends import tar_reader
@@ -824,3 +824,146 @@ def test_a_hardlink_to_an_escaping_symlink_is_blocked_like_it(tmp_path: Path) ->
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses == {"s": ExtractionStatus.BLOCKED, "h": ExtractionStatus.BLOCKED}
     assert not os.path.lexists(dest / "h")
+
+
+# --- RAR hard links against unrar -------------------------------------------------
+
+
+def _rar5_with(entries: list[tuple]) -> bytes:
+    """A stored RAR5 archive of ``(name, kind, payload)`` entries, as `_build_tar` takes.
+
+    ``hard`` is a RAR5 hard-link redirect, which ``rar`` itself never points at a
+    symlink or at a later member; these are the shapes a crafted archive can carry.
+    """
+    import struct
+    import zlib
+
+    from tests.test_audit_rar_iso_dir import _rar5_build, _vint
+
+    def redirect(kind: int, target: str) -> bytes:
+        record = (
+            _vint(5) + _vint(kind) + _vint(0) + _vint(len(target)) + target.encode()
+        )
+        return _vint(len(record)) + record
+
+    blocks: list[dict[str, Any]] = [
+        {"type": 1, "flags": 0, "body": _vint(0), "extra": b"", "data": b""}
+    ]
+    for name, kind, payload in entries:
+        block: dict[str, Any] = {
+            "type": 2,
+            "flags": 0,
+            "file_flags": 0,
+            "unpacked": 0,
+            "mtime": None,
+            "crc": None,
+            "cinfo": 0,
+            "host_os": 1,
+            "name": name.encode(),
+            "extra": b"",
+            "data": b"",
+        }
+        if kind == "dir":
+            block.update(file_flags=1, attr=0o40755)
+        elif kind == "file":
+            block.update(
+                attr=0o100644,
+                unpacked=len(payload),
+                crc=struct.pack("<I", zlib.crc32(payload)),
+                data=payload,
+            )
+        else:
+            block.update(
+                attr=0o120777 if kind == "sym" else 0o100644,
+                extra=redirect(1 if kind == "sym" else 4, payload),
+            )
+        blocks.append(block)
+    blocks.append({"type": 5, "flags": 0, "body": _vint(0), "extra": b"", "data": b""})
+    return _rar5_build(blocks)
+
+
+def _tree(root: Path) -> dict[str, str]:
+    """Every entry under ``root``: a symlink's target or a file's content."""
+    seen: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            seen[rel] = f"-> {os.readlink(path)}"
+        elif path.is_file():
+            seen[rel] = path.read_bytes().decode()
+    return seen
+
+
+_SUB = [("sub", "dir", None), ("sub/x", "file", b"X")]
+
+
+@posix_links
+@pytest.mark.parametrize(
+    "entries",
+    [
+        pytest.param(
+            [*_SUB, ("s", "sym", "sub/x"), ("h", "hard", "s")], id="to-a-symlink"
+        ),
+        pytest.param(
+            [*_SUB, ("h", "hard", "s"), ("s", "sym", "sub/x")], id="to-a-later-symlink"
+        ),
+        pytest.param(
+            [
+                *_SUB,
+                ("s", "sym", "sub/x"),
+                ("h1", "hard", "s"),
+                ("h2", "hard", "h1"),
+                ("h3", "hard", "h2"),
+            ],
+            id="chain-to-a-symlink",
+        ),
+        pytest.param(
+            [
+                *_SUB,
+                ("h0", "hard", "late"),
+                ("h1", "hard", "h0"),
+                ("late", "sym", "sub/x"),
+                ("h2", "hard", "h1"),
+            ],
+            id="chain-through-a-later-symlink",
+        ),
+        pytest.param([("h", "hard", "f"), ("f", "file", b"F")], id="to-a-later-file"),
+        pytest.param(
+            [
+                ("n1", "hard", "n2"),
+                ("n2", "hard", "n3"),
+                ("n3", "file", b"F"),
+                ("z", "hard", "n1"),
+            ],
+            id="chain-to-a-later-file",
+        ),
+    ],
+)
+def test_rar_hard_links_extract_as_unrar_does_in_both_modes(
+    tmp_path: Path, entries: list[tuple]
+) -> None:
+    # unrar links to what it has already written: a hard link whose target comes later
+    # fails, and a hard link to a symlink is a second name for the symlink. Both modes
+    # must leave the tree unrar leaves.
+    import shutil
+    import subprocess
+
+    if shutil.which("unrar") is None:
+        pytest.skip("requires external binary(ies): unrar")
+    archive = tmp_path / "a.rar"
+    archive.write_bytes(_rar5_with(entries))
+    expected_root = tmp_path / "unrar"
+    expected_root.mkdir()
+    subprocess.run(
+        ["unrar", "x", "-o+", "-idq", str(archive)],
+        cwd=expected_root,
+        check=False,
+        capture_output=True,
+    )
+    expected = _tree(expected_root)
+
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        with archivey.open_archive(archive, streaming=streaming) as reader:
+            reader.extract_all(dest, policy="standard", on_error="continue")
+        assert _tree(dest) == expected, f"streaming={streaming}"

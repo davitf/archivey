@@ -392,7 +392,7 @@ class BaseArchiveReader(ArchiveReader):
     _MEMBER_LIST_UPFRONT: bool = True
     # May a hardlink whose name has no earlier match resolve to the last member of that
     # name after it? A backend whose format defines hardlinks as backward references
-    # (TAR) sets False.
+    # (TAR, RAR) sets False.
     _HARDLINK_FORWARD_FALLBACK: bool = True
 
     def __init__(
