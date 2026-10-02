@@ -745,7 +745,8 @@ class ExtractionReport:
         default=None, repr=False, compare=False
     )
     # A dry run's symlinks, as (path under ``dest`` with ``/`` separators, target),
-    # read from the same scratch tree when it held a single top-level entry. Private,
+    # read from the same scratch tree when it held a single top-level entry. ``None``
+    # with a single top-level entry means part of the tree could not be read. Private,
     # for the same prediction: the CLI walks them as its hoist walks a real tree.
     _dry_run_links: tuple[tuple[str, str], ...] | None = field(
         default=None, repr=False, compare=False

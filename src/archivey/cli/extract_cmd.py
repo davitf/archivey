@@ -408,7 +408,9 @@ def maybe_hoist_single_root(
         return _HoistResult(wrapper)
     child = children[0]
     block = None
-    if child.is_symlink():
+    if wrapper_existed:
+        pass  # the reason is settled; walking the tree would not change it
+    elif child.is_symlink():
         block = "symlink"
     elif child.is_dir() and not _links_stay_inside(child):
         block = "link_leaves"
@@ -495,9 +497,15 @@ def predict_hoist(
     if len(tops) != 1:
         return _HoistResult(wrapper)
     ((name, is_dir),) = tops
-    links = report._dry_run_links or ()
+    links = report._dry_run_links
     block = None
-    if any(path == name for path, _ in links):
+    if wrapper_existed:
+        pass  # the reason is settled, as in the hoist
+    elif links is None:
+        # Part of the scratch tree could not be read, and the hoist keeps a tree it
+        # cannot fully walk.
+        block = "link_leaves"
+    elif any(path == name for path, _ in links):
         block = "symlink"
     elif is_dir and not _recorded_links_stay_inside(name, links):
         block = "link_leaves"

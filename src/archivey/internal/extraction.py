@@ -142,18 +142,29 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
-def _scratch_links(root: Path) -> tuple[tuple[str, str], ...]:
+def _scratch_links(root: Path) -> tuple[tuple[str, str], ...] | None:
     """Every symlink under ``root``, as (its path relative to ``root`` with ``/``
-    separators, its target), sorted. Directories are listed without following links;
-    one that cannot be listed is left out."""
+    separators, its target), sorted; ``None`` when part of the tree could not be read.
+
+    Directories are listed without following links. A directory that cannot be listed,
+    or a link that cannot be read, makes the whole record ``None`` rather than leaving
+    it out: the CLI's hoist keeps a tree it could not fully walk, and a partial record
+    would let the prediction move it.
+    """
     links = []
-    for parent, dirnames, filenames in os.walk(root):
-        for name in (*dirnames, *filenames):
-            path = os.path.join(parent, name)
-            if os.path.islink(path):
-                with contextlib.suppress(OSError):
-                    rel = Path(path).relative_to(root).as_posix()
-                    links.append((rel, os.readlink(path)))
+    pending = [root]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        rel = Path(entry.path).relative_to(root).as_posix()
+                        links.append((rel, os.readlink(entry.path)))
+                    elif entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+    except OSError:
+        return None
     return tuple(sorted(links))
 
 

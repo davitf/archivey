@@ -739,7 +739,7 @@ that one `open()` operation.
 | Hardlink → `/../a` | Unresolved (escapes after the `/` is set aside) |
 | Duplicate names, hardlink | Most recent occurrence strictly before the link |
 | Duplicate names, symlink (RA) | Last occurrence overall |
-| Hardlink source only later | TAR: no target in either mode (`LinkTargetNotFoundError`), since a TAR hardlink refers to an earlier member (`format-tar`). Other formats: RA falls back to the later member; streaming cannot resolve |
+| Hardlink source only later | No target in either mode, in every format (`LinkTargetNotFoundError`): a hardlink refers to an earlier member, as `tar(1)` and `unrar` treat it (`format-tar`, `format-rar`) |
 | Two distinct same-named members on one chain | Not a cycle (id-based tracking) |
 
 ### Requirement: Context-manager and close lifecycle

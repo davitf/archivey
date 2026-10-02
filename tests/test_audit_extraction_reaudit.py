@@ -189,10 +189,10 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
 
 @posix_links
 @pytest.mark.parametrize(
-    ("entries", "existing"),
+    ("entries", "existing", "unlistable"),
     [
-        ([("top", "sym", "passwd")], False),
-        ([("top", "dir", None), ("top/k", "sym", "../passwd")], False),
+        ([("top", "sym", "passwd")], False, False),
+        ([("top", "dir", None), ("top/k", "sym", "../passwd")], False, False),
         (
             [
                 ("top", "dir", None),
@@ -201,14 +201,27 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
                 ("top/sub/l", "sym", "a/../passwd"),
             ],
             False,
+            False,
         ),
-        ([("top", "dir", None), ("top/f", "file", b"x")], True),
+        ([("top", "dir", None), ("top/f", "file", b"x")], True, False),
+        # `top/d` stands for a directory extracted without its read bit (0o300 under
+        # STANDARD): neither walk can see `k`, so neither may assume it is safe.
+        (
+            [
+                ("top", "dir", None),
+                ("top/d", "dir", None),
+                ("top/d/k", "sym", "../../passwd"),
+            ],
+            False,
+            True,
+        ),
     ],
     ids=[
         "lone-symlink",
         "link-leaves-the-entry",
         "chain-hides-a-climb",
         "wrapper-was-there",
+        "unlistable-directory",
     ],
 )
 def test_a_dry_run_predicts_the_hoist_keeping_the_entry(
@@ -216,9 +229,20 @@ def test_a_dry_run_predicts_the_hoist_keeping_the_entry(
     monkeypatch: pytest.MonkeyPatch,
     entries: list,
     existing: bool,
+    unlistable: bool,
 ) -> None:
     # Each case is one the real hoist leaves in the wrapper. The dry run must say so
     # too, not "would move", and name the same place in its summary.
+    if unlistable:
+        real_scandir = os.scandir
+
+        def refuse_d(path: Any = ".") -> Any:
+            # shutil.rmtree lists by file descriptor; only paths are refused.
+            if not isinstance(path, int) and os.fspath(path).endswith(f"{os.sep}d"):
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real_scandir(path)
+
+        monkeypatch.setattr(os, "scandir", refuse_d)
     runs = {}
     for dry_run in (False, True):
         cwd = tmp_path / ("dry" if dry_run else "real")
@@ -1017,3 +1041,27 @@ def test_rar_hard_links_extract_as_unrar_does_in_both_modes(
         with archivey.open_archive(archive, streaming=streaming) as reader:
             reader.extract_all(dest, policy="standard", on_error="continue")
         assert _tree(dest) == expected, f"streaming={streaming}"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_rar_hard_link_to_a_later_member_has_no_target(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # The reading side of the rule above: `h` names `f`, listed only after it, so `h`
+    # has no target and opening it fails, in random access as in a streaming pass.
+    from archivey.exceptions import LinkTargetNotFoundError
+
+    archive = tmp_path / "a.rar"
+    archive.write_bytes(_rar5_with([("h", "hard", "f"), ("f", "file", b"F")]))
+    with archivey.open_archive(archive, streaming=streaming) as reader:
+        if streaming:
+            for member, stream in reader.stream_members():
+                if member.name == "f":
+                    assert stream is not None
+                    assert stream.read() == b"F"
+        listed = {m.name: m for m in reader.members_report().members}
+    assert listed["h"].link_target_member is None
+    if not streaming:
+        with archivey.open_archive(archive) as reader:
+            with pytest.raises(LinkTargetNotFoundError):
+                reader.read("h")
