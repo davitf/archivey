@@ -1306,7 +1306,9 @@ def _zisofs_image(
     return _replace_tf(data, b"zzz", entry + _UNKNOWN_ENTRY)
 
 
-_ZISOFS_PLAIN = (b"zisofs block data " * 3000) + bytes(40_000) + b"tail"
+# Four 32 KiB blocks: text, text then zeros, all zeros (block 2, which ``_zisofs``
+# stores as no data), zeros then ``tail``.
+_ZISOFS_PLAIN = (b"zisofs block data " * 3000) + bytes(70_000) + b"tail"
 
 
 def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
@@ -1315,6 +1317,9 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
     """pycdlib refuses a ``ZF`` entry, which cost the whole image. The member lists
     with the size the entry declares and reads the bytes ``mkzftree`` compressed,
     including a block of zeros stored as no data; its neighbour is untouched."""
+    stored = _zisofs(_ZISOFS_PLAIN)
+    pointers = struct.unpack("<5I", stored[16:36])
+    assert pointers[2] == pointers[3] < pointers[4]  # block 2 is stored as no data
     data = _zisofs_image(_ZISOFS_PLAIN)
     with open_archive(io.BytesIO(data)) as ar:
         by_name = {m.name: m for m in ar.members()}
@@ -1389,7 +1394,7 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     data = bytearray(_zisofs_image(_ZISOFS_PLAIN))
     stored = _zisofs(_ZISOFS_PLAIN)
     at = data.index(stored)
-    first_block = at + 16 + 4 * 4  # three blocks, four pointers
+    first_block = at + 16 + 4 * 5  # four blocks, five pointers
     data[first_block : first_block + 8] = b"\xff" * 8
     with open_archive(io.BytesIO(bytes(data))) as ar:
         with raises_corruption_not_truncation():
