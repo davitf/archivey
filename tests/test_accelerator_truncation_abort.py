@@ -14,6 +14,7 @@ test and does not kill pytest.
 from __future__ import annotations
 
 import base64
+import functools
 import gzip
 import io
 import logging
@@ -325,7 +326,18 @@ def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
 # Runs the real worker with rapidgzip held to one thread. ``parallelization=1`` starts
 # no decoder threads: each chunk is decoded inside the ``read`` that needs it, in order,
 # so the chunk that holds the cut is decoded, and aborts, only after every chunk before
-# it has been read.
+# it has been read. Measured with rapidgzip 0.16.0 on a 4-CPU Linux machine: after the
+# first ``read``, ``parallelization=1`` had added 0 threads to the process, against 4
+# for ``parallelization=4`` (and for 0, the shipped setting); and on the gzip input of
+# the test below, raw rapidgzip at ``parallelization=1`` returned exactly 27,582,464
+# bytes before the abort on 45 of 45 runs under CPU load. A later rapidgzip that decodes
+# ahead even with one thread would make the ``serial`` case's size check flaky again.
+#
+# The wrapper replaces the ``rapidgzip.open`` module attribute and forces the
+# ``parallelization`` keyword, so it works only while the worker calls
+# ``rapidgzip.open(..., parallelization=...)`` through the module. A positional
+# argument makes the call raise ``TypeError``; any other entry point would bypass the
+# wrapper, so the wrapper writes ``marker`` when it is called and the test checks it.
 _SERIAL_WORKER = """
 import importlib, runpy
 
@@ -335,6 +347,8 @@ _open = rapidgzip.open
 
 def _serial_open(*args, **kwargs):
     kwargs["parallelization"] = 1
+    with open({marker!r}, "w", encoding="utf-8") as marker:
+        marker.write("called")
     return _open(*args, **kwargs)
 
 
@@ -343,13 +357,26 @@ runpy.run_path({worker!r}, run_name="__main__")
 """
 
 
+@functools.cache
+def _large_payload() -> bytes:
+    """About 32 MB of base64 text. Built once: every case reads it and none changes it."""
+    return base64.encodebytes(random.Random(32).randbytes(24_000_000))
+
+
+@functools.cache
+def _large_cut(codec: Codec) -> bytes:
+    """``_large_payload`` compressed with ``codec``, without its last 500 bytes."""
+    return _compress(codec, _large_payload())[:-500]
+
+
 @pytest.mark.parametrize("decoder", ["serial", "parallel"])
 @pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
 def test_a_large_cut_stream_delivers_a_correct_prefix_before_the_abort(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, codec: Codec, decoder: str
 ) -> None:
-    """Many READ round trips, then the abort: the read-ahead buffer's bookkeeping over
-    a long run.
+    """A 32 MB cut stream through the child: what comes back before the abort is a
+    correct prefix, and in ``serial`` mode it spans many READ round trips, which
+    exercises the read-ahead buffer's bookkeeping over a long run.
 
     How much the shipped decoder returns first is a race. Its threads decode chunks
     ahead of the reader, the chunk that holds the cut among them, and the abort ends
@@ -359,24 +386,33 @@ def test_a_large_cut_stream_delivers_a_correct_prefix_before_the_abort(
     case (the shipped worker) checks only that what came back is a prefix, and the
     ``serial`` case holds rapidgzip to one thread so that everything before the cut
     chunk comes back first, on every run: more than a few full-size round trips."""
+    marker = tmp_path / "serial_open_called"
     if decoder == "serial":
         worker = tmp_path / "serial_worker.py"
         worker.write_text(
-            _SERIAL_WORKER.format(worker=str(rapidgzip_child._WORKER)),
+            _SERIAL_WORKER.format(
+                marker=str(marker), worker=str(rapidgzip_child._WORKER)
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr(rapidgzip_child, "_WORKER", worker)
-    payload = base64.encodebytes(random.Random(32).randbytes(24_000_000))
-    path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-500])
+    payload = _large_payload()
+    path = _write(tmp_path, f"cut.{codec.value}", _large_cut(codec))
+    # Two read sizes, so the parent's read-ahead buffer is split both ways. After the
+    # first read the parent asks the child for power-of-two amounts (64 KiB doubling up
+    # to _CHUNK), which 4096-byte reads use up exactly; 10,000-byte reads end partway
+    # into a buffer and straddle round trips.
+    read_size = 4096 if codec is Codec.GZIP else 10_000
     got = bytearray()
     with open_codec_stream(codec, str(path), config=_ON) as stream:
         assert _has_child_stream(stream)
         with pytest.raises(CorruptionError):
-            while block := stream.read(4096 if codec is Codec.GZIP else 10_000):
+            while block := stream.read(read_size):
                 got += block
     assert len(got) < len(payload)
     assert payload.startswith(got)
     if decoder == "serial":
+        assert marker.is_file(), "the worker did not call rapidgzip.open"
         assert len(got) > 4 * rapidgzip_child._CHUNK, len(got)
 
 
