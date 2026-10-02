@@ -121,6 +121,9 @@ dev = [
     "pytest>=8.3.0",
     "pytest-cov>=6.0.0",
     "pytest-timeout>=2.3.0",
+    # Runs the suite on every core (`-n auto`): scripts/test.sh and CI pass it. Not in
+    # addopts, so a single-test run does not pay for starting workers.
+    "pytest-xdist>=3.6.0",
     # Lint and type checkers are pinned EXACTLY, not floored. Their version decides
     # what the gates *report*, so a floor makes two developers — or the same developer
     # across dependency configs — disagree about whether the tree is clean. Concretely:

@@ -8,6 +8,9 @@
 #   ./scripts/test.sh tests/test_zip.py -k roundtrip
 #   ./scripts/test.sh --all-configs   all three legs CI runs — when a change can reach an extra
 #
+# Every leg runs on all cores (`-n auto`, pytest-xdist). A later `-n 0` among the extra
+# arguments wins, for a run where you want one process (pdb, `-s` output in order).
+#
 # `--all-configs` runs what CONTRIBUTING.md §"Before pushing…" describes:
 #
 #   1. [all]        current versions, every extra — the everyday leg
@@ -31,7 +34,7 @@ PYTEST_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --all-configs) ALL_CONFIGS=1 ;;
-    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *) PYTEST_ARGS+=("$arg") ;;
   esac
 done
@@ -40,7 +43,7 @@ EVERYDAY_SYNC=(uv sync --group dev --extra all)
 
 if [ "$ALL_CONFIGS" -eq 0 ]; then
   "${EVERYDAY_SYNC[@]}" || exit 1
-  exec uv run --no-sync pytest "${PYTEST_ARGS[@]}"
+  exec uv run --no-sync pytest -n auto "${PYTEST_ARGS[@]}"
 fi
 
 if [ ${#PYTEST_ARGS[@]} -gt 0 ]; then
@@ -72,7 +75,7 @@ leg() {
 leg "[all]" bash -c '
   set -e
   uv sync --group dev --extra all
-  uv run --no-sync pytest
+  uv run --no-sync pytest -n auto
 '
 
 # 2. minimum supported versions
@@ -87,7 +90,7 @@ leg "[all-lowest]" bash -c '
     fi
   fi
   uv sync --group dev --extra all --resolution lowest-direct
-  uv run --no-sync pytest
+  uv run --no-sync pytest -n auto
 '
 
 # 3. zero-dependency core
@@ -96,7 +99,7 @@ leg "[core-only]" bash -c '
   git checkout -- uv.lock 2>/dev/null || true
   uv sync --no-dev
   uv run --no-sync python tests/check_zero_dep_core.py
-  uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov pytest tests/ -q
+  uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov --with pytest-xdist pytest tests/ -q -n auto
 '
 
 if [ ${#FAILED[@]} -eq 0 ]; then
