@@ -1,6 +1,6 @@
 """Dry-run every archive under a directory: statistics, and a list of files to check.
 
-    python scripts/scan_archives.py ~/backups -o scan.csv [--password PW ...]
+    python scripts/scan_archives.py ~/backups -o scan.csv [--password-file FILE]
 
 Each archive goes through ``extract_all(dry_run=True)``, the real extraction pass with
 file bodies discarded, so nothing is kept on disk. Files are found by content, not by
@@ -13,12 +13,13 @@ Three outputs:
   ``diag:archive_trailing_data``, ...); filter on it. Empty flags means nothing stood
   out.
 - ``scan.log``: the detail for every flagged archive (error messages, the members
-  that failed, what declared the largest decoder allocation, tracebacks), then the
-  summary.
+  that failed, what declared the largest decoder allocation, archivey's own warnings,
+  tracebacks), then the summary.
 - The summary, also printed at the end: counts by format and outcome, how many
   archives carry each flag and diagnostic, and for every configurable limit the
-  largest value seen, the 99th percentile, and how many archives are over the default
-  or past half of it.
+  largest value seen, the 99th and 50th percentiles, and how many archives are over
+  the default or past half of it without being over. Ctrl-C stops the scan and still
+  writes the summary for the archives done so far.
 
 **Limits.** By default the scan turns off the limits that only count something (bytes,
 entries, ratio, members, metadata, key-derivation rounds, spool), so the columns show
@@ -26,19 +27,31 @@ the true value rather than stopping at the cap. The two that protect the scannin
 machine, ``max_decoder_memory`` and ``max_ppmd_in_process_input``, stay at their
 defaults. ``--default-limits`` scans under the full default config instead.
 
+**Where a dry run says less than a real run.** Two of the divergences the dry run
+documents (``extract`` in ``src/archivey/internal/extraction.py`` has the full list)
+land on this scan's columns. A link whose target leaves the destination and comes back
+through a symlink outside it, or climbs above the directory holding it, is refused in
+the scratch tree where a real run could accept it, so ``blocked_members`` can name a
+member a real extraction would write. And the scratch tree is one filesystem, so a
+hardlink never falls back to a copy: ``bytes_written`` is a floor for
+``max_extracted_bytes`` when a real destination spans a mount point.
+
 **Best-effort columns.** ``decoder_memory``, ``kdf_rounds`` and ``spool_bytes`` have no
 public API yet. The script reads them by wrapping three internal functions for the
-duration of the scan, so they can silently stop working when those internals change.
-``decoder_memory`` is the largest allocation an archive *declared* that archivey checks
-itself; xz and zstd hand the limit to liblzma / libzstd and are not counted.
-``metadata_bytes`` reads the reader's private listing tracker.
+duration of the scan, and ``metadata_bytes`` reads the reader's private listing tracker.
+Any of them can stop working when those internals change; the script then prints which
+on its ``warning: probes not installed`` line rather than leaving a column silently
+empty. ``decoder_memory`` is the largest allocation an archive *declared* that archivey
+checks itself; xz and zstd hand the limit to liblzma / libzstd and are not counted.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import logging
+import pkgutil
 import sys
 import tempfile
 import time
@@ -47,6 +60,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 import archivey
 from archivey import (
@@ -70,14 +84,26 @@ from archivey import (
 class _Probe:
     decoder_memory_peak: int = 0
     decoder_memory_what: str = ""
+    # The ``what`` of the ``check_decoder_memory`` call in progress, so the peak and
+    # its description are recorded together by whichever wrapper sees the new peak.
+    pending_what: str = ""
     kdf_rounds: int = 0
     spool_bytes: int = 0
+    # Archivey's own WARNING log records for the archive being scanned.
+    warnings: list[str] = field(default_factory=list)
 
     def reset(self) -> None:
-        self.__init__()  # type: ignore[misc]
+        self.decoder_memory_peak = 0
+        self.decoder_memory_what = ""
+        self.pending_what = ""
+        self.kdf_rounds = 0
+        self.spool_bytes = 0
+        self.warnings = []
 
 
 PROBE = _Probe()
+# Names of probes that turned out not to work; reported once, with the install ones.
+BROKEN_PROBES: set[str] = set()
 
 
 def _install_probes() -> list[str]:
@@ -85,13 +111,10 @@ def _install_probes() -> list[str]:
     failed: list[str] = []
     # Backends import lazily, and a module imported after the patch keeps the
     # original binding, so everything is imported first.
-    import importlib
-    import pkgutil
-
     for mod in pkgutil.walk_packages(archivey.__path__, "archivey."):
         try:
             importlib.import_module(mod.name)
-        except Exception:  # noqa: BLE001, S112 - optional dependency missing
+        except Exception:  # noqa: BLE001 - an optional dependency is missing
             continue
     try:
         from archivey.internal import config as internal_config
@@ -101,54 +124,72 @@ def _install_probes() -> list[str]:
         def exceeds(declared: int, limits: DecoderLimits) -> bool:
             if declared > PROBE.decoder_memory_peak:
                 PROBE.decoder_memory_peak = declared
+                # The LZMA Alone codec branches on this directly, without going
+                # through ``check_decoder_memory``, so it has no ``what``.
+                PROBE.decoder_memory_what = (
+                    PROBE.pending_what or "LZMA Alone dictionary size"
+                )
             return original_exceeds(declared, limits)
-
-        # ``check_decoder_memory`` calls it through its module's global; the codecs
-        # that branch on it imported the name, so every binding is replaced.
-        for name, module in list(sys.modules.items()):
-            if name.startswith("archivey") and (
-                getattr(module, "exceeds_decoder_memory", None) is original_exceeds
-            ):
-                module.exceeds_decoder_memory = exceeds  # type: ignore[attr-defined]
 
         original_check = internal_config.check_decoder_memory
 
-        def check(declared: int, **kwargs: object) -> None:
-            if declared >= PROBE.decoder_memory_peak:
-                PROBE.decoder_memory_what = str(kwargs.get("what", ""))
-            original_check(declared, **kwargs)  # type: ignore[arg-type]
+        def check(declared: int, **kwargs: Any) -> None:
+            PROBE.pending_what = str(kwargs.get("what", ""))
+            try:
+                original_check(declared, **kwargs)
+            finally:
+                PROBE.pending_what = ""
 
+        # ``check_decoder_memory`` calls ``exceeds_decoder_memory`` through its
+        # module's global; the codecs imported both names, so every binding is
+        # replaced.
         for name, module in list(sys.modules.items()):
-            if name.startswith("archivey") and (
-                getattr(module, "check_decoder_memory", None) is original_check
-            ):
-                module.check_decoder_memory = check  # type: ignore[attr-defined]
+            if not name.startswith("archivey"):
+                continue
+            if getattr(module, "exceeds_decoder_memory", None) is original_exceeds:
+                setattr(module, "exceeds_decoder_memory", exceeds)
+            if getattr(module, "check_decoder_memory", None) is original_check:
+                setattr(module, "check_decoder_memory", check)
 
         budget_cls = internal_config.KeyDerivationBudget
         original_spend = budget_cls.spend
 
-        def spend(self: object, rounds: int, *, what: str) -> None:
-            original_spend(self, rounds, what=what)  # type: ignore[arg-type]
+        def spend(self: Any, rounds: int, *, what: str) -> None:
+            original_spend(self, rounds, what=what)
             PROBE.kdf_rounds += rounds
 
-        budget_cls.spend = spend  # type: ignore[method-assign]
+        setattr(budget_cls, "spend", spend)
     except Exception:  # noqa: BLE001 - a probe that cannot install is only reported
-        failed.append("decoder_memory/kdf")
+        failed.append("decoder_memory/kdf_rounds")
     try:
         from archivey.internal.spool import SpoolBudget
 
         original_copy = SpoolBudget.copy
 
-        def copy(self: SpoolBudget, src: object, out: object) -> None:
+        def copy(self: Any, src: Any, out: Any) -> None:
             try:
-                original_copy(self, src, out)  # type: ignore[arg-type]
+                original_copy(self, src, out)
             finally:
                 PROBE.spool_bytes = max(PROBE.spool_bytes, self._written)
 
-        SpoolBudget.copy = copy  # type: ignore[method-assign]
+        setattr(SpoolBudget, "copy", copy)
     except Exception:  # noqa: BLE001
-        failed.append("spool")
+        failed.append("spool_bytes")
     return failed
+
+
+class _WarningCapture(logging.Handler):
+    """Keep archivey's WARNING records for the archive being scanned.
+
+    Most of them repeat a diagnostic or a failed result, which the CSV already counts,
+    but two do not: a dry-run scratch directory that could not be removed, and the
+    once-per-process notice that gzip falls back to the stdlib decoder because no
+    rapidgzip child can start, which changes what ``seconds`` means for every gzip row.
+    So each one goes to its archive's log rather than being dropped.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        PROBE.warnings.append(record.getMessage())
 
 
 # --- Scanning ----------------------------------------------------------------------
@@ -179,9 +220,9 @@ _LIMITS: tuple[tuple[str, str, float | None], ...] = (
         "max_key_derivation_rounds",
         DecoderLimits().max_key_derivation_rounds,
     ),
-    ("spool_bytes", "spool_max_bytes", SpoolLimits().max_bytes),
+    ("spool_bytes", "spool_limits.max_bytes", SpoolLimits().max_bytes),
 )
-# A value past this share of its default gets a ``near:`` flag.
+# A value past this share of its default, and not over it, gets a ``near:`` flag.
 _NEAR = 0.5
 # Diagnostics too common in ordinary archives to flag on their own.
 _ROUTINE_DIAGNOSTICS = frozenset(
@@ -199,7 +240,11 @@ COLUMNS = (
 
 @dataclass
 class _Row:
-    values: dict[str, object] = field(default_factory=dict)
+    path: str
+    file_size: int | None = None
+    # The text columns of the CSV, and the numeric ones below, by column name.
+    text: dict[str, str] = field(default_factory=dict)
+    numbers: dict[str, float] = field(default_factory=dict)
     diagnostics: Counter[str] = field(default_factory=Counter)
     flags: list[str] = field(default_factory=list)
     log: list[str] = field(default_factory=list)
@@ -209,11 +254,11 @@ class _Row:
             self.flags.append(name)
 
     def failure(self, stage: str, exc: BaseException) -> None:
-        """Record an exception that ended ``stage`` (detect, open or extract)."""
+        """Record an exception that ended ``stage`` (detect, open, extract or scan)."""
         bug = not isinstance(exc, ArchiveyError)
         label = f"BUG:{type(exc).__name__}" if bug else type(exc).__name__
-        self.values["open" if stage != "extract" else "extract"] = label
-        self.values.setdefault("error", str(exc)[:200])
+        self.text["extract" if stage == "extract" else "open"] = label
+        self.text.setdefault("error", str(exc)[:200])
         self.log.append(f"{stage}: {type(exc).__name__}: {exc}")
         if bug:
             self.flag("bug")
@@ -222,6 +267,16 @@ class _Row:
             self.flag("needs_password")
         else:
             self.flag(f"{stage}_error")
+
+    def csv_row(self) -> dict[str, object]:
+        out: dict[str, object] = {"path": self.path, "file_size": self.file_size}
+        out.update(self.text)
+        out.update(self.numbers)
+        out["flags"] = " ".join(self.flags)
+        out["diagnostics"] = " ".join(
+            f"{code}={n}" for code, n in sorted(self.diagnostics.items())
+        )
+        return out
 
 
 def _format_name(fmt: archivey.ArchiveFormat) -> str:
@@ -239,72 +294,85 @@ def _ratio(out: int, compressed: int | None) -> float | None:
 def scan_one(
     path: Path, config: ArchiveyConfig, password: PasswordInput = None
 ) -> _Row | None:
-    """Scan one file; ``None`` when it is not an archive."""
-    row = _Row()
-    v = row.values
-    v["path"] = str(path)
-    v["file_size"] = path.stat().st_size
+    """Scan one file; ``None`` when it is not an archive.
+
+    Every exit that returns a row goes through ``_finish``, so the flags the scan
+    found reach the CSV whichever stage stopped it.
+    """
+    row = _Row(path=str(path), file_size=path.stat().st_size)
+    PROBE.reset()
     try:
         info = archivey.detect_format(path, config=config)
     except FormatDetectionError:
         return None
     except Exception as exc:  # noqa: BLE001 - every failure becomes a row
         row.failure("detect", exc)
-        return row
-    v["format"] = _format_name(info.format)
+        return _finish(row)
+    row.text["format"] = _format_name(info.format)
     if info.payload_offset:
         row.flag("sfx")
     if info.detected_by == "extension":
         row.flag("extension_only")
 
-    PROBE.reset()
     started = time.perf_counter()
     try:
         _open_and_extract(path, config, row, password)
-    finally:
-        seconds = time.perf_counter() - started
-        v["seconds"] = round(seconds, 2)
-        if seconds > _SLOW_SECONDS:
-            row.flag("slow")
-        v["decoder_memory"] = PROBE.decoder_memory_peak or None
-        v["kdf_rounds"] = PROBE.kdf_rounds or None
-        v["spool_bytes"] = PROBE.spool_bytes or None
-        if PROBE.decoder_memory_what:
-            row.log.append(
-                f"largest decoder allocation: {PROBE.decoder_memory_peak} bytes, "
-                f"{PROBE.decoder_memory_what}"
-            )
+    except Exception as exc:  # noqa: BLE001 - e.g. the reader's close() raising
+        row.failure("scan", exc)
+    seconds = time.perf_counter() - started
+    row.numbers["seconds"] = round(seconds, 2)
+    if seconds > _SLOW_SECONDS:
+        row.flag("slow")
+    return _finish(row)
+
+
+def _finish(row: _Row) -> _Row:
+    """Fold the probes into the row and derive the flags from everything recorded."""
+    for column, value in (
+        ("decoder_memory", PROBE.decoder_memory_peak),
+        ("kdf_rounds", PROBE.kdf_rounds),
+        ("spool_bytes", PROBE.spool_bytes),
+    ):
+        if value:
+            row.numbers[column] = value
+    if PROBE.decoder_memory_what:
+        row.log.append(
+            f"largest decoder allocation: {PROBE.decoder_memory_peak} bytes, "
+            f"{PROBE.decoder_memory_what}"
+        )
+    for message in PROBE.warnings:
+        row.log.append(f"warning: {message}")
+        if message.startswith("Could not remove dry-run scratch directory"):
+            row.flag("scratch_left_behind")
     _flag_limits(row)
     for code in sorted(row.diagnostics):
         if code not in _ROUTINE_DIAGNOSTICS:
             row.flag(f"diag:{code}")
-    v["flags"] = " ".join(row.flags)
-    v["diagnostics"] = " ".join(f"{c}={n}" for c, n in sorted(row.diagnostics.items()))
     return row
 
 
 def _open_and_extract(
     path: Path, config: ArchiveyConfig, row: _Row, password: PasswordInput
 ) -> None:
-    v = row.values
     try:
         reader = archivey.open_archive(path, config=config, password=password)
     except Exception as exc:  # noqa: BLE001
         row.failure("open", exc)
         return
     with reader:
-        v["open"] = "ok"
+        row.text["open"] = "ok"
         ai = reader.info
-        v["format"] = _format_name(ai.format)
-        v["version"] = ai.format_version
-        v["solid"] = ai.is_solid or None
-        v["encrypted"] = ai.is_encrypted or None
+        row.text["format"] = _format_name(ai.format)
+        row.text["version"] = ai.format_version or ""
+        row.text["solid"] = "yes" if ai.is_solid else ""
+        row.text["encrypted"] = "yes" if ai.is_encrypted else ""
 
         member_bytes: dict[int, int] = {}  # id(member) -> bytes written
+        total = [0]
 
         def on_progress(p: archivey.ExtractionProgress) -> None:
             member_bytes[id(p.member)] = p.member_bytes_written
-            v["bytes_written"] = p.bytes_written
+            total[0] = p.bytes_written
 
         report = None
         try:
@@ -317,12 +385,13 @@ def _open_and_extract(
                 )
         except Exception as exc:  # noqa: BLE001
             row.failure("extract", exc)
+        row.numbers["bytes_written"] = total[0]
 
         listed = reader.members_report_if_available()
         members = listed.members if listed is not None else ()
         if listed is not None:
-            v["members"] = len(members)
-            v["codecs"] = " ".join(
+            row.numbers["members"] = len(members)
+            row.text["codecs"] = " ".join(
                 sorted(
                     {
                         "+".join(c.algo.value for c in m.compression)
@@ -334,8 +403,10 @@ def _open_and_extract(
             if any(m.type is MemberType.OTHER for m in members):
                 row.flag("device_or_fifo")
         tracker = getattr(reader, "_listing_tracker", None)
-        if tracker is not None:
-            v["metadata_bytes"] = tracker.metadata_bytes
+        if tracker is None:
+            BROKEN_PROBES.add("metadata_bytes")
+        else:
+            row.numbers["metadata_bytes"] = tracker.metadata_bytes
         for code, count in reader.diagnostics.counts.items():
             row.diagnostics[code.value] += count
 
@@ -350,27 +421,31 @@ def _read_report(
     config: ArchiveyConfig,
     row: _Row,
 ) -> None:
-    v = row.values
     statuses = Counter(r.status for r in report.results)
     failed = [r for r in report.results if r.status is ExtractionStatus.FAILED]
     blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
-    v["extract"] = "ok" if not failed and not blocked else "partial"
+    row.text["extract"] = "ok" if not failed and not blocked else "partial"
     if failed:
         row.flag("failed_members")
     if blocked:
         row.flag("blocked_members")
     for r in (failed + blocked)[:_LOGGED_MEMBER_ERRORS]:
         row.log.append(f"{r.status.value} {r.member.name!r}: {r.error}")
-        v.setdefault("error", f"{type(r.error).__name__}: {r.error}"[:200])
+        row.text.setdefault("error", f"{type(r.error).__name__}: {r.error}"[:200])
     if any(isinstance(r.error, EncryptionError) for r in failed):
         row.flag("needs_password")
-    v["entries_written"] = statuses[ExtractionStatus.EXTRACTED]
-    written = int(v.setdefault("bytes_written", 0))  # type: ignore[call-overload]
+    # ``max_entries`` counts what an extraction leaves on disk, and refunds a
+    # superseded entry, so EXTRACTED is the matching count here.
+    row.numbers["entries_written"] = statuses[ExtractionStatus.EXTRACTED]
+    written = int(row.numbers["bytes_written"])
 
     # A clean run writes exactly what the members declare; anything else is worth a
-    # look. Only checked when every file member declares a size.
+    # look. Only checked when every file member declares a size. This relies on the
+    # default ``overwrite=ERROR``: a collision is a FAILED result, which makes the run
+    # "partial" and skips the check. Under ``overwrite="skip"`` a NOT_OVERWRITTEN
+    # member would declare a size and write nothing.
     files = [m for m in members if m.type is MemberType.FILE and m.is_current]
-    if v["extract"] == "ok" and files and all(m.size is not None for m in files):
+    if row.text["extract"] == "ok" and files and all(m.size is not None for m in files):
         declared = sum(m.size or 0 for m in files)
         if declared != written:
             row.flag("size_mismatch")
@@ -379,8 +454,9 @@ def _read_report(
     # ``max_ratio`` only looks at output past ``ratio_activation_threshold``, so the
     # ratio columns follow the same rule and compare with the limit.
     floor = config.extraction_limits.ratio_activation_threshold
-    if written > floor:
-        v["archive_ratio"] = _ratio(written, v.get("file_size"))  # type: ignore[arg-type]
+    archive_ratio = _ratio(written, row.file_size)
+    if written > floor and archive_ratio is not None:
+        row.numbers["archive_ratio"] = archive_ratio
     best: tuple[float, str] | None = None
     for r in report.results:
         out = member_bytes.get(id(r.member), 0)
@@ -388,18 +464,18 @@ def _read_report(
         if ratio is not None and out > floor and (best is None or ratio > best[0]):
             best = (ratio, r.member.name)
     if best is not None:
-        v["max_member_ratio"] = best[0]
+        row.numbers["max_member_ratio"] = best[0]
         row.log.append(f"highest member ratio: {best[0]}:1, {best[1]!r}")
 
 
 def _flag_limits(row: _Row) -> None:
     for column, limit, default in _LIMITS:
-        value = row.values.get(column)
+        value = row.numbers.get(column)
         if value is None or default is None:
             continue
-        if float(value) > default:  # type: ignore[arg-type]
+        if value > default:
             row.flag(f"over:{limit}")
-        elif float(value) > default * _NEAR:  # type: ignore[arg-type]
+        elif value > default * _NEAR:
             row.flag(f"near:{limit}")
 
 
@@ -412,6 +488,14 @@ def _walk(root: Path) -> Iterator[Path]:
             yield path
 
 
+def _passwords(args: argparse.Namespace) -> list[str]:
+    passwords = list(args.password)
+    if args.password_file is not None:
+        lines = args.password_file.read_text(encoding="utf-8").splitlines()
+        passwords += [line for line in lines if line]
+    return passwords
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("root", type=Path, help="file or directory to scan")
@@ -420,7 +504,15 @@ def main(argv: list[str] | None = None) -> int:
         "--password",
         action="append",
         default=[],
-        help="a password to try on encrypted archives; repeat for several",
+        help=(
+            "a password to try on encrypted archives; repeat for several "
+            "(visible in process lists: prefer --password-file)"
+        ),
+    )
+    parser.add_argument(
+        "--password-file",
+        type=Path,
+        help="a file of passwords to try, one per line",
     )
     parser.add_argument(
         "--default-limits",
@@ -428,11 +520,13 @@ def main(argv: list[str] | None = None) -> int:
         help="scan under the default limits instead of turning the counting ones off",
     )
     args = parser.parse_args(argv)
-    # Every warning archivey logs is also a diagnostic, which the CSV counts.
-    logging.getLogger("archivey").setLevel(logging.ERROR)
+    passwords = _passwords(args) or None
+
+    archivey_logger = logging.getLogger("archivey")
+    archivey_logger.addHandler(_WarningCapture(logging.WARNING))
+    # The capture keeps every record for the log; stderr is for the progress lines.
+    archivey_logger.propagate = False
     failed_probes = _install_probes()
-    if failed_probes:
-        print(f"warning: probes not installed: {failed_probes}", file=sys.stderr)
     config = _scan_config(args.default_limits)
     log_path = args.output.with_suffix(".log")
 
@@ -443,27 +537,31 @@ def main(argv: list[str] | None = None) -> int:
     ):
         writer = csv.DictWriter(csv_file, fieldnames=COLUMNS)
         writer.writeheader()
-        for path in _walk(args.root):
-            try:
-                row = scan_one(path, config, args.password or None)
-            except OSError as exc:
-                print(f"skipped {path}: {exc}", file=sys.stderr)
-                continue
-            if row is None:
-                continue
-            rows.append(row)
-            writer.writerow(row.values)
-            csv_file.flush()
-            if row.flags:
-                log.write(f"== {path}\nflags: {' '.join(row.flags)}\n")
-                log.writelines(f"  {line}\n" for line in row.log)
-                log.write("\n")
-                log.flush()
-            print(
-                f"{len(rows):>6} {' '.join(row.flags) or 'ok':<40.40} {path}",
-                file=sys.stderr,
-            )
+        try:
+            for path in _walk(args.root):
+                try:
+                    row = scan_one(path, config, passwords)
+                except OSError as exc:
+                    print(f"skipped {path}: {exc}", file=sys.stderr)
+                    continue
+                if row is None:
+                    continue
+                rows.append(row)
+                writer.writerow(row.csv_row())
+                csv_file.flush()
+                if row.flags:
+                    log.write(f"== {path}\nflags: {' '.join(row.flags)}\n")
+                    log.writelines(f"  {line}\n" for line in row.log)
+                    log.write("\n")
+                    log.flush()
+                status = " ".join(row.flags) or "ok"
+                print(f"{len(rows):>6} {status:<40.40} {path}", file=sys.stderr)
+        except KeyboardInterrupt:
+            print("\ninterrupted; summarizing what was scanned", file=sys.stderr)
         summary = _summary(rows)
+        broken = sorted({*failed_probes, *BROKEN_PROBES})
+        if broken:
+            summary += f"warning: probes not installed: {', '.join(broken)}\n"
         log.write(summary)
     print(f"\n{summary}\nwrote {args.output} and {log_path}", file=sys.stderr)
     return 0
@@ -481,26 +579,28 @@ def _percentile(values: list[float], share: float) -> float:
 
 
 def _summary(rows: list[_Row]) -> str:
-    values = [r.values for r in rows]
     lines = [f"== summary: {len(rows)} archives"]
-    lines += _counts("formats", Counter(str(v.get("format")) for v in values))
-    lines += _counts("open", Counter(str(v.get("open")) for v in values))
-    lines += _counts("extract", Counter(str(v.get("extract", "-")) for v in values))
+    lines += _counts("formats", Counter(r.text.get("format", "?") for r in rows))
+    lines += _counts("open", Counter(r.text.get("open", "?") for r in rows))
+    lines += _counts("extract", Counter(r.text.get("extract", "-") for r in rows))
     lines += _counts("flags (archives)", Counter(f for r in rows for f in r.flags))
     lines += _counts(
         "diagnostics (archives)", Counter(c for r in rows for c in r.diagnostics)
     )
+    # ``near`` here is the ``near:`` flag's definition: past half, not over.
     lines.append(
         f"{'limit':<26}{'default':>14}{'max':>14}{'p99':>14}{'p50':>12}"
-        f"{'>half':>7}{'over':>6}"
+        f"{'near':>7}{'over':>6}"
     )
-    for column, limit, default in _LIMITS:
-        seen = [float(v[column]) for v in values if v.get(column) is not None]  # type: ignore[arg-type]
+    for column, _limit, default in _LIMITS:
+        seen = [r.numbers[column] for r in rows if column in r.numbers]
         if not seen:
             lines.append(f"{column:<26}{default!s:>14}  no values")
             continue
-        over = sum(1 for s in seen if default is not None and s > default)
-        near = sum(1 for s in seen if default is not None and s > default * _NEAR)
+        over = near = 0
+        if default is not None:
+            over = sum(1 for s in seen if s > default)
+            near = sum(1 for s in seen if default * _NEAR < s <= default)
         lines.append(
             f"{column:<26}{default!s:>14}{max(seen):>14.0f}"
             f"{_percentile(seen, 0.99):>14.0f}{_percentile(seen, 0.5):>12.0f}"
