@@ -329,8 +329,24 @@ table to almost nothing: a 315-byte 7z declaring 1 000 000 directory entries cos
 858 MB and 16 s at open under the default `max_members` (about 860 bytes and 16 µs per
 member, the fixed cost of a member object, so names add little and `max_metadata_bytes`
 does not see it). The cost is linear in the count the caller allowed, so lowering
-`max_members` is the mitigation for a caller opening untrusted 7z, RAR or ISO. Whether
-the default of 1 048 576 should stay has not been ruled on. ZIP builds the
+`max_members` is the mitigation for a caller opening untrusted 7z, RAR or ISO.
+
+The 1 048 576 default stays (davitf, 2026-10-01), for these reasons:
+
+- The cost per member is the same an honest archive of that many members pays, so a
+  crafted header buys no amplification per member. Header compression makes the input
+  small, not each member dearer.
+- `max_members` bounds it linearly and is the caller's to set: 262 144 caps it near
+  250 MB.
+- A lower default refuses real large archives for every caller, to protect only those
+  opening untrusted input with default limits.
+- A ratio check (declared entries per compressed header byte) needs a tuned threshold,
+  and an honest header of similar names compresses well too, so it would refuse real
+  archives.
+
+Revisit this if a stricter safety-first configuration mode lands (it could carry a
+lower default), if member records become lazy (removing most of the fixed cost), or if
+callers are found to open untrusted 7z with default limits. ZIP builds the
 whole central directory at open through stdlib `zipfile` (ADR
 [0006](decisions/0006-stdlib-zipfile.md)), so its memory at open is linear in the
 central directory and `max_members` binds at `members()`. `max_metadata_bytes` counts

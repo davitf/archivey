@@ -133,13 +133,22 @@ def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
     )
 
 
-def check_universal(member: ArchiveMember, dest: Path) -> None:
+def check_universal(
+    member: ArchiveMember,
+    dest: Path,
+    *,
+    link_target_on_disk: Callable[[str], str] | None = None,
+) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
     ``dest`` is the extraction root. Raises :class:`FilterRejectionError` on the first
     violation (an escaping path, an escaping symlink, a special file); returns ``None``
     when the member is safe to extract. Applied to the member about to be written, after
     the policy transform and any caller filter, regardless of the active policy.
+
+    ``link_target_on_disk`` is given by a dry run only. It maps a link target to the
+    one the link is created with in the scratch tree, so an absolute target is checked
+    where it points there.
 
     Everything here makes the *write itself* dangerous or impossible — escaping the
     destination, a NUL the OS truncates on, a device node. A name that is merely
@@ -205,7 +214,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # Link-target escape at planning time (the authoritative symlink check is re-run
     # post-creation in the coordinator). A symlink target is relative to the link's own
     # directory; a hardlink target is archive-root relative. An absolute target makes the
-    # join absolute, so it resolves outside dest and is caught here too.
+    # join absolute, so it passes only when it names a path inside dest.
     if member.link_target is not None:
         target = member.link_target
         if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
@@ -226,9 +235,11 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
                     member_name=name,
                     link_target=target,
                 ) from exc
+        if link_target_on_disk is not None:
+            target = link_target_on_disk(target)
         if member.type == MemberType.SYMLINK:
             link_parent = (dest_root / name).parent
-            resolved_target = (link_parent / member.link_target).resolve()
+            resolved_target = (link_parent / target).resolve()
             if not _within(resolved_target, dest_root):
                 raise FilterRejectionError(
                     "Symlink target escapes destination",
@@ -236,7 +247,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
                     link_target=member.link_target,
                 )
         elif member.type == MemberType.HARDLINK:
-            resolved_target = (dest_root / member.link_target).resolve()
+            resolved_target = (dest_root / target).resolve()
             if not _within(resolved_target, dest_root):
                 raise FilterRejectionError(
                     "Hardlink target escapes destination",
