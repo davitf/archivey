@@ -8,11 +8,18 @@ be concatenated freely. Each member carries its own sizes in a 20-byte trailer (
 "distributed index"), enabling random access without a separate index.
 
   Per member:
-    Header  (6 bytes):  magic b"LZIP"(4) + version(1, must be 1) +
+    Header  (6 bytes):  magic b"LZIP"(4) + version(1; only 1 is read, see below) +
                         coded_dict(1; dict_size = 1 << (coded_dict & 0x1F), exp 12-29)
     LZMA1 data:         raw LZMA1 with an end-of-stream marker, fixed lc=3,lp=0,pb=2.
                         The 13-byte LZMA_ALONE header is absent and synthesised here.
     Trailer (20 bytes): crc32(4 LE) + data_size(8 LE) + member_size(8 LE)
+
+Version 0 (lzip before 1.0, with a 12-byte trailer and no member size) and any later
+version are refused with :class:`UnsupportedFeatureError` by every path that reads a
+header: the forward decoder, and the backward index walk at each member start and at
+the bytes after the last member it finds. A full ``LZIP`` magic always starts a member,
+so a version-0 member after a version-1 one is refused too, not read past as trailing
+data, as ``lzip`` itself reports "Version 0 member format not supported" for it.
 
 Spec: https://www.nongnu.org/lzip/manual/lzip_manual.html#File-format
 """
@@ -29,7 +36,11 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import BinaryIO
 
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import (
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.config import DecoderLimits, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
@@ -47,6 +58,7 @@ from archivey.internal.streams.decompressor_stream import (
 
 _MAGIC = b"LZIP"
 _HEADER_SIZE = 6
+_VERSION = 1
 _TRAILER_SIZE = 20
 # The trailer's last field, the member size.
 _SIZE_FIELD = 8
@@ -55,6 +67,15 @@ _SIZE_FIELD = 8
 _PROPS_BYTE = bytes([0x5D])
 # "uncompressed size unknown" sentinel — relies on the in-stream EOS marker.
 _UNKNOWN_SIZE = b"\xff" * 8
+
+
+def _check_version(header: bytes, offset: int) -> None:
+    """Refuse a member header, magic already matched, whose version is not 1."""
+    if len(header) > 4 and header[4] != _VERSION:
+        raise UnsupportedFeatureError(
+            f"Unsupported lzip version {header[4]} in the member at offset {offset}: "
+            f"only version {_VERSION} is read"
+        )
 
 
 @dataclass
@@ -74,6 +95,9 @@ def _member_ends_at(
 ) -> bool:
     """Whether a member's trailer ends at ``end``: its size leads back to a header.
 
+    Any version counts, so a member archivey does not read is still found as a member
+    and refused by the walk (:func:`_check_version`), not taken for trailing data.
+
     ``window`` holds the source's bytes from ``base``; bytes it covers are not read
     again.
     """
@@ -90,12 +114,12 @@ def _member_ends_at(
     start = end - member_size
     if member_size < _HEADER_SIZE + _TRAILER_SIZE or start < stop_at:
         return False
-    if base <= start and start + 5 <= base + len(window):
-        header = window[start - base : start - base + 5]
+    if base <= start and start + len(_MAGIC) <= base + len(window):
+        header = window[start - base : start - base + len(_MAGIC)]
     else:
         stream.seek(start)
-        header = stream.read(5)
-    return header == _MAGIC + b"\x01"
+        header = stream.read(len(_MAGIC))
+    return header == _MAGIC
 
 
 def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
@@ -144,9 +168,21 @@ def _iter_trailers_backwards(
     Reads only trailers and the 4-byte magic at each computed member start — no
     decompression. The magic check catches a corrupt ``member_size`` before it cascades
     into wrong offsets for every earlier member. Data after the last member is looked
-    past (:func:`_data_end`).
+    past (:func:`_data_end`), unless it starts with the header of a member in another
+    version: that is refused, as the forward decoder refuses it. A member whose version
+    is not 1 raises :class:`UnsupportedFeatureError`, checked first at ``stop_at`` (a
+    version-0 trailer has no member size, so the walk could not reach it).
     """
+    stream.seek(stop_at)
+    header = stream.read(_HEADER_SIZE)
+    if header[:4] == _MAGIC:
+        _check_version(header, stop_at)
     compressed_end = _data_end(stream, file_size, stop_at)
+    if compressed_end < file_size:
+        stream.seek(compressed_end)
+        header = stream.read(_HEADER_SIZE)
+        if header[:4] == _MAGIC:
+            _check_version(header, compressed_end)
     while compressed_end > stop_at:
         if compressed_end < _TRAILER_SIZE:
             raise CorruptionError("Lzip file is too small to contain a valid trailer")
@@ -165,12 +201,13 @@ def _iter_trailers_backwards(
                 f"Lzip member_size {member_size} exceeds remaining file size"
             )
         stream.seek(compressed_start)
-        magic = stream.read(4)
-        if magic != _MAGIC:
+        header = stream.read(_HEADER_SIZE)
+        if header[:4] != _MAGIC:
             raise CorruptionError(
                 f"Lzip magic not found at expected member start {compressed_start} "
-                f"(got {magic!r}); member_size in trailer may be corrupt"
+                f"(got {header[:4]!r}); member_size in trailer may be corrupt"
             )
+        _check_version(header, compressed_start)
         yield compressed_start, int(data_size), int(member_size), int(crc32)
         compressed_end = compressed_start
 
@@ -238,8 +275,10 @@ class _LzipState:
     _IN_MEMBER = 1
     _NEED_TRAILER = 2
 
-    def __init__(self, limits: DecoderLimits) -> None:
+    def __init__(self, limits: DecoderLimits, offset: int = 0) -> None:
         self._limits = limits
+        # Source offset of the current member's header, for error messages.
+        self._comp_offset = offset
         self._state = self._NEED_HEADER
         self._buf = bytearray()
         self._dec: lzma.LZMADecompressor | None = None
@@ -380,8 +419,7 @@ class _LzipState:
                     f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
                 )
             return False  # lzip spec §7: trailing data after members is allowed
-        if header[4] != 1:
-            raise CorruptionError(f"Unsupported lzip version: {header[4]}")
+        _check_version(header, self._comp_offset)
         exp = header[5] & 0x1F
         if not (12 <= exp <= 29):
             raise CorruptionError(
@@ -422,6 +460,7 @@ class _LzipState:
                 f"actual {actual_member_size}"
             )
         self._members_seen += 1
+        self._comp_offset += int(member_size)
         return (int(data_size), int(member_size))
 
 
@@ -446,7 +485,7 @@ class LzipDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(self._limits),
+            _LzipState(self._limits, point.compressed_offset),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=self._collector,
@@ -518,7 +557,7 @@ def LzipDecompressorStream(
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(decoder_limits),
+            _LzipState(decoder_limits, point.compressed_offset),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=collector,

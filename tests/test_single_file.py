@@ -34,6 +34,7 @@ from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
@@ -360,6 +361,17 @@ def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
         member = ar.members()[0]
         assert member.size == len(payload)
         assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
+
+
+def test_lzip_version_0_is_unsupported_at_open(tmp_path: Path) -> None:
+    """A version-0 ``.lz`` is a recognized lzip file archivey cannot read, not damage."""
+    member = bytearray(make_lzip_member(b"old format"))
+    member[4] = 0
+    path = tmp_path / "old.lz"
+    path.write_bytes(bytes(member))
+    with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
+        with open_archive(path) as ar:
+            ar.read(ar.members()[0])
 
 
 def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:

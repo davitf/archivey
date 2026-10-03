@@ -155,7 +155,12 @@ member it checks the version (1) and the dictionary exponent (12 to 29), synthes
 LZMA Alone header with lzip's fixed properties, and feeds the member to liblzma. At the
 trailer it checks the CRC-32, the data size and the member size against what it decoded.
 After the first member, bytes that do not start with `LZIP` end the data, as the lzip
-manual allows. A source of 1 to 5 bytes with no whole header is `TruncatedError` when it
+manual allows. A version other than 1, version 0 included, raises
+`UnsupportedFeatureError` at any member, the first or a later one: a full `LZIP` magic
+starts a member, and `lzip` too reports a later version-0 member as unsupported rather
+than ignoring it. The trailer walk checks the same byte at each member start, at the
+start of its range, and at the bytes after the last member it finds, so a seek cannot
+skip a member the forward read refuses. A source of 1 to 5 bytes with no whole header is `TruncatedError` when it
 is empty or a prefix of the magic, and `CorruptionError` otherwise.
 
 Seek points are the member starts, from the trailer walk. A backward seek resumes at the
