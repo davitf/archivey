@@ -148,22 +148,24 @@ The three legs, which `--all-configs` runs in order:
 
 ```bash
 # 1. Current versions, all extras — the everyday leg.
-uv sync --group dev --extra all && uv run --no-sync pytest
+uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 
 # 2. Minimum supported versions — every declared dependency pinned to its floor
 #    (`pycdlib 1.16`, `zstandard 0.23`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
-uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest
+uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
 
 # 3. Zero-dependency core — no extras, no dev group; proves tests needing an optional
 #    library skip/xfail cleanly (see the `requires` helper in tests/conftest.py) and the
 #    core imports nothing third-party.
 uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
-  && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov pytest tests/ -q
+  && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov --with pytest-xdist \
+     pytest tests/ -q -n auto
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
-green.
+green. `-n auto` (pytest-xdist) runs the suite on every core; it is not in `addopts`, so
+a plain `uv run pytest tests/test_zip.py` stays one process.
 
 > **`--resolution lowest-direct` rewrites `uv.lock`.** Leg 2 does not merely install
 > different versions — it *persists* them, so every later `uv sync --frozen` /
@@ -209,7 +211,9 @@ security fixes one line each, other bug fixes summarized in one line).
   to mypy, and prose there makes the file unparseable in the consumer's own run.
   `tests/test_no_stray_type_comments.py` is what keeps that true.
 - **Coverage is reported, never gated.** `pytest-cov` produces a report you can eyeball;
-  there is no `fail_under` threshold. Aim for meaningful coverage through the tests
+  there is no `fail_under` threshold. CI measures it on one leg only (ubuntu, py3.14, the
+  `coverage: true` row in `ci.yml`); the others pass `--no-cov`, because tracing doubles
+  the run on 3.11. Aim for meaningful coverage through the tests
   below, not a number.
 - **Zero-dependency core.** The core (incl. native 7z read + RAR metadata) imports no
   third-party packages. Everything else is an optional extra (see

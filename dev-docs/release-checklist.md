@@ -159,14 +159,15 @@ particular diff could not reach are exactly the ones nobody has run lately.
 
 ```bash
 # 1. Current [all]
-uv sync --group dev --extra all && uv run --no-sync pytest
+uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 
 # 2. Lowest direct
-uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest
+uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
 
 # 3. Core-only
 uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
-  && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov pytest tests/ -q
+  && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov \
+     --with pytest-xdist pytest tests/ -q -n auto
 
 # Restore everyday env
 uv sync --group dev --extra all
