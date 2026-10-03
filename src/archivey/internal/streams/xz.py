@@ -273,6 +273,11 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     :data:`TRAILING_DATA_CANDIDATES` occurrences of the magic; the walk then checks
     every index and header as usual. The forward decoder reports the appended bytes
     when a read reaches them.
+
+    A footer followed (after any stream padding) by a stream header's magic is not the
+    last one: the forward decoder starts a stream there, so the later stream's own
+    footer is damaged. That is corruption, not appended data, and is raised so the
+    last stream is never dropped from the size and the seek range.
     """
     if _ends_with_footer(stream, file_size, stop_at):
         return file_size
@@ -291,6 +296,16 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
             except CorruptionError:
                 pass
             else:
+                after = at + 2
+                # Same padding rule as _XzState._process (_NEED_HEADER); the two
+                # must agree on where the next header starts.
+                while window[after : after + 4] == b"\x00\x00\x00\x00":
+                    after += 4
+                if window[after : after + 6] == _XZ_STREAM_MAGIC:
+                    raise CorruptionError(
+                        f"XZ stream starting at offset {start + after} has no valid "
+                        "footer at the end of the file"
+                    )
                 return end
         at -= 1
         if at < 0:
@@ -650,7 +665,9 @@ class _XzState:
             if self._state == self._NEED_HEADER:
                 # XZ spec §2.2 "Stream Padding": concatenated streams may be separated by
                 # null bytes whose length is a multiple of four (to keep streams 4-byte
-                # aligned). Strip all leading 4-byte runs in one delete.
+                # aligned). Strip all leading 4-byte runs in one delete. _data_end
+                # applies the same rule when it checks for a stream after a footer;
+                # the two must agree.
                 padding = 0
                 while (
                     padding + 4 <= len(self._buf)

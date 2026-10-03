@@ -83,11 +83,40 @@ def unar_refusal() -> str | None:
     return None
 
 
-def has_binary(name: str) -> bool:
-    """Whether ``name`` is on ``PATH``; for ``unar``, whether archivey will use it."""
+def unrar_refusal() -> str | None:
+    """Why archivey has no RARLAB data program, or ``None`` when it has one.
+
+    ``find_rarlab_unrar`` accepts RARLAB ``unrar``, or ``rar`` 6.0+ when there is no
+    usable ``unrar``, and refuses a lookalike or a release below 6.0. A test that reads
+    RAR data with ``rar_decompressor="unrar"`` needs exactly what it accepts.
+    """
+    from archivey.exceptions import PackageNotInstalledError
+    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+    try:
+        find_rarlab_unrar()
+    except PackageNotInstalledError as exc:
+        return str(exc)
+    return None
+
+
+def binary_refusal(name: str) -> str | None:
+    """Why a test cannot use ``name``, or ``None`` when it can.
+
+    For ``unar`` and ``unrar`` this is archivey's own policy (:func:`unar_refusal`,
+    :func:`unrar_refusal`), so a binary on ``PATH`` that archivey refuses reads as
+    missing. Any other name only has to be on ``PATH``.
+    """
     if name == "unar":
-        return unar_refusal() is None
-    return shutil.which(name) is not None
+        return unar_refusal()
+    if name == "unrar":
+        return unrar_refusal()
+    return None if shutil.which(name) else f"{name} is not on PATH"
+
+
+def has_binary(name: str) -> bool:
+    """Whether a test can use ``name``: :func:`binary_refusal` has no objection."""
+    return binary_refusal(name) is None
 
 
 def requires_binary(*names: str) -> pytest.MarkDecorator:

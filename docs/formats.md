@@ -470,6 +470,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   data, not trailing bytes. `.xz` and `.lz` keep their size and seeks when the
   appended bytes are within 1 MiB, unless they are crafted to hold thousands of fake
   end markers; further out the index is not found and the size reads as unknown.
+  A damaged end marker on the last of several `.xz` streams or `.lz` members is
+  corruption, not appended bytes: the size reads as unknown, and the read or seek
+  that reaches the damage raises `CorruptionError`.
   Brotli has no end marker the library reports, so archivey finds the end by decoding
   the source again, which needs a seekable source: from a pipe, bytes after a Brotli
   stream raise `CorruptionError`. The check applies to a bare compressed file and to a
