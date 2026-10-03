@@ -1404,6 +1404,8 @@ class ZipReader(BaseArchiveReader):
                 expected_size=size,
                 verify_member=member,
             )
+        # Listed members always carry a size; only a caller's own copy rebuilt with
+        # ``replace(size=None, hashes={})`` gets here, and is then not verified.
         return self._wrap_member_stream(decoded, member.name, size=size)
 
     def _open_codec_member(
@@ -1615,6 +1617,7 @@ class ZipReader(BaseArchiveReader):
             return self._verified_member_stream(decoded, member)
 
         size = member.size
+        hashes = member.hashes
 
         def decrypt(password: bytes) -> BinaryIO:
             body = stage(password)
@@ -1642,7 +1645,7 @@ class ZipReader(BaseArchiveReader):
             return _UnconfirmedZipCryptoStream(
                 VerifyingStream(
                     decoded,
-                    member.hashes,
+                    hashes,
                     expected_size=size,
                     collector=self._diagnostics_collector,
                     member=member,
@@ -1955,6 +1958,8 @@ class ZipReader(BaseArchiveReader):
         member: its HMAC survives seeks, so only a read reaching the end counts.
         """
 
+        # Runs at close, not open: a ZIP member's name and id are fixed at listing,
+        # so reading them here gives the open-time values.
         def report(reason: str) -> None:
             missed = (
                 "gave up its integrity check by seeking"
