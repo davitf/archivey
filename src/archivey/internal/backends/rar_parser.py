@@ -470,6 +470,17 @@ class RarArchive:
     #: ``truncated`` already reports the cut, nor for RAR 1.5-4, whose writers
     #: may omit the block.
     end_block_missing_volumes: list[int] = field(default_factory=list)
+    #: 0-based indices of the volumes whose end-of-archive block failed its header
+    #: CRC. The block sits after the last member, so the walk keeps the members
+    #: before it and stops there; the reader reports the damage as
+    #: ``ARCHIVE_EOF_MARKER_MISSING`` after the members, and a strict policy refuses.
+    #: The block's flags are not data once its CRC fails, so its next-volume flag is
+    #: not read: ``needs_next_volume`` is then set only by a member header (CRC
+    #: intact) whose data continues, as for a volume with no end block. Both
+    #: formats. Never set where the header password is unproven: there a CRC
+    #: mismatch reads the same as a wrong key, so the walk raises the wrong-password
+    #: ``EncryptionError`` instead.
+    end_block_damaged_volumes: list[int] = field(default_factory=list)
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
@@ -616,6 +627,7 @@ def parse_rar_volumes(
             merged.truncated = merged.truncated or part.truncated
             merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
+            merged.end_block_damaged_volumes.extend(part.end_block_damaged_volumes)
             for member in part.members:
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
@@ -880,6 +892,16 @@ def _encrypted_header_cut(start: int) -> str:
         f"RAR archive is truncated: the file ends inside the encrypted header "
         f"that starts at byte {start}"
     )
+
+
+class _RarEndBlockCrcError(CorruptionError):
+    """A RAR5 end-of-archive block failed its header CRC; private signal for the walk.
+
+    :func:`_read_rar5_block` raises this in place of the generic CRC error when the
+    block's type field reads as the end block. The walk keeps the members before
+    it when the header password is proven or headers are plain, and otherwise
+    treats it as any other CRC mismatch. The flags past the type are not read.
+    """
 
 
 class _RarHeaderCutError(TruncatedError):
@@ -1625,6 +1647,7 @@ def _parse_rar3(
     members: list[RarMemberInfo] = []
     needs_next_volume = False
     truncated: str | None = None
+    end_block_damaged = False
     # Set once an encrypted header decrypted with a matching CRC16, in this volume or
     # an earlier one of the set (the caller passes that in). The walk treats a
     # mismatch as proof of a wrong password, so a match proves the password the same
@@ -1761,7 +1784,11 @@ def _parse_rar3(
                     raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
-                raise CorruptionError("RAR3 ENDARC header CRC mismatch")
+                # Damage after the last member: keep the listing, and do not read
+                # the flags, the next-volume flag among them. unrar lists such an
+                # archive and tests every member OK, then reports one error.
+                end_block_damaged = True
+                break
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
             break
 
@@ -1850,6 +1877,7 @@ def _parse_rar3(
         needs_next_volume=needs_next_volume,
         old_volume_naming=old_volume_naming,
         truncated=truncated,
+        end_block_damaged_volumes=[volume_index] if end_block_damaged else [],
         password_proven=password_proven,
     )
 
@@ -2472,6 +2500,7 @@ def _parse_rar5(
     damaged_service_headers_omitted = 0
     truncated: str | None = None
     end_block_seen = False
+    end_block_damaged = False
 
     while True:
         header_fd: _Readable = source
@@ -2527,7 +2556,15 @@ def _parse_rar5(
                     raise wrong_password_error(
                         "Failed to decrypt RAR5 headers (wrong password?)"
                     ) from exc
-            elif isinstance(exc, _RarHeaderCutError):
+            if isinstance(exc, _RarEndBlockCrcError):
+                # As in the RAR3 walk: damage after the last member keeps the
+                # listing, and the block's next-volume flag is not read.
+                end_block_seen = True
+                end_block_damaged = True
+                break
+            if isinstance(exc, _RarHeaderCutError) and not isinstance(
+                header_fd, _HeaderDecryptStream
+            ):
                 # A plain header the file holds only part of, its CRC and size
                 # vint included: unrar lists the members before it and reports an
                 # unexpected end of archive.
@@ -2693,6 +2730,7 @@ def _parse_rar5(
         end_block_missing_volumes=(
             [volume_index] if not end_block_seen and truncated is None else []
         ),
+        end_block_damaged_volumes=[volume_index] if end_block_damaged else [],
     )
 
 
@@ -2744,6 +2782,14 @@ def _read_rar5_block(
     data_offset = fd.tell()
 
     if header_crc != _crc32(memoryview(hdata)[4:]):
+        try:
+            damaged_type, _ = load_vint(hdata, pos)
+        except CorruptionError:
+            damaged_type = None
+        if damaged_type == _RAR5_ENDARC:
+            raise _RarEndBlockCrcError(
+                f"RAR5 end-of-archive header CRC mismatch at offset {header_offset}"
+            )
         raise CorruptionError(f"RAR5 header CRC mismatch at offset {header_offset}")
 
     block_type, pos = load_vint(hdata, pos)
