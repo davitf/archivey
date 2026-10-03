@@ -505,9 +505,11 @@ def _scan_for_sfx_payload(
     means ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback and no
     cap: earliest *valid* match, not earliest needle. A CRC-valid decoy in the stub
     that ends early (``VALID_SHORT``) must not beat the real payload appended after
-    it. Holding a short hit, the scan keeps reading to ``scan_limit``: a decoy in the
-    stub ends before the real payload starts, so nothing about the short hit bounds
-    where that payload can be. That is the cost of a short hit with data after it
+    it, so a later ``VALID`` hit of the *same format* displaces a held short hit; a
+    ``VALID`` hit of another format ends the scan with the short hit, so the
+    exact-end preference never reorders formats. Holding a short hit, the scan keeps
+    reading to ``scan_limit``: a decoy in the stub ends before the real payload
+    starts, so nothing about the short hit bounds where that payload can be. That is the cost of a short hit with data after it
     (an Authenticode signature, say): up to the whole window, as a miss already
     pays. ``PROBABLE`` rather than ``CERTAIN``: an exact
     magic found at a *searched-for* offset is a weaker claim than one found at the
@@ -530,7 +532,11 @@ def _scan_for_sfx_payload(
         entries = [entry for entry in entries if entry.format in validators]
     by_needle = {entry.magic: entry for entry in entries}
     needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
-    selector: HitSelector[FormatInfo] = HitSelector(keep_damaged=False, cap=None)
+    # The selector holds (format, origin); the one FormatInfo is built from the winner,
+    # so a decoy-carpeted window costs no construction per candidate.
+    selector: HitSelector[tuple[ArchiveFormat, int]] = HitSelector(
+        keep_damaged=False, cap=None
+    )
     for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
         entry = by_needle[hit.needle]
         validator = validators.get(entry.format)
@@ -544,15 +550,19 @@ def _scan_for_sfx_payload(
                 else max(0, source_len - hit.candidate_origin)
             )
             outcome = validator(view, remaining)
-        info = FormatInfo(
-            entry.format,
+        if selector.offer(entry.format, (entry.format, hit.candidate_origin), outcome):
+            break
+    chosen, _ = selector.result()
+    result = (
+        None
+        if chosen is None
+        else FormatInfo(
+            chosen[0],
             DetectionConfidence.PROBABLE,
             "sfx_scan",
-            payload_offset=hit.candidate_origin,
+            payload_offset=chosen[1],
         )
-        if selector.offer(entry.format, info, outcome):
-            break
-    result, _ = selector.result()
+    )
     # Charge the window actually examined — a miss is the expensive case.
     workspace.charge_scanned(min(workspace.buffered_length, scan_limit))
     # A miss in a window the budget made shorter than ``SFX_MAX`` is a search cut
@@ -560,7 +570,9 @@ def _scan_for_sfx_payload(
     # as ``SFX_MAX`` the structural bound stopped the scan, not the budget.
     source_len = workspace.remaining_known()
     cut_short = scan_limit < SFX_MAX and (source_len is None or source_len > scan_limit)
-    if workspace.take_clamped_view_read() or (result is None and cut_short):
+    # Take the flag on its own line: the call clears it, so it must always run.
+    clamped = workspace.take_clamped_view_read()
+    if clamped or (result is None and cut_short):
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     return result
 

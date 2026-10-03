@@ -672,6 +672,8 @@ def scan_for_magic(
             if validator is None:
                 return MagicScan(found, None, 0)
             remaining = _remaining_from_origin(scan_start, origin, total)
+            # One key for every hit: each caller passes the needles of one format,
+            # so a later VALID hit always displaces a held short one.
             if selector.offer(None, found, validator(bind_view(origin), remaining)):
                 return finish()
             search_from = index + 1
