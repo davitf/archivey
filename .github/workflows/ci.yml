@@ -136,9 +136,11 @@ jobs:
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
     timeout-minutes: 20
-    # Every pytest step below runs on all cores (`-n auto`, pytest-xdist): 4 vCPUs on Linux
-    # and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial with
-    # coverage, 1m52s with -n 4 and --no-cov, same results.
+    # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
+    # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
+    # with coverage, 1m52s with -n 4 and --no-cov, same results. One module is excepted and
+    # runs in its own serial step, "Run accelerator truncation tests"; the distro-unar probe
+    # and the scripts/ci_run_native_modules.py steps are one process by design.
     # Force every uv sync/run in this job onto the matrix interpreter. Without this,
     # `.python-version` (3.11) wins and "py3.12/3.13/3.14" legs silently re-test 3.11.
     env:
@@ -158,7 +160,9 @@ jobs:
           # upload and no threshold, see CONTRIBUTING.md), and tracing doubled the run on
           # 3.11 (measured 2026-10-02), where coverage uses the C tracer: every other leg
           # passes --no-cov. 3.14 is the cheapest place for it, since coverage uses
-          # sys.monitoring there.
+          # sys.monitoring there. The steps pass --cov-report=term-missing here, which
+          # addopts already sets, only because an empty string is false in a GitHub
+          # expression: `matrix.coverage && '' || '--no-cov'` would give --no-cov here too.
           - { os: ubuntu-latest, python-version: "3.14", install: all, coverage: true }
           # Minimum supported library versions (uv --resolution lowest-direct) on the min
           # Python: the [all] legs above run the *current* versions of every dependency, so
@@ -456,8 +460,13 @@ jobs:
       # One process, not -n auto, which is how these tests ran before xdist. Under four
       # workers, test_a_large_cut_stream_delivers_what_the_standard_library_delivers
       # [DEFLATE] killed its worker with no output after a stall of several minutes
-      # (ubuntu py3.11 all, 2026-10-02), and 40 runs under full CPU load locally did not
-      # reproduce it. The cause is tracked internally.
+      # (ubuntu py3.11 all, 2026-10-02). A silent worker death is what the 60 s
+      # thread-method timeout looks like under xdist, which loses its stack dump (see
+      # timeout_method in pyproject.toml), so the test most likely ran past 60 s. The
+      # likely reason is oversubscription: archivey opens rapidgzip with parallelization=0
+      # (every core), so four workers can each start an all-core decoder. Not confirmed:
+      # four concurrent copies of the three large-cut cases plus four CPU burners, run
+      # 10 times on a 4-core container, all passed in about 11 s. Tracked internally.
       - name: Run accelerator truncation tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
         env:

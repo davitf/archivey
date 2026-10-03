@@ -244,6 +244,9 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # hang — the accelerator busy-loop in dev-docs/threat-model.md is exactly that shape, and
 # no per-test timeout will ever name it.
 # The cost is that the whole run dies with the timeout instead of one test failing alone.
+# Under pytest-xdist (`-n auto`, which CI and scripts/test.sh pass) only the worker dies,
+# and its stack dump does not reach the output: xdist reports the test's nodeid and
+# "worker crashed", nothing more. Re-run the named test with `-n 0` to get the stacks.
 # That cost is known to be acceptable rather than merely argued: pytest-timeout falls back
 # to this method where there is no SIGALRM, so Windows CI has been paying it here all
 # along and nobody noticed. A hang costs the whole job anyway.

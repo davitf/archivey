@@ -34,7 +34,7 @@ PYTEST_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --all-configs) ALL_CONFIGS=1 ;;
-    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,${/^#/!q;s/^# \?//;p;}' "$0"; exit 0 ;;
     *) PYTEST_ARGS+=("$arg") ;;
   esac
 done
