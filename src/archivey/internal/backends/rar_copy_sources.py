@@ -13,7 +13,9 @@ the caller reads that member. Small sources stay in memory; a larger one goes to
 temporary file charged to the reader's spool budget (``SpoolLimits.max_bytes``). The
 file is opened, and the source charged, only when the source's first byte arrives,
 and :meth:`FileCopySources.close` gives the charge back. A source that fits neither
-is not kept, and its copies fall back to the named open.
+is not kept, and its copies fall back to the named open. So is a source the pass's
+``keep`` callback declines when its first byte arrives: extraction declines a source it
+is writing to disk, and copies the source's copies from the written file.
 Kept bytes are served unverified; the caller wraps them in the source's digest
 check, as it does the pipe's own bytes.
 """
@@ -46,9 +48,10 @@ _State = Literal["memory", "file", "dropped"]
 class _Kept:
     """One source's range in the pipe and what has been kept of it."""
 
-    __slots__ = ("data", "file_offset", "received", "size", "start", "state")
+    __slots__ = ("data", "file_offset", "key", "received", "size", "start", "state")
 
-    def __init__(self, start: int, size: int, state: _State) -> None:
+    def __init__(self, key: int, start: int, size: int, state: _State) -> None:
+        self.key = key
         self.start = start
         self.size = size
         self.received = 0
@@ -98,7 +101,8 @@ class FileCopySources:
     a charge back. Charging only when a source's first byte arrives means a pass that
     reads nothing writes nothing, and the pass has already made any copy of the
     archive source it needs (that copy comes before the decompressor that produces
-    the byte), so a keep never takes the allowance that copy needed.
+    the byte), so a keep never takes the allowance that copy needed. ``keep(key)``,
+    when given, is asked at that same first byte; ``False`` leaves the source unkept.
     """
 
     def __init__(
@@ -106,8 +110,10 @@ class FileCopySources:
         source_ids: frozenset[int],
         try_spool: Callable[[int], bool],
         release_spool: Callable[[int], None],
+        keep: Callable[[int], bool] | None = None,
     ) -> None:
         self._source_ids = source_ids
+        self._keep = keep
         self._try_spool = try_spool
         self._release_spool = release_spool
         self._kept: dict[int, _Kept] = {}
@@ -129,13 +135,13 @@ class FileCopySources:
         if start < self._pipe_pos:
             # The pipe has already passed it; never the case for a pass that
             # registers members in order, but a partial range would be wrong bytes.
-            self._kept[key] = _Kept(start, size, "dropped")
+            self._kept[key] = _Kept(key, start, size, "dropped")
             return
         if size == 0 or self._memory + size <= _MEMORY_LIMIT:
-            kept = _Kept(start, size, "memory")
+            kept = _Kept(key, start, size, "memory")
             self._memory += size
         else:
-            kept = _Kept(start, size, "file")
+            kept = _Kept(key, start, size, "file")
         self._kept[key] = kept
         if kept.received < kept.size:
             self._pending.append(kept)
@@ -160,6 +166,15 @@ class FileCopySources:
             self._file = tempfile.TemporaryFile()  # noqa: SIM115 - closed in close()
         return True
 
+    def _wanted(self, kept: _Kept) -> bool:
+        """Whether to keep ``kept``, asked as its first byte arrives; drops it if not."""
+        if self._keep is None or self._keep(kept.key):
+            return True
+        if kept.state == "memory":
+            self._memory -= kept.size
+        kept.state = "dropped"
+        return False
+
     def _feed(self, at: int, data: bytes) -> None:
         end = at + len(data)
         self._pipe_pos = end
@@ -171,6 +186,9 @@ class FileCopySources:
             hi = min(kept.end, end)
             if hi > lo:
                 chunk = memoryview(data)[lo - at : hi - at]
+                if kept.received == 0 and not self._wanted(kept):
+                    self._pending.pop(0)
+                    continue
                 if kept.state == "memory":
                     assert isinstance(kept.data, bytearray)
                     kept.data += chunk

@@ -152,12 +152,19 @@ class ForwardArchiveReader(ABC):
 
     @abstractmethod
     def stream_members(
-        self, members: MemberSelector = None
+        self, members: MemberSelector = None, *, file_copy_streams: bool = True
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
         ``members`` is an optional selector (predicate, name/member collection, or
         ``None`` for all). The yielded stream is valid only until the iterator advances;
         it is ``None`` for non-file members.
+
+        ``file_copy_streams=False`` also yields ``None`` for a file that the archive
+        stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file
+        copy). Its bytes and digests are its source's, ``link_target_member``, so a
+        caller that records hashes can reuse the source's. A solid RAR pass then keeps
+        nothing for the copies; by default it keeps each source until the pass ends,
+        in memory or in a temporary file within ``SpoolLimits.max_bytes``.
 
         The yielded stream is forward-only on every format, with or without
         ``seekable_members=True``: ``seekable()`` is ``False``, ``seek()`` raises

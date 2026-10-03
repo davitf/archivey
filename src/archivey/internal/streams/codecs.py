@@ -81,16 +81,20 @@ from archivey.internal.streams.decompress import (
     stream_magic,
 )
 from archivey.internal.streams.decompressor_stream import (
+    DecompressorStream,
+    SeekPoint,
     _StreamChecksumError,
     gzip_corruption,
     report_trailing_data,
 )
+from archivey.internal.streams.deflate_resume import ResumeReachedStreamEnd
 from archivey.internal.streams.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.ppmd_child import PpmdChildError
 from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,
+    crashed_on_data,
     from_callers_source,
     mark_callers_source,
     rapidgzip_child_unavailable_reason,
@@ -1168,10 +1172,11 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     So on a data error this stream switches to the standard-library decoder, over a
     fresh view of the source, skips the bytes already delivered, and carries on. That
-    costs a second decode up to that point, paid only by a file with something after
-    its data or a damaged one. An error from the caller's own source is not a data
-    error and passes through unchanged. So does one from a seek, which the caller asked
-    for and which leaves no delivered data to lose.
+    costs a second decode up to that point (from a resume point, below), paid only by a
+    file with something after its data or a damaged one. An error from the caller's own
+    source is not a data error and passes through unchanged. So does a data error from
+    a seek, which the caller asked for and which leaves no delivered data to lose, unless
+    it crashed the child: no later call could use that child, so the seek switches.
 
     ``limit``, the size a container declared, switches the same way when a read would
     take the output past it. For raw DEFLATE, rapidgzip decodes on past the stream's
@@ -1179,6 +1184,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     is either that or a stream too long for both decoders, and the standard library
     decides which, from the position before that read. Up to the end of the first
     stream the two decoders agree, so a caller sees what the standard library gives.
+    Only the raw DEFLATE path sets ``limit``, even where gzip and zlib have a declared
+    size: their streams end where the standard library ends them, so the
+    ``VerifyingStream`` alone checks the size there.
 
     The stream that sets ``limit`` is wrapped by ``_wrap_accelerated_length``, whose
     ``VerifyingStream`` has the same size as its ``expected_size`` and bounds each of
@@ -1187,6 +1195,23 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     (``_probe_past_declared``): this branch is what decides an over-run on the
     accelerated path. A switch there decodes the member again with the standard
     library from its start, up to the position already delivered.
+
+    A truncated stream is the case where the second decode matters most, and where
+    starting it over is most wasteful. rapidgzip 0.16 aborts the child on one, and its
+    threads decode ahead of the reader, so the reader can be megabytes short of the cut
+    when the child dies (with every core decoding, a cut file of tens of MB can deliver
+    nothing). A child crash (``crashed_on_data``) and a truncation rapidgzip reports
+    switch here too, and the standard library starts at the child's ``resume_point``: a
+    DEFLATE block boundary the reader passed, with the 32 KiB of output before it
+    (``deflate_resume``). That bounds the second decode by rapidgzip's read-ahead, the
+    spacing of the index queries (``_query_after`` in ``rapidgzip_child.py``) and the
+    spacing of the points, rather than by the file. Every data error starts there:
+    damage after the point raises from the resumed decode as it would from a full one,
+    and a resumed decode that reaches the end of its DEFLATE stream (appended bytes, or
+    damage only a checksum shows) cannot check the stream's checksum, so it raises
+    ``ResumeReachedStreamEnd`` and the standard library decodes from the start after all
+    (``_restart_without_resume``). The two switches that know the stream is whole
+    (``limit`` and ``switch_to_stdlib``) start from the start.
     """
 
     readinto_passthrough = False
@@ -1213,27 +1238,55 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     def read(self, size: int = -1, /) -> bytes:
         try:
             data = self._inner.read(size)
-        except Exception as exc:
-            if (
-                self.switched
-                or from_callers_source(exc)
-                or _translate_rapidgzip(exc, self._label) is None
-            ):
-                raise
-            self._switch()
+        except ResumeReachedStreamEnd:
+            self._restart_without_resume()
             data = self._inner.read(size)
+        except Exception as exc:
+            if not self._takes_over(exc):
+                raise
+            self._switch(resume=True)
+            data = self._read_switched(size)
         if (
             self._limit is not None
             and not self.switched
             and self._position + len(data) > self._limit
         ):
             self._switch()
-            data = self._inner.read(size)
+            data = self._read_switched(size)
         self._position += len(data)
         return data
 
+    def _takes_over(self, exc: Exception) -> bool:
+        """Whether the standard library takes over after ``exc`` from rapidgzip."""
+        if self.switched or from_callers_source(exc):
+            return False
+        return (
+            crashed_on_data(exc) or _translate_rapidgzip(exc, self._label) is not None
+        )
+
+    def _read_switched(self, size: int) -> bytes:
+        try:
+            return self._inner.read(size)
+        except ResumeReachedStreamEnd:
+            self._restart_without_resume()
+            return self._inner.read(size)
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        self._position = super().seek(offset, whence)
+        try:
+            self._position = super().seek(offset, whence)
+        except ResumeReachedStreamEnd:
+            self._restart_without_resume()
+            self._position = super().seek(offset, whence)
+        except Exception as exc:
+            # A seek runs rapidgzip's decode too; a crash there ends the child.
+            if self.switched or from_callers_source(exc) or not crashed_on_data(exc):
+                raise
+            self._switch(resume=True)
+            try:
+                self._position = super().seek(offset, whence)
+            except ResumeReachedStreamEnd:
+                self._restart_without_resume()
+                self._position = super().seek(offset, whence)
         return self._position
 
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -1244,18 +1297,47 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         if not self.switched:
             self._switch()
 
-    def _switch(self) -> None:
+    def _switch(self, *, resume: bool = False) -> None:
         old = self._inner
-        fallback: CodecSource = (
-            self._fallback_path if self._fallback_path is not None else self._reopen()
-        )
-        stdlib = self._open_stdlib(fallback)
-        stdlib.seek(self._position)
+        point = None
+        if resume and isinstance(old, RapidgzipChildStream):
+            point = old.resume_point(self._position)
+        stdlib = self._open_stdlib_at(point)
         self._replace_inner(stdlib)
         self.switched = True
         try:
             old.close()
         except Exception:  # noqa: BLE001 - best-effort; the stdlib handle took over
+            pass
+
+    def _open_stdlib_at(self, point: SeekPoint | None) -> BinaryIO:
+        """The standard-library decoder at the position delivered so far, starting from
+        ``point`` when one is given. ``point`` must lie at or before that position
+        (``resume_point`` picks it so): the seek ignores a point past it."""
+        fallback: CodecSource = (
+            self._fallback_path if self._fallback_path is not None else self._reopen()
+        )
+        stdlib = self._open_stdlib(fallback)
+        if point is not None and isinstance(stdlib, DecompressorStream):
+            stdlib.add_seek_points([point])
+        try:
+            stdlib.seek(self._position)
+        except ResumeReachedStreamEnd:
+            stdlib.close()
+            return self._open_stdlib_at(None)
+        except BaseException:
+            stdlib.close()
+            raise
+        return stdlib
+
+    def _restart_without_resume(self) -> None:
+        """Replace a standard-library decoder whose resumed decode reached the end of
+        its DEFLATE stream with one that decodes from the start."""
+        old = self._inner
+        self._replace_inner(self._open_stdlib_at(None))
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - best-effort; the new handle took over
             pass
 
 
@@ -2249,9 +2331,23 @@ class GzipCodec(StreamCodec):
                 return _stdlib_gzip(source, config)
             if config.expected_decompressed_size is not None:
                 # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
-                stream = _open_rapidgzip(source, "gzip", config)
+                accel_source, reopen = _accelerator_backstop_source(source)
+                stream = _open_rapidgzip(accel_source, "gzip", config)
                 if stream is None:
                     return _stdlib_gzip(source, config)
+                # _refuse_forward_only_accelerator has refused a source that cannot seek.
+                assert reopen is not None
+                stream = _StdlibOnAcceleratorError(
+                    stream,
+                    reopen=reopen,
+                    fallback_path=(
+                        os.fspath(source)
+                        if isinstance(source, (str, os.PathLike))
+                        else None
+                    ),
+                    open_stdlib=lambda fallback: _stdlib_gzip(fallback, config),
+                    label="gzip",
+                )
                 return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
             # Truncation backstop for **any** seekable source (path or caller-owned stream):
             # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
