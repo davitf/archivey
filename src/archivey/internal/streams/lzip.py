@@ -141,7 +141,9 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     from the size and the seek range. The magic must follow at once, with no padding
     skipped first as xz does: lzip has no stream padding, and the forward decoder
     treats zeros after a member as the end of the data, so a member behind zeros is
-    trailing data on both paths.
+    trailing data on both paths. A member there whose version is not 1 is refused as
+    unsupported (:func:`_check_version`), as the forward decoder refuses it, before its
+    trailer is judged: a version-0 trailer has no member size, so it is never found.
     """
     if _member_ends_at(stream, file_size, stop_at):
         return file_size
@@ -161,6 +163,7 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     for end in itertools.islice(candidate_ends(), TRAILING_DATA_CANDIDATES):
         if _member_ends_at(stream, base + end, stop_at, window, base):
             if window[end : end + len(_MAGIC)] == _MAGIC:
+                _check_version(window[end : end + _HEADER_SIZE], base + end)
                 raise CorruptionError(
                     f"Lzip member starting at offset {base + end} has no valid "
                     "trailer at the end of the file"
@@ -178,24 +181,19 @@ def _iter_trailers_backwards(
 ) -> Iterator[tuple[int, int, int, int]]:
     """Yield ``(compressed_start, data_size, member_size, crc32)`` from the last member back.
 
-    Reads only trailers and the 4-byte magic at each computed member start — no
+    Reads only trailers and the 6-byte header at each computed member start — no
     decompression. The magic check catches a corrupt ``member_size`` before it cascades
     into wrong offsets for every earlier member. Data after the last member is looked
-    past (:func:`_data_end`), unless it starts with the header of a member in another
-    version: that is refused, as the forward decoder refuses it. A member whose version
-    is not 1 raises :class:`UnsupportedFeatureError`, checked first at ``stop_at`` (a
-    version-0 trailer has no member size, so the walk could not reach it).
+    past (:func:`_data_end`). A member whose version is not 1 raises
+    :class:`UnsupportedFeatureError`: at each member start, after the last member
+    (:func:`_data_end`), and first at ``stop_at``, since a version-0 trailer has no
+    member size and the walk could not reach that member from its end.
     """
     stream.seek(stop_at)
     header = stream.read(_HEADER_SIZE)
     if header[:4] == _MAGIC:
         _check_version(header, stop_at)
     compressed_end = _data_end(stream, file_size, stop_at)
-    if compressed_end < file_size:
-        stream.seek(compressed_end)
-        header = stream.read(_HEADER_SIZE)
-        if header[:4] == _MAGIC:
-            _check_version(header, compressed_end)
     while compressed_end > stop_at:
         if compressed_end < _TRAILER_SIZE:
             raise CorruptionError("Lzip file is too small to contain a valid trailer")

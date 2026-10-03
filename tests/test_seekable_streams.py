@@ -767,7 +767,7 @@ def test_lzip_version_0_member_is_unsupported_on_forward_read(case: str) -> None
             stream.read()
 
 
-@pytest.mark.parametrize("case", ["only", "first", "middle", "last"])
+@pytest.mark.parametrize("case", sorted(_V0_CASES))
 def test_lzip_version_0_member_is_unsupported_on_index_scan(case: str) -> None:
     """The backward walk refuses a version-0 member, as the forward decoder does.
 
