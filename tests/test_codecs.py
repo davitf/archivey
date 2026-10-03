@@ -1779,6 +1779,14 @@ def test_verify_seek_to_declared_size_cannot_silence_overrun() -> None:
         stream.read(-1)
     stream.close()
 
+    # declared size 0: nothing is read before the seek, so the frontier already
+    # equals the declared size. A bounded read must still probe, not return b"".
+    stream = VerifyingStream(io.BytesIO(overlong), {}, expected_size=0)
+    stream.seek(2)
+    with raises_corruption_not_truncation(match="exceeds its declared size"):
+        stream.read(1)
+    stream.close()
+
 
 def test_verify_sized_readall_propagates_oserror_not_truncation() -> None:
     """Resource errors on the sized drain must not be relabeled TruncatedError."""
