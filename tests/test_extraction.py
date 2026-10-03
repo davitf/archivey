@@ -2953,8 +2953,9 @@ def _case_sensitive(path: Path) -> bool:
         probe.unlink()
 
 
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
 def test_replace_keeps_a_case_variant_directory_that_is_still_there(
-    tmp_path: Path,
+    tmp_path: Path, build
 ) -> None:
     """The casefolded key also covers ``X/`` beside ``x/`` on a case-sensitive
     filesystem. Removing ``x/`` must not revise ``X/``, which is still on disk."""
@@ -2964,9 +2965,7 @@ def test_replace_keeps_a_case_variant_directory_that_is_still_there(
         pytest.skip(
             "needs a case-sensitive filesystem, where X/ and x/ are two entries"
         )
-    archive = _tar_bytes(
-        [("dir", "X/", None), ("dir", "x/", None), ("file", "x", b"f")]
-    )
+    archive = build([("dir", "X/", None), ("dir", "x/", None), ("file", "x", b"f")])
     report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
     upper, lower, member = report.results
     assert lower.status is ExtractionStatus.OVERWRITTEN
@@ -2975,13 +2974,33 @@ def test_replace_keeps_a_case_variant_directory_that_is_still_there(
     assert member.status is ExtractionStatus.EXTRACTED
 
 
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
+def test_replace_revises_a_case_variant_directory_it_removed(
+    tmp_path: Path, build
+) -> None:
+    """On a case-insensitive filesystem ``x`` lands on the entry ``X/`` made, so
+    removing it revises ``X/``. The casefolded collision key is what finds it."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if _case_sensitive(dest):
+        pytest.skip("needs a case-insensitive filesystem, where X/ and x are one entry")
+    archive = build([("dir", "X/", None), ("file", "x", b"f")])
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    directory, member = report.results
+    assert directory.status is ExtractionStatus.OVERWRITTEN
+    assert directory.path is None
+    assert member.status is ExtractionStatus.EXTRACTED
+    assert (dest / "x").read_bytes() == b"f"
+
+
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
 def test_progress_during_a_replace_follows_the_directory_it_removed(
-    tmp_path: Path,
+    tmp_path: Path, build
 ) -> None:
     """While ``x`` replaces the empty ``x/`` this run wrote, ``members_extracted`` no
     longer counts ``x/``: the revision happens before the write, and the intra-member
     reports used to carry a tally copied before it."""
-    archive = _tar_bytes([("dir", "x/", None), ("file", "x", b"\0" * (3 << 20))])
+    archive = build([("dir", "x/", None), ("file", "x", b"\0" * (3 << 20))])
     reports: list[tuple[str, int, int]] = []
     extract(
         io.BytesIO(archive),

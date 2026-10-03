@@ -518,9 +518,11 @@ replacing member SHALL fail with an `ExtractionError` governed by `OnError` (as 
 does without `--recursive-unlink`). Removing a tree would take the members this run wrote
 into it, which would still report `EXTRACTED`, and the caller's own files when the
 directory was already there. When a member of this run wrote the removed directory, under
-any spelling that reaches it (through a directory symlink the archive created, or a case
-variant on a case-insensitive filesystem), that member's result SHALL be revised to
-`OVERWRITTEN`. Its `collided_with` stays `None`: DIRECTORY members are not claimed in the
+any spelling that reaches it (through a directory symlink the archive created, under every
+policy, or a case variant on a case-insensitive filesystem, under `STRICT` and `STANDARD`),
+that member's result SHALL be revised to `OVERWRITTEN`. Under `TRUSTED` the coordinator keys
+on the exact path and defers to the local OS (see the O2 collision requirement), so a case
+variant there is not recognized and the earlier result is not revised. Its `collided_with` stays `None`: DIRECTORY members are not claimed in the
 collision map, so this revises a result and is not a collision event, and
 `AbortOn.NAME_COLLISION` does not fire.
 
