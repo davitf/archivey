@@ -120,8 +120,10 @@ tests that crash other processes on purpose. That run's `suite_neighbours` and
 `main_step` iterations all failed on one unrelated test, `test_benchmark_structural_gate`,
 which needs `unrar`, and the workflow had not installed it. It does now.
 
-**Locally**, without a pipe handler (`core_pattern` `core`, limit 0, so no core either
-way): 0 failures in 106 `xdist` iterations (17 before the fix, 89 after).
+**Locally** (4 CPUs), without a pipe handler (`core_pattern` `core`, limit 0, so no core
+either way), 0 failures, stalls or worker deaths in every scenario: `xdist` 0 in 106 (17
+before the fix, 89 after), `xdist_2x` 0 in 60, `contended` 0 in 60, `file_mode_only` 0 in
+30 (each `-file` case 10 times a run: 1,800 cut-stream reads), `serial` 0 in 26.
 
 On py3.14 a cut stream sometimes kills the child with SIGSEGV instead of SIGABRT (2 to 6
 in 60 children). Without the abort message that death classifies as `CorruptionError`,
