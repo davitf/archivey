@@ -888,8 +888,8 @@ class _RespawnStream(ReadOnlyIOStream):
     process. Re-probing after seeking back to ``_size`` is then not
     byte-exact; that path is unreachable while the first probe raises
     ``CorruptionError`` on any trailing byte (``verify.py`` ``_conclude``).
-    Respawn is keyed on the pipe, so
-    ``seek(0, SEEK_END); seek(0)`` before any read costs nothing.
+    Respawn is keyed on the pipe, so ``seek(0, SEEK_END); seek(0)`` before any
+    read costs nothing.
 
     ``spawn`` must return a stream that owns the process (``_UnrarOwnedStream``,
     ``_bounded_member_pipe`` wrapping one, or a ``UnarOutputStream``), so

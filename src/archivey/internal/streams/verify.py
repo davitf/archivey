@@ -24,10 +24,10 @@ Per ADR 0014 / ``compressed-streams``:
   linear consumption). Length / truncation / over-run stay on and key
   off bytes **actually read** (``_furthest_read_pos``). If a seek jumps to/past the
   declared size without reading the intervening bytes, concluding reads the skipped
-  gap and probes one byte past the declared size (``_conclude``)
-  rather than returning ``b""`` blind, so a past-EOF ``seek(declared_size)`` still
-  catches truncation (short) *and* over-run (long) — a completed member
-  (``furthest >= expected``) short-circuits with no extra I/O.
+  gap and probes one byte past the declared size (``_conclude``) rather than
+  returning ``b""`` blind, so a past-EOF ``seek(declared_size)`` still catches
+  truncation (short) *and* over-run (long). A member already concluded
+  (``_verified``) returns with no extra I/O.
 - **Size-declared corruption** (digest mismatch / over-run at the declared size):
   the reaching read raises and **withholds** that chunk.
 - **Size-unknown corruption**: deliver data bytes; raise on the EOS-observing
@@ -306,6 +306,10 @@ class MemberVerifier:
             expected_size is not None
             and self._furthest_read_pos < expected_size <= self._pos
         ):
+            # Only a seek off the frontier puts ``_pos`` past it, and ``note_seek``
+            # forfeits the digests for that seek; the gap bytes never reach the
+            # hashers, so the digest check below must not run on this path.
+            assert not self._digests_enabled
             resume = inner.tell()
             inner.seek(self._furthest_read_pos)
             try:
@@ -495,9 +499,8 @@ class MemberVerifier:
         assumes linear consumption). Length / truncation / over-run checks stay
         enabled and key off bytes actually read (``_furthest_read_pos``); a seek that
         jumps to/past the declared size has the skipped gap read back and a byte
-        probed past the size at conclusion (``_conclude``), so
-        ``seek(declared_size)`` cannot silence truncation (short) or over-run (long)
-        (ADR 0014).
+        probed past the size at conclusion (``_conclude``), so ``seek(declared_size)``
+        cannot silence truncation (short) or over-run (long) (ADR 0014).
         """
         if result == 0:
             self._rearm()
