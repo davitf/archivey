@@ -181,12 +181,27 @@ raised first, unchanged. An exception that rapidgzip raised in the child SHALL r
 translator as the same built-in type, and any `RuntimeError` rapidgzip raised SHALL translate
 to `CorruptionError` when no listed message says truncation.
 
+The same rule SHALL hold for bzip2 through rapidgzip's in-process decoder: a data error it
+raises (on a cut stream an opaque `RuntimeError('std::exception')`), on a read or a seek, SHALL
+hand the operation to the standard library decoder, so the bytes delivered and the error match
+`use_indexed_bzip2=OFF`. The standard library SHALL start at the newest block from rapidgzip's
+index at or before the position delivered to the caller, among a bounded number of the newest
+such blocks it keeps as seek points; where there is none, at the start of the stream. A bzip2
+block carries no window. A decode started at a block that meets the end of its stream (the
+combined CRC, which it cannot check) or a damaged block SHALL start over from the start of the
+stream; one that runs out of input first SHALL raise the standard library's `TruncatedError`.
+
 rapidgzip does not validate zlib's Adler-32 and returns a silent short read on some
 mid-stream DEFLATE truncations. For a zlib stream the system SHALL check the Adler-32 after
 rapidgzip: once the stream has been read to its end (a forward seek reads the skipped bytes, so
 a reader that skips is still covered), a mismatch the standard library confirms SHALL raise
 `CorruptionError` from the read or seek that reached the end, and the TAR end-of-archive scan
-SHALL re-raise it. Raw DEFLATE carries no checksum, so there is no backstop for the deflate
+SHALL re-raise it. Where the standard library agrees with every byte rapidgzip delivered and
+then has more output, or meets the end of the source inside the stream (a cut stream), the
+read SHALL be handed to the standard library at the delivered position, so the bytes and the
+`TruncatedError` match `use_rapidgzip=OFF`. One stated exception: with a container-declared
+size, the read that reaches it is the verifying stage's verifying event, and when the probe past
+the size meets a cut trailer that read's chunk is withheld; the error is still `TruncatedError`. Raw DEFLATE carries no checksum, so there is no backstop for the deflate
 accelerator path. A DEFLATE-family member decoded inside a container (e.g. a ZIP member) SHALL
 rely on the container's own checksum (CRC-32 via the shared verifying stage) to catch
 truncation/corruption. A standalone deflate stream accelerated by rapidgzip MAY therefore miss a
@@ -206,7 +221,8 @@ path, and corruption inside a DEFLATE block SHALL still surface as `CorruptionEr
 | DEFLATE-family child killed by SIGKILL / ended by SIGTERM | `ResourceLimitError` / `ReadError`; later calls raise the same |
 | Caller-owned source raises while the child reads it | That exception, unchanged; a later child death is `ReadError` |
 | Caller-owned source after the archivey stream closes | Still open and readable; accelerator/wrapper closed only its own view |
-| Truncated or damaged standalone zlib through rapidgzip, read to its end | `CorruptionError` or `TruncatedError`; never a silent short or wrong read (Adler-32 check) |
+| Damaged standalone zlib through rapidgzip, read to its end | `CorruptionError`; never a silent wrong read (Adler-32 check) |
+| Truncated standalone zlib or bzip2 through the accelerator (`AUTO` / `ON`), cut in the first block, a later block or the end marker | The bytes and the error (`TruncatedError`) of the accelerator `OFF` |
 | Damaged `.tar.zz` through rapidgzip, listed or read | `CorruptionError` (the TAR end scan re-raises the Adler-32 mismatch) |
 | Truncated standalone deflate through rapidgzip | Corruption in a block → `CorruptionError`; a clean mid-stream cut MAY return a short read undetected (no checksum backstop) |
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
