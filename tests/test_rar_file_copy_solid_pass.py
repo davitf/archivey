@@ -25,11 +25,16 @@ from archivey import (
     ArchiveyConfig,
     DecoderLimits,
     ExtractionLimits,
+    ExtractionProgress,
     SpoolLimits,
     extract,
     open_archive,
 )
-from archivey.exceptions import CorruptionError, ResourceLimitError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    CorruptionError,
+    ResourceLimitError,
+)
 from archivey.internal.backends import rar_copy_sources, rar_reader
 
 _COPIES = 6
@@ -199,11 +204,13 @@ def test_a_source_the_spool_limit_refuses_falls_back_to_named_opens(
     monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
     config = _config("unrar", spool_limits=SpoolLimits(max_bytes=0))
     archive, payload = _solid_with_copies(tmp_path)
-    dest = tmp_path / "out"
+    seen: dict[str, bytes] = {}
     with open_archive(archive, config=config) as reader:
-        reader.extract_all(dest)
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            seen[member.name] = stream.read()
     for name in ["b_source.txt", *_COPY_NAMES]:
-        assert (dest / name).read_bytes() == payload, name
+        assert seen[name] == payload, name
     assert spawns == ["unrar"] * (1 + _COPIES)
 
 
@@ -361,3 +368,209 @@ def test_a_kept_source_does_not_take_the_stream_copys_allowance(
         **dict.fromkeys(copies, payload),
     }
     assert spawns == ["unrar"] * (1 + len(copies))
+
+
+# --- Extraction copies a copy from its written source; file_copy_streams=False ---
+
+
+def _no_temp_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test if the pass opens its temporary file for a kept source."""
+
+    def refuse() -> object:
+        raise AssertionError("a source was kept in the temporary file")
+
+    monkeypatch.setattr(rar_copy_sources.tempfile, "TemporaryFile", refuse)
+
+
+@pytest.mark.parametrize("decompressor", _DECOMPRESSORS)
+@pytest.mark.parametrize("streaming", [False, True])
+def test_extract_copies_each_copy_from_the_written_source(
+    tmp_path: Path,
+    decompressor: str,
+    streaming: bool,
+    spawns: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source is written from the pass, so it is not kept: each copy is copied
+    from the source's file. With no room in memory or in the spool, the copies still
+    cost no second decode."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    _no_temp_file(monkeypatch)
+    config = _config(decompressor, spool_limits=SpoolLimits(max_bytes=0))
+    archive, payload = _solid_with_copies(tmp_path)
+    dest = tmp_path / "out"
+    with open_archive(archive, config=config, streaming=streaming) as reader:
+        report = reader.extract_all(dest)
+    assert all(r.status.value == "extracted" for r in report.results)
+    for name in ["b_source.txt", *_COPY_NAMES]:
+        assert (dest / name).read_bytes() == payload, name
+    assert spawns == [decompressor]
+
+
+def test_extract_copy_counts_toward_the_byte_cap_when_copied_from_disk(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_temp_file(monkeypatch)
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    total_without_copies = 200_000 + len(payload) + len(b"other")
+    limits = ExtractionLimits(
+        max_extracted_bytes=total_without_copies + 2 * len(payload)
+    )
+    with pytest.raises(ResourceLimitError, match="max_extracted_bytes"):
+        extract(archive, tmp_path / "out", config=config, limits=limits)
+    # The copies came from the source's file: a re-decode would spawn again.
+    assert spawns == ["unrar"]
+
+
+def test_extract_falls_back_when_the_written_source_was_replaced(
+    tmp_path: Path, spawns: list[str]
+) -> None:
+    """Something else replaces the source's file before its copies are written. The
+    copies do not take the new file's bytes: they read the source again from the
+    archive."""
+    config = _config("unrar")
+    archive, payload = _solid_with_copies(tmp_path)
+    dest = tmp_path / "out"
+    swapped = []
+
+    def swap(progress: ExtractionProgress) -> None:
+        if progress.member.name == "c_other.txt" and not swapped:
+            other = dest / "replacement"
+            other.write_bytes(b"x" * len(payload))
+            other.replace(dest / "b_source.txt")
+            swapped.append(True)
+
+    with open_archive(archive, config=config) as reader:
+        reader.extract_all(dest, on_progress=swap)
+    assert swapped
+    for name in _COPY_NAMES:
+        assert (dest / name).read_bytes() == payload, name
+    # The pass did not keep the source, since it was writing it to disk; each copy
+    # then decodes it again.
+    assert spawns == ["unrar"] * (1 + _COPIES)
+
+
+def test_extract_falls_back_when_a_later_member_took_the_source_path(
+    tmp_path: Path,
+) -> None:
+    """A later member of the same size lands on the source's path (a filter renames
+    it, REPLACE lets it in). The copies must not take that member's bytes.
+
+    The later member is a copy source too (``e_copy_of_c.txt`` reads it), so its
+    write records an identity as well; keyed by path alone, that identity would
+    vouch for ``b_source.txt``'s copies."""
+    config = _config("unrar")
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = _text(7, 4000)
+    impostor = _text(8, 4000)
+    copies = ["d_copy0.txt", "d_copy1.txt"]
+    (src / "b_source.txt").write_bytes(payload)
+    (src / "c_same.txt").write_bytes(impostor)
+    for name in copies:
+        (src / name).write_bytes(payload)
+    (src / "e_copy_of_c.txt").write_bytes(impostor)
+    archive = tmp_path / "clash.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-s", "-oi:1000", str(archive)]
+        + ["b_source.txt", "c_same.txt", *copies, "e_copy_of_c.txt"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    dest = tmp_path / "out"
+    with open_archive(archive, config=config) as reader:
+        assert all(
+            reader.get(name).extra.get("is_file_copy")
+            for name in [*copies, "e_copy_of_c.txt"]
+        )
+        reader.extract_all(
+            dest,
+            filter=lambda m: (
+                m.replace(name="b_source.txt") if m.name == "c_same.txt" else m
+            ),
+            overwrite="replace",
+        )
+    assert (dest / "b_source.txt").read_bytes() == impostor
+    assert (dest / "e_copy_of_c.txt").read_bytes() == impostor
+    for name in copies:
+        assert (dest / name).read_bytes() == payload, name
+
+
+def test_dry_run_still_serves_copies_from_one_decode(
+    tmp_path: Path, spawns: list[str]
+) -> None:
+    """A dry run writes empty files, so it keeps the source and reads the copies from
+    the pass."""
+    config = _config("unrar")
+    archive, _ = _solid_with_copies(tmp_path)
+    dest = tmp_path / "out"
+    with open_archive(archive, config=config) as reader:
+        report = reader.extract_all(dest, dry_run=True)
+    assert all(r.status.value == "extracted" for r in report.results)
+    assert not dest.exists()
+    assert spawns == ["unrar"]
+
+
+@pytest.mark.parametrize("decompressor", _DECOMPRESSORS)
+def test_stream_members_without_copy_streams_yields_none_for_copies(
+    tmp_path: Path,
+    decompressor: str,
+    spawns: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``file_copy_streams=False``: each copy comes with no stream and the pass keeps
+    nothing for it; the copy names its source, whose digest stands for it."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    _no_temp_file(monkeypatch)
+    config = _config(decompressor)
+    archive, payload = _solid_with_copies(tmp_path)
+    seen: dict[str, bytes | None] = {}
+    with open_archive(archive, config=config) as reader:
+        for member, stream in reader.stream_members(file_copy_streams=False):
+            seen[member.name] = None if stream is None else stream.read()
+            if member.name in _COPY_NAMES:
+                source = member.link_target_member
+                assert source is not None and source.name == "b_source.txt"
+                assert source.hashes
+    assert seen["b_source.txt"] == payload
+    assert all(seen[name] is None for name in _COPY_NAMES)
+    assert spawns == [decompressor]
+
+
+def test_stream_members_without_copy_streams_on_a_nonsolid_archive(
+    tmp_path: Path,
+) -> None:
+    config = _config("unrar")
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = _text(6, 3000)
+    (src / "a.txt").write_bytes(payload)
+    (src / "b.txt").write_bytes(payload)
+    archive = tmp_path / "nonsolid.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-oi:1000", str(archive), "a.txt", "b.txt"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    with open_archive(archive, config=config) as reader:
+        assert reader.get("b.txt").extra.get("is_file_copy")
+        pairs = [
+            (m.name, None if s is None else s.read())
+            for m, s in reader.stream_members(file_copy_streams=False)
+        ]
+        assert pairs == [("a.txt", payload), ("b.txt", None)]
+        # The default still reads the copy's bytes.
+        assert [
+            s.read() if s is not None else None for _, s in reader.stream_members()
+        ] == [payload, payload]
+
+
+def test_file_copy_streams_takes_a_bool(tmp_path: Path) -> None:
+    config = _config("unrar")
+    archive, _ = _solid_with_copies(tmp_path)
+    with open_archive(archive, config=config) as reader:
+        with pytest.raises(ArchiveyUsageError, match="file_copy_streams"):
+            reader.stream_members(file_copy_streams=0)  # type: ignore[arg-type]

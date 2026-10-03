@@ -88,8 +88,21 @@ input that aborts the bzip2 decoder would still end the caller's process.
 
 Archivey runs the DEFLATE-family decoders in a child process, so the abort costs the member:
 the parent reports `TruncatedError` when the abort message names this truncation, else
-`CorruptionError` (known-issues Bug 4). This is the report worth filing upstream: a
-destructor must not throw, and the input is only short, not hostile.
+`CorruptionError` (known-issues Bug 4). The standard library then takes the read over from
+the last index point the reader passed (`formats/gzip.md` §2.3), so nothing the abort lost
+is lost to the caller.
+
+The abort fires in whichever worker thread decodes the chunk that holds the cut, up to
+about threads × 4 MiB (compressed) ahead of the reader. Measured 2026-10-02 on 4 cores, a
+154 MB gzip cut at 10 % gave nothing before the abort, where the standard library gave
+20 MB; at 16 threads a cut near the end lost about 40 MB of 202. The code path sits behind
+`windowSparsity`, which the Python binding does not expose. Wrapping the `seekTo` in the
+`Finally` lambda (GzipChunk.hpp:79) in `try`/`catch` and building 0.16.0 from source ended
+the aborts: parallel decoding then delivered every chunk before the cut, as one thread
+does, and raised `RuntimeError("std::exception")` (the "Unexpected end of file" detail
+goes only to stderr, so a report should ask for it in the exception too). This is the
+report worth filing upstream: a destructor must not throw, and the input is only short,
+not hostile.
 
 | Related Archivey notes | |
 | --- | --- |
