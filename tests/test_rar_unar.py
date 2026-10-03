@@ -412,17 +412,19 @@ def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
     ids=["single", "volumes"],
 )
 def test_a_volume_that_cannot_be_linked_is_copied_within_the_spool_limit(
-    monkeypatch: pytest.MonkeyPatch, names: tuple[Path, ...]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, names: tuple[Path, ...]
 ) -> None:
     """Where the system allows neither link, unar gets a copy, and the copy is spooled
     like any other: read correctly within the limit, refused over it."""
+    # This test's own temp root: the shared one also holds other xdist workers' dirs.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     with open_archive(names[0], format="rar", config=_UNRAR) as archive:
         expected = _file_digests(archive)
     total = sum(path.stat().st_size for path in names)
     _no_links(monkeypatch)
     with open_archive(names[0], format="rar", config=_unar_limited(total)) as archive:
         assert _file_digests(archive) == expected
-    before = set(Path(tempfile.gettempdir()).glob("archivey-unar-*"))
+    before = set(tmp_path.glob("archivey-unar-*"))
     with open_archive(
         names[0], format="rar", config=_unar_limited(total - 1)
     ) as archive:
@@ -430,14 +432,18 @@ def test_a_volume_that_cannot_be_linked_is_copied_within_the_spool_limit(
         with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
             archive.read(member)
         # The links failed, so the directory was made; the refused copy removed it.
-        assert set(Path(tempfile.gettempdir()).glob("archivey-unar-*")) == before
+        assert set(tmp_path.glob("archivey-unar-*")) == before
 
 
 @requires_binary("unar", "unrar")
-def test_a_stream_source_is_copied_once_into_unars_directory() -> None:
+def test_a_stream_source_is_copied_once_into_unars_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """A stream source is copied once, straight into unar's private directory, so it is
     charged once against the spool limit: it reads at a limit of exactly its size and
     is refused one byte under, before any directory is made (review round 2, K11)."""
+    # This test's own temp root: the shared one also holds other xdist workers' dirs.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     path = _CORPUS / "compressed.rar"
     data = path.read_bytes()
     with open_archive(path, format="rar", config=_UNRAR) as archive:
@@ -445,13 +451,13 @@ def test_a_stream_source_is_copied_once_into_unars_directory() -> None:
     config = _unar_limited(len(data))
     with open_archive(io.BytesIO(data), format="rar", config=config) as archive:
         assert _file_digests(archive) == expected
-    before = set(Path(tempfile.gettempdir()).glob("archivey-unar-*"))
+    before = set(tmp_path.glob("archivey-unar-*"))
     config = _unar_limited(len(data) - 1)
     with open_archive(io.BytesIO(data), format="rar", config=config) as archive:
         member = next(m for m in archive.members() if m.is_file)
         with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
             archive.read(member)
-        assert set(Path(tempfile.gettempdir()).glob("archivey-unar-*")) == before
+        assert set(tmp_path.glob("archivey-unar-*")) == before
 
 
 @requires_binary("unar", "rar")

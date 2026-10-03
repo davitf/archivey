@@ -42,6 +42,12 @@ def _run_isolated(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]
             str(path),
             "--rootdir",
             str(REPO),
+            # Without it pytest collects down from the temp root, listing every entry
+            # there. Under pytest-xdist another worker can delete one of those between
+            # the listing and the stat, and the nested run fails to collect (Windows,
+            # 2026-10-02: FileNotFoundError on a sibling tmp* directory).
+            "--confcutdir",
+            str(tmp_path),
             "-p",
             "leak_oracle",
             "-p",

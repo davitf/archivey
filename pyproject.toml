@@ -121,6 +121,9 @@ dev = [
     "pytest>=8.3.0",
     "pytest-cov>=6.0.0",
     "pytest-timeout>=2.3.0",
+    # Runs the suite on every core (`-n auto`): scripts/test.sh and CI pass it. Not in
+    # addopts, so a single-test run does not pay for starting workers.
+    "pytest-xdist>=3.6.0",
     # Lint and type checkers are pinned EXACTLY, not floored. Their version decides
     # what the gates *report*, so a floor makes two developers — or the same developer
     # across dependency configs — disagree about whether the tree is clean. Concretely:
@@ -240,10 +243,14 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # serialising thing at all. Both methods lose only when the GIL is held for the whole
 # hang — the accelerator busy-loop in dev-docs/threat-model.md is exactly that shape, and
 # no per-test timeout will ever name it.
-# The cost is that the whole run dies with the timeout instead of one test failing alone.
-# That cost is known to be acceptable rather than merely argued: pytest-timeout falls back
-# to this method where there is no SIGALRM, so Windows CI has been paying it here all
-# along and nobody noticed. A hang costs the whole job anyway.
+# In a serial run the cost is that the whole run dies with the timeout instead of one
+# test failing alone. That cost is known to be acceptable rather than merely argued:
+# pytest-timeout falls back to this method where there is no SIGALRM, so Windows CI paid
+# it for years and nobody noticed; a GIL-held hang costs the whole job anyway.
+# Under pytest-xdist (`-n auto`, which CI and scripts/test.sh pass) the blast radius
+# shrinks: only the worker dies, xdist replaces it, the named test fails and the run
+# goes on. What is lost is the stack dump, which does not reach the output (xdist
+# reports the nodeid and "node down", nothing more). Re-run that test with `-n 0`.
 # This is a diagnostic, not a fix; the hang itself is tracked internally.
 # It is an ini option rather than an addopts flag on purpose. Five pytest entry points
 # override addopts — the two free-threaded CI steps, the PPMd stress workflow,
