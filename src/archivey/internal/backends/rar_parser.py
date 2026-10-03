@@ -934,6 +934,9 @@ def _header_failure(
     reads to the end of the file as well, so that stays a wrong password. A plain
     header the file holds only part of is a cut: unrar lists the members before it
     and reports an unexpected end of archive.
+
+    :raises EncryptionError: (from :func:`wrong_password_error`) for a failure in an
+        encrypted header while the password is unproven.
     """
     if isinstance(header_fd, _HeaderDecryptStream):
         if not proven:
@@ -954,7 +957,6 @@ def _check_rar3_crc(
     *,
     encrypted: bool,
     proven: bool,
-    show_values: bool = True,
 ) -> bool:
     """Check a RAR3 header's CRC16 and return the updated password proof.
 
@@ -967,8 +969,9 @@ def _check_rar3_crc(
             raise wrong_password_error(
                 "Failed to decrypt RAR3 headers (wrong password?)"
             )
-        detail = f": expected {header_crc:#x}, got {calc:#x}" if show_values else ""
-        raise CorruptionError(f"RAR3 {what} header CRC mismatch{detail}")
+        raise CorruptionError(
+            f"RAR3 {what} header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
+        )
     return proven or encrypted
 
 
@@ -1790,14 +1793,12 @@ def _parse_rar3(
             continue
 
         if block_type == _RAR3_ENDARC:
-            # A match here does not add to the proof the walk returns.
-            _check_rar3_crc(
+            password_proven = _check_rar3_crc(
                 header_crc,
                 hdata[2:header_size],
                 "ENDARC",
                 encrypted=block_encrypted,
                 proven=password_proven,
-                show_values=False,
             )
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
             break
