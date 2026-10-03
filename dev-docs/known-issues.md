@@ -219,15 +219,18 @@ everything it had decoded past the reader: up to the whole stream for a cut file
 of MB with every core decoding.
 
 **CI runs this module in one process.** Under pytest-xdist (`-n 4`, ubuntu py3.11
-`[all]`, 2026-10-02) `test_a_large_cut_stream_delivers_what_the_standard_library_delivers
-[DEFLATE]` killed its worker with no output, after a stall of nearly four minutes in which
-no worker reported a result. A silent worker death is what pytest-timeout's thread method
-looks like under xdist (the 60 s timer's stack dump is lost), so the test most likely ran
-past 60 s. The likely reason is oversubscription: archivey opens rapidgzip with
+`[all]`, 2026-10-02)
+`test_a_large_cut_stream_delivers_what_the_standard_library_delivers [DEFLATE]` killed
+its worker with no output. The job log shows 3 m 41 s between two progress lines, but
+the interrupted line carries 54 results, so the other workers kept finishing tests
+during that gap; it is line buffering, not a frozen box. A silent worker death is what
+pytest-timeout's thread method looks like under xdist (the 60 s timer's stack dump is
+lost), so the test most likely ran past 60 s. Why is open: that one case may simply be
+slow under contention, or the box was oversubscribed: archivey opens rapidgzip with
 `parallelization=0`, every core, so four workers can start four all-core decoders. Not
-confirmed: four concurrent copies of the three large-cut cases plus four CPU burners, run
-10 times on a 4-core container, all passed in about 11 s. Until the cause is known, the
-module has its own serial CI step.
+confirmed: four concurrent copies of the three large-cut cases plus four CPU burners,
+run 10 times on a 4-core container, all passed in about 11 s. Until the cause is known,
+the module has its own serial CI step.
 
 **What remains.** bzip2 still runs in-process, so an input
 that aborts the bzip2 decoder would end the caller's process; none has been found.
@@ -396,7 +399,11 @@ for i in $(seq 1 20); do
     || { echo "FAILED pass $i rc=$?"; break; }
 done
 
-# 2) Same soak in the CI bandage shape
+# 2) The CI shape, not step 1's A/B partner: it differs from step 1 in the --ignore set
+#    AND in running the main suite as four short-lived xdist workers without coverage.
+#    A heap corruption that needs the whole suite in one long-lived process may not show
+#    there at any rate, so a clean 20/20 does not credit the --ignore set. For the A/B,
+#    run step 1 again with the same --ignore set (serial, coverage on).
 for i in $(seq 1 20); do
   uv run --python 3.11 --no-sync pytest tests/ \
     --ignore=tests/test_property_safety.py \
