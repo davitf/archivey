@@ -367,6 +367,32 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
             stream.read(10)
 
 
+def test_member_read_unsupported_operation_other_than_seek_is_not_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``io.UnsupportedOperation`` is also a ``ValueError``. One that is not about
+    seeking says nothing about the archive, so it propagates as itself instead of
+    reaching the ValueError arm, which reports corruption."""
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    class _Unsupported(io.BytesIO):
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            raise io.UnsupportedOperation("read")
+
+    monkeypatch.setattr(
+        zip_reader, "open_codec_stream", lambda *_a, **_k: _Unsupported()
+    )
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        stream = ar.open(next(iter(ar)))
+        with pytest.raises(io.UnsupportedOperation) as excinfo:
+            stream.read(10)
+    assert type(excinfo.value) is io.UnsupportedOperation
+
+
 def _symlink_zip(tmp_path: Path) -> Path:
     import stat as stat_module
 

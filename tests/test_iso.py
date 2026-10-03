@@ -42,6 +42,7 @@ from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
     ReadSizeRecorder,
+    assert_seek_underflow_matches_bytesio,
 )
 
 pytestmark = requires("pycdlib")
@@ -1318,7 +1319,8 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
     with the size the entry declares and reads the bytes ``mkzftree`` compressed,
     including a block of zeros stored as no data; its neighbour is untouched."""
     stored = _zisofs(_ZISOFS_PLAIN)
-    pointers = struct.unpack("<5I", stored[16:36])
+    count = -(-len(_ZISOFS_PLAIN) // (1 << 15)) + 1
+    pointers = struct.unpack(f"<{count}I", stored[16 : 16 + 4 * count])
     assert pointers[2] == pointers[3] < pointers[4]  # block 2 is stored as no data
     data = _zisofs_image(_ZISOFS_PLAIN)
     with open_archive(io.BytesIO(data)) as ar:
@@ -1361,6 +1363,25 @@ def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
             assert stream.read(10) == _ZISOFS_PLAIN[:10]
             assert stream.seek(-(10**7), io.SEEK_END) == 0
             assert stream.read(10) == _ZISOFS_PLAIN[:10]
+            stream.seek(0)
+            assert_seek_underflow_matches_bytesio(stream)
+
+
+def test_the_zisofs_stream_refuses_a_negative_absolute_seek_and_a_bad_whence() -> None:
+    """The member contract above goes through ``ArchiveStream.seek``, which refuses
+    both before the zisofs stream sees them. The stream refuses them itself too, with
+    the caller's ``ValueError`` and without moving."""
+    from archivey.internal.backends.iso_reader import _ZisofsEntry, _ZisofsStream
+
+    entry = _ZisofsEntry(b"ZF", 1, b"pz", 16, 15, len(_ZISOFS_PLAIN))
+    stored = _zisofs(_ZISOFS_PLAIN)
+    stream = _ZisofsStream(io.BytesIO(stored), entry, len(stored))
+    stream.seek(10)
+    for offset, whence in ((-1, io.SEEK_SET), (0, 7)):
+        with pytest.raises(ValueError) as excinfo:
+            stream.seek(offset, whence)
+        assert type(excinfo.value) is ValueError
+        assert stream.tell() == 10
 
 
 @pytest.mark.parametrize(
@@ -1394,7 +1415,7 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     data = bytearray(_zisofs_image(_ZISOFS_PLAIN))
     stored = _zisofs(_ZISOFS_PLAIN)
     at = data.index(stored)
-    first_block = at + 16 + 4 * 5  # four blocks, five pointers
+    first_block = at + struct.unpack_from("<I", stored, 16)[0]  # pointer 0
     data[first_block : first_block + 8] = b"\xff" * 8
     with open_archive(io.BytesIO(bytes(data))) as ar:
         with raises_corruption_not_truncation():

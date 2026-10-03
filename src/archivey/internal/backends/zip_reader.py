@@ -814,8 +814,13 @@ class ZipReader(BaseArchiveReader):
                 return EncryptionError("Password required to read this ZIP member")
             if "bad password" in text:
                 return wrong_password_error("Wrong password for this ZIP member")
-        if isinstance(exc, io.UnsupportedOperation) and "seek" in str(exc):
-            return StreamNotSeekableError("ZIP archives require a seekable source")
+        if isinstance(exc, io.UnsupportedOperation):
+            if "seek" in str(exc):
+                return StreamNotSeekableError("ZIP archives require a seekable source")
+            # Any other unsupported operation says nothing about the archive. Without
+            # this return it would reach the ValueError arm below (a subclass) and be
+            # reported as corruption.
+            return None
         if isinstance(exc, NotImplementedError):
             # zipfile raises NotImplementedError for a version or feature it does not
             # handle. Member bodies no longer go through zipfile's own decoders (every
