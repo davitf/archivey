@@ -10,6 +10,9 @@ import shutil
 import struct
 import subprocess
 import zlib
+from typing import BinaryIO
+
+import pytest
 
 
 class NonSeekableBytesIO(io.RawIOBase):
@@ -347,3 +350,40 @@ def brotli_compressed_metablock_header(*, first: bool = False) -> bytes:
         if parse_metablock(hdr, first=first).outcome is BrotliBlock.COMPRESSED:
             return hdr
     raise RuntimeError("no compressed meta-block header pattern found")
+
+
+def assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
+    """A relative seek before the start clamps to 0; a negative SEEK_SET is ValueError.
+
+    That is what ``io.BytesIO`` does. A compressed member used to raise
+    ``ValueError("Invalid offset")`` on the relative case, which a backend translator
+    (ZIP) then reported as ``CorruptionError`` on an undamaged archive.
+    """
+    content = stream.read()
+    # Inside the member: a TAR member's seek past its end returns the member size
+    # (dev-docs/known-issues.md), which is not what this test is about.
+    start = min(5, len(content))
+    assert stream.seek(start) == start
+    assert stream.seek(-100, io.SEEK_CUR) == 0
+    assert stream.read() == content
+    assert stream.seek(-(len(content) + 100), io.SEEK_END) == 0
+    assert stream.tell() == 0
+    assert stream.read() == content
+    with pytest.raises(ValueError) as excinfo:
+        stream.seek(-1)
+    # The caller's own error, not a translated archive error.
+    assert type(excinfo.value) is ValueError
+    assert_unknown_whence_is_value_error(stream)
+    # The refused seeks did not move the stream.
+    assert stream.tell() == len(content)
+
+
+def assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:
+    """An unknown ``whence`` is the caller's ``ValueError`` on every format.
+
+    Without the check in ``ArchiveStream.seek`` the ZIP translator reports it as
+    ``CorruptionError`` on an undamaged archive.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        stream.seek(0, 7)
+    assert type(excinfo.value) is ValueError

@@ -1592,6 +1592,78 @@ def test_rar3_service_comment_maps_to_member_comment() -> None:
         assert member.comment == comment.decode()
 
 
+# unrar reads a RAR 2.9-4 ``CMT`` as UTF-16LE only when bit 0 of the SERVICE
+# header's attribute field (``SUBHEAD_FLAGS_CMT_UNICODE``) is set, and as 8-bit
+# text cut at the first NUL otherwise (``Archive::ReadCommentData``). Checked with
+# ``unrar l`` 7.00 on archives built like these.
+@pytest.mark.parametrize(
+    ("stored", "attributes", "expected"),
+    [
+        pytest.param(b"caf\xe9 ok", 0, "caf\xe9 ok", id="ansi-odd-length"),
+        # An even length used to decode as UTF-16LE: '\u6163\u6166\u20e9\u6b6f'.
+        pytest.param(b"caf\xe9 ok!", 0, "caf\xe9 ok!", id="ansi-even-length"),
+        pytest.param("caf\xe9 ok!".encode(), 0, "caf\xe9 ok!", id="utf8"),
+        pytest.param(b"\x81\x81\x81", 0, "\ufffd" * 3, id="undefined-cp1252"),
+        pytest.param(
+            "caf\xe9 ok!".encode("utf-16le"), 1, "caf\xe9 ok!", id="unicode-flag"
+        ),
+        pytest.param(
+            "a\U0001f600".encode("utf-16le") + b"\0\0junk",
+            1,
+            "a\U0001f600",
+            id="unicode-flag-cut-at-nul",
+        ),
+        # unrar reads CmtSize / 2 units, so the odd trailing byte is not a U+FFFD.
+        pytest.param(
+            "hi".encode("utf-16le") + b"\xff", 1, "hi", id="unicode-flag-odd-length"
+        ),
+        # Without the flag the UTF-16LE bytes are 8-bit text up to the first NUL.
+        pytest.param("caf\xe9".encode("utf-16le"), 0, "c", id="utf16-no-flag"),
+    ],
+)
+def test_rar3_service_comment_text_encoding(
+    stored: bytes, attributes: int, expected: str
+) -> None:
+    main_hdr, end_hdr = _rar3_main_and_end()
+    service_hdr = _rar3_file_block(
+        b"CMT",
+        flags=0,
+        pack_lo=len(stored),
+        unp_lo=len(stored),
+        block_type=0x7A,
+        attributes=attributes,
+    )
+    with open_archive(
+        io.BytesIO(RAR_ID + main_hdr + service_hdr + stored + end_hdr)
+    ) as archive:
+        assert archive.info.comment == expected
+
+
+def test_rar3_old_style_comment_is_not_guessed_as_utf16() -> None:
+    """A RAR 1.5-2.x COMMENT subblock is always 8-bit text (``DoGetComment``)."""
+    from archivey.internal.backends.rar_parser import _parse_rar3_old_comment_subblocks
+
+    text = b"caf\xe9 ok!"
+    block = _rar3_old_comment_subblock(text)
+    assert _parse_rar3_old_comment_subblocks(block, 0) == "caf\xe9 ok!"
+
+
+def test_rar3_old_style_comment_is_cut_at_the_first_nul() -> None:
+    """unrar reads an old-style comment as a C string (``DoGetComment``).
+
+    The stored subblock and the compressed one (``rar_reader``, after ``unrar``
+    unpacks it) both go through ``_decode_comment_text``.
+    """
+    from archivey.internal.backends.rar_parser import (
+        _decode_comment_text,
+        _parse_rar3_old_comment_subblocks,
+    )
+
+    block = _rar3_old_comment_subblock(b"hi\0rest")
+    assert _parse_rar3_old_comment_subblocks(block, 0) == "hi"
+    assert _decode_comment_text(b"caf\xe9\0\xff") == "caf\xe9"
+
+
 def test_rar5_comment_service_stays_archive_only() -> None:
     """RAR5 CMT is an archive comment, never an invented member comment."""
     with open_archive(_fixture("comment__.rar")) as archive:
@@ -1662,6 +1734,7 @@ def _rar3_file_block(
     block_type: int = 0x74,
     extract_version: int = 20,
     trailing_subblock: bytes = b"",
+    attributes: int = 0o100644,
 ) -> bytes:
     """Build one RAR3 FILE block with a valid 16-bit header CRC.
 
@@ -1684,7 +1757,7 @@ def _rar3_file_block(
         extract_version,
         method,
         len(name),
-        0o100644,
+        attributes,
     )
     if flags & _RAR3_FILE_LARGE:
         file_fields += struct.pack("<LL", pack_hi, unp_hi)
@@ -4707,11 +4780,78 @@ def test_password_with_a_line_break_is_refused_not_clamped() -> None:
     from archivey.exceptions import UnsupportedFeatureError
     from archivey.internal.backends.rar_unrar import _password_stdin_bytes
 
-    assert _password_stdin_bytes("ab") == b"ab"
-    assert _password_stdin_bytes(b"ab") == b"ab"
-    for bad in ["ab\nXX", "ab\rXX", b"ab\nXX", b"ab\rXX"]:
-        with pytest.raises(UnsupportedFeatureError, match="line break"):
-            _password_stdin_bytes(bad)
+    for rar5 in (False, True):
+        assert _password_stdin_bytes("ab", rar5=rar5) == b"ab"
+        assert _password_stdin_bytes(b"ab", rar5=rar5) == b"ab"
+        for bad in ["ab\nXX", "ab\rXX", b"ab\nXX", b"ab\rXX"]:
+            with pytest.raises(UnsupportedFeatureError, match="line break"):
+                _password_stdin_bytes(bad, rar5=rar5)
+
+
+# 128 UTF-16 units: RAR keeps the first 127, which ends on half of the emoji's pair.
+_PASSWORD_CUT_INSIDE_A_PAIR = "a" * 126 + "\U0001f600"
+
+
+def test_rar5_password_cut_inside_a_surrogate_pair_is_a_wrong_password_for_unrar() -> (
+    None
+):
+    """RAR5 hashes UTF-8, so a cut with no UTF-8 form cannot be the real password.
+
+    The native RAR5 path rejects the same candidate with the wrong-password
+    ``EncryptionError`` (``test_a_rar5_password_cut_inside_a_surrogate_pair_is_a_wrong_
+    candidate``); the ``unrar`` path raised ``UnsupportedFeatureError`` instead.
+    """
+    from archivey.internal.backends.rar_unrar import _password_stdin_bytes
+    from archivey.internal.password import is_wrong_password
+
+    with pytest.raises(EncryptionError) as excinfo:
+        _password_stdin_bytes(_PASSWORD_CUT_INSIDE_A_PAIR, rar5=True)
+    assert is_wrong_password(excinfo.value)
+    # One unit shorter, the whole emoji is cut off and the rest is sent.
+    assert _password_stdin_bytes("a" * 127 + "\U0001f600", rar5=True) == b"a" * 127
+
+
+def test_rar4_password_cut_inside_a_surrogate_pair_is_refused_not_wrong() -> None:
+    """RAR 1.5-4 hashes the UTF-16 units as they are, lone half included.
+
+    The native RAR3 key derivation accepts exactly this password, so a header CRC
+    can prove it right. Calling it wrong would be false: the limit is ``unrar``'s
+    stdin, which cannot carry half a character.
+    """
+    from archivey.exceptions import UnsupportedFeatureError
+    from archivey.internal.backends.rar_parser import _normalize_password_utf16le
+    from archivey.internal.backends.rar_unrar import _password_stdin_bytes
+
+    # The native path keeps the lone high surrogate.
+    assert _normalize_password_utf16le(_PASSWORD_CUT_INSIDE_A_PAIR).endswith(
+        b"\x3d\xd8"
+    )
+    with pytest.raises(UnsupportedFeatureError, match="unrar reads the password"):
+        _password_stdin_bytes(_PASSWORD_CUT_INSIDE_A_PAIR, rar5=False)
+    assert _password_stdin_bytes("a" * 127 + "\U0001f600", rar5=False) == b"a" * 127
+
+
+@requires_binary("unrar")
+def test_rar4_member_password_cut_inside_a_surrogate_pair_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end on RAR4 data encryption, which is decrypted by ``unrar``.
+
+    The refusal comes before any ``unrar`` process starts. Asserting only
+    ``EncryptionError`` would also pass if the password were mangled and sent,
+    because ``unrar``'s own wrong-password exit maps to that class too.
+    """
+    from archivey.exceptions import UnsupportedFeatureError
+    from archivey.internal.backends import rar_unrar
+
+    def _no_spawn(*args: object, **kwargs: object) -> None:
+        raise AssertionError("unrar must not be spawned for this password")
+
+    monkeypatch.setattr(rar_unrar, "spawn_for_stdout", _no_spawn)
+    path = _fixture("encryption__rar4.rar")
+    with open_archive(path, password=_PASSWORD_CUT_INSIDE_A_PAIR) as archive:
+        with pytest.raises(UnsupportedFeatureError, match="unrar reads the password"):
+            archive.read("secret.txt")
 
 
 @requires_binary("unrar")
