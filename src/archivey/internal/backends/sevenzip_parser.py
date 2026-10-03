@@ -1106,10 +1106,11 @@ def _decode_utf16_names(blob: bytes, *, expected_count: int) -> list[str]:
         raise CorruptionError("7z UTF-16 name payload has an odd byte length")
     if not blob.endswith(b"\x00\x00"):
         raise CorruptionError("7z UTF-16 name list is not null-terminated")
-    try:
-        text = blob.decode("utf-16le")
-    except UnicodeDecodeError as exc:
-        raise CorruptionError(f"Could not decode 7z UTF-16 names: {exc!r}") from exc
+    # surrogatepass: a name is UTF-16 code units, and NTFS lets a name hold a surrogate
+    # without its partner. 7-Zip lists and extracts such a name, so it stays in the
+    # string as that code unit. With an even length and this handler, the decode
+    # cannot fail.
+    text = blob.decode("utf-16le", errors="surrogatepass")
     # Final NUL from the last terminator → trailing empty from split; drop it.
     if not text.endswith("\x00"):
         raise CorruptionError("7z UTF-16 name list is not null-terminated")
@@ -1375,7 +1376,7 @@ def _read_utf16(cur: _Cursor) -> str:
     for _ in range(_MAX_UTF16_CHARS):
         unit = cur.read(2, "7z UTF-16 name")
         if unit == b"\x00\x00":
-            return bytes(chunks).decode("utf-16le")
+            return bytes(chunks).decode("utf-16le", errors="surrogatepass")
         chunks.extend(unit)
     raise CorruptionError("7z UTF-16 string is not null-terminated")
 

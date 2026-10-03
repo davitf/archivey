@@ -48,6 +48,7 @@ from archivey.internal.filters import (
     apply_name_policy,
     check_universal,
     collision_key,
+    disk_spelled,
     reroot_absolute,
 )
 from archivey.internal.link_watch import LinkWatch
@@ -1370,7 +1371,11 @@ class ExtractionCoordinator:
             if transformed.name != rerooted_name:
                 rerooted_from = None  # the filter chose this name; it is not a rewrite
         transformed = self._as_written(original, transformed)
-        check_universal(transformed, dest_root, link_target_on_disk=self._on_disk)
+        # The checks run on the name that reaches disk; the name policy below runs on
+        # the stored one, so it does not take a lone surrogate for a byte.
+        check_universal(
+            disk_spelled(transformed), dest_root, link_target_on_disk=self._on_disk
+        )
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet: `read_link_targets=False`, or a streaming pass whose own read
@@ -1390,7 +1395,9 @@ class ExtractionCoordinator:
                 if transformed is not original:
                     transformed = transformed.replace(link_target=original.link_target)
                 check_universal(
-                    transformed, dest_root, link_target_on_disk=self._on_disk
+                    disk_spelled(transformed),
+                    dest_root,
+                    link_target_on_disk=self._on_disk,
                 )
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
@@ -1406,7 +1413,7 @@ class ExtractionCoordinator:
             )
         portable = apply_name_policy(transformed, self._policy)
         if portable.name == transformed.name:
-            return portable, rerooted_from
+            return disk_spelled(portable), rerooted_from
         # The pre-rewrite spelling is the caller filter's output when there is one, which
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
@@ -1418,7 +1425,7 @@ class ExtractionCoordinator:
                 )
             )
         # After a re-root, the stored name is the one the caller will recognise.
-        return portable, rerooted_from or transformed.name
+        return disk_spelled(portable), rerooted_from or transformed.name
 
     @staticmethod
     def _needs_target_read(original: ArchiveMember, transformed: ArchiveMember) -> bool:

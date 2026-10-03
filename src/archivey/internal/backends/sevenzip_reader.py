@@ -732,7 +732,9 @@ class SevenZipReader(BaseArchiveReader):
             member_type,
             backslash_is_separator=True,
         )
-        raw_name = record.filename.encode("utf-16le", errors="surrogateescape")
+        # surrogatepass undoes the parser's decode, so a lone surrogate comes back
+        # as the code unit that was stored.
+        raw_name = record.filename.encode("utf-16le", errors="surrogatepass")
         folder_index = record.folder_index
         compression = (
             self._folder_compression[folder_index] if folder_index is not None else ()
