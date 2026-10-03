@@ -21,7 +21,7 @@ import traceback
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterator
+from typing import Callable, Iterator
 
 import pytest
 
@@ -47,6 +47,10 @@ from tests.sample_archives import (
     CorpusEntry,
     corpus_archive_path,
     skip_unless_runnable,
+)
+from tests.streams_util import (
+    assert_seek_underflow_matches_bytesio,
+    assert_unknown_whence_is_value_error,
 )
 
 CONTENT = b"The quick brown fox jumps over.\n"  # 32 bytes; < one ISO sector
@@ -353,43 +357,6 @@ def test_seek_to_start_rereads(member: tuple[Path, str]) -> None:
         assert f.read() == CONTENT
 
 
-def _assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
-    """A relative seek before the start clamps to 0; a negative SEEK_SET is ValueError.
-
-    That is what ``io.BytesIO`` does. A compressed member used to raise
-    ``ValueError("Invalid offset")`` on the relative case, which a backend translator
-    (ZIP) then reported as ``CorruptionError`` on an undamaged archive.
-    """
-    content = stream.read()
-    # Inside the member: a TAR member's seek past its end returns the member size
-    # (dev-docs/known-issues.md), which is not what this test is about.
-    start = min(5, len(content))
-    assert stream.seek(start) == start
-    assert stream.seek(-100, io.SEEK_CUR) == 0
-    assert stream.read() == content
-    assert stream.seek(-(len(content) + 100), io.SEEK_END) == 0
-    assert stream.tell() == 0
-    assert stream.read() == content
-    with pytest.raises(ValueError) as excinfo:
-        stream.seek(-1)
-    # The caller's own error, not a translated archive error.
-    assert type(excinfo.value) is ValueError
-    _assert_unknown_whence_is_value_error(stream)
-    # The refused seeks did not move the stream.
-    assert stream.tell() == len(content)
-
-
-def _assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:
-    """An unknown ``whence`` is the caller's ``ValueError`` on every format.
-
-    Without the check in ``ArchiveStream.seek`` the ZIP translator reports it as
-    ``CorruptionError`` on an undamaged archive.
-    """
-    with pytest.raises(ValueError) as excinfo:
-        stream.seek(0, 7)
-    assert type(excinfo.value) is ValueError
-
-
 def test_seek_underflow_matches_bytesio(member: tuple[Path, str]) -> None:
     source, name = member
     with open_archive(source, seekable_members=True) as ar, ar.open(name) as f:
@@ -405,9 +372,9 @@ def test_seek_underflow_matches_bytesio(member: tuple[Path, str]) -> None:
             with pytest.raises(ValueError) as excinfo:
                 f.seek(-1)
             assert type(excinfo.value) is ValueError
-            _assert_unknown_whence_is_value_error(f)
+            assert_unknown_whence_is_value_error(f)
             return
-        _assert_seek_underflow_matches_bytesio(f)
+        assert_seek_underflow_matches_bytesio(f)
 
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -439,7 +406,7 @@ def test_encrypted_zip_seek_underflow_matches_bytesio(
         ) as ar,
         ar.open(member_name) as f,
     ):
-        _assert_seek_underflow_matches_bytesio(f)
+        assert_seek_underflow_matches_bytesio(f)
 
 
 # ---------------------------------------------------------------------------
@@ -648,9 +615,9 @@ def test_corpus_seek_underflow_matches_bytesio(
                 with pytest.raises(ValueError) as excinfo:
                     f.seek(-1)
                 assert type(excinfo.value) is ValueError
-                _assert_unknown_whence_is_value_error(f)
+                assert_unknown_whence_is_value_error(f)
                 return
-            _assert_seek_underflow_matches_bytesio(f)
+            assert_seek_underflow_matches_bytesio(f)
 
 
 def _assert_forward_only(f) -> None:
