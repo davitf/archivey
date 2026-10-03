@@ -18,15 +18,13 @@ Registers keep the status; this page states the behaviour and links the row.
 | Size | `None`. bzip2 has no size field |
 | Digests | None listed. Every block's CRC and the stream's combined CRC are checked on read, the combined one when the read reaches the end of the stream (§2.3) |
 | Metadata | None beyond the shared fields |
-| Truncation | Always raised: `TruncatedError` from the standard library, `CorruptionError` through the accelerator (§5) |
+| Truncation | Always raised: `TruncatedError`, after the same bytes with the accelerator off and on (§2.3) |
 | Refuses | Nothing bzip2-specific |
 
-**Three things a reader might expect and will not find.** `member.size` is `None` until the
-whole stream has been read: nothing in the file records it. The error for a cut file
-depends on the accelerator: the same file raises `TruncatedError` with it off and
-`CorruptionError` with it on. And the accelerator has no size threshold the way `rapidgzip`
-has for gzip: under `AUTO` it is used for any bzip2 stream where seeking was declared,
-however small.
+**Two things a reader might expect and will not find.** `member.size` is `None` until the
+whole stream has been read: nothing in the file records it. And the accelerator has no size
+threshold the way `rapidgzip` has for gzip: under `AUTO` it is used for any bzip2 stream
+where seeking was declared, however small.
 
 ## 1. Shape
 
@@ -157,10 +155,26 @@ Otherwise a 7z AES stage's padding after the end marker reaches the decoder, whi
 match on, so `Bzip2Codec._translate_accelerator` matches the text. "Calculated CRC",
 "[BZip2 block", "Huffman", "magic", "bit string", "bad optional access" and a bare
 `std::exception` or "Unknown exception" are `CorruptionError`; each was seen on a corrupt
-file. A cut stream is one of these: under the accelerator every cut in the truncation
-sweep came back as `RuntimeError("std::exception")`, which says nothing about where the
-input ended, so it is `CorruptionError`, not `TruncatedError` (§5). A non-seekable source
-is `StreamNotSeekableError`.
+file. A non-seekable source is `StreamNotSeekableError`.
+
+**The standard library takes over on a data error.** A cut stream is one of those errors:
+under the accelerator every cut in the truncation sweep came back as
+`RuntimeError("std::exception")`, which says nothing about where the input ended. So any
+data error from the accelerator, on a read or a seek, hands the stream to the standard
+library (`_StdlibOnAcceleratorError`, as for gzip), which delivers what it delivers with
+the accelerator off and raises its error: `TruncatedError` for a cut, `CorruptionError` at
+damage. The accelerator decodes ahead of the reader, so on a cut it has usually failed
+before the reader got anything, and the takeover starts at the origin. When the reader is
+further in, the standard library starts at the newest block at or before it from the
+accelerator's index (`available_block_offsets()`, which still answers after the error), and
+keeps up to eight such blocks as seek points. A bzip2 block carries nothing from the blocks
+before it, so a resume is the compressed bits from the block on, shifted to a byte boundary
+behind a made-up `BZh9` header (`bzip2_resume.py`; 9 accepts a block of any level). A
+resumed decode that meets its stream's end marker fails the combined CRC, and `bz2`
+reports that as it reports a damaged block, so either one starts the decode over from the
+origin, which decides. Scanning the source for the block magic instead of reading the index
+would find blocks, but not where their output starts, which only decoding everything before
+them tells.
 
 ### 2.4 Extract
 
@@ -184,7 +198,7 @@ accelerator `OFF` and `ON`.
 | A stream and empty streams (`bzip2 -c /dev/null`) concatenated, the empty ones before, between or after | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` accepts it |
 | The same, with zero bytes between or after the streams | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` warns "trailing garbage after EOF ignored" and exits 0: it stops at the first zero byte |
 | A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, "[Warning] Trailing garbage after EOF ignored!" is also printed to standard error. `bzip2 -t` warns and exits 0 |
-| A stream cut at any of 20 points | `TruncatedError` with the accelerator off, `CorruptionError` with it on. Never a short read with no error |
+| A stream cut at any of 20 points | `TruncatedError` after the same bytes with the accelerator off and on. Never a short read with no error |
 
 ## 4. Threat surface
 
@@ -210,7 +224,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | `member.size` is `None` for a `.bz2` | **format** | No size field (§1) |
-| A cut `.bz2` raises `TruncatedError` with the accelerator off and `CorruptionError` with it on | **library** | The accelerator reports only `std::exception` (§2.3). Catch `ReadError` for both |
 | Opening a small `.bz2` decodes up to 900 kB | **format** | Open-time validation needs the first block (§1, §2.2) |
 | "[Warning] Trailing garbage after EOF ignored!" on standard error | **library** | The accelerator prints it for bytes after the last stream in a standalone file; archivey cannot route it into diagnostics. Tracked internally |
 | A backward seek re-decodes from the start | **format** | Install `[seekable]` and pass `seekable_members=True` |
@@ -231,6 +244,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
 | Find the accelerator's end from its compressed position and scan the source | Its warning goes to standard error, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
 | The scan skips whole empty streams as well as zeros | The compressed position stops before trailing empty streams, and the standard library engine reads them as part of the data | Reading the end from the decoder's block offsets, whose last entry is where an end-of-stream marker starts: undocumented, and it forces the full index |
+| On a data error from the accelerator, the standard library takes over and gives the verdict (maintainer ruling, 2026-10-03) | The accelerator must not change what a cut or damaged file delivers or raises; its `std::exception` names no cause | Mapping `std::exception` to `TruncatedError`, which would mislabel damage |
+| The takeover resumes at a block from the accelerator's index | A block needs no window; decoding again from the origin costs as much as the bytes already delivered | Scanning the source for the block magic, which gives no decompressed offset |
 | Translate the accelerator's errors by message text | They carry no distinct type; each string was seen on a real corrupt file | Treating every `RuntimeError` as corruption, which would hide archivey's own bugs |
 
 ## 7. Open questions
@@ -240,8 +255,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - **Standard error output from the accelerator** on trailing bytes. Removing it needs an
   upstream option or clipping a standalone file to its last end marker, which is only found
   by decoding. Tracked internally.
-- **Telling truncation from damage under the accelerator.** It would need `rapidgzip` to
-  report where decoding stopped; today `std::exception` carries nothing.
 
 ## 8. Verify
 
@@ -249,7 +262,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 ./scripts/test.sh tests/test_single_file.py tests/test_accelerator_corruption.py \
     tests/test_accelerator_truncation_abort.py tests/test_seekable_streams.py \
     tests/test_detection.py tests/test_exception_handlers.py \
-    tests/test_stream_trailing_data.py -k "bz"
+    tests/test_stream_trailing_data.py tests/test_accelerator_takeover.py -k "bz"
 ```
 
 | Claim | Pinned by |
@@ -259,6 +272,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A seek before the first read does not bypass the check | `::test_indexed_bzip2_seek_before_read_still_raises` |
 | Empty streams anywhere in the file are data in every accelerator and access mode; bytes after them report at the same offset | `tests/test_stream_trailing_data.py::test_empty_bzip2_streams_are_part_of_the_data`, `::test_bytes_after_empty_bzip2_streams_are_reported_past_them`, `::test_the_accelerator_scan_finds_empty_streams_across_its_reads` |
 | Accelerator errors become `CorruptionError`; intact files read clean | `::test_indexed_bzip2_corrupt_translates_to_corruption`, `::test_indexed_bzip2_intact_reads_clean` |
+| A cut or damaged stream delivers the same bytes and error with the accelerator off, `AUTO` and `ON`, for a cut in the first block, a later block, the end marker and a second stream; seeks after a takeover | `tests/test_accelerator_takeover.py::test_a_cut_bzip2_reads_as_it_does_with_the_accelerator_off`, `::test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off`, `::test_after_a_takeover_seeks_back_and_forward_read_the_data` |
+| A resume from any block reproduces the data and never gives a verdict at the stream's end | `tests/test_accelerator_takeover.py::test_every_block_resumes_to_the_stream_end`, `::test_the_bit_shifter_matches_a_whole_shift` |
 | The caller's source exception reaches the caller unchanged | `::test_bzip2_callers_source_exception_reaches_the_caller_unchanged`, `tests/test_exception_handlers.py::test_bzip2_accelerator_traps_a_failing_caller_source` |
 | bzip2 stays in-process | `tests/test_accelerator_truncation_abort.py::test_bzip2_stays_in_process` |
 | The rewind report with the accelerator off; `ON` without the package | `tests/test_seekable_streams.py::test_bzip2_accelerator_off_warns_on_rewind`, `::test_bzip2_accelerator_on_without_package_raises` |
