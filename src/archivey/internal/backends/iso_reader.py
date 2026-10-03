@@ -526,8 +526,9 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 ) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 
 
-# Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier.
-_VERSION_SUFFIX = re.compile(r";(\d+)$")
+# Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
+# not ``$``: ``$`` also matches before a final newline, which would drop it from the name.
+_VERSION_SUFFIX = re.compile(r";(\d+)\Z")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
@@ -551,7 +552,12 @@ def _nm_name(record: DirectoryRecord) -> bytes | None:
 def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
     """``name`` without its ``;N`` version, and ``N`` (``None`` without one).
 
-    ``iso9660`` also drops an empty extension's ``.`` and leaves a bare ``;N`` alone.
+    With ``iso9660`` (plain ISO 9660 identifiers), an empty extension's ``.`` goes too
+    (``FOO.;1`` is ``FOO``), and a bare ``;N`` is a name, not a version: it comes back
+    unchanged with ``None``. Without it (Joliet), the suffix always goes and its version
+    is reported, so ``;1`` becomes ``""`` with version 1. Neither Joliet caller lets that
+    empty name reach a member: ``_joliet_name`` drops it in ``_ascii_runs_match``, and
+    ``_joliet_text`` only feeds extent matching.
     """
     match = _VERSION_SUFFIX.search(name)
     if match is None or (iso9660 and match.start() == 0):
@@ -1161,15 +1167,15 @@ class IsoReader(BaseArchiveReader):
         return presented, version or 0
 
     def _decode_bytes_name(
-        self, raw: bytes, joliet_record: DirectoryRecord | None = None
+        self, raw: bytes, *, rr_record: DirectoryRecord | None = None
     ) -> str:
         """Decode a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target.
 
         Nothing in the image says which charset these bytes are in: a Rock Ridge name
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
         valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
-        does for its names, then by the Joliet name of ``joliet_record`` when one is
-        given (``_joliet_name``), and with UTF-8 and ``surrogateescape`` otherwise.
+        does for its names, then by the name of the Joliet counterpart of the Rock Ridge
+        record ``rr_record`` when one is given (``_joliet_name``), and with UTF-8 and ``surrogateescape`` otherwise.
 
         Decoding always returns. A codec ``open_archive`` accepted can still fail on
         these bytes (``utf-32`` on a length that is not a multiple of four, or
@@ -1177,11 +1183,11 @@ class IsoReader(BaseArchiveReader):
         with no ``encoding=``.
         """
         decoded = self._decode_known(raw)
-        if decoded is None and joliet_record is not None:
+        if decoded is None and rr_record is not None:
             # Only a Rock Ridge image has Rock Ridge names and link targets to fall
             # back from.
             assert self._namespace == "rock_ridge"
-            decoded = self._joliet_name(joliet_record, raw)
+            decoded = self._joliet_name(rr_record, raw)
         if decoded is None:
             decoded = raw.decode("utf-8", errors="surrogateescape")
         return decoded
@@ -1310,7 +1316,7 @@ class IsoReader(BaseArchiveReader):
         if self._namespace == "rock_ridge":
             nm = _nm_name(record)
             if nm is not None:
-                return self._decode_bytes_name(nm, joliet_record=record), nm
+                return self._decode_bytes_name(nm, rr_record=record), nm
             ident = _iso_ident_name(record)
             return self._decode_bytes_name(ident), ident
         ident = bytes(record.file_identifier())
@@ -1691,6 +1697,8 @@ class IsoReader(BaseArchiveReader):
             px = getattr(entries, "px_record", None)
             if px is not None:
                 mode = getattr(px, "posix_file_mode", None)
+                # Only the mode is type-checked: ``_make_member`` calls
+                # ``stat.S_IMODE`` on it, while uid and gid pass through untouched.
                 return (
                     mode if isinstance(mode, int) else None,
                     getattr(px, "posix_user_id", None),
@@ -1731,7 +1739,7 @@ class IsoReader(BaseArchiveReader):
             # ``_joliet_name`` registers ``here`` for the member's diagnostic, as the
             # walk's own ``_record_name`` does with the same record and bytes, so which
             # of the two runs first changes nothing.
-            parts.append(self._decode_bytes_name(component, joliet_record=here))
+            parts.append(self._decode_bytes_name(component, rr_record=here))
             directory = here if here is not None and here.is_dir() else None
         return "/".join(parts)
 
