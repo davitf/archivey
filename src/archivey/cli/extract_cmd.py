@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TextIO
@@ -298,7 +298,24 @@ def _walk_stays_inside(
     return current
 
 
-def _links_stay_inside(root: Path) -> bool:
+def _disk_links(root: Path) -> Iterator[tuple[PurePath, str]]:
+    """Each symlink under ``root`` with its target, listed from disk as it is read."""
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    yield Path(entry.path), os.readlink(entry.path)
+                elif entry.is_dir():
+                    pending.append(Path(entry.path))
+
+
+def _links_stay_inside(
+    root: PurePath,
+    links: Iterable[tuple[PurePath, str]],
+    readlink: Callable[[PurePath], str | None] = _readlink_on_disk,
+) -> bool:
     """Whether every symlink under ``root`` reaches its target without leaving ``root``.
 
     The hoist moves ``root`` one level up after extraction checked its links against
@@ -313,29 +330,19 @@ def _links_stay_inside(root: Path) -> bool:
     The walk follows each symlink on the way, so a chain cannot hide a climb, and an
     absolute target always blocks. A path that ends at nothing is walked by name. A
     directory that cannot be listed blocks too: what is under it was not checked.
+
+    ``links`` and ``readlink`` come from the disk, read lazily, or a dry run's record.
     """
-    pending = [root]
-    while pending:
-        directory = pending.pop()
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if entry.is_symlink():
-                        target = os.readlink(entry.path)
-                        if (
-                            _walk_stays_inside(
-                                directory, target, root, [_MAX_LINK_HOPS]
-                            )
-                            is None
-                        ):
-                            return False
-                    elif entry.is_dir():
-                        pending.append(Path(entry.path))
-        except OSError:
-            # A directory the walk cannot list could hold anything: keep the tree
-            # where it is rather than move what was not looked at.
-            return False
-    return True
+    try:
+        return all(
+            _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS], readlink)
+            is not None
+            for path, target in links
+        )
+    except OSError:
+        # A directory the walk cannot list could hold anything: keep the tree
+        # where it is rather than move what was not looked at.
+        return False
 
 
 def _recorded_links_stay_inside(top: str, links: tuple[tuple[str, str], ...]) -> bool:
@@ -346,33 +353,27 @@ def _recorded_links_stay_inside(top: str, links: tuple[tuple[str, str], ...]) ->
         PurePosixPath(name): target for name, target in links
     }
     root = PurePosixPath(top)
-    for path, target in targets.items():
-        if root not in path.parents:
-            continue
-        if (
-            _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS], targets.get)
-            is None
-        ):
-            return False
-    return True
+    under = ((path, t) for path, t in targets.items() if root in path.parents)
+    return _links_stay_inside(root, under, targets.get)
 
 
-def _keep_reason(wrapper_existed: bool, block: str | None) -> str | None:
+def _keep_reason(
+    wrapper_existed: bool, is_symlink: bool, links_leave: Callable[[], bool]
+) -> str | None:
     """Why the hoist leaves the wrapper's single entry in place, or ``None`` to move it.
 
-    ``block`` is what the tree itself says: ``"symlink"`` when the entry is a symlink,
-    ``"link_leaves"`` when a symlink in it leaves it on the way to its target
-    (:func:`_links_stay_inside`).
+    ``links_leave`` says whether a symlink in the entry leaves it on the way to its
+    target (:func:`_links_stay_inside`); it runs only when nothing earlier settled it.
     """
     if wrapper_existed:
         # The directory is the operator's, and its only entry may be their own file.
         return "the folder was already there, so its content may be your own"
-    if block == "symlink":
+    if is_symlink:
         # A link's relative target is read from its own directory, which the move
         # changes from the wrapper to the working directory: `b -> passwd` would then
         # name the operator's own `passwd`, and `b -> ../etc/passwd` one outside it.
         return "its only entry is a symlink, which the move would repoint"
-    if block == "link_leaves":
+    if links_leave():
         return "a symlink in it points outside it, and would point elsewhere if moved"
     return None
 
@@ -407,14 +408,11 @@ def maybe_hoist_single_root(
     if len(children) != 1:
         return _HoistResult(wrapper)
     child = children[0]
-    block = None
-    if wrapper_existed:
-        pass  # the reason is settled; walking the tree would not change it
-    elif child.is_symlink():
-        block = "symlink"
-    elif child.is_dir() and not _links_stay_inside(child):
-        block = "link_leaves"
-    reason = _keep_reason(wrapper_existed, block)
+    reason = _keep_reason(
+        wrapper_existed,
+        child.is_symlink(),
+        lambda: child.is_dir() and not _links_stay_inside(child, _disk_links(child)),
+    )
     if reason is not None:
         print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
@@ -498,18 +496,15 @@ def predict_hoist(
         return _HoistResult(wrapper)
     ((name, is_dir),) = tops
     links = report._dry_run_links
-    block = None
-    if wrapper_existed:
-        pass  # the reason is settled, as in the hoist
-    elif links is None:
-        # Part of the scratch tree could not be read, and the hoist keeps a tree it
-        # cannot fully walk.
-        block = "link_leaves"
-    elif any(path == name for path, _ in links):
-        block = "symlink"
-    elif is_dir and not _recorded_links_stay_inside(name, links):
-        block = "link_leaves"
-    reason = _keep_reason(wrapper_existed, block)
+    # ``links`` is ``None`` when part of the scratch tree could not be read, and the
+    # hoist keeps a tree it cannot fully walk.
+    reason = _keep_reason(
+        wrapper_existed,
+        links is not None and any(path == name for path, _ in links),
+        lambda: (
+            links is None or (is_dir and not _recorded_links_stay_inside(name, links))
+        ),
+    )
     if reason is not None:
         print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
@@ -544,13 +539,9 @@ def _summary_dest_label(
         if dry_run or target.is_dir():
             return f"{escape_path(target)}/"
         return escape_path(target)
-    tops: set[str] = set()
-    for result in report:
-        if result.status is not ExtractionStatus.EXTRACTED:
-            continue
-        name = result.member.name.strip("/")
-        if name:
-            tops.add(name.split("/", 1)[0])
+    tops = _top_level_names(
+        [r.member for r in report if r.status is ExtractionStatus.EXTRACTED]
+    )
     if len(tops) == 1:
         only = next(iter(tops))
         if dry_run:
