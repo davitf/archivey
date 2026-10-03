@@ -79,7 +79,7 @@ Python built without `ctypes` the `prctl` step is skipped and the child runs on
 (`tests/test_worker_scripts.py`).
 
 A side effect: a non-dumpable process cannot be attached to by `gdb` or `py-spy`, nor its
-`/proc` stacks read, without root or `CAP_SYS_PTRACE`. Nothing in archivey does either;
+`/proc` stacks or `wchan` read, without root or `CAP_SYS_PTRACE`. Nothing in archivey does either;
 the one place it bites is the stress harness's own stack capture of a stalled child
 (§6).
 
@@ -147,8 +147,9 @@ process group per iteration, under named scenarios (`serial`, `xdist`, `xdist_2x
 `contended`, `suite_neighbours`, `file_mode_only`, `main_step`). A plugin logs each test's
 start and finish and each child's spawn, death and return code. When a test runs past
 `--stall` seconds, it captures the stacks of the worker and of every process under it
-before anything is killed. The rapidgzip and PPMd children are not dumpable (§4), so
-`gdb` and `py-spy` reach them only as root; their `/proc` state and `wchan` still show
-where they wait. `.github/workflows/rapidgzip-resume-stress.yml` runs it on ubuntu py3.11
+before anything is killed. The rapidgzip and PPMd children are not dumpable (§4), so for
+them `wchan` (it reads `0`), the task stacks, `gdb` and `py-spy` all need root or
+`CAP_SYS_PTRACE`; without either, only `/proc/<pid>/status` is left, whose `State` line
+shows that a child sleeps, not where. `.github/workflows/rapidgzip-resume-stress.yml` runs it on ubuntu py3.11
 and py3.14, weekly and on demand (davitf, PR #570 review, decision D1); it is not a
 required check.

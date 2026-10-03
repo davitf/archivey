@@ -19,9 +19,10 @@ return code. When a test runs past ``--stall`` seconds, the harness captures sta
 the worker and of every process under it before anything is killed: the kernel's view
 (``/proc/<pid>/wchan``, ``/proc/<pid>/task/*/stack``), Python's (``faulthandler`` on
 SIGUSR1, registered by the plugin), ``gdb`` if present, and ``py-spy`` if present. The
-rapidgzip and PPMd children are not dumpable, by design, so ``gdb`` and ``py-spy`` can
-attach to them, and their ``/proc`` stacks can be read, only as root (or with
-``CAP_SYS_PTRACE``); their ``/proc`` state and ``wchan`` still show where they wait.
+rapidgzip and PPMd children are not dumpable, by design, so for them ``wchan`` (it reads
+``0``), the task stacks, ``gdb`` and ``py-spy`` all need root or ``CAP_SYS_PTRACE``.
+Without either, only ``/proc/<pid>/status`` is left: its ``State`` line shows that a
+child sleeps, not where.
 
 Scenarios (``--scenarios``):
 
@@ -243,7 +244,7 @@ def _rss_kib(pids: list[int]) -> int:
 # Added under a failed attach to a child: the decoder children are not dumpable.
 _NOT_DUMPABLE = (
     "    (the rapidgzip and PPMd decoder children turn off dumping at start, so "
-    "attaching to one needs root or CAP_SYS_PTRACE)"
+    "attaching to one, or reading its wchan and stacks, needs root or CAP_SYS_PTRACE)"
 )
 
 
