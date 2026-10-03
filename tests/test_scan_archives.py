@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -131,9 +133,47 @@ def _tree(tmp_path: Path) -> Path:
     return root
 
 
+_ARCHIVES = ("top.rar", "a/x.rar", "a/deep/x.rar", "b/x.rar")
+
+
+def _csv_paths(out: Path) -> list[str]:
+    with out.open(encoding="utf-8", newline="", errors="surrogateescape") as fh:
+        return [row["path"] for row in csv.DictReader(fh)]
+
+
+def _progress(out: Path) -> list[dict[str, object]]:
+    text = out.with_suffix(".progress").read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines()]
+
+
+class _Recorder:
+    """Stands in for ``scan_one``: records each call, then runs a scripted action."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.scanned: list[Path] = []
+        # path -> exceptions to raise, one per call, before scanning for real.
+        self.raises: dict[Path, list[BaseException]] = {}
+        real = scan.scan_one
+
+        def fake(path: Path, *args: object, **kwargs: object) -> object:
+            self.scanned.append(path)
+            pending = self.raises.get(path)
+            if pending:
+                raise pending.pop(0)
+            return real(path, *args, **kwargs)
+
+        monkeypatch.setattr(scan, "scan_one", fake)
+
+
+class _Crash(BaseException):
+    """What a process kill looks like from inside: nothing in ``main`` catches it."""
+
+
 def test_walk_reports_a_directory_after_its_subtree(tmp_path: Path) -> None:
     root = _tree(tmp_path)
-    events = [(kind, str(Path(p).relative_to(root))) for kind, p in scan._walk(root)]
+    events = [
+        (kind, Path(p).relative_to(root).as_posix()) for kind, p, _ in scan._walk(root)
+    ]
     assert events == [
         ("file", "top.rar"),
         ("file", "a/notes.txt"),
@@ -147,8 +187,8 @@ def test_walk_reports_a_directory_after_its_subtree(tmp_path: Path) -> None:
         ("dir", "b"),
         ("dir", "."),
     ]
-    skipped = [p for _, p in scan._walk(root, frozenset({str(root / "a")}))]
-    assert not any(p.startswith(str(root / "a")) for p in skipped)
+    skipped = [p for _, p, _ in scan._walk(root, frozenset({str(root / "a")}))]
+    assert not any(Path(p).is_relative_to(root / "a") for p in skipped)
 
 
 def test_resume_skips_what_was_done(
@@ -157,47 +197,192 @@ def test_resume_skips_what_was_done(
     _quiet_main(monkeypatch)
     root = _tree(tmp_path)
     out = tmp_path / "scan.csv"
-    scanned: list[Path] = []
-    real_scan_one = scan.scan_one
-    interrupt = [True]
-
-    def counting(path: Path, *args: object, **kwargs: object) -> object:
-        scanned.append(path)
-        if path == root / "b" / "notes.txt" and interrupt.pop():
-            raise KeyboardInterrupt
-        return real_scan_one(path, *args, **kwargs)
-
-    monkeypatch.setattr(scan, "scan_one", counting)
+    rec = _Recorder(monkeypatch)
+    rec.raises[root / "b" / "notes.txt"] = [KeyboardInterrupt()]
     assert scan.main([str(root), "-o", str(out)]) == 0
-    assert scanned[-1] == root / "b" / "notes.txt"
-    progress = out.with_suffix(".progress").read_text(encoding="utf-8")
-    assert f'"dir": "{root / "a"}"' in progress
+    assert rec.scanned[-1] == root / "b" / "notes.txt"
+    assert {"dir": str(root / "a")} in _progress(out)
 
-    scanned.clear()
-    interrupt.append(False)
-    monkeypatch.setattr(
-        scan,
-        "_list_dir",
-        lambda d, real=scan._list_dir: (
-            pytest.fail(f"listed a finished directory {d}")
-            if Path(d).is_relative_to(root / "a")
-            else real(d)
-        ),
-    )
+    rec.scanned.clear()
+    real_list_dir = scan._list_dir
+
+    def list_dir(directory: str) -> object:
+        if Path(directory).is_relative_to(root / "a"):
+            pytest.fail(f"listed a finished directory {directory}")
+        return real_list_dir(directory)
+
+    monkeypatch.setattr(scan, "_list_dir", list_dir)
     assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
     # The interrupted file is scanned again; nothing already done is.
-    assert scanned == [root / "b" / "notes.txt", root / "b" / "x.rar"]
+    assert rec.scanned == [root / "b" / "notes.txt", root / "b" / "x.rar"]
+    assert sorted(_csv_paths(out)) == sorted(str(root / p) for p in _ARCHIVES)
+    log = out.with_suffix(".log").read_text(encoding="utf-8")
+    assert "== summary: 4 archives" in log
+
+
+@pytest.mark.parametrize("earlier_stops", [0, 1])
+def test_a_row_written_before_its_checkpoint_is_not_written_twice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    earlier_stops: int,
+) -> None:
+    # The process dies between the CSV write and the ``file`` entry, after
+    # ``earlier_stops`` runs died on the same file before writing anything. The row is
+    # already in the CSV, so the resume neither scans it again, nor says it will, nor
+    # adds a ``crashed`` row for it.
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    top = root / "top.rar"
+    rec = _Recorder(monkeypatch)
+    rec.raises[top] = [_Crash() for _ in range(earlier_stops)]
+    real_file_done = scan._Progress.file_done
+    first = [True]
+
+    def file_done(self: object, path: str) -> None:
+        if path == str(top) and first.pop():
+            raise _Crash
+        real_file_done(self, path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(scan._Progress, "file_done", file_done)
+    for run in range(earlier_stops + 1):
+        with pytest.raises(_Crash):
+            scan.main([str(root), "-o", str(out), *(["--resume"] if run else [])])
+    assert _csv_paths(out) == [str(top)]
+    first.append(False)
+    rec.scanned.clear()
+    capsys.readouterr()
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    assert top not in rec.scanned
+    assert sorted(_csv_paths(out)) == sorted(str(root / p) for p in _ARCHIVES)
+    assert "again" not in capsys.readouterr().err
+
+
+def test_resume_cuts_a_torn_last_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A run killed mid-write (a full disk, a power cut) leaves the last line of the
+    # CSV and of the checkpoint torn; appending to it must not glue the next line on.
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    assert scan.main([str(root), "-o", str(out)]) == 0
+    torn = str(root / "a" / "deep" / "x.rar")
+    data = out.read_bytes()
+    keep = data[: data.index(torn.encode()) - 1]  # up to the torn row's start
+    rest = data[len(keep) :]
+    out.write_bytes(keep + rest[: rest.index(b"\r\n") - 40])
+    lines = out.with_suffix(".progress").read_text(encoding="utf-8").splitlines(True)
+    cut = lines.index(json.dumps({"file": torn}) + "\n")
+    out.with_suffix(".progress").write_text(
+        "".join(lines[:cut]) + lines[cut][:10], encoding="utf-8"
+    )
+
+    rec = _Recorder(monkeypatch)
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    assert Path(torn) in rec.scanned
+    assert sorted(_csv_paths(out)) == sorted(str(root / p) for p in _ARCHIVES)
+    rec.scanned.clear()
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    assert rec.scanned == []
+    assert len(_csv_paths(out)) == len(_ARCHIVES)
+
+
+def test_a_damaged_csv_row_is_refused_not_counted(tmp_path: Path) -> None:
+    out = tmp_path / "scan.csv"
+    out.write_text(",".join(scan.COLUMNS) + "\r\nx,1,zip,a,b\r\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="x"):
+        scan._load_rows(out)
+
+
+def test_what_could_not_be_read_is_not_marked_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    real_scandir = os.scandir
+
+    def scandir(path: str) -> object:
+        if Path(path) == root / "a" / "deep":
+            raise PermissionError(13, "Permission denied", path)
+        return real_scandir(path)
+
+    monkeypatch.setattr(scan.os, "scandir", scandir)
+    rec = _Recorder(monkeypatch)
+    rec.raises[root / "b" / "x.rar"] = [OSError(5, "Input/output error")]
+    assert scan.main([str(root), "-o", str(out)]) == 0
+    progress = _progress(out)
+    # Neither the unreadable directory nor any directory above it is done.
+    for directory in (root / "a" / "deep", root / "a", root):
+        assert {"dir": str(directory)} not in progress
+    assert {"file": str(root / "b" / "x.rar")} not in progress
+    log = out.with_suffix(".log").read_text(encoding="utf-8")
+    assert "Permission denied" in log
+    assert "Input/output error" in log
+    assert "not read: 2" in log
+
+    monkeypatch.setattr(scan.os, "scandir", real_scandir)
+    rec.scanned.clear()
+    capsys.readouterr()
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    # A file that raised is retried as a skip, not as a run that stopped on it.
+    assert "stopped while scanning" not in capsys.readouterr().err
+    assert set(rec.scanned) == {
+        root / "a" / "deep" / "notes.txt",
+        root / "a" / "deep" / "x.rar",
+        root / "b" / "x.rar",
+    }
+    assert sorted(_csv_paths(out)) == sorted(str(root / p) for p in _ARCHIVES)
+
+
+def test_a_file_that_kills_the_scan_twice_is_recorded_as_crashed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    killer = root / "a" / "x.rar"
+    rec = _Recorder(monkeypatch)
+    rec.raises[killer] = [_Crash(), _Crash()]
+    with pytest.raises(_Crash):
+        scan.main([str(root), "-o", str(out)])
+    # The first resume tries it again: one stop may have had another cause.
+    with pytest.raises(_Crash):
+        scan.main([str(root), "-o", str(out), "--resume"])
+    assert rec.scanned.count(killer) == 2
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    assert rec.scanned.count(killer) == 2
     with out.open(encoding="utf-8", newline="") as fh:
-        paths = [row["path"] for row in csv.DictReader(fh)]
-    assert sorted(paths) == sorted(
-        str(root / p) for p in ("top.rar", "a/x.rar", "a/deep/x.rar", "b/x.rar")
-    )
-    assert "== summary: 4 archives" in out.with_suffix(".log").read_text(
-        encoding="utf-8"
-    )
+        rows = {row["path"]: row for row in csv.DictReader(fh)}
+    assert rows[str(killer)]["flags"] == "crashed"
+    assert set(rows) == {str(root / p) for p in _ARCHIVES}
+    log = out.with_suffix(".log").read_text(encoding="utf-8")
+    assert f"== {killer}" in log
 
 
-def test_resume_refuses_a_different_root(
+def test_ctrl_c_is_not_counted_as_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    target = root / "a" / "x.rar"
+    rec = _Recorder(monkeypatch)
+    rec.raises[target] = [_Crash(), KeyboardInterrupt(), KeyboardInterrupt()]
+    with pytest.raises(_Crash):
+        scan.main([str(root), "-o", str(out)])
+    for _ in range(2):
+        assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    with out.open(encoding="utf-8", newline="") as fh:
+        rows = {row["path"]: row for row in csv.DictReader(fh)}
+    assert rows[str(target)]["open"] == "ok"
+    assert rec.scanned.count(target) == 4
+
+
+def test_resume_refuses_a_different_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _quiet_main(monkeypatch)
@@ -206,6 +391,63 @@ def test_resume_refuses_a_different_root(
     assert scan.main([str(root / "b"), "-o", str(out)]) == 0
     with pytest.raises(SystemExit, match="start a new scan"):
         scan.main([str(root), "-o", str(out), "--resume"])
+    with pytest.raises(SystemExit, match="start a new scan"):
+        scan.main([str(root / "b"), "-o", str(out), "--resume", "--default-limits"])
+
+
+def test_resume_refuses_the_same_name_from_another_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    for parent in ("one", "two"):
+        _tree(tmp_path / parent)
+    out = tmp_path / "scan.csv"
+    monkeypatch.chdir(tmp_path / "one")
+    assert scan.main(["root", "-o", str(out)]) == 0
+    monkeypatch.chdir(tmp_path / "two")
+    with pytest.raises(SystemExit, match="start a new scan"):
+        scan.main(["root", "-o", str(out), "--resume"])
+
+
+def test_a_new_scan_does_not_overwrite_an_unfinished_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    rec = _Recorder(monkeypatch)
+    rec.raises[root / "a" / "x.rar"] = [KeyboardInterrupt()]
+    assert scan.main([str(root), "-o", str(out)]) == 0
+    before = out.with_suffix(".progress").read_bytes()
+    with pytest.raises(SystemExit, match="--resume"):
+        scan.main([str(root), "-o", str(out)])
+    assert out.with_suffix(".progress").read_bytes() == before
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    # A finished scan may be started over.
+    assert scan.main([str(root), "-o", str(out)]) == 0
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="Windows and macOS refuse non-UTF-8 file names"
+)
+def test_a_non_utf8_file_name_survives_a_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    bad = root / "b" / os.fsdecode(b"bad\xff.rar")
+    bad.write_bytes(FIXTURE.read_bytes())
+    out = tmp_path / "scan.csv"
+    rec = _Recorder(monkeypatch)
+    rec.raises[root / "b" / "x.rar"] = [KeyboardInterrupt()]
+    assert scan.main([str(root), "-o", str(out)]) == 0
+    assert str(bad) in _csv_paths(out)
+    rec.scanned.clear()
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    assert bad not in rec.scanned
+    assert sorted(_csv_paths(out)) == sorted(
+        [str(bad), *(str(root / p) for p in _ARCHIVES)]
+    )
 
 
 def test_row_round_trips_through_the_csv() -> None:
