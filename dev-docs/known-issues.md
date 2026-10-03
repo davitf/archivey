@@ -218,19 +218,16 @@ reader passed, so a cut stream delivers the same bytes as without rapidgzip
 everything it had decoded past the reader: up to the whole stream for a cut file of tens
 of MB with every core decoding.
 
-**CI runs this module in one process.** Under pytest-xdist (`-n 4`, ubuntu py3.11
-`[all]`, 2026-10-02)
-`test_a_large_cut_stream_delivers_what_the_standard_library_delivers [DEFLATE]` killed
-its worker with no output. The job log shows 3 m 41 s between two progress lines, but
-the interrupted line carries 54 results, so the other workers kept finishing tests
-during that gap; it is line buffering, not a frozen box. A silent worker death is what
-pytest-timeout's thread method looks like under xdist (the 60 s timer's stack dump is
-lost), so the test most likely ran past 60 s. Why is open: that one case may simply be
-slow under contention, or the box was oversubscribed: archivey opens rapidgzip with
-`parallelization=0`, every core, so four workers can start four all-core decoders. Not
-confirmed: four concurrent copies of the three large-cut cases plus four CPU burners,
-run 10 times on a 4-core container, all passed in about 11 s. Until the cause is known,
-the module has its own serial CI step.
+**Core dumps of the aborting child (fixed).** Each abort used to write a core dump. A crash
+handler that `core_pattern` pipes to gets the whole core whatever `RLIMIT_CORE` says,
+about 4 GB with every core decoding, and the parent waits until the handler has read it.
+That stalled the main CI step for 68 to 150 s on every run, and lost an xdist worker
+silently at the 60 s timeout five times (2026-10-02 in
+`test_accelerator_truncation_abort.py`; 2026-10-03 four times in
+`test_rapidgzip_resume.py`, py3.11 and py3.13). The child now turns off its own core
+dumps. `test_accelerator_truncation_abort.py` still has its own serial CI step from the
+first occurrence. Details, measurements and the stress harness:
+[`investigations/rapidgzip-worker-deaths.md`](investigations/rapidgzip-worker-deaths.md).
 
 **What remains.** bzip2 still runs in-process, so an input
 that aborts the bzip2 decoder would end the caller's process; none has been found.
