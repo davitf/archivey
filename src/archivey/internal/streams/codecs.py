@@ -778,6 +778,19 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
 
 
 @contextmanager
+def _restoring_position(source: CodecSource) -> Iterator[None]:
+    """Put a stream source back at its position on exit. A path has no position."""
+    if isinstance(source, (str, os.PathLike)):
+        yield
+        return
+    start = source.tell()
+    try:
+        yield
+    finally:
+        source.seek(start)
+
+
+@contextmanager
 def _peeking(source: CodecSource) -> Iterator[BinaryIO]:
     """Read ``source`` without moving it: a path is opened afresh, and a stream's position
     is put back on exit."""
@@ -785,15 +798,12 @@ def _peeking(source: CodecSource) -> Iterator[BinaryIO]:
         with open(os.fspath(source), "rb") as f:
             yield f
         return
-    start = source.tell()
-    try:
+    with _restoring_position(source):
         yield source
-    finally:
-        source.seek(start)
 
 
 def _source_tail(
-    source: CodecSource, size: int, min_length: int
+    source: CodecSource, *, size: int, min_length: int
 ) -> tuple[int | None, bytes | None]:
     """``(source_byte_length, last size bytes)`` of ``source``, without moving it.
 
@@ -836,7 +846,7 @@ def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]
     file; callers needing a hard bound still prefer a container-declared size. Restores the
     source position for a caller-owned stream.
     """
-    length, trailer = _source_tail(source, 4, 18)
+    length, trailer = _source_tail(source, size=4, min_length=18)
     if trailer is None:
         return length, None
     return length, int.from_bytes(trailer, "little")
@@ -1282,7 +1292,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     def _restarting(self, op: Callable[[], _T]) -> _T:
         """Run ``op`` on the inner stream, and once more, on a decoder that starts from
         the start, if a resumed standard-library decode reached the end of its DEFLATE
-        stream."""
+        stream. Only a switched stream decodes with the standard library, so a failure
+        of the repeated call reaches ``read``/``seek`` with ``switched`` set, and they
+        pass it to the caller unchanged."""
         try:
             return op()
         except ResumeReachedStreamEnd:
@@ -1345,6 +1357,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     def _restart_without_resume(self) -> None:
         """Replace a standard-library decoder whose resumed decode reached the end of
         its DEFLATE stream with one that decodes from the start."""
+        assert self.switched, "only a standard-library decoder resumes"
         old = self._inner
         self._replace_inner(self._open_stdlib_at(None))
         try:
@@ -1561,7 +1574,7 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
     the four-byte trailer) or cannot be read; :class:`_ZlibAdlerCheckStream` then goes
     straight to its standard-library confirmation. Restores a stream source's position.
     """
-    trailer = _source_tail(source, 4, 6)[1]
+    trailer = _source_tail(source, size=4, min_length=6)[1]
     if trailer is None:
         return None
     return int.from_bytes(trailer, "big")
@@ -2354,7 +2367,8 @@ class _DeflateFamilyCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO | None:
         """Open ``source`` through rapidgzip, or ``None`` where the standard library
-        decodes it instead (here, an ``AUTO`` open whose child could not start).
+        decodes it instead: here, an ``AUTO`` open whose child could not start; a
+        subclass may add its own cases.
 
         The layers, outermost first: :class:`_StdlibSeekContract`, the
         ``VerifyingStream`` of a declared size (:func:`_wrap_accelerated_length`), the
@@ -2391,8 +2405,9 @@ class _DeflateFamilyCodec(StreamCodec):
         return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
 
     def _accelerated_limit(self, config: StreamConfig) -> int | None:
-        """The ``limit`` of :class:`_StdlibOnAcceleratorError`, which says why only raw
-        DEFLATE sets one."""
+        """The ``limit`` for :class:`_StdlibOnAcceleratorError`: ``None`` for a codec
+        whose stream ends where the standard library ends it. That class's docstring
+        says why only raw DEFLATE sets one."""
         return None
 
     def _end_check(
@@ -2406,9 +2421,11 @@ class _DeflateFamilyCodec(StreamCodec):
         """The wrapper that checks the end of the accelerated data, or ``None``.
 
         Called before the child starts, so what it reads from the source it reads
-        while nothing else does. ``source`` is the caller's; ``accel_source`` is what the
-        child reads, ``reopen`` makes fresh views of it at offset 0, and
-        ``fallback_path`` is its path when it has one.
+        while nothing else does. That is also why reading ``source`` here, outside the
+        lock that ``accel_source``'s views share, is sound: none of them has read yet.
+        ``source`` is the caller's; ``accel_source`` is what the child reads, ``reopen``
+        makes fresh views of it at offset 0, and ``fallback_path`` is its path when it
+        has one.
         """
         return None
 
@@ -2433,6 +2450,8 @@ class GzipCodec(_DeflateFamilyCodec):
     codec = Codec.GZIP
     stream_format = StreamFormat.GZIP
     magic = (MagicSignature(0, b"\x1f\x8b", ArchiveFormat.GZ),)
+    # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
+    # declares a pack size to clip it to and no AES pad follows its data.
     _bounds_source = False
 
     def open(
@@ -3072,11 +3091,8 @@ class ZlibCodec(_ZlibErrorCodec):
     ) -> Callable[[BinaryIO], BinaryIO] | None:
         # Read through the view, which can move the caller's stream under it; put
         # that back, since an AUTO open whose child cannot start decodes from it.
-        if isinstance(source, (str, os.PathLike)):
+        with _restoring_position(source):
             trailer = _zlib_adler_trailer(accel_source)
-        else:
-            with _peeking(source):
-                trailer = _zlib_adler_trailer(accel_source)
         return lambda stream: _ZlibAdlerCheckStream(
             stream, reopen=reopen, trailer=trailer
         )
