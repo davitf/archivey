@@ -1046,8 +1046,9 @@ class ExtractionCoordinator:
                     self._set_result(results, recorded_index, result)
                 else:
                     recorded_index = self._append_result(results, result)
-                kind = original.type.value
-                self._stop_or_log(exc, error, status, kind, original.name)
+                self._stop_or_log(
+                    exc, error, status, kind=original.type.value, name=original.name
+                )
             finally:
                 self._emit_progress = None
                 self._close(stream)
@@ -1467,19 +1468,20 @@ class ExtractionCoordinator:
 
         return self._settle_placement(
             result,
-            requested,
-            prior,
-            collided_with,
-            transformed,
-            results,
-            result_index,
-            collision_map,
-            dest,
+            requested=requested,
+            prior=prior,
+            collided_with=collided_with,
+            transformed=transformed,
+            results=results,
+            result_index=result_index,
+            collision_map=collision_map,
+            dest=dest,
         )
 
     def _settle_placement(
         self,
         result: ExtractionResult,
+        *,
         requested: Path,
         prior: _Claim | None,
         collided_with: Path | None,
@@ -1705,6 +1707,7 @@ class ExtractionCoordinator:
         exc: ArchiveyError | OSError,
         error: ArchiveyError | OSError,
         status: ExtractionStatus,
+        *,
         kind: str,
         name: str,
     ) -> None:
@@ -2054,7 +2057,7 @@ class ExtractionCoordinator:
             # nothing. There is nothing to write, and nothing here went wrong, so this
             # is a LINK_TARGET_UNAVAILABLE result rather than a per-member failure that
             # OnError.STOP would turn into an aborted extraction.
-            # Checked before _prepare_destination so a member we are not going to
+            # Checked before _make_room so a member we are not going to
             # write cannot unlink an existing destination under OverwritePolicy.REPLACE.
             return ExtractionResult(
                 original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
@@ -2249,12 +2252,17 @@ class ExtractionCoordinator:
                 # One failed source, N failed links: the fan-out is recorded on the
                 # results themselves, so a caller can tell N separate failures from one
                 # failure seen N times without joining against a diagnostic. The second
-                # pass records FAILED whatever the error, so only OnError can stop it.
-                error, _ = self._classify(exc, member.name)
+                # pass records FAILED, so only OnError can stop it.
+                error, status = self._classify(exc, member.name)
+                # Nothing the second pass runs raises FilterRejectionError.
+                assert status is ExtractionStatus.FAILED
                 self._record_failure_group(results, group, error)
-                kind = "orphaned hardlink source"
                 self._stop_or_log(
-                    exc, error, ExtractionStatus.FAILED, kind, member.name
+                    exc,
+                    error,
+                    status,
+                    kind="orphaned hardlink source",
+                    name=member.name,
                 )
             finally:
                 self._close(stream)
@@ -2268,10 +2276,19 @@ class ExtractionCoordinator:
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.
         for source_id in needed:
-            err = ExtractionError("Hardlink source was not found on the second pass")
-            self._record_failure_group(results, orphans_by_source[source_id], err)
-            if self._stops_on_failure():
-                raise err
+            group = orphans_by_source[source_id]
+            name = group[0].source.name
+            err = ExtractionError(
+                "Hardlink source was not found on the second pass", member_name=name
+            )
+            self._record_failure_group(results, group, err)
+            self._stop_or_log(
+                err,
+                err,
+                ExtractionStatus.FAILED,
+                kind="orphaned hardlink source",
+                name=name,
+            )
 
     def _record_failure_group(
         self,
@@ -2311,8 +2328,8 @@ class ExtractionCoordinator:
         ``presented_name`` rewrite, and the ``requested_path`` the member asked for. A
         rebuild that does not supply them must not erase them — results are the sole
         record, so a dropped field is a fact lost rather than a fact reported elsewhere.
-        Unlike ``_set_result`` it moves no progress tally: no progress report follows
-        the second pass.
+        Unlike ``_set_result`` it moves no progress tally: ``_report_progress`` is
+        called only from the main member loop, which has finished by the second pass.
         """
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
@@ -2370,10 +2387,9 @@ class ExtractionCoordinator:
         # (a deferred link's key may have been claimed after it was orphaned).
         #
         # Unlike the main pass, neither orphan path adds what it writes to
-        # ``written_paths``; this keeps it that way.
-        remaining = list(group)
-        while remaining:
-            orphan = remaining.pop(0)
+        # ``written_paths``.
+        remaining: list[_Orphan] = []
+        for index, orphan in enumerate(group):
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original,
                 orphan.transformed,
@@ -2392,17 +2408,18 @@ class ExtractionCoordinator:
                 )
             result = self._settle_placement(
                 result,
-                orphan.dest_path,
-                prior,
-                collided_with,
-                orphan.transformed,
-                results,
-                orphan.result_index,
-                collision_map,
-                dest,
+                requested=orphan.dest_path,
+                prior=prior,
+                collided_with=collided_with,
+                transformed=orphan.transformed,
+                results=results,
+                result_index=orphan.result_index,
+                collision_map=collision_map,
+                dest=dest,
             )
             self._revise_result(results, orphan.result_index, result)
             if result.status is ExtractionStatus.EXTRACTED:
+                remaining = group[index + 1 :]
                 break
         # Nothing remains when every link's destination already exists under SKIP:
         # then nothing was written either.
@@ -2479,8 +2496,10 @@ class ExtractionCoordinator:
         except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
-            # FAILED whatever the error, as for an orphaned source.
-            error, _ = self._classify(exc, orphan.original.name)
+            # FAILED, as for an orphaned source.
+            error, status = self._classify(exc, orphan.original.name)
+            # Nothing the second pass runs raises FilterRejectionError.
+            assert status is ExtractionStatus.FAILED
             self._revise_result(
                 results,
                 orphan.result_index,
@@ -2495,19 +2514,19 @@ class ExtractionCoordinator:
             )
             # A single link's failure, not a source fan-out: no group id.
             name = orphan.original.name
-            self._stop_or_log(exc, error, ExtractionStatus.FAILED, "hardlink", name)
+            self._stop_or_log(exc, error, status, kind="hardlink", name=name)
             return
         # Not added to ``written_paths``: see ``_materialize_orphan_source``.
         result = self._settle_placement(
             result,
-            orphan.dest_path,
-            prior,
-            collided_with,
-            orphan.transformed,
-            results,
-            orphan.result_index,
-            collision_map,
-            dest,
+            requested=orphan.dest_path,
+            prior=prior,
+            collided_with=collided_with,
+            transformed=orphan.transformed,
+            results=results,
+            result_index=orphan.result_index,
+            collision_map=collision_map,
+            dest=dest,
         )
         self._revise_result(results, orphan.result_index, result)
 
