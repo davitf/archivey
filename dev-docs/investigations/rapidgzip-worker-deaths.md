@@ -117,14 +117,19 @@ difference. `systemd-coredump.socket` is active; apport is installed but inactiv
 | the whole step | 295–431 s | 106–144 s |
 | worker deaths | 4 in the last 10 runs | none |
 
-**Stress workflow with the fix** (run 37129260952, py3.11 and py3.14): `serial`, `xdist`,
-`xdist_2x`, `contended` (4 CPU burners) and `file_mode_only` were clean in 10 of 10
-iterations each: 0 failures, stalls or worker deaths in 100 (50 per Python), with the
-slowest test 6.6 s.
+**Stress workflow with the fix** (runs 37129260952 and 37134373725, py3.11 and py3.14):
+0 failures, stalls, worker deaths or timeouts in 226 iterations:
+
+- `serial`, `xdist`, `xdist_2x`, `contended` (4 CPU burners) and `file_mode_only`: 0 in
+  200 (20 per scenario per Python);
+- `suite_neighbours`: 0 in 20 (10 per Python);
+- `main_step`, the whole main CI step under the 60 s thread-method timeout, as CI runs
+  it: 0 in 6 (3 per Python), with the slowest test 10.7 s.
+
 `coredumpctl` listed no rapidgzip core after them, only small cores (24 KB to 48 MB) from
-tests that crash other processes on purpose. That run's `suite_neighbours` and
-`main_step` iterations all failed on one unrelated test, `test_benchmark_structural_gate`,
-which needs `unrar`, and the workflow had not installed it. It does now.
+tests that crash other processes on purpose. (The first run's `suite_neighbours` and
+`main_step` iterations had all failed on one unrelated test, `test_benchmark_structural_gate`,
+which needs `unrar`; the workflow installs it since.)
 
 **Locally** (4 CPUs), without a pipe handler (`core_pattern` `core`, limit 0, so no core
 either way), 0 failures, stalls or worker deaths in every scenario: `xdist` 0 in 106 (17
