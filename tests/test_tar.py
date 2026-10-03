@@ -1470,7 +1470,7 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
             self._payloads = payloads
             self._listed = members
             for m in members:
-                BaseArchiveReader._index_member_name(self._listed_by_name, m)
+                self._index_member_name(m)
             self._publish_materialized(error=None)
 
         def _iter_members(self):

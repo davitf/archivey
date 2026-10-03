@@ -105,13 +105,11 @@ class ListingLimitTracker:
 
     def account_member(self, member: ArchiveMember, *, enforce: bool = True) -> None:
         next_count = self.member_count + 1
-        added = member_metadata_bytes(member)
-        next_bytes = self.metadata_bytes + added
         if enforce:
             self._check_members(next_count)
-            self._check_metadata(next_bytes)
+        # Raises before storing, so a refused member changes neither total.
+        self._add_bytes(member_metadata_bytes(member), enforce=enforce)
         self.member_count = next_count
-        self.metadata_bytes = next_bytes
 
     def account_link_target(self, target: str, *, enforce: bool = True) -> None:
         """Add a link target that was resolved after its member was registered.
