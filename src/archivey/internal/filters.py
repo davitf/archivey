@@ -37,6 +37,15 @@ _SEP_SPLIT = re.compile(r"[\\/]")
 _SEP_KEEP_SPLIT = re.compile(r"([\\/])")
 
 
+def _map_segments(name: str, fn: Callable[[str], str]) -> str:
+    """``name`` with ``fn`` applied to each segment between separators (``/`` or
+    ``\\``); the separators are kept exactly as they are."""
+    return "".join(
+        part if part in ("/", "\\") else fn(part)
+        for part in _SEP_KEEP_SPLIT.split(name)
+    )
+
+
 def _is_absolute(name: str) -> bool:
     """Whether ``name`` is an absolute path: a POSIX root, a UNC share, or a drive letter."""
     if name.startswith("/") or name.startswith("\\"):
@@ -104,7 +113,7 @@ def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
 
 
 def _within(path: Path, root: Path) -> bool:
-    return path == root or path.is_relative_to(root)
+    return path.is_relative_to(root)
 
 
 def _escapes(path: Path, root: Path) -> bool:
@@ -352,16 +361,9 @@ _RESERVED_NAMES = frozenset(
 
 
 def _is_reserved_segment(segment: str) -> bool:
+    """Whether ``segment`` names a Windows reserved device: its first dot-separated
+    component, stripped of surrounding whitespace the way Win32 strips it."""
     return segment.partition(".")[0].strip().upper() in _RESERVED_NAMES
-
-
-def _map_segments(name: str, fn: Callable[[str], str]) -> str:
-    """``name`` with ``fn`` applied to each segment between separators (``/`` or
-    ``\\``); the separators are kept exactly as they are."""
-    return "".join(
-        part if part in ("/", "\\") else fn(part)
-        for part in _SEP_KEEP_SPLIT.split(name)
-    )
 
 
 def _sanitize_portable_name(name: str) -> str:
