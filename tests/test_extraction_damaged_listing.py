@@ -21,6 +21,7 @@ import pytest
 
 from archivey import ArchiveyConfig, ListingLimits, OnError, open_archive
 from archivey.exceptions import ResourceLimitError
+from tests.conftest import requires_binary
 from tests.test_audit2_cross_format import _rar4_blocks, _rar5_blocks
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -72,11 +73,15 @@ _CASES = [
         _rar_cut("basic_solid__.rar", rar4=False, file_index=2),
         {"file1.txt", "empty_file.txt"},
         id="rar5-solid",
+        # Solid RAR5 member data needs RARLAB unrar.
+        marks=requires_binary("unrar"),
     ),
     pytest.param(
         _rar_cut("hardlinks_solid__.rar", rar4=False, file_index=3),
         {"file1.txt", "subdir/file2.txt", "subdir/hardlink_to_file1.txt"},
         id="rar5-hardlink",
+        # Solid RAR5 member data needs RARLAB unrar.
+        marks=requires_binary("unrar"),
     ),
     pytest.param(_tar_with_hardlink(), {"a.txt", "b.txt"}, id="tar"),
 ]
@@ -166,6 +171,7 @@ def test_selection_inside_the_prefix_still_raises(
             "subdir/hardlink_to_file1.txt",
             "file1.txt",
             id="rar5",
+            marks=requires_binary("unrar"),
         ),
         pytest.param(_tar_with_hardlink(), "b.txt", "a.txt", id="tar"),
     ],
