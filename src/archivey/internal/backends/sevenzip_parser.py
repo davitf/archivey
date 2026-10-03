@@ -38,7 +38,7 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import BinaryIO
+from typing import BinaryIO, NamedTuple
 
 from archivey.config import ListingLimits
 from archivey.exceptions import (
@@ -190,6 +190,30 @@ class _StreamsInfo:
     num_unpackstreams_folders: list[int] | None = None
     unpack_sizes: list[int] | None = None
     digests: list[int | None] | None = None
+
+
+class SignatureHeaderFields(NamedTuple):
+    """The 32-byte 7z signature header, field by field."""
+
+    magic_ok: bool
+    major_version: int
+    minor_version: int
+    start_header_crc_ok: bool
+    next_header_offset: int
+    next_header_size: int
+    next_header_crc: int
+
+
+def unpack_signature_header(signature: bytes) -> SignatureHeaderFields:
+    """Decode a full signature header; detection and the parser each judge the fields."""
+    start_header = signature[12:32]
+    return SignatureHeaderFields(
+        signature[: len(MAGIC_7Z)] == MAGIC_7Z,
+        signature[6],
+        signature[7],
+        crc32(start_header) == int.from_bytes(signature[8:12], "little"),
+        *struct.unpack("<QQI", start_header),
+    )
 
 
 @dataclass(slots=True)
@@ -476,23 +500,25 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     """
     fp.seek(0)
     signature = _read_stream_exact(fp, SIGNATURE_HEADER_SIZE, "7z signature header")
-    if signature[: len(MAGIC_7Z)] != MAGIC_7Z:
+    (
+        magic_ok,
+        major_version,
+        minor_version,
+        start_header_crc_ok,
+        next_header_offset,
+        next_header_size,
+        next_header_crc,
+    ) = unpack_signature_header(signature)
+    if not magic_ok:
         raise CorruptionError("Not a 7z archive: bad magic bytes")
 
-    major_version = signature[6]
-    minor_version = signature[7]
     if major_version != SEVENZIP_MAJOR_VERSION:
         raise UnsupportedFeatureError(
             f"7z format version {major_version}.{minor_version} is not supported"
         )
-    start_header_crc = int.from_bytes(signature[8:12], "little")
-    start_header = signature[12:32]
-    if crc32(start_header) != start_header_crc:
+    if not start_header_crc_ok:
         raise CorruptionError("7z signature header CRC mismatch")
 
-    next_header_offset, next_header_size, next_header_crc = struct.unpack(
-        "<QQI", start_header
-    )
     if next_header_offset > _MAX_SEEK_OFFSET:
         raise CorruptionError(
             f"7z next-header offset {next_header_offset} exceeds the seekable range"

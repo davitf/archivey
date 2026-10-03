@@ -7,15 +7,13 @@ the known remaining length from that origin.
 
 from __future__ import annotations
 
-import struct
 from collections.abc import Callable
 
 from archivey.internal.backends.sevenzip_parser import (
-    MAGIC_7Z,
     MAX_NEXT_HEADER_SIZE,
     SEVENZIP_MAJOR_VERSION,
     SIGNATURE_HEADER_SIZE,
-    crc32,
+    unpack_signature_header,
 )
 from archivey.internal.sfx import HitOutcome
 
@@ -50,23 +48,19 @@ def validate_sevenzip_signature_header(
     beat the real payload appended after it.
     """
     header = peek_more(SIGNATURE_HEADER_SIZE)
-    if len(header) < SIGNATURE_HEADER_SIZE or header[: len(MAGIC_7Z)] != MAGIC_7Z:
+    if len(header) < SIGNATURE_HEADER_SIZE:
         return HitOutcome.NOT_THIS_FORMAT
-    major_version = header[6]
-    if major_version != SEVENZIP_MAJOR_VERSION:
+    fields = unpack_signature_header(header)
+    if not fields.magic_ok or fields.major_version != SEVENZIP_MAJOR_VERSION:
         return HitOutcome.NOT_THIS_FORMAT
-    start_header_crc = int.from_bytes(header[8:12], "little")
-    start_header = header[12:32]
-    if crc32(start_header) != start_header_crc:
+    if not fields.start_header_crc_ok:
         return HitOutcome.DAMAGED
-    next_header_offset, next_header_size, _next_header_crc = struct.unpack(
-        "<QQI", start_header
-    )
+    next_header_size = fields.next_header_size
     if next_header_size == 0:
         return HitOutcome.NOT_THIS_FORMAT
     if next_header_size > MAX_NEXT_HEADER_SIZE:
         return HitOutcome.DAMAGED
-    declared = SIGNATURE_HEADER_SIZE + next_header_offset + next_header_size
+    declared = SIGNATURE_HEADER_SIZE + fields.next_header_offset + next_header_size
     if remaining is not None and declared > remaining:
         return HitOutcome.DAMAGED
     if remaining is not None and declared < remaining:
