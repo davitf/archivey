@@ -279,16 +279,20 @@ def test_rar3_sha1_short_seed_is_not_mutated() -> None:
     assert bytes(seed) == original
 
 
-@requires("rarfile")
-def test_rar3_s2k_matches_rarfile_for_a_long_password() -> None:
-    """Long password+salt (> 64 bytes) exercises the mutation path; the
-    derived key/IV must still match rarfile's ``rar3_s2k``.
-    """
-    import rarfile
+def test_rar3_s2k_matches_the_pinned_rarfile_key_for_a_long_password() -> None:
+    """A long password+salt (> 64 bytes), which exercises the mutation path, must
+    derive the key/IV that rarfile's ``rar3_s2k`` recorded for it.
 
+    The expected pair is what ``rarfile.rar3_s2k(password, salt)`` returns (rarfile
+    4.2). It is pinned rather than recomputed because rarfile's pure-Python KDF took
+    as long as ours, 4.5 s, and pinning also runs the check where rarfile is absent.
+    """
     password = "x" * 40  # 80 UTF-16LE bytes + 8-byte salt > 64
     salt = bytes(range(8))
-    assert _rar3_s2k(password, salt) == rarfile.rar3_s2k(password, salt)
+    assert _rar3_s2k(password, salt) == (
+        bytes.fromhex("548d90a03d1323e2dbb745ea3cb7edd8"),
+        bytes.fromhex("6cd51fd9a536aebc2b6749963f02c501"),
+    )
 
 
 _TINYVOL_HP = [f"tinyvol_hp.part{n}.rar" for n in range(1, 5)]
