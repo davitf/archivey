@@ -39,6 +39,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,
+    MemberType,
 )
 
 
@@ -571,6 +572,18 @@ def _dry_run_top_level(report: ExtractionReport) -> tuple[tuple[str, bool], ...]
     return report._dry_run_top_level or ()
 
 
+def _follows_renamed_dir(
+    requested: Path, path: Path, renamed_dirs: dict[Path, Path]
+) -> bool:
+    """Whether ``requested`` -> ``path`` only moved with its nearest ancestor directory
+    already reported as renamed: the same tail under that directory's written name."""
+    for ancestor in requested.parents:
+        renamed_to = renamed_dirs.get(ancestor)
+        if renamed_to is not None:
+            return path == renamed_to / requested.relative_to(ancestor)
+    return False
+
+
 def _report_extraction(
     report: ExtractionReport,
     *,
@@ -603,6 +616,11 @@ def _report_extraction(
     blocked = 0
     failed = 0
     rerooted = 0
+    # Directory renames already reported: requested path -> written path. A member
+    # inside a renamed directory follows it (``dd/f`` -> ``dd (1)/f``) and so also
+    # reports ``requested_path != path``; that is the directory's one rename, not a new
+    # one.
+    renamed_dirs: dict[Path, Path] = {}
     for result in report:
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
@@ -611,8 +629,16 @@ def _report_extraction(
                 result.requested_path is not None
                 and result.path is not None
                 and result.requested_path != result.path
+                # An anti-item deletes; where it deleted is not a rename.
+                and not result.member.is_anti
+                and not _follows_renamed_dir(
+                    result.requested_path, result.path, renamed_dirs
+                )
             )
             if was_renamed:
+                assert result.requested_path is not None and result.path is not None
+                if result.member.type is MemberType.DIRECTORY:
+                    renamed_dirs[result.requested_path] = result.path
                 renamed += 1
                 # Renames change where data lives — always report them.
                 print(

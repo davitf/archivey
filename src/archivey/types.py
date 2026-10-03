@@ -1136,10 +1136,12 @@ class ExtractionResult:
     # The destination the coordinator intended before overwrite/rename resolution. For an
     # ordinary write it equals ``path``; under ``OverwritePolicy.RENAME`` a collided member
     # is written to a derived name, so ``requested_path != path and status == EXTRACTED``
-    # marks the rename; a collision resolved by SKIP/ERROR sets ``requested_path`` with
-    # ``path=None``. ``None`` for members that never reached destination resolution.
-    # On an OVERWRITTEN result it retains the destination the member did write to, so a
-    # caller can join the pair to the replacing member's ``path``.
+    # marks the rename, of the member itself or of a directory it lies inside (``dd/f``
+    # written at ``dd (1)/f``); a collision resolved by SKIP/ERROR sets
+    # ``requested_path`` with ``path=None``. ``None`` for members that never reached
+    # destination resolution. On an OVERWRITTEN result it retains the destination the
+    # member did write to, so a caller can join the pair to the replacing member's
+    # ``path``.
     requested_path: Path | None = None
     # The member's full relative name BEFORE a safety rewrite that reached disk, or
     # ``None`` when none did. The safety rewrites are the portable-name rewrite (O3

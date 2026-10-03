@@ -1461,7 +1461,9 @@ class ExtractionCoordinator:
     ) -> ExtractionResult:
         requested = dest / transformed.name
         self._requested_path = requested
-        target = self._follow_renamed_dirs(requested)
+        target = self._follow_renamed_dirs(
+            requested, is_dir=transformed.type == MemberType.DIRECTORY
+        )
 
         if original.is_anti:
             return replace(
@@ -1522,7 +1524,11 @@ class ExtractionCoordinator:
         # ``results`` instead of two members both reporting EXTRACTED at one path.
         if result.status is ExtractionStatus.EXTRACTED:
             self._mark_overwritten(results, prior)
-            if transformed.type == MemberType.DIRECTORY and result.path != target:
+            if (
+                transformed.type == MemberType.DIRECTORY
+                and not redirected
+                and result.path != target
+            ):
                 self._renamed_dirs[requested] = dest_path
 
         self._register_collision_key(
@@ -1639,21 +1645,23 @@ class ExtractionCoordinator:
         carry. A pre-existing on-disk obstacle is not a collision event and reports
         ``None``, as the diagnostic was also silent for it.
 
-        Directories are structural (parents recur, entries merge) and are not tracked as
-        content collisions. The one exception is RENAME over an entry that is not a real
-        directory (a file or a symlink, the caller's or this run's): the directory gets a
-        ``name (N)`` too, as removing that entry would lose it, and the members inside
-        it follow it there (``_follow_renamed_dirs``). For a tracked member whose key is already claimed THIS run, a
-        collision is deterministic on every OS: route ERROR/SKIP/REPLACE to the prior path
-        so the existing OverwritePolicy machinery handles it uniformly, or derive a fresh
-        ``name (N)`` under RENAME. TRUSTED keys on the exact name and defers to the local
-        OS (no collision *event*, but RENAME still uses the map to avoid re-deriving
-        names). Shared by the main pass and the orphan second pass so deferred hardlinks
-        honour the map too.
+        Directories are structural (parents recur, entries merge) and are never claimed
+        in the map, so a directory member landing on a real directory merges into it.
+        One landing on an entry that is not a real directory (a file or a symlink) goes
+        through the same resolution as any other member: under every policy it collides
+        with a claim this run holds there, so ``collided_with``, the abort and a REPLACE
+        revision of the earlier member work as they do for files. Under RENAME it gets a
+        ``name (N)`` too, as removing that entry would lose it, and the members inside it
+        follow it there (``_follow_renamed_dirs``). For a tracked member whose key is
+        already claimed THIS run, a collision is deterministic on every OS: route
+        ERROR/SKIP/REPLACE to the prior path so the existing OverwritePolicy machinery
+        handles it uniformly, or derive a fresh ``name (N)`` under RENAME. TRUSTED keys
+        on the exact name and defers to the local OS (no collision *event*, but RENAME
+        still uses the map to avoid re-deriving names). Shared by the main pass and the
+        orphan second pass so deferred hardlinks honour the map too.
         """
-        if transformed.type == MemberType.DIRECTORY and not (
-            self._overwrite is OverwritePolicy.RENAME
-            and self._blocks_directory(requested)
+        if transformed.type == MemberType.DIRECTORY and not self._blocks_directory(
+            requested
         ):
             return requested, None, None
         key = self._collision_key(dest, requested)
@@ -1683,7 +1691,7 @@ class ExtractionCoordinator:
     def _blocks_directory(self, path: Path) -> bool:
         """Whether ``path`` holds an entry that is not a real directory: a file or a
         symlink (to a directory too, as it is never written through), which a directory
-        member under RENAME goes around rather than removing."""
+        member cannot merge into."""
         if not self._occupied(path):
             return False
         try:
@@ -1691,12 +1699,19 @@ class ExtractionCoordinator:
         except (OSError, ValueError):
             return False
 
-    def _follow_renamed_dirs(self, requested: Path) -> Path:
+    def _follow_renamed_dirs(self, requested: Path, *, is_dir: bool) -> Path:
         """``requested`` moved under the derived name of the nearest directory RENAME
-        wrote elsewhere (``dd/f`` -> ``dd (1)/f``), or unchanged when none contains it."""
+        wrote elsewhere (``dd/f`` -> ``dd (1)/f``), or unchanged when none contains it.
+
+        Only a directory member also matches itself: a second ``dd/`` merges into
+        ``dd (1)/`` as directories always merge, which a streaming pass needs because
+        the first copy is still in place, superseded, when the second arrives. A file
+        that only shares the renamed directory's name is not inside it, and resolves
+        its own collision from the name it asked for (``dd (2)``, not ``dd (1) (1)``)."""
         if not self._renamed_dirs:
             return requested
-        for ancestor in (requested, *requested.parents):
+        candidates = (requested, *requested.parents) if is_dir else requested.parents
+        for ancestor in candidates:
             renamed = self._renamed_dirs.get(ancestor)
             if renamed is not None:
                 return renamed / requested.relative_to(ancestor)
@@ -2823,10 +2838,10 @@ class ExtractionCoordinator:
             # REPLACE (RENAME members are pre-resolved to a free path, a directory
             # member too when a file or symlink holds its name, so they reach an
             # existing entry here only if it appeared after that check): never
-            # write-through a symlink. For an atomic FILE write,
-            # os.replace handles a file/symlink target atomically, so only a real
-            # directory must be removed up front. Otherwise unlink a symlink/file (bytes
-            # never follow the link). A directory is removed only when it is empty.
+            # write-through a symlink. For an atomic FILE write, os.replace handles a
+            # file/symlink target atomically, so only a real directory must be removed
+            # up front. Otherwise unlink a symlink/file (bytes never follow the link). A
+            # directory is removed only when it is empty.
             if stat.S_ISDIR(existing):
                 # Only an empty directory is removed, as GNU tar does without
                 # --recursive-unlink. Removing a tree takes the members this run wrote

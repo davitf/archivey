@@ -2773,6 +2773,124 @@ def test_rename_directory_over_a_file_this_run_wrote(tmp_path: Path) -> None:
     assert directory.collided_with == dest / "x"
 
 
+def _zip_bytes(specs: list[tuple]) -> bytes:
+    """A zip from the same (kind, name, payload) specs as ``_tar_bytes`` (files and
+    directories only), read with random access rather than as a stream."""
+    buf = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # duplicate names are the point
+        with zipfile.ZipFile(buf, "w") as z:
+            for kind, name, payload in specs:
+                if kind == "dir":
+                    z.writestr(name.rstrip("/") + "/", b"")
+                else:
+                    z.writestr(name, payload)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
+def test_rename_file_named_like_a_renamed_directory_is_not_inside_it(
+    tmp_path: Path, build
+) -> None:
+    """A file that only shares a renamed directory's name takes the next free name.
+
+    The renamed-directory lookup used to match the member's own path, so the file was
+    sent onto the directory's derived name and renamed again from there: ``dd (1) (1)``,
+    a name no member asked for. ``dd`` is the caller's and ``dd (1)`` this run's
+    directory, so the file belongs at ``dd (2)``.
+    """
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    archive = build([("dir", "dd/", None), ("file", "dd", b"member")])
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+
+    directory, member = report.results
+    assert directory.path == dest / "dd (1)"
+    assert member.status is ExtractionStatus.EXTRACTED
+    assert member.requested_path == dest / "dd"
+    assert member.path == dest / "dd (2)"
+    assert (dest / "dd (2)").read_bytes() == b"member"
+    assert (dest / "dd").read_bytes() == b"callers"
+    assert not (dest / "dd (1) (1)").exists()
+
+
+def test_rename_file_after_a_directory_that_went_around_it(tmp_path: Path) -> None:
+    """``[file x, dir x/, file x]``: the later ``x`` replaces the first, not ``x (1)/``.
+
+    The directory collided with the first ``x`` and went to ``x (1)/``. The later
+    ``x`` is a second copy of the first, so it lands at ``x`` again; it used to follow
+    the directory to ``x (1) (1)`` and leave nothing at ``x``.
+    """
+    archive = _tar_bytes(
+        [("file", "x", b"1"), ("dir", "x/", None), ("file", "x", b"3")]
+    )
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+
+    first, directory, last = report.results
+    assert first.status is ExtractionStatus.SUPERSEDED
+    assert directory.path == dest / "x (1)"
+    assert last.status is ExtractionStatus.EXTRACTED
+    assert last.path == dest / "x"
+    assert (dest / "x").read_bytes() == b"3"
+    assert not (dest / "x (1) (1)").exists()
+
+
+def test_rename_second_copy_of_a_renamed_directory_merges_into_it(
+    tmp_path: Path,
+) -> None:
+    """A directory member does match its own renamed path: a second ``dd/`` merges.
+
+    In a streaming pass the first copy is still in place, superseded, when the second
+    arrives, so without the self-match the second copy would get a name of its own and
+    split the tree between ``dd (1)/`` and ``dd (2)/``.
+    """
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    archive = _tar_bytes(
+        [
+            ("dir", "dd/", None),
+            ("file", "dd/f", b"1"),
+            ("dir", "dd/", None),
+            ("file", "dd/g", b"2"),
+        ]
+    )
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert report.results[2].path == dest / "dd (1)"
+    assert (dest / "dd (1)" / "f").read_bytes() == b"1"
+    assert (dest / "dd (1)" / "g").read_bytes() == b"2"
+    assert sorted(p.name for p in dest.iterdir()) == ["dd", "dd (1)"]
+
+
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
+def test_replace_directory_over_a_file_this_run_wrote_revises_it(
+    tmp_path: Path, build
+) -> None:
+    """REPLACE: a directory member that removes a file this run wrote revises that
+    member to OVERWRITTEN, as any other replacement does, instead of leaving it
+    reporting EXTRACTED at a path that now holds a directory."""
+    archive = build([("file", "x", b"first"), ("dir", "x/", None)])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+
+    first, directory = report.results
+    assert first.status is ExtractionStatus.OVERWRITTEN
+    assert directory.status is ExtractionStatus.EXTRACTED
+    assert directory.path == dest / "x"
+    assert directory.requested_path == dest / "x"
+    assert directory.collided_with == dest / "x"
+    assert (dest / "x").is_dir()
+
+
 def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:
     archive = _tar_bytes([("file", "a.txt", b"x")])
     dest = tmp_path / "out"
@@ -3091,6 +3209,52 @@ def test_abort_on_name_collision_fires_on_every_resolution(
             on_error=OnError.CONTINUE,
             abort_on={AbortOn.NAME_COLLISION},
         )
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.ERROR,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_abort_on_name_collision_fires_for_a_directory_member(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """A directory member landing on a file this run wrote is a collision too, under
+    every resolution: the abort follows the collision, not the policy."""
+    archive = _tar_bytes([("file", "x", b"A"), ("dir", "x/", None)])
+    dest = tmp_path / "out"
+    with pytest.raises(NameCollisionError) as excinfo:
+        extract(
+            io.BytesIO(archive),
+            dest,
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+    assert excinfo.value.member_name == "x/"
+    assert (dest / "x").read_bytes() == b"A"
+
+
+def test_abort_on_name_collision_not_triggered_by_a_directory_under_trusted(
+    tmp_path: Path,
+) -> None:
+    """TRUSTED has no collision events, for a directory member as for a file."""
+    archive = _tar_bytes([("file", "x", b"A"), ("dir", "x/", None)])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.RENAME,
+        abort_on={AbortOn.NAME_COLLISION},
+    )
+    directory = report.results[1]
+    assert directory.path == dest / "x (1)"
+    assert directory.collided_with is None
 
 
 def test_abort_on_name_collision_not_triggered_under_trusted(tmp_path: Path) -> None:
@@ -3506,6 +3670,30 @@ def test_collided_with_names_the_blocking_path_for_a_this_run_collision(
     assert blocked.collided_with == dest / "README"
     # The member that got there first collided with nothing.
     assert report.results[0].collided_with is None
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.ERROR,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_collided_with_names_the_file_a_directory_member_landed_on(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    """The same holds for a directory member over a file this run wrote: the field
+    means the same under every policy, not only under RENAME."""
+    archive = _tar_bytes([("file", "x", b"A"), ("dir", "x/", None)])
+    dest = tmp_path / "out"
+    report = extract(
+        io.BytesIO(archive), dest, overwrite=overwrite, on_error=OnError.CONTINUE
+    )
+    first, directory = report.results
+    assert directory.collided_with == dest / "x"
+    assert first.collided_with is None
 
 
 @pytest.mark.parametrize(

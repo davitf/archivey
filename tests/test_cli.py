@@ -9,9 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from archivey import ExtractionReport, ExtractionResult, ExtractionStatus
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
+from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.main import _inject_default_list, main
+from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError
+from archivey.types import ArchiveMember, MemberType
 from tests.corruption_util import raises_corruption_not_truncation
 
 
@@ -536,6 +540,71 @@ def test_extract_reports_renames(
     assert (dest / "a.txt").read_bytes() == b"old"
     # Library rename spelling: "a (1).txt"
     assert any(p.name.startswith("a (") for p in dest.iterdir())
+
+
+def test_extract_reports_a_renamed_directory_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One directory renamed around a file is one rename, however much it holds.
+
+    Every member inside the directory follows it and so reports
+    ``requested_path != path``; the CLI used to print a ``renamed:`` line for each and
+    count them all, so one rename read as a dozen.
+    """
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("dd/", b"")
+        for i in range(3):
+            zf.writestr(f"dd/f{i}", b"x")
+        zf.writestr("dd/s/", b"")
+        zf.writestr("dd/s/g", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    assert (
+        main(["extract", str(z), "-d", str(dest), "--overwrite", "rename"]) == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert _report_lines(err, "renamed:") == ["renamed: dd -> dd (1)"]
+    assert "6 extracted, 1 renamed, 0 skipped" in err
+    assert (dest / "dd (1)" / "s" / "g").read_bytes() == b"y"
+
+
+def test_extract_reports_a_rename_inside_a_renamed_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A member that moved with its directory *and* was renamed on its own is still
+    reported: only the inherited part of the move is collapsed."""
+
+    def result(
+        type_: MemberType, name: str, requested: str, path: str
+    ) -> ExtractionResult:
+        return ExtractionResult(
+            ArchiveMember(type=type_, name=name),
+            tmp_path / path,
+            ExtractionStatus.EXTRACTED,
+            None,
+            requested_path=tmp_path / requested,
+        )
+
+    report = ExtractionReport(
+        results=(
+            result(MemberType.DIRECTORY, "dd/", "dd", "dd (1)"),
+            result(MemberType.FILE, "dd/a", "dd/a", "dd (1)/a"),
+            result(MemberType.FILE, "dd/b", "dd/b", "dd (1)/b (1)"),
+            # An anti-item deletes what an earlier member wrote; where it deleted is
+            # not a rename, though it followed the directory too.
+            result(MemberType.ANTI, "dd/a", "dd/a", "dd (1)/a"),
+        ),
+        diagnostics=DiagnosticSummary.empty(),
+    )
+    err = io.StringIO()
+    _report_extraction(report, target=tmp_path, verbose=False, err=err)
+    assert _report_lines(err.getvalue(), "renamed:") == [
+        "renamed: dd -> dd (1)",
+        "renamed: dd/b -> dd (1)/b (1)",
+    ]
+    assert "4 extracted, 2 renamed, 0 skipped" in err.getvalue()
 
 
 def test_extract_verbose_lists_members(
