@@ -98,14 +98,23 @@ def requires_binary(*names: str) -> pytest.MarkDecorator:
     machines without it stay green. ``unar`` also skips where archivey refuses the one
     on ``PATH`` (:func:`unar_refusal`), and the reason says why.
     """
+    reason = missing_binary_reason(*names)
+    return pytest.mark.skipif(reason is not None, reason=reason or "")
+
+
+def missing_binary_reason(*names: str) -> str | None:
+    """Why a test that needs ``names`` must skip, or ``None`` when it can run.
+
+    The reason :func:`requires_binary` gives, for a test that decides at run time.
+    """
     missing = [n for n in names if shutil.which(n) is None]
-    reason = f"requires external binary(ies): {', '.join(missing)}"
-    if not missing and "unar" in names:
+    if missing:
+        return f"requires external binary(ies): {', '.join(missing)}"
+    if "unar" in names:
         refusal = unar_refusal()
         if refusal is not None:
-            missing = ["unar"]
-            reason = f"requires a unar archivey will use: {refusal}"
-    return pytest.mark.skipif(bool(missing), reason=reason)
+            return f"requires a unar archivey will use: {refusal}"
+    return None
 
 
 def requires_zstd() -> pytest.MarkDecorator:
