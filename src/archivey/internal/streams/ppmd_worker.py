@@ -74,7 +74,8 @@ def disable_core_dumps() -> None:
     since neither worker can import the other; ``tests/test_worker_scripts.py`` keeps
     the two the same.
 
-    Best effort: anything missing (no ``resource`` on Windows, no ``prctl``) is skipped.
+    Best effort: anything missing (no ``resource`` on Windows, a Python built without
+    ``ctypes``, no ``prctl``) is skipped.
     """
     try:
         import resource
@@ -88,7 +89,7 @@ def disable_core_dumps() -> None:
 
             pr_set_dumpable = 4
             ctypes.CDLL(None).prctl(pr_set_dumpable, 0, 0, 0, 0)
-        except (OSError, AttributeError):
+        except (ImportError, OSError, AttributeError):
             pass
 
 

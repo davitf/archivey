@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
-"""Stress-test the rapidgzip cut-stream tests for the silent xdist worker death.
+"""Stress the rapidgzip child-process path under pytest, and catch a stalled test.
 
-Background
-----------
-Twice an ubuntu py3.11 ``[all]`` CI job lost a pytest-xdist worker with no output
-(``[gwN] node down: Not properly terminated``) in a test that reads a cut gzip, zlib or
-raw DEFLATE stream through the rapidgzip child process:
-
-- 2026-10-02: ``test_accelerator_truncation_abort.py::
-  test_a_large_cut_stream_delivers_what_the_standard_library_delivers[DEFLATE]``;
-- 2026-10-03 (run 37122014346): ``test_rapidgzip_resume.py::
-  test_a_cut_stream_delivers_what_the_standard_library_delivers[Codec.GZIP-0.999-file]``.
+gzip, zlib and raw DEFLATE decode through rapidgzip in a child process, which rapidgzip
+aborts on every stream that ends early. In 2026-10 the cut-stream tests stalled the main
+CI step and lost pytest-xdist workers with no output: each abort wrote a core dump of
+several GB to the runner's crash handler while the test waited. The children now turn
+their core dumps off; ``dev-docs/investigations/rapidgzip-worker-deaths.md`` has the
+cause and the measurements. This harness stays for the next stall on that path.
 
 Under xdist a worker that dies of SIGSEGV or SIGABRT prints ``Fatal Python error`` (CI
 sets ``PYTHONFAULTHANDLER=1``); one that pytest-timeout's thread method ends, or that
-SIGKILL ends, prints nothing. See ``dev-docs/known-issues.md`` (rapidgzip Bug 4, "CI
-runs this module in one process").
+SIGKILL ends, prints nothing. So the harness watches each test itself.
 
 Each iteration runs pytest in a fresh process group, so a stall or a crash ends one
 iteration and not the harness. A small plugin, loaded into pytest and into every xdist
@@ -23,7 +18,10 @@ worker, logs each test's start and finish and each rapidgzip child's spawn, deat
 return code. When a test runs past ``--stall`` seconds, the harness captures stacks of
 the worker and of every process under it before anything is killed: the kernel's view
 (``/proc/<pid>/wchan``, ``/proc/<pid>/task/*/stack``), Python's (``faulthandler`` on
-SIGUSR1, registered by the plugin), ``gdb`` if present, and ``py-spy`` if present.
+SIGUSR1, registered by the plugin), ``gdb`` if present, and ``py-spy`` if present. The
+rapidgzip and PPMd children are not dumpable, by design, so ``gdb`` and ``py-spy`` can
+attach to them, and their ``/proc`` stacks can be read, only as root (or with
+``CAP_SYS_PTRACE``); their ``/proc`` state and ``wchan`` still show where they wait.
 
 Scenarios (``--scenarios``):
 
@@ -41,12 +39,6 @@ Scenarios (``--scenarios``):
 
     uv run --no-sync python scripts/rapidgzip_resume_stress.py
     uv run --no-sync python scripts/rapidgzip_resume_stress.py 50 --scenarios xdist contended
-    uv run --no-sync python scripts/rapidgzip_resume_stress.py 20 --core-dumps
-
-``--core-dumps`` raises ``RLIMIT_CORE`` to unlimited for pytest and its children, so a
-rapidgzip abort writes a core (hypothesis: a slow core dump crosses the timeout). Core
-files that land in the repository root as ``core`` or ``core.<pid>`` are deleted after
-each iteration.
 
 Exit code is non-zero if any iteration failed, crashed, timed out or stalled. Console
 output is ASCII-safe.
@@ -81,7 +73,6 @@ _MAIN_STEP_IGNORES: tuple[str, ...] = (
     "tests/test_accelerator_shutdown.py",
     "tests/test_accelerator_corruption.py",
     "tests/test_ppmd_raw_streams.py",
-    "tests/test_accelerator_truncation_abort.py",
 )
 
 _DEFAULT_SCENARIOS: tuple[str, ...] = (
@@ -202,7 +193,7 @@ def _read(path: str | Path) -> str:
 
 
 def core_settings() -> str:
-    """``core_pattern`` and the core-size limit: hypothesis 2 depends on both."""
+    """``core_pattern`` and the core-size limit, which decide what a crash costs."""
     soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
 
     def show(value: int) -> str:
@@ -247,6 +238,13 @@ def _rss_kib(pids: list[int]) -> int:
             if line.startswith("VmRSS:"):
                 total += int(line.split()[1])
     return total
+
+
+# Added under a failed attach to a child: the decoder children are not dumpable.
+_NOT_DUMPABLE = (
+    "    (the rapidgzip and PPMd decoder children turn off dumping at start, so "
+    "attaching to one needs root or CAP_SYS_PTRACE)"
+)
 
 
 def _capture_one(pid: int, out: list[str], *, python_dump: Path | None) -> None:
@@ -307,6 +305,8 @@ def _capture_one(pid: int, out: list[str], *, python_dump: Path | None) -> None:
             out.append(done.stdout.strip())
             if done.returncode:
                 out.append(done.stderr.strip()[-2000:])
+                if python_dump is None:  # a child of pytest, not pytest itself
+                    out.append(_NOT_DUMPABLE)
         except subprocess.TimeoutExpired:
             out.append(f"--- {tool}: timed out")
 
@@ -384,19 +384,9 @@ class Result:
     log: Path
 
 
-def _cleanup_cores(since: float) -> int:
-    removed = 0
-    for path in _REPO_ROOT.iterdir():
-        if re.fullmatch(r"core(\.\d+)?", path.name) and path.is_file():
-            if path.stat().st_mtime >= since - 1:
-                path.unlink()
-                removed += 1
-    return removed
-
-
 def run_iteration(
     scenario: str, index: int, argv: list[str], env: dict[str, str], work: Path,
-    *, burners: int, stall: float, hard_timeout: float, core_dumps: bool,
+    *, burners: int, stall: float, hard_timeout: float,
 ) -> Result:  # fmt: skip
     work.mkdir(parents=True, exist_ok=True)
     (work / f"{_PLUGIN_NAME}.py").write_text(_PLUGIN, encoding="utf-8")
@@ -405,12 +395,6 @@ def run_iteration(
         filter(None, [str(work), env.get("PYTHONPATH")])
     )
     log_path = work / "pytest.log"
-
-    def preexec() -> None:
-        if core_dumps:
-            resource.setrlimit(
-                resource.RLIMIT_CORE, (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
-            )
 
     burner_procs = [
         subprocess.Popen([sys.executable, "-c", "while True: pass"])
@@ -424,7 +408,7 @@ def run_iteration(
     with log_path.open("wb") as log:
         proc = subprocess.Popen(
             argv, cwd=_REPO_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
-            start_new_session=True, preexec_fn=preexec,
+            start_new_session=True,
         )  # fmt: skip
         try:
             while proc.poll() is None:
@@ -454,8 +438,6 @@ def run_iteration(
                 os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
     seconds = time.time() - started
-    if core_dumps:
-        _cleanup_cores(started)
     text = _read(log_path)
     failed = re.findall(r"^(?:FAILED|ERROR) (\S+)", text, re.MULTILINE)
     crashed = re.findall(r"worker '(\w+)' crashed while running '([^']+)'", text)
@@ -526,7 +508,7 @@ def summarize(
         "",
         f"- platform: `{platform.platform()}`, {os.cpu_count()} CPUs",
         f"- python: `{sys.version.split()[0]}`",
-        f"- {core_settings()}" + (" (children: unlimited, --core-dumps)" if args.core_dumps else ""),
+        f"- {core_settings()}",
         f"- PYTHONFAULTHANDLER: `{'unset' if args.no_faulthandler else '1'}`",
         f"- per-test timeout: {args.timeout} s ({args.timeout_method}); "
         f"stall capture after {args.stall:.0f} s",
@@ -576,7 +558,7 @@ def summarize(
         lines.append("")
     lines.append(
         "A clean run is not a fix: report the rate as failures in iterations per "
-        "scenario. See `dev-docs/known-issues.md` (rapidgzip Bug 4)."
+        "scenario. See `dev-docs/investigations/rapidgzip-worker-deaths.md`."
     )
     return "\n".join(lines) + "\n"
 
@@ -614,9 +596,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--repeat", type=int, default=10, help="file_mode_only: runs of each case"
-    )
-    parser.add_argument(
-        "--core-dumps", action="store_true", help="RLIMIT_CORE unlimited in pytest"
     )
     parser.add_argument(
         "--no-faulthandler", action="store_true", help="Do not set PYTHONFAULTHANDLER"
@@ -671,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = run_iteration(
                     scenario, i, command, env, root / scenario / f"iter-{i:04d}",
                     burners=burners, stall=args.stall,
-                    hard_timeout=args.iteration_timeout, core_dumps=args.core_dumps,
+                    hard_timeout=args.iteration_timeout,
                 )  # fmt: skip
                 results.append(result)
                 slowest = max(result.events.durations, default=(0.0, "-"))

@@ -73,17 +73,23 @@ limit of 0 (a core file) and, on Linux, `prctl(PR_SET_DUMPABLE, 0)`, which makes
 skip the dump entirely, piped or not. The child still ends with SIGABRT, so the parent's
 reporting is unchanged. With the same counting program installed, no core reached it
 (0 of 84 before), the module ran in 11 s under `-n auto` and 17–18 s serially, and the
-70 s case passed in 3 s.
+70 s case passed in 3 s. Pinned by
+`tests/test_accelerator_truncation_abort.py::test_the_child_writes_no_core_dump`. On a
+Python built without `ctypes` the `prctl` step is skipped and the child runs on
+(`tests/test_worker_scripts.py`).
 
-A side effect: a non-dumpable process cannot be attached to by `gdb` or `py-spy` without
-root. Pinned by `tests/test_accelerator_truncation_abort.py::test_the_child_writes_no_core_dump`.
+A side effect: a non-dumpable process cannot be attached to by `gdb` or `py-spy`, nor its
+`/proc` stacks read, without root or `CAP_SYS_PTRACE`. Nothing in archivey does either;
+the one place it bites is the stress harness's own stack capture of a stalled child
+(§6).
 
 **The PPMd child gets the same.** `ppmd_worker.py` also exists to crash on hostile input,
 and its core is about the size of the model the archive declares plus about 20 MB:
 measured with the same counting program, 28 MB for a 16 MiB model, 280 MB for 256 MiB and
 1.1 GB (1.1 s) for 1 GiB. `max_decoder_memory` allows 2 GiB by default, so a hostile 7z
 could have every crashed member hand about 2 GB to the user's crash handler. It now calls
-the same `disable_core_dumps()` (a copy: neither worker can import the other), and the
+the same `disable_core_dumps()` (a copy, since neither worker can import the other;
+`tests/test_worker_scripts.py` keeps the two the same), and the
 1 GiB crash ends at once. Pinned by
 `tests/test_ppmd_crash_isolation.py::test_the_child_writes_no_core_dump`. `unrar` and
 `unar` are left alone: they are third-party programs that are not expected to crash, and
@@ -130,9 +136,9 @@ in 60 children). Without the abort message that death classifies as `CorruptionE
 but it still counts as a crash on the data, so the standard library takes over and the
 caller gets its bytes and its `TruncatedError`, as the tests check.
 
-**Still open.** `test_accelerator_truncation_abort.py` has had its own serial CI step since
-the first death on 2026-10-02. It can go back into the main step now; that changes a
-required job, so it is the maintainer's call.
+**The serial step is gone.** `test_accelerator_truncation_abort.py` had run in its own
+serial CI step since the first death on 2026-10-02. With the cause fixed it is back in the
+main `-n auto` step (davitf, PR #570 review, decision D2).
 
 ## 6. The harness
 
@@ -141,5 +147,8 @@ process group per iteration, under named scenarios (`serial`, `xdist`, `xdist_2x
 `contended`, `suite_neighbours`, `file_mode_only`, `main_step`). A plugin logs each test's
 start and finish and each child's spawn, death and return code. When a test runs past
 `--stall` seconds, it captures the stacks of the worker and of every process under it
-before anything is killed. `.github/workflows/rapidgzip-resume-stress.yml` runs it on
-ubuntu py3.11 and py3.14; it is not a required check.
+before anything is killed. The rapidgzip and PPMd children are not dumpable (§4), so
+`gdb` and `py-spy` reach them only as root; their `/proc` state and `wchan` still show
+where they wait. `.github/workflows/rapidgzip-resume-stress.yml` runs it on ubuntu py3.11
+and py3.14, weekly and on demand (davitf, PR #570 review, decision D1); it is not a
+required check.

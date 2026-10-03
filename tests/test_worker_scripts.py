@@ -10,14 +10,19 @@ from __future__ import annotations
 
 import ast
 import inspect
+import subprocess
+import sys
 import textwrap
+from types import FunctionType
+
+import pytest
 
 from archivey.internal.streams import ppmd_worker, rapidgzip_worker
 
 
-def _code_without_docstring(function: object) -> str:
+def _code_without_docstring(function: FunctionType) -> str:
     """``function``'s code as an AST dump, without its docstring, comments or layout."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))  # type: ignore[arg-type]
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
     body = tree.body[0]
     assert isinstance(body, ast.FunctionDef)
     if (
@@ -37,3 +42,24 @@ def test_both_workers_turn_off_core_dumps_the_same_way() -> None:
     assert _code_without_docstring(
         rapidgzip_worker.disable_core_dumps
     ) == _code_without_docstring(ppmd_worker.disable_core_dumps)
+
+
+@pytest.mark.parametrize("worker", ["ppmd_worker", "rapidgzip_worker"])
+def test_turning_off_core_dumps_survives_a_python_without_ctypes(worker: str) -> None:
+    """A Python built without ``_ctypes`` (no libffi at build time, some minimal images)
+    still runs the workers: turning dumps off is best effort, so a missing ``ctypes``
+    skips the ``prctl`` step instead of ending the child before it decodes."""
+    probe = textwrap.dedent(
+        f"""
+        import sys
+        sys.modules["ctypes"] = None  # import ctypes now raises ImportError
+        from archivey.internal.streams.{worker} import disable_core_dumps
+        disable_core_dumps()
+        print("returned")
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "returned"

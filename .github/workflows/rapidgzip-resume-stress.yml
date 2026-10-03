@@ -1,19 +1,19 @@
 name: rapidgzip resume stress
 
-# Investigation vehicle for the silent pytest-xdist worker death in the rapidgzip
-# cut-stream tests (`[gwN] node down: Not properly terminated`, no traceback), seen on
-# the ubuntu py3.11 [all] main CI step in tests/test_accelerator_truncation_abort.py
-# (2026-10-02) and tests/test_rapidgzip_resume.py (2026-10-03, twice). See
-# dev-docs/known-issues.md (rapidgzip Bug 4, "CI runs this module in one process")
-# and scripts/rapidgzip_resume_stress.py.
+# Stresses the rapidgzip child-process path (gzip, zlib and raw DEFLATE decode in a
+# child that rapidgzip aborts on every cut stream) with scripts/rapidgzip_resume_stress.py,
+# and captures the stacks of any test that stalls. In 2026-10 the cut-stream tests
+# stalled the main CI step and lost xdist workers with no output: each abort wrote a
+# multi-GB core to the runner's crash handler while the test waited. The cause and the
+# fix are in dev-docs/investigations/rapidgzip-worker-deaths.md.
 #
-# Runs on every PR and on pushes to main so it keeps giving signal, but it is its *own*
-# workflow on purpose: do **not** add this check as a required status check, and do not
-# make the main CI depend on it. A red run here must not block merge.
+# On demand and weekly, not per PR (davitf, PR #570 review, decision D1): the main CI
+# step runs the same tests on every push, and a weekly run catches drift such as a
+# runner image changing core_pattern. It is its *own* workflow on purpose: do **not**
+# add this check as a required status check, and do not make the main CI depend on it.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"
   workflow_dispatch:
     inputs:
       iterations:
@@ -26,7 +26,7 @@ on:
         default: "3"
 
 concurrency:
-  group: rapidgzip-resume-stress-${{ github.event.pull_request.number || github.ref }}
+  group: rapidgzip-resume-stress-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # All three worker deaths were on ubuntu py3.11 [all]; 3.14 is the control.
+          # The oldest and newest Python the main CI's ubuntu [all] legs run.
           - { os: ubuntu-latest, python-version: "3.11" }
           - { os: ubuntu-latest, python-version: "3.14" }
     env:
@@ -76,7 +76,7 @@ jobs:
           uv pip install --python ${{ matrix.python-version }} py-spy
 
       - name: Show the runner (core dumps, limits, memory)
-        # Hypothesis 2 (a slow core dump of the aborting child) depends on these.
+        # What a crash costs here depends on these (see the investigation page).
         run: |
           echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
           echo "ulimit -c: $(ulimit -c)"
@@ -96,9 +96,9 @@ jobs:
           --summary rgz-stress-summary-${{ env.TAG }}.md
 
       - name: Stress the whole main CI test step
-        # The only setting that has reproduced the worker death so far. vmstat samples
-        # the box every 5 s: a stall across every worker shows as a run queue, iowait
-        # or swap spike, where one hung test does not.
+        # The main CI step as it runs, the setting where the 2026-10 deaths happened.
+        # vmstat samples the box every 5 s: a stall across every worker shows as a run
+        # queue, iowait or swap spike, where one hung test does not.
         if: always() && steps.sync.outcome == 'success'
         run: |
           vmstat -t -w 5 > vmstat-${TAG}.log 2>&1 &

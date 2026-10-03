@@ -225,8 +225,9 @@ That stalled the main CI step for 68 to 150 s on every run, and lost an xdist wo
 silently at the 60 s timeout five times (2026-10-02 in
 `test_accelerator_truncation_abort.py`; 2026-10-03 four times in
 `test_rapidgzip_resume.py`, py3.11 and py3.13). The child now turns off its own core
-dumps. `test_accelerator_truncation_abort.py` still has its own serial CI step from the
-first occurrence. Details, measurements and the stress harness:
+dumps, and `test_accelerator_truncation_abort.py`, which had run in its own serial CI
+step since the first occurrence, is back in the main step. Details, measurements and the
+stress harness:
 [`investigations/rapidgzip-worker-deaths.md`](investigations/rapidgzip-worker-deaths.md).
 
 **What remains.** bzip2 still runs in-process, so an input
@@ -344,7 +345,7 @@ stacks are not in a PPMd decode.
    `DecompressorStream` or `verify.py`.
 
 **CI bandage (not a root-cause fix).** The required `[all]` and `[all-lowest]` jobs in
-`.github/workflows/ci.yml` split the suite into five steps, each with
+`.github/workflows/ci.yml` split the suite into four steps, each with
 `PYTHONFAULTHANDLER=1`:
 
 ```text
@@ -355,11 +356,7 @@ pytest tests/ \
   --ignore=tests/test_rapidgzip_deflate_zlib.py \
   --ignore=tests/test_accelerator_shutdown.py \
   --ignore=tests/test_accelerator_corruption.py \
-  --ignore=tests/test_ppmd_raw_streams.py \
-  --ignore=tests/test_accelerator_truncation_abort.py -q -n auto --no-cov
-
-# 1b) The rapidgzip truncation module, in one process (see Bug 4)
-pytest tests/test_accelerator_truncation_abort.py -q --no-cov
+  --ignore=tests/test_ppmd_raw_streams.py -q -n auto --no-cov
 
 # 2) Accelerator stream modules, one fresh subprocess each (coverage off, breadcrumbs)
 python scripts/ci_run_native_modules.py
@@ -407,11 +404,8 @@ for i in $(seq 1 20); do
     --ignore=tests/test_rapidgzip_deflate_zlib.py \
     --ignore=tests/test_accelerator_shutdown.py \
     --ignore=tests/test_accelerator_corruption.py \
-    --ignore=tests/test_ppmd_raw_streams.py \
-    --ignore=tests/test_accelerator_truncation_abort.py -q -n auto --no-cov \
+    --ignore=tests/test_ppmd_raw_streams.py -q -n auto --no-cov \
     || { echo "main FAILED pass $i rc=$?"; break; }
-  uv run --python 3.11 --no-sync pytest tests/test_accelerator_truncation_abort.py \
-    -q --no-cov || { echo "truncation FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
     || { echo "accelerators FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
