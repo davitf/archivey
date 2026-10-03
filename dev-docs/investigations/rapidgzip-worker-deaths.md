@@ -100,9 +100,10 @@ difference. `systemd-coredump.socket` is active; apport is installed but inactiv
 | the whole step | 295–431 s | 106–144 s |
 | worker deaths | 4 in the last 10 runs | none |
 
-**Stress workflow with the fix** (run 37129260952, py3.14): `serial`, `xdist`, `xdist_2x`,
-`contended` (4 CPU burners) and `file_mode_only` were clean in 10 of 10 iterations each:
-0 failures, stalls or worker deaths in 50, with the slowest test 4.9 s.
+**Stress workflow with the fix** (run 37129260952, py3.11 and py3.14): `serial`, `xdist`,
+`xdist_2x`, `contended` (4 CPU burners) and `file_mode_only` were clean in 10 of 10
+iterations each: 0 failures, stalls or worker deaths in 100 (50 per Python), with the
+slowest test 6.6 s.
 `coredumpctl` listed no rapidgzip core after them, only small cores (24 KB to 48 MB) from
 tests that crash other processes on purpose. That run's `suite_neighbours` and
 `main_step` iterations all failed on one unrelated test, `test_benchmark_structural_gate`,
