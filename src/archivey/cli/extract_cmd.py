@@ -575,8 +575,8 @@ def _dry_run_top_level(report: ExtractionReport) -> tuple[tuple[str, bool], ...]
 def _follows_renamed_dir(
     requested: Path, path: Path, renamed_dirs: dict[Path, Path]
 ) -> bool:
-    """Whether ``requested`` -> ``path`` only moved with its nearest ancestor directory
-    already reported as renamed: the same tail under that directory's written name."""
+    """Whether ``requested`` -> ``path`` only moved with its nearest renamed ancestor
+    directory: the same tail under that directory's written name."""
     for ancestor in requested.parents:
         renamed_to = renamed_dirs.get(ancestor)
         if renamed_to is not None:
@@ -616,11 +616,20 @@ def _report_extraction(
     blocked = 0
     failed = 0
     rerooted = 0
-    # Directory renames already reported: requested path -> written path. A member
+    # Every directory rename in the run: requested path -> written path. A member
     # inside a renamed directory follows it (``dd/f`` -> ``dd (1)/f``) and so also
     # reports ``requested_path != path``; that is the directory's one rename, not a new
-    # one.
-    renamed_dirs: dict[Path, Path] = {}
+    # one. Collected before the walk, as the result that carries the rename is not
+    # always first: with the directory stored twice, it is the later copy, after the
+    # members written between the two.
+    renamed_dirs = {
+        r.requested_path: r.path
+        for r in report.results
+        if r.member.type is MemberType.DIRECTORY
+        and r.requested_path is not None
+        and r.path is not None
+        and r.requested_path != r.path
+    }
     for result in report:
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
@@ -636,9 +645,6 @@ def _report_extraction(
                 )
             )
             if was_renamed:
-                assert result.requested_path is not None and result.path is not None
-                if result.member.type is MemberType.DIRECTORY:
-                    renamed_dirs[result.requested_path] = result.path
                 renamed += 1
                 # Renames change where data lives — always report them.
                 print(

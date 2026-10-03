@@ -165,8 +165,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
   Directories are not in the collision map, and archivey checks a directory member
   against it only when a file or symlink already holds its destination. So a *file* `x`
-  and a *directory* `x/` collide everywhere. A *file* `Foo` and a *directory* `foo/` that
-  differ only by case collide only on a case-insensitive filesystem.
+  collides with a *directory* `x/` stored after it, but not with one stored before it.
+  A *file* `Foo` and a later *directory* `foo/` that differ only by case collide only
+  on a case-insensitive filesystem.
 - **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
   with context; genuine I/O errors propagate unchanged; no handler swallows or
   reclassifies an unknown exception.

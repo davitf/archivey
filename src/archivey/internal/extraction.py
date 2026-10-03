@@ -497,6 +497,14 @@ class ExtractionCoordinator:
         # the path it was written to. Members inside such a directory follow it there
         # (``_follow_renamed_dirs``). Reset per ``run()``.
         self._renamed_dirs: dict[Path, Path] = {}
+        # Directories this run wrote: written path -> indices of the EXTRACTED results
+        # that report it. Not collision claims (directories merge, so they never go in
+        # the collision map); kept so a REPLACE that removes an empty directory this run
+        # wrote can revise that result to OVERWRITTEN. Reset per ``run()``.
+        self._written_dirs: dict[Path, list[int]] = {}
+        # The current run's results, for the revision above, which happens in
+        # ``_prepare_destination`` where no caller passes them.
+        self._results: list[ExtractionResult] = []
         # A streaming pass's superseded copies, left in place while the later copy of the
         # same name is handled so that copy can replace one atomically: path -> index of
         # the superseded result. Only for the length of one member; see
@@ -737,6 +745,7 @@ class ExtractionCoordinator:
         forward_only = reader._streaming
         self._rename_next = {}
         self._renamed_dirs = {}
+        self._written_dirs = {}
         self._stale = {}
         self._unremoved = {}
         self._streaming_now = None
@@ -817,6 +826,7 @@ class ExtractionCoordinator:
         )
 
         results: list[ExtractionResult] = []
+        self._results = results
         # source member_id -> list of on-disk paths holding that source's content.
         source_paths: dict[int, list[Path]] = {}
         written_paths: set[Path] = set()
@@ -1524,12 +1534,10 @@ class ExtractionCoordinator:
         # ``results`` instead of two members both reporting EXTRACTED at one path.
         if result.status is ExtractionStatus.EXTRACTED:
             self._mark_overwritten(results, prior)
-            if (
-                transformed.type == MemberType.DIRECTORY
-                and not redirected
-                and result.path != target
-            ):
-                self._renamed_dirs[requested] = dest_path
+            if transformed.type == MemberType.DIRECTORY and result.path is not None:
+                self._written_dirs.setdefault(result.path, []).append(result_index)
+                if not redirected and result.path != target:
+                    self._renamed_dirs[requested] = dest_path
 
         self._register_collision_key(
             collision_map, dest, transformed, result, result_index
@@ -2634,11 +2642,17 @@ class ExtractionCoordinator:
         can."""
         if prior is None or self._overwrite is not OverwritePolicy.REPLACE:
             return
-        clobbered = results[prior.result_index]
+        self._revise_to_overwritten(results, prior.result_index)
+
+    def _revise_to_overwritten(
+        self, results: list[ExtractionResult], index: int
+    ) -> None:
+        """Revise result ``index`` to OVERWRITTEN, keeping where it had written."""
+        clobbered = results[index]
         if clobbered.status is ExtractionStatus.SUPERSEDED:
             # A superseded copy the filesystem would not remove: it keeps its status.
             return
-        results[prior.result_index] = replace(
+        results[index] = replace(
             clobbered,
             path=None,
             status=ExtractionStatus.OVERWRITTEN,
@@ -2857,6 +2871,11 @@ class ExtractionCoordinator:
                 self._note_link_change(dest_path)
                 os.rmdir(dest_path)
                 self._removed_existing = True
+                # A directory member of this run that wrote it no longer has it. This is
+                # not a collision event (directories are never claimed), so only the
+                # result is revised; ``collided_with`` is untouched.
+                for index in self._written_dirs.pop(dest_path, ()):
+                    self._revise_to_overwritten(self._results, index)
             else:
                 if moves_links:
                     self._note_link_change(dest_path)

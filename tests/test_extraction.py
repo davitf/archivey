@@ -2891,6 +2891,28 @@ def test_replace_directory_over_a_file_this_run_wrote_revises_it(
     assert (dest / "x").is_dir()
 
 
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
+def test_replace_file_over_an_empty_directory_this_run_wrote_revises_it(
+    tmp_path: Path, build
+) -> None:
+    """REPLACE: a file member that removes an empty directory this run wrote revises
+    that directory's result to OVERWRITTEN, instead of leaving it reporting EXTRACTED
+    at a path that now holds a file. Directories are not collision claims, so this is
+    not a collision event and ``collided_with`` stays ``None``."""
+    archive = build([("dir", "x/", None), ("file", "x", b"file")])
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+
+    directory, member = report.results
+    assert directory.status is ExtractionStatus.OVERWRITTEN
+    assert directory.path is None
+    assert directory.requested_path == dest / "x"
+    assert member.status is ExtractionStatus.EXTRACTED
+    assert member.path == dest / "x"
+    assert member.collided_with is None
+    assert (dest / "x").read_bytes() == b"file"
+
+
 def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:
     archive = _tar_bytes([("file", "a.txt", b"x")])
     dest = tmp_path / "out"

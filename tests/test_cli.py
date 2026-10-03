@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -568,6 +569,42 @@ def test_extract_reports_a_renamed_directory_once(
     assert _report_lines(err, "renamed:") == ["renamed: dd -> dd (1)"]
     assert "6 extracted, 1 renamed, 0 skipped" in err
     assert (dest / "dd (1)" / "s" / "g").read_bytes() == b"y"
+
+
+def test_extract_reports_a_renamed_directory_stored_twice_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With the directory entry stored twice, the first copy is superseded and the
+    rename is carried by the later one. The members written between the two still
+    only moved with the directory, and are not reported as renames."""
+    a = tmp_path / "a.tar"
+    with tarfile.open(a, "w") as tf:
+
+        def add(name: str, data: bytes | None) -> None:
+            info = tarfile.TarInfo(name)
+            if data is None:
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                tf.addfile(info)
+            else:
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+        add("dd/", None)
+        for i in range(5):
+            add(f"dd/f{i}", b"x")
+        add("dd/", None)
+        add("dd/g", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    assert (
+        main(["extract", str(a), "-d", str(dest), "--overwrite", "rename"]) == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert _report_lines(err, "renamed:") == ["renamed: dd -> dd (1)"]
+    assert "7 extracted, 1 renamed, 1 skipped" in err
+    assert (dest / "dd (1)" / "f4").read_bytes() == b"x"
 
 
 def test_extract_reports_a_rename_inside_a_renamed_directory(
