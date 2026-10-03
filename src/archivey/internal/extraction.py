@@ -497,11 +497,13 @@ class ExtractionCoordinator:
         # the path it was written to. Members inside such a directory follow it there
         # (``_follow_renamed_dirs``). Reset per ``run()``.
         self._renamed_dirs: dict[Path, Path] = {}
-        # Directories this run wrote: written path -> indices of the EXTRACTED results
-        # that report it. Not collision claims (directories merge, so they never go in
-        # the collision map); kept so a REPLACE that removes an empty directory this run
-        # wrote can revise that result to OVERWRITTEN. Reset per ``run()``.
-        self._written_dirs: dict[Path, list[int]] = {}
+        # Directories this run wrote: collision key of the written path -> indices of the
+        # EXTRACTED results that report it. Not collision claims (directories merge, so
+        # they never go in the collision map), but keyed the same way, so a directory
+        # reached through the archive's own symlink or by a case variant is one entry.
+        # Kept so a REPLACE that removes an empty directory this run wrote can revise
+        # that result to OVERWRITTEN. Reset per ``run()``.
+        self._written_dirs: dict[str, list[int]] = {}
         # The current run's results, for the revision above, which happens in
         # ``_prepare_destination`` where no caller passes them.
         self._results: list[ExtractionResult] = []
@@ -1006,11 +1008,11 @@ class ExtractionCoordinator:
                         tracker.start_member(original)
                         member_started = True
                         if self._on_progress is not None:
-                            # Capture counters for intra-member reports: members_done is
-                            # members fully completed *before* this one.
+                            # Capture members_done for intra-member reports: members fully
+                            # completed *before* this one. The outcome tallies are read
+                            # live: they change only when a member completes, except that
+                            # this member's REPLACE can revise an earlier result first.
                             done_so_far = members_done
-                            extracted_so_far = self._members_extracted
-                            blocked_so_far = self._members_blocked
                             current = original
 
                             def emit_progress() -> None:
@@ -1021,8 +1023,8 @@ class ExtractionCoordinator:
                                     done_so_far,
                                     members_total,
                                     member_bytes_written=tracker.member_bytes,
-                                    members_extracted=extracted_so_far,
-                                    members_blocked=blocked_so_far,
+                                    members_extracted=self._members_extracted,
+                                    members_blocked=self._members_blocked,
                                 )
 
                             self._emit_progress = emit_progress
@@ -1535,7 +1537,9 @@ class ExtractionCoordinator:
         if result.status is ExtractionStatus.EXTRACTED:
             self._mark_overwritten(results, prior)
             if transformed.type == MemberType.DIRECTORY and result.path is not None:
-                self._written_dirs.setdefault(result.path, []).append(result_index)
+                self._written_dirs.setdefault(
+                    self._collision_key(dest, result.path), []
+                ).append(result_index)
                 if not redirected and result.path != target:
                     self._renamed_dirs[requested] = dest_path
 
@@ -2644,6 +2648,27 @@ class ExtractionCoordinator:
             return
         self._revise_to_overwritten(results, prior.result_index)
 
+    def _revise_removed_directory(self, removed: Path) -> None:
+        """Revise the directory results this run wrote at ``removed`` to OVERWRITTEN.
+
+        Looked up by collision key, so a result that reached the same directory through
+        a symlink or a case variant is found. A casefolded key can also cover a
+        different directory on a case-sensitive filesystem (``X/`` beside ``x/``), so a
+        result is revised only when its own path is gone; the others stay recorded."""
+        key = self._collision_key(self._dest, removed)
+        indices = self._written_dirs.pop(key, None)
+        if not indices:
+            return
+        kept: list[int] = []
+        for index in indices:
+            path = self._results[index].path
+            if path is not None and os.path.lexists(path):
+                kept.append(index)
+            else:
+                self._revise_to_overwritten(self._results, index)
+        if kept:
+            self._written_dirs[key] = kept
+
     def _revise_to_overwritten(
         self, results: list[ExtractionResult], index: int
     ) -> None:
@@ -2873,9 +2898,11 @@ class ExtractionCoordinator:
                 self._removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
-                # result is revised; ``collided_with`` is untouched.
-                for index in self._written_dirs.pop(dest_path, ()):
-                    self._revise_to_overwritten(self._results, index)
+                # result is revised; ``collided_with`` is untouched. Only under REPLACE:
+                # RENAME reaches this arm only after a filesystem race, with nothing of
+                # this run's here, and OVERWRITTEN is a REPLACE outcome.
+                if self._overwrite is OverwritePolicy.REPLACE:
+                    self._revise_removed_directory(dest_path)
             else:
                 if moves_links:
                     self._note_link_change(dest_path)

@@ -2901,7 +2901,12 @@ def test_replace_file_over_an_empty_directory_this_run_wrote_revises_it(
     not a collision event and ``collided_with`` stays ``None``."""
     archive = build([("dir", "x/", None), ("file", "x", b"file")])
     dest = tmp_path / "out"
-    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    report = extract(
+        io.BytesIO(archive),
+        dest,
+        overwrite=OverwritePolicy.REPLACE,
+        abort_on={AbortOn.NAME_COLLISION},  # not a collision event: no abort
+    )
 
     directory, member = report.results
     assert directory.status is ExtractionStatus.OVERWRITTEN
@@ -2911,6 +2916,85 @@ def test_replace_file_over_an_empty_directory_this_run_wrote_revises_it(
     assert member.path == dest / "x"
     assert member.collided_with is None
     assert (dest / "x").read_bytes() == b"file"
+
+
+def test_replace_revises_a_directory_reached_through_the_archives_symlink(
+    tmp_path: Path,
+) -> None:
+    """``s/sub/`` and ``d/sub/`` are one directory when ``s -> d``: removing it revises
+    both results, not only the one spelled the way the replacing member spells it."""
+    archive = _tar_bytes(
+        [
+            ("dir", "d/", None),
+            ("sym", "s", "d"),
+            ("dir", "s/sub/", None),
+            ("dir", "d/sub/", None),
+            ("file", "d/sub", b"file"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+
+    top, link, via_link, direct, member = report.results
+    assert via_link.status is ExtractionStatus.OVERWRITTEN
+    assert direct.status is ExtractionStatus.OVERWRITTEN
+    assert top.status is ExtractionStatus.EXTRACTED
+    assert link.status is ExtractionStatus.EXTRACTED
+    assert member.status is ExtractionStatus.EXTRACTED
+    assert (dest / "d" / "sub").read_bytes() == b"file"
+
+
+def _case_sensitive(path: Path) -> bool:
+    probe = path / "CaseProbe"
+    probe.write_bytes(b"")
+    try:
+        return not (path / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
+def test_replace_keeps_a_case_variant_directory_that_is_still_there(
+    tmp_path: Path,
+) -> None:
+    """The casefolded key also covers ``X/`` beside ``x/`` on a case-sensitive
+    filesystem. Removing ``x/`` must not revise ``X/``, which is still on disk."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if not _case_sensitive(dest):
+        pytest.skip(
+            "needs a case-sensitive filesystem, where X/ and x/ are two entries"
+        )
+    archive = _tar_bytes(
+        [("dir", "X/", None), ("dir", "x/", None), ("file", "x", b"f")]
+    )
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE)
+    upper, lower, member = report.results
+    assert lower.status is ExtractionStatus.OVERWRITTEN
+    assert upper.status is ExtractionStatus.EXTRACTED
+    assert (dest / "X").is_dir()
+    assert member.status is ExtractionStatus.EXTRACTED
+
+
+def test_progress_during_a_replace_follows_the_directory_it_removed(
+    tmp_path: Path,
+) -> None:
+    """While ``x`` replaces the empty ``x/`` this run wrote, ``members_extracted`` no
+    longer counts ``x/``: the revision happens before the write, and the intra-member
+    reports used to carry a tally copied before it."""
+    archive = _tar_bytes([("dir", "x/", None), ("file", "x", b"\0" * (3 << 20))])
+    reports: list[tuple[str, int, int]] = []
+    extract(
+        io.BytesIO(archive),
+        tmp_path / "out",
+        overwrite=OverwritePolicy.REPLACE,
+        on_progress=lambda p: reports.append(
+            (p.member.name, p.member_bytes_written, p.members_extracted)
+        ),
+    )
+    during = [r for r in reports[:-1] if r[0] == "x"]
+    assert during, reports
+    assert all(extracted == 0 for _, _, extracted in during), reports
+    assert reports[-1] == ("x", 3 << 20, 1)
 
 
 def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:

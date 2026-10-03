@@ -517,7 +517,12 @@ only an **empty** one: a directory that holds entries SHALL NOT be removed, and 
 replacing member SHALL fail with an `ExtractionError` governed by `OnError` (as GNU tar
 does without `--recursive-unlink`). Removing a tree would take the members this run wrote
 into it, which would still report `EXTRACTED`, and the caller's own files when the
-directory was already there.
+directory was already there. When a member of this run wrote the removed directory, under
+any spelling that reaches it (through a directory symlink the archive created, or a case
+variant on a case-insensitive filesystem), that member's result SHALL be revised to
+`OVERWRITTEN`. Its `collided_with` stays `None`: DIRECTORY members are not claimed in the
+collision map, so this revises a result and is not a collision event, and
+`AbortOn.NAME_COLLISION` does not fire.
 
 A DIRECTORY member whose destination is a directory that was there before the run (the
 destination root, for a `./` member, when the call did not create it, or any directory
@@ -568,6 +573,7 @@ name-safety requirement.
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
 | `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
 | `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
+| `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`, with `collided_with=None`; no collision abort |
 | Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
 
 ### Requirement: Extraction as a Composable Module
