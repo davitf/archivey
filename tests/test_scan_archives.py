@@ -409,6 +409,74 @@ def test_resume_refuses_the_same_name_from_another_directory(
         scan.main(["root", "-o", str(out), "--resume"])
 
 
+def test_resume_refuses_the_same_tree_under_another_spelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The done-keys are paths as the root was typed, so a resume that spells the
+    # same tree differently would match none of them and rescan everything.
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    monkeypatch.chdir(tmp_path)
+    rec = _Recorder(monkeypatch)
+    rec.raises[Path("root") / "b" / "x.rar"] = [KeyboardInterrupt()]
+    assert scan.main(["root", "-o", str(out)]) == 0
+    with pytest.raises(SystemExit, match="start a new scan"):
+        scan.main([str(root), "-o", str(out), "--resume"])
+    assert scan.main(["root", "-o", str(out), "--resume"]) == 0
+    assert len(_csv_paths(out)) == len(_ARCHIVES)
+
+
+def test_a_torn_csv_row_is_cut_without_rewriting_the_rows_before_it(
+    tmp_path: Path,
+) -> None:
+    # Rewriting the file would lose every row past an interrupt of the rewrite; a
+    # truncate cannot. Rows a writer would quote differently show that the bytes
+    # before the torn row are the original ones.
+    out = tmp_path / "scan.csv"
+    header = ",".join(scan.COLUMNS) + "\r\n"
+    blanks = "," * (len(scan.COLUMNS) - 1)
+    kept = header + '"a.rar"' + blanks + "\r\n" + '"line\nbreak.rar"' + blanks + "\r\n"
+    # The torn row's path holds the same line break a row ends with.
+    out.write_bytes((kept + '"torn\r\npath.rar",12,zi').encode())
+    rows = scan._load_rows(out)
+    assert [row.path for row in rows] == ["a.rar", "line\nbreak.rar"]
+    assert out.read_bytes() == kept.encode()
+
+
+def test_an_empty_progress_file_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    assert scan.main([str(root), "-o", str(out)]) == 0
+    out.with_suffix(".progress").write_bytes(b"")
+    with pytest.raises(SystemExit, match="no header"):
+        scan.main([str(root), "-o", str(out), "--resume"])
+    assert out.with_suffix(".progress").read_bytes() == b""
+
+
+def test_an_interrupted_resume_of_a_finished_scan_is_not_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A finished scan with a skip writes ``complete``; a resume that retries the skip
+    # and is interrupted leaves that ``complete`` above an unfinished run.
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    rec = _Recorder(monkeypatch)
+    rec.raises[root / "b" / "x.rar"] = [
+        OSError(5, "Input/output error"),
+        KeyboardInterrupt(),
+    ]
+    assert scan.main([str(root), "-o", str(out)]) == 0
+    assert {"complete": True} in _progress(out)
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    with pytest.raises(SystemExit, match="--resume"):
+        scan.main([str(root), "-o", str(out)])
+
+
 def test_a_new_scan_does_not_overwrite_an_unfinished_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

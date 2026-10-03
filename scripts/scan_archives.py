@@ -26,8 +26,10 @@ or not, and every directory whose whole subtree is done. ``--resume`` continues 
 interrupted scan from it: finished directories are not listed again, finished files
 are not opened again, and the CSV and log are appended to. The summary covers the
 whole scan, earlier rows read back from the CSV. A resume does not look for changes
-in what was already scanned; a changed tree is a new scan. Without ``--resume``, the
-script refuses to start over a scan that has not finished.
+in what was already scanned; a changed tree is a new scan. The checkpoint and the CSV
+hold paths as the root was typed, so a resume must name the root the same way (a
+relative root from the same directory); another spelling is refused. Without
+``--resume``, the script refuses to start over a scan that has not finished.
 
 - A file or directory that could not be read is logged under ``not read`` and counted
   in the summary. It is not marked done, so a resume tries it again.
@@ -621,7 +623,8 @@ def _cut_torn_tail(path: Path, keep: int) -> None:
 class _Progress:
     """The checkpoint a resumed scan starts from: one JSON object per line.
 
-    The first line holds the scan's resolved root and ``--default-limits``. Then each
+    The first line holds the scan's root, as typed and resolved, and
+    ``--default-limits``. Then each
     file gets ``{"start": path}`` before it is scanned, and one of three entries after:
     ``{"file": path}`` when it is done, ``{"interrupted": path}`` when Ctrl-C stopped
     its scan, or ``{"skipped": path}`` when it could not be read. ``{"dir": path}``
@@ -638,7 +641,14 @@ class _Progress:
         self.done_files: set[str] = set()
         # Runs that stopped while scanning a file, other than by Ctrl-C.
         self.attempts: Counter[str] = Counter()
-        header = {"root": str(root.resolve()), "default_limits": default_limits}
+        # Both spellings: the resolved root tells a different tree under the same
+        # name apart, and the typed one is the prefix of every path the checkpoint
+        # and the CSV hold, so a resume must spell the root the same way to match.
+        header = {
+            "root": str(root),
+            "resolved_root": str(root.resolve()),
+            "default_limits": default_limits,
+        }
         if resume:
             if not path.exists():
                 raise SystemExit(f"--resume: no progress file {path}")
@@ -649,18 +659,29 @@ class _Progress:
 
     @staticmethod
     def unfinished_scan(path: Path) -> bool:
-        """Whether ``path`` holds a scan whose walk has not reached its end."""
+        """Whether ``path`` holds a scan whose last run has not reached its end.
+
+        Only the last entry counts: a resume of a finished scan (to retry what it could
+        not read) appends after the earlier ``complete``, and can be interrupted.
+        """
         if not path.exists():
             return False
-        with path.open(encoding="utf-8") as fh:
-            return not any(line.startswith('{"complete"') for line in fh)
+        with path.open("rb") as fh:
+            fh.seek(max(0, fh.seek(0, os.SEEK_END) - 4096))
+            tail = fh.read().splitlines()
+        return not tail or tail[-1] != json.dumps({"complete": True}).encode()
 
     def _load(self, header: dict[str, object]) -> None:
         # A run killed mid-write leaves a torn last line; the next run would glue its
         # first entry onto it, so the file is cut back to its last complete line.
         data = self.path.read_bytes()
-        _cut_torn_tail(self.path, data.rfind(b"\n") + 1)
-        lines = data[: data.rfind(b"\n") + 1].decode("utf-8").splitlines()
+        keep = data.rfind(b"\n") + 1
+        lines = data[:keep].decode("utf-8").splitlines()
+        if not lines:
+            raise SystemExit(
+                f"--resume: {self.path} has no header; start a new scan instead"
+            )
+        _cut_torn_tail(self.path, keep)
         for number, line in enumerate(lines, 1):
             try:
                 entry = json.loads(line)
@@ -718,24 +739,39 @@ def _open_csv(path: Path, mode: str) -> Any:
     return path.open(mode, newline="", encoding="utf-8", errors="surrogateescape")
 
 
+def _count_records(text: str) -> int:
+    return sum(1 for _ in csv.reader(io.StringIO(text, newline="")))
+
+
+def _complete_rows(text: str) -> str:
+    """``text`` without its last, torn, record.
+
+    A quoted path can hold a line break, so the record boundary is the last
+    ``\\r\\n`` whose prefix parses as one record fewer, not simply the last one.
+    """
+    records = _count_records(text)
+    end = len(text)
+    while (end := text.rfind("\r\n", 0, end)) >= 0:
+        prefix = text[: end + 2]
+        if _count_records(prefix) == records - 1:
+            return prefix
+    return ""
+
+
 def _load_rows(csv_path: Path) -> list[_Row]:
     """Read back an earlier run's rows, cutting a torn last row off the file.
 
     ``csv.writer`` ends every row with ``\\r\\n``. A file that does not end with it
-    was cut mid-row: that row is dropped from the file, so its archive is scanned
-    again rather than counted as done, and the next row does not land on its tail. A
-    row with the wrong number of fields anywhere else is refused.
+    was cut mid-row: the file is truncated where that row starts, so its archive is
+    scanned again rather than counted as done, and the next row does not land on its
+    tail. Truncating cannot lose a complete row the way rewriting the file could if it
+    were interrupted. A row with the wrong number of fields anywhere else is refused.
     """
     with _open_csv(csv_path, "r") as fh:
         text = fh.read()
     if text and not text.endswith("\r\n"):
-        # A quoted path can hold a newline, so the cut is found by parsing, not by
-        # searching for the last line break.
-        records = list(csv.reader(io.StringIO(text)))
-        with _open_csv(csv_path, "w") as fh:
-            csv.writer(fh).writerows(records[:-1])
-        with _open_csv(csv_path, "r") as fh:
-            text = fh.read()
+        text = _complete_rows(text)
+        _cut_torn_tail(csv_path, len(text.encode("utf-8", "surrogateescape")))
     rows = []
     for record in csv.DictReader(io.StringIO(text, newline="")):
         if None in record or None in record.values():
@@ -782,8 +818,8 @@ def main(argv: list[str] | None = None) -> int:
         "--resume",
         action="store_true",
         help=(
-            "continue an interrupted scan of the same root into the same output, "
-            "skipping what its .progress file records as done"
+            "continue an interrupted scan into the same output, skipping what its "
+            ".progress file records as done; name the root exactly as the first run did"
         ),
     )
     args = parser.parse_args(argv)
