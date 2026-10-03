@@ -1,0 +1,127 @@
+name: rapidgzip resume stress
+
+# Investigation vehicle for the silent pytest-xdist worker death in the rapidgzip
+# cut-stream tests (`[gwN] node down: Not properly terminated`, no traceback), seen on
+# the ubuntu py3.11 [all] main CI step in tests/test_accelerator_truncation_abort.py
+# (2026-10-02) and tests/test_rapidgzip_resume.py (2026-10-03, twice). See
+# dev-docs/known-issues.md (rapidgzip Bug 4, "CI runs this module in one process")
+# and scripts/rapidgzip_resume_stress.py.
+#
+# Runs on every PR and on pushes to main so it keeps giving signal, but it is its *own*
+# workflow on purpose: do **not** add this check as a required status check, and do not
+# make the main CI depend on it. A red run here must not block merge.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Iterations per module-level scenario"
+        required: false
+        default: "10"
+      main_step_iterations:
+        description: "Runs of the whole main CI test step (about 7 min each)"
+        required: false
+        default: "3"
+
+concurrency:
+  group: rapidgzip-resume-stress-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rapidgzip-stress:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }} / rapidgzip resume stress
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # All three worker deaths were on ubuntu py3.11 [all]; 3.14 is the control.
+          - { os: ubuntu-latest, python-version: "3.11" }
+          - { os: ubuntu-latest, python-version: "3.14" }
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      ARCHIVEY_RGZ_STRESS_ITERS: ${{ github.event.inputs.iterations || '10' }}
+      MAIN_STEP_ITERS: ${{ github.event.inputs.main_step_iterations || '3' }}
+      TAG: ${{ matrix.os }}-py${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        id: setup-uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync (dev + all extras)
+        id: sync
+        run: uv sync --python ${{ matrix.python-version }} --group dev --extra all
+
+      - name: Install stack tools (gdb, py-spy; best effort)
+        continue-on-error: true
+        run: |
+          sudo apt-get update && sudo apt-get install -y gdb
+          uv pip install --python ${{ matrix.python-version }} py-spy
+
+      - name: Show the runner (core dumps, limits, memory)
+        # Hypothesis 2 (a slow core dump of the aborting child) depends on these.
+        run: |
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+          echo "ulimit -c: $(ulimit -c)"
+          echo "nproc: $(nproc)"
+          free -m
+          swapon --show || true
+          systemctl is-active apport systemd-coredump.socket 2>/dev/null || true
+          cat /etc/default/apport 2>/dev/null || true
+
+      - name: Stress the module (serial, xdist, contended, neighbours, file mode)
+        # Non-zero exit when any iteration fails, crashes or stalls: intentional.
+        if: steps.sync.outcome == 'success'
+        run: >
+          uv run --python ${{ matrix.python-version }} --no-sync
+          python scripts/rapidgzip_resume_stress.py
+          --keep rgz-stress-logs
+          --summary rgz-stress-summary-${{ env.TAG }}.md
+
+      - name: Stress the whole main CI test step
+        # The only setting that has reproduced the worker death so far. vmstat samples
+        # the box every 5 s: a stall across every worker shows as a run queue, iowait
+        # or swap spike, where one hung test does not.
+        if: always() && steps.sync.outcome == 'success'
+        run: |
+          vmstat -t -w 5 > vmstat-${TAG}.log 2>&1 &
+          VMSTAT=$!
+          status=0
+          uv run --python ${{ matrix.python-version }} --no-sync \
+            python scripts/rapidgzip_resume_stress.py "$MAIN_STEP_ITERS" \
+            --scenarios main_step --timeout-method thread \
+            --keep rgz-stress-logs \
+            --summary rgz-stress-main-step-${TAG}.md || status=$?
+          kill "$VMSTAT" || true
+          exit "$status"
+
+      - name: Kernel and core-dump evidence
+        if: always()
+        run: |
+          sudo dmesg -T | grep -i -E "out of memory|oom|killed process|segfault|traps:" | tail -50 || true
+          ls -la /var/crash 2>/dev/null || true
+          coredumpctl list 2>/dev/null | tail -20 || true
+
+      - name: Upload stress summary and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapidgzip-resume-stress-${{ env.TAG }}
+          path: |
+            rgz-stress-summary-${{ env.TAG }}.md
+            rgz-stress-main-step-${{ env.TAG }}.md
+            vmstat-${{ env.TAG }}.log
+            rgz-stress-logs/
+          if-no-files-found: ignore
