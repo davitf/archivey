@@ -452,7 +452,7 @@ def test_an_empty_progress_file_is_refused(
     out = tmp_path / "scan.csv"
     assert scan.main([str(root), "-o", str(out)]) == 0
     out.with_suffix(".progress").write_bytes(b"")
-    with pytest.raises(SystemExit, match="no header"):
+    with pytest.raises(SystemExit, match="no header; delete it"):
         scan.main([str(root), "-o", str(out), "--resume"])
     assert out.with_suffix(".progress").read_bytes() == b""
 

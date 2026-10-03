@@ -624,13 +624,12 @@ class _Progress:
     """The checkpoint a resumed scan starts from: one JSON object per line.
 
     The first line holds the scan's root, as typed and resolved, and
-    ``--default-limits``. Then each
-    file gets ``{"start": path}`` before it is scanned, and one of three entries after:
-    ``{"file": path}`` when it is done, ``{"interrupted": path}`` when Ctrl-C stopped
-    its scan, or ``{"skipped": path}`` when it could not be read. ``{"dir": path}``
-    follows once a directory's whole subtree is done, and ``{"complete": true}`` once
-    the walk has reached its end. JSON keeps any path intact, newlines and undecodable
-    bytes included.
+    ``--default-limits``. Then each file gets ``{"start": path}`` before it is scanned,
+    and one of three entries after: ``{"file": path}`` when it is done,
+    ``{"interrupted": path}`` when Ctrl-C stopped its scan, or ``{"skipped": path}``
+    when it could not be read. ``{"dir": path}`` follows once a directory's whole
+    subtree is done, and ``{"complete": true}`` once the walk has reached its end. JSON
+    keeps any path intact, newlines and undecodable bytes included.
     """
 
     def __init__(
@@ -679,7 +678,7 @@ class _Progress:
         lines = data[:keep].decode("utf-8").splitlines()
         if not lines:
             raise SystemExit(
-                f"--resume: {self.path} has no header; start a new scan instead"
+                f"--resume: {self.path} has no header; delete it to start a new scan"
             )
         _cut_torn_tail(self.path, keep)
         for number, line in enumerate(lines, 1):
@@ -693,7 +692,8 @@ class _Progress:
                 if entry != header:
                     raise SystemExit(
                         f"--resume: {self.path} is a scan with {entry}, "
-                        f"not {header}; start a new scan instead"
+                        f"not {header}; resume with the same root and options, or "
+                        "delete it (or choose another -o) to start a new scan"
                     )
             elif "start" in entry:
                 self.attempts[entry["start"]] += 1
