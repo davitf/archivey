@@ -1160,13 +1160,16 @@ class IsoReader(BaseArchiveReader):
         presented, version = self._split_version(item[0])
         return presented, version or 0
 
-    def _decode_bytes_name(self, raw: bytes) -> str:
+    def _decode_bytes_name(
+        self, raw: bytes, joliet_record: DirectoryRecord | None = None
+    ) -> str:
         """Decode a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target.
 
         Nothing in the image says which charset these bytes are in: a Rock Ridge name
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
         valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
-        does for its names, and with UTF-8 and ``surrogateescape`` otherwise.
+        does for its names, then by the Joliet name of ``joliet_record`` when one is
+        given (``_joliet_name``), and with UTF-8 and ``surrogateescape`` otherwise.
 
         Decoding always returns. A codec ``open_archive`` accepted can still fail on
         these bytes (``utf-32`` on a length that is not a multiple of four, or
@@ -1174,11 +1177,14 @@ class IsoReader(BaseArchiveReader):
         with no ``encoding=``.
         """
         decoded = self._decode_known(raw)
-        return (
-            raw.decode("utf-8", errors="surrogateescape")
-            if decoded is None
-            else decoded
-        )
+        if decoded is None and joliet_record is not None:
+            # Only a Rock Ridge image has Rock Ridge names and link targets to fall
+            # back from.
+            assert self._namespace == "rock_ridge"
+            decoded = self._joliet_name(joliet_record, raw)
+        if decoded is None:
+            decoded = raw.decode("utf-8", errors="surrogateescape")
+        return decoded
 
     def _decode_known(self, raw: bytes) -> str | None:
         """``raw`` as UTF-8, else with ``encoding=``; ``None`` when neither applies."""
@@ -1304,12 +1310,7 @@ class IsoReader(BaseArchiveReader):
         if self._namespace == "rock_ridge":
             nm = _nm_name(record)
             if nm is not None:
-                name = self._decode_known(nm)
-                if name is None:
-                    name = self._joliet_name(record, nm)
-                if name is None:
-                    name = nm.decode("utf-8", errors="surrogateescape")
-                return name, nm
+                return self._decode_bytes_name(nm, joliet_record=record), nm
             ident = _iso_ident_name(record)
             return self._decode_bytes_name(ident), ident
         ident = bytes(record.file_identifier())
@@ -1726,18 +1727,11 @@ class IsoReader(BaseArchiveReader):
         directory: DirectoryRecord | None = record.parent
         parts: list[str] = []
         for component in target.split(b"/"):
-            part = self._decode_known(component)
             here = self._rock_ridge_child(directory, component)
-            if part is None and here is not None:
-                # Only a Rock Ridge image reaches here (``has_joliet()`` with a Rock
-                # Ridge symlink). ``_joliet_name`` registers ``here`` for the
-                # member's diagnostic, as the walk's own ``_record_name`` does with the
-                # same record and bytes, so which of the two runs first changes nothing.
-                assert self._namespace == "rock_ridge"
-                part = self._joliet_name(here, component)
-            if part is None:
-                part = component.decode("utf-8", errors="surrogateescape")
-            parts.append(part)
+            # ``_joliet_name`` registers ``here`` for the member's diagnostic, as the
+            # walk's own ``_record_name`` does with the same record and bytes, so which
+            # of the two runs first changes nothing.
+            parts.append(self._decode_bytes_name(component, joliet_record=here))
             directory = here if here is not None and here.is_dir() else None
         return "/".join(parts)
 
