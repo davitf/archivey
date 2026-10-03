@@ -78,6 +78,17 @@ reporting is unchanged. With the same counting program installed, no core reache
 A side effect: a non-dumpable process cannot be attached to by `gdb` or `py-spy` without
 root. Pinned by `tests/test_accelerator_truncation_abort.py::test_the_child_writes_no_core_dump`.
 
+**The PPMd child gets the same.** `ppmd_worker.py` also exists to crash on hostile input,
+and its core is about the size of the model the archive declares plus about 20 MB:
+measured with the same counting program, 28 MB for a 16 MiB model, 280 MB for 256 MiB and
+1.1 GB (1.1 s) for 1 GiB. `max_decoder_memory` allows 2 GiB by default, so a hostile 7z
+could have every crashed member hand about 2 GB to the user's crash handler. It now calls
+the same `disable_core_dumps()` (a copy: neither worker can import the other), and the
+1 GiB crash ends at once. Pinned by
+`tests/test_ppmd_crash_isolation.py::test_the_child_writes_no_core_dump`. `unrar` and
+`unar` are left alone: they are third-party programs that are not expected to crash, and
+`PR_SET_DUMPABLE` does not survive `exec`.
+
 ## 5. On the GitHub runners
 
 **The handler.** `ubuntu-latest` (4 CPUs, 16 GB, 3 GB swap) pipes cores to

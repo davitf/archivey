@@ -61,7 +61,38 @@ def _error_payload(exc: BaseException) -> bytes:
     return f"{type(exc).__name__}\n{exc}".encode("utf-8", "replace")
 
 
+def disable_core_dumps() -> None:
+    """Ask the system not to write a core dump when this process crashes.
+
+    A crash here is expected on corrupt or hostile input (the reason this process
+    exists), so a core is useless, and it is about the size of the model the archive
+    declared, up to ``max_decoder_memory`` (2 GiB by default). ``RLIMIT_CORE`` of 0
+    stops a core file but not a core piped to a crash handler (``core_pattern``
+    starting with ``|``: apport, systemd-coredump), which the kernel feeds whatever the
+    limit while this process stays alive and the parent waits. Linux skips the dump
+    entirely for a process that is not dumpable. ``rapidgzip_worker.py`` has the same
+    function: neither worker can import the other.
+
+    Best effort: anything missing (no ``resource`` on Windows, no ``prctl``) is skipped.
+    """
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+
+            pr_set_dumpable = 4
+            ctypes.CDLL(None).prctl(pr_set_dumpable, 0, 0, 0, 0)
+        except (OSError, AttributeError):
+            pass
+
+
 def main() -> None:
+    disable_core_dumps()
     # A terminal's Ctrl-C signals the whole foreground process group, this child too.
     # The parent decides what an interrupt means.
     signal.signal(signal.SIGINT, signal.SIG_IGN)

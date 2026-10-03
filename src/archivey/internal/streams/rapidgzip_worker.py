@@ -238,6 +238,7 @@ def disable_core_dumps() -> None:
     with its pipes open, and the parent waits: measured, 2 to 4 s per abort with a
     handler that only drains the pipe, and longer with one that compresses or stores
     it. Linux skips the dump entirely for a process that is not dumpable.
+    ``ppmd_worker.py`` has the same function: neither worker can import the other.
 
     Best effort: anything missing (no ``resource`` on Windows, no ``prctl``) is skipped.
     """
