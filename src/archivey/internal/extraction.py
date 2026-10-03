@@ -29,11 +29,12 @@ import tempfile
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, assert_never
+from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, Iterator, assert_never
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     DiagnosticRaisedError,
     ExtractionError,
     FilterRejectionError,
@@ -74,6 +75,7 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.streams.archive_stream import ArchiveStream
 
 
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
@@ -400,6 +402,26 @@ class BombTracker:
                         f"{self._total_bytes / consumed:.0f}:1 exceeds limit "
                         f"max_ratio={self._max_ratio:.0f}:1"
                     )
+
+
+def _until_listing_damage(
+    reader: "BaseArchiveReader",
+    pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
+    found: list[CorruptionError],
+) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+    """``pairs``, ending quietly when the listing's own damage ends them.
+
+    That damage is appended to ``found`` for the caller to raise once the members
+    before it are done. Only the reader's walk error counts: any other error the
+    pass raises propagates at once, as before. An error from the loop body never
+    reaches this generator.
+    """
+    try:
+        yield from pairs
+    except CorruptionError as exc:
+        if exc is not reader._walk_error:
+            raise
+        found.append(exc)
 
 
 @dataclass
@@ -757,6 +779,12 @@ class ExtractionCoordinator:
         # processed below. Streaming readers with no free list report None totals.
         members_report = reader.members_report_if_available()
         all_members = list(members_report) if members_report is not None else None
+        # A free list that ends in damage holds only the members before it. What it
+        # says no selected entry matches is not known, and the pass has to reach the
+        # damage to raise it (see _run_pass).
+        listing_damaged = (
+            members_report is not None and members_report.error is not None
+        )
         if all_members is not None and selector is not None:
             all_members = [m for m in all_members if selector(m)]
         # A members= collection whose entries all went through the free list is
@@ -766,7 +794,7 @@ class ExtractionCoordinator:
         # Without a free list the answer is known only at the end of the pass.
         unmatched_pending: CollectionSelector | None = None
         if isinstance(selector, CollectionSelector):
-            if all_members is not None:
+            if all_members is not None and not listing_damaged:
                 selector.report_unmatched(
                     reader._diagnostics_collector, reader._archive_name
                 )
@@ -837,7 +865,9 @@ class ExtractionCoordinator:
         # count, so they still drain.
         selected_total = (
             members_total
-            if selector is not None and members_total is not None
+            if selector is not None
+            and members_total is not None
+            and not listing_damaged
             else None
         )
 
@@ -909,7 +939,17 @@ class ExtractionCoordinator:
         counted: dict[int, int] = {}
 
         copies = FileCopyPass(keep_source=self._keep_copy_source)
-        for original, stream in reader._stream_members(stream_selector, copies):
+        # Damage that ends the listing ends this loop, not the pass: the members listed
+        # before it are all written, including the hardlinks the second pass below
+        # completes, and then it is raised. A hardlink only points back, so every
+        # source the second pass needs is in that prefix.
+        # The pass is not bound to a name: an error out of the loop body then drops
+        # it at once, which closes the open member stream (a held traceback would
+        # otherwise keep it, and an unrar child, alive).
+        listing_damage: list[CorruptionError] = []
+        for original, stream in _until_listing_damage(
+            reader, reader._stream_members(stream_selector, copies), listing_damage
+        ):
             member_started = False
             recorded_index: int | None = None
             presented_name: str | None = None
@@ -1123,6 +1163,8 @@ class ExtractionCoordinator:
             self._resolve_orphans(
                 reader, source_paths, orphans, tracker, results, collision_map, dest
             )
+        if listing_damage:
+            raise listing_damage[0]
 
     def _supersede_written_copy(
         self,
