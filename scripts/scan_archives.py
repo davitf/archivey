@@ -21,6 +21,15 @@ Three outputs:
   the default or past half of it without being over. Ctrl-C stops the scan and still
   writes the summary for the archives done so far.
 
+**Resuming.** ``scan.progress`` records every file the scan has finished with, archive
+or not, and every directory whose whole subtree is done. ``--resume`` continues an
+interrupted scan from it: finished directories are not listed again, finished files
+are not opened again, and the CSV and log are appended to. The summary covers the
+whole scan, earlier rows read back from the CSV. A resume does not look for changes
+in what was already scanned; a changed tree is a new scan. A file that was being
+scanned when the previous run stopped is scanned again, and named on stderr in case
+it is what stopped the run.
+
 **Limits.** By default the scan turns off the limits that only count something (bytes,
 entries, ratio, members, metadata, key-derivation rounds, spool), so the columns show
 the true value rather than stopping at the cap. The two that protect the scanning
@@ -48,9 +57,12 @@ checks itself; xz and zstd hand the limit to liblzma / libzstd and are not count
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import importlib
+import json
 import logging
+import os
 import pkgutil
 import sys
 import tempfile
@@ -237,6 +249,7 @@ COLUMNS = (
     "members entries_written bytes_written archive_ratio max_member_ratio "
     "metadata_bytes decoder_memory kdf_rounds spool_bytes codecs diagnostics error"
 ).split()
+_NUMERIC_COLUMNS = frozenset({"seconds", *(column for column, _, _ in _LIMITS)})
 
 
 @dataclass
@@ -268,6 +281,28 @@ class _Row:
             self.flag("needs_password")
         else:
             self.flag(f"{stage}_error")
+
+    @classmethod
+    def from_csv(cls, record: Mapping[str, str]) -> _Row:
+        """Rebuild a row written by an earlier run, for the summary of a resumed scan."""
+        row = cls(path=record["path"])
+        if record.get("file_size"):
+            row.file_size = int(record["file_size"])
+        for column in COLUMNS:
+            value = record.get(column) or ""
+            if not value or column in ("path", "file_size"):
+                continue
+            if column == "flags":
+                row.flags = value.split()
+            elif column == "diagnostics":
+                for item in value.split():
+                    code, _, count = item.rpartition("=")
+                    row.diagnostics[code] = int(count)
+            elif column in _NUMERIC_COLUMNS:
+                row.numbers[column] = float(value)
+            else:
+                row.text[column] = value
+        return row
 
     def csv_row(self) -> dict[str, object]:
         out: dict[str, object] = {"path": self.path, "file_size": self.file_size}
@@ -490,13 +525,130 @@ def _flag_limits(row: _Row) -> None:
             row.flag(f"near:{limit}")
 
 
-def _walk(root: Path) -> Iterator[Path]:
+def _list_dir(directory: str) -> tuple[list[str], list[str]]:
+    """The regular files and the subdirectories of ``directory``, each sorted.
+
+    Symlinks are neither followed nor scanned.
+    """
+    files: list[str] = []
+    dirs: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir():
+                        dirs.append(entry.path)
+                    elif entry.is_file():
+                        files.append(entry.path)
+                except OSError:
+                    continue
+    except OSError as exc:
+        print(f"skipped {directory}: {exc}", file=sys.stderr)
+    return sorted(files), sorted(dirs)
+
+
+def _walk(
+    root: Path, done_dirs: frozenset[str] = frozenset()
+) -> Iterator[tuple[str, str]]:
+    """Yield ``("file", path)`` for each file, depth first, as the tree is listed.
+
+    After the last item under a directory, yield ``("dir", path)`` for it, so a
+    directory is reported only once its whole subtree has been handed out. A directory
+    in ``done_dirs`` is not listed at all.
+    """
     if root.is_file():
-        yield root
+        yield ("file", str(root))
         return
-    for path in sorted(root.rglob("*")):
-        if path.is_file() and not path.is_symlink():
-            yield path
+    top = str(root)
+    if top in done_dirs:
+        return
+    # Each entry: a directory, and an iterator over the subdirectories still to visit.
+    stack: list[tuple[str, Iterator[str]]] = []
+
+    def enter(directory: str) -> Iterator[tuple[str, str]]:
+        files, dirs = _list_dir(directory)
+        stack.append((directory, iter([d for d in dirs if d not in done_dirs])))
+        for path in files:
+            yield ("file", path)
+
+    yield from enter(top)
+    while stack:
+        directory, subdirs = stack[-1]
+        nxt = next(subdirs, None)
+        if nxt is None:
+            stack.pop()
+            yield ("dir", directory)
+        else:
+            yield from enter(nxt)
+
+
+class _Progress:
+    """The checkpoint a resumed scan starts from: one JSON object per line.
+
+    The scan's root and ``--default-limits`` first, then ``{"start": path}`` before each file is scanned,
+    ``{"file": path}`` after it, and ``{"dir": path}`` once a directory's whole subtree
+    is done. JSON keeps any path intact, newlines and undecodable bytes included.
+    """
+
+    def __init__(
+        self, path: Path, root: Path, default_limits: bool, resume: bool
+    ) -> None:
+        self.done_dirs: set[str] = set()
+        self.done_files: set[str] = set()
+        self.unfinished: str | None = None
+        if resume and path.exists():
+            self._load(path, {"root": str(root), "default_limits": default_limits})
+        elif resume:
+            raise SystemExit(f"--resume: no progress file {path}")
+        self._file = path.open("a" if resume else "w", encoding="utf-8")
+        if not resume:
+            self._write({"root": str(root), "default_limits": default_limits})
+
+    def _load(self, path: Path, header: dict[str, object]) -> None:
+        with path.open(encoding="utf-8") as fh:
+            for number, line in enumerate(fh, 1):
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    # The last line of a run that was killed mid-write.
+                    continue
+                if number == 1:
+                    if entry != header:
+                        raise SystemExit(
+                            f"--resume: {path} is a scan with {entry}, "
+                            f"not {header}; start a new scan instead"
+                        )
+                elif "start" in entry:
+                    self.unfinished = entry["start"]
+                elif "file" in entry:
+                    self.done_files.add(entry["file"])
+                    if entry["file"] == self.unfinished:
+                        self.unfinished = None
+                elif "dir" in entry:
+                    self.done_dirs.add(entry["dir"])
+
+    def _write(self, entry: Mapping[str, object]) -> None:
+        self._file.write(json.dumps(entry) + "\n")
+        self._file.flush()
+
+    def start(self, path: str) -> None:
+        self._write({"start": path})
+
+    def file_done(self, path: str) -> None:
+        self._write({"file": path})
+
+    def dir_done(self, path: str) -> None:
+        self._write({"dir": path})
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def _load_rows(csv_path: Path) -> list[_Row]:
+    with csv_path.open(newline="", encoding="utf-8", errors="surrogateescape") as fh:
+        return [_Row.from_csv(record) for record in csv.DictReader(fh)]
 
 
 def _passwords(args: argparse.Namespace) -> list[str]:
@@ -530,6 +682,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="scan under the default limits instead of turning the counting ones off",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "continue an interrupted scan of the same root into the same output, "
+            "skipping what its .progress file records as done"
+        ),
+    )
     args = parser.parse_args(argv)
     passwords = _passwords(args) or None
 
@@ -541,34 +701,69 @@ def main(argv: list[str] | None = None) -> int:
     config = _scan_config(args.default_limits)
     log_path = args.output.with_suffix(".log")
 
+    progress_path = args.output.with_suffix(".progress")
     rows: list[_Row] = []
+    if args.resume:
+        if not args.output.exists():
+            raise SystemExit(f"--resume: no CSV {args.output}")
+        rows = _load_rows(args.output)
+    progress = _Progress(progress_path, args.root, args.default_limits, args.resume)
+    # A row reaches the CSV before its file is marked done, so a run stopped between
+    # the two must not write the row twice.
+    done_files = progress.done_files | {row.path for row in rows}
+    if progress.unfinished is not None:
+        print(
+            f"the previous run stopped while scanning {progress.unfinished}; "
+            "scanning it again",
+            file=sys.stderr,
+        )
+    mode = "a" if args.resume else "w"
+    # ``surrogateescape``: a file name that is not valid UTF-8 keeps its bytes.
     with (
-        args.output.open("w", newline="", encoding="utf-8") as csv_file,
-        log_path.open("w", encoding="utf-8") as log,
+        args.output.open(
+            mode, newline="", encoding="utf-8", errors="surrogateescape"
+        ) as csv_file,
+        log_path.open(mode, encoding="utf-8", errors="surrogateescape") as log,
+        contextlib.closing(progress),
     ):
         writer = csv.DictWriter(csv_file, fieldnames=COLUMNS)
-        writer.writeheader()
+        if args.resume:
+            log.write(f"== resumed with {len(rows)} archives already scanned\n\n")
+        else:
+            writer.writeheader()
         try:
-            for path in _walk(args.root):
+            for kind, name in _walk(args.root, frozenset(progress.done_dirs)):
+                if kind == "dir":
+                    progress.dir_done(name)
+                    continue
+                if name in done_files:
+                    continue
+                progress.start(name)
+                path = Path(name)
                 try:
                     row = scan_one(path, config, passwords)
                 except OSError as exc:
                     print(f"skipped {path}: {exc}", file=sys.stderr)
+                    progress.file_done(name)
                     continue
-                if row is None:
-                    continue
-                rows.append(row)
-                writer.writerow(row.csv_row())
-                csv_file.flush()
-                if row.flags:
-                    log.write(f"== {path}\nflags: {' '.join(row.flags)}\n")
-                    log.writelines(f"  {line}\n" for line in row.log)
-                    log.write("\n")
-                    log.flush()
-                status = " ".join(row.flags) or "ok"
-                print(f"{len(rows):>6} {status:<40.40} {path}", file=sys.stderr)
+                if row is not None:
+                    rows.append(row)
+                    writer.writerow(row.csv_row())
+                    csv_file.flush()
+                    if row.flags:
+                        log.write(f"== {path}\nflags: {' '.join(row.flags)}\n")
+                        log.writelines(f"  {line}\n" for line in row.log)
+                        log.write("\n")
+                        log.flush()
+                    status = " ".join(row.flags) or "ok"
+                    print(f"{len(rows):>6} {status:<40.40} {path}", file=sys.stderr)
+                progress.file_done(name)
         except KeyboardInterrupt:
-            print("\ninterrupted; summarizing what was scanned", file=sys.stderr)
+            print(
+                f"\ninterrupted; summarizing what was scanned "
+                f"(--resume continues from {progress_path})",
+                file=sys.stderr,
+            )
         summary = _summary(rows)
         broken = sorted({*failed_probes, *BROKEN_PROBES})
         if broken:

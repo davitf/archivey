@@ -112,3 +112,107 @@ def test_detection_diagnostics_survive_a_failed_open(tmp_path: Path) -> None:
     assert out["open"] == "CorruptionError"
     assert out["detected"] == "magic/certain"
     assert "diag:format_extension_conflict" in str(out["flags"]).split()
+
+
+def _quiet_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scan, "_install_probes", lambda: [])
+    logger = logging.getLogger("archivey")
+    monkeypatch.setattr(logger, "handlers", list(logger.handlers))
+    monkeypatch.setattr(logger, "propagate", logger.propagate)
+
+
+def _tree(tmp_path: Path) -> Path:
+    root = tmp_path / "root"
+    for sub in ("a", "a/deep", "b"):
+        (root / sub).mkdir(parents=True)
+        (root / sub / "x.rar").write_bytes(FIXTURE.read_bytes())
+        (root / sub / "notes.txt").write_text("not an archive\n", encoding="utf-8")
+    (root / "top.rar").write_bytes(FIXTURE.read_bytes())
+    return root
+
+
+def test_walk_reports_a_directory_after_its_subtree(tmp_path: Path) -> None:
+    root = _tree(tmp_path)
+    events = [(kind, str(Path(p).relative_to(root))) for kind, p in scan._walk(root)]
+    assert events == [
+        ("file", "top.rar"),
+        ("file", "a/notes.txt"),
+        ("file", "a/x.rar"),
+        ("file", "a/deep/notes.txt"),
+        ("file", "a/deep/x.rar"),
+        ("dir", "a/deep"),
+        ("dir", "a"),
+        ("file", "b/notes.txt"),
+        ("file", "b/x.rar"),
+        ("dir", "b"),
+        ("dir", "."),
+    ]
+    skipped = [p for _, p in scan._walk(root, frozenset({str(root / "a")}))]
+    assert not any(p.startswith(str(root / "a")) for p in skipped)
+
+
+def test_resume_skips_what_was_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    scanned: list[Path] = []
+    real_scan_one = scan.scan_one
+    interrupt = [True]
+
+    def counting(path: Path, *args: object, **kwargs: object) -> object:
+        scanned.append(path)
+        if path == root / "b" / "notes.txt" and interrupt.pop():
+            raise KeyboardInterrupt
+        return real_scan_one(path, *args, **kwargs)
+
+    monkeypatch.setattr(scan, "scan_one", counting)
+    assert scan.main([str(root), "-o", str(out)]) == 0
+    assert scanned[-1] == root / "b" / "notes.txt"
+    progress = out.with_suffix(".progress").read_text(encoding="utf-8")
+    assert f'"dir": "{root / "a"}"' in progress
+
+    scanned.clear()
+    interrupt.append(False)
+    monkeypatch.setattr(
+        scan,
+        "_list_dir",
+        lambda d, real=scan._list_dir: (
+            pytest.fail(f"listed a finished directory {d}")
+            if Path(d).is_relative_to(root / "a")
+            else real(d)
+        ),
+    )
+    assert scan.main([str(root), "-o", str(out), "--resume"]) == 0
+    # The interrupted file is scanned again; nothing already done is.
+    assert scanned == [root / "b" / "notes.txt", root / "b" / "x.rar"]
+    with out.open(encoding="utf-8", newline="") as fh:
+        paths = [row["path"] for row in csv.DictReader(fh)]
+    assert sorted(paths) == sorted(
+        str(root / p) for p in ("top.rar", "a/x.rar", "a/deep/x.rar", "b/x.rar")
+    )
+    assert "== summary: 4 archives" in out.with_suffix(".log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_resume_refuses_a_different_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _quiet_main(monkeypatch)
+    root = _tree(tmp_path)
+    out = tmp_path / "scan.csv"
+    assert scan.main([str(root / "b"), "-o", str(out)]) == 0
+    with pytest.raises(SystemExit, match="start a new scan"):
+        scan.main([str(root), "-o", str(out), "--resume"])
+
+
+def test_row_round_trips_through_the_csv() -> None:
+    row = scan.scan_one(FIXTURE, scan._scan_config(False))
+    assert row is not None
+    row.flag("near:max_ratio")
+    row.diagnostics["some_code"] = 2
+    record = {k: "" if v is None else str(v) for k, v in row.csv_row().items()}
+    back = scan._Row.from_csv(record)
+    assert scan._summary([back]) == scan._summary([row])
