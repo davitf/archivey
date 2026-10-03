@@ -526,9 +526,8 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 ) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 
 
-# Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
+# Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier.
 _VERSION_SUFFIX = re.compile(r";(\d+)$")
-_VERSION_SUFFIX_BYTES = re.compile(rb";(\d+)$")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
@@ -549,15 +548,25 @@ def _nm_name(record: DirectoryRecord) -> bytes | None:
     return bytes(rr.name())
 
 
+def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
+    """``name`` without its ``;N`` version, and ``N`` (``None`` without one).
+
+    ``iso9660`` also drops an empty extension's ``.`` and leaves a bare ``;N`` alone.
+    """
+    match = _VERSION_SUFFIX.search(name)
+    if match is None or (iso9660 and match.start() == 0):
+        return name, None
+    stem = name[: match.start()]
+    if iso9660 and len(stem) > 1 and stem.endswith("."):
+        stem = stem[:-1]
+    return stem, int(match.group(1))
+
+
 def _iso_ident_name(record: DirectoryRecord) -> bytes:
     """A record's ISO 9660 identifier, version and empty-extension dot removed."""
-    ident = bytes(record.file_identifier())
-    match = _VERSION_SUFFIX_BYTES.search(ident)
-    if match is not None and match.start() > 0:
-        ident = ident[: match.start()]
-        if ident.endswith(b".") and len(ident) > 1:
-            ident = ident[:-1]
-    return ident
+    # Latin-1 maps each byte to one character, and none of 0x80-0xff is a digit.
+    ident = bytes(record.file_identifier()).decode("latin-1")
+    return _strip_version(ident, iso9660=True)[0].encode("latin-1")
 
 
 def _byte_ascii_runs(raw: bytes) -> tuple[str, ...]:
@@ -1138,15 +1147,8 @@ class IsoReader(BaseArchiveReader):
         if self._namespace != "iso9660":
             return rel, None
         parent, sep, base = rel.rpartition("/")
-        match = _VERSION_SUFFIX.search(base)
-        if match is None:
-            return rel, None
-        stem = base[: match.start()]
-        if stem.endswith(".") and len(stem) > 1:
-            stem = stem[:-1]
-        if not stem:
-            return rel, None
-        return parent + sep + stem, int(match.group(1))
+        stem, version = _strip_version(base, iso9660=True)
+        return parent + sep + stem, version
 
     def _version_order(self, item: tuple[str, bytes, object]) -> tuple[str, int]:
         """Sort key putting each plain-ISO name's versions in ascending order."""
@@ -1208,12 +1210,10 @@ class IsoReader(BaseArchiveReader):
         if counterpart is None:
             return None
         try:
-            name = bytes(counterpart.file_identifier()).decode("utf-16_be")
+            ident = bytes(counterpart.file_identifier()).decode("utf-16_be")
         except UnicodeDecodeError:
             return None
-        match = _VERSION_SUFFIX.search(name)
-        if match is not None:
-            name = name[: match.start()]
+        name, _ = _strip_version(ident, iso9660=False)
         if not _ascii_runs_match(raw, name):
             return None
         self._joliet_named[id(record)] = counterpart
@@ -1290,8 +1290,7 @@ class IsoReader(BaseArchiveReader):
     @staticmethod
     def _joliet_text(record: DirectoryRecord) -> str:
         name = bytes(record.file_identifier()).decode("utf-16_be", errors="replace")
-        match = _VERSION_SUFFIX.search(name)
-        return name if match is None else name[: match.start()]
+        return _strip_version(name, iso9660=False)[0]
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
