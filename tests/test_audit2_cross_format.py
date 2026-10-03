@@ -750,6 +750,7 @@ def test_rar_damaged_endarc_next_volume_flag_is_not_followed(
         pytest.param(("tinyvol_rnn.rar", "tinyvol_rnn.r00"), 4, id="rar4"),
     ],
 )
+@requires_binary("unrar")
 def test_rar_volume_set_damaged_endarc_continues_on_a_split_member(
     tmp_path: Path, names: tuple[str, str], version: int
 ) -> None:
