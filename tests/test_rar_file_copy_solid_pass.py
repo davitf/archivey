@@ -36,6 +36,7 @@ from archivey.exceptions import (
     ResourceLimitError,
 )
 from archivey.internal.backends import rar_copy_sources, rar_reader
+from tests.conftest import binary_refusal
 
 _COPIES = 6
 _COPY_NAMES = [f"d_copy{i}.txt" for i in range(_COPIES)]
@@ -91,9 +92,21 @@ def _solid_with_copies(tmp_path: Path) -> tuple[Path, bytes]:
     return archive, payload
 
 
-def _config(decompressor: str, **kwargs: object) -> ArchiveyConfig:
-    if shutil.which("rar") is None or shutil.which(decompressor) is None:
-        pytest.skip(f"needs rar and {decompressor}")
+def _config(
+    decompressor: str, *, needs_decompressor: bool = True, **kwargs: object
+) -> ArchiveyConfig:
+    """Skip without ``rar``, and without a ``decompressor`` archivey will use.
+
+    ``binary_refusal``, not ``shutil.which``: archivey refuses some binaries that are
+    on PATH (a ``unar`` that fails its RAR5 check, a lookalike or pre-6.0 ``unrar``),
+    and the rows would fail rather than skip. ``needs_decompressor=False`` is for a
+    test that stops before any process starts; such a test asserts ``spawns == []``,
+    which is what keeps the flag honest.
+    """
+    if shutil.which("rar") is None:
+        pytest.skip("needs rar")
+    if needs_decompressor and (refusal := binary_refusal(decompressor)) is not None:
+        pytest.skip(f"needs a {decompressor} archivey will use: {refusal}")
     return ArchiveyConfig(rar_decompressor=decompressor, **kwargs)  # type: ignore[arg-type]
 
 
@@ -293,7 +306,11 @@ def test_a_copy_read_checks_its_source_dictionary(
     """Serving a copy decodes through its source, so the source's dictionary is
     checked against ``max_decoder_memory`` before the pass's process starts, as the
     source's own read would be."""
-    config = _config(decompressor, decoder_limits=DecoderLimits(max_decoder_memory=1))
+    config = _config(
+        decompressor,
+        needs_decompressor=False,
+        decoder_limits=DecoderLimits(max_decoder_memory=1),
+    )
     archive, _ = _solid_with_copies(tmp_path)
     with open_archive(archive, config=config) as reader:
         for member, stream in reader.stream_members():

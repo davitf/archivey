@@ -328,6 +328,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   Otherwise it tries UTF-8, then cp437 for a member written on DOS or Windows (WinRAR
   writes the OEM code page) and windows-1252 for one written elsewhere. `raw_name` is
   always the stored bytes. `encoding=` has no effect on a RAR5 name.
+- **Comments.** A RAR 1.5-4 comment is 8-bit text that does not say which code page
+  it is in. Archivey reads it up to the first NUL, as UTF-8 if it is valid and as
+  windows-1252 otherwise. The one exception is a RAR 2.9-4 comment flagged as
+  Unicode, which is UTF-16LE. `encoding=` does not apply to comments, so a DOS
+  comment written in cp437 is decoded as windows-1252 even when you pass
+  `encoding="cp437"`.
 - **Several members under one name.** `unrar` emits every member a name selects, in
   archive order: two members with the same name, or two names `unrar` reads the same
   way. Archivey skips to the one you asked for, so each read returns that member's own
@@ -462,6 +468,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   data, not trailing bytes. `.xz` and `.lz` keep their size and seeks when the
   appended bytes are within 1 MiB, unless they are crafted to hold thousands of fake
   end markers; further out the index is not found and the size reads as unknown.
+  A damaged end marker on the last of several `.xz` streams or `.lz` members is
+  corruption, not appended bytes: the size reads as unknown, and the read or seek
+  that reaches the damage raises `CorruptionError`.
   Brotli has no end marker the library reports, so archivey finds the end by decoding
   the source again, which needs a seekable source: from a pipe, bytes after a Brotli
   stream raise `CorruptionError`. The check applies to a bare compressed file and to a

@@ -367,6 +367,32 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
             stream.read(10)
 
 
+def test_member_read_unsupported_operation_other_than_seek_is_not_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``io.UnsupportedOperation`` is also a ``ValueError``. One that is not about
+    seeking says nothing about the archive, so it propagates as itself instead of
+    reaching the ValueError arm, which reports corruption."""
+    import archivey.internal.backends.zip_reader as zip_reader
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("x.txt", b"hello world" * 10)
+
+    class _Unsupported(io.BytesIO):
+        def read(self, *args: object, **kwargs: object) -> bytes:
+            raise io.UnsupportedOperation("read")
+
+    monkeypatch.setattr(
+        zip_reader, "open_codec_stream", lambda *_a, **_k: _Unsupported()
+    )
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+        stream = ar.open(next(iter(ar)))
+        with pytest.raises(io.UnsupportedOperation) as excinfo:
+            stream.read(10)
+    assert type(excinfo.value) is io.UnsupportedOperation
+
+
 def _symlink_zip(tmp_path: Path) -> Path:
     import stat as stat_module
 
@@ -971,6 +997,25 @@ def test_corrupt_member_data_raises_corruption_on_read() -> None:
         assert ar.members()[0].name == "data.txt"  # listing is unaffected
         with raises_corruption_not_truncation():
             ar.read("data.txt")
+
+
+def test_non_utf8_local_header_name_is_reported_as_a_bad_name() -> None:
+    """A local header that sets the UTF-8 flag over a name that is not UTF-8 is a
+    corrupt entry name, and the error says so rather than blaming the offset."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("data.txt", b"A" * 200)
+    raw = bytearray(buf.getvalue())
+    raw[6:8] = struct.pack("<H", struct.unpack_from("<H", raw, 6)[0] | 0x800)
+    raw[30] = 0xFF  # first byte of the local name; the central name is untouched
+
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        assert ar.members()[0].name == "data.txt"
+        with raises_corruption_not_truncation(
+            match="Corrupt ZIP entry name in local header"
+        ) as excinfo:
+            ar.read("data.txt")
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
 
 
 def _overlapping_entries_zip() -> bytes:

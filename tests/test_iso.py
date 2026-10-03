@@ -42,6 +42,7 @@ from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
     ReadSizeRecorder,
+    assert_seek_underflow_matches_bytesio,
 )
 
 pytestmark = requires("pycdlib")
@@ -1306,7 +1307,9 @@ def _zisofs_image(
     return _replace_tf(data, b"zzz", entry + _UNKNOWN_ENTRY)
 
 
-_ZISOFS_PLAIN = (b"zisofs block data " * 3000) + bytes(40_000) + b"tail"
+# Four 32 KiB blocks: text, text then zeros, all zeros (block 2, which ``_zisofs``
+# stores as no data), zeros then ``tail``.
+_ZISOFS_PLAIN = (b"zisofs block data " * 3000) + bytes(70_000) + b"tail"
 
 
 def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
@@ -1315,6 +1318,10 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
     """pycdlib refuses a ``ZF`` entry, which cost the whole image. The member lists
     with the size the entry declares and reads the bytes ``mkzftree`` compressed,
     including a block of zeros stored as no data; its neighbour is untouched."""
+    stored = _zisofs(_ZISOFS_PLAIN)
+    count = -(-len(_ZISOFS_PLAIN) // (1 << 15)) + 1
+    pointers = struct.unpack(f"<{count}I", stored[16 : 16 + 4 * count])
+    assert pointers[2] == pointers[3] < pointers[4]  # block 2 is stored as no data
     data = _zisofs_image(_ZISOFS_PLAIN)
     with open_archive(io.BytesIO(data)) as ar:
         by_name = {m.name: m for m in ar.members()}
@@ -1338,6 +1345,43 @@ def test_a_zisofs_member_seeks_across_blocks() -> None:
             for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
                 stream.seek(offset)
                 assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
+
+
+def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
+    """``SEEK_CUR`` and ``SEEK_END`` land where they say, and a relative seek to
+    before the start clamps to 0 as every member stream does; it is the caller's
+    seek, not damage in the image."""
+    data = _zisofs_image(_ZISOFS_PLAIN)
+    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
+        with ar.open("zzz") as stream:
+            assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
+            assert stream.read() == b"tail"
+            stream.seek(70_000)
+            assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
+            assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
+            assert stream.seek(-(10**7), io.SEEK_CUR) == 0
+            assert stream.read(10) == _ZISOFS_PLAIN[:10]
+            assert stream.seek(-(10**7), io.SEEK_END) == 0
+            assert stream.read(10) == _ZISOFS_PLAIN[:10]
+            stream.seek(0)
+            assert_seek_underflow_matches_bytesio(stream)
+
+
+def test_the_zisofs_stream_refuses_a_negative_absolute_seek_and_a_bad_whence() -> None:
+    """The member contract above goes through ``ArchiveStream.seek``, which refuses
+    both before the zisofs stream sees them. The stream refuses them itself too, with
+    the caller's ``ValueError`` and without moving."""
+    from archivey.internal.backends.iso_reader import _ZisofsEntry, _ZisofsStream
+
+    entry = _ZisofsEntry(b"ZF", 1, b"pz", 16, 15, len(_ZISOFS_PLAIN))
+    stored = _zisofs(_ZISOFS_PLAIN)
+    stream = _ZisofsStream(io.BytesIO(stored), entry, len(stored))
+    stream.seek(10)
+    for offset, whence in ((-1, io.SEEK_SET), (0, 7)):
+        with pytest.raises(ValueError) as excinfo:
+            stream.seek(offset, whence)
+        assert type(excinfo.value) is ValueError
+        assert stream.tell() == 10
 
 
 @pytest.mark.parametrize(
@@ -1371,7 +1415,7 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     data = bytearray(_zisofs_image(_ZISOFS_PLAIN))
     stored = _zisofs(_ZISOFS_PLAIN)
     at = data.index(stored)
-    first_block = at + 16 + 4 * 4  # three blocks, four pointers
+    first_block = at + struct.unpack_from("<I", stored, 16)[0]  # pointer 0
     data[first_block : first_block + 8] = b"\xff" * 8
     with open_archive(io.BytesIO(bytes(data))) as ar:
         with raises_corruption_not_truncation():
