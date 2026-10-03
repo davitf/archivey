@@ -1430,7 +1430,7 @@ class IsoReader(BaseArchiveReader):
         superseded: bool = False,
     ) -> ArchiveMember:
         rr = getattr(record, "rock_ridge", None)
-        raw_mode = self._px_mode(rr)
+        raw_mode, uid, gid = self._px(rr)
 
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
@@ -1463,7 +1463,7 @@ class IsoReader(BaseArchiveReader):
         )
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
-        mode, uid, gid = self._posix_metadata(rr)
+        mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
         link_target = self._symlink_target(member_type, record, rr)
 
         size = self._file_size(record) if member_type == MemberType.FILE else None
@@ -1679,35 +1679,22 @@ class IsoReader(BaseArchiveReader):
         )
         return modified, accessed, created, ctime, invalid
 
-    def _px_mode(self, rr: RockRidge | None) -> int | None:
-        """The full POSIX mode from a Rock Ridge PX record, file-type bits included."""
-        if rr is None:
-            return None
-        for entries in (rr.dr_entries, rr.ce_entries):
-            px = getattr(entries, "px_record", None)
-            if px is not None:
-                mode = getattr(px, "posix_file_mode", None)
-                return mode if isinstance(mode, int) else None
-        return None
+    def _px(self, rr: RockRidge | None) -> tuple[int | None, int | None, int | None]:
+        """The full POSIX mode (file-type bits included), uid and gid of a PX record.
 
-    def _posix_metadata(
-        self, rr: RockRidge | None
-    ) -> tuple[int | None, int | None, int | None]:
-        # POSIX mode/uid/gid come only from a Rock Ridge PX record; Joliet/plain carry none,
-        # so those namespaces correctly yield (None, None, None).
+        Only Rock Ridge carries them; Joliet and plain ISO 9660 yield ``None`` for all.
+        """
         if rr is None:
             return None, None, None
         for entries in (rr.dr_entries, rr.ce_entries):
             px = getattr(entries, "px_record", None)
-            if px is None:
-                continue
-            raw_mode = getattr(px, "posix_file_mode", None)
-            mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
-            return (
-                mode,
-                getattr(px, "posix_user_id", None),
-                getattr(px, "posix_group_id", None),
-            )
+            if px is not None:
+                mode = getattr(px, "posix_file_mode", None)
+                return (
+                    mode if isinstance(mode, int) else None,
+                    getattr(px, "posix_user_id", None),
+                    getattr(px, "posix_group_id", None),
+                )
         return None, None, None
 
     def _symlink_target(
