@@ -1969,6 +1969,41 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
         self._emit_end_block_missing()
+        self._emit_end_block_damaged()
+
+    def _emit_end_block_damaged(self) -> None:
+        """Report volumes whose end-of-archive block failed its header CRC.
+
+        The block sits after the last member, so the listing keeps every member and
+        they read normally; this is reported once, after them, like a missing block,
+        and a ``RAISE`` disposition refuses after delivery. The walk did not follow
+        the damaged block's next-volume flag, so a set continued past that volume
+        only where a member's own header said its data continues.
+        """
+        damaged = self._archive.end_block_damaged_volumes
+        if not damaged:
+            return
+        if self._archive.is_volume or self._volume_count > 1:
+            where = "volume(s) " + ", ".join(str(index + 1) for index in damaged)
+        else:
+            where = "the archive"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+            message=(
+                f"RAR archive is damaged after its last member: the end-of-archive "
+                f"block of {where} fails its header CRC. Its flags were not used, "
+                f"so its next-volume flag was not followed."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="rar",
+                expected_marker="end_of_archive_block",
+                expected_bytes=0,
+                observed_bytes=0,
+                observed_kind="nonzero",
+            ),
+            logger=logger,
+        )
 
     def _emit_end_block_missing(self) -> None:
         """Report RAR5 volumes that end without their end-of-archive block.
