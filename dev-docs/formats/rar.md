@@ -503,11 +503,15 @@ used to list as `慣琮瑸`. `raw_name` is always the stored bytes, and the deco
 changes which member a read returns, because the `unrar` mask is built from the stored
 name (§2.3). `USES_ENCODING` is true, so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`.
 Comments follow `unrar`: a RAR 2.9-4 `CMT` SERVICE header whose attribute field has bit 0
-set (`SUBHEAD_FLAGS_CMT_UNICODE`) is UTF-16LE, cut at the first U+0000. Every other
-RAR 1.5-4 comment (an unflagged `CMT`, an old-style COMMENT subblock, stored or
-compressed) is 8-bit text cut at the first NUL, decoded as strict UTF-8 and then
-windows-1252. It is never guessed as UTF-16LE, for the reason names are not: an
+set (`SUBHEAD_FLAGS_CMT_UNICODE`) is UTF-16LE, read in whole 2-byte units (an odd
+trailing byte is dropped, as `unrar` reads `CmtSize / 2` units) and cut at the first
+U+0000. Every other RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style
+COMMENT subblock, stored or compressed) is 8-bit text cut at the first NUL, decoded as
+strict UTF-8 and then windows-1252, with U+FFFD for the five bytes windows-1252 leaves
+undefined. It is never guessed as UTF-16LE, for the reason names are not: an
 even-length `caf\xe9 ok!` used to list as CJK. `encoding=` does not apply to comments.
+A compressed `CMT` SERVICE header is not decoded: the parser reads only a stored one,
+so such an archive lists with no comment and no diagnostic.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.
@@ -695,7 +699,10 @@ never starts `unrar` and is never asked for a password.
   `UnsupportedFeatureError`, because `unrar` ends the password there: measured,
   `"password\x00zz"` decrypts a RAR4 member whose password is `password`.
   A password whose 127-unit cut falls inside a surrogate pair has no UTF-8 form to
-  write, so it is a wrong password (`EncryptionError`), as on the native RAR5 path.
+  write. On RAR5 it is a wrong password (`EncryptionError`), as on the native path,
+  because RAR5 hashes UTF-8. On RAR 1.5-4 the native path hashes the UTF-16 units as
+  they are, so it accepts exactly this password and a header CRC can prove it right;
+  there the limit is `unrar`'s stdin, and the read raises `UnsupportedFeatureError`.
 - **The mask is built from what `unrar` compares against.** An 8-bit RAR3 name (no
   Unicode flag) goes into argv as its **stored bytes**: `unrar` runs both the argv mask
   and the stored name through the C library's multibyte conversion, so the bytes match

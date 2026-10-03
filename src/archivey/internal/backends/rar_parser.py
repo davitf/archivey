@@ -253,12 +253,6 @@ _S_COMMENT_HDR = struct.Struct("<HBBH")
 _S_LONG = struct.Struct("<L")
 _S_SHORT = struct.Struct("<H")
 
-# A RAR 1.5-4 comment is 8-bit text whose code page is not recorded. It is never
-# guessed as UTF-16LE: almost any even-length byte string decodes that way, so
-# ``caf\xe9 ok!`` came out as CJK. The one UTF-16LE comment is a RAR 2.9-4 ``CMT``
-# SERVICE header with ``_RAR3_SUBHEAD_CMT_UNICODE`` set, decoded on its own path.
-_COMMENT_TRY_ENCODINGS = ("utf8", "windows-1252")
-
 # Bit 0 of a RAR 2.9-4 SERVICE header's attribute field (unrar's
 # ``SUBHEAD_FLAGS_CMT_UNICODE``): the ``CMT`` payload is UTF-16LE. Without it unrar
 # reads the payload as 8-bit text up to the first NUL (``Archive::ReadCommentData``).
@@ -1070,13 +1064,23 @@ def _normalize_password_utf16le(password: str | bytes) -> bytes:
 
 
 def _decode_comment_text(raw: bytes) -> str:
-    """Decode an 8-bit RAR 1.5-4 comment: UTF-8 if it is valid, else windows-1252."""
-    for enc in _COMMENT_TRY_ENCODINGS:
-        try:
-            return raw.decode(enc)
-        except UnicodeError:
-            continue
-    return raw.decode("windows-1252", "replace")
+    """Decode an 8-bit RAR 1.5-4 comment the way ``unrar`` reads it.
+
+    The text ends at the first NUL, because ``unrar`` hands the bytes to a C-string
+    conversion (``DoGetComment``, ``Archive::ReadCommentData``). What is left is
+    UTF-8 if it is valid, else windows-1252, with U+FFFD for the five bytes that
+    code page leaves undefined.
+
+    A RAR 1.5-4 comment is 8-bit text whose code page is not recorded. It is never
+    guessed as UTF-16LE: almost any even-length byte string decodes that way, so
+    ``caf\xe9 ok!`` came out as CJK. The one UTF-16LE comment is a RAR 2.9-4 ``CMT``
+    SERVICE header with ``_RAR3_SUBHEAD_CMT_UNICODE`` set, decoded on its own path.
+    """
+    text = raw.split(b"\0", 1)[0]
+    try:
+        return text.decode("utf8")
+    except UnicodeDecodeError:
+        return text.decode("windows-1252", "replace")
 
 
 def _decode_rar3_8bit_name(
@@ -1831,12 +1835,14 @@ def _parse_rar3(
                 source.seek(data_offset)
                 raw = _read_stored_comment(source, member.compress_size, "RAR3 comment")
                 if member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE:
-                    # Cut at the first NUL *character*: ASCII text in UTF-16LE is
-                    # full of NUL bytes.
-                    text = raw.decode("utf-16le", "replace")
+                    # unrar converts ``CmtSize / 2`` units, so an odd trailing byte
+                    # is dropped rather than shown as U+FFFD. Cut at the first NUL
+                    # *character*: ASCII text in UTF-16LE is full of NUL bytes.
+                    even = raw[: len(raw) - len(raw) % 2]
+                    text = even.decode("utf-16le", "replace")
                     cmt = text.split("\0", 1)[0]
                 else:
-                    cmt = _decode_comment_text(raw.split(b"\0", 1)[0])
+                    cmt = _decode_comment_text(raw)
                 if member.file_solid and members:
                     members[-1].comment = cmt
                 else:
