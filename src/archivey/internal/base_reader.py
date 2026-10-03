@@ -1550,8 +1550,11 @@ class BaseArchiveReader(ArchiveReader):
         enforced, so nothing is written from an archive over them. A backend whose
         listing is itself a scan of the data may instead enforce them as members
         arrive during the pass (TAR), and not decode the archive twice.
+
+        A listing that ends in damage does not raise here: the pass writes the
+        members listed before it and then raises the damage, as a TAR pass does.
         """
-        self._get_members_registered(enforce_listing_limits=True)
+        self._materialize_members(enforce_listing_limits=True)
         return nullcontext()
 
     def _account_archive_comment(self, *, enforce: bool) -> None:
