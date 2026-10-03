@@ -240,10 +240,10 @@ def test_a_row_written_before_its_checkpoint_is_not_written_twice(
     real_file_done = scan._Progress.file_done
     first = [True]
 
-    def file_done(self: object, path: str) -> None:
+    def file_done(self: scan._Progress, path: str) -> None:
         if path == str(top) and first.pop():
             raise _Crash
-        real_file_done(self, path)  # type: ignore[arg-type]
+        real_file_done(self, path)
 
     monkeypatch.setattr(scan._Progress, "file_done", file_done)
     for run in range(earlier_stops + 1):
