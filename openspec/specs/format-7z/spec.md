@@ -59,6 +59,13 @@ prefix, as 7-Zip does, within the header buffer. A member's `raw_name` SHALL be 
 stored UTF-16LE name, backslashes included; only the presented `name` treats `\` as a
 separator.
 
+A name SHALL decode as UTF-16LE with `surrogatepass`: a surrogate without its partner
+stays in `name` as that code unit, every member still lists, and `raw_name` encodes back
+to the stored units. Extraction writes such a name as 7-Zip does (`safe-extraction`,
+"Lone surrogates in a member name"). A unit in U+DC80–U+DCFF is the exception: in a
+Python `str` it cannot be told from a `surrogateescape` byte, so extraction takes it for
+one, as it does for every format, and does not write 7-Zip's three-byte form.
+
 #### Scenario: native header matrix
 
 | Case | Expected |
@@ -68,6 +75,7 @@ separator.
 | Archive contains anti-items | Member list remains correct |
 | `FILES_INFO` holds an unknown property (ID `0x1A` or higher) | Property skipped; members read |
 | Stored name `dir\file.txt` | `name == "dir/file.txt"`; `raw_name` is the stored bytes, backslash included |
+| Stored name holds a lone surrogate (`hi` U+D800) | Every member lists; `name == "hi\ud800"`; never `CorruptionError` |
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 

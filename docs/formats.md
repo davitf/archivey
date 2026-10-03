@@ -193,6 +193,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   runs about 15 times slower than on real code.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
+- **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
+  hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
+  in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. On Linux and
+  other POSIX systems, extraction writes it as its three-byte UTF-8 form, the bytes 7-Zip
+  writes: `hi\ud800` becomes `hi` followed by `ed a0 80`. A filesystem that accepts only
+  valid UTF-8, such as APFS, refuses those bytes, and the member fails with
+  `ExtractionError`. On Windows the exact name is used. The CLI shows the name escaped,
+  as `hi\ud800`. One exception: a unit in U+DC80 to U+DCFF looks
+  the same as an undecodable byte (see
+  [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)), so
+  extraction writes it as that byte, where 7-Zip writes three bytes. `member.raw_name`
+  always holds the stored units.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.

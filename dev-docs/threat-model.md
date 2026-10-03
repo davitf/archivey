@@ -74,8 +74,9 @@ no member replaces the destination itself.
   (any separator), absolute paths including drive letters and UNC prefixes (every
   absolute name under `STRICT`; at any policy a drive-relative `C:x`, which has no
   root to drop, or an absolute name a filter returned), NUL bytes, names
-  `os.fsencode` cannot represent, special files (devices, FIFOs, sockets), and a
-  non-directory member whose normalized name is `"."` or `""` (which would replace the
+  `os.fsencode` cannot represent once a lone surrogate is spelled as its UTF-8 bytes
+  (`filters.disk_spelling`, which the coordinator applies first), special files
+  (devices, FIFOs, sockets), and a non-directory member whose normalized name is `"."` or `""` (which would replace the
   destination root with a file). It resolves the parent and checks containment, and
   checks symlink and hardlink targets lexically.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
