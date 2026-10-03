@@ -31,6 +31,7 @@ from archivey.cli.main import main
 from archivey.exceptions import ExtractionError
 from archivey.internal.filters import disk_spelling
 from archivey.types import ExtractionPolicy, ExtractionStatus
+from tests.conftest import requires_binary
 
 _POSIX = sys.platform != "win32"
 # APFS refuses a name that is not valid UTF-8 (EILSEQ), so the bytes 7-Zip writes on
@@ -155,11 +156,11 @@ def test_posix_extraction_writes_the_surrogate_as_utf8(
 
 
 @pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
+@requires_binary("7z")
 def test_posix_extraction_matches_the_7z_tool(archive: Path, tmp_path: Path) -> None:
     """7-Zip 23.01 on Linux writes each lone surrogate as its UTF-8 form."""
-    seven_zip = shutil.which("7z") or shutil.which("7zz")
-    if seven_zip is None:
-        pytest.skip("7z is not installed")
+    seven_zip = shutil.which("7z")
+    assert seven_zip is not None
     theirs = tmp_path / "theirs"
     theirs.mkdir()
     subprocess.run(
