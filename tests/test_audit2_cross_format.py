@@ -48,6 +48,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_archive,
     parse_rar_volumes,
 )
+from archivey.reader import ForwardArchiveReader
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
 from tests.sample_archives import CORPUS, corpus_archive_path
@@ -655,12 +656,12 @@ _ENDARC_FIXTURES = [
 
 
 def _members_and_bytes(
-    reader: object, streaming: bool
+    reader: ForwardArchiveReader,
 ) -> list[tuple[str, bytes | None]]:
-    out: list[tuple[str, bytes | None]] = []
-    for member, stream in reader.stream_members():  # type: ignore[attr-defined]
-        out.append((member.name, stream.read() if stream is not None else None))
-    return out
+    return [
+        (member.name, stream.read() if stream is not None else None)
+        for member, stream in reader.stream_members()
+    ]
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
@@ -670,10 +671,10 @@ def test_rar_damaged_endarc_keeps_the_listing(
 ) -> None:
     data = (_RAR_FIXTURES / fixture).read_bytes()
     with open_archive(io.BytesIO(data)) as reader:
-        expected = _members_and_bytes(reader, streaming=False)
+        expected = _members_and_bytes(reader)
     damaged = _edit_endarc(data, version)
     with open_archive(io.BytesIO(damaged), streaming=streaming) as reader:
-        assert _members_and_bytes(reader, streaming) == expected
+        assert _members_and_bytes(reader) == expected
         diagnostics = _eof_marker_diagnostics(reader.diagnostics)
     assert len(diagnostics) == 1
     context = diagnostics[0].context
