@@ -1,8 +1,7 @@
 # Silent xdist worker deaths in the rapidgzip cut-stream tests
 
-**Status:** cause found locally and fixed in archivey (the rapidgzip child turns off its own
-core dumps). The core-dump handler on the GitHub runners is still to be read from the
-stress workflow's output (§5).
+**Status:** cause found and fixed in archivey (the rapidgzip child turns off its own core
+dumps). Confirmed on the GitHub runners (§5).
 
 ## 1. What CI showed
 
@@ -79,14 +78,47 @@ reporting is unchanged. With the same counting program installed, no core reache
 A side effect: a non-dumpable process cannot be attached to by `gdb` or `py-spy` without
 root. Pinned by `tests/test_accelerator_truncation_abort.py::test_the_child_writes_no_core_dump`.
 
-## 5. Still open
+## 5. On the GitHub runners
 
-- The runners' `core_pattern` and the cost there: the stress workflow prints them (step
-  "Show the runner") and collects `dmesg` and `coredumpctl` output.
-- Rates from the harness (§6) before and after the fix.
-- Whether `test_accelerator_truncation_abort.py` can go back into the main CI step. It was
-  moved to its own serial step on 2026-10-02 because of the first death above; that changes
-  a required job, so it is the maintainer's call.
+**The handler.** `ubuntu-latest` (4 CPUs, 16 GB, 3 GB swap) pipes cores to
+systemd-coredump, which compresses and stores them:
+
+```
+core_pattern: |/usr/lib/systemd/systemd-coredump %P %u %g %s %t 9223372036854775808 %h %d
+ulimit -c: 0
+```
+
+The core limit it passes is the literal 2^63, not `%c`, so `ulimit -c 0` makes no
+difference. `systemd-coredump.socket` is active; apport is installed but inactive.
+
+**Before and after, main CI step** (`ci.yml`, "Run tests", ubuntu `[all]` jobs):
+
+| | Before the fix (runs 37095139139 to 37126688179) | After (run 37129260930) |
+| --- | --- | --- |
+| the 61%→62% progress line | 68–150 s on every job read | 0.2–1.5 s |
+| largest gap between two progress lines | 68–207 s | under 9 s |
+| the whole step | 295–431 s | 106–144 s |
+| worker deaths | 4 in the last 10 runs | none |
+
+**Stress workflow with the fix** (run 37129260952, py3.14): `serial`, `xdist`, `xdist_2x`,
+`contended` (4 CPU burners) and `file_mode_only` were clean in 10 of 10 iterations each:
+0 failures, stalls or worker deaths in 50, with the slowest test 4.9 s.
+`coredumpctl` listed no rapidgzip core after them, only small cores (24 KB to 48 MB) from
+tests that crash other processes on purpose. That run's `suite_neighbours` and
+`main_step` iterations all failed on one unrelated test, `test_benchmark_structural_gate`,
+which needs `unrar`, and the workflow had not installed it. It does now.
+
+**Locally**, without a pipe handler (`core_pattern` `core`, limit 0, so no core either
+way): 0 failures in 106 `xdist` iterations (17 before the fix, 89 after).
+
+On py3.14 a cut stream sometimes kills the child with SIGSEGV instead of SIGABRT (2 to 6
+in 60 children). Without the abort message that death classifies as `CorruptionError`,
+but it still counts as a crash on the data, so the standard library takes over and the
+caller gets its bytes and its `TruncatedError`, as the tests check.
+
+**Still open.** `test_accelerator_truncation_abort.py` has had its own serial CI step since
+the first death on 2026-10-02. It can go back into the main step now; that changes a
+required job, so it is the maintainer's call.
 
 ## 6. The harness
 

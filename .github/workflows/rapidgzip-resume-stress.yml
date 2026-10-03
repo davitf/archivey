@@ -64,10 +64,15 @@ jobs:
         id: sync
         run: uv sync --python ${{ matrix.python-version }} --group dev --extra all
 
+      - name: Install unrar
+        # The suite_neighbours and main_step scenarios run tests that need RARLAB unrar
+        # (test_benchmark_structural_gate fails without it), as ci.yml installs it.
+        run: sudo apt-get update && sudo apt-get install -y unrar
+
       - name: Install stack tools (gdb, py-spy; best effort)
         continue-on-error: true
         run: |
-          sudo apt-get update && sudo apt-get install -y gdb
+          sudo apt-get install -y gdb
           uv pip install --python ${{ matrix.python-version }} py-spy
 
       - name: Show the runner (core dumps, limits, memory)
