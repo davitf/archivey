@@ -396,8 +396,8 @@ def test_extract_copies_each_copy_from_the_written_source(
     from the source's file. With no room in memory or in the spool, the copies still
     cost no second decode."""
     monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
-    _no_temp_file(monkeypatch)
     config = _config(decompressor, spool_limits=SpoolLimits(max_bytes=0))
+    _no_temp_file(monkeypatch)
     archive, payload = _solid_with_copies(tmp_path)
     dest = tmp_path / "out"
     with open_archive(archive, config=config, streaming=streaming) as reader:
@@ -411,8 +411,8 @@ def test_extract_copies_each_copy_from_the_written_source(
 def test_extract_copy_counts_toward_the_byte_cap_when_copied_from_disk(
     tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _no_temp_file(monkeypatch)
     config = _config("unrar")
+    _no_temp_file(monkeypatch)
     archive, payload = _solid_with_copies(tmp_path)
     total_without_copies = 200_000 + len(payload) + len(b"other")
     limits = ExtractionLimits(
@@ -524,8 +524,8 @@ def test_stream_members_without_copy_streams_yields_none_for_copies(
     """``file_copy_streams=False``: each copy comes with no stream and the pass keeps
     nothing for it; the copy names its source, whose digest stands for it."""
     monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
-    _no_temp_file(monkeypatch)
     config = _config(decompressor)
+    _no_temp_file(monkeypatch)
     archive, payload = _solid_with_copies(tmp_path)
     seen: dict[str, bytes | None] = {}
     with open_archive(archive, config=config) as reader:
