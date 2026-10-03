@@ -526,9 +526,9 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 ) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 
 
-# Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
-_VERSION_SUFFIX = re.compile(r";(\d+)$")
-_VERSION_SUFFIX_BYTES = re.compile(rb";(\d+)$")
+# Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
+# not ``$``: ``$`` also matches before a final newline, which would drop it from the name.
+_VERSION_SUFFIX = re.compile(r";(\d+)\Z")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
@@ -549,15 +549,30 @@ def _nm_name(record: DirectoryRecord) -> bytes | None:
     return bytes(rr.name())
 
 
+def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
+    """``name`` without its ``;N`` version, and ``N`` (``None`` without one).
+
+    With ``iso9660`` (plain ISO 9660 identifiers), an empty extension's ``.`` goes too
+    (``FOO.;1`` is ``FOO``), and a bare ``;N`` is a name, not a version: it comes back
+    unchanged with ``None``. Without it (Joliet), the suffix always goes and its version
+    is reported, so ``;1`` becomes ``""`` with version 1. Neither Joliet caller lets that
+    empty name reach a member: ``_joliet_name`` drops it in ``_ascii_runs_match``, and
+    ``_joliet_text`` only feeds extent matching.
+    """
+    match = _VERSION_SUFFIX.search(name)
+    if match is None or (iso9660 and match.start() == 0):
+        return name, None
+    stem = name[: match.start()]
+    if iso9660 and len(stem) > 1 and stem.endswith("."):
+        stem = stem[:-1]
+    return stem, int(match.group(1))
+
+
 def _iso_ident_name(record: DirectoryRecord) -> bytes:
     """A record's ISO 9660 identifier, version and empty-extension dot removed."""
-    ident = bytes(record.file_identifier())
-    match = _VERSION_SUFFIX_BYTES.search(ident)
-    if match is not None and match.start() > 0:
-        ident = ident[: match.start()]
-        if ident.endswith(b".") and len(ident) > 1:
-            ident = ident[:-1]
-    return ident
+    # Latin-1 maps each byte to one character, and none of 0x80-0xff is a digit.
+    ident = bytes(record.file_identifier()).decode("latin-1")
+    return _strip_version(ident, iso9660=True)[0].encode("latin-1")
 
 
 def _byte_ascii_runs(raw: bytes) -> tuple[str, ...]:
@@ -758,10 +773,15 @@ class _Extent(NamedTuple):
     length: int
 
 
+def _is_entry(child: DirectoryRecord | None) -> TypeGuard[DirectoryRecord]:
+    """Whether a directory's child record is an entry: not ``None``, ``.`` or ``..``."""
+    return child is not None and not child.is_dot() and not child.is_dotdot()
+
+
 def _yield_children(
     record: DirectoryRecord, rock_ridge: bool
-) -> Iterator[DirectoryRecord | None]:
-    """A directory record's children, as pycdlib's own ``walk()`` enumerates them.
+) -> Iterator[DirectoryRecord]:
+    """A directory record's entries, as pycdlib's own ``walk()`` enumerates them.
 
     ``pycdlib.pycdlib._yield_children`` is private, but it is the one place pycdlib
     skips the extra records of a multi-extent file and follows Rock Ridge CL/PL
@@ -770,7 +790,7 @@ def _yield_children(
     every supported pycdlib, so a rename there fails loudly rather than silently.
     """
     assert _pycdlib_core is not None
-    return _pycdlib_core._yield_children(record, rock_ridge)
+    return filter(_is_entry, _pycdlib_core._yield_children(record, rock_ridge))
 
 
 # zisofs: the 16-byte header at the start of a compressed file's data, then one
@@ -1138,28 +1158,24 @@ class IsoReader(BaseArchiveReader):
         if self._namespace != "iso9660":
             return rel, None
         parent, sep, base = rel.rpartition("/")
-        match = _VERSION_SUFFIX.search(base)
-        if match is None:
-            return rel, None
-        stem = base[: match.start()]
-        if stem.endswith(".") and len(stem) > 1:
-            stem = stem[:-1]
-        if not stem:
-            return rel, None
-        return parent + sep + stem, int(match.group(1))
+        stem, version = _strip_version(base, iso9660=True)
+        return parent + sep + stem, version
 
     def _version_order(self, item: tuple[str, bytes, object]) -> tuple[str, int]:
         """Sort key putting each plain-ISO name's versions in ascending order."""
         presented, version = self._split_version(item[0])
         return presented, version or 0
 
-    def _decode_bytes_name(self, raw: bytes) -> str:
+    def _decode_bytes_name(
+        self, raw: bytes, *, rr_record: DirectoryRecord | None = None
+    ) -> str:
         """Decode a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target.
 
         Nothing in the image says which charset these bytes are in: a Rock Ridge name
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
         valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
-        does for its names, and with UTF-8 and ``surrogateescape`` otherwise.
+        does for its names, then by the name of the Joliet counterpart of the Rock Ridge
+        record ``rr_record`` when one is given (``_joliet_name``), and with UTF-8 and ``surrogateescape`` otherwise.
 
         Decoding always returns. A codec ``open_archive`` accepted can still fail on
         these bytes (``utf-32`` on a length that is not a multiple of four, or
@@ -1167,11 +1183,14 @@ class IsoReader(BaseArchiveReader):
         with no ``encoding=``.
         """
         decoded = self._decode_known(raw)
-        return (
-            raw.decode("utf-8", errors="surrogateescape")
-            if decoded is None
-            else decoded
-        )
+        if decoded is None and rr_record is not None:
+            # Only a Rock Ridge image has Rock Ridge names and link targets to fall
+            # back from.
+            assert self._namespace == "rock_ridge"
+            decoded = self._joliet_name(rr_record, raw)
+        if decoded is None:
+            decoded = raw.decode("utf-8", errors="surrogateescape")
+        return decoded
 
     def _decode_known(self, raw: bytes) -> str | None:
         """``raw`` as UTF-8, else with ``encoding=``; ``None`` when neither applies."""
@@ -1208,12 +1227,10 @@ class IsoReader(BaseArchiveReader):
         if counterpart is None:
             return None
         try:
-            name = bytes(counterpart.file_identifier()).decode("utf-16_be")
+            ident = bytes(counterpart.file_identifier()).decode("utf-16_be")
         except UnicodeDecodeError:
             return None
-        match = _VERSION_SUFFIX.search(name)
-        if match is not None:
-            name = name[: match.start()]
+        name, _ = _strip_version(ident, iso9660=False)
         if not _ascii_runs_match(raw, name):
             return None
         self._joliet_named[id(record)] = counterpart
@@ -1233,8 +1250,6 @@ class IsoReader(BaseArchiveReader):
         stack = [root]
         while stack:
             for child in _yield_children(stack.pop(), False):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 extent = child.extent_location()
                 if not child.is_dir():
                     files.setdefault(extent, []).append(child)
@@ -1270,8 +1285,6 @@ class IsoReader(BaseArchiveReader):
         while queue and visited < _JOLIET_SEARCH_RECORDS:
             directory, depth = queue.pop(0)
             for child in _yield_children(directory, True):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 visited += 1
                 if visited > _JOLIET_SEARCH_RECORDS:
                     break
@@ -1290,8 +1303,7 @@ class IsoReader(BaseArchiveReader):
     @staticmethod
     def _joliet_text(record: DirectoryRecord) -> str:
         name = bytes(record.file_identifier()).decode("utf-16_be", errors="replace")
-        match = _VERSION_SUFFIX.search(name)
-        return name if match is None else name[: match.start()]
+        return _strip_version(name, iso9660=False)[0]
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
@@ -1304,12 +1316,7 @@ class IsoReader(BaseArchiveReader):
         if self._namespace == "rock_ridge":
             nm = _nm_name(record)
             if nm is not None:
-                name = self._decode_known(nm)
-                if name is None:
-                    name = self._joliet_name(record, nm)
-                if name is None:
-                    name = nm.decode("utf-8", errors="surrogateescape")
-                return name, nm
+                return self._decode_bytes_name(nm, rr_record=record), nm
             ident = _iso_ident_name(record)
             return self._decode_bytes_name(ident), ident
         ident = bytes(record.file_identifier())
@@ -1328,11 +1335,7 @@ class IsoReader(BaseArchiveReader):
         ``..`` carries a PL record), which is the same test pycdlib uses to hide those
         children from their parking place.
         """
-        children = [
-            c
-            for c in record.children
-            if c is not None and not c.is_dot() and not c.is_dotdot()
-        ]
+        children = [c for c in record.children if _is_entry(c)]
         if not children:
             return False
         for child in children:
@@ -1369,8 +1372,6 @@ class IsoReader(BaseArchiveReader):
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
             for child in _yield_children(dir_record, use_rr):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 if (
                     use_rr
                     and dirpath == "/"
@@ -1436,7 +1437,7 @@ class IsoReader(BaseArchiveReader):
         superseded: bool = False,
     ) -> ArchiveMember:
         rr = getattr(record, "rock_ridge", None)
-        raw_mode = self._px_mode(rr)
+        raw_mode, uid, gid = self._px(rr)
 
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
@@ -1469,7 +1470,7 @@ class IsoReader(BaseArchiveReader):
         )
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
-        mode, uid, gid = self._posix_metadata(rr)
+        mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
         link_target = self._symlink_target(member_type, record, rr)
 
         size = self._file_size(record) if member_type == MemberType.FILE else None
@@ -1685,35 +1686,24 @@ class IsoReader(BaseArchiveReader):
         )
         return modified, accessed, created, ctime, invalid
 
-    def _px_mode(self, rr: RockRidge | None) -> int | None:
-        """The full POSIX mode from a Rock Ridge PX record, file-type bits included."""
-        if rr is None:
-            return None
-        for entries in (rr.dr_entries, rr.ce_entries):
-            px = getattr(entries, "px_record", None)
-            if px is not None:
-                mode = getattr(px, "posix_file_mode", None)
-                return mode if isinstance(mode, int) else None
-        return None
+    def _px(self, rr: RockRidge | None) -> tuple[int | None, int | None, int | None]:
+        """The full POSIX mode (file-type bits included), uid and gid of a PX record.
 
-    def _posix_metadata(
-        self, rr: RockRidge | None
-    ) -> tuple[int | None, int | None, int | None]:
-        # POSIX mode/uid/gid come only from a Rock Ridge PX record; Joliet/plain carry none,
-        # so those namespaces correctly yield (None, None, None).
+        Only Rock Ridge carries them; Joliet and plain ISO 9660 yield ``None`` for all.
+        """
         if rr is None:
             return None, None, None
         for entries in (rr.dr_entries, rr.ce_entries):
             px = getattr(entries, "px_record", None)
-            if px is None:
-                continue
-            raw_mode = getattr(px, "posix_file_mode", None)
-            mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
-            return (
-                mode,
-                getattr(px, "posix_user_id", None),
-                getattr(px, "posix_group_id", None),
-            )
+            if px is not None:
+                mode = getattr(px, "posix_file_mode", None)
+                # Only the mode is type-checked: ``_make_member`` calls
+                # ``stat.S_IMODE`` on it, while uid and gid pass through untouched.
+                return (
+                    mode if isinstance(mode, int) else None,
+                    getattr(px, "posix_user_id", None),
+                    getattr(px, "posix_group_id", None),
+                )
         return None, None, None
 
     def _symlink_target(
@@ -1745,18 +1735,11 @@ class IsoReader(BaseArchiveReader):
         directory: DirectoryRecord | None = record.parent
         parts: list[str] = []
         for component in target.split(b"/"):
-            part = self._decode_known(component)
             here = self._rock_ridge_child(directory, component)
-            if part is None and here is not None:
-                # Only a Rock Ridge image reaches here (``has_joliet()`` with a Rock
-                # Ridge symlink). ``_joliet_name`` registers ``here`` for the
-                # member's diagnostic, as the walk's own ``_record_name`` does with the
-                # same record and bytes, so which of the two runs first changes nothing.
-                assert self._namespace == "rock_ridge"
-                part = self._joliet_name(here, component)
-            if part is None:
-                part = component.decode("utf-8", errors="surrogateescape")
-            parts.append(part)
+            # ``_joliet_name`` registers ``here`` for the member's diagnostic, as the
+            # walk's own ``_record_name`` does with the same record and bytes, so which
+            # of the two runs first changes nothing.
+            parts.append(self._decode_bytes_name(component, rr_record=here))
             directory = here if here is not None and here.is_dir() else None
         return "/".join(parts)
 
@@ -1773,8 +1756,6 @@ class IsoReader(BaseArchiveReader):
         if children is None:
             children = {}
             for child in _yield_children(directory, True):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 # The name the member lists under; the first of several records
                 # sharing it, as a scan finds.
                 nm = _nm_name(child)
