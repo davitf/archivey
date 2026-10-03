@@ -297,6 +297,8 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
                 pass
             else:
                 after = at + 2
+                # Same padding rule as _XzState._process (_NEED_HEADER); the two
+                # must agree on where the next header starts.
                 while window[after : after + 4] == b"\x00\x00\x00\x00":
                     after += 4
                 if window[after : after + 6] == _XZ_STREAM_MAGIC:
@@ -663,7 +665,9 @@ class _XzState:
             if self._state == self._NEED_HEADER:
                 # XZ spec §2.2 "Stream Padding": concatenated streams may be separated by
                 # null bytes whose length is a multiple of four (to keep streams 4-byte
-                # aligned). Strip all leading 4-byte runs in one delete.
+                # aligned). Strip all leading 4-byte runs in one delete. _data_end
+                # applies the same rule when it checks for a stream after a footer;
+                # the two must agree.
                 padding = 0
                 while (
                     padding + 4 <= len(self._buf)

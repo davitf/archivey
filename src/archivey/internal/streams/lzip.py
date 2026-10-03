@@ -111,10 +111,13 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     :data:`TRAILING_DATA_CANDIDATES` of them are tried in all. The forward decoder
     reports the appended bytes when a read reaches them.
 
-    A member followed by the lzip magic is not the last one: the forward decoder starts
-    a member there, so the later member's trailer is damaged. That is corruption, not
-    appended data, and is raised so the last member is never dropped from the size and
-    the seek range.
+    A member immediately followed by the lzip magic is not the last one: the forward
+    decoder starts a member there, so the later member's trailer is damaged. That is
+    corruption, not appended data, and is raised so the last member is never dropped
+    from the size and the seek range. The magic must follow at once, with no padding
+    skipped first as xz does: lzip has no stream padding, and the forward decoder
+    treats zeros after a member as the end of the data, so a member behind zeros is
+    trailing data on both paths.
     """
     if _member_ends_at(stream, file_size, stop_at):
         return file_size
@@ -502,8 +505,7 @@ class LzipDecoder(BaseDecoder):
             last_known,
             _read_index_backwards,
             lambda m: SeekPoint(m.decompressed_start, m.compressed_start),
-            "Lzip backwards index scan failed (the file may have trailing data after the "
-            "last member, which is valid per the lzip spec); falling back to sequential "
+            "Lzip backwards index scan failed; falling back to sequential "
             "decompression. Reason: %s",
             codec_name="lzip",
             collector=self._collector,

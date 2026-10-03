@@ -29,6 +29,7 @@ from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
 )
+from archivey.internal.streams.lzip import _SIZE_FIELD as _LZIP_SIZE_FIELD
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
@@ -391,25 +392,29 @@ def _damage_last_lzip_trailer(blob: bytearray) -> None:
     blob[-_LZIP_SIZE_FIELD:] = (10).to_bytes(_LZIP_SIZE_FIELD, "little")
 
 
-_LZIP_SIZE_FIELD = 8
-
-
 @pytest.mark.parametrize(
-    ("suffix", "damage"),
+    ("suffix", "damage", "padding"),
     [
-        pytest.param(".xz", _damage_last_xz_footer, id="xz"),
-        pytest.param(".lz", _damage_last_lzip_trailer, id="lz"),
+        pytest.param(".xz", _damage_last_xz_footer, b"", id="xz"),
+        # XZ stream padding between the streams: the search skips it before
+        # looking for the next header, as the forward decoder does.
+        pytest.param(".xz", _damage_last_xz_footer, b"\x00" * 4, id="xz-padding-4"),
+        pytest.param(".xz", _damage_last_xz_footer, b"\x00" * 16, id="xz-padding-16"),
+        pytest.param(".lz", _damage_last_lzip_trailer, b"", id="lz"),
     ],
 )
 def test_a_damaged_last_footer_is_not_taken_for_appended_bytes(
-    tmp_path: Path, suffix: str, damage: Callable[[bytearray], None]
+    tmp_path: Path,
+    suffix: str,
+    damage: Callable[[bytearray], None],
+    padding: bytes,
 ) -> None:
     """The footer search must not stop at the previous stream's footer: the bytes
     after it start a stream, so the seekable path reports the damage as the
     sequential read does, instead of a clean stream of half the size."""
     _name, compress, _marks = _CODECS[suffix]
     half = _PAYLOAD[:50_000]
-    blob = bytearray(compress(half) * 2)
+    blob = bytearray(compress(half) + padding + compress(half))
     damage(blob)
     path = _write(tmp_path, suffix, bytes(blob))
     with open_archive(path, seekable_members=True) as reader:
@@ -427,6 +432,26 @@ def test_a_damaged_last_footer_is_not_taken_for_appended_bytes(
                 stream.read()
     with open_archive(path) as reader, pytest.raises(CorruptionError):
         reader.read(reader.members()[0])
+
+
+def test_a_damaged_lzip_member_behind_zeros_is_appended_bytes(tmp_path: Path) -> None:
+    """Zeros after an lzip member end its data (lzip has no stream padding), so a
+    damaged member behind them is trailing data on both paths, not a dropped last
+    member: the size and CRC are the first member's, and the read is clean."""
+    half = _PAYLOAD[:50_000]
+    blob = bytearray(make_lzip_member(half) + b"\x00" * 8 + make_lzip_member(half))
+    _damage_last_lzip_trailer(blob)
+    path = _write(tmp_path, ".lz", bytes(blob))
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        assert member.size == len(half)
+        assert member.hashes[HashAlgorithm.CRC32] == zlib.crc32(half).to_bytes(4, "big")
+        with reader.open(member) as stream:
+            assert stream.seek(0, io.SEEK_END) == len(half)
+            stream.seek(0)
+            assert stream.read() == half
+        assert len(_reports(reader)) == 1
+        assert DiagnosticCode.SEEK_INDEX_DEGRADED not in reader.diagnostics.counts
 
 
 @pytest.mark.parametrize("suffix", [".xz", ".lz"])
