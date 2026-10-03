@@ -70,8 +70,9 @@ def disable_core_dumps() -> None:
     stops a core file but not a core piped to a crash handler (``core_pattern``
     starting with ``|``: apport, systemd-coredump), which the kernel feeds whatever the
     limit while this process stays alive and the parent waits. Linux skips the dump
-    entirely for a process that is not dumpable. ``rapidgzip_worker.py`` has the same
-    function: neither worker can import the other.
+    entirely for a process that is not dumpable. ``rapidgzip_worker.py`` has a copy,
+    since neither worker can import the other; ``tests/test_worker_scripts.py`` keeps
+    the two the same.
 
     Best effort: anything missing (no ``resource`` on Windows, no ``prctl``) is skipped.
     """
