@@ -767,10 +767,15 @@ class _Extent(NamedTuple):
     length: int
 
 
+def _is_entry(child: DirectoryRecord | None) -> TypeGuard[DirectoryRecord]:
+    """Whether a directory's child record is an entry: not ``None``, ``.`` or ``..``."""
+    return child is not None and not child.is_dot() and not child.is_dotdot()
+
+
 def _yield_children(
     record: DirectoryRecord, rock_ridge: bool
-) -> Iterator[DirectoryRecord | None]:
-    """A directory record's children, as pycdlib's own ``walk()`` enumerates them.
+) -> Iterator[DirectoryRecord]:
+    """A directory record's entries, as pycdlib's own ``walk()`` enumerates them.
 
     ``pycdlib.pycdlib._yield_children`` is private, but it is the one place pycdlib
     skips the extra records of a multi-extent file and follows Rock Ridge CL/PL
@@ -779,7 +784,7 @@ def _yield_children(
     every supported pycdlib, so a rename there fails loudly rather than silently.
     """
     assert _pycdlib_core is not None
-    return _pycdlib_core._yield_children(record, rock_ridge)
+    return filter(_is_entry, _pycdlib_core._yield_children(record, rock_ridge))
 
 
 # zisofs: the 16-byte header at the start of a compressed file's data, then one
@@ -1233,8 +1238,6 @@ class IsoReader(BaseArchiveReader):
         stack = [root]
         while stack:
             for child in _yield_children(stack.pop(), False):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 extent = child.extent_location()
                 if not child.is_dir():
                     files.setdefault(extent, []).append(child)
@@ -1270,8 +1273,6 @@ class IsoReader(BaseArchiveReader):
         while queue and visited < _JOLIET_SEARCH_RECORDS:
             directory, depth = queue.pop(0)
             for child in _yield_children(directory, True):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 visited += 1
                 if visited > _JOLIET_SEARCH_RECORDS:
                     break
@@ -1327,11 +1328,7 @@ class IsoReader(BaseArchiveReader):
         ``..`` carries a PL record), which is the same test pycdlib uses to hide those
         children from their parking place.
         """
-        children = [
-            c
-            for c in record.children
-            if c is not None and not c.is_dot() and not c.is_dotdot()
-        ]
+        children = [c for c in record.children if _is_entry(c)]
         if not children:
             return False
         for child in children:
@@ -1368,8 +1365,6 @@ class IsoReader(BaseArchiveReader):
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
             for child in _yield_children(dir_record, use_rr):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 if (
                     use_rr
                     and dirpath == "/"
@@ -1772,8 +1767,6 @@ class IsoReader(BaseArchiveReader):
         if children is None:
             children = {}
             for child in _yield_children(directory, True):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 # The name the member lists under; the first of several records
                 # sharing it, as a scan finds.
                 nm = _nm_name(child)
