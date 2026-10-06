@@ -80,6 +80,46 @@ def test_iso_long_form_tf_date_at_year_one_does_not_break_modified_utc() -> None
         member.modified_utc()
 
 
+def _peak_at_open(data: bytes, config: ArchiveyConfig) -> int:
+    """Peak traced bytes while ``open_archive`` opens and lists ``data``.
+
+    A run that ``ResourceLimitError`` stops counts the same as one that completes.
+    """
+
+    def attempt() -> None:
+        try:
+            with open_archive(io.BytesIO(data), config=config) as archive:
+                archive.members()
+        except ResourceLimitError:
+            pass
+
+    # One untraced run first, so lazy imports and first-use caches (which differ by
+    # platform: 474 KB on Windows against 174 KB of image) are not counted. Then
+    # collect, so that two kinds of garbage are not finalized inside the traced window,
+    # where a cyclic collection would count its finalizers' allocations: what earlier
+    # tests left, and the reference cycles that the untraced run itself just left.
+    attempt()
+    gc.collect()
+    tracemalloc.start()
+    try:
+        attempt()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak
+
+
+def _other_threads() -> list[str]:
+    """Names of the live threads other than the main thread, for a failure message.
+
+    tracemalloc counts allocations from every thread. On a free-threaded build, a
+    thread that an earlier test left running allocates at the same time as the traced
+    run, and its allocations add to the peak.
+    """
+    main = threading.main_thread()
+    return [thread.name for thread in threading.enumerate() if thread is not main]
+
+
 # ---------------------------------------------------------------------------------
 # I2: ListingLimits do not bound what pycdlib builds at open
 # ---------------------------------------------------------------------------------
@@ -97,25 +137,7 @@ def test_iso_listing_limits_bound_the_memory_spent_at_open() -> None:
     data = _build_iso(populate)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
 
-    def attempt() -> None:
-        try:
-            with open_archive(io.BytesIO(data), config=config) as archive:
-                archive.members()
-        except ResourceLimitError:
-            pass
-
-    # One untraced run first, so lazy imports and first-use caches (which differ
-    # by platform: 474 KB on Windows against 174 KB of image) are not counted.
-    # Then collect, so garbage left by earlier tests is not finalized (and its
-    # finalizers' allocations counted) inside the traced window.
-    attempt()
-    gc.collect()
-    tracemalloc.start()
-    try:
-        attempt()
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    peak = _peak_at_open(data, config)
 
     # 7z and RAR refuse at open once the member count passes max_members; the cost
     # of an over-limit ISO should likewise be about the budget, not a multiple of
@@ -123,7 +145,7 @@ def test_iso_listing_limits_bound_the_memory_spent_at_open() -> None:
     # Python objects per directory record), so a 64 MiB image of records cost about
     # 1 GiB. The bound leaves room for the copies of the directory extent pycdlib reads,
     # and for the source buffer itself: the free-threaded 3.13 build peaked at 4.3x.
-    assert peak < 8 * len(data), (peak, len(data))
+    assert peak < 8 * len(data), (peak, len(data), _other_threads())
 
 
 # ---------------------------------------------------------------------------------
@@ -177,30 +199,14 @@ def test_iso_shared_continuation_area_does_not_multiply_memory_at_open() -> None
     data = _shared_continuation_image(1000)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
 
-    def attempt() -> None:
-        try:
-            with open_archive(io.BytesIO(data), config=config) as archive:
-                archive.members()
-        except ResourceLimitError:
-            pass
-
-    # One untraced run first, so lazy imports and first-use caches (which differ
-    # by platform: 474 KB on Windows against 174 KB of image) are not counted.
-    # Then collect, so garbage left by earlier tests is not finalized (and its
-    # finalizers' allocations counted) inside the traced window.
-    attempt()
-    gc.collect()
-    tracemalloc.start()
-    try:
-        attempt()
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    peak = _peak_at_open(data, config)
 
     # Every name is ~1.9 KB, all from one 2 KiB sector. The listing budget is 10
     # members; what open_archive() spends should not scale with the number of
-    # records pointing at that sector.
-    assert peak < 4 * len(data), (peak, len(data))
+    # records pointing at that sector. Free-threaded 3.13.7 peaks at 2.35x (409 725
+    # bytes), alone and in the full serial suite. The free-threaded CI job has peaked
+    # at 5.3x and 6.4x in the full suite; that cause is not reproduced locally.
+    assert peak < 4 * len(data), (peak, len(data), _other_threads())
 
 
 def _count_record_parses(monkeypatch: pytest.MonkeyPatch) -> list[int]:
