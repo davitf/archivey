@@ -597,6 +597,32 @@ def test_a_child_killed_from_outside_ends_the_stream(
         assert str(second.value) == str(first.value)
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl and /proc")
+def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
+    """The child aborts on every cut stream, and a crash handler that ``core_pattern``
+    pipes to (apport, systemd-coredump) gets the whole core whatever ``RLIMIT_CORE``
+    says: several GB, for which the parent waits. That made the cut-stream tests stall
+    for minutes on CI, and a worker died at the 60 s timeout. The child turns its dumps
+    off: a core limit of 0, and not dumpable, which is what stops a piped dump."""
+    path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
+    with RapidgzipChildStream(str(path), label="gzip") as stream:
+        assert stream._proc is not None
+        limits = Path(f"/proc/{stream._proc.pid}/limits").read_text()
+    core = next(line for line in limits.splitlines() if line.startswith("Max core"))
+    assert core.split()[4:6] == ["0", "0"], core
+    # Whether a process is dumpable shows only to itself (PR_GET_DUMPABLE), so the
+    # worker's function is run in a fresh interpreter.
+    probe = """
+        import ctypes
+        from archivey.internal.streams.rapidgzip_worker import disable_core_dumps
+        disable_core_dumps()
+        print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))  # PR_GET_DUMPABLE
+    """
+    proc = _run(probe)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "0"
+
+
 @_POSIX
 @pytest.mark.parametrize("sig", ["SIGSEGV", "SIGABRT"])
 @pytest.mark.parametrize("then", ["read", "seek"])

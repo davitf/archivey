@@ -218,6 +218,18 @@ reader passed, so a cut stream delivers the same bytes as without rapidgzip
 everything it had decoded past the reader: up to the whole stream for a cut file of tens
 of MB with every core decoding.
 
+**Core dumps of the aborting child (fixed).** Each abort used to write a core dump. A crash
+handler that `core_pattern` pipes to gets the whole core whatever `RLIMIT_CORE` says,
+about 4 GB with every core decoding, and the parent waits until the handler has read it.
+That stalled the main CI step for 68 to 150 s on every run, and lost an xdist worker
+silently at the 60 s timeout five times (2026-10-02 in
+`test_accelerator_truncation_abort.py`; 2026-10-03 four times in
+`test_rapidgzip_resume.py`, py3.11 and py3.13). The child now turns off its own core
+dumps, and `test_accelerator_truncation_abort.py`, which had run in its own serial CI
+step since the first occurrence, is back in the main step. Details, measurements and the
+stress harness:
+[`investigations/rapidgzip-worker-deaths.md`](investigations/rapidgzip-worker-deaths.md).
+
 **What remains.** bzip2 still runs in-process, so an input
 that aborts the bzip2 decoder would end the caller's process; none has been found.
 
@@ -337,13 +349,14 @@ stacks are not in a PPMd decode.
 `PYTHONFAULTHANDLER=1`:
 
 ```text
-# 1) Main suite, without Hypothesis and the dedicated accelerator/PPMd stream modules
+# 1) Main suite on every core, without Hypothesis and the dedicated accelerator/PPMd
+#    stream modules (--no-cov on every leg but ubuntu py3.14 [all])
 pytest tests/ \
   --ignore=tests/test_property_safety.py \
   --ignore=tests/test_rapidgzip_deflate_zlib.py \
   --ignore=tests/test_accelerator_shutdown.py \
   --ignore=tests/test_accelerator_corruption.py \
-  --ignore=tests/test_ppmd_raw_streams.py -q
+  --ignore=tests/test_ppmd_raw_streams.py -q -n auto --no-cov
 
 # 2) Accelerator stream modules, one fresh subprocess each (coverage off, breadcrumbs)
 python scripts/ci_run_native_modules.py
@@ -355,7 +368,7 @@ python scripts/ci_run_native_modules.py \
   --allow-exit-after-green
 
 # 4) Hypothesis property-safety
-pytest tests/test_property_safety.py -q
+pytest tests/test_property_safety.py -q -n auto --no-cov
 ```
 
 Steps 1 and 4 apart stop a corrupted main-suite heap from taking down Hypothesis, and the
@@ -369,7 +382,8 @@ hygiene, not a product fix.
 **How to reproduce or bisect.** Use a rate and A/B runs:
 
 ```bash
-# Match CI (Linux preferred; uv's standalone CPython, pytest-cov on via addopts)
+# Match CI (Linux preferred; uv's standalone CPython). The serial baseline below keeps
+# pytest-cov on via addopts, as CI ran before 2026-10-02; the bandage shape matches CI now.
 uv python install 3.11
 uv sync --group dev --extra all
 
@@ -379,22 +393,26 @@ for i in $(seq 1 20); do
     || { echo "FAILED pass $i rc=$?"; break; }
 done
 
-# 2) Same soak in the CI bandage shape
+# 2) The CI shape, not step 1's A/B partner: it differs from step 1 in the --ignore set
+#    AND in running the main suite as four short-lived xdist workers without coverage.
+#    A heap corruption that needs the whole suite in one long-lived process may not show
+#    there at any rate, so a clean 20/20 does not credit the --ignore set. For the A/B,
+#    run step 1 again with the same --ignore set (serial, coverage on).
 for i in $(seq 1 20); do
   uv run --python 3.11 --no-sync pytest tests/ \
     --ignore=tests/test_property_safety.py \
     --ignore=tests/test_rapidgzip_deflate_zlib.py \
     --ignore=tests/test_accelerator_shutdown.py \
     --ignore=tests/test_accelerator_corruption.py \
-    --ignore=tests/test_ppmd_raw_streams.py -q \
+    --ignore=tests/test_ppmd_raw_streams.py -q -n auto --no-cov \
     || { echo "main FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
     || { echo "accelerators FAILED pass $i rc=$?"; break; }
   uv run --python 3.11 --no-sync python scripts/ci_run_native_modules.py \
     --modules tests/test_ppmd_raw_streams.py \
     || { echo "ppmd-raw FAILED pass $i rc=$?"; break; }
-  uv run --python 3.11 --no-sync pytest tests/test_property_safety.py -q \
-    || { echo "property FAILED pass $i rc=$?"; break; }
+  uv run --python 3.11 --no-sync pytest tests/test_property_safety.py -q -n auto \
+    --no-cov || { echo "property FAILED pass $i rc=$?"; break; }
 done
 
 # 2b) Hard soak of the PPMd raw-streams exit abort (the stress workflow's step)
