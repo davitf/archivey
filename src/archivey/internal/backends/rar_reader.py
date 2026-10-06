@@ -267,6 +267,17 @@ def _unrar_finds_exactly(
     return True
 
 
+def _data_is_in_one_place(info: RarMemberInfo) -> bool:
+    """Whether the member's packed data is one run starting at ``data_offset``.
+
+    A part of a split member has a split flag set. Once the parser merges the parts,
+    the member keeps the first part's ``data_offset`` and the total packed size, and
+    ``spanned_volumes`` marks it: a read from ``data_offset`` would run past the first
+    volume's part into the next header.
+    """
+    return not (info.split_before or info.split_after or info.spanned_volumes)
+
+
 def _link_file(src: Path, dest: Path) -> None:
     """Make ``dest`` name ``src``'s bytes without copying them: a symlink, else a
     hard link. Raises ``OSError`` when neither is possible."""
@@ -2736,9 +2747,7 @@ class RarReader(BaseArchiveReader):
         return (
             info.compress_type == _RAR_METHOD_STORED
             and not info.file_solid
-            and not info.split_after
-            and not info.split_before
-            and not info.spanned_volumes
+            and _data_is_in_one_place(info)
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
@@ -2870,19 +2879,32 @@ class RarReader(BaseArchiveReader):
             and not raw.is_encrypted
             and not raw.encryption_unknown
             and raw.file_size > 0
-            and not raw.split_before
-            and not raw.split_after
-            # A target split across volumes was merged into one member whose
-            # ``data_offset`` is in the first volume: reading ``file_size`` bytes
-            # from there runs past that volume's part into the next header.
-            and not raw.spanned_volumes
+            and _data_is_in_one_place(raw)
         ):
+            # Unlike the member read, a solid flag does not hold the target back: a
+            # stored target needs no decoder. ``encryption_unknown`` needs no arm in
+            # the reason chain below: only the RAR5 extra-area walk sets it, and a
+            # RAR5 symlink has ``file_redir`` and returned above.
+            #
             # Stored, so the read is the header's own size and cannot amplify; it is
             # still held to the cap every data-stored target is, and an oversized one
             # is refused before any of it is read.
             if raw.file_size > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member)
                 return
+            # A stored target is its packed bytes, so the two sizes must agree, as
+            # ``_open_member`` requires of any stored member. A header that declares
+            # more would have the read take the next header, and whatever follows
+            # it, as the target.
+            if raw.file_size != raw.compress_size:
+                raise CorruptionError(
+                    "The stored symlink target's declared size "
+                    f"({raw.file_size} bytes) does not match its packed size "
+                    f"({raw.compress_size} bytes)",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                )
             view = self._shared.view(raw.data_offset, raw.file_size)
             try:
                 data = view.read()
@@ -2921,7 +2943,7 @@ class RarReader(BaseArchiveReader):
                 "its data is encrypted and this reader does not decrypt it in place"
             )
             in_archive = True
-        elif raw.split_before or raw.split_after or raw.spanned_volumes:
+        elif not _data_is_in_one_place(raw):
             reason = "target_data_split_across_volumes"
             detail = "its data is split across volumes"
             in_archive = True
