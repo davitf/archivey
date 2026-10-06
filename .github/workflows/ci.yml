@@ -138,9 +138,8 @@ jobs:
     timeout-minutes: 20
     # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
     # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
-    # with coverage, 1m52s with -n 4 and --no-cov, same results. One module is excepted and
-    # runs in its own serial step, "Run accelerator truncation tests"; the distro-unar probe
-    # and the scripts/ci_run_native_modules.py steps are one process by design.
+    # with coverage, 1m52s with -n 4 and --no-cov, same results. The distro-unar probe and
+    # the scripts/ci_run_native_modules.py steps are one process by design.
     # Force every uv sync/run in this job onto the matrix interpreter. Without this,
     # `.python-version` (3.11) wins and "py3.12/3.13/3.14" legs silently re-test 3.11.
     env:
@@ -454,27 +453,7 @@ jobs:
           --ignore=tests/test_accelerator_shutdown.py
           --ignore=tests/test_accelerator_corruption.py
           --ignore=tests/test_ppmd_raw_streams.py
-          --ignore=tests/test_accelerator_truncation_abort.py
           -q -n auto ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
-
-      # One process, not -n auto, which is how these tests ran before xdist. Under four
-      # workers, test_a_large_cut_stream_delivers_what_the_standard_library_delivers
-      # [DEFLATE] killed its worker with no output after a stall of several minutes
-      # (ubuntu py3.11 all, 2026-10-02). A silent worker death is what the 60 s
-      # thread-method timeout looks like under xdist, which loses its stack dump (see
-      # timeout_method in pyproject.toml), so the test most likely ran past 60 s. The
-      # likely reason is oversubscription: archivey opens rapidgzip with parallelization=0
-      # (every core), so four workers can each start an all-core decoder. Not confirmed:
-      # four concurrent copies of the three large-cut cases plus four CPU burners, run
-      # 10 times on a 4-core container, all passed in about 11 s. Tracked internally.
-      - name: Run accelerator truncation tests
-        if: matrix.install == 'all' || matrix.install == 'all-lowest'
-        env:
-          PYTHONFAULTHANDLER: "1"
-        run: >
-          uv run --python ${{ matrix.python-version }} --no-sync
-          pytest tests/test_accelerator_truncation_abort.py -q
-          ${{ matrix.coverage && '--cov-report=term-missing' || '--no-cov' }}
 
       - name: Run accelerator stream tests
         if: matrix.install == 'all' || matrix.install == 'all-lowest'
