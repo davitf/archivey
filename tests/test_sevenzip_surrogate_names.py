@@ -385,39 +385,48 @@ def test_an_error_while_writing_names_the_member_as_listed(tmp_path: Path) -> No
     assert result.error.link_target == "missing.txt"
 
 
-# The taken destination is a non-UTF-8 name, which APFS refuses to create.
-@pytest.mark.skipif(
-    sys.platform in ("win32", "darwin"), reason="needs non-UTF-8 POSIX names"
+@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
+@pytest.mark.parametrize(
+    "links",
+    [
+        # The source's bytes are written at the failing link: _materialize_orphan_source.
+        pytest.param(["h"], id="materialized"),
+        # `h1` takes the source's bytes, then `h2` is linked to it: _link_orphan.
+        pytest.param(["h1", "h2"], id="linked"),
+    ],
 )
-@pytest.mark.parametrize("source_kept", [False, True], ids=["excluded", "later"])
 def test_a_deferred_hardlink_error_names_the_member_as_listed(
-    tmp_path: Path, source_kept: bool
+    tmp_path: Path, links: list[str]
 ) -> None:
     """The second pass names a deferred hardlink as the first pass would.
 
-    The link is deferred because its source is excluded (written from a re-read) or
-    comes later in the archive (linked against). Its destination is taken, so
-    ``OverwritePolicy.ERROR`` fails it in the second pass.
+    The filter excludes the source, so its links are deferred to the second pass,
+    which writes the source's bytes at the first link and links the rest to it.
+    The last link gets a lone surrogate, and its destination is taken, so
+    ``OverwritePolicy.ERROR`` fails it there.
     """
     archive = tmp_path / "deferred.tar"
     with tarfile.open(archive, "w") as tar:
-        link = tarfile.TarInfo("h")
-        link.type = tarfile.LNKTYPE
-        link.linkname = "src"
         source = tarfile.TarInfo("src")
         source.size = 2
-        members = [link, source] if source_kept else [source, link]
-        for info in members:
-            tar.addfile(info, io.BytesIO(b"ok") if info is source else None)
+        tar.addfile(source, io.BytesIO(b"ok"))
+        for name in links:
+            link = tarfile.TarInfo(name)
+            link.type = tarfile.LNKTYPE
+            link.linkname = "src"
+            tar.addfile(link)
+    failing = links[-1]
 
     def rename(member: ArchiveMember) -> ArchiveMember | None:
         if member.name == "src":
-            return member if source_kept else None
-        return member.replace(name="h\ud800")
+            return None
+        if member.name == failing:
+            return member.replace(name=failing + "\ud800")
+        return member
 
     dest = tmp_path / "out"
     dest.mkdir()
-    (dest / os.fsdecode(b"h\xed\xa0\x80")).write_bytes(b"taken")
+    (dest / os.fsdecode(failing.encode() + b"\xed\xa0\x80")).write_bytes(b"taken")
     with archivey.open_archive(archive) as reader:
         results = reader.extract_all(
             dest,
@@ -425,9 +434,9 @@ def test_a_deferred_hardlink_error_names_the_member_as_listed(
             filter=rename,
             on_error="continue",
         )
-    (failed,) = [r for r in results if r.member.name == "h"]
+    (failed,) = [r for r in results if r.member.name == failing]
     assert failed.error is not None
-    assert failed.error.member_name == "h\ud800"
+    assert failed.error.member_name == failing + "\ud800"
 
 
 def _symlinks_tar(path: Path, links: list[tuple[str, str]]) -> None:
