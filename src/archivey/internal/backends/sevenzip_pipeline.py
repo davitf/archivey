@@ -63,11 +63,14 @@ from archivey.internal.backends.sevenzip_methods import (
 from archivey.internal.backends.sevenzip_parser import (
     MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
+    FolderGraph,
     HeaderBlock,
     PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
+    check_bind_pairs,
+    check_packed_indices,
     empty_archive,
     encoded_folder_slices,
     folder_is_encrypted,
@@ -292,20 +295,13 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
                 f"7z coder {_method_hex(coder.method)} with "
                 f"{coder.num_in_streams} inputs is not supported"
             )
-    # With one output per coder, out-stream ``i`` is coder ``i``'s output.
-    in_base: list[int] = []
-    total_in = 0
-    for coder in coders:
-        in_base.append(total_in)
-        total_in += coder.num_in_streams
-    bound: dict[int, int] = {}
-    for in_index, out_index in folder.bind_pairs:
-        if in_index in bound or not 0 <= out_index < len(coders):
-            raise CorruptionError("7z folder has an invalid coder bind pair")
-        bound[in_index] = out_index
-    if len(set(bound.values())) != len(bound):
-        raise CorruptionError("7z folder binds one coder output to two inputs")
-    roots = [i for i in range(len(coders)) if i not in set(bound.values())]
+    # The two checks leave every in-stream either bound to a coder's output (so
+    # ``graph.producer`` names that coder) or packed: an in-stream with no producer
+    # is in ``packed_indices``, which the two ``.index`` calls below rely on.
+    graph = FolderGraph.of(folder)
+    check_bind_pairs(folder.bind_pairs, graph.total_in, graph.total_out)
+    check_packed_indices(folder.packed_indices, set(graph.bound), graph.total_in)
+    roots = graph.roots()
     if not roots:
         raise CorruptionError("7z folder coder graph has a cycle and no output")
     if len(roots) > 1:
@@ -318,13 +314,10 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
     visited: set[int] = set()
 
     def input_chain(in_index: int) -> _Chain:
-        if in_index in folder.packed_indices:
-            if in_index in bound:
-                raise CorruptionError("7z folder coder input is both packed and bound")
-            return _Chain(folder.packed_indices.index(in_index), [])
-        if in_index not in bound:
-            raise CorruptionError("7z folder coder input is neither packed nor bound")
-        return chain_ending_at(bound[in_index])
+        producer = graph.producer(in_index)
+        if producer is not None:
+            return chain_ending_at(producer)
+        return _Chain(folder.packed_indices.index(in_index), [])
 
     def chain_ending_at(top: int) -> _Chain:
         run: list[int] = []  # top first; reversed into decode order below
@@ -336,18 +329,18 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
             # Four inputs means BCJ2: the check at the top refused every other coder
             # with more than one input. Relaxing that check must change this test too.
             if coders[coder_index].num_in_streams == 4:
-                base = in_base[coder_index]
                 source: int | _Bcj2Stage = _Bcj2Stage(
-                    [input_chain(base + k) for k in range(4)],
+                    [input_chain(in_index) for in_index in graph.inputs[coder_index]],
                     folder.unpack_sizes[coder_index],
                 )
                 break
             run.append(coder_index)
-            in_index = in_base[coder_index]
-            if in_index in folder.packed_indices or in_index not in bound:
-                source = input_chain(in_index).source
+            (in_index,) = graph.inputs[coder_index]
+            producer = graph.producer(in_index)
+            if producer is None:
+                source = folder.packed_indices.index(in_index)
                 break
-            coder_index = bound[in_index]
+            coder_index = producer
         run.reverse()
         return _Chain(source, _plan_run(folder, run, source), folder.unpack_sizes[top])
 
@@ -435,9 +428,7 @@ def _check_size_preserving_coders(
     for position, index in enumerate(run):
         coder = folder.coders[index]
         method = require(coder.method)
-        if method.kind is not MethodKind.COPY and not (
-            method is METHOD_DELTA or is_bcj(coder.method)
-        ):
+        if method.kind is not MethodKind.COPY and not method.is_filter:
             continue
         input_size = (
             folder.unpack_sizes[run[position - 1]] if position > 0 else source_size
@@ -559,7 +550,7 @@ def _lzma_filter(coder: SevenZipCoder) -> dict:
         if len(coder.properties) != 1:
             raise CorruptionError("Malformed 7z Delta coder properties")
         return {"id": lzma.FILTER_DELTA, "dist": coder.properties[0] + 1}
-    if method.lzma_filter_id is not None and is_bcj(coder.method):
+    if method.lzma_filter_id is not None and method.is_branch_filter:
         return _bcj_filter(coder, method.lzma_filter_id)
     raise UnsupportedFeatureError(
         f"Unsupported 7z LZMA-family coder {_method_hex(coder.method)}"
@@ -641,7 +632,7 @@ def _open_aes_stage(
 
 def _filter_stage(coder: SevenZipCoder, unpack_size: int) -> _FilterStage:
     method = require(coder.method)
-    if method is not METHOD_DELTA and not is_bcj(coder.method):
+    if not method.is_filter:
         raise UnsupportedFeatureError(
             f"Unsupported 7z filter-only coder {_method_hex(coder.method)}"
         )

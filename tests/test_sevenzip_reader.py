@@ -1081,6 +1081,43 @@ def test_unregistered_coder_is_listed_as_unknown_not_dropped() -> None:
     )
 
 
+def test_listing_walk_stops_at_a_coder_with_no_input() -> None:
+    """A coder with no in-stream ends the first-input walk; it does not borrow one.
+
+    The parser accepts such a coder (only decoding refuses it). Its in-stream offset is
+    the next coder's first in-stream, here the Delta coder's, which the PPMd coder
+    feeds: reading that offset as the LZMA coder's input listed PPMd in the chain.
+    """
+
+    def coder(method: bytes, num_in: int = 1) -> SevenZipCoder:
+        return SevenZipCoder(
+            method=method, num_in_streams=num_in, num_out_streams=1, properties=None
+        )
+
+    folder = SevenZipFolder(
+        # In-streams: Delta 0, LZMA2 1 and 2, PPMd 3. LZMA2 (the output) reads the
+        # LZMA coder first and the Delta coder second; PPMd feeds Delta.
+        coders=[
+            coder(b"\x03\x01\x01", num_in=0),
+            coder(b"\x03"),
+            coder(b"\x21", num_in=2),
+            coder(b"\x03\x04\x01"),
+        ],
+        bind_pairs=[(1, 0), (2, 1), (0, 3)],
+        packed_indices=[3],
+        unpack_sizes=[16, 16, 16, 16],
+        crc=None,
+        digest_defined=False,
+    )
+    (chain,) = SevenZipReader._build_folder_compression(
+        types.SimpleNamespace(folders=[folder])
+    )
+    assert tuple(m.algo for m in chain) == (
+        CompressionAlgorithm.LZMA2,
+        CompressionAlgorithm.LZMA,
+    )
+
+
 @requires_binary("7z")
 @requires("inflate64")
 def test_7z_cli_deflate64_fixture_roundtrip(tmp_path: Path) -> None:

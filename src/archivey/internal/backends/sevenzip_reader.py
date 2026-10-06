@@ -53,6 +53,7 @@ from archivey.internal.backends.sevenzip_detect import (
 from archivey.internal.backends.sevenzip_methods import is_aes, lookup
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
+    FolderGraph,
     PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
@@ -182,26 +183,11 @@ def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
     reject one. Listing never validates the graph, so the walk tolerates any wiring.
     """
     coders = folder.coders
-    in_owner: dict[int, int] = {}
-    out_owner: dict[int, int] = {}
-    total_in = total_out = 0
-    for index, coder in enumerate(coders):
-        for offset in range(coder.num_in_streams):
-            in_owner[total_in + offset] = index
-        for offset in range(coder.num_out_streams):
-            out_owner[total_out + offset] = index
-        total_in += coder.num_in_streams
-        total_out += coder.num_out_streams
-    consumers: dict[int, list[int]] = {}
-    for in_index, out_index in folder.bind_pairs:
-        producer = out_owner.get(out_index)
-        consumer = in_owner.get(in_index)
-        if producer is not None and consumer is not None:
-            consumers.setdefault(producer, []).append(consumer)
+    graph = FolderGraph.of(folder)
     pending = [index for index, coder in enumerate(coders) if is_aes(coder.method)]
     seen: set[int] = set()
     while pending:
-        for index in consumers.get(pending.pop(), ()):
+        for index in graph.consumers(pending.pop()):
             if index in seen:
                 continue
             seen.add(index)
@@ -216,28 +202,24 @@ def _compression_coders(folder: SevenZipFolder) -> list[SevenZipCoder]:
     """The folder's coders from its output down each coder's first input.
 
     Listing never validates the graph (only decoding does, in ``plan_folder``), so this
-    walk tolerates any wiring: it stops at a pack stream, an unbound input or a coder
-    it has already visited. A graph with no single output falls back to the coder
-    list reversed, which is the same order for a linear chain written in list order.
+    walk tolerates any wiring: it stops at a pack stream, an unbound input, a coder
+    with no input or a coder it has already visited. A graph with no single output
+    falls back to the coder list reversed, which is the same order for a linear chain
+    written in list order.
     """
     coders = folder.coders
-    bound = dict(folder.bind_pairs)
-    consumed = set(bound.values())
-    roots = [i for i in range(len(coders)) if i not in consumed]
+    graph = FolderGraph.of(folder)
+    roots = graph.roots()
     if len(roots) != 1 or any(c.num_out_streams != 1 for c in coders):
         return list(reversed(coders))
-    in_base: list[int] = []
-    total = 0
-    for coder in coders:
-        in_base.append(total)
-        total += coder.num_in_streams
     walk: list[SevenZipCoder] = []
     seen: set[int] = set()
     index: int | None = roots[0]
-    while index is not None and index not in seen and 0 <= index < len(coders):
+    while index is not None and index not in seen:
         seen.add(index)
         walk.append(coders[index])
-        index = bound.get(in_base[index])
+        first_input = graph.inputs[index][:1]
+        index = graph.producer(first_input[0]) if first_input else None
     return walk
 
 
