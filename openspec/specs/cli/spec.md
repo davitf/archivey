@@ -407,9 +407,10 @@ say that nothing was written. With no `-d`, it SHALL name the smart default dest
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,
 and use that place in the closing summary. Where a real run would keep that entry in
-the destination (the folder was already there, the entry is a symlink, or a symlink in
-it leaves it), it SHALL print `would keep in <stem>/:` with the same reason, judged
-from the symlinks the dry run created. It SHALL NOT check for collisions with entries
+the destination (the folder was already there, the entry is a symlink, a symlink in it
+leaves it, or part of the entry could not be listed, which here means part of the
+scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
+reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
 already at that place.
 
 #### Scenario: extract dry-run matrix

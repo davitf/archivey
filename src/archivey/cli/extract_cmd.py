@@ -398,9 +398,8 @@ def maybe_hoist_single_root(
 ) -> _HoistResult:
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
-    The entry stays in the wrapper, and a line says why, when the wrapper was already
-    there (``wrapper_existed``), when the entry is a symlink, or when a symlink in the
-    entry leaves it on the way to its target (:func:`_links_stay_inside`).
+    The entry stays in the wrapper, and a line says why, for the reasons
+    :func:`_keep_reason` gives.
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
     after an always-wrap extract, without a pre-extract metadata pass. The final
@@ -544,31 +543,30 @@ def _summary_dest_label(
     terminal-safe: the top, the operator's ``-d`` and a wrapper named after the archive
     file can all carry control bytes, and this is the last line the operator reads.
 
-    A dry run wrote nothing to look at, so it answers from what its scratch tree held:
-    the target is a directory the run would create, and the single top's kind is the
-    one the scratch tree gave it."""
+    A dry run wrote nothing to look at, so it answers from what its scratch tree held,
+    which is what a real run's extracted results hold: the target is a directory the
+    run would create, and the single top's kind is the one the scratch tree gave it."""
     if target != Path("."):
         if dry_run or target.is_dir():
             return f"{escape_path(target)}/"
         return escape_path(target)
     if dry_run:
-        tops = {name for name, _ in _dry_run_top_level(report)}
+        tops = dict(_dry_run_top_level(report))
     else:
         written = (
             _relative_name(r.path, target) or r.member.name.strip("/")
             for r in report
             if r.status is ExtractionStatus.EXTRACTED
         )
-        tops = {name.split("/", 1)[0] for name in written} - {""}
-    if len(tops) == 1:
-        only = next(iter(tops))
-        if dry_run:
-            is_dir = dict(_dry_run_top_level(report)).get(only, False)
-        else:
-            on_disk = Path(only)
-            is_dir = on_disk.is_dir() and not on_disk.is_symlink()
-        return f"{escape_member_name(only)}/" if is_dir else escape_member_name(only)
-    return "."
+        # The kind is read from disk below, once there is a single top.
+        tops = dict.fromkeys({name.split("/", 1)[0] for name in written} - {""}, False)
+    if len(tops) != 1:
+        return "."
+    ((only, is_dir),) = tops.items()
+    if not dry_run:
+        on_disk = Path(only)
+        is_dir = on_disk.is_dir() and not on_disk.is_symlink()
+    return f"{escape_member_name(only)}/" if is_dir else escape_member_name(only)
 
 
 def _dry_run_top_level(report: ExtractionReport) -> tuple[tuple[str, bool], ...]:
