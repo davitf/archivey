@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import uuid
@@ -37,8 +38,10 @@ from archivey.diagnostics import (
     DiagnosticDisposition,
     DiagnosticSummary,
     EmptyArchiveContext,
+    EncryptedVerificationContext,
     ExtractionReport,
     MemberListReport,
+    MemberTimestampContext,
     SymlinkTargetContext,
     UnconfirmedFormatContext,
 )
@@ -68,6 +71,7 @@ from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPas
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
+from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.measurement import (
     ByteCounter,
     IoStats,
@@ -81,6 +85,7 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
 from archivey.internal.reader_state import LiveStreamReservation, ReaderState
 from archivey.internal.selection import (
     CollectionSelector,
@@ -100,6 +105,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
+from archivey.internal.timestamps import TimestampIssue
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
     parse_reparse_data,
@@ -1785,6 +1791,84 @@ class BaseArchiveReader(ArchiveReader):
             ),
             target_in_archive=True,
             member_id=member_id,
+        )
+
+    def _emit_timestamp_invalid(
+        self,
+        member: ArchiveMember,
+        member_id: int,
+        issue: TimestampIssue,
+        *,
+        log: logging.Logger | None = logger,
+    ) -> None:
+        """Report one ``MEMBER_TIMESTAMP_INVALID`` finding, attached to ``member``.
+
+        ``member_id`` is the walk position, as for :meth:`_emit_link_target_unavailable`:
+        backends call this while typing the member. ``log=None`` uses the collector's
+        own logger.
+        """
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+            message=issue.message,
+            context=MemberTimestampContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                field=issue.field,
+                source=issue.source,
+                value_repr=issue.value_repr,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=log,
+        )
+
+    def _watch_unverified_read(
+        self,
+        stream: BinaryIO,
+        member: ArchiveMember,
+        *,
+        size: int,
+        check: str,
+        format_label: str,
+        digest: str,
+        why: str,
+        seek_forfeits: bool = True,
+    ) -> BinaryIO:
+        """Wrap ``stream`` to report ``ENCRYPTED_MEMBER_UNVERIFIED`` if it is abandoned
+        before its ``digest`` (``"checksum"``, ``"integrity check"``) is reached.
+
+        ``why`` says why the password is in doubt. The report runs at close, not
+        open: a member's name and id are fixed at listing, so reading them then gives
+        the open-time values.
+        """
+
+        def report(reason: str) -> None:
+            missed = (
+                f"gave up its {digest} by seeking"
+                if reason == "seek"
+                else f"was closed before its {digest} was reached"
+            )
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
+                message=(
+                    f"Encrypted {format_label} member {quoted(member.name)} {missed}, "
+                    f"and {why}: the bytes read may have been decrypted with a wrong "
+                    f"password."
+                ),
+                context=EncryptedVerificationContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    check=check,
+                    reason=reason,
+                ),
+                member=member,
+                logger=integrity_logger,
+            )
+
+        return UnverifiedPasswordReadWatch(
+            stream, size=size, on_unverified=report, seek_forfeits=seek_forfeits
         )
 
     def _read_link_target_data(
