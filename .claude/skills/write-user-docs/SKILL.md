@@ -5,20 +5,23 @@ description: |
   at a time: build the pile of facts, verify each by running code, offer options per
   paragraph, show the final text before committing. Merges five writing skills into one
   voice where "sounds like a person" outranks Simplified Technical English.
-  Use when: writing or rewriting a page in docs/ or new_docs/, "grill me on the docs",
-  drafting user documentation with the maintainer, or when the user invokes
-  /write-user-docs.
+  Use when: writing or rewriting a user docs page, "write the next docs page", drafting
+  user documentation with the maintainer, editing user docs prose, or when the user
+  invokes /write-user-docs.
 ---
 
 # Write user docs
 
 How the `new_docs/` rewrite was written (PR #523, started 2026-09-29), kept so the next
-pages are written the same way. The maintainer found the old `docs/` too flat, too
+pages are written the same way. The rewritten pages live in `new_docs/` (on #523's branch
+until it merges), and `docs/` stays the live site until `new_docs/` replaces it. The maintainer found the old `docs/` too flat, too
 prescriptive and too detailed. This process fixed that by working in small agreed steps
 and by putting "reads as if a person wrote it" above the sentence rules, below only
-accuracy and clarity.
+being true and being impossible to misread.
 
-This skill is for **published user docs**. Chat, PR comments and briefs still use
+This skill sets the voice for **all user docs prose**, in `docs/` and `new_docs/`. Its loop
+is for writing or rewriting a page with the maintainer. For a one-sentence fix, use the
+Voice and Shaping sections without the loop. Chat, PR comments and briefs still use
 [`unslop`](../unslop/SKILL.md). Code comments and exception messages still use
 [`asd-ste100`](../asd-ste100/SKILL.md) in strict mode ([`AGENTS.md`](../../../AGENTS.md)
 §Writing English).
@@ -54,8 +57,9 @@ This skill is for **published user docs**. Chat, PR comments and briefs still us
 
 Docstrings and old docs drift. During #523, the `extract_all` docstring still described
 the filter order from before a merged change, and several first guesses were wrong:
-Windows reserved names are refused rather than renamed, and path refusals apply under
-every policy rather than per policy. So:
+Windows reserved names such as `CON` are refused under `strict` and `standard` rather than
+renamed (`trusted` keeps them, and `sanitize_names` renames them), and refusing `..` or a
+link pointing outside happens under every policy, not only some. So:
 
 - Build a tiny archive with the unusual case in it and run it through the API under each
   option. Use `uv run python`, not bare `python3`. Keep the scratch script outside the
@@ -68,8 +72,12 @@ every policy rather than per policy. So:
 
 Precedence when rules disagree, settled from the maintainer's choices in #523:
 
-**the maintainer > true > can't be misread > sounds like a person > grounding > Diátaxis >
-sentence rules > STE.**
+**true > can't be misread > sounds like a person > grounding > Diátaxis > sentence rules >
+STE.**
+
+When two rules still pull different ways on a paragraph, offer the options and let the
+maintainer pick. The maintainer settles which rule applies; nothing licenses an
+inaccurate sentence.
 
 1. **True, and no bigger than true.** A sentence that isn't quite accurate gets cut, not
    reworded around ("just remove it"). Scope claims to what holds: "whenever possible",
@@ -125,7 +133,9 @@ Rulings from the maintainer in #523's thread:
 
 Mechanics:
 
-- No em dashes. Use commas, full stops, or a colon introducing a list.
+- No em dashes or en dashes. Use commas or full stops. A colon only introduces a list or
+  an example. Parentheses only as a whole grammatical unit. Hyphens in words and ranges
+  ("2-3") are fine.
 - Never put a bidi control character in a doc or a chat message. Describe it in words,
   because a real one reverses the rest of the line where it's displayed.
 - Show defaults in a code block with one short comment per argument, then explain the
@@ -150,8 +160,9 @@ Where they conflicted, this is how it was settled:
 
 - **Diátaxis vs grounding.** On a usage page, grounding wins. A first page may explain a
   concept in a clause, or stay vague and link out, rather than lean on an undefined term.
-- **Punctuation.** No dashes. Colons only to introduce a list or example. Parentheses only
-  as a whole grammatical unit.
+- **Punctuation.** `unslop` bans dashes, parentheses and mid-sentence colons, while
+  `humanizer` offers colons and parentheses as the replacement for dashes. The rule in
+  Mechanics above is the result.
 - **STE strictness.** STE's caps (one instruction per sentence, word limits, avoid -ing)
   are a check for real procedures and warnings only. Applied to whole pages they produced
   the flat docs this rewrite replaced.

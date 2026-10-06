@@ -74,14 +74,17 @@ different things, and where both apply, both run:
   prose: chat replies, decision packets, PR comments, thin briefs.
 - [`asd-ste100`](.claude/skills/asd-ste100/SKILL.md) cuts **ambiguity** — sentences a
   reader can parse two ways. It applies to every piece of English an agent writes here:
-  chat with the maintainer, user-visible text (exception messages, CLI output, `docs/`),
+  chat with the maintainer, user-visible text (exception messages, CLI output, `docs/`, where
+  [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) ranks it below being true
+  and sounding like a person),
   pull request titles and descriptions, review and inline comments, commit messages, and
   code comments in `src/` and `tests/`.
 
 `technical-writing` is separate and is still opened only for Diátaxis structure and
-sentence craft on a published docs or handbook page. Writing a user docs page with the maintainer
-follows [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md), which puts "sounds
-like a person" above STE for that prose.
+sentence craft on a published docs or handbook page. User docs prose, a new page or a
+one-sentence fix, follows the voice in
+[`write-user-docs`](.claude/skills/write-user-docs/SKILL.md), which puts "sounds like a
+person" above STE.
 
 ### Advice, not a gate
 
