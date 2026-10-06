@@ -128,7 +128,8 @@ short pointer to it:
 The docs SHALL state that diagnostics alone are not the primary signal for these
 failures, that an incomplete pass does not publish a complete member cache, and
 that extraction from a listing that ends in damage leaves the prefix's members on
-disk when it raises (per `safe-extraction`). Salvage / `--salvage` remains out of scope and separately reserved.
+disk when it raises (per `safe-extraction`). Salvage / `--salvage` remains out of
+scope and separately reserved.
 
 #### Scenario: listing honesty documentation
 

@@ -1174,6 +1174,7 @@ has been offered to the selector:
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
+| `extract_all(members=["typo.txt", "a.txt"])` on a listing that ends in damage after `a.txt`, code set to `RAISE` | `a.txt` written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
 
 ### Requirement: Honour detection payload_offset at open
 

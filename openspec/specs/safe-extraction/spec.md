@@ -962,6 +962,7 @@ read at open, so damage there fails the open.
 | RAR4 / RAR5 / TAR listing cut or corrupt after N members, random access or streaming, listed first or not | The N members written, then the listing's error; no report |
 | Same, `members=` naming one prefix member | That member written, then the listing's error |
 | Same, `members=` naming a prefix hardlink whose source is not selected | The link written with the source's bytes, then the listing's error |
+| Same, `members=` naming a prefix member and an entry that matches nothing, `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | The prefix member written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
 | Same, prefix over a listing limit | `ResourceLimitError`; nothing written |
 
 ### Requirement: ExtractionReport is an immutable operation result
