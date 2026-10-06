@@ -50,7 +50,8 @@ from archivey.internal.volumes import (
     _numbered_part_number,
     _rar_part_number,
     discover_volume_siblings,
-    next_old_rar_volume_name,
+    next_rar_volume_name,
+    rar_volume_name,
 )
 from archivey.types import ArchiveMember, MemberType
 from tests.streams_util import NonSeekableBytesIO
@@ -532,12 +533,37 @@ def test_volume_part_helpers_total(name: str) -> None:
         _rar_part_number(name),
     ):
         assert isinstance(number, int) and number >= 0
-    following = next_old_rar_volume_name(name)
+    following = next_rar_volume_name(name, old_numbering=True)
     assert following is None or isinstance(following, str)
     # Regex matchers themselves must not raise.
     _NUMBERED_VOLUME_RE.match(name)
     _RAR_PART_RE.match(name)
     _OLD_RAR_CONTINUATION_RE.match(name)
+
+
+# ``rar_volume_name`` is the closed form of unrar's next-name walk: archivey stages a
+# set under these names, and unrar must find each one from the one before it.
+# A newline in the stem defeated the ``.partN`` pattern's ``.`` until it took
+# ``re.DOTALL``, and the walk stopped after volume 1.
+@example(stem="a\nb", index=1, old_numbering=False)
+@given(
+    # Name punctuation is drawn often, so stems like ``x.part3`` come up.
+    stem=st.text(
+        st.one_of(
+            st.sampled_from(".partPART0189"), st.characters(blacklist_characters="/")
+        ),
+        max_size=12,
+    ),
+    index=st.integers(min_value=1, max_value=1499),
+    old_numbering=st.booleans(),
+)
+def test_rar_volume_name_is_the_next_name_unrar_walks(
+    stem: str, index: int, old_numbering: bool
+) -> None:
+    current = rar_volume_name(stem, index, old_numbering=old_numbering)
+    assert next_rar_volume_name(
+        current, old_numbering=old_numbering
+    ) == rar_volume_name(stem, index + 1, old_numbering=old_numbering)
 
 
 @given(
