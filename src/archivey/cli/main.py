@@ -8,7 +8,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import NoReturn, TextIO, cast
+from typing import Any, NoReturn, TextIO, cast
 
 import archivey
 from archivey import (
@@ -33,25 +33,6 @@ from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import display_path, quoted
-
-# Registered verbs + aliases + reserved unimplemented verbs (known-verb-wins).
-_VERBS = frozenset(
-    {
-        "list",
-        "l",
-        "test",
-        "t",
-        "extract",
-        "x",
-        "info",
-        "i",
-        "detect",
-        "hash",
-        "create",
-        "convert",
-        "cat",
-    }
-)
 
 _TOP_EPILOG = """\
 examples:
@@ -219,6 +200,40 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+# A verb's runner: the parsed args plus the kwargs every verb shares, to an exit code.
+_Runner = Callable[[argparse.Namespace, dict[str, Any]], int]
+
+
+def _selection(args: argparse.Namespace) -> dict[str, Any]:
+    """Member-selection kwargs of the verbs that read members (``--salvage`` refused)."""
+    return {
+        "patterns": list(args.patterns),
+        "exclude": list(args.exclude),
+        "salvage": False,
+    }
+
+
+def _add_verb(
+    sub: argparse._SubParsersAction[_ArchiveyArgumentParser],
+    name: str,
+    *,
+    common_sub: _ArchiveyArgumentParser,
+    run: _Runner,
+    aliases: Sequence[str] = (),
+    **kwargs: Any,
+) -> argparse.ArgumentParser:
+    p = sub.add_parser(
+        name,
+        aliases=list(aliases),
+        parents=[common_sub],
+        conflict_handler="resolve",
+        allow_abbrev=False,
+        **kwargs,
+    )
+    p.set_defaults(_run=run)
+    return p
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Two parent instances: action objects are shared if the same instance is reused,
     # so SUPPRESS on a single parent would also wipe the main parser's defaults.
@@ -249,12 +264,13 @@ def build_parser() -> argparse.ArgumentParser:
         parser_class=_ArchiveyArgumentParser,
     )
 
-    p_list = sub.add_parser(
+    # Each runner looks its run_* up by name when called, so tests can patch it.
+    p_list = _add_verb(
+        sub,
         "list",
         aliases=["l"],
-        parents=[common_sub],
-        conflict_handler="resolve",
-        allow_abbrev=False,
+        common_sub=common_sub,
+        run=lambda a, kw: run_list(**kw, **_selection(a), digests=bool(a.digests)),
         help="list archive members (default verb)",
     )
     p_list.add_argument("archive", help="archive path")
@@ -264,26 +280,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show stored member digests (no body read)",
     )
-    p_list.set_defaults(_run="list")
 
-    p_test = sub.add_parser(
+    p_test = _add_verb(
+        sub,
         "test",
         aliases=["t"],
-        parents=[common_sub],
-        conflict_handler="resolve",
-        allow_abbrev=False,
+        common_sub=common_sub,
+        run=lambda a, kw: run_test(
+            **kw, **_selection(a), hide_progress=bool(a.hide_progress)
+        ),
         help="full-read integrity check (verify stored digests)",
     )
     p_test.add_argument("archive", help="archive path")
     _add_filter_args(p_test)
-    p_test.set_defaults(_run="test")
 
-    p_extract = sub.add_parser(
+    p_extract = _add_verb(
+        sub,
         "extract",
         aliases=["x"],
-        parents=[common_sub],
-        conflict_handler="resolve",
-        allow_abbrev=False,
+        common_sub=common_sub,
+        run=lambda a, kw: run_extract(
+            **kw,
+            **_selection(a),
+            dest=a.dest,
+            policy=a.policy,
+            overwrite=a.overwrite,
+            hide_progress=bool(a.hide_progress),
+            stop_on_error=bool(a.stop_on_error),
+            abort_on=list(a.abort_on or ()),
+            dry_run=bool(a.dry_run),
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EXTRACT_EPILOG,
         help="safely extract members",
@@ -343,18 +369,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_filter_args(p_extract)
-    p_extract.set_defaults(_run="extract")
 
-    p_info = sub.add_parser(
+    p_info = _add_verb(
+        sub,
         "info",
         aliases=["i", "detect"],
-        parents=[common_sub],
-        conflict_handler="resolve",
-        allow_abbrev=False,
+        common_sub=common_sub,
+        run=lambda a, kw: run_info(**kw),
         help="format detection + archive identity",
     )
     p_info.add_argument("archive", help="archive path")
-    p_info.set_defaults(_run="info")
 
     for name, hint in (
         ("hash", "hash emission is not implemented yet"),
@@ -362,27 +386,42 @@ def build_parser() -> argparse.ArgumentParser:
         ("convert", "archive conversion is not implemented yet"),
         ("cat", "member streaming to stdout is not implemented yet"),
     ):
-        p = sub.add_parser(
+        p = _add_verb(
+            sub,
             name,
-            parents=[common_sub],
-            allow_abbrev=False,
+            common_sub=common_sub,
+            run=_refuse_reserved,
             help=f"reserved ({hint})",
         )
         p.add_argument("archive", nargs="?", default=None)
-        p.set_defaults(_run="reserved", _reserved_message=hint)
+        p.set_defaults(_reserved_message=hint)
 
     return parser
 
 
-# The main parser's value-taking options, whose value is never the verb (default-list
-# injection). Not a verb's own: before the verb argparse does not know them, so it does
-# not consume their value either, and skipping it would blame the value as a bad verb.
-_VALUE_OPTIONS = frozenset(
-    opt
-    for action in build_parser()._actions
-    if action.nargs != 0
-    for opt in action.option_strings
-)
+def _refuse_reserved(args: argparse.Namespace, _common: dict[str, Any]) -> NoReturn:
+    raise CliError(args._reserved_message, code=EXIT_USAGE)
+
+
+def _default_list_grammar() -> tuple[frozenset[str], frozenset[str]]:
+    """Every verb word (aliases and reserved verbs too) and the main parser's value options.
+
+    Only the main parser's own options: before the verb argparse does not know a verb's
+    options, so it does not consume their value either, and skipping it would blame the
+    value as a bad verb.
+    """
+    verbs: frozenset[str] = frozenset()
+    value_options: set[str] = set()
+    for action in build_parser()._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            verbs = frozenset(action.choices)
+        elif action.nargs != 0:
+            value_options.update(action.option_strings)
+    return verbs, frozenset(value_options)
+
+
+# What known-verb-wins default-list injection reads.
+_VERBS, _VALUE_OPTIONS = _default_list_grammar()
 
 
 def _print_version(*, verbose: bool, out: TextIO) -> None:
@@ -415,65 +454,15 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
         build_parser().print_help(err)
         return EXIT_USAGE
 
-    if run == "reserved":
-        raise CliError(getattr(args, "_reserved_message"), code=EXIT_USAGE)
-
-    if run == "list":
-        return run_list(
-            archive=args.archive,
-            password=args.password,
-            track_io=bool(args.track_io),
-            verbose=bool(args.verbose),
-            patterns=list(args.patterns),
-            exclude=list(args.exclude),
-            digests=bool(args.digests),
-            salvage=False,
-            out=out,
-            err=err,
-        )
-    if run == "test":
-        return run_test(
-            archive=args.archive,
-            password=args.password,
-            track_io=bool(args.track_io),
-            verbose=bool(args.verbose),
-            patterns=list(args.patterns),
-            exclude=list(args.exclude),
-            salvage=False,
-            hide_progress=bool(args.hide_progress),
-            out=out,
-            err=err,
-        )
-    if run == "extract":
-        return run_extract(
-            archive=args.archive,
-            password=args.password,
-            track_io=bool(args.track_io),
-            verbose=bool(args.verbose),
-            dest=args.dest,
-            patterns=list(args.patterns),
-            exclude=list(args.exclude),
-            policy=args.policy,
-            overwrite=args.overwrite,
-            salvage=False,
-            hide_progress=bool(args.hide_progress),
-            stop_on_error=bool(getattr(args, "stop_on_error", False)),
-            abort_on=list(getattr(args, "abort_on", None) or ()),
-            dry_run=bool(getattr(args, "dry_run", False)),
-            out=out,
-            err=err,
-        )
-    if run == "info":
-        return run_info(
-            archive=args.archive,
-            password=args.password,
-            track_io=bool(args.track_io),
-            verbose=bool(args.verbose),
-            out=out,
-            err=err,
-        )
-
-    raise CliError(f"unknown verb {run!r}", code=EXIT_USAGE)
+    common = {
+        "archive": args.archive,
+        "password": args.password,
+        "track_io": bool(args.track_io),
+        "verbose": bool(args.verbose),
+        "out": out,
+        "err": err,
+    }
+    return cast(_Runner, run)(args, common)
 
 
 def _format_os_error(exc: OSError) -> str:
