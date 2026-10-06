@@ -298,12 +298,16 @@ written `%XX`, so `hi\ud800` is written `hi%ED%A0%80` on every OS and
 name as 7-Zip 23.01 does: on POSIX each such surrogate as its three-byte UTF-8 form
 (U+D800 becomes the bytes `ed a0 80`), on Windows the exact name. That on-disk spelling
 is not a rename, so `presented_name` stays unset for it. A link target is written the
-`TRUSTED` way under every policy, as O7 does not rewrite link targets.
+`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under `STRICT`
+and `STANDARD` a link to a member whose name was escaped therefore points at the
+unescaped spelling and dangles, as it already does for undecodable bytes; on a
+filesystem that accepts only UTF-8, such as APFS, creating that link fails.
 
 U+DC80–U+DCFF SHALL keep its `surrogateescape` meaning, one undecodable byte, for every
 format: it is written as that byte, or percent-escaped by the portable-name rule. The
 path checks run on the name the disk spelling gives, before the portable-name rule, and
-a rejection names the stored member name. The collision key and the overwrite policy
+a rejection, like any error raised while writing the member, names the stored member
+name. The collision key and the overwrite policy
 see the name that is written. Under every policy a lone U+D800 and a name whose
 undecodable bytes are `ed a0 80` are therefore one file: both are `hi%ED%A0%80` under
 `STRICT` and `STANDARD`, and both are the bytes under `TRUSTED`. A name that cannot be

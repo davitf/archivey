@@ -405,6 +405,21 @@ class BombTracker:
                     )
 
 
+def _report_stored_spelling(
+    exc: ArchiveyError, on_disk: ArchiveMember, member: ArchiveMember
+) -> None:
+    """Rename ``exc`` from the disk spelling ``on_disk`` back to ``member``'s names.
+
+    A lone surrogate is checked and written as its UTF-8 bytes (``disk_spelled``), but
+    an error names the member and its link target as listed, so a caller can match
+    it, and one skip does not print two names for one member.
+    """
+    if exc.member_name == on_disk.name:
+        exc.member_name = member.name
+    if exc.link_target is not None and exc.link_target == on_disk.link_target:
+        exc.link_target = member.link_target
+
+
 def _until_listing_damage(
     reader: "BaseArchiveReader",
     pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
@@ -497,6 +512,9 @@ class ExtractionCoordinator:
         # Set by ``_transform`` when reading a link's target showed the current member
         # is not a link after all, so the pass yielded it with no data stream.
         self._retyped: bool = False
+        # Set by ``_transform`` to the member before ``disk_spelled`` when the disk
+        # spelling differs, so an error raised while writing can name it as listed.
+        self._spelled_from: ArchiveMember | None = None
         # Set by ``_prepare_destination`` when it removes an existing entry to make room.
         # Only the non-atomic paths (DIR / SYMLINK / HARDLINK) do that — a FILE write
         # lands via os.replace and never destroys the destination up front — so this is
@@ -975,6 +993,7 @@ class ExtractionCoordinator:
             self._requested_path = None
             self._collided_with = None
             self._retyped = False
+            self._spelled_from = None
             link_error: ArchiveyError | None = None
             try:
                 for held, held_index in self._unremoved.pop(original.name, {}).items():
@@ -1090,6 +1109,10 @@ class ExtractionCoordinator:
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
+                if isinstance(exc, ArchiveyError) and self._spelled_from is not None:
+                    _report_stored_spelling(
+                        exc, disk_spelled(self._spelled_from), self._spelled_from
+                    )
                 error, status = self._classify(exc, original.name)
                 result = ExtractionResult(
                     original,
@@ -1433,8 +1456,11 @@ class ExtractionCoordinator:
                 )
             )
         portable = apply_name_policy(transformed, self._policy)
+        on_disk = disk_spelled(portable)
+        if on_disk is not portable:
+            self._spelled_from = portable
         if portable.name == transformed.name:
-            return disk_spelled(portable), rerooted_from
+            return on_disk, rerooted_from
         # The pre-rewrite spelling is the caller filter's output when there is one, which
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
@@ -1446,27 +1472,16 @@ class ExtractionCoordinator:
                 )
             )
         # After a re-root, the stored name is the one the caller will recognise.
-        return disk_spelled(portable), rerooted_from or transformed.name
+        return on_disk, rerooted_from or transformed.name
 
     def _check_universal(self, member: ArchiveMember, dest_root: Path) -> None:
-        """``check_universal`` on the disk spelling, reporting the stored names.
-
-        A lone surrogate is checked as the bytes that reach disk (``disk_spelled``),
-        but an error names ``member.name`` and its link target as listed, so a caller
-        can match it to the member, and one skip does not print two names.
-        """
+        """``check_universal`` on the disk spelling, reporting the stored names."""
         on_disk = disk_spelled(member)
         try:
             check_universal(on_disk, dest_root, link_target_on_disk=self._on_disk)
         except ExtractionError as exc:
             if on_disk is not member:
-                if exc.member_name == on_disk.name:
-                    exc.member_name = member.name
-                if (
-                    exc.link_target is not None
-                    and exc.link_target == on_disk.link_target
-                ):
-                    exc.link_target = member.link_target
+                _report_stored_spelling(exc, on_disk, member)
             raise
 
     @staticmethod

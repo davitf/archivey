@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import zlib
 from pathlib import Path
 
@@ -29,7 +30,11 @@ import pytest
 import archivey
 from archivey.cli.exit_codes import EXIT_OK
 from archivey.cli.main import main
-from archivey.exceptions import ExtractionError, FilterRejectionError
+from archivey.exceptions import (
+    ExtractionError,
+    FilterRejectionError,
+    LinkTargetNotFoundError,
+)
 from archivey.internal.filters import apply_name_policy, disk_spelling
 from archivey.types import (
     ArchiveMember,
@@ -350,6 +355,34 @@ def test_a_rejection_names_the_stored_member(tmp_path: Path) -> None:
     assert isinstance(blocked.error, FilterRejectionError)
     assert blocked.error.member_name == blocked.member.name == "\ud800/../x"
     assert "member='\\ud800/../x'" in str(blocked.error)
+
+
+def test_an_error_while_writing_names_the_member_as_listed(tmp_path: Path) -> None:
+    """A write-path error names the member before its disk spelling, under ``TRUSTED``.
+
+    A filter gives a hardlink a lone surrogate, and its target is not in the archive.
+    The error is raised after the name checks, by the hardlink write.
+    """
+    archive = tmp_path / "link.tar"
+    with tarfile.open(archive, "w") as tar:
+        info = tarfile.TarInfo("h")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "missing.txt"
+        tar.addfile(info)
+
+    def rename(member: ArchiveMember) -> ArchiveMember:
+        return member.replace(name=member.name + "\ud800")
+
+    with archivey.open_archive(archive) as reader:
+        (result,) = reader.extract_all(
+            tmp_path / "out",
+            policy=ExtractionPolicy.TRUSTED,
+            filter=rename,
+            on_error="continue",
+        )
+    assert isinstance(result.error, LinkTargetNotFoundError)
+    assert result.error.member_name == "h\ud800"
+    assert result.error.link_target == "missing.txt"
 
 
 def test_a_low_surrogate_in_the_escape_range_is_a_byte(tmp_path: Path) -> None:

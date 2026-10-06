@@ -206,7 +206,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   U+DC80 to U+DCFF looks the same as an undecodable byte (see
   [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)), so
   extraction writes it as that byte, where 7-Zip writes three bytes. `member.raw_name`
-  always holds the stored units.
+  always holds the stored units. The archive comment is UTF-16 too: a lone surrogate
+  stays in `ArchiveInfo.comment`, so be ready for it if you print the comment, and only
+  a comment with an odd byte count raises `CorruptionError`.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.

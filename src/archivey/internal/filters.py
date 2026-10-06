@@ -207,7 +207,8 @@ def disk_spelling(text: str) -> str:
     which is what 7-Zip 23.01 writes on Linux. Without this, ``os.fsencode`` raises
     ``UnicodeEncodeError``. Under ``STRICT`` and ``STANDARD`` the name policy has
     already escaped such a name, so this changes a member name only under
-    ``TRUSTED``; it changes a link target under every policy.
+    ``TRUSTED``; it changes a link target under every policy. A link to a member whose
+    name the policy escaped therefore dangles, as it does for undecodable bytes.
 
     U+DC80-U+DCFF is left alone: in a ``str`` it means one undecodable byte, for every
     format, and ``os.fsencode`` writes that byte. A 7z name with a lone unit in that
