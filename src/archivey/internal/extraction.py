@@ -467,13 +467,13 @@ class _RunState:
     """
 
     # The destination as given, and resolved.
-    dest: Path = Path()
-    dest_root: Path = Path()
+    dest: Path
+    dest_root: Path
+    tracker: BombTracker
     # The reader being extracted from, for the one read ``_transform`` makes on it:
     # an accepted link's target.
     reader: BaseArchiveReader | None = None
     forward_only: bool = False
-    tracker: BombTracker = field(default_factory=lambda: BombTracker(None, None))
     # Progress totals; see ``_run``.
     members_total: int | None = None
     total_estimate: int | None = None
@@ -558,7 +558,8 @@ class _RunState:
 class _MemberState:
     """What the member being handled publishes from deep in its write path.
 
-    ``_run_pass`` builds a new one per member, so nothing carries over.
+    ``_run_pass`` builds a new one per member, and one for the orphan second pass,
+    so nothing carries over.
     """
 
     # The destination the member asked for, published so the per-member error
@@ -738,9 +739,11 @@ class ExtractionCoordinator:
         self._members = members
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
-        # The current run's state and the current member's. Replaced per run and per
-        # member; the empty ones here serve helpers called outside ``run()``.
-        self._state = _RunState()
+        # Placeholders until ``run()`` builds the run's state, so the attribute is never
+        # None and helpers read it unguarded. A test that drives a helper directly
+        # installs its own ``_RunState``.
+        self._state = _RunState(Path(), Path(), BombTracker(None, None))
+        # The state of the member being handled; each pass replaces it per member.
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
         self._dry: _DryRun | None = None
@@ -1093,7 +1096,6 @@ class ExtractionCoordinator:
                     exc, error, status, kind=original.type.value, name=original.name
                 )
             finally:
-                current.emit_progress = None
                 self._close(stream)
                 if state.stale:
                     self._drop_stale_copies(original)
@@ -1125,6 +1127,9 @@ class ExtractionCoordinator:
         # excluded. Only populated for a seekable source; forward-only orphans already
         # failed at the link during the main pass.
         if state.orphans:
+            # Its own member state: none of the first pass's carries over, and it
+            # reports no intra-member progress.
+            self._current = _MemberState()
             self._resolve_orphans(reader)
         if listing_damage:
             raise listing_damage[0]

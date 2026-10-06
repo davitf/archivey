@@ -26,6 +26,7 @@ from archivey import (
 )
 from archivey.internal import link_watch
 from archivey.internal.extraction import (
+    BombTracker,
     ExtractionCoordinator,
     _RunState,
     _symlink_escapes,
@@ -531,7 +532,11 @@ def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
     coordinator = ExtractionCoordinator()
     watch = link_watch.LinkWatch(root.resolve(), budget=None)
     coordinator._state = _RunState(
-        dest=root, dest_root=root.resolve(), written_paths={root / "x"}, links=watch
+        dest=root,
+        dest_root=root.resolve(),
+        tracker=BombTracker(None, None),
+        written_paths={root / "x"},
+        links=watch,
     )
     watch.track(root / "l", "x/../../secret", result_index=0)
     watch.recheck(lambda path, target: False)  # l passed when it was created

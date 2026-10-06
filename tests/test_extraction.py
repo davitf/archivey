@@ -3659,6 +3659,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     coordinator._state = _RunState(
         dest=dest,
         dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -3687,6 +3688,7 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
     coordinator._state = _RunState(
         dest=dest,
         dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
         written_paths=set(),
         collision_map=collision_map,
     )
@@ -3720,6 +3722,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
     coordinator._state = _RunState(
         dest=dest,
         dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -3754,6 +3757,7 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     coordinator._state = _RunState(
         dest=dest,
         dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -3789,6 +3793,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     coordinator._state = _RunState(
         dest=dest,
         dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
