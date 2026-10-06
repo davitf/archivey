@@ -171,6 +171,14 @@ are sized with `stat()` and the joiner keeps a small cache of Path handles
 `.z01 … .zip` is a genuinely spanned set whose entries are addressed by
 `(disk, offset-within-disk)`, so it keeps refusing. §3 has the producer detail.
 
+Two files with the same part number in different padding (`x.zip.002` and a stray
+`x.zip.0002`) are one part, not a repeat: discovery takes the one padded like the name
+opened, as 7-Zip does when it predicts the next part's name, and falls back to the lowest
+name, never listing order (measured, 7-Zip 23.01 opens `x.7z.001` beside a stray
+`x.7z.0002` and reads `.002`; it refuses a set renamed to mixed widths, which archivey
+still joins). The same rule picks RAR `.partN` volumes ([`rar.md`](rar.md) §2.2). An
+explicit sequence naming both is still refused as a repeated part.
+
 A lone numbered part (`.zip.NNN` / `.exe.NNN` / `.7z.NNN` with no siblings) is
 `TruncatedError` naming the missing parts — the same incomplete-set error as a
 gap, not the ZIP "not supported" message. A part that is not on disk itself is
@@ -619,7 +627,7 @@ move.
 | A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set | `tests/test_volume_missing_part.py` |
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
 | `7z -v` set joined, read across a part boundary, opened from any part | `::test_sevenzip_split_zip_set_is_joined_and_read`, `::test_sevenzip_split_zip_set_opens_from_a_middle_part`, `::test_sevenzip_split_zip_set_with_missing_part_is_truncated` |
-| Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps` |
+| Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps`, `::test_discover_prefers_the_opened_names_padding_over_a_stray`, `::test_numbered_set_with_a_stray_of_another_width_opens` |
 | Joiner caches a few Path handles, cursor on sequential read | `tests/test_volumes.py::test_concatenated_file_backwards_seek_across_volume_boundaries`, `::test_concatenated_file_alternating_seek_reuses_cached_handles`, `::test_concatenated_file_handle_cache_evicts_past_capacity`, `::test_concatenated_file_cache_miss_reopens_beyond_capacity`, `::test_concatenated_file_sequential_read_does_not_search_offsets`, `::test_concatenated_file_mixed_path_and_stream`, `::test_concatenated_file_path_open_error_surfaces_on_read`, `::test_concatenated_file_missing_path_fails_at_construction` |
 | Timestamp precedence; an out-of-range NTFS time is an issue; the extended timestamp, a signed 32-bit field, is always a valid date (pre-1970 included) | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_pre_epoch`, `::test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime`, `tests/test_timestamps.py::test_filetime_out_of_range_is_an_issue`, `::test_unix32_to_datetime_covers_every_32_bit_value` |
 | A bad timestamp's diagnostic names the member field, the creation slot by host | `tests/test_zip.py::test_bad_ntfs_times_name_the_member_field` |

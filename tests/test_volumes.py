@@ -247,6 +247,121 @@ def test_rar_sfx_duplicate_part1_opens_the_named_set(tmp_path: Path) -> None:
                 assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
+def _force_listing_order(monkeypatch: pytest.MonkeyPatch, *, reverse: bool) -> None:
+    """Make ``Path.iterdir`` list names in sorted (or reverse) order.
+
+    A volume pick that depends on listing order then shows up in one of the two runs,
+    whatever order the filesystem happens to use.
+    """
+    listing = Path.iterdir
+    monkeypatch.setattr(
+        Path, "iterdir", lambda self: iter(sorted(listing(self), reverse=reverse))
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    ("names", "opened", "expected"),
+    [
+        # unrar walks q.part1 -> q.part2 -> q.part3, keeping the padding, and
+        # never looks at q.part02.rar (checked with unrar 7.00: All OK).
+        (
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar", "q.part02.rar"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar"],
+        ),
+        (
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar", "q.part02.rar"],
+            "q.part3.rar",
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar"],
+        ),
+        # The name the caller opened still wins for its own part.
+        (
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar", "q.part02.rar"],
+            "q.part02.rar",
+            ["q.part1.rar", "q.part02.rar", "q.part3.rar"],
+        ),
+        (
+            ["q.part01.rar", "q.part02.rar", "q.part03.rar", "q.part2.rar"],
+            "q.part01.rar",
+            ["q.part01.rar", "q.part02.rar", "q.part03.rar"],
+        ),
+        # A set renamed to mixed widths has one name per part; it is still a set.
+        (
+            ["q.part1.rar", "q.part02.rar", "q.part03.rar"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part02.rar", "q.part03.rar"],
+        ),
+        # 7-Zip walks x.7z.001 -> .002 -> .003 the same way (7-Zip 23.01: Ok).
+        (
+            ["x.7z.001", "x.7z.002", "x.7z.003", "x.7z.0002"],
+            "x.7z.001",
+            ["x.7z.001", "x.7z.002", "x.7z.003"],
+        ),
+        (
+            ["x.zip.0001", "x.zip.0002", "x.zip.002"],
+            "x.zip.0002",
+            ["x.zip.0001", "x.zip.0002"],
+        ),
+        (
+            ["x.7z.001", "x.7z.0002", "x.7z.0003"],
+            "x.7z.001",
+            ["x.7z.001", "x.7z.0002", "x.7z.0003"],
+        ),
+    ],
+)
+def test_discover_prefers_the_opened_names_padding_over_a_stray(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    names: list[str],
+    opened: str,
+    expected: list[str],
+    reverse: bool,
+) -> None:
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    _force_listing_order(monkeypatch, reverse=reverse)
+    siblings = discover_volume_siblings(tmp_path / opened)
+    assert siblings is not None
+    assert [p.name for p in siblings] == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rar_part_set_with_a_stray_of_another_width_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+) -> None:
+    """A stray ``tinyvol.part02.rar`` used to be read as volume 2 in listing order."""
+    for name in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+        shutil.copy(_RAR_FIXTURES / name, tmp_path / name)
+    (tmp_path / "tinyvol.part02.rar").write_bytes(b"not volume two" * 100)
+    _force_listing_order(monkeypatch, reverse=reverse)
+    for anchor in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+        with open_archive(tmp_path / anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            if _have_rarlab_unrar():
+                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_numbered_set_with_a_stray_of_another_width_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+) -> None:
+    """``x.zip.0002`` beside ``x.zip.001 … .003`` used to refuse as a repeated part."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("payload.bin", b"0123456789" * 30)
+    data = buffer.getvalue()
+    third = len(data) // 3 + 1
+    for index in range(3):
+        chunk = data[index * third : (index + 1) * third]
+        (tmp_path / f"x.zip.{index + 1:03d}").write_bytes(chunk)
+    (tmp_path / "x.zip.0002").write_bytes(b"\x00" * third)
+    _force_listing_order(monkeypatch, reverse=reverse)
+    with open_archive(tmp_path / "x.zip.001") as archive:
+        assert archive.read("payload.bin") == b"0123456789" * 30
+
+
 def test_discover_old_rar_rnn_volumes(tmp_path: Path) -> None:
     (tmp_path / "archive.rar").write_bytes(b"")
     for name in ("archive.r01", "archive.r00"):

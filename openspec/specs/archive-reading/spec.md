@@ -195,7 +195,11 @@ logical `ArchiveReader`:
 - **Single path in a volume set** (e.g. `name.7z.001`, `name.exe.001`,
   `name.part1.rar`, `name.part1.sfx`, `name.rar` + `name.r00`…, or an old-scheme
   SFX first volume `name.exe` / `name.sfx` + `name.r00`): discover
-  siblings in natural order
+  siblings in natural order. When two files carry the same part number in different
+  zero padding (`q.part2.rar` and `q.part02.rar`, `x.7z.002` and `x.7z.0002`),
+  discovery SHALL take one of them, as unrar and 7-Zip do by keeping the padding
+  of the name opened: the name opened, then the one padded like it, then (RAR) a
+  `.rar` over an `.exe` / `.sfx`, then the lowest name — never directory listing order
 - **Stub-only SFX** (`name.exe` / `name.sfx` with no archive magic) beside
   exactly one of `name.exe.001`, `name.7z.001`, `name.zip.001`: open that
   first volume's set, including when `format=` is set. Two of those names
@@ -254,6 +258,7 @@ self-describing.
 | --- | --- |
 | `open_archive("disc.7z.001")` with siblings present | One reader for the whole set |
 | `open_archive("vol.exe.001")` (or `.7z.001` / `.zip.001`) with no siblings | `TruncatedError` names the missing parts |
+| `open_archive("q.part1.rar")` (or `x.7z.001`) beside its set and a stray `q.part02.rar` (`x.7z.0002`) | The set `q.part1`, `q.part2`, `q.part3`; the stray is not read |
 | `open_archive("archive.exe")` with `archive.r00` siblings | One logical RAR archive; `.exe` / `.sfx` is volume 1 |
 | `open_archive("vol.exe")` with a stub-only exe and `vol.exe.001` / `vol.7z.001` / `vol.zip.001` | One reader for that set |
 | `open_archive("vol.exe", format=ZIP)` with a stub-only exe and a zip first volume | One reader for that set |
