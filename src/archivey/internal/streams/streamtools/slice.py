@@ -25,11 +25,12 @@ import io
 from contextlib import nullcontext
 from typing import BinaryIO, Callable, ContextManager
 
-from archivey.internal.streams.streamtools.base import ReadOnlyIOStream, resolve_seek
+from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
     is_seekable,
     read_exact,
+    resolve_seek,
     source_byte_size,
 )
 
@@ -297,18 +298,9 @@ class SlicingStream(ReadOnlyIOStream):
 
         assert self._start is not None  # always set for seekable streams
         start_abs = self._start
-
-        def end_relative() -> int:
-            bound = self._effective_length
-            if bound is not None:
-                return bound
-            # No bound: the slice ends where the underlying stream does,
-            # so probe that end on demand.
-            with self._io_guard:
-                self._raise_if_closed()
-                return self._stream.seek(0, io.SEEK_END) - start_abs
-
-        new_relative = resolve_seek(offset, whence, pos=self._pos, end=end_relative)
+        new_relative = resolve_seek(
+            offset, whence, pos=self._pos, end=self._end_relative
+        )
 
         # Seeking past a defined end is allowed (reads clamp to empty), matching BytesIO.
         if not self._seek_before_read:
@@ -318,6 +310,18 @@ class SlicingStream(ReadOnlyIOStream):
         # Re-seek mode: only update _pos — the next read re-seeks under the guard.
         self._pos = new_relative
         return self._pos
+
+    def _end_relative(self) -> int:
+        """Return the slice's length, the target of ``seek(0, SEEK_END)``."""
+        bound = self._effective_length
+        if bound is not None:
+            return bound
+        # No bound: the slice ends where the underlying stream does,
+        # so probe that end on demand.
+        assert self._start is not None
+        with self._io_guard:
+            self._raise_if_closed()
+            return self._stream.seek(0, io.SEEK_END) - self._start
 
     def seekable(self) -> bool:
         return self._seekable

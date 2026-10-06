@@ -735,13 +735,15 @@ class _StdlibSeekContract(DelegatingStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # tell() can be a round trip to the child: ask only when the seek is relative.
         pos = self.tell() if whence == io.SEEK_CUR else 0
-        target = resolve_seek(
-            offset, whence, pos=pos, end=lambda: self._inner.seek(0, io.SEEK_END)
-        )
+        target = resolve_seek(offset, whence, pos=pos, end=self._end_offset)
         self._past_end = None
         if self._inner.seek(target, io.SEEK_SET) < target:
             self._past_end = target
         return target
+
+    def _end_offset(self) -> int:
+        """Return the size, by seeking the stream below to its end."""
+        return self._inner.seek(0, io.SEEK_END)
 
     def tell(self, /) -> int:
         if self._past_end is not None:

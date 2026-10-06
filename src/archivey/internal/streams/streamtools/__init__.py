@@ -17,9 +17,10 @@ lifted out.
 
 Module map:
 
-- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases), ``resolve_seek``
+- :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
   plus ``ask_resume_offset`` (duck-typed resume query; see the named exception above)
+  and ``resolve_seek`` (``io.BytesIO`` seek-target rules)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
 - :mod:`.locked` — ``LockedStream`` (whole-op lock wrapper)
@@ -41,7 +42,6 @@ from __future__ import annotations
 from archivey.internal.streams.streamtools.base import (
     DelegatingStream,
     ReadOnlyIOStream,
-    resolve_seek,
 )
 from archivey.internal.streams.streamtools.binaryio import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
@@ -59,6 +59,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     readinto_via_read,
     reject_source,
     require_source,
+    resolve_seek,
     source_byte_size,
     source_name,
     source_size_fact,
@@ -95,13 +96,13 @@ __all__ = [
     "raise_if_write_only_stream",
     "reject_source",
     "require_source",
+    "resolve_seek",
     "read_exact",
     "readinto_via_read",
     "skip_forward",
     "read_within_reach",
     "DEFAULT_UNKNOWN_LENGTH_READ_STEP",
     "source_byte_size",
-    "resolve_seek",
     "source_size_fact",
     "source_name",
 ]

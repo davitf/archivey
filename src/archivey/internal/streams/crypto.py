@@ -429,7 +429,7 @@ class AesDecryptStream(ReadOnlyIOStream):
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
 
-        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._sized_end)
+        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._end_offset)
         if new_pos == self._pos:
             return self._pos
 
@@ -468,7 +468,8 @@ class AesDecryptStream(ReadOnlyIOStream):
                 self._pos = new_pos
         return self._pos
 
-    def _sized_end(self) -> int:
+    def _end_offset(self) -> int:
+        """Return the plaintext size, the target of ``seek(0, SEEK_END)``."""
         size = self._plaintext_size()
         if size is None:
             # Production sources are SharedView / SlicingStream, which

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import abc
 import io
-from typing import TYPE_CHECKING, BinaryIO, Callable, Never
+from typing import TYPE_CHECKING, BinaryIO, Never
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
@@ -43,25 +43,6 @@ from archivey.internal.streams.streamtools.binaryio import (
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
-
-
-def resolve_seek(offset: int, whence: int, *, pos: int, end: Callable[[], int]) -> int:
-    """Resolve a seek target as ``io.BytesIO`` does; ``end`` is called only for ``SEEK_END``.
-
-    A relative seek (``SEEK_CUR``/``SEEK_END``) that underflows clamps to the origin;
-    only an explicitly negative ``SEEK_SET`` raises. Callers probing backwards from
-    the end (``ZipFile``'s ``seek(-22, SEEK_END)`` EOCD probe on a short source) rely
-    on the clamp rather than a raw ``ValueError``.
-    """
-    if whence == io.SEEK_SET:
-        if offset < 0:
-            raise ValueError(f"Negative seek position {offset}")
-        return offset
-    if whence == io.SEEK_CUR:
-        return max(0, pos + offset)
-    if whence == io.SEEK_END:
-        return max(0, end() + offset)
-    raise ValueError(f"Invalid whence: {whence}")
 
 
 class ReadOnlyIOStream(io.RawIOBase, BinaryIO):

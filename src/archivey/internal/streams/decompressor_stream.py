@@ -984,7 +984,8 @@ class DecompressorStream(ReadOnlyIOStream):
                 raise held
         return pos
 
-    def _seek_end(self) -> int:
+    def _end_offset(self) -> int:
+        """Return the decompressed size; finding it may decode the rest of the stream."""
         self._ensure_index_built()
         if self._size is None:
             if self._spent is not None:
@@ -1015,7 +1016,7 @@ class DecompressorStream(ReadOnlyIOStream):
         if not self._inner.seekable():
             raise io.UnsupportedOperation("seek")
 
-        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._seek_end)
+        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._end_offset)
         if (
             whence != io.SEEK_END
             and new_pos > self._pos + len(self._buffer)

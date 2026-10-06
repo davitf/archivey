@@ -28,6 +28,7 @@ from archivey.internal.streams.streamtools import (
     raise_if_text_stream,
     readinto_via_read,
     reject_source,
+    resolve_seek,
     source_name,
 )
 from archivey.terminal import display_path
@@ -622,17 +623,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
 
     def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
         self._checkClosed()
-        if whence == os.SEEK_SET:
-            new_pos = offset
-        elif whence == os.SEEK_CUR:
-            new_pos = self._pos + offset
-        elif whence == os.SEEK_END:
-            new_pos = self._size + offset
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-        if new_pos < 0:
-            raise ValueError("Negative seek position")
-        self._pos = new_pos
+        self._pos = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
         self._recompute_cursor()
         return self._pos
 
