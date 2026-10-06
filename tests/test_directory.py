@@ -1019,6 +1019,171 @@ def test_a_parent_swap_is_refused_on_a_filesystem_without_identities(
     assert listed == ["sub/", "sub/b.txt", "sub/deeper/"]
 
 
+def _scan_without_identities(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scan every subdirectory as if the listing had recorded no identity for it."""
+    from archivey.internal.backends.directory_reader import DirectoryReader
+
+    real_open = DirectoryReader._open_listed_directory
+
+    def without_identity(self, directory, rel_prefix, expected):
+        return real_open(self, directory, rel_prefix, None)
+
+    monkeypatch.setattr(DirectoryReader, "_open_listed_directory", without_identity)
+
+
+def _scan_past_path_max(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Fail the reader's whole-path opens with ENAMETOOLONG, as past ``PATH_MAX``.
+
+    Returns the paths refused, so a test can show the component walk was taken.
+    """
+    from archivey.internal.backends import directory_reader
+
+    real_os = directory_reader.os
+    refused: list[str] = []
+
+    class _LongPathOs:
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_os, name)
+
+        @staticmethod
+        def open(path, flags, *args, dir_fd=None, **kwargs):
+            if dir_fd is None and flags & real_os.O_NOFOLLOW:
+                refused.append(str(path))
+                raise OSError(errno.ENAMETOOLONG, "File name too long", str(path))
+            return real_os.open(path, flags, *args, dir_fd=dir_fd, **kwargs)
+
+    monkeypatch.setattr(directory_reader, "os", _LongPathOs())
+    return refused
+
+
+def _replace_tree(path: Path, kind: str, outside: Path) -> None:
+    # The replacement exists before the original goes, so it cannot reuse its inode.
+    fresh = path.with_name("fresh.tmp")
+    if kind == "symlink":
+        fresh.symlink_to(outside, target_is_directory=True)
+    elif kind == "file":
+        fresh.write_bytes(b"not a directory")
+    else:
+        fresh.mkdir()
+    shutil.rmtree(path)
+    fresh.rename(path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX O_NOFOLLOW walk")
+@pytest.mark.parametrize("scan", ["identity", "no_identity", "past_path_max"])
+@pytest.mark.parametrize(
+    ("swap", "after"),
+    [
+        ("symlink", "sub/"),
+        ("file", "sub/"),
+        ("directory", "sub/"),
+        ("symlink", "sub/deeper/"),
+        ("file", "sub/deeper/"),
+    ],
+)
+def test_every_directory_scan_refuses_a_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scan: str,
+    swap: str,
+    after: str,
+) -> None:
+    # `sub/` is swapped once it is yielded, or once `sub/deeper/` is (a parent swap).
+    # Each way a subdirectory is opened for its scan (the whole path checked against
+    # the listing's identity, the component walk with no identity, and the component
+    # walk past PATH_MAX, still checked) refuses the same swaps the same way. A
+    # symlink or file in the way fails in the kernel and is the cause; a fresh real
+    # directory only fails the identity check, so it has no cause and no refusal at
+    # all where there is no identity.
+    if swap == "directory" and scan == "no_identity":
+        pytest.skip("with no identity a fresh directory is indistinguishable")
+    if scan == "no_identity":
+        _scan_without_identities(monkeypatch)
+    refused = _scan_past_path_max(monkeypatch) if scan == "past_path_max" else None
+    root = tmp_path / "root"
+    (root / "sub" / "deeper").mkdir(parents=True)
+    (root / "sub" / "b.txt").write_bytes(b"inside")
+    outside = _outside_tree(tmp_path)
+    listed: list[str] = []
+    with pytest.raises(
+        OSError, match="was replaced since the directory was listed; not scanning it"
+    ) as excinfo:
+        with open_archive(root, streaming=True) as reader:
+            for member, _stream in reader.stream_members():
+                listed.append(member.name)
+                if member.name == after:
+                    _replace_tree(root / "sub", swap, outside)
+    assert excinfo.value.errno == errno.ESTALE
+    assert after.rstrip("/") in str(excinfo.value)
+    cause = excinfo.value.__cause__
+    # Only the identity check can see a fresh directory, or a parent symlink whose
+    # target has a `deeper/` of its own when the whole path is opened.
+    if swap == "directory" or (scan, swap, after) == (
+        "identity",
+        "symlink",
+        "sub/deeper/",
+    ):
+        assert cause is None
+    else:
+        assert isinstance(cause, OSError)
+        assert cause.errno in (errno.ENOTDIR, errno.ELOOP)
+    assert listed[-1] == after
+    if refused is not None:
+        assert refused
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX O_NOFOLLOW walk")
+@pytest.mark.parametrize(
+    ("replaced", "kind", "errnos"),
+    [
+        # O_NOFOLLOW on the file itself: ELOOP (EMLINK on FreeBSD).
+        ("a.txt", "symlink", (errno.ELOOP, errno.EMLINK)),
+        # O_NOFOLLOW | O_DIRECTORY on a directory component.
+        ("sub", "symlink", (errno.ENOTDIR, errno.ELOOP)),
+        ("sub", "file", (errno.ENOTDIR,)),
+    ],
+)
+def test_a_member_path_that_fails_in_the_kernel_keeps_the_kernel_error(
+    tmp_path: Path, replaced: str, kind: str, errnos: tuple[int, ...]
+) -> None:
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "a.txt").write_bytes(b"inside")
+    outside = _outside_tree(tmp_path)
+    (outside / "a.txt").write_bytes(b"outside the root")
+    path = root / "sub" / replaced if replaced == "a.txt" else root / replaced
+    with open_archive(root) as reader:
+        member = reader.get("sub/a.txt")
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        if kind == "symlink":
+            target = outside if replaced == "sub" else outside / replaced
+            path.symlink_to(target, target_is_directory=target.is_dir())
+        else:
+            path.write_bytes(b"inside")
+        with pytest.raises(OSError) as excinfo:
+            reader.read(member)
+    assert excinfo.value.errno in errnos
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot open a directory")
+def test_a_file_swapped_for_a_directory_after_listing_is_refused(
+    tmp_path: Path,
+) -> None:
+    # The file itself is opened without O_DIRECTORY, so a directory opens; it is
+    # refused on type afterwards.
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("a.txt")
+        (tmp_path / "a.txt").unlink()
+        (tmp_path / "a.txt").mkdir()
+        with pytest.raises(OSError, match="is no longer a regular file") as excinfo:
+            reader.read(member)
+    assert excinfo.value.errno == errno.ESTALE
+
+
 def test_a_file_replaced_after_listing_is_refused(tmp_path: Path) -> None:
     # Same length as the listed file, so only the (st_dev, st_ino) comparison can
     # catch it; removing that comparison turns this test red.
