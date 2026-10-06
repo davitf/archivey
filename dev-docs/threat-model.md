@@ -407,13 +407,15 @@ fails in the library and is translated to `CorruptionError`. The ISO reader pass
 source to `open_fp` as an `ArchiveSource`, a path included, so there is always something
 of archivey's under pycdlib; `open_archive` closes the source if the reader never
 finishes constructing. Two sizes are checked before the read rather than left to the
-source, because the source bounds them only by the image: a Rock Ridge `CE` entry's
-area must end inside its logical block, as pycdlib itself requires after its read and
-the Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB image is
-refused without the read (545 MiB peak before); and a path table must end inside the
-image ([Listing](#listing) weighs it against `max_metadata_bytes` too). This bounds one
-read; how many records and continuation areas
-`pycdlib` builds from those reads is the listing budget's ([Listing](#listing)).
+source, because the source bounds them only by the image: a Rock Ridge `CE` entry's area
+must end inside its logical block, as pycdlib itself requires after its read and the
+Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB image is refused
+without the read (545 MiB peak before), and so is each further link of a `CE` chain,
+which pycdlib follows from 1.21 (a 256 MiB second link peaked at 256 MiB under default
+limits before); and a path table must end inside the image ([Listing](#listing) weighs
+it against `max_metadata_bytes` too). This bounds one read; how many records and
+continuation areas `pycdlib` builds from those reads is the listing budget's
+([Listing](#listing)).
 
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
 40 MiB member arrives as one 40 MiB request.
@@ -424,6 +426,7 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 `::test_a_refused_path_source_does_not_hold_its_handle`;
 `tests/test_iso_metadata_bounds.py`:
 `::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
+`::test_a_chained_continuation_area_past_its_block_is_refused_before_the_read`,
 `::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`.
 
 #### Decoder memory

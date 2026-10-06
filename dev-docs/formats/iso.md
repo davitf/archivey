@@ -362,8 +362,10 @@ ISO-specific only. General extraction and name hazards are §2.4.
   replaces `pycdlib.rockridge.RockRidge.parse` with the System Use filter (§2.2), but that
   wrapper acts only inside `IsoReader`'s own `open_fp` call, where a `ContextVar` is set,
   so other callers are untouched (`test_pycdlib_used_directly_is_not_filtered`). The
-  `ListingLimits` hook on `pycdlib.dr.DirectoryRecord.parse` (§2.2) is gated the same
-  way (`test_the_record_counter_is_inert_outside_archivey_opens`). The
+  `ListingLimits` hooks on `pycdlib.dr.DirectoryRecord.parse`,
+  `pycdlib.pycdlib.PyCdlib._parse_path_table` and
+  `pycdlib.path_table_record.PathTableRecord.parse` (§2.2) are gated the same way
+  (`test_the_pycdlib_hooks_are_inert_outside_archivey_opens`). The
   mutation-harness finding is in [`threat-model.md`](../threat-model.md).
 - **Records multiply what `pycdlib` builds at open.** Every record costs `pycdlib` about
   0.8 KB of Python objects, 15 to 20 times its size on disc, and records whose Rock Ridge
@@ -375,21 +377,28 @@ ISO-specific only. General extraction and name hazards are §2.4.
   `open_archive()`. Closed by routing every read through the source's bound (O16).
 - **The path table size sizes `pycdlib`'s read and parse.** `pycdlib` reads the size the
   volume descriptor declares in one read and parses it into one object per record of at
-  least 8 bytes, about 29 times the size: a 16 MiB table peaked at 471 MiB, and 512 MiB
-  passed 6.4 GB. The source bounded the read, not the parse. The path-table hook (§2.2)
-  now refuses a table that runs past the end of the image as `CorruptionError` (what
-  `pycdlib`'s parse of the short read raised, after the parse), with any
-  `ListingLimits`, weighs it against `max_metadata_bytes` before the read, and counts its
-  entries against `max_members` as they are parsed. The byte budget alone let a table of
-  the whole 64 MiB through (about 1.8 GB); the entry count caps one table near 240 MB at
-  the default `max_members`, about 230 bytes an entry.
+  least 8 bytes, about 29 times the size: with `pycdlib` 1.16, a 16 MiB table peaked at
+  471 MiB, and 512 MiB passed 6.4 GB. The source bounded the read, not the parse. A table
+  that runs past the end of the image cost the parse of the short read on 1.16, which
+  then failed; 1.21 clamps the read to the image itself and refuses a short one before
+  the parse. The path-table hook (§2.2) refuses such a table as `CorruptionError` before
+  the read, on either version and with any `ListingLimits`, weighs every table against
+  `max_metadata_bytes` before the read, and counts its entries against `max_members` as
+  they are parsed. The byte budget alone let a table of the whole 64 MiB through (about
+  1.8 GB); the entry count caps one table near 240 MB at the default `max_members`,
+  about 230 bytes an entry.
 - **A Rock Ridge `CE` entry sizes `pycdlib`'s read.** `pycdlib` read the continuation
   area for the length the entry declares, up to 4 GiB, and only then refused an area
   that does not fit in its logical block: a 512 MiB area was read (545 MiB peak) before
-  the refusal. The record hook (§2.2) checks `offset + length` against the block size
-  between the record's parse and the read and raises the same `CorruptionError` for the
-  image; the Linux kernel refuses the same entry (`rock_continue`). Not gated on
-  `ListingLimits`.
+  the refusal. From 1.21 `pycdlib` also follows a chain, an area that ends in a `CE`
+  naming a further area, and reads each link the same way: a 1 GiB sparse image whose
+  second link declared 256 MiB peaked at 256 MiB under default limits. The System Use
+  hook (`RockRidge.parse`, §2.2) checks `offset + length` of every `CE` it parses, in the
+  record or in a continuation area, against the block size `pycdlib` checks against (the
+  primary volume descriptor's, for every tree), between the parse that names the area and
+  the read, and raises `CorruptionError` for the image; the Linux kernel refuses the same
+  entry (`rock_continue`). `pycdlib` before 1.21 refuses any `CE` inside a continuation
+  area while parsing it. Not gated on `ListingLimits`.
 - **`pycdlib` is not hardened against crafted input.** Beyond its own exception type it
   raises bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
   `KeyError` and `ValueError` from its parsers. All of them are `CorruptionError` at the
@@ -486,7 +495,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag is not a chain; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_is_not_one_file`, `::test_the_raw_directory_walk_crosses_sector_padding` |
 | No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
 | Cycle guard in `pycdlib`'s own walk, in all three trees | `::test_pycdlib_directory_cycle_does_not_hang` |
-| Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, and one ending at the block end opens | `tests/test_iso_metadata_bounds.py` |
+| Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens | `tests/test_iso_metadata_bounds.py` |
 | Directory length bound; path sources go through the source; handles released on failure | `::test_directory_data_length_does_not_drive_the_allocation`, `::test_a_path_source_is_read_through_the_archive_source`, `::test_a_refused_path_source_does_not_hold_its_handle`, `::test_a_failure_after_open_fp_is_translated_and_releases` |
 | Corrupt input is `CorruptionError`; handle `OSError` is not | `::test_corrupt_iso_raises`, `::test_filesystem_oserror_propagates_unwrapped` |
 | Listing reads nothing after open, on an image with no repeated identifier and no file ending at the image end | `::test_listing_reads_nothing_from_the_image` |

@@ -8,6 +8,7 @@ length the ``CE`` entry declares. Every fixture is built in the test.
 
 from __future__ import annotations
 
+import importlib.metadata
 import io
 import struct
 from pathlib import Path
@@ -78,11 +79,12 @@ def _with_path_table_size(size: int, image_size: int) -> bytes:
 def test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it(
     limits: ListingLimits,
 ) -> None:
-    """A size past the image is corruption, whatever the limits, before the parse.
+    """A size past the image is corruption, whatever the limits, before the read.
 
-    pycdlib parses the table into one object per record of at least 8 bytes, about
-    29 times its size; before the fix the 2 MiB the source let it read cost tens of
-    megabytes before pycdlib's own parse failed on the short read.
+    Unchecked, pycdlib 1.16 read the 2 MiB the image held and parsed it into one
+    object per 8-byte record, 28 MiB, before failing on the short read; 1.21 reads
+    it and refuses the short read before the parse, at about twice the image. The
+    image is read once here, and the bound holds about 512 KiB above it.
     """
     data = _with_path_table_size(64 * 2**20, image_size=2 * 2**20)
     config = ArchiveyConfig(listing_limits=limits)
@@ -90,7 +92,7 @@ def test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it(
     with pytest.raises(CorruptionError, match="path table at block"):
         open_archive(io.BytesIO(data), config=config)
     peak = _peak_at_open(data, config, CorruptionError)
-    assert peak < 2 * len(data), (peak, len(data))
+    assert peak < len(data) + 2**19, (peak, len(data))
 
 
 def test_a_path_table_over_max_metadata_bytes_is_refused_before_pycdlib_parses_it() -> (
@@ -200,6 +202,113 @@ def test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it(
             open_archive(path, config=config)
         peak = _peak_at_open(path, config, CorruptionError)
         assert peak < 2**20, peak
+
+
+def _with_chained_ce(length: int) -> bytearray:
+    """The file's ``CE`` area, which fits its block, ending in a ``CE`` of ``length``.
+
+    The second entry names block 100, past the image's own blocks; the tests pad the
+    image out to it.
+    """
+    data = _build_iso()
+    at = _ce_entry_at(data)
+    (block,) = struct.unpack_from("<I", data, at + 4)
+    (offset,) = struct.unpack_from("<I", data, at + 12)
+    (first,) = struct.unpack_from("<I", data, at + 20)
+    end = block * 2048 + offset + first
+    assert offset + first + 28 <= 2048 and not any(data[end : end + 28])
+    data[end : end + 28] = b"CE\x1c\x01" + _both(100) + _both(0) + _both(length)
+    data[at + 20 : at + 28] = _both(first + 28)
+    return data
+
+
+def _pycdlib_follows_ce_chains() -> bool:
+    """pycdlib follows a ``CE`` chain from 1.21; before, a second ``CE`` is invalid."""
+    version = importlib.metadata.version("pycdlib")
+    return tuple(int(part) for part in version.split(".")[:2]) >= (1, 21)
+
+
+# What older pycdlib raises, in its own parse, for a CE inside a continuation area.
+_NO_CHAINS = r"Only single CE record supported"
+
+
+def test_a_chained_continuation_area_past_its_block_is_refused_before_the_read(
+    tmp_path: Path,
+) -> None:
+    """Every link of a ``CE`` chain is held to its block, not only the record's own.
+
+    pycdlib 1.21 follows the chain and reads each further link for its declared
+    length, clamped only to the image, before it refuses a link past its block: 8 MiB
+    here, under any limits. Older pycdlib refuses the second ``CE`` while parsing the
+    first area, before any read.
+    """
+    path = tmp_path / "ce-chain.iso"
+    with path.open("wb") as f:
+        f.write(_with_chained_ce(8 * 2**20))
+        f.truncate(16 * 2**20)
+
+    match = (
+        "continuation area of 8388608 bytes at offset 0 of block 100"
+        if _pycdlib_follows_ce_chains()
+        else _NO_CHAINS
+    )
+    for limits in (ListingLimits(), ListingLimits.UNLIMITED):
+        config = ArchiveyConfig(listing_limits=limits)
+        with pytest.raises(CorruptionError, match=match):
+            open_archive(path, config=config)
+        peak = _peak_at_open(path, config, CorruptionError)
+        assert peak < 2**20, peak
+
+
+def test_a_chained_continuation_area_inside_its_block_is_read() -> None:
+    """The check does not refuse a link that fits its block (where pycdlib chains)."""
+    data = _with_chained_ce(64)
+    data += bytes(101 * 2048 - len(data))
+    if not _pycdlib_follows_ce_chains():
+        with pytest.raises(CorruptionError, match=_NO_CHAINS):
+            open_archive(io.BytesIO(bytes(data)))
+        return
+    with open_archive(io.BytesIO(bytes(data))) as reader:
+        assert [m.name for m in reader.members()] == ["a" * 230]
+
+
+def test_a_continuation_area_is_held_to_the_primary_descriptors_block() -> None:
+    """The block is the PVD's, which pycdlib checks against, in every tree.
+
+    The Joliet descriptor here declares 4096-byte blocks, and its root's ``.`` record
+    carries a ``CE`` for 3000 bytes: inside the Joliet block size, past the PVD's
+    2048. Held to the descriptor being walked, the area was read and then refused by
+    pycdlib ("No room in continuation block").
+    """
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    iso.add_fp(io.BytesIO(b"hello\n"), 6, "/A.TXT;1", rr_name="a", joliet_path="/a.txt")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = bytearray(out.getvalue())
+
+    svd = 17 * 2048
+    assert data[svd : svd + 6] == b"\x02CD001"
+    # ECMA-119 §8.5: the logical block size, both-endian 16-bit, at byte 128.
+    data[svd + 128 : svd + 132] = struct.pack("<H", 4096) + struct.pack(">H", 4096)
+    # The root's records, rewritten with a CE entry appended to ``.``.
+    (root,) = struct.unpack_from("<I", data, svd + 156 + 2)
+    records = []
+    at = root * 2048
+    while data[at]:
+        records.append(bytes(data[at : at + data[at]]))
+        at += data[at]
+    dot = bytearray(records[0]) + b"CE\x1c\x01" + _both(100) + _both(0) + _both(3000)
+    dot[0] = len(dot)
+    directory = bytes(dot) + b"".join(records[1:])
+    data[root * 2048 : root * 2048 + len(directory)] = directory
+    data += bytes(102 * 2048 - len(data))
+
+    with pytest.raises(CorruptionError, match="runs past the 2048-byte block"):
+        open_archive(io.BytesIO(bytes(data)))
 
 
 @pytest.mark.parametrize("offset", [2040, 2049])

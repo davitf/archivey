@@ -26,14 +26,21 @@ tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. I
 confined to pycdlib and transparent on well-formed images, but a program that also uses
 pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
 is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
-``dev-docs/formats/iso.md`` §4. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
-(:func:`_install_pycdlib_system_use_filter`) and ``pycdlib.dr.DirectoryRecord.parse``
-(:func:`_install_pycdlib_record_counter`, which weighs what pycdlib parses against
-``ListingLimits`` and refuses a Rock Ridge ``CE`` area past its block before pycdlib
-reads it), and ``pycdlib.pycdlib.PyCdlib._parse_path_table``
-(:func:`_install_pycdlib_path_table_bound`, which bounds a path table by the image and
-the same budget before pycdlib reads it), but every wrapper acts only inside this
-module's own ``open_fp`` call, so other users of pycdlib see no change.
+``dev-docs/formats/iso.md`` §4. The same import wraps four pycdlib methods:
+
+- ``pycdlib.rockridge.RockRidge.parse`` (:func:`_install_pycdlib_system_use_filter`),
+  which filters each System Use area and refuses a Rock Ridge ``CE`` area past its
+  block before pycdlib reads it;
+- ``pycdlib.dr.DirectoryRecord.parse`` (:func:`_install_pycdlib_record_counter`), which
+  weighs what pycdlib parses against ``ListingLimits``;
+- ``pycdlib.pycdlib.PyCdlib._parse_path_table`` and
+  ``pycdlib.path_table_record.PathTableRecord.parse``
+  (:func:`_install_pycdlib_path_table_bound`), which bound a path table by the image
+  and the same budget before pycdlib reads it, and count its entries as pycdlib parses
+  them.
+
+Every wrapper acts only inside this module's own ``open_fp`` call, so other users of
+pycdlib see no change.
 """
 
 from __future__ import annotations
@@ -63,12 +70,11 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
     from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
     from pycdlib.dr import DirectoryRecord
-    from pycdlib.headervd import PrimaryOrSupplementaryVD
     from pycdlib.inode import Inode
     from pycdlib.path_table_record import PathTableRecord
     from pycdlib.pycdlib import PyCdlib
     from pycdlib.pycdlibio import PyCdlibIO
-    from pycdlib.rockridge import RockRidge
+    from pycdlib.rockridge import RockRidge, RRCERecord
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import (
@@ -265,12 +271,40 @@ class _SystemUseNotes:
 
     Keyed by ``id`` of the ``RockRidge`` the entries belong to; the object itself is
     kept alongside, so the id cannot be reused while the reader holds the notes.
-    ``RockRidge`` has ``__slots__``, so nothing can be stored on it.
+    ``RockRidge`` has ``__slots__``, so nothing can be stored on it. ``iso`` is the
+    ``PyCdlib`` doing the parse, for the logical block size a ``CE`` area must fit in.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, iso: object) -> None:
         self.zisofs: dict[int, tuple[object, _ZisofsEntry]] = {}
         self.dropped: dict[int, tuple[object, str]] = {}
+        self._iso = iso
+
+    def check_continuation_entry(self, ce: RRCERecord | None) -> None:
+        """Refuse a Rock Ridge ``CE`` entry whose area runs past its block, before the read.
+
+        pycdlib reads the area a ``CE`` entry names right after parsing the System Use
+        area that holds it, for the length the entry declares (up to 4 GiB, clamped
+        only to the image), and only then refuses an area that does not fit in one
+        logical block (``track_rr_ce_entry``). From 1.21 it follows the chain: an area
+        may end in a ``CE`` naming a further area, read the same way. This runs on
+        every area pycdlib parses, the record's own and each continuation, so every
+        link is refused between the parse that names it and the read. The Linux kernel
+        refuses the same entry (``rock_continue``).
+
+        The block is the one pycdlib checks against: the primary volume descriptor's,
+        which pycdlib copies to ``logical_block_size`` before it parses any directory
+        record, whichever descriptor's tree it is walking.
+        """
+        if ce is None:
+            return
+        block_size = cast(int, getattr(self._iso, "logical_block_size"))
+        if ce.offset_cont_area + ce.len_cont_area > block_size:
+            raise CorruptionError(
+                "Error reading ISO image: Rock Ridge continuation area of "
+                f"{ce.len_cont_area} bytes at offset {ce.offset_cont_area} of block "
+                f"{ce.bl_cont_area} runs past the {block_size}-byte block"
+            )
 
     def filter(self, rock_ridge: object, record: bytes, skip: int) -> bytes:
         """``record`` with the entries pycdlib would refuse the whole image over removed.
@@ -363,6 +397,18 @@ class _SystemUseNotes:
 _SYSTEM_USE_NOTES: ContextVar[_SystemUseNotes | None] = ContextVar(
     "archivey_iso_system_use_notes", default=None
 )
+
+
+def _inside_our_open() -> bool:
+    """Whether this thread is inside ``IsoReader``'s own ``open_fp`` call.
+
+    The structural checks the pycdlib hooks make (a path table past the image, a
+    ``CE`` area past its block) are not limits, so they key on this rather than on
+    ``_PARSE_BUDGET``, which is ``None`` under ``ListingLimits.UNLIMITED``.
+    """
+    return _SYSTEM_USE_NOTES.get() is not None
+
+
 _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED = False
 
 
@@ -395,7 +441,7 @@ def _install_pycdlib_system_use_filter() -> None:
             # area is weighed each time it is parsed, as pycdlib parses a shared one
             # again for every record that names it.
             budget.add_continuation(len(record))
-        notes = _SYSTEM_USE_NOTES.get()
+        notes = _SYSTEM_USE_NOTES.get()  # set only inside our own open_fp
         if notes is not None:
             record = notes.filter(self, record, bytes_to_skip)
         original(
@@ -406,6 +452,13 @@ def _install_pycdlib_system_use_filter() -> None:
             continuation,
             dr_name,
         )
+        if notes is not None:
+            # pycdlib keeps the CE of a continuation area in ``ce_entries`` (``None``
+            # until one is parsed, from 1.20) and the record's own in ``dr_entries``.
+            entries = self.ce_entries if continuation else self.dr_entries
+            notes.check_continuation_entry(
+                None if entries is None else entries.ce_record
+            )
 
     setattr(rr_mod.RockRidge, "parse", parse)
     _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED = True
@@ -535,36 +588,12 @@ def _install_pycdlib_record_counter() -> None:
         if budget is not None:
             budget.add_record(vd, len(record))
         result = original(self, vd, record, parent, xa)
-        if _SYSTEM_USE_NOTES.get() is not None:
-            _check_continuation_entry(self, vd)
         if budget is not None and not (self.is_dot() or self.is_dotdot()):
             budget.add_member()
         return result
 
     setattr(dr_mod.DirectoryRecord, "parse", parse)
     _PYCDLIB_RECORD_COUNTER_INSTALLED = True
-
-
-def _check_continuation_entry(record: DirectoryRecord, vd: object) -> None:
-    """Refuse a Rock Ridge ``CE`` entry whose area runs past its block, before the read.
-
-    pycdlib reads a record's continuation area right after parsing the record, for
-    the length the ``CE`` entry declares (up to 4 GiB), and only then refuses an area
-    that does not fit in one logical block (``track_rr_ce_entry``). The Linux kernel
-    refuses the same entry (``rock_continue``). Raising here, between the parse and
-    the read, gives the same refusal without the read.
-    """
-    rr = record.rock_ridge
-    ce = None if rr is None else rr.dr_entries.ce_record
-    if ce is None:
-        return
-    block_size = cast("PrimaryOrSupplementaryVD", vd).logical_block_size()
-    if ce.offset_cont_area + ce.len_cont_area > block_size:
-        raise CorruptionError(
-            "Error reading ISO image: Rock Ridge continuation area of "
-            f"{ce.len_cont_area} bytes at offset {ce.offset_cont_area} of block "
-            f"{ce.bl_cont_area} runs past the {block_size}-byte block"
-        )
 
 
 _install_pycdlib_record_counter()
@@ -594,7 +623,7 @@ def _install_pycdlib_path_table_bound() -> None:
     original = pcd_module.PyCdlib._parse_path_table
 
     def parse_path_table(self: PyCdlib, ptr_size: int, extent: int) -> object:
-        if _SYSTEM_USE_NOTES.get() is not None:
+        if _inside_our_open():  # not a limit, so it holds under UNLIMITED too
             _check_path_table(self, ptr_size, extent)
         return original(self, ptr_size, extent)
 
@@ -1198,7 +1227,7 @@ class IsoReader(BaseArchiveReader):
         self._raw_directories: dict[int, _RawDirectory] = {}
         # What the System Use filter kept aside while ``open_fp`` parsed the Rock Ridge
         # areas: zisofs entries, and the areas it cut short.
-        self._system_use = _SystemUseNotes()
+        self._system_use = _SystemUseNotes(self._iso)
         # The Joliet tree's files by extent, and by extent and the ASCII runs of their
         # name, built the first time a Rock Ridge name is not UTF-8 and ``encoding=``
         # does not decode it; and the records whose name was taken from their Joliet

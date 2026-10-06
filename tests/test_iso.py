@@ -713,13 +713,21 @@ def test_listing_limits_count_directory_record_bytes_at_open(
         open_archive(rock_ridge_iso, config=tight)
 
 
-def test_the_record_counter_is_inert_outside_archivey_opens() -> None:
-    """The ``DirectoryRecord.parse`` hook counts nothing when pycdlib is used directly."""
+def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
+    """Every hook archivey installs in pycdlib leaves a direct pycdlib open alone.
+
+    The hooks on ``DirectoryRecord.parse``, ``RockRidge.parse``,
+    ``PyCdlib._parse_path_table`` and ``PathTableRecord.parse`` act only while
+    ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``; outside,
+    both are unset, and a Rock Ridge and Joliet image (path tables included) opens
+    and reads through pycdlib as it would without archivey.
+    """
     import pycdlib
 
     from archivey.internal.backends import iso_reader
 
     assert iso_reader._PARSE_BUDGET.get() is None
+    assert not iso_reader._inside_our_open()
     iso = pycdlib.PyCdlib()
     iso.open_fp(io.BytesIO(_build_iso(rock_ridge=True, joliet=True)))
     try:
