@@ -130,7 +130,7 @@ def format_member_line(
 
     if digests and member.hashes:
         digest_bits = " ".join(
-            f"{algo}={format_hash_value(val)}"
+            f"{algo.value}={format_hash_value(val)}"
             for algo, val in sorted(member.hashes.items())
         )
         line = f"{line}  [{digest_bits}]"
