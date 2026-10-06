@@ -1139,6 +1139,13 @@ segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and S
 rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
 the OS allows).
 
+**Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
+literal character (TAR) SHALL be written as `/` on every platform, as Windows writes it, and
+recorded as `ExtractionResult.presented_name`; a hard link's target gets the same rewrite.
+The path-safety checks SHALL run again on a name the policy rewrote, so a rewrite that
+changes the directories a path passes through cannot bypass them. `TRUSTED` writes the
+`\` as the local OS does.
+
 **Portable-name representability (O7).** Under `STRICT` and `STANDARD`, a name carrying
 bytes that cannot be represented portably on the destination filesystem SHALL be normalized
 to a deterministic, reversible portable spelling — each non-UTF-8 byte (a surrogateescape
@@ -1170,6 +1177,7 @@ rewritten name then collides and is renamed).
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`; `STANDARD` keeps faithful | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
+| TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
 | Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |

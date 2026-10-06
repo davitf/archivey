@@ -2730,17 +2730,17 @@ def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
     "name,expected",
     [
         ("foo. /bar", "foo/bar"),
-        ("foo. \\bar", "foo\\bar"),  # separator kept as stored, segment stripped
-        ("a\\b.\\c ", "a\\b\\c"),
-        ("mixed. /x \\y.", "mixed/x\\y"),
+        ("foo. \\bar", "foo/bar"),
+        ("a\\b.\\c ", "a/b/c"),
+        ("mixed. /x \\y.", "mixed/x/y"),
     ],
 )
 def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) -> None:
     """Trailing dot/space stripping splits on ``\\`` too, like the rest of the module.
 
     TAR keeps ``\\`` as a literal character and Windows writes it as a separator, so
-    ``foo. \\bar`` has to lose its trailing space as ``foo. /bar`` does. The separators
-    are put back as stored: this rewrites segments, not the path's structure.
+    ``foo. \\bar`` has to lose its trailing space as ``foo. /bar`` does. The name
+    policy then writes each ``\\`` as ``/``, so the result is the same on every OS.
     """
     out = apply_name_policy(_member(name), ExtractionPolicy.STRICT)
     assert out.name == expected

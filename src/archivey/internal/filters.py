@@ -506,8 +506,9 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides — and **rewrite** the
-    merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3) and both levels
-    normalize non-representable bytes (O7). A lone surrogate outside U+DC80-U+DCFF is
+    merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3), and both levels
+    write a ``\\`` as ``/`` (in a hard link's target too) and normalize
+    non-representable bytes (O7). A lone surrogate outside U+DC80-U+DCFF is
     escaped too, as its UTF-8 bytes (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is
     the same on every OS; ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not
     rejecting) a legitimate-but-awkward name keeps extraction working; refusal is reserved for
@@ -556,10 +557,21 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     # faithful. The O2 collision map catches any clash the rewrite creates.
     if policy is ExtractionPolicy.STRICT:
         name = _strip_trailing_dot_space(name)
+    # A TAR name keeps ``\`` as a literal character, and Windows writes it as a
+    # separator. Writing it as ``/`` everywhere gives the tree Windows would create, on
+    # every OS. The collision key already treats the two separators as one.
+    name = name.replace("\\", "/")
     name = _sanitize_portable_name(_lone_surrogates_as_bytes(name))
+    changes: dict[str, object] = {}
     if name != member.name:
-        return member.replace(name=name)
-    return member
+        changes["name"] = name
+    target = member.link_target
+    if member.type is MemberType.HARDLINK and target is not None and "\\" in target:
+        # A hard link names an archive member, so its target is a member name and
+        # gets the same separator rewrite. A symlink target is a filesystem path and
+        # is left alone.
+        changes["link_target"] = target.replace("\\", "/")
+    return member.replace(**changes) if changes else member
 
 
 # --- sanitize_names: a ready-made caller filter ---------------------------------------

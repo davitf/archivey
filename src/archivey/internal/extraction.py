@@ -1431,6 +1431,16 @@ class ExtractionCoordinator:
                 )
             )
         portable = apply_name_policy(transformed, self._policy)
+        if portable is not transformed:
+            # The rewrite can change which directories the path passes through: a
+            # "\\" becomes a separator, and "foo. /x" becomes "foo/x". The parent
+            # checked above is then not the parent written to, so check again. A
+            # symlink "foo" that leaves the destination is refused here.
+            try:
+                self._check_universal(portable, dest_root)
+            except ExtractionError as exc:
+                _report_stored_spelling(exc, portable, transformed)
+                raise
         on_disk = disk_spelled(portable)
         if on_disk is not portable:
             self._current.spelled_from = portable
