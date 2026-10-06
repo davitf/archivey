@@ -1285,6 +1285,10 @@ def test_zero_max_scan_bytes_records_sfx_scan_not_enabled(tmp_path: Path) -> Non
 
     path = tmp_path / "x.zip"
     path.write_bytes(b"MZ" + b"\x00" * 4094 + _zip_bytes())
+    # The control: under the default budget the scan finds the appended payload.
+    found = detect_format(path, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET))
+    assert found.detected_by == "sfx_scan"
+    assert not any(s.tier == "sfx_scan" for s in found.unavailable_tiers)
     budget = replace(BALANCED_BUDGET, max_scan_bytes=0)
     info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
     assert info.detected_by == "extension"
@@ -1299,6 +1303,8 @@ def test_zero_max_prefix_bytes_records_near_magic_not_enabled(tmp_path: Path) ->
 
     path = tmp_path / "a.zip"
     path.write_bytes(_zip_bytes())
+    found = detect_format(path, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET))
+    assert found.detected_by == "magic"
     budget = replace(BALANCED_BUDGET, max_prefix_bytes=0)
     info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
     assert info.detected_by == "extension"
