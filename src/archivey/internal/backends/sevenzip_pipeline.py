@@ -90,6 +90,7 @@ from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
     CodecParams,
+    LzmaDataAfterEndError,
     open_codec_stream,
     parse_ppmd_var_h_properties,
 )
@@ -173,21 +174,26 @@ class _CodecStage:
 class _LzmaChainStage:
     """One liblzma raw-filter chain (LZMA1/LZMA2 with any Delta/BCJ filters).
 
-    ``cap_size`` bounds the decoded output with a ``SlicingStream``; it is set for
-    every LZMA1 chain, because 7-Zip writes LZMA1 without an end marker and a reader
-    past the declared size (a BCJ look-ahead, BPO-21872, or a following codec) would
-    otherwise ask for input that is not there. ``None`` means no cap. The following
-    ``_FilterStage`` must close that slice (``owns_inner=True``) — DecompressorStream
-    does not close a passed-in stream by default.
+    ``cap_size`` bounds the decoded output (the codec's ``unpack_size``); it is set
+    for every LZMA1 chain, because 7-Zip writes LZMA1 without an end marker and a
+    reader past the declared size (a BCJ look-ahead, BPO-21872, or a following codec)
+    would otherwise ask for input that is not there. ``None`` means no cap. The
+    following ``_FilterStage`` must close the capped stream (``owns_inner=True``) —
+    DecompressorStream does not close a passed-in stream by default.
 
     ``end_check_size`` is set for an LZMA2 chain instead: the declared output size,
     past which a decoded byte is corruption (:class:`_DecodedPastSizeCheck`).
+
+    ``pack_size`` is the chain's input length, as for :class:`_CodecStage`: the codec
+    reads no further, so AES padding is outside the span in which input after an end
+    marker is corruption.
     """
 
     codec: Codec
     filters: list[dict]
     cap_size: int | None
     end_check_size: int | None = None
+    pack_size: int | None = None
 
 
 @dataclass
@@ -400,13 +406,16 @@ def _plan_run(
             position += 1
             continue
         # LZMA_FAMILY (LZMA1/LZMA2/Delta/BCJ): batch the contiguous run, then plan it.
+        run_input_size = (
+            folder.unpack_sizes[run[position - 1]] if position > 0 else source_size
+        )
         lzma_run: list[SevenZipCoder] = []
         sizes: list[int] = []
         while position < len(run) and is_lzma_family(coders[run[position]].method):
             lzma_run.append(coders[run[position]])
             sizes.append(folder.unpack_sizes[run[position]])
             position += 1
-        stages.extend(_plan_lzma_family(lzma_run, sizes))
+        stages.extend(_plan_lzma_family(lzma_run, sizes, run_input_size))
     return stages
 
 
@@ -452,7 +461,7 @@ def _in_liblzma_chain(coder: SevenZipCoder) -> bool:
 
 
 def _plan_lzma_family(
-    run: list[SevenZipCoder], unpack_sizes: list[int]
+    run: list[SevenZipCoder], unpack_sizes: list[int], input_size: int | None = None
 ) -> list[_Stage]:
     """Plan a run of LZMA1/LZMA2/Delta/BCJ coders, given in decode order.
 
@@ -463,6 +472,9 @@ def _plan_lzma_family(
     any codec of its segment (``7z a -m0=LZMA2 -m1=BCJ`` stores BCJ first in decode
     order), or past the limit, runs as its own stage. So does a filter Python's
     ``lzma`` will not build (ARM64), and every filter decoded after it in its segment.
+
+    ``input_size`` is the run's input length (``None`` over a pack stream); each
+    chain's input is the output of the coder before it.
     """
     if len(run) != len(unpack_sizes):
         raise CorruptionError("7z LZMA-family run length does not match unpack sizes")
@@ -495,7 +507,9 @@ def _plan_lzma_family(
                 chain_end += 1
             stages.append(
                 _lzma_chain_stage(
-                    run[index:chain_end], cap_size=unpack_sizes[chain_end - 1]
+                    run[index:chain_end],
+                    cap_size=unpack_sizes[chain_end - 1],
+                    pack_size=unpack_sizes[index - 1] if index > 0 else input_size,
                 )
             )
             stages.extend(
@@ -510,7 +524,10 @@ def _plan_lzma_family(
             # As above, the chain's last size is the LZMA2 coder's own.
             stages.append(
                 _lzma_chain_stage(
-                    run[index:end], cap_size=None, end_check_size=unpack_sizes[end - 1]
+                    run[index:end],
+                    cap_size=None,
+                    end_check_size=unpack_sizes[end - 1],
+                    pack_size=unpack_sizes[index - 1] if index > 0 else input_size,
                 )
             )
         index = end
@@ -644,6 +661,7 @@ def _lzma_chain_stage(
     *,
     cap_size: int | None,
     end_check_size: int | None = None,
+    pack_size: int | None = None,
 ) -> _LzmaChainStage:
     has_lzma1 = any(lookup(c.method) is METHOD_LZMA for c in run)
     has_lzma2 = any(lookup(c.method) is METHOD_LZMA2 for c in run)
@@ -658,7 +676,7 @@ def _lzma_chain_stage(
     # Decode order is outer-first; liblzma wants encode order → reversed(run).
     filters = [_lzma_filter(coder) for coder in reversed(run)]
     codec = Codec.LZMA if has_lzma1 and not has_lzma2 else Codec.LZMA2
-    return _LzmaChainStage(codec, filters, cap_size, end_check_size)
+    return _LzmaChainStage(codec, filters, cap_size, end_check_size, pack_size)
 
 
 # The codecs whose output _DecodedPastSizeCheck checks, with 7-Zip's name for each.
@@ -701,10 +719,12 @@ class _DecodedPastSizeCheck(DelegatingStream):
     Bounding it would need a counter on the codec's input, outside this wrapper.
 
     AES padding in the codec's input is not output, so it is never surplus: LZMA2
-    raises on input after its end marker, and the other decoders end the stream at it
-    (or, for the rapidgzip accelerators, never see it: their input is cut to
-    ``pack_size``). So a decoder error on the probe read is not surplus output either;
-    7-Zip also does not treat input after the end of the stream as a data error.
+    reads only its ``pack_size`` span, which excludes the pad, the other decoders end
+    the stream at it (or, for the rapidgzip accelerators, never see it: their input
+    is cut to ``pack_size``). So a decoder error on the probe read is not surplus
+    output either, with one exception: input left in an LZMA2 coder's span after its
+    end marker (:class:`LzmaDataAfterEndError`), which 7-Zip reports as a data error.
+    For the other codecs 7-Zip only warns about input after the end of the stream.
     Discarding that error is safe because every codec wrapped here verifies its data
     before or together with delivering it (the BZip2 block CRC, the Zstd and LZ4
     content checksums), so a failed check of the declared data raises on the read
@@ -742,6 +762,10 @@ class _DecodedPastSizeCheck(DelegatingStream):
             self._checked = True
             try:
                 surplus = self._inner.read(1)
+            except LzmaDataAfterEndError:
+                # Input after an LZMA2 end marker inside the coder's span: 7-Zip's
+                # "Data Error". The span excludes AES padding (``pack_size``).
+                raise
             except (ArchiveyError, lzma.LZMAError, EOFError):
                 surplus = b""
             if surplus:
@@ -814,13 +838,17 @@ def _execute_stage(
             stage.codec,
             stream,
             config=stream_config,
-            params=CodecParams(filters=stage.filters),
+            # An LZMA1 chain is capped at its size by the codec (``unpack_size``),
+            # which also looks for an end marker there.
+            params=CodecParams(
+                filters=stage.filters,
+                unpack_size=stage.cap_size,
+                pack_size=stage.pack_size,
+            ),
             collector=collector,
             seekable=seekable,
         )
-        if stage.cap_size is not None:
-            out = SlicingStream(out, length=stage.cap_size, owns_inner=True)
-        elif stage.end_check_size is not None:
+        if stage.end_check_size is not None:
             out = _DecodedPastSizeCheck(
                 out, size=stage.end_check_size, label=_CODEC_LABELS[Codec.LZMA2]
             )

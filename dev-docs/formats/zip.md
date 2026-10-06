@@ -345,9 +345,10 @@ since `use_rapidgzip` covers raw deflate.
 
 On the standard library path a bzip2 member ends at its first end-of-stream marker, as
 7-Zip, Info-ZIP and `zipfile` read it, and as a DEFLATE, LZMA or PPMd member ends at its own.
-An LZMA member with an end marker (bit 1 set) ends there too: `lzma.LZMAFile` would start a
-second raw stream on the bytes after it and read that as content, so the codec decodes one
-stream instead. Without the marker the member ends at its declared size, as before.
+An LZMA member ends at its end marker too (`lzma.LZMAFile` would start a second raw stream on
+the bytes after it and read that as content), and any byte of the member's compressed data
+after the marker, a zero too, is `CorruptionError`, as 7-Zip reports "Data Error" for it.
+With bit 1 clear the member ends at its declared size; a marker right there is still checked.
 The accelerators read on into a second stream, and they stay on for ZIP members: the declared
 size and CRC give the verdict (`compressed-streams`, *An accelerator preserves the error
 contract*), so output that matches both is the member's data and output that breaks either
