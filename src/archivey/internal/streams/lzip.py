@@ -19,9 +19,9 @@ version are refused with :class:`UnsupportedFeatureError` by the forward decoder
 by the backward index walk at each member header it reaches. A full ``LZIP`` magic
 always starts a member, so a version-0 member after a version-1 one is refused too,
 not read past as trailing data, as ``lzip`` itself reports "Version 0 member format
-not supported" for it. The walk cannot reach a version-0 member that has a member
-after it; it fails as corrupt there, the seek index degrades, and the forward decoder
-refuses the member (:func:`_iter_trailers_backwards`).
+not supported" for it. The walk cannot reach a real version-0 member strictly
+between two version-1 members; it fails as corrupt there, the seek index degrades,
+and the forward decoder refuses the member (:func:`_iter_trailers_backwards`).
 
 Spec: https://www.nongnu.org/lzip/manual/lzip_manual.html#File-format
 """
@@ -196,12 +196,13 @@ def _iter_trailers_backwards(
     (:func:`_data_end`), and first at ``stop_at``, since a version-0 trailer has no
     member size and the walk could not reach that member from its end.
 
-    A real version-0 member with a member after it is not reached either: the walk
-    reads the end of its LZMA data and its 12-byte trailer as a 20-byte trailer, and
-    fails on the member size it finds there with :class:`CorruptionError`. That error
-    degrades the seek index (:func:`build_index_backwards`), so a seek falls back to
-    the sequential read, and the forward decoder refuses the member. A seek therefore
-    never skips it, but the error from this walk is corruption, not the version.
+    A real version-0 member strictly between two version-1 members is reached by none
+    of those checks: the walk reads the end of its LZMA data and its 12-byte trailer as
+    a 20-byte trailer, and fails on the member size it finds there with
+    :class:`CorruptionError`. That error degrades the seek index
+    (:func:`build_index_backwards`), so a seek falls back to the sequential read, and
+    the forward decoder refuses the member. A seek therefore never skips it, but the
+    error from this walk is corruption, not the version.
     """
     stream.seek(stop_at)
     header = stream.read(_HEADER_SIZE)

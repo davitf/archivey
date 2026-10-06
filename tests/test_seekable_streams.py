@@ -760,8 +760,9 @@ _V0_CASES = {
         make_lzip_member(b"one") + _lzip_real_version_0_member(b"zero" * 50)
     ),
 }
-# A real version-0 member with a version-1 member after it: the walk from the end
-# reaches the version-0 member's end, and its 12-byte trailer has no member size.
+# A real version-0 member strictly between two version-1 members: the walk from the
+# end reaches the version-0 member's end, and its 12-byte trailer has no member size.
+# One at the start of the file is reached by the walk's check at the start of its range.
 _V0_UNREACHABLE = {"middle_real"}
 
 
@@ -796,11 +797,11 @@ def test_lzip_version_0_member_is_unsupported_on_index_scan(case: str) -> None:
 
 @pytest.mark.parametrize("case", sorted(_V0_UNREACHABLE))
 def test_lzip_version_0_member_the_walk_cannot_reach_fails_the_walk(case: str) -> None:
-    """A real version-0 member before a version-1 one fails the walk as corruption.
+    """A real version-0 member strictly between two version-1 members fails the walk.
 
-    The walk cannot find that member's start, so it cannot name its version. The
-    seek test below pins what keeps a seek right here: the failed walk degrades the
-    index, and the sequential read refuses the member.
+    The walk raises corruption there: it cannot find that member's start, so it cannot
+    name its version. The seek test below pins what keeps a seek right here: the failed
+    walk degrades the index, and the sequential read refuses the member.
     """
     from archivey.internal.streams.lzip import peek_index_summary
 
