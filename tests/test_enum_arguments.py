@@ -48,6 +48,7 @@ from archivey.internal.enum_args import (
     coerce_enum,
     coerce_enum_collection,
     normalize_spelling,
+    spelling_table,
 )
 from archivey.types import (
     AbortOnStr,
@@ -103,6 +104,13 @@ def test_no_two_members_share_a_normalized_spelling(enum_cls: type[Enum]) -> Non
                 f"{member.name}"
             )
             seen[spelling] = member.name
+
+
+def test_spelling_table_prefers_preferred_then_the_first_fallback() -> None:
+    # The tie-break ``_lookup`` and the format tables rely on, pinned on the helper
+    # itself because no shipping enum or format has a tie to exercise it.
+    assert spelling_table(fallback=[("a", 1)], preferred=[("A", 2)]) == {"a": 2}
+    assert spelling_table(fallback=[("a", 1), ("A", 2)], preferred=[]) == {"a": 1}
 
 
 @pytest.mark.parametrize("enum_cls", PUBLIC_ENUMS, ids=lambda c: c.__name__)
