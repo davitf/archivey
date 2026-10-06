@@ -143,6 +143,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
+from archivey.internal.unix_mode import is_special_file_mode
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
@@ -2320,6 +2321,14 @@ class RarReader(BaseArchiveReader):
             return MemberType.HARDLINK
         if info.is_symlink:
             return MemberType.SYMLINK
+        if (
+            info.host_os == _RAR_HOST_OS_UNIX
+            and info.mode is not None
+            and is_special_file_mode(info.mode)
+        ):
+            # A device, FIFO or socket, typed OTHER as in every format. rar itself
+            # skips these when archiving; only a hand-built header carries one.
+            return MemberType.OTHER
         return MemberType.FILE
 
     def _iter_with_data(

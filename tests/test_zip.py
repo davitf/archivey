@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import stat
 import struct
 import subprocess
 import zipfile
@@ -1803,3 +1804,37 @@ def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> Non
             ar._zipcrypto_check_byte(info)  # type: ignore[attr-defined]
         info._raw_time = 0xABCD
         assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "file_type", [stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK]
+)
+def test_unix_special_file_is_other(tmp_path: Path, file_type: int) -> None:
+    """A device, FIFO or socket is OTHER, as in TAR and ISO. unzip would write an
+    empty regular file; extraction refuses the member instead."""
+    path = tmp_path / "special.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, mode in (("dev", file_type | 0o644), ("f.txt", 0o100644)):
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = mode << 16
+            zf.writestr(info, b"xyz" if name == "dev" else b"data")
+    with open_archive(path) as ar:
+        types = {m.name: m.type for m in ar.members()}
+        assert types == {"dev": MemberType.OTHER, "f.txt": MemberType.FILE}
+        assert ar.get("dev").size == 3  # the stored size, not zeroed
+        ar.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "dev").exists()
+    assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+def test_device_bits_from_a_non_unix_writer_are_ignored(tmp_path: Path) -> None:
+    """The high word is a Unix mode only when "version made by" says Unix."""
+    path = tmp_path / "dos.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("f")
+        info.create_system = 0
+        info.external_attr = (stat.S_IFCHR | 0o644) << 16
+        zf.writestr(info, b"x")
+    with open_archive(path) as ar:
+        assert ar.members()[0].type is MemberType.FILE

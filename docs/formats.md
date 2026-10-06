@@ -92,6 +92,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - Unsupported compression methods: listing succeeds; reading raises
   ``UnsupportedFeatureError``.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
+  extraction skips it. The mode is read only when "version made by" says Unix.
 - **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise falls back
@@ -194,6 +196,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   runs about 15 times slower than on real code.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
+- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix lists as
+  `MemberType.OTHER`, so extraction skips it. The mode is trusted for this only when the
+  attribute's `0x8000` Unix-extension bit is set.
 - **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
   hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
   in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. The CLI shows
@@ -235,6 +240,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   exception is a compressed RAR 1.5 / 2.x comment, which the selected program
   (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
   `comment` is `None`.
+- An entry from a Unix host whose mode is a device, FIFO or socket lists as
+  `MemberType.OTHER`, so extraction skips it. `rar` itself skips such files when
+  archiving.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
   archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets

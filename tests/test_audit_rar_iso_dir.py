@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, open_archive
+from archivey import ArchiveyConfig, MemberType, open_archive
 from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
@@ -286,6 +286,43 @@ def test_duplicate_named_compressed_rar5_members_read_their_own_bytes(
         assert [m.name for m in members] == ["canary.txt", "-inul", "-inul"]
         assert archive.read(members[2]) == payloads["@atfile"]
         assert archive.read(members[1]) == payloads["-inul"]
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "attr",
+    [
+        0o020664,
+        # A vint wider than a C unsigned long, which stat.S_IFMT would refuse.
+        (1 << 70) | 0o020664,
+    ],
+)
+def test_unix_special_file_is_other(tmp_path: Path, attr: int) -> None:
+    """A Unix-host entry whose mode names a device is OTHER, as in TAR and ISO.
+
+    rar skips devices when archiving, so the mode is written into a fixture's header.
+    The later member still reads its own bytes, and extraction refuses the device.
+    """
+    payloads = _hostile_argv_payloads()
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
+    files = _rar5_file_blocks(blocks)
+    assert files[1]["host_os"] == 1  # Unix
+    files[1]["attr"] = attr  # char device
+    path = tmp_path / "device.rar"
+    path.write_bytes(_rar5_build(blocks))
+
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        members = archive.members()
+        assert [m.type for m in members] == [
+            MemberType.FILE,
+            MemberType.OTHER,
+            MemberType.FILE,
+        ]
+        assert members[1].size == len(payloads["-inul"])  # the stored size
+        assert archive.read(members[2]) == payloads["@atfile"]
+        archive.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "-inul").exists()
+    assert (tmp_path / "out" / "@atfile").read_bytes() == payloads["@atfile"]
 
 
 @requires_binary("unrar")
