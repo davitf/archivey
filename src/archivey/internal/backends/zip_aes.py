@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import io
 import struct
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -65,15 +66,26 @@ class WinZipAesInfo:
         return self.vendor_version == 2
 
 
+def iter_extra_fields(extra: bytes) -> Iterator[tuple[int, bytes, bool]]:
+    """Yield ``(tag, data, complete)`` for each field of a ZIP extra-field blob.
+
+    A last field whose declared size runs past the blob comes back with the bytes
+    that are there and ``complete`` false; each caller decides what that means.
+    """
+    pos = 0
+    while pos + 4 <= len(extra):
+        tag, size = struct.unpack_from("<HH", extra, pos)
+        data = extra[pos + 4 : pos + 4 + size]
+        yield tag, data, len(data) == size
+        pos += 4 + size
+
+
 def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:
     """Return AE info from a ZIP extra field blob, or ``None`` when absent/malformed."""
-    i = 0
-    while i + 4 <= len(extra):
-        hdr_id, size = struct.unpack_from("<HH", extra, i)
-        if i + 4 + size > len(extra):
+    for hdr_id, data, complete in iter_extra_fields(extra):
+        if not complete:
             break
-        data = extra[i + 4 : i + 4 + size]
-        if hdr_id == _AES_EXTRA_ID and size >= 7:
+        if hdr_id == _AES_EXTRA_ID and len(data) >= 7:
             vendor_version, vendor_id, strength, actual_method = struct.unpack(
                 "<H2sBH", data[:7]
             )
@@ -82,7 +94,6 @@ def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:
             if vendor_version not in (1, 2):
                 return None
             return WinZipAesInfo(vendor_version, strength, actual_method)
-        i += 4 + size
     return None
 
 
