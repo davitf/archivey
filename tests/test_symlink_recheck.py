@@ -25,7 +25,11 @@ from archivey import (
     ResourceLimitError,
 )
 from archivey.internal import link_watch
-from archivey.internal.extraction import ExtractionCoordinator, _symlink_escapes
+from archivey.internal.extraction import (
+    ExtractionCoordinator,
+    _RunState,
+    _symlink_escapes,
+)
 from archivey.types import ArchiveMember, MemberType
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
@@ -525,12 +529,15 @@ def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
     (root / "x").symlink_to("a/b")
     (root / "l").symlink_to("x/../../secret")
     coordinator = ExtractionCoordinator()
-    watch = coordinator._links = link_watch.LinkWatch(root.resolve(), budget=None)
+    watch = link_watch.LinkWatch(root.resolve(), budget=None)
+    coordinator._state = _RunState(
+        dest=root, dest_root=root.resolve(), written_paths={root / "x"}, links=watch
+    )
     watch.track(root / "l", "x/../../secret", result_index=0)
     watch.recheck(lambda path, target: False)  # l passed when it was created
 
     anti = ArchiveMember(type=MemberType.ANTI, name="x")
-    coordinator._apply_anti_item(anti, root / "x", {root / "x"}, {}, root)
+    coordinator._apply_anti_item(anti, root / "x")
     outcome = watch.recheck(
         lambda path, target: _symlink_escapes(path, target, root.resolve())
     )

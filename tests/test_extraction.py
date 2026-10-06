@@ -3643,7 +3643,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     Exercised at the coordinator level: reaching it through a backend needs two members
     with the same collision key both marked current, which last-entry-wins prevents.
     """
-    from archivey.internal.extraction import _Claim
+    from archivey.internal.extraction import _Claim, _RunState
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -3656,9 +3656,13 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     collision_map = {"readme": _Claim(written, 0, written)}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
-    result = coordinator._apply_anti_item(
-        anti, written, written_paths, collision_map, dest
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        written_paths=written_paths,
+        collision_map=collision_map,
     )
+    result = coordinator._apply_anti_item(anti, written)
 
     assert result.status is ExtractionStatus.EXTRACTED
     assert not written.exists()
@@ -3668,7 +3672,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
 
 def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
     """A no-op anti (nothing written this run at that path) releases nothing."""
-    from archivey.internal.extraction import _Claim
+    from archivey.internal.extraction import _Claim, _RunState
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -3680,7 +3684,13 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
     collision_map = {"other.txt": _Claim(other, 0, other)}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
-    coordinator._apply_anti_item(anti, pre_existing, set(), collision_map, dest)
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        written_paths=set(),
+        collision_map=collision_map,
+    )
+    coordinator._apply_anti_item(anti, pre_existing)
 
     assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
     assert collision_map == {"other.txt": _Claim(other, 0, other)}
@@ -3695,7 +3705,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
     anti-item used to compare exact paths instead, so on a case-insensitive filesystem
     the file it names survived.
     """
-    from archivey.internal.extraction import _Claim
+    from archivey.internal.extraction import _Claim, _RunState
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -3707,9 +3717,13 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
     collision_map = {"readme": _Claim(written, 0, written)}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
-    result = coordinator._apply_anti_item(
-        anti, dest / "readme", written_paths, collision_map, dest
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        written_paths=written_paths,
+        collision_map=collision_map,
     )
+    result = coordinator._apply_anti_item(anti, dest / "readme")
 
     assert result.status is ExtractionStatus.EXTRACTED
     assert result.path == written
@@ -3725,7 +3739,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
 )
 def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     """TRUSTED keys on the exact name, so ``readme`` leaves ``README`` alone."""
-    from archivey.internal.extraction import _Claim
+    from archivey.internal.extraction import _Claim, _RunState
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -3737,9 +3751,13 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     collision_map = {"README": _Claim(written, 0, written)}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
-    coordinator._apply_anti_item(
-        anti, dest / "readme", written_paths, collision_map, dest
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        written_paths=written_paths,
+        collision_map=collision_map,
     )
+    coordinator._apply_anti_item(anti, dest / "readme")
 
     assert written.read_bytes() == b"A"
     assert written_paths == {written}
@@ -3752,7 +3770,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     Directories are not in the collision map, so a run can write directory ``x`` and
     file ``X`` (claimed under key ``x``). An anti-item ``x`` names the directory.
     """
-    from archivey.internal.extraction import _Claim
+    from archivey.internal.extraction import _Claim, _RunState
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -3768,9 +3786,13 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     collision_map = {"x": _Claim(file_, 1, file_)}
     anti = ArchiveMember(type=MemberType.ANTI, name="x")
 
-    result = coordinator._apply_anti_item(
-        anti, directory, written_paths, collision_map, dest
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        written_paths=written_paths,
+        collision_map=collision_map,
     )
+    result = coordinator._apply_anti_item(anti, directory)
 
     assert result.path == directory
     assert not directory.exists()
