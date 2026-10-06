@@ -20,6 +20,7 @@ from archivey.config import DecoderLimits
 from archivey.exceptions import ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.arm64 import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.bzip2_resume import Bzip2Resume, Bzip2ResumeDecoder
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -403,8 +404,11 @@ class FramedDecoder(BaseDecoder):
         self._need_more = False
         self._done = False
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> FramedDecoder:
-        del point, inner
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
+        del inner
+        if isinstance(point.state, Bzip2Resume):
+            # Only the bzip2 takeover adds such a point (``bzip2_resume``).
+            return Bzip2ResumeDecoder(point.state, self)
         return FramedDecoder(self._new, magic=self._magic)
 
     def _next_stream(self, data: bytes) -> bytes:
