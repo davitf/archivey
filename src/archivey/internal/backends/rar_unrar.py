@@ -27,7 +27,10 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.rar_parser import _normalize_password_utf16le
+from archivey.internal.backends.rar_parser import (
+    _normalize_password_utf8,
+    _normalize_password_utf16le,
+)
 from archivey.internal.external.cli import (
     spawn_for_stdout,
     stat_identity,
@@ -323,12 +326,12 @@ def _password_arg(password: str | bytes | None) -> str:
     return "-p"
 
 
-def _password_stdin_bytes(password: str | bytes) -> bytes:
+def _password_stdin_bytes(password: str | bytes, *, rar5: bool) -> bytes:
     """Encode a password for ``unrar``'s stdin, refusing one it would silently cut.
 
     What is sent is the password the native path hashes
     (:func:`rar_parser._normalize_password_utf16le`): its first 127 UTF-16 code
-    units. ``unrar`` truncates as well (measured on 7.00: a RAR5 archive whose
+    units, written as UTF-8. ``unrar`` truncates as well (measured on 7.00: a RAR5 archive whose
     password is 127 characters decrypts with 100 000 more appended), but its
     ``wchar_t`` is not UTF-16 on every platform, so its count may differ once a
     character outside the BMP is involved; it is handed the already-truncated
@@ -337,6 +340,14 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
     buffer, so :func:`open_unrar_p` can write it all before reading stdout without
     a deadlock. A password with no Unicode form raises the wrong-password
     ``EncryptionError`` the native path raises for it.
+
+    A password whose 127-unit cut falls inside a surrogate pair has no UTF-8 form to
+    write, and dropping or completing the lone half would change it. What that means
+    depends on ``rar5``. RAR5 hashes UTF-8, so such a password cannot be the real one:
+    it is the wrong-password ``EncryptionError`` the native RAR5 path raises. RAR 1.5-4
+    hashes the UTF-16LE units directly, so the native path accepts exactly this
+    password and a header CRC can prove it right; here the limit is ``unrar``'s stdin,
+    not the password, so it is an ``UnsupportedFeatureError``.
 
     ``unrar`` reads the password as a single line that ends at the first newline or
     NUL, and discards the rest. Measured against RARLAB ``rar`` 7.00: an archive
@@ -347,17 +358,19 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
     hashes past a newline or NUL, so the same argument would also mean two
     different things on the two paths. Refuse it instead of clamping it.
     """
-    wstr = _normalize_password_utf16le(password)
-    try:
-        text = wstr.decode("utf-16le")
-    except UnicodeDecodeError:
-        # The 127th unit is the first half of a surrogate pair, which has no
-        # UTF-8 form to send; dropping or completing it would change the password.
-        raise UnsupportedFeatureError(
-            "This password cannot be passed to unrar: RAR uses only its first 127 "
-            "UTF-16 code units, and that limit falls inside a character."
-        ) from None
-    raw = text.encode("utf-8")
+    if rar5:
+        raw = _normalize_password_utf8(password)
+    else:
+        wstr = _normalize_password_utf16le(password)
+        try:
+            raw = wstr.decode("utf-16le").encode("utf-8")
+        except UnicodeDecodeError:
+            raise UnsupportedFeatureError(
+                "This password cannot be passed to unrar: RAR uses only its first 127 "
+                "UTF-16 code units, that limit falls inside a character, and unrar "
+                "reads the password from stdin as text, which cannot carry half a "
+                "character."
+            ) from None
     if b"\n" in raw or b"\r" in raw:
         raise UnsupportedFeatureError(
             "A password containing a line break cannot be passed to unrar: it reads "
@@ -1207,6 +1220,7 @@ def open_unrar_p(
     password: str | bytes | None = None,
     member: str | bytes | None = None,
     version_control: bool = False,
+    rar5: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] -- archive``.
 
@@ -1226,7 +1240,9 @@ def open_unrar_p(
     stdin when redirected, keeping the secret out of ``argv``. A password containing a
     line break or a NUL is refused rather than sent, because ``unrar`` would read only
     the part before it, and a longer one is cut to the 127 UTF-16 units RAR hashes —
-    see :func:`_password_stdin_bytes`. That bound is what lets the whole password be
+    see :func:`_password_stdin_bytes`, which also needs ``rar5`` (true for a RAR5
+    archive) to tell a wrong password from one ``unrar``'s stdin cannot carry; the
+    default gives the refusal, which claims nothing about the password. That bound is what lets the whole password be
     written before stdout is read: it always fits in the pipe buffer, so the write
     cannot block on a child that is itself blocked writing a full stdout.
 
@@ -1270,7 +1286,7 @@ def open_unrar_p(
     stdin_bytes: bytes | None = None
     if feed_password:
         assert password is not None and password != b"" and password != ""
-        stdin_bytes = _password_stdin_bytes(password)
+        stdin_bytes = _password_stdin_bytes(password, rar5=rar5)
     proc, stdout = spawn_for_stdout(
         cmd,
         name="unrar",
