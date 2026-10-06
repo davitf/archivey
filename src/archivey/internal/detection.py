@@ -541,7 +541,8 @@ def _scan_for_sfx_payload(
 
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
-    This is the one place that records the ``sfx_scan`` tier as cut short.
+    This is the one place that records the ``sfx_scan`` tier as cut short, or as not
+    enabled when the window is zero.
 
     ``restrict_to_validated`` is the shebang cue: a script is text, so magics appear
     as literals. Search only formats that have a hit validator — derived from
@@ -549,8 +550,8 @@ def _scan_for_sfx_payload(
     key this off :attr:`ExecutableCue.WEAK` alone: an unconfirmed ``MZ`` / ELF stub
     is the live 7z/RAR SFX path and keeps the full needle set.
     """
-    if scan_limit <= 0:
-        workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+    # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
+    if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
         return None
     if restrict_to_validated:
         entries = [entry for entry in entries if entry.format in validators]

@@ -1276,6 +1276,22 @@ def test_sfx_miss_in_a_source_shorter_than_the_window_is_not_cut_short(
     assert not any(s.tier == "sfx_scan" for s in info.unavailable_tiers)
 
 
+def test_zero_max_scan_bytes_records_sfx_scan_not_enabled(tmp_path: Path) -> None:
+    # A zero field turns its tier off, recorded as not enabled like the other tiers,
+    # not as a search the budget cut short.
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+
+    path = tmp_path / "x.zip"
+    path.write_bytes(b"MZ" + b"\x00" * 4094 + _zip_bytes())
+    budget = replace(BALANCED_BUDGET, max_scan_bytes=0)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.detected_by == "extension"
+    sfx = [s for s in info.unavailable_tiers if s.tier == "sfx_scan"]
+    assert sfx == [TierSkip("sfx_scan", TierSkipReason.NOT_ENABLED_BY_POLICY)]
+
+
 @pytest.mark.parametrize("as_str", [False, True])
 def test_detect_format_reports_directory_for_a_directory_path(
     tmp_path: Path, as_str: bool
