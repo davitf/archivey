@@ -1122,10 +1122,11 @@ class ExtractionCoordinator:
             raise listing_damage[0]
 
     def _park_earlier_copies(self, name: str, earlier: int | None) -> None:
-        """Park every earlier copy of ``name`` still on disk for the member of that
-        name now being handled (streaming only): result ``earlier``, taken back now,
-        and any an earlier take-back could not remove, unless another member has since
-        replaced it under its own claim.
+        """Park every earlier non-directory copy of ``name`` still on disk for the
+        member of that name now being handled (streaming only): result ``earlier``,
+        taken back now, and any an earlier take-back could not remove, unless another
+        member has since replaced it under its own claim. A superseded directory is
+        never parked; see ``_supersede_written_copy``.
 
         Random access never writes a shadowed copy; a streaming pass finds out only
         when the later copy arrives. A parked path counts as free (``_occupied``,
@@ -1135,11 +1136,10 @@ class ExtractionCoordinator:
         state = self._state
         parked = self._current.parked
         for path, index in state.unremoved.pop(name, {}).items():
-            key = self._claimed_key(path)
-            claim = state.collision_map.get(key)
+            claim = state.collision_map.get(self._claimed_key(path))
             if claim is not None and claim.path == path and claim.result_index == index:
                 parked[path] = index
-                del state.collision_map[key]
+                self._release_claim(path)
         if earlier is not None:
             self._supersede_written_copy(earlier)
 
@@ -1207,9 +1207,13 @@ class ExtractionCoordinator:
         state = self._state
         parked, self._current.parked = self._current.parked, {}
         latest = state.results[result_index] if result_index is not None else None
+        # Only a path the member wrote: an anti-item also reports EXTRACTED at its
+        # name, but writes nothing there.
         landed = (
             latest.path
-            if latest is not None and latest.status is ExtractionStatus.EXTRACTED
+            if latest is not None
+            and latest.status is ExtractionStatus.EXTRACTED
+            and latest.path in state.written_paths
             else None
         )
         for path, index in parked.items():
@@ -2697,9 +2701,9 @@ class ExtractionCoordinator:
         # Replacing a symlink or a directory can move where an earlier link resolves;
         # the member's handler rechecks the links once the member is done.
         moves_links = stat.S_ISLNK(existing) or stat.S_ISDIR(existing)
-        # A parked superseded copy of this same name that this run wrote: the member
-        # replaces it under any policy, as random access would never have written it.
-        # Never a directory (see ``_supersede_written_copy``).
+        # A parked copy of this name (``_park_earlier_copies``) skips the policy: the
+        # member replaces it under any policy, as random access would never have
+        # written it.
         parked = dest_path in self._current.parked
         if not parked:
             # A real directory recreated as a directory is fine under any policy.
@@ -2751,6 +2755,8 @@ class ExtractionCoordinator:
                     self._revise_removed_directory(dest_path)
                 self._forget_source_path(dest_path)
                 return True
+        # Reached by a parked copy of this name (never a directory), and by REPLACE or
+        # RENAME over an existing file or symlink.
         if moves_links:
             self._note_link_change(dest_path)
         if not atomic:
