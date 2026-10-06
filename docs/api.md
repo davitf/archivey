@@ -11,7 +11,6 @@ Authoritative contracts: `openspec/specs/`.
 
 ::: archivey.open_archive
 ::: archivey.open_stream
-::: archivey.extract
 ::: archivey.detect_format
 ::: archivey.FormatInfo
 ::: archivey.DetectionConfidence

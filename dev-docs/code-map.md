@@ -17,7 +17,7 @@ Normative behavior lives in `openspec/specs/`; this describes the tree, not the 
 ```
 src/archivey/
 ├── __init__.py          the export surface — the frozen public API
-├── core.py              open_archive(), extract()
+├── core.py              open_archive(), open_stream()
 ├── reader.py            ArchiveReader — the caller-facing read interface
 ├── types.py             Member, ArchiveInfo, ArchiveFormat, extraction policies/results, …
 ├── detection.py         FormatInfo, DetectionConfidence
@@ -71,7 +71,7 @@ reader.members() / .open(m)                          reader.py → base_reader.p
        └─ digest / length verification               internal/streams/verify.py
   └─ ArchiveStream wraps + translates exceptions     internal/streams/archive_stream.py
 
-extract(path, dest)                                  core.py → internal/extraction.py
+reader.extract_all(dest)                             base_reader.py → internal/extraction.py
   └─ member selection                                internal/selection.py
   └─ path safety + policy                            internal/filters.py
   └─ bomb accounting                                 internal/extraction.py

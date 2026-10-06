@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from archivey import detect_format, extract, open_archive
+from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import (
     ArchiveyUsageError,
@@ -44,6 +44,7 @@ from archivey.internal.volumes import (
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.extract_util import open_and_extract
 from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
@@ -783,7 +784,7 @@ def test_extract_non_utf8_tar_with_explicit_encoding(tmp_path: Path) -> None:
     archive.write_bytes(buf.getvalue())
 
     dest = tmp_path / "out"
-    extract(archive, dest, encoding="latin-1")
+    open_and_extract(archive, dest, encoding="latin-1")
     assert (dest / "café.txt").read_bytes() == b"tea"
 
 

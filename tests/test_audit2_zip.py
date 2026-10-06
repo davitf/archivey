@@ -31,6 +31,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from tests.conftest import requires
+from tests.extract_util import open_and_extract
 
 
 @dataclass
@@ -177,7 +178,7 @@ def test_zip64_header_offset_past_ssize_max_is_typed(offset: int) -> None:
 def test_zip64_header_offset_past_ssize_max_extract_is_typed(tmp_path: Path) -> None:
     blob = _zip64_header_offset_zip(2**63)
     with pytest.raises(ArchiveyError):
-        archivey.extract(io.BytesIO(blob), tmp_path / "out")
+        open_and_extract(io.BytesIO(blob), tmp_path / "out")
 
 
 def test_zip64_header_offset_past_ssize_max_symlink_lists() -> None:
@@ -500,7 +501,7 @@ def test_zero_size_member_with_wrong_crc_raises_on_chunked_read() -> None:
 def test_zero_size_member_with_wrong_crc_does_not_extract_clean(tmp_path: Path) -> None:
     blob = _build_zip([_Entry(b"a", b"", crc=0x12345678)])
     with pytest.raises(CorruptionError):
-        archivey.extract(io.BytesIO(blob), tmp_path / "out")
+        open_and_extract(io.BytesIO(blob), tmp_path / "out")
 
 
 @pytest.mark.parametrize("method", [0, 8])
@@ -524,7 +525,7 @@ def test_zero_declared_size_with_data_does_not_extract_clean(tmp_path: Path) -> 
         [_Entry(b"a", _raw_deflate(b"hello"), method=8, plain=b"", usize=0)]
     )
     with pytest.raises(CorruptionError):
-        archivey.extract(io.BytesIO(blob), tmp_path / "out")
+        open_and_extract(io.BytesIO(blob), tmp_path / "out")
 
 
 # ---------------------------------------------------------------------------------------

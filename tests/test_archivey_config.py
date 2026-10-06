@@ -16,13 +16,13 @@ from archivey import (
     ArchiveyConfig,
     ExtractionLimits,
     ListingLimits,
-    extract,
     open_archive,
 )
 from archivey.config import _check_limit_fields
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.config import stream_config_from_archivey
 from archivey.types import ArchiveFormat
+from tests.extract_util import open_and_extract
 
 
 def test_config_types_are_frozen() -> None:
@@ -184,7 +184,7 @@ def test_extract_limits_from_config(tmp_path) -> None:
         z.writestr("a.txt", b"x" * 5000)
     dest = tmp_path / "out"
     with pytest.raises(ResourceLimitError):
-        extract(
+        open_and_extract(
             src,
             dest,
             config=ArchiveyConfig(
@@ -213,7 +213,7 @@ def test_unlimited_preset_disables_guards(tmp_path) -> None:
     with zipfile.ZipFile(src, "w") as z:
         z.writestr("a.txt", b"x" * 5000)
     dest = tmp_path / "out"
-    extract(src, dest, limits=ExtractionLimits.UNLIMITED)
+    open_and_extract(src, dest, limits=ExtractionLimits.UNLIMITED)
     assert (dest / "a.txt").read_bytes() == b"x" * 5000
 
 

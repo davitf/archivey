@@ -43,6 +43,7 @@ from archivey.types import (
     MemberType,
 )
 from tests.conftest import requires_binary
+from tests.extract_util import open_and_extract
 
 _POSIX = sys.platform != "win32"
 # APFS refuses a name that is not valid UTF-8 (EILSEQ), so the bytes 7-Zip writes on
@@ -164,7 +165,7 @@ def test_the_portable_policies_escape_the_surrogate(
 ) -> None:
     """``STRICT`` and ``STANDARD`` escape the UTF-8 bytes, the same on every OS."""
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest, policy=policy)
+    results = open_and_extract(archive, dest, policy=policy)
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED] * len(_FILES)
     assert _tree(dest) == _ESCAPED
     by_name = {r.member.name: r for r in results}
@@ -180,7 +181,7 @@ def test_trusted_posix_extraction_writes_the_surrogate_as_utf8(
     archive: Path, tmp_path: Path
 ) -> None:
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
+    results = open_and_extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED] * len(_FILES)
     assert _tree(dest) == {
         b"hi\xed\xa0\x80.txt": b"high",
@@ -218,7 +219,7 @@ def test_trusted_posix_extraction_matches_the_7z_tool(
 ) -> None:
     """7-Zip 23.01 on Linux writes each lone surrogate as its UTF-8 form."""
     ours = tmp_path / "ours"
-    archivey.extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
+    open_and_extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
     assert _tree(ours) == _seven_zip_tree(archive, tmp_path)
 
 
@@ -229,7 +230,7 @@ def test_the_default_policy_escapes_where_the_7z_tool_writes_bytes(
 ) -> None:
     """At the default policy every surrogate name differs from 7-Zip's; ok.txt does not."""
     ours = tmp_path / "ours"
-    archivey.extract(archive, ours)
+    open_and_extract(archive, ours)
     assert _tree(ours) == _ESCAPED
     assert _seven_zip_tree(archive, tmp_path) == {
         b"hi\xed\xa0\x80.txt": b"high",
@@ -253,14 +254,14 @@ def test_a_unit_in_the_escape_range_is_the_one_difference_from_the_7z_tool(
     archive = tmp_path / "low.7z"
     archive.write_bytes(_surrogate_7z([*_FILES, ("lo\udc80.txt", b"low")]))
     ours = tmp_path / "ours"
-    archivey.extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
+    open_and_extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
     ours_tree, theirs_tree = _tree(ours), _seven_zip_tree(archive, tmp_path)
     assert ours_tree.pop(b"lo\x80.txt") == b"low"
     assert theirs_tree.pop(b"lo\xed\xb2\x80.txt") == b"low"
     assert ours_tree == theirs_tree
     assert len(ours_tree) == len(_FILES)
     default = tmp_path / "default"
-    archivey.extract(archive, default)
+    open_and_extract(archive, default)
     assert _tree(default)[b"lo%80.txt"] == b"low"
 
 
@@ -270,7 +271,7 @@ def test_a_utf8_only_filesystem_refusal_is_a_typed_failure(
 ) -> None:
     """On APFS ``TRUSTED``'s bytes are refused: a typed failure, not a crash."""
     dest = tmp_path / "out"
-    results = archivey.extract(
+    results = open_and_extract(
         archive, dest, policy=ExtractionPolicy.TRUSTED, on_error="continue"
     )
     by_name = {r.member.name: r for r in results}
@@ -291,7 +292,7 @@ def test_trusted_windows_extraction_uses_the_exact_name(
     archive: Path, tmp_path: Path
 ) -> None:
     dest = tmp_path / "out"
-    archivey.extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
+    open_and_extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
     assert (dest / "hi\ud800.txt").read_bytes() == b"high"
     assert (dest / "z\udfff").read_bytes() == b"last"
     assert (dest / "dir\udbff" / "in.txt").read_bytes() == b"nested"
@@ -325,7 +326,7 @@ def test_a_surrogate_name_and_its_utf8_bytes_collide(
         _surrogate_7z([("hi\ud800", b"first"), ("hi\udced\udca0\udc80", b"second")])
     )
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest, policy=policy, overwrite="skip")
+    results = open_and_extract(archive, dest, policy=policy, overwrite="skip")
     assert results[0].status is ExtractionStatus.EXTRACTED
     assert results[1].status is ExtractionStatus.NOT_OVERWRITTEN
     assert _tree(dest) == {written: b"first"}
@@ -348,7 +349,7 @@ def test_a_rejection_names_the_stored_member(tmp_path: Path) -> None:
     archive = tmp_path / "escape.7z"
     archive.write_bytes(_surrogate_7z([("\ud800/../x", b"x"), ("ok.txt", b"ok")]))
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest, on_error="continue")
+    results = open_and_extract(archive, dest, on_error="continue")
     blocked, ok = results
     assert ok.status is ExtractionStatus.EXTRACTED
     assert blocked.status is ExtractionStatus.BLOCKED
@@ -496,7 +497,7 @@ def test_a_low_surrogate_in_the_escape_range_is_a_byte(tmp_path: Path) -> None:
     assert member.name == "lo\udc80.txt"
     assert member.raw_name == "lo\udc80.txt".encode("utf-16le", "surrogatepass")
     dest = tmp_path / "out"
-    (result,) = archivey.extract(archive, dest)
+    (result,) = open_and_extract(archive, dest)
     assert result.status is ExtractionStatus.EXTRACTED
     assert result.presented_name == "lo\udc80.txt"
     assert (dest / "lo%80.txt").read_bytes() == b"low"

@@ -1,8 +1,7 @@
 """Coercion for the public ``format=`` arguments.
 
-Four public entry points take a format: :func:`~archivey.open_archive`,
-:func:`~archivey.extract` and :func:`~archivey.format_availability` take an
-:class:`~archivey.ArchiveFormat`, and :func:`~archivey.open_stream` also takes a
+Three public entry points take a format: :func:`~archivey.open_archive` and
+:func:`~archivey.format_availability` take an :class:`~archivey.ArchiveFormat`, and :func:`~archivey.open_stream` also takes a
 :class:`~archivey.StreamFormat` because a raw compressed stream genuinely has no
 container.
 

@@ -281,7 +281,7 @@ stability guarantees. Format backends SHALL live under
 Importing top-level `archivey` SHALL still register all bundled backends. The
 codec/stream layer SHALL remain under `archivey.internal.streams.*`. Phase 4
 extraction modules SHALL follow the same implementation-under-`internal` rule while
-public extraction types and `extract()` live on the public surface.
+the public extraction types live on the public surface.
 
 #### Scenario: package-layout matrix
 

@@ -54,7 +54,6 @@ from archivey import (
     ListingLimits,
     SpoolLimits,
     detect_format,
-    extract,
     open_archive,
     open_stream,
 )
@@ -108,7 +107,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
     d = iter(range(10_000))
 
     def out() -> Path:
-        # Do not create the directory. extract / extract_all used to check
+        # Do not create the directory. extract_all used to check
         # members= only after dest existed, and a helper that mkdir'd first
         # made any "refusal must not touch the disk" assertion dead on arrival.
         return dest / f"d{next(d)}"
@@ -130,12 +129,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: open_stream(archive, config=b),
             ),
             _case(
-                "extract",
-                "config",
-                bad,
-                lambda b=bad: extract(archive, out(), config=b),
-            ),
-            _case(
                 "detect_format",
                 "config",
                 bad,
@@ -145,12 +138,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
 
     for bad in ("x", 0, ExtractionLimits):
         rows += [
-            _case(
-                "extract",
-                "limits",
-                bad,
-                lambda b=bad: extract(archive, out(), limits=b),
-            ),
             _case(
                 "extract_all",
                 "limits",
@@ -166,12 +153,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "encoding",
                 bad,
                 lambda b=bad: open_archive(archive, encoding=b),
-            ),
-            _case(
-                "extract",
-                "encoding",
-                bad,
-                lambda b=bad: extract(archive, out(), encoding=b),
             ),
         ]
 
@@ -190,12 +171,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
 
     for bad in (0, "callback", []):
         rows += [
-            _case(
-                "extract",
-                "on_progress",
-                bad,
-                lambda b=bad: extract(archive, out(), on_progress=b),
-            ),
             _case(
                 "extract_all",
                 "on_progress",
@@ -262,12 +237,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 bad,
                 lambda b=bad: open_archive(archive, password=b),
             ),
-            _case(
-                "extract",
-                "password",
-                bad,
-                lambda b=bad: extract(archive, out(), password=b),
-            ),
         ]
 
     for bad in (
@@ -302,17 +271,9 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: detect_format(b),
                 label=f"detect_format({bad!r})",
             ),
-            _case(
-                "extract",
-                "source",
-                bad,
-                lambda b=bad: extract(b, out()),
-                label=f"extract({bad!r}, dest)",
-            ),
         ]
 
     for bad in (0, None, object()):
-        rows.append(_case("extract", "dest", bad, lambda b=bad: extract(archive, b)))
         rows.append(
             _case(
                 "extract_all", "dest", bad, lambda b=bad: _extract_all(archive, b, None)
@@ -518,7 +479,8 @@ def _with_config(archive: Path, dest: Path, **field: Any) -> Any:
     every one of these fields used to survive construction and fail somewhere inside
     the extraction instead, naming a private attribute.
     """
-    return extract(archive, dest, config=ArchiveyConfig(**field))
+    with open_archive(archive, config=ArchiveyConfig(**field)) as reader:
+        return reader.extract_all(dest)
 
 
 def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
@@ -569,7 +531,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # argument name.)
     ("open_archive", "format"): "coerced by format_args; test_format_arguments.py",
     ("open_stream", "format"): "coerced by format_args; test_format_arguments.py",
-    ("extract", "format"): "coerced by format_args; test_format_arguments.py",
     # The enum-typed arguments, owned by ``internal/enum_args``, which **coerces**
     # them: a recognised spelling becomes the member, so a refusal here would
     # contradict it. ``tests/test_enum_arguments.py`` asserts what they do; this
@@ -585,20 +546,13 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # ``overwrite=0``, ``on_error="halt"``, ``abort_on="blocked"`` and ``abort_on=0``
     # all answer ``ArchiveyUsageError``. Anything that turns out not to be covered
     # belongs in _cases, not here.
-    ("extract", "policy"): "coerced by enum_args; test_enum_arguments.py",
-    ("extract", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
-    ("extract", "on_error"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
     # Collection[AbortOn], not an enum, so the container shape is a second way to get
     # it wrong. ``coerce_enum_collection`` refuses both: a bare string, which would
     # otherwise iterate into characters and silently disable every abort, and a
     # non-iterable, which would otherwise be a raw TypeError.
-    ("extract", "abort_on"): (
-        "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
-        "in enum_args"
-    ),
-    ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
-    ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
-    ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "abort_on"): (
         "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
         "in enum_args"
@@ -617,7 +571,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_archive", "concurrent_members"): "truthiness flag",
     ("open_stream", "seekable"): "truthiness flag",
     ("detect_format", "follow_stub_volumes"): "truthiness flag",
-    ("extract", "dry_run"): "truthiness flag",
     ("extract_all", "dry_run"): "truthiness flag",
     # ``get`` is mapping-shaped on purpose: like ``dict.get`` it answers with the
     # default rather than raising, so ``reader.get(0)`` returning ``None`` is the
@@ -630,7 +583,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
 def _public_surface() -> list[tuple[str, list[str]]]:
     """(name, argument names) for every public entry point this file is about."""
     surface: list[tuple[str, list[str]]] = []
-    for func in (open_archive, open_stream, extract, detect_format):
+    for func in (open_archive, open_stream, detect_format):
         surface.append((func.__name__, list(inspect.signature(func).parameters)))
     for method in ("open", "read", "extract_all", "stream_members", "get"):
         names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)
@@ -742,10 +695,14 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
     for budget in (DetectionBudgetPreset.BALANCED, BALANCED_BUDGET):
         config = ArchiveyConfig(detection_budget=budget)
         assert detect_format(archive, config=config).format.container.name == "ZIP"
-    assert extract(archive, dest / "a", config=ArchiveyConfig()).results
-    assert extract(archive, dest / "b", limits=ExtractionLimits.UNLIMITED).results
-    assert extract(archive, dest / "c", encoding="UTF8").results  # an alias, not a name
-    assert extract(archive, dest / "d", on_progress=lambda _p: None).results
+    with open_archive(archive, config=ArchiveyConfig()) as reader:
+        assert reader.extract_all(dest / "a").results
+    with open_archive(archive, encoding="UTF8") as reader:  # an alias, not a name
+        assert reader.extract_all(dest / "c").results
+    with open_archive(archive) as reader:
+        assert reader.extract_all(dest / "b", limits=ExtractionLimits.UNLIMITED).results
+    with open_archive(archive) as reader:
+        assert reader.extract_all(dest / "d", on_progress=lambda _p: None).results
 
     with open_archive(archive) as reader:
         members = list(reader)

@@ -44,7 +44,8 @@ pip install "archivey[recommended]"  # every format and codec that installs ever
 import archivey
 
 # Extract safely: traversal, link escapes and bombs are blocked by default.
-archivey.extract("untrusted.zip", "out/")
+with archivey.open_archive("untrusted.zip") as reader:
+    reader.extract_all("out/")
 
 # List and read members, whatever the format.
 with archivey.open_archive("photos.tar.gz") as reader:

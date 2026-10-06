@@ -247,8 +247,7 @@ def _check_limit_fields(
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
-    Applied by :func:`archivey.extract` and
-    :meth:`~archivey.ForwardArchiveReader.extract_all`.
+    Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
     ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
     guard fields to ``None``; :attr:`ratio_activation_threshold` is a parameter of the
@@ -392,7 +391,7 @@ class DecoderLimits:
     extraction produces them and stop when the total or the ratio says the
     archive is lying about its size. A decoder's working memory is neither
     output nor proportional to it, it is claimed up front, and it is claimed on
-    ``open()`` and ``read()`` as much as on ``extract()`` — paths
+    ``open()`` and ``read()`` as much as on ``extract_all()`` — paths
     ``ExtractionLimits`` does not cover at all.
 
     Applied from the reader's open :attr:`ArchiveyConfig.decoder_limits` for its
@@ -615,7 +614,7 @@ SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
-    """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`extract`.
+    """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`open_stream`.
 
     Per-call operationals (``format``, ``streaming``, ``password``, extraction's
     ``members``/``filter``/``policy``/…) stay keyword arguments — not fields here.

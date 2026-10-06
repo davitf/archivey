@@ -193,16 +193,7 @@ checker still cannot see is the one-pass rule.
 Annotate a function that takes a reader of either kind, and only makes one pass, with
 `ForwardArchiveReader`; the full `ArchiveReader` is a subclass of it.
 
-## One-shot extract
+## Extracting
 
-`archivey.extract(src, dest)` extracts everything with safe defaults — see
-[Extracting](extracting.md).
-
-Two things about it are easy to trip over:
-
-- **There is no `members=` argument.** Selecting a subset needs the member list, and
-  fetching that would mean opening, listing and reopening inside a call that is meant
-  to be one pass. Open a reader and use `reader.extract_all(members=...)` instead.
-- **It accepts a non-seekable source**, opening it in streaming mode for you, while
-  `open_archive` refuses one unless you pass `streaming=True`. Extraction is a single
-  forward pass by nature, so there is nothing to decide.
+`reader.extract_all(dest)` extracts everything with safe defaults, and
+`reader.extract_all(dest, members=...)` a subset — see [Extracting](extracting.md).

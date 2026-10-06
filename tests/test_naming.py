@@ -15,6 +15,7 @@ import pytest
 from archivey import ExtractionPolicy
 from archivey.internal.naming import normalize_member_name
 from archivey.types import MemberType
+from tests.extract_util import open_and_extract
 
 
 @pytest.mark.parametrize(
@@ -194,13 +195,11 @@ def test_dots_only_stem_extracts_under_every_policy(
     """
     import gzip
 
-    from archivey import extract
-
     src = tmp_path / "....gz"
     src.write_bytes(gzip.compress(b"payload"))
     dest = tmp_path / "out"
 
-    extract(src, dest, policy=policy)
+    open_and_extract(src, dest, policy=policy)
 
     assert (dest / "....gz.uncompressed").read_bytes() == b"payload"
 

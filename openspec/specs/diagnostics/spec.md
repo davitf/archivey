@@ -200,7 +200,6 @@ The system SHALL own diagnostic aggregation per lifetime as follows:
 | `open_archive` + auto-detect | Prospective-reader collector created before detection, passed in, owned by successful reader — no seed/merge/replay/copy. Same counters, retained tuple, ids, order, one-time budget charges |
 | Reader-owned stream | Operation-filtered view over the reader collector (no second aggregate retain) |
 | Standalone stream | Own stream-lifetime collector |
-| Top-level `extract()` | One collector for the whole call (see `safe-extraction`) |
 
 Attachment rules:
 
@@ -224,7 +223,7 @@ extracting.
 | Case | Expected |
 | --- | --- |
 | `open_archive` detects conflict, opens reader | One collector/budget; conflict one aggregate slot; visible on reader summary; no copy |
-| Top-level `extract()` detect→open→extract | One collector from before detection; report is watermark range; no phase-local merge |
+| `open_archive` then `extract_all()` | Report is the watermark range of that call; detection and open diagnostics stay on `reader.diagnostics` |
 | Reader-owned stream rewinds | On stream op snapshot + cumulative reader; `CostReceipt`/`ArchiveInfo` unchanged |
 | Extraction hits a member with an invalid timestamp and a blocked member | Timestamp diagnostic in the report summary; the block appears only as a `BLOCKED` result |
 

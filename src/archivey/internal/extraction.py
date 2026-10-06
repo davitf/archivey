@@ -92,7 +92,7 @@ _TMP_PREFIX = ".archivey-tmp-"
 # ``ExtractionCoordinator.run``). Removed when the run ends, like the temp files above.
 _DRY_RUN_PREFIX = "archivey-dry-run-"
 
-# Defaults (see the safe-extraction spec); callers override via extract()/extract_all().
+# Defaults (see the safe-extraction spec); callers override via extract_all().
 DEFAULT_MAX_EXTRACTED_BYTES = 2 * 2**30  # 2 GiB
 DEFAULT_MAX_RATIO = 1000.0
 DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB

@@ -28,6 +28,7 @@ from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import UnsupportedFeatureError
 from archivey.types import ExtractionPolicy, ExtractionStatus
 from tests.conftest import requires, requires_binary
+from tests.extract_util import open_and_extract
 from tests.test_audit_rar_iso_dir import _fixture, _rar3_build, _rar3_parse
 from tests.test_sevenzip_surrogate_names import _surrogate_7z, _tree
 
@@ -287,9 +288,9 @@ def test_extraction_writes_what_the_7z_gives(
     seven = tmp_path / "same.7z"
     seven.write_bytes(_surrogate_7z(_FILES))
     expected_dest = tmp_path / "from7z"
-    expected = archivey.extract(seven, expected_dest, policy=policy)
+    expected = open_and_extract(seven, expected_dest, policy=policy)
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest, policy=policy)
+    results = open_and_extract(archive, dest, policy=policy)
     files = [r for r in results if r.member.is_file]
     assert [r.status for r in files] == [ExtractionStatus.EXTRACTED] * len(_FILES)
     assert _tree(dest) == _tree(expected_dest)
@@ -300,7 +301,7 @@ def test_extraction_writes_what_the_7z_gives(
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows keeps the exact name")
 def test_windows_extraction_uses_the_exact_name(archive: Path, tmp_path: Path) -> None:
     dest = tmp_path / "out"
-    archivey.extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
+    open_and_extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
     assert (dest / "hi\ud800.txt").read_bytes() == b"high"
     assert (dest / "dir\udbff" / "in.txt").read_bytes() == b"nested"
 
@@ -332,7 +333,7 @@ def test_trusted_extraction_matches_the_7z_tool(archive: Path, tmp_path: Path) -
         capture_output=True,
     )
     ours = tmp_path / "ours"
-    archivey.extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
+    open_and_extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
     assert _tree(ours) == _tree(theirs)
 
 

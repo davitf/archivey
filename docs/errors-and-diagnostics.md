@@ -123,7 +123,6 @@ whichever view fits what you were doing:
 | `reader.members()` / `reader.stream_members()` | `member.diagnostics` on each `ArchiveMember` | The diagnostics about that member (a rewritten name, an invalid timestamp) |
 | `reader.members_report()` | `report.diagnostics` | The listing |
 | `reader.extract_all(...)` | `report.diagnostics` | **That extraction call only.** Diagnostics from opening the archive are on `reader.diagnostics`, not here, and a second call gets a fresh window |
-| `archivey.extract(...)` (one-shot) | `report.diagnostics` | Detection, open and extraction together, because the call opened the reader for you and there is no reader to ask |
 | `detect_format(...)` | `FormatInfo.diagnostics` | Detection alone |
 
 Each view is a [`DiagnosticSummary`][archivey.DiagnosticSummary], a snapshot taken when
