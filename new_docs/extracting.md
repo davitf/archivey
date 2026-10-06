@@ -39,6 +39,7 @@ archivey.extract(
     overwrite="error",   # what to do when a file is already there
     on_error="stop",     # whether a damaged member stops the rest
     abort_on=[],         # events that stop the whole extraction at once
+    on_progress=None,    # called as files are written
     limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
 )
 ```
@@ -84,6 +85,10 @@ After an abort there's no report, and the files already written stay on disk.
 Each of these strings is also an enum value, so `policy=archivey.ExtractionPolicy.STRICT` works as
 well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, `OnError` and
 `AbortOn`. The strings ignore case, and `-` works in place of `_`.
+
+`on_progress` gets a snapshot after each member and every so often during a large one: the member,
+the bytes and members done so far, and the expected totals when the archive records them. It's
+meant for progress bars.
 
 ## What each policy does with unusual members
 
@@ -146,8 +151,11 @@ them.
 
 ## What archivey doesn't protect against
 
-Nothing limits how long an extraction takes. If that matters to you, run it in a process you can
-stop. The limits apply to each archive separately, so if you extract archives found inside other
-archives, you need to bound the total yourself. Archivey also assumes that no other program
-changes the archive while it's being read, or the destination folder while files are written
-into it.
+Archivey assumes that no other program changes the archive while it's being read, or the
+destination folder while files are written into it. The limits apply to each archive separately,
+so be careful if you extract archives found inside other archives.
+
+Nothing limits how long an extraction takes. Raising an exception from `on_progress` stops it, but
+the callback only runs between chunks of written data, so a decompressor that's slow to produce the
+next chunk can't be interrupted. If you need a hard time limit, run the extraction in a process you
+can stop.
