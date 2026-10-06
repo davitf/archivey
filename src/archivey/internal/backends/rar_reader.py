@@ -1963,12 +1963,52 @@ class RarReader(BaseArchiveReader):
         if self._archive.truncated is not None:
             # Terminal damage after the prefix, so the listing keeps what the file
             # holds and reports the rest as missing (``members_report().error``).
+            # Raised before the end-block diagnostics below: under a strict policy
+            # emitting them first would replace this with a DiagnosticRaisedError
+            # about lesser damage.
             raise TruncatedError(
                 self._archive.truncated,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )
         self._emit_end_block_missing()
+        self._emit_end_block_damaged()
+
+    def _emit_end_block_damaged(self) -> None:
+        """Report each volume whose end-of-archive block failed its header CRC.
+
+        The block sits after the last member, so the listing keeps every member and
+        they read normally; this is reported after them, once per damaged block,
+        and a ``RAISE`` disposition refuses after delivery. ``observed_bytes`` is
+        where the block starts in its volume. The walk did not follow the damaged
+        block's next-volume flag, so a set continued past that volume only where a
+        member's own header said its data continues.
+        """
+        in_set = self._archive.is_volume or self._volume_count > 1
+        for index, offset in sorted(self._archive.end_block_damaged_volumes.items()):
+            if in_set:
+                detail = (
+                    f"the end-of-archive block of volume {index + 1}, at byte "
+                    f"{offset}, fails its header CRC. Its flags were not used, so "
+                    f"its next-volume flag was not followed."
+                )
+            else:
+                detail = (
+                    f"the end-of-archive block at byte {offset} fails its header CRC."
+                )
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+                message=f"RAR archive is damaged after its last member: {detail}",
+                context=ArchiveEofContext(
+                    archive_name=self._archive_name,
+                    format="rar",
+                    expected_marker="end_of_archive_block",
+                    expected_bytes=0,
+                    observed_bytes=offset,
+                    observed_kind="nonzero",
+                ),
+                logger=logger,
+            )
 
     def _emit_end_block_missing(self) -> None:
         """Report RAR5 volumes that end without their end-of-archive block.
