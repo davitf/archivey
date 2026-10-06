@@ -1971,16 +1971,16 @@ def _make_gzip_check_stream(inner, path):
     from archivey.internal.streams.codecs import (
         _gzip_isize_and_length,
         _GzipTruncationCheckStream,
+        _SourceViews,
         _stdlib_gzip,
     )
 
     source_len, isize = _gzip_isize_and_length(str(path))
     return _GzipTruncationCheckStream(
         inner,
-        reopen=lambda: open(str(path), "rb"),
+        views=_SourceViews(lambda: open(str(path), "rb"), str(path)),
         isize=isize,
         source_len=source_len,
-        fallback_path=str(path),
         open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
     )
 

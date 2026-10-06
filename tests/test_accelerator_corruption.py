@@ -30,6 +30,7 @@ from archivey.internal.streams.codecs import (
     Codec,
     _AcceleratorStream,
     _GzipTruncationCheckStream,
+    _SourceViews,
     _stdlib_gzip,
     _TrappingSource,
     open_codec_stream,
@@ -707,10 +708,9 @@ def _soft_short_backstop() -> tuple[_GzipTruncationCheckStream, bytes]:
     prefix = payload[: len(payload) // 3]
     stream = _GzipTruncationCheckStream(
         io.BytesIO(prefix),
-        reopen=lambda: io.BytesIO(whole),
+        views=_SourceViews(lambda: io.BytesIO(whole)),
         isize=len(payload),
         source_len=len(whole),
-        fallback_path=None,
         open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
     )
     return stream, prefix
