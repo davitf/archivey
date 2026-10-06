@@ -49,7 +49,7 @@ what the archive says about names and permissions gets written as it is:
 
 | `policy` | Names | Permissions |
 |---|---|---|
-| `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders at most `rwxr-xr-x` |
+| `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders always `rwxr-xr-x` |
 | `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits |
 | `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root |
 
@@ -62,7 +62,8 @@ what the archive says about names and permissions gets written as it is:
 | `"replace"` | The existing file is deleted, and the member is written |
 | `"rename"` | The member is written next to it, as `name (1)` |
 
-A folder that's already there is never a conflict. Members are written into it.
+A folder member merges into a folder that's already there. A file member whose path is an
+existing folder is a conflict like any other.
 
 `on_error` decides what a failed member does to the rest of the extraction:
 
@@ -78,7 +79,7 @@ aren't failures. It's empty by default:
 |---|---|
 | `"blocked_member"` | A member is refused |
 | `"name_collision"` | Two members of the archive would be written to the same path. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
-| `"name_sanitized"` | A name is rewritten to its portable spelling |
+| `"name_sanitized"` | A name is rewritten to its portable spelling, or an absolute name is placed inside the destination |
 
 After an abort there's no report, and the files already written stay on disk.
 
@@ -108,15 +109,16 @@ Some members are refused under every policy, and others depend on it:
 | A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
 
 `"strict"` and `"standard"` treat `README` and `readme` as the same file on every system, since
-they are the same file on macOS and Windows. An archive that writes more than `limits` allows
-stops the whole extraction, whatever the policy.
+they are the same file on macOS and Windows. An archive that writes more in total than `limits`
+allows stops the whole extraction, whatever the policy.
 
 A `filter` sees each member before these checks run, so it can rename one they would refuse,
 such as `../evil.txt`, and that member is then written under its new name. Device files are
 refused whatever the filter does, and a link pointing outside is refused unless the filter also
-changes its target. `archivey.sanitize_names` is a ready-made filter for this. It drops a leading
-`/` or drive letter, resolves or drops `..`, removes the hidden characters, and adds `_` to names
-Windows reserves, such as `CON`. It doesn't change link targets.
+changes its target. `archivey.sanitize_names` is a ready-made filter for this, passed as
+`filter=` to `extract_all`. It drops a leading `/` or drive letter, resolves or drops `..`,
+removes the hidden characters, and adds `_` to names Windows reserves, such as `CON`. It gives
+a hardlink's target the same rewrite, but leaves a symlink's target as stored.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, with the path it was written to in `result.path` and the
@@ -135,8 +137,10 @@ If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` 
 
 A member that fails partway leaves nothing behind. Archivey writes each file under a temporary
 name and renames it only once it's complete. The files written before the failure stay on disk,
-even with `on_error="stop"`. Going over `limits` stops the extraction even with
-`on_error="continue"`, since it's a sign that the whole archive is hostile.
+even with `on_error="stop"`. Going over the total size or entry count in
+`limits`, or the whole archive expanding too much, stops the extraction even with
+`on_error="continue"`, since it's a sign that the whole archive is hostile. A single member that
+expands too much fails like any other member.
 
 ## Archives you trust
 

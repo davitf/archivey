@@ -10,7 +10,7 @@ Install the `archivey` package from PyPI with your usual tool (e.g.
 `uv add "archivey[recommended]"` or `pip install "archivey[recommended]"`). Without
 `recommended`, archivey has no dependencies and reads ZIP, TAR, 7z with its common compression
 methods, and the single compressed files the standard library handles, such as gzip, bzip2 and
-xz. The extra adds ISO, zstd, lz4 and Brotli, the rarer compression methods in 7z and ZIP, and
+xz. The extra adds ISO, lz4, Brotli, zstd on Python 3.13 and older, the rarer compression methods in 7z and ZIP, and
 AES decryption, which most encrypted 7z and ZIP archives need.
 
 RAR archives can be listed with nothing else installed. To read the files inside, you also

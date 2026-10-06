@@ -510,9 +510,9 @@ def _sanitize_path(name: str) -> str:
 def sanitize_names(member: ArchiveMember) -> ArchiveMember:
     """Rewrite a member's name so that extraction writes it instead of refusing it.
 
-    Pass it as ``filter=`` to :func:`archivey.extract` or ``extract_all()`` (or call it
-    from your own filter) to extract every member that has a safe place to go under a
-    rewritten name, instead of refusing the members with an unsafe one. It changes:
+    Pass it as ``filter=`` to ``extract_all()`` (or call it from your own filter) to
+    extract every member that has a safe place to go under a rewritten name, instead of
+    refusing the members with an unsafe one. It changes:
 
     - a rooted name (``/etc/x``, ``C:\\x``, ``\\\\host\\share\\x``): the root
       is dropped, so the member lands at ``etc/x`` inside the destination. ``STANDARD``
