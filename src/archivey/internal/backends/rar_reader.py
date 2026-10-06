@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO, Literal, NamedTuple
+from typing import BinaryIO, Literal, NamedTuple, assert_never
 
 from archivey.config import ArchiveyConfig, RarDecompressor, SpoolLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -88,7 +88,9 @@ from archivey.internal.backends.rar_unar import (
     uses_no_dictionary,
 )
 from archivey.internal.backends.rar_unrar import (
-    UnrarRefusal,
+    UnrarMask,
+    UnrarMaskRefusal,
+    UnrarNameRefusal,
     decompress_rar3_blob,
     find_rarlab_unrar,
     open_unrar_p,
@@ -3196,23 +3198,25 @@ class RarReader(BaseArchiveReader):
         version_control = raw.is_file_version_history()
         names = self._unrar_names()
         mask = plan_unrar_mask(
-            names.views[names.positions[id(member)]],
-            raw.orig_filename,
-            _presented_filename(raw),
+            view=names.views[names.positions[id(member)]],
+            stored=raw.orig_filename,
+            presented=_presented_filename(raw),
             stored_is_8bit=self._archive.version == 4 and raw.rar3_unicode_name is None,
             surrogates_as_wildcards=raw.rar3_unicode_name is not None,
         )
-        if isinstance(mask, UnrarRefusal):
-            if mask.kind == "name":
-                raise self._unrar_name_refused(member, mask.reason)
+        if isinstance(mask, UnrarNameRefusal):
+            raise self._unrar_name_refused(member, mask.reason)
+        if isinstance(mask, UnrarMaskRefusal):
             raise UnsupportedFeatureError(
                 mask.reason,
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
+        if not isinstance(mask, UnrarMask):
+            assert_never(mask)
         glob_prefix, shares_mask, dictionary_cost = self._unrar_selection(
-            member, mask.view, version_control=version_control
+            member, mask.mask_view, version_control=version_control
         )
         if (
             mask.is_glob
@@ -3300,7 +3304,7 @@ class RarReader(BaseArchiveReader):
             proc, stdout = open_unrar_p(
                 path,
                 password=data_password,
-                member=mask.name,
+                member=mask.argument,
                 version_control=version_control,
                 rar5=self._archive.version == 5,
             )

@@ -21,7 +21,7 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO
 
 from archivey.exceptions import (
     PackageNotInstalledError,
@@ -666,46 +666,58 @@ def _surrogate_in_directory_part(view: str) -> bool:
 class UnrarMask:
     """A member's ``-n`` mask: the :func:`open_unrar_p` argument and unrar's reading."""
 
-    name: str | bytes
-    view: str
+    argument: str | bytes
+    mask_view: str
     is_glob: bool
 
 
 @dataclass(frozen=True, slots=True)
-class UnrarRefusal:
-    """Why a member cannot be read through an ``unrar -n`` mask.
+class UnrarNameRefusal:
+    """No ``-n`` mask can be given for the member's name.
 
-    ``kind`` is ``"name"`` when no mask can be given for the name, and
-    ``"separator_or_dir_glob"`` when one can but its selection is not predictable.
+    ``reason`` is a lowercase clause with no final period, such as "its stored name
+    contains a NUL character, ...", for ``RarReader._unrar_name_refused`` to insert.
     """
 
-    kind: Literal["name", "separator_or_dir_glob"]
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnrarMaskRefusal:
+    """A mask exists, but which members ``unrar`` selects with it is not predictable.
+
+    ``reason`` is the complete ``UnsupportedFeatureError`` message.
+    """
+
     reason: str
 
 
 def plan_unrar_mask(
+    *,
     view: str | None,
     stored: bytes | None,
     presented: str,
-    *,
     stored_is_8bit: bool,
     surrogates_as_wildcards: bool,
-) -> UnrarMask | UnrarRefusal:
+) -> UnrarMask | UnrarNameRefusal | UnrarMaskRefusal:
     """The ``-n`` mask that reads one member through ``unrar``, or why there is none.
 
     ``view`` is the name as ``unrar`` reads it (:func:`unrar_member_view`), ``stored``
     the header's name bytes, and ``presented`` the name archivey shows.
+    ``stored_is_8bit`` marks a RAR3 name with no Unicode field, which goes to
+    ``unrar`` as its stored bytes, and ``surrogates_as_wildcards`` a RAR3 name with
+    one, whose surrogate units go as ``?`` (both :func:`unrar_member_argument`).
     """
-    mask_name = unrar_member_argument(
+    argument = unrar_member_argument(
         view,
         stored,
         stored_is_8bit=stored_is_8bit,
         surrogates_as_wildcards=surrogates_as_wildcards,
     )
-    reason = unrar_member_refusal(mask_name)
+    reason = unrar_member_refusal(argument)
     if reason is not None:
-        return UnrarRefusal("name", reason)
-    assert mask_name is not None  # unrar_member_refusal refuses None
+        return UnrarNameRefusal(reason)
+    assert argument is not None  # unrar_member_refusal refuses None
     if (
         surrogates_as_wildcards
         and sys.platform != "win32"
@@ -714,20 +726,18 @@ def plan_unrar_mask(
     ):
         # Sent as ``?``, that unit would make a directory glob, which the check
         # below refuses with a reason about backslashes and globs.
-        return UnrarRefusal(
-            "name",
+        return UnrarNameRefusal(
             "a directory in its name holds a UTF-16 surrogate unit, which can "
             "reach unrar only as a glob in that directory, and archivey cannot "
-            "size what a directory glob selects",
+            "size what a directory glob selects"
         )
     if "\0" in presented or (stored is not None and b"\0" in stored):
         # unrar cuts the name at the NUL; the name is refused rather than read
         # through the part before it.
-        return UnrarRefusal("name", _NUL_REFUSAL)
-    mask_view = unrar_mask_view(mask_name)
+        return UnrarNameRefusal(_NUL_REFUSAL)
+    mask_view = unrar_mask_view(argument)
     if mask_view is None or not unrar_mask_is_usable(mask_view):
-        return UnrarRefusal(
-            "name",
+        return UnrarNameRefusal(
             "unrar reads its name as empty, or as a path with no name in it"
             if view is not None
             else "its name cannot be read the way unrar reads it on this system",
@@ -745,14 +755,13 @@ def plan_unrar_mask(
         or (sys.platform == "win32" and "\\" in presented)
         or (is_glob and not _unrar_glob_demux_ok(mask_view[2:]))
     ):
-        return UnrarRefusal(
-            "separator_or_dir_glob",
+        return UnrarMaskRefusal(
             "RAR member names that unrar reads with a backslash, or with a "
             "glob in a directory component, cannot be read through unrar: "
             "Windows unrar treats a backslash as a separator, and a "
             "directory glob selects members archivey cannot size.",
         )
-    return UnrarMask(mask_name, mask_view, is_glob)
+    return UnrarMask(argument=argument, mask_view=mask_view, is_glob=is_glob)
 
 
 # --- how unrar reads a member name, and which members a -n mask selects -------
@@ -1364,7 +1373,9 @@ def open_unrar_p(
     hostile member name cannot inject an ``unrar`` switch or ``@listfile`` argument
     (see :func:`_member_include_switch`). It is ``bytes`` for a name given to
     ``unrar`` as stored (:func:`unrar_member_argument`). The child runs under a
-    UTF-8 locale (:func:`_unrar_env`).
+    UTF-8 locale (:func:`_unrar_env`). ``None`` means no ``-n`` mask, so every
+    payload member is piped: the solid pass wants that, and a named read must never
+    pass it.
 
     When a non-empty ``password`` is given, the switch is bare ``-p`` and the password
     (plus a trailing newline) is written to the child's stdin — ``unrar`` reads it from
