@@ -2490,6 +2490,8 @@ def test_comment_terminator_is_trimmed_a_code_unit_at_a_time() -> None:
     assert _read_comment(_Cursor(b"\x00" + "hi\x00\x00".encode("utf-16le"))) == "hi"
     assert _read_comment(_Cursor(b"\x00")) is None
     assert _read_comment(_Cursor(b"\x00" + "\x00".encode("utf-16le"))) is None
+    with raises_corruption_not_truncation(match="odd byte length"):
+        _read_comment(_Cursor(b"\x00abc"))
 
 
 def _encode_7z_number(value: int) -> bytes:

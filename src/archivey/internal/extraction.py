@@ -49,6 +49,7 @@ from archivey.internal.filters import (
     apply_name_policy,
     check_universal,
     collision_key,
+    disk_spelled,
     reroot_absolute,
 )
 from archivey.internal.link_watch import LinkWatch
@@ -404,6 +405,22 @@ class BombTracker:
                     )
 
 
+def _report_stored_spelling(
+    exc: ArchiveyError, on_disk: ArchiveMember, member: ArchiveMember
+) -> None:
+    """Rename ``exc`` from the disk spelling ``on_disk`` back to ``member``'s names.
+
+    A lone surrogate is checked and written as its UTF-8 bytes (``disk_spelled``), but
+    an error names the name and link target from before that step, so one skip does
+    not print two names for one member. Under ``STRICT`` and ``STANDARD`` the name
+    policy has already escaped the name, so only the link target changes back.
+    """
+    if exc.member_name == on_disk.name:
+        exc.member_name = member.name
+    if exc.link_target is not None and exc.link_target == on_disk.link_target:
+        exc.link_target = member.link_target
+
+
 def _until_listing_damage(
     reader: "BaseArchiveReader",
     pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
@@ -431,6 +448,8 @@ class _Orphan:
     ``transformed`` is the policy/filter-transformed copy from the first pass: it supplies
     the on-disk identity (mode, timestamps) when the source's content is materialized at
     this link's path (see the ``safe-extraction`` "copy supplies the identity" rule).
+    ``spelled_from`` is ``transformed`` before its disk spelling, when that differs, so
+    an error names it as the first pass would (``_report_stored_spelling``).
     """
 
     result_index: int
@@ -438,6 +457,11 @@ class _Orphan:
     transformed: ArchiveMember
     dest_path: Path
     source: ArchiveMember
+    spelled_from: ArchiveMember | None = None
+
+    def report_stored_spelling(self, exc: ArchiveyError | OSError) -> None:
+        if isinstance(exc, ArchiveyError) and self.spelled_from is not None:
+            _report_stored_spelling(exc, self.transformed, self.spelled_from)
 
 
 @dataclass(frozen=True)
@@ -540,6 +564,9 @@ class _RunState:
     # The symlinks this run created and the paths each one's resolution depends on,
     # so a later member that changes such a path gets them rechecked.
     links: LinkWatch | None = None
+    # The stored target of each tracked symlink whose target was disk-spelled, by
+    # result index, so a recheck error names it as listed.
+    stored_targets: dict[int, str] = field(default_factory=dict)
     # RAR file copies (``_open_written_source``). ``streaming_now`` is ``id()`` of
     # the member whose stream is being written; a file-copy source arriving then is
     # not kept by the pass (``_keep_copy_source``), and goes in ``declined``. Only
@@ -571,6 +598,9 @@ class _MemberState:
     # Set by ``_transform`` when reading a link's target showed the member is not a
     # link after all, so the pass yielded it with no data stream.
     retyped: bool = False
+    # Set by ``_transform`` to the member before ``disk_spelled`` when the disk
+    # spelling differs, so an error raised while writing can name it as listed.
+    spelled_from: ArchiveMember | None = None
     # Set by ``_prepare_destination`` when it removes an existing entry to make room.
     # Only the non-atomic paths (DIR / SYMLINK / HARDLINK) do that — a FILE write
     # lands via os.replace and never destroys the destination up front — so this is
@@ -1078,6 +1108,11 @@ class ExtractionCoordinator:
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
+                spelled_from = current.spelled_from
+                if isinstance(exc, ArchiveyError) and spelled_from is not None:
+                    _report_stored_spelling(
+                        exc, disk_spelled(spelled_from), spelled_from
+                    )
                 error, status = self._classify(exc, original.name)
                 result = ExtractionResult(
                     original,
@@ -1356,7 +1391,9 @@ class ExtractionCoordinator:
                 rerooted_from = None  # the filter chose this name; it is not a rewrite
         transformed = self._as_written(original, transformed)
         dest_root = self._state.dest_root
-        check_universal(transformed, dest_root, link_target_on_disk=self._on_disk)
+        # The checks run on the name that reaches disk; the name policy below runs on
+        # the stored one, so its escape of a lone surrogate is the same on every OS.
+        self._check_universal(transformed, dest_root)
         reader = self._state.reader
         if reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
@@ -1376,9 +1413,7 @@ class ExtractionCoordinator:
             if original.link_target is not None:
                 if transformed is not original:
                     transformed = transformed.replace(link_target=original.link_target)
-                check_universal(
-                    transformed, dest_root, link_target_on_disk=self._on_disk
-                )
+                self._check_universal(transformed, dest_root)
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
@@ -1392,8 +1427,11 @@ class ExtractionCoordinator:
                 )
             )
         portable = apply_name_policy(transformed, self._policy)
+        on_disk = disk_spelled(portable)
+        if on_disk is not portable:
+            self._current.spelled_from = portable
         if portable.name == transformed.name:
-            return portable, rerooted_from
+            return on_disk, rerooted_from
         # The pre-rewrite spelling is the caller filter's output when there is one, which
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
@@ -1405,7 +1443,17 @@ class ExtractionCoordinator:
                 )
             )
         # After a re-root, the stored name is the one the caller will recognise.
-        return portable, rerooted_from or transformed.name
+        return on_disk, rerooted_from or transformed.name
+
+    def _check_universal(self, member: ArchiveMember, dest_root: Path) -> None:
+        """``check_universal`` on the disk spelling, reporting the stored names."""
+        on_disk = disk_spelled(member)
+        try:
+            check_universal(on_disk, dest_root, link_target_on_disk=self._on_disk)
+        except ExtractionError as exc:
+            if on_disk is not member:
+                _report_stored_spelling(exc, on_disk, member)
+            raise
 
     @staticmethod
     def _needs_target_read(original: ArchiveMember, transformed: ArchiveMember) -> bool:
@@ -1589,6 +1637,9 @@ class ExtractionCoordinator:
                     self._link_target_on_disk(transformed.link_target),
                     result_index,
                 )
+                spelled_from = self._current.spelled_from
+                if spelled_from is not None and spelled_from.link_target is not None:
+                    self._state.stored_targets[result_index] = spelled_from.link_target
         return result
 
     def _make_room(
@@ -2176,7 +2227,14 @@ class ExtractionCoordinator:
             )
         # Re-readable: resolve in the second pass.
         self._state.orphans.append(
-            _Orphan(result_index, original, transformed, dest_path, source)
+            _Orphan(
+                result_index,
+                original,
+                transformed,
+                dest_path,
+                source,
+                spelled_from=self._current.spelled_from,
+            )
         )
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
 
@@ -2345,20 +2403,24 @@ class ExtractionCoordinator:
         # ``written_paths``.
         remaining: list[_Orphan] = []
         for index, orphan in enumerate(group):
-            resolved, prior, collided_with = self._resolve_collision(
-                orphan.original, orphan.transformed, orphan.dest_path
-            )
-            result = self._make_room(
-                orphan.original, orphan.transformed, resolved, atomic=True
-            )
-            if result is None:
-                self._write_file_atomic(stream, resolved, orphan.transformed)
-                self._state.source_paths.setdefault(source_member.member_id, []).append(
-                    resolved
+            try:
+                resolved, prior, collided_with = self._resolve_collision(
+                    orphan.original, orphan.transformed, orphan.dest_path
                 )
-                result = ExtractionResult(
-                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                result = self._make_room(
+                    orphan.original, orphan.transformed, resolved, atomic=True
                 )
+                if result is None:
+                    self._write_file_atomic(stream, resolved, orphan.transformed)
+                    self._state.source_paths.setdefault(
+                        source_member.member_id, []
+                    ).append(resolved)
+                    result = ExtractionResult(
+                        orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                    )
+            except (ArchiveyError, OSError) as exc:
+                orphan.report_stored_spelling(exc)
+                raise
             result = self._settle_placement(
                 result,
                 requested=orphan.dest_path,
@@ -2392,9 +2454,13 @@ class ExtractionCoordinator:
 
     def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
         """One link of ``_link_orphan_group``, which rechecks symlinks after it."""
-        resolved, prior, collided_with = self._resolve_collision(
-            orphan.original, orphan.transformed, orphan.dest_path
-        )
+        try:
+            resolved, prior, collided_with = self._resolve_collision(
+                orphan.original, orphan.transformed, orphan.dest_path
+            )
+        except (ArchiveyError, OSError) as exc:
+            orphan.report_stored_spelling(exc)
+            raise
         try:
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
@@ -2407,6 +2473,7 @@ class ExtractionCoordinator:
         except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
+            orphan.report_stored_spelling(exc)
             # FAILED, as for an orphaned source.
             error, status = self._classify(exc, orphan.original.name)
             # Nothing the second pass runs raises FilterRejectionError.
@@ -2509,7 +2576,9 @@ class ExtractionCoordinator:
             error = FilterRejectionError(
                 message,
                 member_name=prior.member.name,
-                link_target=shown_targets.get(link.target, link.target),
+                link_target=state.stored_targets.get(
+                    link.result_index, shown_targets.get(link.target, link.target)
+                ),
             )
             first = first or error
             state.written_paths.discard(link.dest_path)

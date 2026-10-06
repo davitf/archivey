@@ -231,8 +231,8 @@ read back.
 | `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
 | `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
-| Name with lone surrogate unencodable by the platform filesystem encoding | `FilterRejectionError` before path resolution; never raw `UnicodeEncodeError` |
-| SYMLINK/HARDLINK `link_target` with `\x00` or unencodable surrogate | `FilterRejectionError`; never raw `ValueError`/`UnicodeEncodeError` |
+| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
+| SYMLINK/HARDLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
 | Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
 | `MemberType.OTHER` | `FilterRejectionError`; all policies |
 
@@ -283,6 +283,51 @@ of this requirement — it belongs to the future opt-in `SANITIZE` extraction po
 
 - **WHEN** the same member is extracted on a filesystem that accepts arbitrary name bytes
 - **THEN** the member extracts successfully with its bytes preserved
+
+### Requirement: Lone surrogates in a member name
+
+A member name or link target can hold a surrogate without its partner (U+D800–U+DFFF):
+7z names are UTF-16 code units, and NTFS allows any unit in a name. Listing and reading
+keep the unit in the name under every policy.
+
+Under `STRICT` and `STANDARD` such a name is not portable, and the portable-name rule
+(O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
+U+DC80–U+DCFF is taken as its three UTF-8 bytes (`surrogatepass`) and each byte is
+written `%XX`, so `hi\ud800` is written `hi%ED%A0%80` on every OS and
+`presented_name` records the stored name. Under `TRUSTED` extraction SHALL write the
+name as 7-Zip 23.01 does: on POSIX each such surrogate as its three-byte UTF-8 form
+(U+D800 becomes the bytes `ed a0 80`), on Windows the exact name. That on-disk spelling
+is not a rename, so `presented_name` stays unset for it. A link target is written the
+`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under `STRICT`
+and `STANDARD` a link to a member whose name was escaped therefore points at the
+unescaped spelling and dangles, as it already does for undecodable bytes; on a
+filesystem that accepts only UTF-8, such as APFS, creating that link fails.
+
+U+DC80–U+DCFF SHALL keep its `surrogateescape` meaning, one undecodable byte, for every
+format: it is written as that byte, or percent-escaped by the portable-name rule. The
+path checks run on the name the disk spelling gives, before the portable-name rule, and
+a rejection by them names the stored member name. An error raised while writing the
+member, a deferred hardlink included, names the name from before the disk spelling:
+the stored name under `TRUSTED`, the escaped one under `STRICT` and `STANDARD`. Every
+error names a link target as stored, never in its disk spelling. The collision key and
+the overwrite policy see the spelling that reaches disk. Under every policy a lone
+U+D800 and a name whose undecodable bytes are `ed a0 80` are therefore one file: both
+are `hi%ED%A0%80` under `STRICT` and `STANDARD`, and both are the bytes under
+`TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
+raw `UnicodeEncodeError`.
+
+#### Scenario: lone surrogate matrix
+
+`tests/test_sevenzip_surrogate_names.py` compares both policies with the `7z` tool.
+
+| Case | Expected |
+| --- | --- |
+| `hi\ud800.txt` under `STRICT` / `STANDARD`, any OS | Written `hi%ED%A0%80.txt`; `EXTRACTED`; `presented_name == "hi\ud800.txt"` |
+| `hi\ud800.txt` under `TRUSTED` on POSIX | Written as `hi` + `ed a0 80` + `.txt`, as 7-Zip writes it; `presented_name` unset |
+| `hi\ud800.txt` under `TRUSTED` on Windows | Written under the exact name |
+| `hi\ud800` and `hi\udced\udca0\udc80` in one archive, any policy | One file; the second goes through the `OverwritePolicy` |
+| `lo\udc80.txt` | `lo%80.txt` under `STRICT` / `STANDARD`; the byte `0x80` under `TRUSTED`, where 7-Zip writes `ed b2 80` |
+| `\ud800/../x` | `FilterRejectionError` whose `member_name` is `\ud800/../x` |
 
 ### Requirement: Skip non-current members by default
 
@@ -1148,8 +1193,9 @@ non-decodable bytes; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a
 public un-escape API is out of scope. Either way the outcome SHALL be deterministic and
-typed (never a bare `OSError`); a name that cannot be `os.fsencode`d at all remains
-rejected by the universal check.
+typed (never a bare `OSError`). A lone surrogate outside U+DC80–U+DCFF is escaped as
+its three UTF-8 bytes (`hi\ud800` → `hi%ED%A0%80`); "Lone surrogates in a member name"
+has the detail and the `TRUSTED` spelling.
 
 `ExtractionResult.requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution. A rename SHALL be observable as `requested_path != path and
