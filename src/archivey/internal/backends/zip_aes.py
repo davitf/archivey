@@ -33,7 +33,11 @@ from archivey.internal.streams.crypto import (
     _crypto_available,
     open_aes_ctr_stage,
 )
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, read_exact
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    read_exact,
+    resolve_seek,
+)
 
 # WinZip AES extra-field header id.
 _AES_EXTRA_ID = 0x9901
@@ -272,16 +276,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         pos = self.tell()
-        if whence == io.SEEK_SET:
-            if offset < 0:
-                raise ValueError(f"negative seek position {offset}")
-            target = offset
-        elif whence == io.SEEK_CUR:
-            target = max(0, pos + offset)
-        elif whence == io.SEEK_END:
-            target = max(0, self._cipher_len + offset)
-        else:
-            raise ValueError(f"invalid whence ({whence})")
+        target = resolve_seek(offset, whence, pos=pos, end=lambda: self._cipher_len)
         if target == pos:
             return pos
         reach = min(target, self._cipher_len)

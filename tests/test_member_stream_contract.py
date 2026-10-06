@@ -26,7 +26,9 @@ from typing import Callable, Iterator
 import pytest
 
 from archivey import (
+    AcceleratorMode,
     ArchiveStream,
+    ArchiveyConfig,
     StreamNotSeekableError,
     list_known_formats,
     open_archive,
@@ -49,6 +51,7 @@ from tests.sample_archives import (
     skip_unless_runnable,
 )
 from tests.streams_util import (
+    assert_non_integer_seek_is_type_error,
     assert_seek_underflow_matches_bytesio,
     assert_unknown_whence_is_value_error,
 )
@@ -618,6 +621,34 @@ def test_corpus_seek_underflow_matches_bytesio(
                 assert_unknown_whence_is_value_error(f)
                 return
             assert_seek_underflow_matches_bytesio(f)
+
+
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_non_integer_seek_is_type_error(
+    spec: _SeekSpec, member_name: str, tmp_path: Path
+) -> None:
+    """``seek(1.5)`` is the caller's ``TypeError`` on every enrolled backend and codec,
+    raised before the stream moves, and the stream reads correctly afterwards."""
+    with _open_enrolled(spec, tmp_path, seekable_members=True) as ar:
+        member = _resolve_file_member(ar, member_name)
+        with ar.open(member) as f:
+            content = f.read()
+        with ar.open(member) as f:
+            assert_non_integer_seek_is_type_error(f, content)
+
+
+def test_rapidgzip_non_integer_seek_is_type_error(tmp_path: Path) -> None:
+    """The accelerated gzip path: a float offset reached the child and raised a raw
+    ``struct.error``, losing the child."""
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    content = os.urandom(200_000) + b"text " * 200_000
+    path = tmp_path / "data.bin.gz"
+    path.write_bytes(gzip.compress(content))
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    with open_archive(path, seekable_members=True, config=config) as ar:
+        (member,) = [m for m in ar.members() if m.is_file]
+        with ar.open(member) as f:
+            assert_non_integer_seek_is_type_error(f, content)
 
 
 def _assert_forward_only(f) -> None:

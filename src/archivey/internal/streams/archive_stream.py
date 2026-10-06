@@ -14,6 +14,7 @@ and hashes/bounds in the same ``read()``.
 from __future__ import annotations
 
 import io
+import operator
 import sys
 import threading
 import weakref
@@ -506,6 +507,12 @@ class ArchiveStream(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable_hint:
             raise io.UnsupportedOperation("seek")
+        # A non-integer offset or whence (``1.5``, ``None``) is a TypeError, as in
+        # ``io.BytesIO``, raised before anything moves: passed inward, a float made some
+        # backends consume a chunk before failing (wrong bytes after a later seek(0)) and
+        # others report damage that is not there.
+        offset = operator.index(offset)
+        whence = operator.index(whence)
         inner = self._ensure_open()  # outside the try, same as read()
         # A bad position or whence is the caller's error, raised as io raises it. Checked
         # here because inside the try a backend translator that reads ValueError as a

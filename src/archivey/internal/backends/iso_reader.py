@@ -101,6 +101,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
+    resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
 from archivey.terminal import quoted
@@ -889,18 +890,10 @@ class _ZisofsStream(io.RawIOBase):
         # member streams do. ArchiveStream.seek rejects a negative SEEK_SET and a bad
         # whence before they reach here: the ISO translator reads ValueError as
         # corruption.
-        if whence == io.SEEK_SET:
-            if offset < 0:
-                raise ValueError(f"negative seek position {offset}")
-            target = offset
-        elif whence == io.SEEK_CUR:
-            target = max(0, self._position + offset)
-        elif whence == io.SEEK_END:
-            target = max(0, self._size + offset)
-        else:
-            raise ValueError(f"invalid whence ({whence})")
-        self._position = target
-        return target
+        self._position = resolve_seek(
+            offset, whence, pos=self._position, end=lambda: self._size
+        )
+        return self._position
 
     def readinto(self, b: WriteableBuffer, /) -> int:
         view = memoryview(b).cast("B")
@@ -991,13 +984,12 @@ class _PyCdlibStream(DelegatingStream):
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # pycdlib raises its own PyCdlibInvalidInput on a relative seek before the start,
-        # which the translator must read as corruption. Resolve a relative seek here and
-        # clamp it to the origin, as BytesIO does.
-        if whence == io.SEEK_CUR:
-            return super().seek(max(self._raw.tell() + offset, 0), io.SEEK_SET)
-        if whence == io.SEEK_END:
-            return super().seek(max(self._raw.length() + offset, 0), io.SEEK_SET)
-        return super().seek(offset, whence)
+        # which the translator must read as corruption. Resolve every seek here and
+        # clamp a relative one to the origin, as BytesIO does.
+        target = resolve_seek(
+            offset, whence, pos=self._raw.tell(), end=lambda: self._raw.length()
+        )
+        return super().seek(target, io.SEEK_SET)
 
 
 class IsoReader(BaseArchiveReader):

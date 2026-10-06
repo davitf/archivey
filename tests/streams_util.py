@@ -10,7 +10,7 @@ import shutil
 import struct
 import subprocess
 import zlib
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 import pytest
 
@@ -376,6 +376,54 @@ def assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
     assert_unknown_whence_is_value_error(stream)
     # The refused seeks did not move the stream.
     assert stream.tell() == len(content)
+
+
+# Non-integer seek arguments, each refused by ``io.BytesIO`` with a TypeError.
+NON_INTEGER_SEEKS: tuple[tuple[object, ...], ...] = (
+    (1.5,),
+    (None,),
+    ("1",),
+    (0, 1.5),
+    (0, None),
+)
+
+
+def assert_non_integer_seek_is_type_error(stream: BinaryIO, content: bytes) -> None:
+    """A float, ``None`` or str offset or whence raises ``TypeError`` as ``io.BytesIO``
+    does, with its message, and leaves the stream where it was and correct.
+
+    Passed inward, ``seek(1.5)`` made a codec stream consume a chunk before failing (a
+    later ``seek(0)`` read wrong bytes), backends report damage that was not there, and
+    the stored paths kept a float position (cross-format K1).
+    """
+
+    # Untyped handles: the arguments are wrong on purpose.
+    seek: Callable[..., int] = stream.seek
+    reference_seek: Callable[..., int] = io.BytesIO(content).seek
+
+    def refuse(at: int) -> None:
+        for args in NON_INTEGER_SEEKS:
+            with pytest.raises(TypeError) as expected:
+                reference_seek(*args)
+            with pytest.raises(TypeError) as excinfo:
+                seek(*args)
+            assert type(excinfo.value) is TypeError, args
+            assert str(excinfo.value) == str(expected.value), args
+            position = stream.tell()
+            assert type(position) is int and position == at, args
+
+    # First on a fresh stream, then after a partial read.
+    refuse(0)
+    head = min(3, len(content))
+    assert stream.read(head) == content[:head]
+    refuse(head)
+    assert stream.read() == content[head:]
+    assert stream.seek(0) == 0
+    assert stream.read() == content
+    # A bool is an int to io.BytesIO too.
+    if content:
+        assert stream.seek(True) == 1
+        assert stream.read() == content[1:]
 
 
 def assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:

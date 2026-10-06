@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import logging
 import mmap
+import operator
 import os
 import stat
 from pathlib import Path
@@ -79,7 +80,13 @@ def resolve_seek(offset: int, whence: int, *, pos: int, end: Callable[[], int]) 
     that underflows clamps to the origin; only an explicitly negative ``SEEK_SET``
     raises. Callers probing backwards from the end (``ZipFile``'s
     ``seek(-22, SEEK_END)`` EOCD probe on a short source) rely on the clamp.
+
+    A non-integer ``offset`` or ``whence`` raises ``TypeError`` (via
+    ``operator.index``, the message ``io.BytesIO`` gives) before anything else, so a
+    caller that resolves first and moves second never acts on a float.
     """
+    offset = operator.index(offset)
+    whence = operator.index(whence)
     if whence == io.SEEK_SET:
         if offset < 0:
             raise ValueError(f"Negative seek position {offset}")

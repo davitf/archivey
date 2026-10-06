@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import tempfile
+from typing import Callable
 
 import pytest
 
@@ -1087,3 +1089,23 @@ class TestResolveSeek:
         with pytest.raises(ValueError, match="Invalid whence: 3"):
             resolve_seek(0, 3, pos=4, end=self._end)
         assert self.end_calls == 0
+
+    @pytest.mark.parametrize(
+        "args", [(1.5, io.SEEK_SET), (None, io.SEEK_CUR), ("1", io.SEEK_END), (0, 1.5)]
+    )
+    def test_non_integer_raises_type_error_as_bytesio(
+        self, args: tuple[object, object]
+    ) -> None:
+        # Untyped handles: the arguments are wrong on purpose.
+        resolve: Callable[..., int] = resolve_seek
+        reference: Callable[..., int] = io.BytesIO().seek
+        with pytest.raises(TypeError) as expected:
+            reference(*args)
+        with pytest.raises(TypeError, match=re.escape(str(expected.value))):
+            resolve(*args, pos=4, end=self._end)
+        assert self.end_calls == 0
+
+    def test_int_subclass_is_its_int_value(self) -> None:
+        resolved = resolve_seek(True, io.SEEK_SET, pos=4, end=self._end)
+        assert resolved == 1
+        assert type(resolved) is int
