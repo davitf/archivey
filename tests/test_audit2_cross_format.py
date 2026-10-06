@@ -780,6 +780,41 @@ def test_rar_volume_set_damaged_endarc_continues_on_a_split_member(
     assert "next-volume flag was not followed" in diagnostics[0].message
 
 
+@pytest.mark.parametrize(
+    ("names", "version"),
+    [
+        pytest.param(("tinyvol.part1.rar", "tinyvol.part2.rar"), 5, id="rar5"),
+        pytest.param(("tinyvol_rnn.rar", "tinyvol_rnn.r00"), 4, id="rar4"),
+    ],
+)
+@requires_binary("unrar")
+def test_rar_volume_set_damaged_endarc_in_every_volume_reports_each_volume(
+    tmp_path: Path, names: tuple[str, str], version: int
+) -> None:
+    """Both volumes' end blocks are damaged: the set still reads in full and each
+    volume gets its own diagnostic, in volume order, with the offset of its own end
+    block within that volume."""
+    for name in names:
+        (tmp_path / name).write_bytes((_RAR_FIXTURES / name).read_bytes())
+    with open_archive(tmp_path / names[0]) as reader:
+        expected = {m.name: reader.read(m) for m in reader.members() if m.is_file}
+    offsets = []
+    for name in names:
+        path = tmp_path / name
+        data = path.read_bytes()
+        offsets.append(_endarc_block(data, version)[0])
+        path.write_bytes(_edit_endarc(data, version))
+    with open_archive(tmp_path / names[0]) as reader:
+        assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == (
+            expected
+        )
+        diagnostics = _eof_marker_diagnostics(reader.diagnostics)
+    assert len(diagnostics) == 2
+    for number, (diagnostic, offset) in enumerate(zip(diagnostics, offsets), 1):
+        assert f"volume {number}," in diagnostic.message
+        assert diagnostic.context.observed_bytes == offset
+
+
 def _rar3_hp_damaged_endarc(data: bytes) -> bytes:
     """Flip a CRC16 byte inside the encrypted end block, the file's last 24 bytes
     (8 salt bytes, then one cipher block)."""

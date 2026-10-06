@@ -949,8 +949,11 @@ class _RarEndBlockCrcError(CorruptionError):
     header's type reads as the end block and its shape is an end block's (see
     :func:`_rar5_end_block_shaped`). The walk keeps the members before it only if
     the file also ends at ``data_offset`` and the header password is proven or
-    headers are plain; otherwise it raises ``generic``, the error a header of any
-    other type would have raised. The end-of-archive flags are not used.
+    headers are plain. Behind an unproven header password the walk's earlier
+    check raises the wrong-password :class:`EncryptionError` instead. With a proven
+    key or plain headers, a file that does not end at ``data_offset`` raises
+    ``generic``, the error a header of any other type would have raised. The
+    end-of-archive flags are not used.
     """
 
     def __init__(self, header_offset: int, data_offset: int) -> None:

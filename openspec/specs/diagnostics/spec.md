@@ -61,7 +61,8 @@ exactly this union — no backend-defined variants. `observed_kind` ∈
 block, with `format="rar"`, `observed_kind="absent"` and both byte counts 0, or whose
 end-of-archive block fails its header CRC, with `observed_kind="nonzero"` (a block is
 there, but it is not a valid end block), `observed_bytes` the offset where that block
-starts in its volume, and `expected_bytes` 0;
+starts in its volume (counted from that volume's first byte, unlike member offsets,
+which count across the whole set; the message names the volume), and `expected_bytes` 0;
 `"zeros_to_eof"` for the trailing-bytes check, whose `observed_bytes` is the
 offset of the first non-zero byte past the trailer; `"end_of_stream"` for bytes after
 a compressed stream's end, whose `format` is the codec name, such as `"gzip"`, and

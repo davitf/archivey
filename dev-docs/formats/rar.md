@@ -228,7 +228,10 @@ stays `CorruptionError`, including a damaged end block followed by any byte, sin
 has no trailing-data rule to allow one. unrar 7.00 is laxer here: with the second FILE
 header's type byte flipped to `ENDARC` in either `basic_nonsolid__` fixture, `unrar l`
 lists only `file1.txt` and `unrar t` tests it OK and exits 3, dropping the other five
-members.
+members. These checks bound accidental damage, not a crafted file, and that is enough:
+a RAR 1.5-4 file cut at a block boundary already lists the same prefix with no
+diagnostic at all, since writers may omit `ENDARC`, so spoofing a damaged end block
+only adds a warning.
 
 *Volume sets.* Once the CRC fails, the block's flags are not data, so the walk does not
 read its next-volume flag. `needs_next_volume` is then whatever the volume's member
