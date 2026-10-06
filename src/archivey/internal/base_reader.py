@@ -7,7 +7,7 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -176,10 +176,14 @@ def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
 
 @dataclass(frozen=True)
 class _Materialized:
-    """Published member materialization plus its private lookup index."""
+    """The published member listing: the report, frozen when the walk is published.
+
+    Setting ``BaseArchiveReader._materialized`` to one of these is the single atomic
+    point at which a listing becomes visible to other threads and later calls. Name
+    lookups read the walk's own index, ``BaseArchiveReader._listed_by_name``.
+    """
 
     report: MemberListReport
-    by_name_lists: Mapping[str, list[ArchiveMember]]
 
 
 def reject_start_offset(
@@ -1153,13 +1157,31 @@ class BaseArchiveReader(ArchiveReader):
             read_failed=True,
         )
 
-    def _publish_materialized(
-        self,
-        members: list[ArchiveMember],
-        by_name_lists: dict[str, list[ArchiveMember]],
-        *,
-        error: ArchiveyError | None,
+    def _finalize_and_publish(
+        self, error: ArchiveyError | None, *, enforce: bool, child_scope: bool
     ) -> _Materialized:
+        """Resolve the walk's links, then publish it as the report.
+
+        ``enforce`` does two things. It gates a re-check of the running totals before
+        anything is resolved: a non-enforcing pull (a ``stream_members`` pass) may have
+        counted members past a limit, and an enforcing caller must not publish that. It
+        is also passed to ``_finalize_links`` as ``enforce_listing_limits``, so it
+        decides whether link targets read during finalization are weighed under the
+        limits.
+
+        ``child_scope`` makes the link-target reads a private child scope of the active
+        operation, exempt from the live-stream gate: true for random-access
+        materialization, false when a forward pass finalizes.
+        """
+        if enforce:
+            self._listing_tracker.assert_within_limits()
+        self._finalize_links(
+            error=error, child_scope=child_scope, enforce_listing_limits=enforce
+        )
+        return self._publish_materialized(error=error)
+
+    def _publish_materialized(self, *, error: ArchiveyError | None) -> _Materialized:
+        members = self._listed
         if error is not None:
             self._stamp_error_context(error)
         elif not members:
@@ -1171,19 +1193,16 @@ class BaseArchiveReader(ArchiveReader):
                 error=error,
                 diagnostics=self._diagnostics_collector.snapshot(),
             ),
-            by_name_lists=by_name_lists,
         )
         self._materialized = holder
         return holder
 
     def _finalize_links(
         self,
-        members: list[ArchiveMember],
-        by_name_lists: dict[str, list[ArchiveMember]],
         *,
-        error: ArchiveyError | None = None,
-        child_scope: bool = False,
-        enforce_listing_limits: bool = True,
+        error: ArchiveyError | None,
+        child_scope: bool,
+        enforce_listing_limits: bool,
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
 
@@ -1212,6 +1231,7 @@ class BaseArchiveReader(ArchiveReader):
         tracker as it arrives, under ``enforce_listing_limits``, so
         ``max_metadata_bytes`` covers every target the published list will carry.
         """
+        members = self._listed
         if not any(member.is_link for member in members):
             return
         read_targets = self._config.read_link_targets
@@ -1242,7 +1262,7 @@ class BaseArchiveReader(ArchiveReader):
             terminals: dict[int, ArchiveMember | None] = {}
             for member in members:
                 if member.is_link and member.link_target:
-                    self._resolve_link(member, by_name_lists, terminals)
+                    self._resolve_link(member, terminals)
 
         try:
             if child_scope:
@@ -1358,7 +1378,7 @@ class BaseArchiveReader(ArchiveReader):
                 self._end_walk(exc)
                 return None
             self._register_member(position, member, enforce_listing_limits=enforce)
-            self._index_member_name(self._listed_by_name, member)
+            self._index_member_name(member)
             self._listed.append(member)
             return member
         except BaseException as exc:
@@ -1430,15 +1450,13 @@ class BaseArchiveReader(ArchiveReader):
         self._listing_tracker.reset()
 
     def _drain_walk(self, *, enforce: bool) -> None:
-        """Pull to the end of the walk; with ``enforce``, check the running totals too.
+        """Pull to the end of the walk, each pull under ``enforce``.
 
-        The check covers members a non-enforcing pull (a ``stream_members`` pass)
-        already counted, which no enforcing pull saw cross a limit.
+        The caller re-checks the running totals afterwards: members a non-enforcing
+        pull (a ``stream_members`` pass) already counted were seen by no enforcing pull.
         """
         while self._pull_member(enforce=enforce) is not None:
             pass
-        if enforce:
-            self._listing_tracker.assert_within_limits()
 
     def _ensure_walked(self, *, enforce: bool) -> None:
         """Drain the walk under the first-touch election, without resolving links.
@@ -1449,19 +1467,14 @@ class BaseArchiveReader(ArchiveReader):
         overlap raises, as materialization does. The election is handed back unpublished
         afterwards, so ``members()`` can still resolve links and publish.
         """
-        if self._walk_done:
-            if enforce:
-                self._listing_tracker.assert_within_limits()
-            return
-        if not self._state.begin_materialization():
-            # Published while we waited: that walk has ended.
-            if enforce:
-                self._listing_tracker.assert_within_limits()
-            return
-        try:
-            self._drain_walk(enforce=enforce)
-        finally:
-            self._state.fail_materialization()
+        # A walk published while we waited on the election has ended too.
+        if not self._walk_done and self._state.begin_materialization():
+            try:
+                self._drain_walk(enforce=enforce)
+            finally:
+                self._state.fail_materialization()
+        if enforce:
+            self._listing_tracker.assert_within_limits()
 
     def _listed_members(self) -> Iterator[ArchiveMember]:
         """The listed members for a backend's own data pass, then the walk's damage.
@@ -1489,32 +1502,22 @@ class BaseArchiveReader(ArchiveReader):
         walk: the members may already have been handed out by a peek, and a retry
         resolves the links that were not finished.
         """
-        if self._materialized is not None:
-            if enforce_listing_limits:
-                self._listing_tracker.assert_within_limits()
-            return self._materialized
+        published = self._published_within_limits(enforce=enforce_listing_limits)
+        if published is not None:
+            return published
 
         if not self._state.begin_materialization():
             # Another thread published while we waited (or cache was already ready).
-            assert self._materialized is not None
-            if enforce_listing_limits:
-                self._listing_tracker.assert_within_limits()
-            return self._materialized
+            published = self._published_within_limits(enforce=enforce_listing_limits)
+            assert published is not None
+            return published
 
         try:
             self._drain_walk(enforce=enforce_listing_limits)
             # Prefer the original listing error on the report; leave unresolved links
             # as-is when a secondary link-target fault is swallowed.
-            error = self._walk_error
-            self._finalize_links(
-                self._listed,
-                self._listed_by_name,
-                error=error,
-                child_scope=True,
-                enforce_listing_limits=enforce_listing_limits,
-            )
-            holder = self._publish_materialized(
-                self._listed, self._listed_by_name, error=error
+            holder = self._finalize_and_publish(
+                self._walk_error, enforce=enforce_listing_limits, child_scope=True
             )
             self._state.complete_materialization()
             return holder
@@ -1530,6 +1533,31 @@ class BaseArchiveReader(ArchiveReader):
             self._materialized = None
             self._state.fail_materialization()
             raise
+
+    def _published_within_limits(self, *, enforce: bool) -> _Materialized | None:
+        """The published listing, or ``None``; under ``enforce``, re-check its totals.
+
+        A report a non-enforcing pass published (``stream_members``) may be over the
+        limits, so a caller that enforces them refuses it on the way out.
+        """
+        materialized = self._materialized
+        if materialized is not None and enforce:
+            self._listing_tracker.assert_within_limits()
+        return materialized
+
+    @contextmanager
+    def _enforcing_listing_limits(self) -> Iterator[None]:
+        """Have the forward pass enforce ``ListingLimits`` as it registers members.
+
+        ``members_report()`` and an extraction's one pass enforce them;
+        ``stream_members()`` does not. The previous setting comes back on exit.
+        """
+        previous = self._progressive_enforce_listing_limits
+        self._progressive_enforce_listing_limits = True
+        try:
+            yield
+        finally:
+            self._progressive_enforce_listing_limits = previous
 
     def _get_members_registered(
         self, *, enforce_listing_limits: bool = True
@@ -1932,23 +1960,17 @@ class BaseArchiveReader(ArchiveReader):
             member_id=member_id,
         )
 
-    @staticmethod
-    def _index_member_name(
-        by_name_lists: dict[str, list[ArchiveMember]], member: ArchiveMember
-    ) -> None:
-        by_name_lists.setdefault(member.name, []).append(member)
+    def _index_member_name(self, member: ArchiveMember) -> None:
+        self._listed_by_name.setdefault(member.name, []).append(member)
 
-    @staticmethod
     def _latest_prior_named_member(
-        target_name: str,
-        before_id: int,
-        by_name_lists: Mapping[str, list[ArchiveMember]],
+        self, target_name: str, before_id: int
     ) -> ArchiveMember | None:
         """Latest member matching ``target_name`` with ``member_id`` strictly before ``before_id``."""
         best: ArchiveMember | None = None
         best_id = -1
         for name in link_target_name_keys(target_name):
-            for prior in reversed(by_name_lists.get(name, [])):
+            for prior in reversed(self._listed_by_name.get(name, [])):
                 prior_id = prior._member_id
                 if prior_id is None:
                     continue
@@ -1959,36 +1981,26 @@ class BaseArchiveReader(ArchiveReader):
                     break
         return best
 
-    @staticmethod
-    def _last_by_exact_name(
-        name: str, by_name_lists: Mapping[str, list[ArchiveMember]]
-    ) -> ArchiveMember | None:
-        candidates = by_name_lists.get(name)
+    def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
+        candidates = self._listed_by_name.get(name)
         if not candidates:
             return None
         return candidates[-1]
 
-    @staticmethod
-    def _last_named_member(
-        target_name: str, by_name_lists: Mapping[str, list[ArchiveMember]]
-    ) -> ArchiveMember | None:
+    def _last_named_member(self, target_name: str) -> ArchiveMember | None:
         """Last-wins lookup for a link target (tries bare and ``/``-suffixed names)."""
         for name in link_target_name_keys(target_name):
-            candidates = by_name_lists.get(name)
+            candidates = self._listed_by_name.get(name)
             if candidates:
                 return candidates[-1]
         return None
 
-    @staticmethod
-    def _lookup_link_target(
-        member: ArchiveMember,
-        by_name_lists: Mapping[str, list[ArchiveMember]],
-    ) -> ArchiveMember | None:
+    def _lookup_link_target(self, member: ArchiveMember) -> ArchiveMember | None:
         """The member ``member``'s link target refers to, or ``None`` if not present.
 
         Resolves the stored target string to an archive-namespace name first (a symlink
         target is relative to the link's own directory — see
-        :func:`resolve_link_target_name`), then looks it up in ``by_name_lists``
+        :func:`resolve_link_target_name`), then looks it up in ``_listed_by_name``
         (last-wins for symlinks); directory members carry a trailing ``/`` in their names,
         so both forms are tried.
         """
@@ -1999,13 +2011,9 @@ class BaseArchiveReader(ArchiveReader):
         )
         if target_name is None:
             return None
-        return BaseArchiveReader._last_named_member(target_name, by_name_lists)
+        return self._last_named_member(target_name)
 
-    @staticmethod
-    def _lookup_hardlink_target(
-        member: ArchiveMember,
-        by_name_lists: Mapping[str, list[ArchiveMember]],
-    ) -> ArchiveMember | None:
+    def _lookup_hardlink_target(self, member: ArchiveMember) -> ArchiveMember | None:
         """Positional hardlink resolution: latest same-named member strictly before ``member``.
 
         Never a member listed after it, in any format or mode: a hard link names a file
@@ -2025,9 +2033,7 @@ class BaseArchiveReader(ArchiveReader):
         before_id = member._member_id
         if before_id is None:
             return None
-        return BaseArchiveReader._latest_prior_named_member(
-            target_name, before_id, by_name_lists
-        )
+        return self._latest_prior_named_member(target_name, before_id)
 
     def _hardlink_direct_target(self, member: ArchiveMember) -> ArchiveMember | None:
         """The member a HARDLINK names, before following any link.
@@ -2039,21 +2045,18 @@ class BaseArchiveReader(ArchiveReader):
         """
         if member.type is not MemberType.HARDLINK:
             return None
-        return self._lookup_hardlink_target(member, self._listed_by_name)
+        return self._lookup_hardlink_target(member)
 
     def _lookup_link_target_for_member(
-        self,
-        member: ArchiveMember,
-        by_name_lists: Mapping[str, list[ArchiveMember]],
+        self, member: ArchiveMember
     ) -> ArchiveMember | None:
         if member.type == MemberType.HARDLINK:
-            return self._lookup_hardlink_target(member, by_name_lists)
-        return self._lookup_link_target(member, by_name_lists)
+            return self._lookup_hardlink_target(member)
+        return self._lookup_link_target(member)
 
     def _resolve_link(
         self,
         member: ArchiveMember,
-        by_name_lists: dict[str, list[ArchiveMember]],
         terminals: dict[int, ArchiveMember | None],
     ) -> None:
         """Resolve link_target to the fully dereferenced link_target_member.
@@ -2091,7 +2094,7 @@ class BaseArchiveReader(ArchiveReader):
                 break
             path.append(member_id)
             on_path.add(member_id)
-            target = self._lookup_link_target_for_member(current, by_name_lists)
+            target = self._lookup_link_target_for_member(current)
             if target is None:
                 terminal = None
                 break
@@ -2106,27 +2109,20 @@ class BaseArchiveReader(ArchiveReader):
         """Resolve all links after a streaming forward pass reaches EOF or terminal damage."""
         if self._materialized is not None:
             return
-        # members_report drains with enforcement: refuse to publish an over-limit report.
-        if self._progressive_enforce_listing_limits:
-            self._listing_tracker.assert_within_limits()
-        self._finalize_links(
-            self._listed,
-            self._listed_by_name,
-            error=error,
+        # Also ends TAR's one-pass stream_members() on a random-access reader, which
+        # opens no child scope either.
+        self._finalize_and_publish(
+            error,
+            enforce=self._progressive_enforce_listing_limits,
             child_scope=False,
-            enforce_listing_limits=self._progressive_enforce_listing_limits,
         )
-        self._publish_materialized(self._listed, self._listed_by_name, error=error)
 
-    @staticmethod
     def _last_named_member_before(
-        target_name: str,
-        before_id: int,
-        by_name_lists: Mapping[str, list[ArchiveMember]],
+        self, target_name: str, before_id: int
     ) -> ArchiveMember | None:
         """``_last_named_member``, looking only at members listed before ``before_id``."""
         for name in link_target_name_keys(target_name):
-            for candidate in reversed(by_name_lists.get(name, [])):
+            for candidate in reversed(self._listed_by_name.get(name, [])):
                 candidate_id = candidate._member_id
                 if candidate_id is not None and candidate_id < before_id:
                     return candidate
@@ -2150,13 +2146,9 @@ class BaseArchiveReader(ArchiveReader):
         if target_name is None:
             return
         if member.type == MemberType.HARDLINK:
-            target = self._latest_prior_named_member(
-                target_name, member_id, self._listed_by_name
-            )
+            target = self._latest_prior_named_member(target_name, member_id)
         else:
-            target = self._last_named_member_before(
-                target_name, member_id, self._listed_by_name
-            )
+            target = self._last_named_member_before(target_name, member_id)
         if target is not None and target is not member:
             if target.is_link:
                 target = target.link_target_member
@@ -2366,14 +2358,11 @@ class BaseArchiveReader(ArchiveReader):
 
         token = self._state.acquire_pass(op)
         try:
-            if self._materialized is not None:
-                self._listing_tracker.assert_within_limits()
-                return self._materialized.report
-            # Enforce ListingLimits while draining; stream_members leaves this false.
-            self._progressive_enforce_listing_limits = True
-            try:
-                if not self._forward_pass_started:
-                    self._forward_pass_started = True
+            published = self._published_within_limits(enforce=True)
+            if published is not None:
+                return published.report
+            with self._enforcing_listing_limits():
+                self._forward_pass_started = True
                 gen = self._begin_forward_pass()
                 while True:
                     try:
@@ -2383,11 +2372,9 @@ class BaseArchiveReader(ArchiveReader):
                     except CorruptionError:
                         assert self._materialized is not None
                         break
-                assert self._materialized is not None
-                self._listing_tracker.assert_within_limits()
-                return self._materialized.report
-            finally:
-                self._progressive_enforce_listing_limits = False
+                published = self._published_within_limits(enforce=True)
+                assert published is not None
+                return published.report
         finally:
             self._state.release_pass(token)
 
@@ -2414,9 +2401,9 @@ class BaseArchiveReader(ArchiveReader):
         incomplete report (prefix plus ``error``), not raised.
         """
         self._state.require_open("members_report_if_available()")
-        if self._materialized is not None:
-            self._listing_tracker.assert_within_limits()
-            return self._materialized.report
+        published = self._published_within_limits(enforce=True)
+        if published is not None:
+            return published.report
         if not self._MEMBER_LIST_UPFRONT:
             return None
         self._ensure_walked(enforce=True)
@@ -2451,7 +2438,7 @@ class BaseArchiveReader(ArchiveReader):
         token = self._state.acquire_worker("get")
         try:
             materialized = self._materialize_members()
-            found = self._last_by_exact_name(name, materialized.by_name_lists)
+            found = self._last_by_exact_name(name)
             if found is not None:
                 return found
             if materialized.report.error is not None:
@@ -2481,7 +2468,7 @@ class BaseArchiveReader(ArchiveReader):
         try:
             materialized = self._materialize_members()
             if isinstance(member, str):
-                found = self._last_by_exact_name(member, materialized.by_name_lists)
+                found = self._last_by_exact_name(member)
                 if found is None:
                     if materialized.report.error is not None:
                         raise materialized.report.error
@@ -2584,15 +2571,9 @@ class BaseArchiveReader(ArchiveReader):
                     "Link target is unknown",
                     member_name=current.name,
                 )
-            materialized = self._materialized
-            by_name_lists = (
-                materialized.by_name_lists if materialized is not None else None
-            )
-            target = (
-                self._lookup_link_target_for_member(current, by_name_lists)
-                if by_name_lists is not None
-                else None
-            )
+            # open() materializes first: a half-walked index must never answer a lookup.
+            assert self._materialized is not None
+            target = self._lookup_link_target_for_member(current)
             if target is None:
                 raise LinkTargetNotFoundError(
                     "Link target not found in archive",
