@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import logging
+from typing import Optional
 
 import pytest
 
@@ -18,6 +19,7 @@ from archivey import (
     extract,
     open_archive,
 )
+from archivey.config import _check_limit_fields
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.config import stream_config_from_archivey
 from archivey.types import ArchiveFormat
@@ -110,6 +112,56 @@ def test_strict_archive_eof_is_gone() -> None:
     }
     with pytest.raises(TypeError):
         ArchiveyConfig(strict_archive_eof=True)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reported"),
+    [
+        # Each pair is in the opposite order as fields; the checked-first one wins.
+        (
+            {"use_rapidgzip": "sometimes", "extraction_limits": "none"},
+            "extraction_limits=",
+        ),
+        ({"read_link_targets": "yes", "detection_budget": "nope"}, "detection_budget="),
+        (
+            {"rar_decompressor": "x", "max_retained_diagnostic_references": -1},
+            "max_retained_diagnostic_references",
+        ),
+    ],
+)
+def test_config_with_several_bad_fields_reports_in_check_order(
+    kwargs: dict[str, object], reported: str
+) -> None:
+    with pytest.raises(archivey.ArchiveyUsageError) as exc_info:
+        ArchiveyConfig(**kwargs)  # type: ignore[arg-type]
+    assert reported in str(exc_info.value)
+
+
+def test_limits_with_several_bad_fields_report_the_first_field() -> None:
+    with pytest.raises(archivey.ArchiveyUsageError, match="max_extracted_bytes"):
+        ExtractionLimits(max_extracted_bytes="x", max_entries=-1)  # type: ignore[arg-type]
+
+
+def test_limit_field_with_an_unknown_annotation_is_refused() -> None:
+    # Guessing allow_none / allow_float from an unfamiliar spelling could switch a
+    # guard on or off without anyone noticing, so the helper refuses to guess.
+    @dataclasses.dataclass(frozen=True)
+    class _Limits:
+        max_things: Optional[int] = None  # noqa: UP045
+
+    with pytest.raises(AssertionError, match=r"_Limits\.max_things"):
+        _check_limit_fields(_Limits(), cls="_Limits")  # type: ignore[arg-type]
+
+
+def test_limits_subclass_error_names_the_documented_class() -> None:
+    @dataclasses.dataclass(frozen=True)
+    class MyListingLimits(ListingLimits):
+        pass
+
+    with pytest.raises(
+        archivey.ArchiveyUsageError, match=r"^ListingLimits\.max_members"
+    ):
+        MyListingLimits(max_members=-1)
 
 
 def test_missing_eof_marker_warns_by_default(
