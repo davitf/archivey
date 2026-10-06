@@ -42,7 +42,11 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, ensure_bufferedio
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    ensure_bufferedio,
+    resolve_seek,
+)
 
 
 class _StreamChecksumError(CorruptionError):
@@ -980,57 +984,44 @@ class DecompressorStream(ReadOnlyIOStream):
                 raise held
         return pos
 
+    def _seek_end(self) -> int:
+        self._ensure_index_built()
+        if self._size is None:
+            if self._spent is not None:
+                # This stream already raised its truncation: report the same error,
+                # not the generic unknown-size one below.
+                self._raise_spent()
+            # Building the index didn't reveal the size; scan to EOF to find it
+            # without buffering all remaining data in RAM.
+            self._pos += len(self._buffer)
+            self._buffer.clear()
+            while not self._eof:
+                data = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
+                self._pos += len(data)
+            # Truncated streams must not publish a clean complete size; surface
+            # the deferred fault instead of asserting or treating the prefix as
+            # the full stream.
+            err = self._decoder.pending_error
+            if err is not None:
+                self._raise_deferred(err)
+            if self._size is None:
+                raise TruncatedError(
+                    "Cannot seek to end: decompressed size is unknown "
+                    "(stream ended incompletely)"
+                )
+        return self._size
+
     def _seek(self, offset: int, whence: int) -> int:
         if not self._inner.seekable():
             raise io.UnsupportedOperation("seek")
 
-        if whence == io.SEEK_SET:
-            new_pos = offset
-        elif whence == io.SEEK_CUR:
-            new_pos = self._pos + offset
-        elif whence == io.SEEK_END:
-            new_pos = -1  # resolved below once _size is known
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-
-        if whence == io.SEEK_END or (
-            new_pos > self._pos + len(self._buffer)
+        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._seek_end)
+        if (
+            whence != io.SEEK_END
+            and new_pos > self._pos + len(self._buffer)
             and new_pos > self._seek_points[-1].decompressed_offset
         ):
             self._ensure_index_built()
-
-        if whence == io.SEEK_END:
-            if self._size is None:
-                if self._spent is not None:
-                    # This stream already raised its truncation: report the same error,
-                    # not the generic unknown-size one below.
-                    self._raise_spent()
-                # Building the index didn't reveal the size; scan to EOF to find it
-                # without buffering all remaining data in RAM.
-                self._pos += len(self._buffer)
-                self._buffer.clear()
-                while not self._eof:
-                    data = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
-                    self._pos += len(data)
-                # Truncated streams must not publish a clean complete size; surface
-                # the deferred fault instead of asserting or treating the prefix as
-                # the full stream.
-                err = self._decoder.pending_error
-                if err is not None:
-                    self._raise_deferred(err)
-                if self._size is None:
-                    raise TruncatedError(
-                        "Cannot seek to end: decompressed size is unknown "
-                        "(stream ended incompletely)"
-                    )
-            new_pos = self._size + offset
-
-        if new_pos < 0:
-            # Match BytesIO / SlicingStream: relative underflow clamps to the
-            # origin; only an explicitly negative SEEK_SET raises.
-            if whence == io.SEEK_SET:
-                raise ValueError(f"Negative seek position {offset}")
-            new_pos = 0
 
         if self._spent is not None:
             # The decoder is at the end of a truncated input, so no position is

@@ -108,6 +108,7 @@ from archivey.internal.streams.streamtools import (
     fix_stream_start_position,
     is_seekable,
     read_exact,
+    resolve_seek,
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.shared import SharedSource
@@ -732,18 +733,11 @@ class _StdlibSeekContract(DelegatingStream):
         self._past_end: int | None = None
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        if whence == io.SEEK_SET:
-            target = offset
-        elif whence == io.SEEK_CUR:
-            target = self.tell() + offset
-        elif whence == io.SEEK_END:
-            target = self._inner.seek(0, io.SEEK_END) + offset
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-        if target < 0:
-            if whence == io.SEEK_SET:
-                raise ValueError(f"Negative seek position {offset}")
-            target = 0
+        # tell() can be a round trip to the child: ask only when the seek is relative.
+        pos = self.tell() if whence == io.SEEK_CUR else 0
+        target = resolve_seek(
+            offset, whence, pos=pos, end=lambda: self._inner.seek(0, io.SEEK_END)
+        )
         self._past_end = None
         if self._inner.seek(target, io.SEEK_SET) < target:
             self._past_end = target
