@@ -79,7 +79,9 @@ different things, and where both apply, both run:
   code comments in `src/` and `tests/`.
 
 `technical-writing` is separate and is still opened only for Diátaxis structure and
-sentence craft on a published docs or handbook page.
+sentence craft on a published docs or handbook page. Writing a user docs page with the maintainer
+follows [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md), which puts "sounds
+like a person" above STE for that prose.
 
 ### Advice, not a gate
 
