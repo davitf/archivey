@@ -27,7 +27,12 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
-from archivey.exceptions import ArchiveyError, CorruptionError, DiagnosticRaisedError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    DiagnosticRaisedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.xz import XzDecompressorStream
 from tests.conftest import requires
@@ -314,18 +319,27 @@ def _gzip_cases() -> dict[str, bytes]:
 
 
 @requires("rapidgzip")
-@pytest.mark.parametrize("case", ["header-crc-mismatch", "reserved-flag-bit"])
-def test_gzip_accelerator_refuses_what_the_stdlib_refuses(case: str) -> None:
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("header-crc-mismatch", CorruptionError),
+        ("reserved-flag-bit", UnsupportedFeatureError),
+    ],
+)
+def test_gzip_accelerator_refuses_what_the_stdlib_refuses(
+    case: str, error: type[Exception]
+) -> None:
     """compressed-streams: 'An accelerator preserves the error contract of the path
-    it replaces'. The standard-library path raises CorruptionError on each (zlib:
-    "header crc mismatch", "unknown header flags set");
+    it replaces'. The standard-library path refuses each (zlib: "header crc
+    mismatch", "unknown header flags set");
     under ``use_rapidgzip=ON`` each read as good data. The first member's header is
     now checked with zlib before rapidgzip is started. RFC 1952 §2.3.1.2 requires an
-    error for reserved flag bits."""
+    error for reserved flag bits; gzip calls them "not supported", so that refusal is
+    UnsupportedFeatureError, and a header CRC mismatch is corruption."""
     data = _gzip_cases()[case]
-    with pytest.raises(CorruptionError):
+    with pytest.raises(error):
         _read_single(data, ArchiveFormat.GZ)
-    with pytest.raises(CorruptionError):
+    with pytest.raises(error):
         _read_single(data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True)
 
 

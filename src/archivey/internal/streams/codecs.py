@@ -88,6 +88,7 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     _StreamChecksumError,
     gzip_corruption,
+    gzip_error,
     report_trailing_data,
 )
 from archivey.internal.streams.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
@@ -2612,8 +2613,9 @@ class GzipCodec(_DeflateFamilyCodec):
             # raised by zlib's gzip window as a raw zlib.error. zlib does not flag
             # truncation distinctly here (a short stream surfaces as TruncatedError via
             # the decompressor engine), so any zlib.error at this point is corruption,
-            # and a failed CRC-32/ISIZE check a whole-stream one.
-            return gzip_corruption(exc)
+            # and a failed CRC-32/ISIZE check a whole-stream one; a member header gzip
+            # refuses as unsupported stays unsupported (:func:`gzip_error`).
+            return gzip_error(exc)
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")
         return None
@@ -3366,6 +3368,12 @@ class ZstdCodec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if _zstd is not None and isinstance(exc, _zstd.ZstdError):
+            if "Dictionary mismatch" in str(exc):
+                # The frame names a dictionary (its Dictionary_ID), and archivey has no
+                # way to be given one. zstd reports the same "Dictionary mismatch".
+                return UnsupportedFeatureError(
+                    f"zstd frame needs a dictionary, which is not supported: {exc!r}"
+                )
             if "checksum" in str(exc):
                 # The frame's content checksum ("Restored data doesn't match
                 # checksum"), over everything the frame decoded.
@@ -3414,6 +3422,12 @@ class Lz4Codec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, RuntimeError) and str(exc).startswith("LZ4"):
+            if "headerVersion_wrong" in str(exc):
+                # The frame's version bits are not 01, the only version the LZ4 frame
+                # format defines; the lz4 CLI's decoder refuses it the same way.
+                return UnsupportedFeatureError(
+                    f"Unsupported lz4 frame version: {exc!r}"
+                )
             if "contentChecksum" in str(exc):
                 # The frame's content checksum, over everything the frame decoded; a
                 # block checksum covers one block and stays a plain corruption.
