@@ -19,50 +19,6 @@ results. It is the caller-facing path for putting archive contents on disk.
 
 ## Requirements
 
-### Requirement: One-Shot Extraction API
-
-The top-level API SHALL expose one-shot extraction and return an immutable
-`ExtractionReport` on success:
-
-```python
-archivey.extract(
-    source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
-    dest: str | Path,
-    *,
-    policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-    overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-    on_error: OnError = OnError.STOP,
-    format: ArchiveFormat | None = None,
-    password: str | bytes | Sequence[str | bytes] | PasswordProvider | None = None,
-    encoding: str | None = None,
-    on_progress: Callable[[ExtractionProgress], None] | None = None,
-    config: ArchiveyConfig | None = None,
-    limits: ExtractionLimits | None = None,
-) -> ExtractionReport
-```
-
-The call SHALL extract all members, deliberately has no `members=` selector, and
-uses the same source/password/encoding/config precedence, default `STRICT`
-policy, default `ERROR` overwrite policy, and automatic streaming mode for
-non-seekable supported sources as the reader APIs. Subset extraction goes through
-`ArchiveReader.extract_all()`.
-
-The call SHALL use one diagnostic collector and one retention budget for
-detection, backend open, reading, and extraction. The final report uses the
-reader collector's cumulative snapshot/range; phases do not seed, copy, merge, or
-re-retain events. If an always-stop condition or `OnError.STOP` raises, no report
-is returned.
-
-#### Scenario: one-shot extraction matrix
-
-| Case | Expected |
-| --- | --- |
-| `archivey.extract(source, dest)` completes | Returns `ExtractionReport(results=(...), diagnostics=...)` with all detection/open/read/extraction diagnostics from that call |
-| Detection emits one retained conflict and extraction emits one retained failure | One occurrence order and one budget from before detection; no duplicated phase handoff events |
-| Non-seekable supported source | Opens in streaming mode automatically and extracts in one forward pass |
-| Caller wants only some members | Caller opens the archive and calls `reader.extract_all(dest, members=...)`; top-level `extract()` has no selection parameter |
-| `encoding="cp932"` for a TAR with CP932 names | Disk paths match `open_archive(..., encoding="cp932")` followed by `extract_all()` |
-
 ### Requirement: Per-Reader Extract-All Helper
 
 `ArchiveReader.extract_all()` SHALL expose per-reader extraction with optional
@@ -90,7 +46,9 @@ and SHALL NOT take a `config=`; `limits=` overrides only the extraction limits.
 
 Selection, filter ordering, one-pass selected extraction, reader-config
 inheritance, and per-call limits precedence retain their existing contracts.
-There is no single-member `reader.extract()` method.
+There is no single-member `reader.extract()` method, and no top-level
+`archivey.extract()`: opening the archive and calling `extract_all()` is the one way to
+extract (ADR 0019).
 
 #### Scenario: extract_all matrix
 
@@ -102,26 +60,22 @@ There is no single-member `reader.extract()` method.
 
 ### Requirement: Extraction reads limits and strictness from the configuration object
 
-`archivey.extract()` and `ArchiveReader.extract_all()` SHALL accept both
-`config: ArchiveyConfig | None` and `limits: ExtractionLimits | None`. Per-call
-`limits` takes precedence over `config.extraction_limits`, then the
-reader/library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
+`ArchiveReader.extract_all()` SHALL accept `limits: ExtractionLimits | None`. Per-call
+`limits` takes precedence over the reader's `config.extraction_limits`, then the
+library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
 archive-wide ratio/live-ratio, and entry-count guards. Policy, overwrite,
 `on_error`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
-Top-level `extract()` SHALL use the supplied config for its one collector.
-`extract_all()` uses the reader config by default; an explicit config affects
-new-event policy/callback behavior but not the existing collector or retention
-maximum. Both APIs always return `ExtractionReport` with an accumulated immutable
-result tuple on success; there is no no-tracking mode.
+`extract_all()` always returns `ExtractionReport` with an accumulated immutable result
+tuple on success; there is no no-tracking mode.
 
 #### Scenario: limits/config matrix
 
 | Case | Expected |
 | --- | --- |
 | `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; report remains a watermark range over the existing collector |
-| `extract(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` | Cumulative byte limit is 10 GiB |
+| `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` then `extract_all(dest)` | Cumulative byte limit is 10 GiB |
 | Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
 | `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |
 | Reader opened with custom config and `extract_all(dest)` | Reader config, including extraction limits, governs the run |
@@ -629,10 +583,9 @@ name-safety requirement.
 ### Requirement: Extraction as a Composable Module
 
 The system SHALL implement safe extraction in a dedicated coordinator module
-separate from reader backends and format detection. Both `archivey.extract()` and
-`ArchiveReader.extract_all()` delegate to the same `ExtractionCoordinator`, which
-drives one unified forward pass over `(member, stream)` pairs in streaming and
-random-access modes.
+separate from reader backends and format detection. `ArchiveReader.extract_all()`
+delegates to `ExtractionCoordinator`, which drives one unified forward pass over
+`(member, stream)` pairs in streaming and random-access modes.
 
 The coordinator SHALL own member selection, transient metadata transforms, user
 filter application, `BombTracker` calls, progress callbacks, result accumulation,
@@ -650,7 +603,7 @@ not detach streamed members from backend updates.
 
 ### Requirement: Enforce Cumulative Max-Extracted-Bytes Limit
 
-The system SHALL track total bytes written across a single `extract()` or
+The system SHALL track total bytes written across a single
 `extract_all()` call and raise `ResourceLimitError` at the chunk boundary where
 the total exceeds `max_extracted_bytes`. The default is 2 GiB
 (2,147,483,648 bytes). Callers override it through `ExtractionLimits`; `None` via
@@ -697,7 +650,7 @@ under `OnError.CONTINUE`; global guards remain always-stop.
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
 The system SHALL apply `ExtractionLimits` bomb guards only during
-`archivey.extract()` and `ArchiveReader.extract_all()`. `ArchiveReader.read()`
+`ArchiveReader.extract_all()`. `ArchiveReader.read()`
 and `ArchiveReader.open()` return decompressed data/streams without byte, ratio,
 or entry-count enforcement; callers are responsible for guarding direct reads.
 Listing materialization caps are separate (`ListingLimits` in `archive-reading`)
@@ -758,7 +711,7 @@ frequency is bounded by the extraction copy chunk size; when `on_progress` is
 
 | Case | Expected |
 | --- | --- |
-| `extract(..., on_progress=cb)` | `cb` called with cumulative bytes, per-member bytes, and counters |
+| `extract_all(..., on_progress=cb)` | `cb` called with cumulative bytes, per-member bytes, and counters |
 | Large FILE member streamed | `cb` invoked multiple times with non-decreasing `member_bytes_written`, ending at the member `size` |
 | FILE member smaller than one copy chunk | `cb` invoked once with `member_bytes_written == size` |
 | Directory / symlink / hardlink member | Single report with `member_bytes_written == 0` |
@@ -986,7 +939,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 ### Requirement: A listing that ends in damage extracts its prefix, then raises
 
 When an archive's listing ends in terminal damage (`CorruptionError` / `TruncatedError`
-after a recovered prefix, per `archive-reading`), `extract_all()` and `extract()` SHALL
+after a recovered prefix, per `archive-reading`), `extract_all()` SHALL
 write the members listed before the damage, in either access mode and for every format,
 and then raise the listing's own error, under either `OnError`. No report is returned, so
 the members after the damage, which were never listed, have no result. This is the order
@@ -1224,7 +1177,7 @@ rewritten name then collides and is renamed).
 
 ### Requirement: Abort-on-event opt-in for extraction
 
-`extract()` and `extract_all()` SHALL accept `abort_on: Collection[AbortOn] = ()`,
+`extract_all()` SHALL accept `abort_on: Collection[AbortOn] = ()`,
 halting the whole extraction the first time a named event occurs.
 
 ```python
@@ -1291,7 +1244,7 @@ expresses "raise on the first failure".
 
 ### Requirement: Dry-run extraction
 
-`extract_all()` and `extract()` SHALL accept `dry_run: bool = False`, read for its
+`extract_all()` SHALL accept `dry_run: bool = False`, read for its
 truthiness like the other boolean flags.
 
 With `dry_run=True`, the extraction SHALL run the same pass as a real extraction into

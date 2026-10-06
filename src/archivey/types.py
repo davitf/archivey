@@ -1020,7 +1020,7 @@ OnErrorStr = Literal["stop", "continue"]
 class AbortOn(str, Enum):
     """Events that abort the whole extraction the first time they occur.
 
-    Passed as ``abort_on=`` to ``extract()`` / ``extract_all()`` (a collection; empty by
+    Passed as ``abort_on=`` to ``extract_all()`` (a collection; empty by
     default). Independent of :class:`OnError` and of ``DiagnosticPolicy``: an event named
     here aborts whatever those are set to, and one not named here never aborts.
 
@@ -1119,7 +1119,7 @@ class ExtractionProgress:
 
 @dataclass(frozen=True)
 class ExtractionResult:
-    """One entry per member processed, returned from ``extract()`` / ``extract_all()``.
+    """One entry per member processed, returned from ``extract_all()``.
 
     Frozen outcome structure (``path`` / ``status`` / ``error`` cannot be replaced after
     construction). ``member`` still refers to the live mutable :class:`ArchiveMember`

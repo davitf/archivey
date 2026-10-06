@@ -21,7 +21,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import archivey
 from archivey import ExtractionStatus, OverwritePolicy, open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import (
@@ -43,6 +42,7 @@ from archivey.internal.windows_reparse import (
 )
 from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
+from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak
 
 _JUNCTION_DIR = Path(__file__).parent / "fixtures" / "external" / "junction"
@@ -416,7 +416,7 @@ def test_skipping_a_targetless_link_does_not_replace_what_is_there(
     (dest / "tree").mkdir(parents=True)
     existing = dest / "tree" / "junction_dir"
     existing.write_text("previously here", encoding="utf-8")
-    results = archivey.extract(
+    results = open_and_extract(
         _JUNCTION_DIR / "junction_7zip_snl.zip",
         dest,
         overwrite=OverwritePolicy.REPLACE,
@@ -968,7 +968,7 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
         assert _unavailable_reasons(opened) == ["password_required"]
 
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest, on_error=OnError.CONTINUE)
+    results = open_and_extract(archive, dest, on_error=OnError.CONTINUE)
     by_name = {r.member.name: r for r in results}
     assert by_name["tree/link.txt"].status is ExtractionStatus.FAILED
     assert isinstance(by_name["tree/link.txt"].error, LinkTargetNotFoundError)
@@ -976,7 +976,7 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
 
     # The library default aborts the extraction, as it does for the encrypted file.
     with pytest.raises(LinkTargetNotFoundError):
-        archivey.extract(archive, tmp_path / "stop")
+        open_and_extract(archive, tmp_path / "stop")
 
 
 @pytest.mark.parametrize(

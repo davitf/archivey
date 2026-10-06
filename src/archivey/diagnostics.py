@@ -733,12 +733,10 @@ class ExtractionReport:
     filled in place.
 
     The report iterates, indexes, and sizes as its ``results`` sequence, so the common
-    ``for result in extract(...)`` / ``len(...)`` / ``report[0]`` idioms keep working while
-    ``report.diagnostics`` exposes the operation's diagnostic summary. Its scope depends
-    on who opened the reader: from :meth:`ForwardArchiveReader.extract_all` it covers
-    that call only (open-phase diagnostics stay on ``reader.diagnostics``); from the
-    one-shot :func:`archivey.extract` it covers detection, open and extraction
-    together, because the caller has no reader to ask.
+    ``for result in reader.extract_all(...)`` / ``len(...)`` / ``report[0]`` idioms keep
+    working while ``report.diagnostics`` exposes the call's diagnostic summary. It covers
+    that :meth:`ForwardArchiveReader.extract_all` call only; detection and open
+    diagnostics stay on ``reader.diagnostics``.
     """
 
     results: tuple[ExtractionResult, ...]

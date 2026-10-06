@@ -1,10 +1,11 @@
 """Coercion for the public API's enum-typed arguments.
 
 Every public entry point that declares an :class:`~enum.Enum` parameter accepts the
-member's **value** spelled as a string, and converts it at the boundary. ``extract(dest,
-overwrite="skip")`` is the same call as ``extract(dest,
-overwrite=OverwritePolicy.SKIP)``, and an unrecognised spelling raises
-:class:`~archivey.ArchiveyUsageError` there and then, naming what would have worked.
+member's **value** spelled as a string, and converts it at the boundary.
+``reader.extract_all(dest, overwrite="skip")`` is the same call as
+``reader.extract_all(dest, overwrite=OverwritePolicy.SKIP)``, and an unrecognised
+spelling raises :class:`~archivey.ArchiveyUsageError` there and then, naming what would
+have worked.
 
 **Why coerce rather than refuse.** The CLI and a throwaway script both hold strings, and
 the CLI was already doing this by hand (``ExtractionPolicy(policy)`` in

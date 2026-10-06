@@ -11,7 +11,7 @@ v1 tree is [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 It is a **pure Python library** — no server and no web UI. It does ship a CLI
 (`archivey list|test|extract|info`, `openspec/specs/cli/spec.md`), but "running the
 application" normally means exercising the library API:
-`archivey.open_archive(path)` / `archivey.extract(path, dest)` plus the detection
+`archivey.open_archive(path)` / `reader.extract_all(dest)` plus the detection
 helpers (`detect_format`, `format_availability`, `list_supported_formats`).
 All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, directory, and
 single-file-compressed (gz/bz2/xz/lzip/LZMA Alone/zstd/lz4/zlib/Brotli/.Z).

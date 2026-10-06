@@ -45,7 +45,7 @@ archivey extract photos.zip --dry-run
 ### Defaults that differ from the library
 
 `archivey extract` uses the library's `policy=strict`, but two of its defaults differ
-from `archivey.extract()`. They are what breaks a script ported from one to the other:
+from `reader.extract_all()`. They are what breaks a script ported from one to the other:
 
 | Setting | CLI default | Library default |
 | --- | --- | --- |

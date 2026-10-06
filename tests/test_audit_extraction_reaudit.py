@@ -24,6 +24,7 @@ import pytest
 import archivey
 from archivey import ExtractionStatus
 from archivey.cli.main import main
+from tests.extract_util import open_and_extract
 
 posix_links = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 
@@ -369,7 +370,7 @@ def test_a_directory_member_never_widens_an_existing_directory(
     os.chmod(dest, 0o700)
     os.chmod(dest / "pre", 0o700)
 
-    report = archivey.extract(archive, dest, policy=policy)
+    report = open_and_extract(archive, dest, policy=policy)
 
     assert stat.S_IMODE(os.stat(dest).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(dest / "pre").st_mode) == 0o700
@@ -387,7 +388,7 @@ def test_a_directory_this_run_created_still_gets_its_mode(tmp_path: Path) -> Non
     )
     dest = tmp_path / "out"
 
-    report = archivey.extract(archive, dest, policy="standard")
+    report = open_and_extract(archive, dest, policy="standard")
 
     assert stat.S_IMODE(os.stat(dest / "d").st_mode) == 0o750
     assert all(r.kept_mode is None for r in report.results)
@@ -403,7 +404,7 @@ def test_a_destination_this_run_created_gets_the_root_members_mode(
     )
     dest = tmp_path / "out"
 
-    report = archivey.extract(archive, dest, policy="standard")
+    report = open_and_extract(archive, dest, policy="standard")
 
     assert stat.S_IMODE(os.stat(dest).st_mode) == 0o750
     assert all(r.kept_mode is None for r in report.results)
@@ -472,7 +473,7 @@ def test_hardlink_never_links_a_file_the_run_did_not_write(tmp_path: Path) -> No
     dest.mkdir()
     (dest / "victim").write_bytes(b"caller's file")
 
-    archivey.extract(
+    open_and_extract(
         archive, dest, policy="standard", overwrite="replace", on_error="continue"
     )
 
@@ -523,7 +524,7 @@ def test_two_members_written_to_one_file_through_a_symlink_are_not_both_extracte
         ],
     )
 
-    report = archivey.extract(archive, tmp_path / "out", overwrite="replace")
+    report = open_and_extract(archive, tmp_path / "out", overwrite="replace")
 
     files = [
         r
@@ -592,7 +593,7 @@ def test_a_name_too_long_for_the_filesystem_is_a_typed_member_failure(
     archive = _build_tar(tmp_path / "a.tar", [entry, ("ok", "file", b"y")])
 
     try:
-        report = archivey.extract(archive, tmp_path / "out")
+        report = open_and_extract(archive, tmp_path / "out")
     except archivey.ArchiveyError:
         return  # a typed stop is fine
     first = report.results[0]
@@ -610,7 +611,7 @@ def test_a_symlink_loop_in_the_destination_is_not_a_raw_runtime_error(
     dest.mkdir()
     os.symlink("x", dest / "x")  # x -> x
 
-    report = archivey.extract(archive, dest, on_error="continue")
+    report = open_and_extract(archive, dest, on_error="continue")
 
     assert {r.member.name: r.status for r in report.results}["ok"] is (
         ExtractionStatus.EXTRACTED
@@ -875,7 +876,7 @@ def test_a_hardlink_to_an_escaping_symlink_is_blocked_like_it(tmp_path: Path) ->
     )
     dest = tmp_path / "out"
 
-    report = archivey.extract(archive, dest, policy="standard")
+    report = open_and_extract(archive, dest, policy="standard")
 
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses == {"s": ExtractionStatus.BLOCKED, "h": ExtractionStatus.BLOCKED}

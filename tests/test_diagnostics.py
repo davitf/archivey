@@ -21,11 +21,9 @@ from archivey import (
     DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticRaisedError,
-    ExtractionReport,
     ExtractionStatus,
     OnError,
     detect_format,
-    extract,
     open_archive,
 )
 from archivey.diagnostics import (
@@ -40,6 +38,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector, EmitLog
 from archivey.types import MemberType
+from tests.extract_util import open_and_extract
 
 
 def _norm_context(**overrides: object) -> NameNormalizationContext:
@@ -486,26 +485,8 @@ def test_open_archive_transfers_detection_collector(tmp_path: Path) -> None:
         assert snap.total_count >= 1
 
 
-def test_oneshot_extract_report_includes_detection(
-    tmp_path: Path,
-) -> None:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("a.txt", b"hi")
-    src = tmp_path / "looks.tar"
-    src.write_bytes(buf.getvalue())
-    dest = tmp_path / "out"
-    dest.mkdir()
-    report = extract(src, dest)
-    assert isinstance(report, ExtractionReport)
-    assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in report.diagnostics.counts
-    assert any(r.status is ExtractionStatus.EXTRACTED for r in report.results)
-
-
 def test_extract_all_report_covers_only_its_own_call(tmp_path: Path) -> None:
-    # The two report scopes, pinned against each other: the one-shot ``extract()``
-    # (above) widens its report to detection and open, because the caller has no
-    # reader to ask. ``reader.extract_all()`` reports its own call only; the open-phase
+    # ``reader.extract_all()`` reports its own call only; the detection and open
     # diagnostics stay on ``reader.diagnostics``.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -524,7 +505,7 @@ def test_extract_all_report_covers_only_its_own_call(tmp_path: Path) -> None:
 
 def test_extraction_report_behaves_like_its_results_sequence(tmp_path: Path) -> None:
     # The report iterates / sizes / indexes as ``results`` so the common extraction loop
-    # (`for r in extract(...)`, `len(...)`, `report[0]`) keeps working alongside
+    # (`for r in reader.extract_all(...)`, `len(...)`, `report[0]`) keeps working alongside
     # ``report.diagnostics``.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -535,7 +516,7 @@ def test_extraction_report_behaves_like_its_results_sequence(tmp_path: Path) -> 
     dest = tmp_path / "out"
     dest.mkdir()
 
-    report = extract(src, dest)
+    report = open_and_extract(src, dest)
     assert len(report) == len(report.results)
     assert list(report) == list(report.results)
     assert report[0] is report.results[0]
@@ -613,7 +594,7 @@ def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) ->
         zf.writestr("../escape.txt", b"x")
     dest = tmp_path / "out"
     dest.mkdir()
-    report = extract(
+    report = open_and_extract(
         io.BytesIO(buf.getvalue()),
         dest,
         on_error=on_error,
@@ -644,7 +625,7 @@ def test_abort_on_blocked_member_stops_despite_continue(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.mkdir()
     with pytest.raises(FilterRejectionError):
-        extract(
+        open_and_extract(
             io.BytesIO(buf.getvalue()),
             dest,
             on_error=OnError.CONTINUE,
@@ -661,7 +642,9 @@ def test_blocked_member_does_not_abort_without_opt_in(tmp_path: Path) -> None:
         zf.writestr("ok.txt", b"y")
     dest = tmp_path / "out"
     dest.mkdir()
-    report = extract(io.BytesIO(buf.getvalue()), dest, on_error=OnError.CONTINUE)
+    report = open_and_extract(
+        io.BytesIO(buf.getvalue()), dest, on_error=OnError.CONTINUE
+    )
     assert [r.status for r in report.results] == [
         ExtractionStatus.BLOCKED,
         ExtractionStatus.EXTRACTED,
@@ -688,7 +671,7 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
     )
     del time
     with pytest.raises(DiagnosticRaisedError) as ei:
-        extract(
+        open_and_extract(
             io.BytesIO(buf.getvalue()),
             dest,
             on_error=OnError.CONTINUE,
@@ -755,7 +738,7 @@ def test_extraction_report_results_frozen(tmp_path: Path) -> None:
     (src / "f.txt").write_bytes(b"x")
     dest = tmp_path / "out"
     dest.mkdir()
-    report = extract(src, dest)
+    report = open_and_extract(src, dest)
     assert isinstance(report.results, tuple)
     with pytest.raises(Exception):
         report.results[0].status = ExtractionStatus.FAILED  # type: ignore[misc]

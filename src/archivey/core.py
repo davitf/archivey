@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, Literal, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, overload
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -27,7 +27,6 @@ from archivey.config import (
 from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
-    ExtractionReport,
     UnusedArgumentContext,
 )
 from archivey.exceptions import (
@@ -37,10 +36,8 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.arg_checks import (
-    check_callable,
     check_config,
     check_encoding,
-    check_extraction_limits,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
 from archivey.internal.backends.zip_detect import (
@@ -55,7 +52,6 @@ from archivey.internal.detection import (
     probe_config,
 )
 from archivey.internal.diagnostics_collector import collector_from_config
-from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
@@ -88,21 +84,12 @@ from archivey.internal.volumes import (
 from archivey.reader import ArchiveReader, ForwardArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
-    AbortOn,
-    AbortOnStr,
     ArchiveFormat,
     ContainerFormat,
-    ExtractionPolicy,
-    ExtractionPolicyStr,
-    ExtractionProgress,
     FormatAvailability,
     FormatSupport,
     MemberStreams,
     MissingComponent,
-    OnError,
-    OnErrorStr,
-    OverwritePolicy,
-    OverwritePolicyStr,
     StreamFormat,
 )
 
@@ -121,7 +108,6 @@ __all__ = [
     "AcceleratorMode",
     "DEFAULT_ARCHIVEY_CONFIG",
     "detect_format",
-    "extract",
     "format_availability",
     "list_known_formats",
     "list_supported_formats",
@@ -392,8 +378,7 @@ def open_archive(
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     # Collector is created before detection so open + detect share one budget /
-    # occurrence order; one-shot extract() then reads reader.diagnostics for the
-    # whole call without cross-call plumbing.
+    # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
     resolved = resolve_source(source)
     slot = _SourceSlot(resolved.source)
@@ -824,91 +809,3 @@ def _resolve_stream_format(
             "stream. Use open_archive for archive containers."
         )
     return detected.format.stream
-
-
-def extract(
-    source: OpenSourceInput,
-    dest: str | Path,
-    *,
-    policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
-    overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
-    on_error: OnError | OnErrorStr = OnError.STOP,
-    abort_on: Collection[AbortOn | AbortOnStr] = (),
-    format: ArchiveFormat | str | None = None,
-    password: PasswordInput = None,
-    encoding: str | None = None,
-    on_progress: Callable[[ExtractionProgress], None] | None = None,
-    config: ArchiveyConfig | None = None,
-    limits: ExtractionLimits | None = None,
-    dry_run: bool = False,
-) -> ExtractionReport:
-    """Open ``source``, apply safety checks, and write **all** members to ``dest``.
-
-    The one-shot extraction API (see ``safe-extraction``). It deliberately has **no**
-    member-selection parameter — selecting a subset requires the member list, which
-    would force a reopen; use :meth:`ForwardArchiveReader.extract_all` with
-    ``members=`` on an already open reader instead. Extraction is safe-by-default:
-    ``ExtractionPolicy.STRICT`` and ``OverwritePolicy.ERROR``, with the
-    decompression-bomb guards active.
-
-    A **non-seekable** stream source (a pipe, a socket) is opened in streaming mode
-    automatically: extraction is a single forward pass, so it needs no random access, and
-    failing fast would reject a source it can perfectly well consume. A seekable source
-    keeps random-access mode — that preserves the re-readable second pass that recovers a
-    hardlink whose target failed or preceded it in archive order.
-
-    ``abort_on`` names events that end the whole call the first time they occur — a
-    blocked member, a name collision, a portable-name rewrite — raising instead of
-    returning a report. It is independent of ``on_error``; see
-    :class:`~archivey.AbortOn`.
-
-    ``dry_run=True`` does everything but write: see
-    :meth:`ForwardArchiveReader.extract_all`.
-
-    Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
-    detection, open, and extraction for this call.
-    """
-    # Checked and converted here rather than left to open_archive and extract_all
-    # below, so a wrong-typed argument is refused before the source is resolved and
-    # peeked, and the message names the call the caller actually made.
-    format = coerce_archive_format(format, call="extract(format=…)")
-    policy = coerce_enum(policy, ExtractionPolicy, call="extract()", param="policy=")
-    overwrite = coerce_enum(
-        overwrite, OverwritePolicy, call="extract()", param="overwrite="
-    )
-    on_error = coerce_enum(on_error, OnError, call="extract()", param="on_error=")
-    abort_on = coerce_enum_collection(
-        abort_on, AbortOn, call="extract()", param="abort_on="
-    )
-    check_config(config, call="extract(config=…)")
-    check_extraction_limits(limits, call="extract(limits=…)")
-    check_encoding(encoding, call="extract(encoding=…)")
-    check_callable(on_progress, call="extract(on_progress=…)")
-
-    # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap: a
-    # path source opens nothing until it is read).
-    with resolve_source(source).source as peek_target:
-        streaming = not peek_target.is_directory and not peek_target.seekable()
-
-    with open_archive(
-        source,
-        format=format,
-        streaming=streaming,
-        password=password,
-        encoding=encoding,
-        config=config,
-    ) as reader:
-        # Reader already carries ``config`` from open_archive — do not forward again.
-        report = reader.extract_all(
-            dest,
-            policy=policy,
-            overwrite=overwrite,
-            on_error=on_error,
-            abort_on=abort_on,
-            on_progress=on_progress,
-            limits=limits,
-            dry_run=dry_run,
-        )
-        # extract_all's report.diagnostics is extraction-only. This reader was opened
-        # fresh for this call, so reader.diagnostics already spans detect+open+extract.
-        return replace(report, diagnostics=reader.diagnostics)

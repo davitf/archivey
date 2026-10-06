@@ -20,7 +20,8 @@ import archivey
 
 # Extract safely. Path traversal, symlink escapes and bombs are blocked by
 # default; you opt out, not in.  -> Safe extraction
-report = archivey.extract("untrusted.zip", "out/")
+with archivey.open_archive("untrusted.zip") as reader:
+    report = reader.extract_all("out/")
 
 # Read one member, verified. A corrupt or truncated member raises from read(),
 # never quietly returns short.  -> Reading members

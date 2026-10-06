@@ -508,10 +508,10 @@ The arguments covered:
 
 | Entry point | Arguments |
 | --- | --- |
-| `open_archive()`, `open_stream()`, `extract()`, `detect_format()` | `config` |
+| `open_archive()`, `open_stream()`, `detect_format()` | `config` |
 | `detect_format()` | `budget` (a `DetectionBudget`; a `DetectionBudgetPreset` is an enum and out of scope) |
-| `open_archive()`, `extract()` | `encoding`, `password` |
-| `extract()`, `ArchiveReader.extract_all()` | `limits`, `on_progress` |
+| `open_archive()` | `encoding`, `password` |
+| `ArchiveReader.extract_all()` | `limits`, `on_progress` |
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
@@ -547,7 +547,7 @@ and would silently switch the guard.
 | Case | Expected |
 | --- | --- |
 | `open_archive(src, config="strict")` | `ArchiveyUsageError` naming `config`; never `AttributeError: 'str' object has no attribute 'diagnostic_policy'` |
-| `ArchiveyConfig(extraction_limits="none")` then `extract(...)` | `ArchiveyUsageError` at construction, not `AttributeError` part-way through the extraction |
+| `ArchiveyConfig(extraction_limits="none")` then `extract_all(...)` | `ArchiveyUsageError` at construction, not `AttributeError` part-way through the extraction |
 | `ArchiveyConfig(listing_limits="x")` then listing | `ArchiveyUsageError` at construction, not `AttributeError` mid-listing |
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
@@ -556,9 +556,9 @@ and would silently switch the guard.
 | `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `ExtractionLimits(ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
 | `ExtractionLimits(max_extracted_bytes=True)` | `ArchiveyUsageError`; `bool` is an `int` subclass and would cap at one byte |
-| `extract(src, dest, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
-| `extract(src, dest, encoding=0)` | `ArchiveyUsageError`; not silently ignored |
-| `extract(src, dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
+| `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
+| `open_archive(src, encoding=0)` | `ArchiveyUsageError`; not silently ignored |
+| `extract_all(dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
 | `extract_all(dest, filter=0)` | `ArchiveyUsageError` before the first member is offered |
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |
 | `extract_all(dest, members=0)` | `ArchiveyUsageError` at the call, before `dest` is created |
@@ -586,7 +586,7 @@ The parameters covered:
 
 | Entry point | Parameters |
 | --- | --- |
-| `extract()`, `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
+| `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
 | `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2` |
 | `DiagnosticPolicy(...)` | `default`, and the keys and values of `overrides` |
 | `detect_format()` | `budget` (a `DetectionBudget` passes through unconverted) |
@@ -618,12 +618,12 @@ vocabulary rather than two that can drift.
 
 | Case | Expected |
 | --- | --- |
-| `extract(src, dest, overwrite="skip")` | Behaves exactly as `OverwritePolicy.SKIP`; an existing local file is kept and reported `NOT_OVERWRITTEN` |
-| `extract(src, dest, on_error="stop")` | Behaves exactly as `OnError.STOP`; a per-member failure raises |
-| `extract(src, dest, policy="strict")` | Behaves as `ExtractionPolicy.STRICT`; never a bare `KeyError` |
-| `extract(src, dest, abort_on=["blocked-member"])` | Accepted; the dash spelling resolves to `AbortOn.BLOCKED_MEMBER` |
-| `extract(src, dest, abort_on="blocked_member")` | `ArchiveyUsageError` naming the list spelling |
-| `extract(src, dest, overwrite="nonsense")` | `ArchiveyUsageError` naming `overwrite` and the valid spellings; nothing written to `dest` |
+| `extract_all(dest, overwrite="skip")` | Behaves exactly as `OverwritePolicy.SKIP`; an existing local file is kept and reported `NOT_OVERWRITTEN` |
+| `extract_all(dest, on_error="stop")` | Behaves exactly as `OnError.STOP`; a per-member failure raises |
+| `extract_all(dest, policy="strict")` | Behaves as `ExtractionPolicy.STRICT`; never a bare `KeyError` |
+| `extract_all(dest, abort_on=["blocked-member"])` | Accepted; the dash spelling resolves to `AbortOn.BLOCKED_MEMBER` |
+| `extract_all(dest, abort_on="blocked_member")` | `ArchiveyUsageError` naming the list spelling |
+| `extract_all(dest, overwrite="nonsense")` | `ArchiveyUsageError` naming `overwrite` and the valid spellings; nothing written to `dest` |
 | `ArchiveyConfig(use_rapidgzip="on")` | Field holds `AcceleratorMode.ON`, not the string |
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
 | `DiagnosticPolicy(default="raise")` | Field holds `DiagnosticDisposition.RAISE`; a diagnostic the policy covers raises |

@@ -2877,9 +2877,8 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
-        # This call's report covers only its own extraction-phase events. The one-shot
-        # extract() re-snapshots against its own pre-detection watermark to widen the
-        # window, so extract_all() never needs to know about that outer scope.
+        # This call's report covers only its own extraction-phase events; open-phase
+        # diagnostics stay on reader.diagnostics.
         wm = collector.watermark()
         coordinator = ExtractionCoordinator(
             policy=policy,

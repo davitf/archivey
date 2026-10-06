@@ -1,12 +1,12 @@
 """A wrong-typed ``format=`` argument is a usage error, on every public entry point.
 
-Four public functions take a format argument, and three of them accepted a
+Four public functions took a format argument, and three of them accepted a
 ``StreamFormat`` — the codec half of an ``ArchiveFormat``'s ``(container, stream)``
 pair — without noticing: ``format_availability()`` fabricated a ``FormatAvailability``
 whose ``format`` field violated its own declared type, and ``open_archive()`` /
-``extract()`` let an ``AttributeError`` naming a private attribute cross the public
-boundary. ``open_stream()`` accepts both types by design, but silently *ignored* a
-value that was neither and auto-detected instead.
+``extract()`` (since removed, ADR 0019) let an ``AttributeError`` naming a private
+attribute cross the public boundary. ``open_stream()`` accepts both types by design,
+but silently *ignored* a value that was neither and auto-detected instead.
 
 The type checkers already reject all four calls (both run over ``src/`` only, so an
 untyped caller is the exposure). These tests cover what happens when the call is made
@@ -34,7 +34,6 @@ from archivey import (
     ArchiveyUsageError,
     FormatSupport,
     StreamFormat,
-    extract,
     format_availability,
     open_archive,
     open_stream,
@@ -173,38 +172,6 @@ def test_open_archive_still_accepts_an_archive_format_and_none(zip_path: Path) -
             assert [m.name for m in reader.members()] == ["member.txt"]
 
 
-# --- extract ----------------------------------------------------------------------
-
-
-def test_extract_rejects_a_stream_format(zip_path: Path, tmp_path: Path) -> None:
-    dest = tmp_path / "out"
-    with pytest.raises(ArchiveyUsageError) as exc_info:
-        extract(zip_path, dest, format=StreamFormat.ZSTD)  # type: ignore[arg-type]
-
-    message = str(exc_info.value)
-    assert "StreamFormat.ZSTD" in message
-    assert "ArchiveFormat.ZST" in message
-
-
-def test_extract_rejects_before_it_touches_the_source(
-    zip_path: Path, tmp_path: Path
-) -> None:
-    dest = tmp_path / "out"
-    with pytest.raises(ArchiveyUsageError):
-        extract(zip_path, dest, format=StreamFormat.ZSTD)  # type: ignore[arg-type]
-
-    assert not dest.exists()
-
-
-def test_extract_still_accepts_an_archive_format(
-    zip_path: Path, tmp_path: Path
-) -> None:
-    dest = tmp_path / "out"
-    extract(zip_path, dest, format=ArchiveFormat.ZIP)
-
-    assert (dest / "member.txt").read_bytes() == CONTENT
-
-
 # --- open_stream: the deliberate exception ----------------------------------------
 
 
@@ -270,14 +237,6 @@ def test_every_format_is_reachable_by_its_name_and_its_extension() -> None:
 def test_open_archive_accepts_the_format_spelled_as_a_string(zip_path: Path) -> None:
     with open_archive(zip_path, format="zip") as reader:
         assert reader.format is ArchiveFormat.ZIP
-
-
-def test_extract_accepts_the_format_spelled_as_a_string(
-    zip_path: Path, tmp_path: Path
-) -> None:
-    dest = tmp_path / "out"
-    extract(zip_path, dest, format="zip")
-    assert (dest / "member.txt").read_bytes() == CONTENT
 
 
 def test_format_availability_accepts_a_string() -> None:

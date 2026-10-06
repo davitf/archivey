@@ -15,8 +15,8 @@ you opt out**. Most migrations are shorter code plus stricter defaults.
 | List names | `zf.namelist()` / `tf.getnames()` | `[m.name for m in reader]` |
 | Member metadata | `ZipInfo` / `TarInfo` | `ArchiveMember` (same shape for every format) |
 | Read one member | `zf.read(n)` / `tf.extractfile(n).read()` | `reader.read(n)` |
-| Extract everything | `zf.extractall(d)` / `tf.extractall(d, filter="data")` | `archivey.extract(p, d)` |
-| Unpack any format | `shutil.unpack_archive(p, d)` | `archivey.extract(p, d)` |
+| Extract everything | `zf.extractall(d)` / `tf.extractall(d, filter="data")` | `reader.extract_all(d)` |
+| Unpack any format | `shutil.unpack_archive(p, d)` | `open_archive(p)`, then `reader.extract_all(d)` |
 | Decompress a `.gz` | `gzip.open(p)` | `archivey.open_stream(p)` |
 | Detect the format | guess from the extension | `archivey.detect_format(p)` |
 
@@ -102,16 +102,18 @@ shutil.unpack_archive("bundle.tar.xz", "out/")
 
 # After
 import archivey
-archivey.extract("bundle.tar.xz", "out/")
+with archivey.open_archive("bundle.tar.xz") as reader:
+    reader.extract_all("out/")
 ```
 
 What changes:
 
 - **More formats.** `unpack_archive` handles zip/tar family only. Archivey adds RAR, 7z,
-  ISO, and single-file streams through the same call.
+  ISO, and single-file streams through the same calls.
 - **Format comes from content, not the filename.** `unpack_archive` dispatches on the
   extension and fails on a misnamed file; Archivey sniffs the bytes.
-- **Safe by default**, with the same policy knobs as `extract_all`.
+- **Safe by default.** `extract_all` blocks unsafe members unless you choose a looser
+  policy.
 - You get an `ExtractionReport` back — what was written, skipped, or blocked — instead of
   `None`.
 
@@ -123,7 +125,8 @@ subprocess.run(["7z", "x", "-o" + dest, "archive.7z"], check=True)
 
 # After
 import archivey
-archivey.extract("archive.7z", dest)
+with archivey.open_archive("archive.7z") as reader:
+    reader.extract_all(dest)
 ```
 
 What changes:
@@ -152,7 +155,8 @@ with py7zr.SevenZipFile("a.7z") as z:
 
 # After
 import archivey
-archivey.extract("a.7z", "out/")
+with archivey.open_archive("a.7z") as reader:
+    reader.extract_all("out/")
 ```
 
 The reason to switch is memory safety and uniformity: Archivey parses 7z and RAR metadata

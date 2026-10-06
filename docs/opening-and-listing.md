@@ -72,8 +72,8 @@ do the job.
 | Read from a pipe, a socket or an HTTP response | `streaming=True` | The same as the first row. Only TAR and the single-file compressors can be read this way; see [below](#what-you-can-open) |
 
 `seekable_members` and `concurrent_members` combine freely with each other. To extract a
-whole archive with safe defaults and no reader at all, call
-`archivey.extract(src, dest)` ([Extracting](extracting.md)).
+whole archive with safe defaults, call `reader.extract_all(dest)`
+([Extracting](extracting.md)).
 
 ### Streaming for one pass
 

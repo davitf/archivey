@@ -2,12 +2,19 @@
 
 Archivey extracts **safely by default**. You opt *out* of protections; you do not opt in.
 
-## One-shot
+## Extracting everything
 
 ```python
-archivey.extract("archive.zip", "out/")
+with archivey.open_archive("archive.zip") as reader:
+    reader.extract_all("out/")
 # policy=ExtractionPolicy.STRICT, overwrite=ERROR, on_error=STOP
 ```
+
+To extract a TAR or a single-file compressed stream from a pipe or a socket, pass
+`streaming=True` to `open_archive`: extraction is a single forward pass, so it needs no
+random access. ZIP, ISO, 7z and RAR keep their index away from the front of the file, so
+they cannot be read from a pipe in either mode; save them to a file or a `BytesIO` first
+([Non-seekable sources](access-and-cost.md#non-seekable-sources)).
 
 ## Trust boundaries
 
@@ -186,14 +193,14 @@ re-running the extraction.
 ```python
 from archivey import ExtractionPolicy, OverwritePolicy, OnError, ExtractionLimits, ListingLimits
 
-archivey.extract(
-    "archive.zip",
-    "out/",
-    policy=ExtractionPolicy.STRICT,       # default
-    overwrite=OverwritePolicy.ERROR,      # or REPLACE / SKIP
-    on_error=OnError.STOP,                # or CONTINUE — failures only
-    limits=ExtractionLimits(...),         # or ExtractionLimits.UNLIMITED
-)
+with archivey.open_archive("archive.zip") as reader:
+    reader.extract_all(
+        "out/",
+        policy=ExtractionPolicy.STRICT,       # default
+        overwrite=OverwritePolicy.ERROR,      # or REPLACE / SKIP
+        on_error=OnError.STOP,                # or CONTINUE — failures only
+        limits=ExtractionLimits(...),         # or ExtractionLimits.UNLIMITED
+    )
 
 with archivey.open_archive(
     "huge.zip",
@@ -233,7 +240,8 @@ pass `abort_on`:
 ```python
 from archivey import AbortOn
 
-archivey.extract("untrusted.zip", "out/", abort_on={AbortOn.BLOCKED_MEMBER})
+with archivey.open_archive("untrusted.zip") as reader:
+    reader.extract_all("out/", abort_on={AbortOn.BLOCKED_MEMBER})
 ```
 
 `abort_on` is independent of `OnError` and names three events:
@@ -265,7 +273,7 @@ read `ExtractionResult.presented_name` and let extraction finish.
 | `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
 | `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
 
-Selective extract on an open reader:
+Selective extract:
 
 ```python
 with archivey.open_archive("a.zip") as reader:
@@ -274,13 +282,14 @@ with archivey.open_archive("a.zip") as reader:
 
 ## Dry run
 
-Pass `dry_run=True` to `extract()` or `extract_all()` to see what an extraction would do
+Pass `dry_run=True` to `extract_all()` to see what an extraction would do
 without keeping anything:
 
 ```python
 from archivey import ExtractionStatus
 
-report = archivey.extract("backup.tar.gz", "out/", on_error="continue", dry_run=True)
+with archivey.open_archive("backup.tar.gz") as reader:
+    report = reader.extract_all("out/", on_error="continue", dry_run=True)
 for result in report.results:
     if result.status is not ExtractionStatus.EXTRACTED:
         print(result.status.value, result.member.name, result.error)
@@ -371,7 +380,7 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
-  `extract()`, so it is neither a listing nor an extraction cap. Trips raise
+  `extract_all()`, so it is neither a listing nor an extraction cap. Trips raise
   `ResourceLimitError`. Format detection is the exception: a `.lzma` or compressed-tar
   sample is decoded uncapped to recognise it, so under a memory cap an oversized
   declaration can surface as `MemoryError` from `open_archive` instead.

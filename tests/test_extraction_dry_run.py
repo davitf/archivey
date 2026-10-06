@@ -38,6 +38,7 @@ from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
 from archivey.terminal import display_path
 from tests.create_adversarial import adversarial_archives
+from tests.extract_util import open_and_extract
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
 
 _POLICIES = list(ExtractionPolicy)
@@ -352,7 +353,7 @@ def test_bodies_are_read_and_verified(tmp_path: Path) -> None:
     path.write_bytes(bytes(blob))
 
     dest = tmp_path / "out"
-    report = archivey.extract(path, dest, on_error=OnError.CONTINUE, dry_run=True)
+    report = open_and_extract(path, dest, on_error=OnError.CONTINUE, dry_run=True)
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses == {
         "good.txt": ExtractionStatus.EXTRACTED,

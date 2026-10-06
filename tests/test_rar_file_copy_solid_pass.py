@@ -27,7 +27,6 @@ from archivey import (
     ExtractionLimits,
     ExtractionProgress,
     SpoolLimits,
-    extract,
     open_archive,
 )
 from archivey.exceptions import (
@@ -37,6 +36,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends import rar_copy_sources, rar_reader
 from tests.conftest import binary_refusal
+from tests.extract_util import open_and_extract
 
 _COPIES = 6
 _COPY_NAMES = [f"d_copy{i}.txt" for i in range(_COPIES)]
@@ -237,7 +237,7 @@ def test_extraction_limits_count_every_copy(tmp_path: Path) -> None:
         max_extracted_bytes=total_without_copies + 2 * len(payload)
     )
     with pytest.raises(ResourceLimitError, match="max_extracted_bytes"):
-        extract(archive, tmp_path / "out", config=config, limits=limits)
+        open_and_extract(archive, tmp_path / "out", config=config, limits=limits)
 
 
 def test_a_kept_source_is_still_checked_against_its_digest(
@@ -435,7 +435,7 @@ def test_extract_copy_counts_toward_the_byte_cap_when_copied_from_disk(
         max_extracted_bytes=total_without_copies + 2 * len(payload)
     )
     with pytest.raises(ResourceLimitError, match="max_extracted_bytes"):
-        extract(archive, tmp_path / "out", config=config, limits=limits)
+        open_and_extract(archive, tmp_path / "out", config=config, limits=limits)
     # The copies came from the source's file: a re-decode would spawn again.
     assert spawns == ["unrar"]
 

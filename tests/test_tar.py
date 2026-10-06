@@ -23,7 +23,6 @@ from archivey import (
     ExtractionLimits,
     ListingLimits,
     MemberType,
-    extract,
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
@@ -46,6 +45,7 @@ from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
 )
+from tests.extract_util import open_and_extract
 from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
@@ -827,10 +827,10 @@ def test_sparse_member_extracts_dense_and_counts_toward_ratio(tmp_path: Path) ->
     archive.write_bytes(_tar_sparse_gnu(logical))
 
     with pytest.raises(ResourceLimitError):
-        extract(archive, tmp_path / "default")
+        open_and_extract(archive, tmp_path / "default")
 
     out = tmp_path / "unlimited"
-    extract(archive, out, limits=ExtractionLimits(max_ratio=None))
+    open_and_extract(archive, out, limits=ExtractionLimits(max_ratio=None))
     written = out / "sparse.bin"
     assert written.stat().st_size == logical
     with written.open("rb") as f:
@@ -1990,7 +1990,7 @@ def test_hardlink_resolves_to_an_earlier_member_only(
 
 @pytest.mark.parametrize("codec", ["gz", "bz2", "xz"])
 def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None:
-    """``archivey.extract`` on a compressed tar reads it in one forward pass: the
+    """``extract_all`` on a compressed tar reads it in one forward pass: the
     listing limits are enforced as members arrive rather than by listing the whole
     archive first, so no seek goes back and ``STREAM_REWIND_REDECOMPRESSES``, set to
     ``RAISE``, never fires. A 2 MiB member makes a rewind large enough to report."""
@@ -1998,7 +1998,6 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
     import gzip
     import lzma
 
-    import archivey
     from archivey.diagnostics import DiagnosticDisposition, DiagnosticPolicy
 
     payload = bytes(range(256)) * (8 * 1024)
@@ -2022,7 +2021,7 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
             }
         )
     )
-    report = archivey.extract(archive, tmp_path / "out", config=config)
+    report = open_and_extract(archive, tmp_path / "out", config=config)
     assert len(report.results) == 3
     for name in ("a.bin", "b.bin", "h.bin"):
         assert (tmp_path / "out" / name).read_bytes() == payload
@@ -2032,8 +2031,6 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
 def test_extract_enforces_listing_limits_as_members_arrive(tmp_path: Path) -> None:
     """Without listing first, ``max_members`` still refuses the extraction, at the
     member that crosses it, before that member is written."""
-    import archivey
-
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w") as t:
         for i in range(5):
@@ -2044,7 +2041,7 @@ def test_extract_enforces_listing_limits_as_members_arrive(tmp_path: Path) -> No
     archive.write_bytes(raw.getvalue())
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
     with pytest.raises(ResourceLimitError, match="max_members"):
-        archivey.extract(archive, tmp_path / "out", config=config)
+        open_and_extract(archive, tmp_path / "out", config=config)
     assert not (tmp_path / "out" / "f3").exists()
 
 

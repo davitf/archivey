@@ -301,7 +301,6 @@ resolving, peeking or reading the source:
 | --- | --- | --- |
 | `format_availability(format)` | `ArchiveFormat`, its spelling | `ArchiveyUsageError` |
 | `open_archive(source, format=…)` | `ArchiveFormat`, its spelling, `None` (auto-detect) | `ArchiveyUsageError` |
-| `extract(source, dest, format=…)` | `ArchiveFormat`, its spelling, `None` (auto-detect) | `ArchiveyUsageError` |
 | `open_stream(source, format=…)` | `StreamFormat`, raw-stream `ArchiveFormat`, either spelling, `None` | `ArchiveyUsageError` |
 
 `open_stream`'s wider argument is by design, not an inconsistency to remove: a raw
@@ -359,7 +358,6 @@ a separate table, so a codec added later is named here without a second edit.
 | `format_availability(None)` | `ArchiveyUsageError` — the query has no auto-detect form |
 | `open_archive("a.tar.gz", format=ContainerFormat.TAR)` | `ArchiveyUsageError` naming `ContainerFormat.TAR` and the pairs built on it, never a `TruncatedError` |
 | `open_archive(path, format=StreamFormat.ZSTD)` | `ArchiveyUsageError`, not `AttributeError: 'StreamFormat' object has no attribute 'container'` |
-| `extract(path, dest, format=StreamFormat.ZSTD)` | `ArchiveyUsageError`; nothing written to `dest`, source never read |
 | `open_stream(src, format=object())` | `ArchiveyUsageError`; the source is not read and detection does not run |
 | `open_stream(src, format=StreamFormat.GZIP \| ArchiveFormat.GZ \| None)` | Opens as before |
 | `open_archive(path, format=ArchiveFormat.ZIP \| None)` | Opens as before |
@@ -369,7 +367,7 @@ a separate table, so a codec added later is named here without a second edit.
 
 | Case | Expected |
 | --- | --- |
-| `open_archive(path, format="zip")` \| `extract(path, dest, format="zip")` | Opens as `ArchiveFormat.ZIP` |
+| `open_archive(path, format="zip")` | Opens as `ArchiveFormat.ZIP` |
 | `format_availability("zip")` | Same record as `format_availability(ArchiveFormat.ZIP)` |
 | Every format, by its name and by its file extension, in any case | Resolves to that format |
 | `open_stream(src, format="gz")` | `ArchiveFormat.GZ` — what `open_archive` would resolve it to |

@@ -2,7 +2,7 @@
 
 Public surface layout (this package root only — not ``internal`` / ``cli``):
 
-- :mod:`archivey.core` — ``open_archive`` / ``open_stream`` / ``extract`` / detection
+- :mod:`archivey.core` — ``open_archive`` / ``open_stream`` / detection
 - :mod:`archivey.reader` — ``ArchiveReader`` / ``ForwardArchiveReader`` ABCs
 - :mod:`archivey.types` — formats, members, compression, extraction policies/results,
   format availability
@@ -39,7 +39,6 @@ from archivey.config import (
 )
 from archivey.core import (
     detect_format,
-    extract,
     format_availability,
     list_known_formats,
     list_supported_formats,
@@ -137,7 +136,6 @@ __all__ = [
     "__version__",
     "open_archive",
     "open_stream",
-    "extract",
     "ArchiveyConfig",
     "DEFAULT_ARCHIVEY_CONFIG",
     "DecoderLimits",
