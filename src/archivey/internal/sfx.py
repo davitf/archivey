@@ -37,9 +37,11 @@ from __future__ import annotations
 import struct
 from collections.abc import Iterator
 from enum import Enum
-from typing import BinaryIO, Callable, NamedTuple, Protocol, Sequence
+from typing import BinaryIO, Callable, Generic, NamedTuple, Protocol, Sequence, TypeVar
 
 from archivey.internal.streams.streamtools import source_byte_size
+
+_T = TypeVar("_T")
 
 # How far past the start of a source the archive magic may sit before we stop looking.
 # 2 MiB comfortably covers real stubs (a `rar a -sfx` ELF stub is ~250 KB, and Windows
@@ -246,6 +248,57 @@ def describe_scan_miss(scan: MagicScan, *, limit: int) -> str:
             f"within the {limit}-byte self-extracting scan window"
         )
     return f"no signature within the {limit}-byte self-extracting scan window"
+
+
+class HitSelector(Generic[_T]):
+    """The SFX hit-selection rule both scans share, fed one graded hit at a time.
+
+    The earliest ``VALID`` hit wins. Failing that, the first ``VALID_SHORT`` hit;
+    failing that, with ``keep_damaged``, the first other hit, so a damaged payload
+    still reaches the parser. A later ``VALID`` hit displaces the short one only
+    when its ``key`` (the format) matches: the preference for a hit that ends at the
+    end of the source is a tie-break among candidates of one format, and never
+    reorders formats. Every other hit, a second short one included, is a rejection;
+    after ``cap`` of them :meth:`offer` says stop, and :meth:`result` gives the
+    short hit or :attr:`ScanMiss.CAPPED` (a ``VALID_SHORT`` hit is structurally
+    valid, not a rejection, so the cap does not discard it).
+    """
+
+    def __init__(self, *, keep_damaged: bool, cap: int | None) -> None:
+        self._keep_damaged = keep_damaged
+        self._cap = cap
+        self._chosen: _T | None = None
+        self._short: tuple[object, _T] | None = None
+        self._fallback: _T | None = None
+        self._capped = False
+        self.rejected = 0
+
+    def offer(self, key: object, hit: _T, outcome: HitOutcome) -> bool:
+        """Grade ``hit``; ``True`` means the scan is decided and should stop."""
+        if outcome is HitOutcome.VALID:
+            short = self._short
+            self._chosen = short[1] if short is not None and short[0] != key else hit
+            return True
+        if outcome is HitOutcome.VALID_SHORT and self._short is None:
+            self._short = (key, hit)
+            return False
+        if self._keep_damaged and self._fallback is None:
+            self._fallback = hit
+        self.rejected += 1
+        self._capped = self._cap is not None and self.rejected >= self._cap
+        return self._capped
+
+    def result(self) -> tuple[_T | None, ScanMiss | None]:
+        """The selected hit, or ``None`` and why there is none."""
+        if self._chosen is not None:
+            return self._chosen, None
+        if self._short is not None:
+            return self._short[1], None
+        if self._capped:
+            return None, ScanMiss.CAPPED
+        if self._fallback is not None:
+            return self._fallback, None
+        return None, ScanMiss.NO_MATCH
 
 
 def executable_cue(prefix: bytes) -> ExecutableCue:
@@ -505,12 +558,10 @@ def scan_for_magic(
 
     ``validator``, when given, is the same :class:`HitValidator` shape the detector
     uses: a candidate-relative ``peek_more(n)`` plus known remaining from that origin.
-    Non-``VALID`` candidates are skipped while a later ``VALID`` hit is sought; if none
-    validate, the first ``VALID_SHORT`` candidate is returned, else the first skipped
-    one, so a damaged payload still reaches the parser. With no validator the first
-    structural match wins. Each caller passes the needles of one format (the 7z and
-    RAR parsers), so a later ``VALID`` hit displacing a short one is always a
-    same-format tie-break, as it is in detection's SFX scan.
+    Candidates are chosen by :class:`HitSelector` with the damaged fallback kept and
+    :data:`MAX_VALIDATED_CANDIDATES` as the rejection cap. Each caller passes the
+    needles of one format (the 7z and RAR parsers). With no validator the first
+    structural match wins and there is no cap.
 
     ``peek_more`` is served from the scan window and may pull extra bytes *forward*
     if the header extends past what has been read. It does not seek back. The source
@@ -519,12 +570,6 @@ def scan_for_magic(
     peek would silently mis-grade it. ``remaining`` is filled from a size probe taken
     once at scan start when both ``tell()`` and the total size are known, otherwise
     ``None``.
-
-    After :data:`MAX_VALIDATED_CANDIDATES` rejections the scan stops. It returns the
-    first ``VALID_SHORT`` candidate if there was one (that candidate is not a
-    rejection and does not count), else :attr:`ScanMiss.CAPPED` with no damaged
-    fallback. The cap does not apply when no validator
-    is passed. A window with no needle is :attr:`ScanMiss.NO_MATCH`.
 
     ``source`` is left wherever the scan stopped reading — callers reposition it from
     the returned origin. Overlapping needles are resolved by earliest start, not by
@@ -556,9 +601,9 @@ def scan_for_magic(
     # ``_EarliestFinder(..., searched=)`` is the same skip ``iter_magic_in_prefix``
     # already uses.
     searched = 0
-    rejected = 0
-    fallback: MagicHit | None = None
-    short_fallback: MagicHit | None = None
+    selector: HitSelector[MagicHit] = HitSelector(
+        keep_damaged=True, cap=MAX_VALIDATED_CANDIDATES
+    )
     scan_start = _scan_start_position(source) if validator is not None else None
     # One probe: the total cannot change during a forward scan, and repeating it
     # inside the candidate loop is 256 metadata reads (or 512 seeks on an
@@ -587,16 +632,8 @@ def scan_for_magic(
 
         return view
 
-    def finish(*, capped: bool = False) -> MagicScan:
-        # A VALID_SHORT hit is structurally valid, not a rejection, so the cap
-        # does not discard it: it is still the answer when nothing later validates.
-        if short_fallback is not None:
-            return MagicScan(short_fallback, None, rejected)
-        if capped:
-            return MagicScan(None, ScanMiss.CAPPED, rejected)
-        if fallback is not None:
-            return MagicScan(fallback, None, rejected)
-        return MagicScan(None, ScanMiss.NO_MATCH, rejected)
+    def finish() -> MagicScan:
+        return MagicScan(*selector.result(), selector.rejected)
 
     while consumed < limit:
         chunk = source.read(min(_SCAN_CHUNK, limit - consumed))
@@ -635,19 +672,10 @@ def scan_for_magic(
             if validator is None:
                 return MagicScan(found, None, 0)
             remaining = _remaining_from_origin(scan_start, origin, total)
-            outcome = validator(bind_view(origin), remaining)
-            if outcome is HitOutcome.VALID:
-                return MagicScan(found, None, rejected)
-            if outcome is HitOutcome.VALID_SHORT and short_fallback is None:
-                # Kept, and not counted toward the cap. Later short hits are.
-                short_fallback = found
-                search_from = index + 1
-                continue
-            if fallback is None:
-                fallback = found
-            rejected += 1
-            if rejected >= MAX_VALIDATED_CANDIDATES:
-                return finish(capped=True)
+            # One key for every hit: each caller passes the needles of one format,
+            # so a later VALID hit always displaces a held short one.
+            if selector.offer(None, found, validator(bind_view(origin), remaining)):
+                return finish()
             search_from = index + 1
 
         search_from = 0
