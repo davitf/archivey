@@ -591,7 +591,10 @@ under the set's own names (copied within `SpoolLimits` only where the filesystem
 refuses a link) on the first data read that needs it. For
 stream sources, data reads SHALL materialize ordered volumes for `unrar` when
 needed. Out-of-order volumes, and a set opened from a later volume, SHALL raise
-`UnsupportedFeatureError` or a truncated error instead of a partial result. A set
+`UnsupportedFeatureError` or a truncated error instead of a partial result. A later
+volume is one whose RAR5 MAIN or RAR 3.0+ end block records a volume number above 0, or
+whose first member continues an earlier volume; a RAR 1.5 / 2.x volume records neither,
+so one whose first member starts on its boundary reads as volume 1, as in `unrar`. A set
 whose last volume present says another follows SHALL list the members of the volumes
 present and then raise `TruncatedError` (the requirement below).
 

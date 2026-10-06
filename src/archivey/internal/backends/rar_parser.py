@@ -102,6 +102,10 @@ _RAR5_MAX_HEADER = 2 * 1024 * 1024
 # field: listing limits stay out of this parser, and a caller cannot usefully
 # raise a "more skipped extras" budget.
 _MAX_SKIPPED_HEADER_RECORDS = 16
+# The ``record`` of the ``skipped_header_records`` entry for bytes between a RAR5
+# header's fixed fields and its declared extra area. They are not a record, so the
+# reader words that diagnostic on its own.
+RAR5_UNPLACED_BYTES = "unplaced bytes"
 # SERVICE headers (``CMT``, ``QO``) are not members, so ``max_members`` never
 # counts them and a damaged one is retained for the reader to report. Both halves
 # of that are attacker-controlled: a 3.4 MB archive of nothing but damaged SERVICE
@@ -248,6 +252,10 @@ _RAR5_XREDIR_FILE_COPY = 5
 _RAR5_ENDARC_NEXT_VOLUME = 0x01
 
 _RAR3_ENDARC_NEXT_VOLUME = 0x0001
+_RAR3_ENDARC_DATACRC = 0x0002
+# RAR 3.0 and later record the volume's 0-based number in its end block (RARLAB
+# ``EARC_VOLNUMBER``); RAR 1.5 / 2.x do not.
+_RAR3_ENDARC_VOLNUMBER = 0x0008
 # 7-byte common header, then optional data CRC (4), volume number (2) and the
 # reserved space RAR 2.x writers leave (7).
 _RAR3_ENDARC_MAX_HEADER = 7 + 4 + 2 + 7
@@ -916,6 +924,23 @@ def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
     20 at most. Every FILE header carries ``LONG_BLOCK`` and is larger than that.
     """
     return not flags & _RAR3_LONG_BLOCK and header_size <= _RAR3_ENDARC_MAX_HEADER
+
+
+def _rar3_end_block_volume_number(
+    hdata: bytes, flags: int, header_size: int
+) -> int | None:
+    """The 0-based volume number a RAR 1.5-4 end block records, or ``None``.
+
+    It follows the 7-byte common header and the optional data CRC. RAR 3.0 and
+    later write it on every volume; RAR 1.5 / 2.x, and a header too short to hold
+    it, give ``None``.
+    """
+    if not flags & _RAR3_ENDARC_VOLNUMBER:
+        return None
+    pos = 7 + (4 if flags & _RAR3_ENDARC_DATACRC else 0)
+    if pos + 2 > header_size:
+        return None
+    return int.from_bytes(hdata[pos : pos + 2], "little")
 
 
 def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
@@ -1941,6 +1966,14 @@ def _parse_rar3(
                 proven=password_proven,
             )
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
+            volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
+            if volume_index == 0 and is_volume and volume_number:
+                # A later volume whose first member starts on its boundary: no
+                # member continues from an earlier volume, so only this number
+                # tells it from volume 1 (RAR5 reads MAIN's instead).
+                raise UnsupportedFeatureError(
+                    "Need first volume of multi-volume RAR archive"
+                )
             break
 
         if block_type in (_RAR3_FILE, _RAR3_SUB):
@@ -3056,6 +3089,22 @@ def _parse_rar5_file_block(
             stop_reason = "its extra area overlaps the header's fixed fields"
             pos = len(hdata)
         else:
+            if extra_start > pos:
+                # A writer leaves no room here: the fixed fields end where the
+                # extra area starts. ``unrar`` skips the bytes in between without
+                # a word and lists the member, and so does this walk; but bytes no
+                # writer puts there mean the header is damaged or crafted, which
+                # is what the diagnostic (and a strict policy) is for. Should a
+                # later RAR add a fixed field this parser does not read, this
+                # fires on every such header and is the place to teach it.
+                skipped_records.append(
+                    (
+                        RAR5_UNPLACED_BYTES,
+                        None,
+                        f"{extra_start - pos} bytes between its fixed fields and "
+                        "its declared extra area",
+                    )
+                )
             pos = extra_start
         # Walk extras until near end (allow 1 byte of padding like rarfile).
         while pos < len(hdata) - 1:

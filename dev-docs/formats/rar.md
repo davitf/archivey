@@ -126,8 +126,10 @@ an identity check or a crafted flag folds an unrelated member into the previous 
 fixed); and a volume set is *discovered* by naming convention rather than by a recorded
 disk number, unlike a spanned ZIP — though discovery is where the resemblance ends. RAR5
 records a volume number in MAIN and the parser checks the set against it, refusing a
-headless set (`Need first volume`) or an out-of-order one; RAR3 records only a flag, so
-there the name really is the whole chain.
+headless set (`Need first volume`) or an out-of-order one. RAR 1.5-4 MAIN records only
+flags; RAR 3.0 and later also write the volume's number into its end block, which the
+parser reads only to refuse a lone later volume. For ordering, there the name really is
+the whole chain.
 
 **Listing is a walk unless RAR5 `QO` is present.** With no `QO`
 (all RAR3/4; small RAR5; `-qo-`; header-encrypted RAR5) the parser starts at MAIN and
@@ -445,7 +447,13 @@ still `split_after` after the merge and raises `TruncatedError` on read, before 
 decompressor runs; `extract_all` writes the members before it and then raises. That is
 `unrar t`: every complete member OK, then "Cannot find volume" for the last one (ruled by
 davitf, 2026-10-06; this used to refuse at open). A lone later volume is still
-`UnsupportedFeatureError` ("Need first volume") rather than a partial listing. An
+`UnsupportedFeatureError` ("Need first volume") rather than a partial listing. It is
+recognised by RAR5 MAIN's volume number, by the RAR 3.0+ end block's volume number
+(`EARC_VOLNUMBER`, flag `0x0008`), or by a first member that continues an earlier volume.
+A RAR 1.5 / 2.x later volume whose first member starts on its boundary records none of
+these and lists as volume 1, as `unrar` lists it. (RAR 3.0+ also sets MAIN flag `0x0100`
+on volume 1, measured on the RAR 6.24 `tinyvol_rnn` fixtures; its absence does not mark
+a later volume, since RAR 1.5 / 2.x predate it.) An
 explicit sequence of volume *paths* is used as given, with no discovery: headers are read
 from those files in that order. For a discovered set and an explicit one alike, `unrar` is
 pointed at the first file in place only when its own next-volume rule, run from it, finds
