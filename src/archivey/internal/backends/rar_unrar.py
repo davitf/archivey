@@ -759,7 +759,9 @@ def plan_unrar_mask(
             "RAR member names that unrar reads with a backslash, or with a "
             "glob in a directory component, cannot be read through unrar: "
             "Windows unrar treats a backslash as a separator, and a "
-            "directory glob selects members archivey cannot size.",
+            "directory glob selects members archivey cannot size. Set "
+            "ArchiveyConfig.rar_decompressor to 'unar' to read it by position "
+            "instead.",
         )
     return UnrarMask(argument=argument, mask_view=mask_view, is_glob=is_glob)
 

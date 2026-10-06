@@ -309,7 +309,8 @@ _SEPARATOR_OR_DIR_GLOB = rar_unrar.UnrarMaskRefusal(
     "RAR member names that unrar reads with a backslash, or with a glob in a "
     "directory component, cannot be read through unrar: Windows unrar treats a "
     "backslash as a separator, and a directory glob selects members archivey "
-    "cannot size."
+    "cannot size. Set ArchiveyConfig.rar_decompressor to 'unar' to read it by "
+    "position instead."
 )
 _NUL = rar_unrar.UnrarNameRefusal(
     "its stored name contains a NUL character, which cannot be passed to a subprocess"
