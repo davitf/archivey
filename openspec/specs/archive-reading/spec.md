@@ -449,7 +449,7 @@ Canonical access-mode × method table: `access-mode-and-cost`.
 The system SHALL define frozen `ListingLimits` and apply them from the reader's
 open `ArchiveyConfig.listing_limits` when registering members into a
 materialized or resolved member list (`members()`, `scan_members()`, and any
-path that materializes via `_get_members_registered` / equivalent). There is no
+path that materializes via `_materialize_members` / equivalent). There is no
 per-call listing-limits override.
 
 ```python
@@ -1153,6 +1153,10 @@ has been offered to the selector:
   first case refuses the call before the destination is created. In the second case
   the members already written stay on disk and `DiagnosticRaisedError` replaces the
   report.
+- When the member list ends in terminal damage, `extract_all()` SHALL NOT report: an
+  entry could match a member past the damage that was never listed. The call raises
+  the listing's own error after writing the prefix (`safe-extraction`), so under a
+  `RAISE` disposition the caller sees that error, not `DiagnosticRaisedError`.
 - Under a `RAISE` disposition, `stream_members()` yields every selected member and
   then raises `DiagnosticRaisedError` from the iterator.
 - A predicate selector SHALL NOT be reported.
@@ -1170,6 +1174,7 @@ has been offered to the selector:
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
+| `extract_all(members=["typo.txt", "a.txt"])` on a listing that ends in damage after `a.txt`, code set to `RAISE` | `a.txt` written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
 
 ### Requirement: Honour detection payload_offset at open
 

@@ -229,7 +229,7 @@ def test_members_report_if_available_returns_cache_once_materialized() -> None:
 
 def test_streaming_iteration_registers_member_ids() -> None:
     # A streaming pass must still stamp identity onto the members it yields (the
-    # progressive path bypasses _get_members_registered).
+    # progressive path bypasses _materialize_members).
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
     (member,) = list(reader)
     assert member.member_id == 0

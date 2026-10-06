@@ -935,6 +935,36 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |
 
+### Requirement: A listing that ends in damage extracts its prefix, then raises
+
+When an archive's listing ends in terminal damage (`CorruptionError` / `TruncatedError`
+after a recovered prefix, per `archive-reading`), `extract_all()` and `extract()` SHALL
+write the members listed before the damage, in either access mode and for every format,
+and then raise the listing's own error, under either `OnError`. No report is returned, so
+the members after the damage, which were never listed, have no result. This is the order
+`stream_members()` gives (the prefix, then the error), and what unrar and 7-Zip do.
+Ruled by the maintainer (davitf, 2026-10-03); the rationale and the rejected
+alternatives are in `dev-docs/formats/rar.md` §6.
+
+The listing limits SHALL still be checked before anything is written. A hardlink in the
+prefix whose source was not selected SHALL still be completed by the second pass before
+the raise; a hardlink only points back, so its source is in the prefix. A member
+selection that the prefix satisfies SHALL NOT stop the pass before the damage, and its
+entries that match nothing in the prefix SHALL NOT be reported unmatched.
+
+#### Scenario: damaged listing matrix
+
+Pinned by `tests/test_extraction_damaged_listing.py`. A 7z or ZIP listing is one index
+read at open, so damage there fails the open.
+
+| Case | Expected |
+| --- | --- |
+| RAR4 / RAR5 / TAR listing cut or corrupt after N members, random access or streaming, listed first or not | The N members written, then the listing's error; no report |
+| Same, `members=` naming one prefix member | That member written, then the listing's error |
+| Same, `members=` naming a prefix hardlink whose source is not selected | The link written with the source's bytes, then the listing's error |
+| Same, `members=` naming a prefix member and an entry that matches nothing, `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | The prefix member written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
+| Same, prefix over a listing limit | `ResourceLimitError`; nothing written |
+
 ### Requirement: ExtractionReport is an immutable operation result
 
 The system SHALL define:

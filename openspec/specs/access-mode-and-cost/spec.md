@@ -183,7 +183,7 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | --- | --- | --- |
 | `__iter__` | ✅ repeatable after **successful** complete cache; yield-then-raise on terminal archive error | ✅ **once** (no replay); yield-then-raise on terminal archive error |
 | `stream_members` | ✅; yield-then-raise on terminal archive error | ✅ once; yield-then-raise |
-| `extract_all` | ✅; RA extract-prep fail-closed on terminal listing error | ✅ once; streaming write-then-raise |
+| `extract_all` | ✅; write-then-raise on terminal listing error (the listed prefix, then the error) | ✅ once; write-then-raise |
 | `scan_members` | ✅ (= `members`); complete-or-raise | ✅ finishes/returns pass; complete-or-raise |
 | `members_report` | ✅ always returns `MemberListReport` | ✅ may consume pass; always returns report |
 | `members_report_if_available` | ✅ report peek: stored report (complete or incomplete) / upfront index / `None`; never scans | ✅ report peek, no-consume |
