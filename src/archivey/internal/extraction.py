@@ -2402,9 +2402,6 @@ class ExtractionCoordinator:
         # inode, so the metadata must be applied to the file that carries the content. Each
         # link's destination is O2-collision-resolved against the map the main pass built
         # (a deferred link's key may have been claimed after it was orphaned).
-        #
-        # Unlike the main pass, neither orphan path adds what it writes to
-        # ``written_paths``.
         remaining: list[_Orphan] = []
         for index, orphan in enumerate(group):
             try:
@@ -2416,6 +2413,7 @@ class ExtractionCoordinator:
                 )
                 if result is None:
                     self._write_file_atomic(stream, resolved, orphan.transformed)
+                    self._state.written_paths.add(resolved)
                     self._state.source_paths.setdefault(
                         source_member.member_id, []
                     ).append(resolved)
@@ -2471,6 +2469,7 @@ class ExtractionCoordinator:
             )
             if result is None:
                 self._place_link(source_id, resolved, orphan.transformed)
+                self._state.written_paths.add(resolved)
                 result = ExtractionResult(
                     orphan.original, resolved, ExtractionStatus.EXTRACTED, None
                 )
@@ -2497,7 +2496,6 @@ class ExtractionCoordinator:
             name = orphan.original.name
             self._stop_or_log(exc, error, status, kind="hardlink", name=name)
             return
-        # Not added to ``written_paths``: see ``_materialize_orphan_source``.
         result = self._settle_placement(
             result,
             requested=orphan.dest_path,

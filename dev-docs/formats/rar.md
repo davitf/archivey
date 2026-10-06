@@ -342,7 +342,7 @@ it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than lea
 | `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
 | `target_data_split_across_volumes` | the target's bytes straddle a volume boundary | yes |
 | `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
-| `no_target_data` | the member declares no data at all | no |
+| `no_target_data` | the member's declared and packed sizes are both zero | no |
 
 The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
 an archive; a lenient one lists the member as a link with no target. The last column is
@@ -354,10 +354,12 @@ per-member failures governed by `OnError`. That is why the encrypted row is not 
 member and catch the failure, so a password really is what is missing, whereas this
 path never decrypts and a correct password does not change its answer.
 
-A target the direct read does reach is held to the member's data CRC32 before it is
-used: the header CRC does not cover the data, so that is the only check a damaged target
-meets. On a mismatch the read raises `CorruptionError`, and link finalization treats it
-as ZIP and 7z treat a damaged target (`_report_damaged_link_target`): the link stays
+A target the direct read does reach is checked twice before it is used. Its declared
+size must equal its packed size, since a stored target is its packed bytes; a header
+that declares more would have the read run into the next header. Then the bytes are held
+to the member's data CRC32, since the header CRC does not cover the data. On either
+mismatch the read raises `CorruptionError`, and link finalization treats it as ZIP and
+7z treat a damaged target (`_report_damaged_link_target`): the link stays
 listed with `link_target` unset, `SYMLINK_TARGET_UNAVAILABLE` carries
 `reason="target_data_damaged"` (so a strict policy refuses the archive), and opening or
 extracting the link raises the fault. A RAR5 redirect needs no such check, since its

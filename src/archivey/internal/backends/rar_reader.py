@@ -143,6 +143,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
+from archivey.internal.unix_mode import is_special_file_mode
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
@@ -265,6 +266,17 @@ def _unrar_finds_exactly(
         # cannot exist, so unrar cannot find it either.
         return False
     return True
+
+
+def _data_is_in_one_place(info: RarMemberInfo) -> bool:
+    """Whether the member's packed data is one run starting at ``data_offset``.
+
+    A part of a split member has a split flag set. Once the parser merges the parts,
+    the member keeps the first part's ``data_offset`` and the total packed size, and
+    ``spanned_volumes`` marks it: a read from ``data_offset`` would run past the first
+    volume's part into the next header.
+    """
+    return not (info.split_before or info.split_after or info.spanned_volumes)
 
 
 def _link_file(src: Path, dest: Path) -> None:
@@ -2323,6 +2335,14 @@ class RarReader(BaseArchiveReader):
             return MemberType.HARDLINK
         if info.is_symlink:
             return MemberType.SYMLINK
+        if (
+            info.host_os == _RAR_HOST_OS_UNIX
+            and info.mode is not None
+            and is_special_file_mode(info.mode)
+        ):
+            # A device, FIFO or socket, typed OTHER as in every format. rar itself
+            # skips these when archiving; only a hand-built header carries one.
+            return MemberType.OTHER
         return MemberType.FILE
 
     def _iter_with_data(
@@ -2739,9 +2759,7 @@ class RarReader(BaseArchiveReader):
         return (
             info.compress_type == _RAR_METHOD_STORED
             and not info.file_solid
-            and not info.split_after
-            and not info.split_before
-            and not info.spanned_volumes
+            and _data_is_in_one_place(info)
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
@@ -2872,10 +2890,31 @@ class RarReader(BaseArchiveReader):
             raw.compress_type == _RAR_METHOD_STORED
             and not raw.is_encrypted
             and not raw.encryption_unknown
-            and raw.file_size > 0
-            and not raw.split_before
-            and not raw.split_after
+            # Either size: a header where only one is zero is damage, refused below,
+            # not an archive that recorded no target.
+            and (raw.file_size > 0 or raw.compress_size > 0)
+            and _data_is_in_one_place(raw)
         ):
+            # Unlike the member read, a solid flag does not hold the target back: a
+            # stored target needs no decoder. ``encryption_unknown`` needs no arm in
+            # the reason chain below: only the RAR5 extra-area walk sets it, and a
+            # RAR5 symlink has ``file_redir`` and returned above.
+            #
+            # A stored target is its packed bytes, so the two sizes must agree, as
+            # ``_open_member`` requires of any stored member. A header that declares
+            # more would have the read take the next header, and whatever follows
+            # it, as the target. This comes before the cap below, so a header whose
+            # sizes disagree is reported as damage rather than as an oversized target
+            # it does not hold.
+            if raw.file_size != raw.compress_size:
+                raise CorruptionError(
+                    "The stored symlink target's declared size "
+                    f"({raw.file_size} bytes) does not match its packed size "
+                    f"({raw.compress_size} bytes)",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                )
             # Stored, so the read is the header's own size and cannot amplify; it is
             # still held to the cap every data-stored target is, and an oversized one
             # is refused before any of it is read.
@@ -2888,9 +2927,10 @@ class RarReader(BaseArchiveReader):
             finally:
                 view.close()
             # The header's data CRC32 covers these bytes, and the header CRC does not,
-            # so this is the only check a damaged target meets. Held to it as ZIP and
-            # 7z hold theirs: a mismatch raises, and link finalization lists the link
-            # targetless (`_report_damaged_link_target`) while open/extract re-raise.
+            # so past the size check above this is the only check a damaged target
+            # meets. Held to it as ZIP and 7z hold theirs: a mismatch raises, and link
+            # finalization lists the link targetless (`_report_damaged_link_target`)
+            # while open/extract re-raise.
             # A short read is caught by the same comparison. Encrypted members never
             # reach here, so the CRC is never a RAR5 key-tweaked one.
             if raw.crc32 is not None and zlib.crc32(data) != raw.crc32:
@@ -2920,7 +2960,7 @@ class RarReader(BaseArchiveReader):
                 "its data is encrypted and this reader does not decrypt it in place"
             )
             in_archive = True
-        elif raw.split_before or raw.split_after:
+        elif not _data_is_in_one_place(raw):
             reason = "target_data_split_across_volumes"
             detail = "its data is split across volumes"
             in_archive = True

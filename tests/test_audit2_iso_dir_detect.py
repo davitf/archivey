@@ -15,7 +15,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -300,29 +299,12 @@ def test_directory_source_deeper_than_path_max_lists_and_reads(
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
-def test_detect_format_on_a_fifo_path_matches_open_archive(tmp_path: Path) -> None:
+def test_detect_format_on_a_fifo_path_matches_open_archive(
+    tmp_path: Path, named_fifo_with_writer: Callable[[Path, bytes], None]
+) -> None:
     fifo = tmp_path / "payload"
-    os.mkfifo(fifo)
-    payload = gzip.compress(b"hello pipe")
-
-    def writer() -> None:
-        try:
-            with open(fifo, "wb") as out:
-                out.write(payload)
-        except (BrokenPipeError, OSError):
-            pass
-
-    thread = threading.Thread(target=writer, daemon=True)
-    thread.start()
-    try:
-        info = detect_format(fifo)
-    finally:
-        # Unblock the writer if detection never opened the pipe.
-        try:
-            os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
-        except OSError:
-            pass
-        thread.join(5)
+    named_fifo_with_writer(fifo, gzip.compress(b"hello pipe"))
+    info = detect_format(fifo)
     assert info.format == ArchiveFormat.GZ
 
 
