@@ -244,9 +244,11 @@ class SingleFileReader(BaseArchiveReader):
     def _on_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
         """Run ``fn`` on a seekable handle over the source; restore stream position.
 
-        Path sources get a fresh FD. Seekable streams are passed through with the caller's
-        position restored afterward. Non-seekable sources return ``None`` without calling
-        ``fn`` (never forces a decode pass). ``OSError`` propagates.
+        Path sources get a fresh FD; a path is always seekable here, because
+        ``ArchiveSource.for_path`` clears ``path`` for a FIFO, device or socket. Seekable
+        streams are passed through with the caller's position restored afterward.
+        Non-seekable sources return ``None`` without calling ``fn`` (never forces a decode
+        pass). ``OSError`` propagates. Under measurement the handle counts its seeks.
         """
         src = self._source
         assert src is not None
@@ -264,7 +266,7 @@ class SingleFileReader(BaseArchiveReader):
         finally:
             src.seek(pos)
 
-    def _with_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
+    def _try_on_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
         """:meth:`_on_seekable_source` for a metadata probe: ``OSError`` gives ``None``."""
         try:
             return self._on_seekable_source(fn)
@@ -277,8 +279,8 @@ class SingleFileReader(BaseArchiveReader):
         Any seekable source answers this, which is the same rule the trailer/CRC probes
         beside it already follow. Gating it on ``isinstance(source, Path)`` made the same
         archive report an ``int`` from disk and ``None`` from an identical ``BytesIO``.
-        A missing path raises ``OSError`` inside ``_with_seekable_source`` and comes back
-        as ``None``, as before.
+        A missing path raises ``OSError`` inside ``_on_seekable_source``, and
+        ``_try_on_seekable_source`` turns it into ``None``.
 
         The absolute ``SEEK_END`` is the member's length, not the handle's, because the
         source reaching a reader is already normalized to begin at offset 0 — a caller
@@ -286,7 +288,7 @@ class SingleFileReader(BaseArchiveReader):
         read locally, ``seek(0, SEEK_END)`` on a "passed through" caller stream looks
         like it would over-report by the start offset.
         """
-        return self._with_seekable_source(lambda f: f.seek(0, io.SEEK_END))
+        return self._try_on_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 
     def _read_source_prefix(self, length: int) -> bytes:
         src = self._source
@@ -308,7 +310,7 @@ class SingleFileReader(BaseArchiveReader):
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
 
         The source only has to *be* seekable, not be a path and not have the caller's
-        ``seekable_members`` declaration: ``_with_seekable_source`` gives the probe a
+        ``seekable_members`` declaration: ``_try_on_seekable_source`` gives the probe a
         handle either way and returns ``None`` for a non-seekable source, which is the
         only gate this needs. Returns ``None`` when the index is unavailable or corrupt.
         """
@@ -324,13 +326,13 @@ class SingleFileReader(BaseArchiveReader):
             except ArchiveyError:
                 return None
 
-        return self._with_seekable_source(probe)
+        return self._try_on_seekable_source(probe)
 
     def _probe_decompressed_size(self) -> int | None:
         """Decompressed size from the stream index/trailer, when cheaply available.
 
         Needs a seekable source, not a path and not the caller's ``seekable_members``
-        declaration: ``_with_seekable_source`` opens a fresh handle for a path and
+        declaration: ``_try_on_seekable_source`` opens a fresh handle for a path and
         restores a caller stream's position afterwards, and ``_metadata_config`` asks the
         codec for its index because the *source* can seek. The codec is opened over a
         non-owning :class:`SlicingStream` view, so closing the probe's decompressor never
@@ -357,7 +359,7 @@ class SingleFileReader(BaseArchiveReader):
             finally:
                 stream.close()
 
-        return self._with_seekable_source(probe)
+        return self._try_on_seekable_source(probe)
 
     # --- reader hooks --------------------------------------------------------------------
 
@@ -373,7 +375,8 @@ class SingleFileReader(BaseArchiveReader):
         A seekable stream source goes through a whole-source ``SharedSource`` view so
         concurrent / re-entrant opens never clobber the shared handle's position. A path
         source is passed through as a path (the codec opens an independent handle — the
-        same concurrent-open shape as ZIP path-source). A non-seekable source is read
+        same concurrent-open shape as ZIP path-source), except under measurement, where it
+        shares one handle too so its seeks stay visible. A non-seekable source is read
         once, forward-only.
         """
         member_name = self._member.name if attribute_member else None
@@ -384,6 +387,8 @@ class SingleFileReader(BaseArchiveReader):
         src = self._source
         assert src is not None  # always set in __init__
         codec_source: str | BinaryIO
+        # _wrap_compressed_input counts the compressed bytes the codec pulls whenever the
+        # source has no size hint, so the live ratio guard has a denominator.
         if self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
             # single-file archive). The view is non-owning; the SharedSource outlives it.
@@ -391,9 +396,6 @@ class SingleFileReader(BaseArchiveReader):
         elif src.path is not None:
             codec_source = str(src.path)
         else:
-            # Count compressed bytes pulled from a non-seekable stream so the live
-            # ratio guard has a denominator (a path / seekable stream keeps its cheap
-            # static size).
             codec_source = self._wrap_compressed_input(src)
         raw = open_codec_stream(
             self._codec,
