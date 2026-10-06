@@ -124,15 +124,22 @@ def _swap_placeholders(image: bytes, *, rock_ridge: dict[str, bytes]) -> bytes:
         image = image.replace(old, unit.encode("utf-16_be", "surrogatepass"))
     for placeholder_name, stored in rock_ridge.items():
         old = placeholder_name.encode()
-        assert len(old) == len(stored) and image.count(old) == 1
+        assert len(old) == len(stored) and old in image
         image = image.replace(old, stored)
     return image
 
 
 def _joliet_iso(
-    files: list[tuple[str, bytes]], *, rock_ridge: dict[str, bytes] | None = None
+    files: list[tuple[str, bytes]],
+    *,
+    rock_ridge: dict[str, bytes] | None = None,
+    symlinks: tuple[tuple[str, str], ...] = (),
 ) -> bytes:
-    """A Joliet image (and Rock Ridge when ``rock_ridge`` maps names to NM bytes)."""
+    """A Joliet image (and Rock Ridge when ``rock_ridge`` maps names to NM bytes).
+
+    ``symlinks`` are Rock Ridge ``(name, target)`` pairs in the root; a target that
+    holds a ``rock_ridge`` placeholder name is swapped with it.
+    """
     import pycdlib
 
     iso = pycdlib.PyCdlib()
@@ -161,6 +168,8 @@ def _joliet_iso(
             joliet_path="/" + "/".join(parts),
             rr_name=parts[-1] if rock_ridge is not None else None,
         )
+    for index, (name, target) in enumerate(symlinks):
+        iso.add_symlink(f"/L{index}.;1", rr_symlink_name=name, rr_path=target)
     out = io.BytesIO()
     iso.write_fp(out)
     iso.close()
@@ -233,6 +242,24 @@ def test_rock_ridge_name_takes_a_joliet_name_with_a_surrogate(
     assert member.raw_name == b"hi\xed\xa0\x80.txt"
 
 
+@requires("pycdlib")
+def test_rock_ridge_link_target_takes_a_joliet_name_with_a_surrogate(
+    tmp_path: Path,
+) -> None:
+    """A link target component that is not UTF-8 resolves to the name the file has."""
+    archive = tmp_path / "rr_link.iso"
+    archive.write_bytes(
+        _joliet_iso(
+            [("hi\ud800.txt", b"high")],
+            rock_ridge={"hi\u4e00.txt": b"hi\xed\xa0\x80.txt"},
+            symlinks=(("link", "hi\u4e00.txt"),),
+        )
+    )
+    with archivey.open_archive(archive) as reader:
+        link = next(m for m in reader.members() if m.name == "link")
+    assert link.link_target == "hi\ud800.txt"
+
+
 # --- extraction -----------------------------------------------------------------
 
 
@@ -303,42 +330,82 @@ def test_trusted_extraction_matches_the_7z_tool(archive: Path, tmp_path: Path) -
     assert _tree(ours) == _tree(theirs)
 
 
-def _compressed_rar4_surrogate(tmp_path: Path) -> tuple[Path, bytes]:
-    """The fixture's first, compressed member renamed ``hi\\ud800.txt``; its bytes."""
+def _compressed_rar4_surrogate(
+    tmp_path: Path, names: tuple[str, ...] = ("hi\ud800.txt",)
+) -> tuple[Path, list[bytes]]:
+    """The fixture's compressed members renamed to ``names``, in order; their bytes.
+
+    A name with a non-ASCII character gets a UTF-16 field, with ``_`` for it in the
+    8-bit field; an ASCII name is an 8-bit name only.
+    """
     source = _fixture("hostile_argv__rar4.rar")
     with archivey.open_archive(source) as reader:
-        expected = reader.read("canary.txt")
+        expected = [reader.read(member) for member in reader.members()[: len(names)]]
     blocks = _rar3_parse(source.read_bytes())
-    first = next(block for block in blocks if block["type"] == 0x74)
-    header = first["header"]
-    field = b"hi_.txt\x00" + _rar3_encode_unicode("hi\ud800.txt")
-    flags = struct.unpack_from("<H", header, 3)[0]
-    old_len = struct.unpack_from("<H", header, 26)[0]
-    offset = 32 + (8 if flags & 0x100 else 0)
-    header[offset : offset + old_len] = field
-    struct.pack_into("<H", header, 26, len(field))
-    struct.pack_into("<H", header, 3, flags | 0x0200)
-    struct.pack_into("<H", header, 5, len(header))
+    files = [block for block in blocks if block["type"] == 0x74]
+    for block, name in zip(files, names, strict=False):
+        header = block["header"]
+        eight_bit = "".join(c if c < "\x80" else "_" for c in name).encode()
+        flags = struct.unpack_from("<H", header, 3)[0]
+        if name.isascii():
+            field, flags = eight_bit, flags & ~0x0200
+        else:
+            field, flags = (
+                eight_bit + b"\x00" + _rar3_encode_unicode(name),
+                flags | 0x0200,
+            )
+        old_len = struct.unpack_from("<H", header, 26)[0]
+        offset = 32 + (8 if flags & 0x100 else 0)
+        header[offset : offset + old_len] = field
+        struct.pack_into("<H", header, 26, len(field))
+        struct.pack_into("<H", header, 3, flags)
+        struct.pack_into("<H", header, 5, len(header))
     archive = tmp_path / "compressed4.rar"
     archive.write_bytes(_rar3_build(blocks))
     return archive, expected
 
 
-@requires_binary("unrar")
-def test_unrar_refuses_a_compressed_rar4_surrogate_name(tmp_path: Path) -> None:
-    """A typed refusal that names unar, not the empty read it used to be.
+_UNRAR = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
 
-    No ``-n`` mask can carry a lone surrogate to ``unrar``, and unrar 7.00 on Linux
-    cuts the name at that unit anyway (``hi\\ud800.txt`` reads as ``hi``). With the
-    unit decoded as U+FFFD the mask matched nothing and the read was reported as a
-    ``TruncatedError``.
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", ["hi\ud800.txt", "pair\U0001f600.txt"])
+def test_unrar_reads_a_compressed_rar4_name_with_a_surrogate_unit(
+    tmp_path: Path, name: str
+) -> None:
+    """``unrar`` matches these names unit by unit; the mask sends each unit as ``?``.
+
+    No argv encoding carries a surrogate unit to ``unrar``. Before, a lone unit was
+    U+FFFD (the read selected nothing and reported a ``TruncatedError``), and a valid
+    pair was sent as one character where ``unrar`` holds two.
     """
-    archive, _ = _compressed_rar4_surrogate(tmp_path)
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
+    archive, expected = _compressed_rar4_surrogate(tmp_path, (name,))
+    with archivey.open_archive(archive, config=_UNRAR) as reader:
+        assert reader.members()[0].name == name
+        assert reader.read(name) == expected[0]
+
+
+@requires_binary("unrar")
+def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
+    tmp_path: Path,
+) -> None:
+    """``hi?.txt`` selects ``hiX.txt`` too, so ``unrar`` pipes the earlier member first.
+
+    The second member's 8-bit name is a mask that ``unrar`` does not match against
+    ``hi`` U+D800 ``.txt``, so that read has nothing to skip.
+    """
+    names = ("hiX.txt", "hi\ud800.txt", "hi")
+    archive, expected = _compressed_rar4_surrogate(tmp_path, names)
+    with archivey.open_archive(archive, config=_UNRAR) as reader:
+        # Decoding an earlier member first is refused by default, as for any glob.
+        with pytest.raises(UnsupportedFeatureError, match="earlier members"):
+            reader.read(names[1])
+    config = ArchiveyConfig(
+        rar_decompressor=RarDecompressor.UNRAR,
+        rar_allow_glob_member_concatenation=True,
+    )
     with archivey.open_archive(archive, config=config) as reader:
-        assert reader.members()[0].name == "hi\ud800.txt"
-        with pytest.raises(UnsupportedFeatureError, match="unar"):
-            reader.read("hi\ud800.txt")
+        assert [reader.read(name) for name in names] == expected
 
 
 @requires_binary("unar")
@@ -346,4 +413,4 @@ def test_unar_reads_a_compressed_rar4_surrogate_name(tmp_path: Path) -> None:
     archive, expected = _compressed_rar4_surrogate(tmp_path)
     config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNAR)
     with archivey.open_archive(archive, config=config) as reader:
-        assert reader.read("hi\ud800.txt") == expected
+        assert reader.read("hi\ud800.txt") == expected[0]

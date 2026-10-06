@@ -445,7 +445,11 @@ def _member_include_switch(member: str | bytes) -> str | bytes:
 
 
 def unrar_member_argument(
-    view: str | None, stored: bytes | None, *, stored_is_8bit: bool
+    view: str | None,
+    stored: bytes | None,
+    *,
+    stored_is_8bit: bool,
+    surrogates_as_wildcards: bool = False,
 ) -> str | bytes | None:
     """The name to build ``unrar``'s ``-n`` mask from: text, the stored bytes, or none.
 
@@ -465,11 +469,18 @@ def unrar_member_argument(
     ``None`` means there is no mask to give; :func:`unrar_member_refusal` turns
     that into a reason. Backslashes are separators in RAR3's stored bytes and
     ``/`` in the mask; the bytes follow the name.
+
+    ``surrogates_as_wildcards`` is for a RAR 1.5-4 Unicode name. Its view holds
+    UTF-16 code units, and no argv encoding carries a surrogate unit to ``unrar``,
+    so each becomes ``?``, which matches exactly one unit. The mask can then select
+    other members too, which the reader sizes like any glob's siblings.
     """
     if stored_is_8bit and stored is not None and sys.platform != "win32":
         return stored.replace(b"\\", b"/").rstrip(b"/")
     if view is None:
         return None
+    if surrogates_as_wildcards:
+        view = "".join("?" if "\ud800" <= c <= "\udfff" else c for c in view)
     if sys.platform == "win32":
         view = view.replace("\\", "/")
     return view.rstrip("/")
@@ -604,7 +615,8 @@ def unrar_member_refusal(member: str | bytes | None) -> str | None:
         )
     if isinstance(member, str) and any(0xD800 <= ord(c) <= 0xDFFF for c in member):
         # unrar decodes an encoded surrogate in a RAR5 name, but no argv encoding
-        # can carry one back to it.
+        # can carry one back to it. (A RAR 1.5-4 name's units are sent as ``?``,
+        # see :func:`unrar_member_argument`, so only RAR5 reaches this.)
         return (
             "unrar reads its name with a UTF-16 surrogate in it, which cannot be "
             "passed back to unrar as a mask"
@@ -846,7 +858,15 @@ def unrar_member_view(
         hsys_unix = host_os == _RAR5_HOST_UNIX
         hsys_windows = host_os == _RAR5_HOST_WINDOWS
     else:
-        text = rar3_unicode_name or unrar_char_to_wide(stored)
+        # unrar keeps a RAR 1.5-4 Unicode name as UTF-16 code units, one ``wchar_t``
+        # each, so a valid pair is two characters to its matcher (measured on 7.00:
+        # ``-n./pair??.txt`` selects ``pair`` U+1F600 ``.txt``, ``-n./pair?.txt``
+        # does not).
+        text = (
+            _as_utf16_units(rar3_unicode_name)
+            if rar3_unicode_name
+            else unrar_char_to_wide(stored)
+        )
         hsys_unix = host_os in _RAR3_HSYS_UNIX
         hsys_windows = host_os in _RAR3_HSYS_WINDOWS
     if text is None:
@@ -1063,9 +1083,16 @@ def _as_utf16_units(text: str) -> str:
     """
     if all(ord(char) <= 0xFFFF for char in text):
         return text
-    return text.encode("utf-16-le", "surrogatepass").decode(
-        "utf-16-le", "surrogatepass"
-    )
+    # Not a UTF-16 round trip: Python's decoder joins a valid pair back into one
+    # character.
+    out: list[str] = []
+    for char in text:
+        code = ord(char) - 0x10000
+        if code < 0:
+            out.append(char)
+        else:
+            out += (chr(0xD800 + (code >> 10)), chr(0xDC00 + (code & 0x3FF)))
+    return "".join(out)
 
 
 def unrar_mask_is_usable(mask_view: str) -> bool:

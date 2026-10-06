@@ -1246,6 +1246,8 @@ class IsoReader(BaseArchiveReader):
             return None
         ident = bytes(counterpart.file_identifier())
         if len(ident) % 2:
+            # A damaged Joliet name: the Rock Ridge record escapes its own bytes
+            # rather than borrow a name that ``_decode_joliet`` ends with U+FFFD.
             return None
         name, _ = _strip_version(_decode_joliet(ident), iso9660=False)
         if not _ascii_runs_match(raw, name):

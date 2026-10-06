@@ -89,11 +89,13 @@ host is MS-DOS, OS/2 or Win32, and windows-1252 for any other host. A RAR 1.5-4 
 with the Unicode flag and no UTF-16 field declares UTF-8, so `encoding=` SHALL apply to
 it only when its bytes are not valid UTF-8. The system MUST NOT decode an 8-bit name as
 UTF-16LE. `raw_name` SHALL be the stored bytes in every case, and RAR SHALL NOT emit
-`ENCODING_ARGUMENT_UNUSED`. How a name is decoded SHALL NOT change which member a read
-returns: the `unrar` mask is built from the stored name, not from the decoded text.
-A RAR 1.5-4 UTF-16 field SHALL decode with `surrogatepass`: a surrogate without its
-partner stays in `name` as that code unit, and a valid pair decodes as one character.
-Extraction writes such a name by `safe-extraction` "Lone surrogates in a member name".
+`ENCODING_ARGUMENT_UNUSED`. How a name with no UTF-16 field is decoded SHALL NOT change
+which member a read returns: its `unrar` mask is built from the stored name, not from the
+decoded text. A RAR 1.5-4 UTF-16 field SHALL decode with `surrogatepass`: a surrogate
+without its partner stays in `name` as that code unit, and a valid pair decodes as one
+character. Extraction writes such a name by `safe-extraction` "Lone surrogates in a
+member name". A read through `unrar` SHALL send each surrogate unit of the field (a
+valid pair is two) as `?` in the mask, since `unrar` matches the field unit by unit.
 
 #### Scenario: RAR name decoding matrix
 

@@ -207,7 +207,8 @@ stored bytes in the Rock Ridge and plain namespaces. `ReadBackend.USES_ENCODING`
 | The same, where the Joliet name was cut at 64 characters | Escaped, no diagnostic |
 | A symlink in that image whose target is `caf\xe9.txt` | `link_target == "café.txt"`, the name the file lists under |
 | The Joliet image, `encoding="cp1252"` | Names decode with cp1252; no diagnostic |
-| Joliet name holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`, never U+FFFD; a Rock Ridge name that is not UTF-8 borrows it |
+| Joliet name holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`, never U+FFFD; `raw_name == b"hi\xed\xa0\x80"`, the unit as its three `surrogatepass` bytes; a Rock Ridge name that is not UTF-8 borrows it |
+| A Rock Ridge symlink in that image whose target bytes are `hi\xed\xa0\x80.txt` | `link_target == "hi\ud800.txt"`, the name the file lists under |
 
 ### Requirement: Contain a System Use entry pycdlib cannot parse to its own record
 

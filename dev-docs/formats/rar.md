@@ -561,13 +561,17 @@ tried as UTF-16LE: almost any even-length byte string decodes that way, so `caf\
 used to list as `慣琮瑸`. The UTF-16 field decodes with `surrogatepass`, as 7z names do
 (7z.md §2): a lone surrogate stays in `name`, and extraction writes it by the
 cross-format rule in `safe-extraction` ("Lone surrogates in a member name"). It used to
-decode with `replace`, which also left the U+D800–U+DFFF arm of
-`_fix_rar3_astral_truncation` unreachable. 7-Zip 23.01 writes such a name as 7z's;
-`unrar` 7.00 on Linux cuts it at the first surrogate unit, a valid pair included
-(`hi\ud800.txt` → `hi`, measured), so its `-n` view of the name differs from archivey's;
-reads still pick the member by the stored 8-bit name. `raw_name` is always the stored
-bytes, and the decoding never changes which member a read returns, because the `unrar`
-mask is built from the stored name (§2.3). `USES_ENCODING` is true, so RAR no longer
+decode with `replace`, which also left the U+D800–U+DFFF arm of `_fix_rar3_astral_truncation`
+unreachable. 7-Zip 23.01 writes such a name as 7z's. `unrar` 7.00 holds the field as
+UTF-16 code units, one `wchar_t` each, so a valid pair is two characters to its `-n`
+matcher (`-n./pair??.txt` selects `pair` U+1F600 `.txt`, `-n./pair?.txt` does not), and
+`unrar x` on Linux writes the name cut at its first surrogate unit (`hi\ud800.txt` →
+`hi`); both measured. No argv encoding carries a surrogate unit to `unrar`, so the mask
+sends each one as `?`, and a member that mask also selects is skipped like any glob's
+sibling (§2.3). `raw_name` is always the stored bytes. A name with no Unicode field goes
+to `unrar` as its stored bytes, so how archivey decodes it never changes which member a
+read returns (§2.3); a name with one goes as the decoded field, as `unrar` reads it.
+`USES_ENCODING` is true, so RAR no longer
 emits `ENCODING_ARGUMENT_UNUSED`.
 Comments follow `unrar`: a RAR 2.9-4 `CMT` SERVICE header whose attribute field has bit 0
 set (`SUBHEAD_FLAGS_CMT_UNICODE`) is UTF-16LE, read in whole 2-byte units (an odd

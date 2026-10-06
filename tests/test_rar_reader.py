@@ -3341,6 +3341,12 @@ def test_rar3_rle_name_zero_correction_keeps_hi_byte() -> None:
     assert decoded == "\u0461\u0462"
 
 
+def test_rar3_unicode_name_keeps_a_lone_surrogate_unit() -> None:
+    """A unit without its partner stays as that unit, never U+FFFD."""
+    # hi=0xD8, flags=0x40 (opcode 1: low byte 0x00 under ``hi``).
+    assert _decode_rar3_unicode_name(b"a", b"\xd8\x40\x00") == "\ud800"
+
+
 def _reference_decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
     """Per-byte transcription of the pre-rewrite ``_UnicodeFilename.decode``.
 
