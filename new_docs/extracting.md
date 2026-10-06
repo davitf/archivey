@@ -3,15 +3,17 @@
 ## Extracting all or some members
 
 ```python
-archivey.extract("download.zip", "out/")
+with archivey.open_archive("download.zip") as archive:
+    archive.extract_all("out/")
 ```
 
-`extract` opens the archive, writes every member under the destination folder, and closes it
-again. It's safe by default: nothing lands outside `out/`, and an archive that expands far beyond
+`extract_all` writes every member under the destination folder. It's safe by default: nothing lands outside `out/`, and an archive that expands far beyond
 its size is stopped. [What each policy does with unusual members](#what-each-policy-does-with-unusual-members) has the details.
 
-On an open archive, `extract_all` does the same, and its `members` argument picks what to
-extract. It takes names, [`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing,
+To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in
+order, so it needs nothing more.
+
+Its `members` argument picks what to extract. It takes names, [`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing,
 or a mix of both:
 
 ```python
@@ -33,18 +35,19 @@ returning `None`.
 ## Options
 
 ```python
-archivey.extract(
-    "download.zip", "out/",
-    policy="strict",     # how much to trust names and permissions
-    overwrite="error",   # what to do when a file is already there
-    on_error="stop",     # whether a damaged member stops the rest
-    abort_on=[],         # events that stop the whole extraction at once
-    on_progress=None,    # called as files are written
-    limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
-)
+with archivey.open_archive("download.zip") as archive:
+    archive.extract_all(
+        "out/",
+        policy="strict",     # how much to trust names and permissions
+        overwrite="error",   # what to do when a file is already there
+        on_error="stop",     # whether a damaged member stops the rest
+        abort_on=[],         # events that stop the whole extraction at once
+        on_progress=None,    # called as files are written
+        limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
+    )
 ```
 
-These are the defaults, and `extract_all` takes the same arguments. `policy` decides how much of
+These are the defaults. `policy` decides how much of
 what the archive says about names and permissions gets written as it is:
 
 | `policy` | Names | Permissions |
@@ -125,7 +128,8 @@ report with one result for each member, with the path it was written to in `resu
 member as the archive stored it in `result.member`. That shows what was refused:
 
 ```python
-report = archivey.extract("download.zip", "out/")
+with archivey.open_archive("download.zip") as archive:
+    report = archive.extract_all("out/")
 for result in report:
     if result.status is archivey.ExtractionStatus.BLOCKED:
         print(result.member.name, result.error)

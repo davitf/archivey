@@ -71,10 +71,11 @@ place of a stream, and each stream works only until the loop moves on.
 ## Extract
 
 ```python
-archivey.extract("download.zip", "out/")
+with archivey.open_archive("download.zip") as archive:
+    archive.extract_all("out/")
 ```
 
-`extract` writes every member under `out/`. By default it refuses anything that would land
+`extract_all` writes every member under `out/`. By default it refuses anything that would land
 outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
 stops archives that expand to far more data than they hold. [Extracting](extracting.md)
 lists every protection and how to relax them for archives you trust, and also shows how to
