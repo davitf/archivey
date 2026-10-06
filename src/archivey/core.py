@@ -172,7 +172,7 @@ def _raise_multi_volume_not_supported(
     )
 
 
-def _refuse_incomplete_numbered_volume(
+def _refuse_unjoined_volume_names(
     resolved: ResolvedSource,
     format: ArchiveFormat | None,
     archive_name: str | None,
@@ -182,25 +182,12 @@ def _refuse_incomplete_numbered_volume(
     # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
     # must be honoured or refused as a format conflict, not rewritten as a
     # missing-volume error.
-    if format is not None and format not in (
-        ArchiveFormat.ZIP,
-        ArchiveFormat.SEVEN_Z,
-    ):
-        return
-    error = incomplete_lone_numbered_volume_error(archive_name)
-    if error is not None:
-        raise error
-
-
-def _refuse_lone_zip_split(
-    resolved: ResolvedSource,
-    format: ArchiveFormat | None,
-    archive_name: str | None,
-) -> None:
-    if (
-        resolved.volume_count == 1
-        and is_zip_split_segment_name(archive_name)
-        and (format is None or format == ArchiveFormat.ZIP)
+    if format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z):
+        error = incomplete_lone_numbered_volume_error(archive_name)
+        if error is not None:
+            raise error
+    if is_zip_split_segment_name(archive_name) and (
+        format is None or format == ArchiveFormat.ZIP
     ):
         raise UnsupportedFeatureError(
             ZIP_MULTI_VOLUME_MSG,
@@ -209,46 +196,42 @@ def _refuse_lone_zip_split(
         )
 
 
-def _refuse_unjoined_volume_names(
-    resolved: ResolvedSource,
-    format: ArchiveFormat | None,
-    archive_name: str | None,
-) -> None:
-    _refuse_incomplete_numbered_volume(resolved, format, archive_name)
-    _refuse_lone_zip_split(resolved, format, archive_name)
-
-
-def _refuse_if_stub_format_conflict(
-    stub: Path,
-    first_volume: Path,
-    requested: ArchiveFormat,
-    config: ArchiveyConfig | None,
-) -> None:
-    try:
-        info = detect_format(
-            first_volume, config=probe_config(config), follow_stub_volumes=False
-        )
-    except FormatDetectionError:
-        return
-    if info.format.container == requested.container:
-        return
-    raise ArchiveyUsageError(
-        f"{display_path(stub)} has no archive magic; the split first volume "
-        f"beside it is {info.format.display_name}, but format={requested!r} "
-        f"was requested."
-    )
-
-
 def _follow_stub_volume(
-    stub: Path, format: ArchiveFormat | None, config: ArchiveyConfig | None
+    slot: _SourceSlot, format: ArchiveFormat | None, config: ArchiveyConfig | None
 ) -> ResolvedSource | None:
+    """Switch ``slot`` from a stub-only ``.exe`` / ``.sfx`` to the split set beside it.
+
+    Returns the resolved first volume, or ``None`` when no split volume sits beside
+    the stub (``slot`` is then unchanged). Raises :class:`ArchiveyUsageError` when
+    ``format`` names a different container than the volume's, and the volume-name
+    refusals of :func:`_refuse_unjoined_volume_names`.
+    """
+    stub = slot.current.path
+    if stub is None:
+        return None
     alt = first_volume_for_stub(stub)
     if alt is None:
         return None
     if format is not None:
-        _refuse_if_stub_format_conflict(stub, alt, format, config)
+        try:
+            info = detect_format(
+                alt, config=probe_config(config), follow_stub_volumes=False
+            )
+        except FormatDetectionError:
+            # This probe only catches a confident container mismatch. A volume it
+            # cannot identify proves no conflict; the real detection after the
+            # switch reports it, to the caller's own collector.
+            pass
+        else:
+            if info.format.container != format.container:
+                raise ArchiveyUsageError(
+                    f"{display_path(stub)} has no archive magic; "
+                    f"the split first volume beside it is {info.format.display_name}, "
+                    f"but format={format!r} was requested."
+                )
     resolved = resolve_source(alt)
     _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
+    slot.replace(resolved.source)
     return resolved
 
 
@@ -518,17 +501,12 @@ def _open_resolved(
                 follow_stub_volumes=False,
             )
         except FormatDetectionError:
-            stub = archive_source.path
-            followed = (
-                _follow_stub_volume(stub, format, config) if stub is not None else None
-            )
+            followed = _follow_stub_volume(slot, format, config)
             if followed is None:
                 raise
             resolved = followed
-            archive_source = slot.replace(resolved.source)
-            archive_name = resolved.archive_name
             detected = detect_format_into(
-                archive_source, config=config, collector=collector
+                slot.current, config=config, collector=collector
             )
         resolved_format = detected.format
         format_info = detected
@@ -536,15 +514,16 @@ def _open_resolved(
         # format= still follows a stub-only miss. Skipping this made
         # detect_format(p); open_archive(p, format=info.format) open the MZ
         # bytes as ZIP/7z while auto-detect joined the split set.
-        stub = archive_source.path
         try:
-            detect_format(stub, config=probe_config(config), follow_stub_volumes=False)
+            detect_format(
+                archive_source.path,
+                config=probe_config(config),
+                follow_stub_volumes=False,
+            )
         except FormatDetectionError:
-            followed = _follow_stub_volume(stub, resolved_format, config)
-            if followed is not None:
-                resolved = followed
-                archive_source = slot.replace(resolved.source)
-                archive_name = resolved.archive_name
+            resolved = _follow_stub_volume(slot, resolved_format, config) or resolved
+    archive_source = slot.current
+    archive_name = resolved.archive_name
 
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
     # Info-ZIP's spanned sets never reach this point as a joined source (they are not
