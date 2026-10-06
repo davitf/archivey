@@ -451,27 +451,48 @@ def test_converging_chains_share_the_memo(tmp_path: Path) -> None:
         assert reader.read("b") == b"payload:end"
 
 
-# A target ``x`` names both a file ``x`` and a directory ``x/``. A symlink prefers the
-# bare name whatever the order; a hard link takes the later of the two.
-@pytest.mark.parametrize("dir_first", [False, True])
+@pytest.mark.parametrize(
+    ("order", "finalized", "streamed"),
+    [
+        pytest.param("x x/ s h", {"s": "x", "h": "x/"}, None, id="file-first"),
+        pytest.param("x/ x s h", {"s": "x", "h": "x"}, None, id="dir-first"),
+        pytest.param(
+            "x/ s h x", {"s": "x", "h": "x/"}, {"s": "x/", "h": "x/"}, id="file-last"
+        ),
+    ],
+)
 def test_link_target_tie_break_between_file_and_directory(
-    tmp_path: Path, dir_first: bool
+    tmp_path: Path,
+    order: str,
+    finalized: dict[str, str],
+    streamed: dict[str, str] | None,
 ) -> None:
-    both: list[tuple[str, str, str | None]] = [("x", "file", None), ("x/", "dir", None)]
-    if dir_first:
-        both.reverse()
-    entries = [*both, ("s", "sym", "x"), ("h", "hard", "x")]
-    later = both[-1][0]
+    """A target ``x`` names both a file ``x`` and a directory ``x/``.
+
+    A symlink prefers the bare name whatever the order; a hard link takes the later
+    of the two listed before it. A link yielded by a streaming pass sees only the
+    members before it (``streamed`` defaults to ``finalized``).
+
+    Mutant: give hard links the symlink rule (bare spelling first) and the hard link
+    in the file-first case resolves to ``x`` instead of ``x/``.
+    """
+    kinds: dict[str, tuple[str, str | None]] = {
+        "x": ("file", None),
+        "x/": ("dir", None),
+        "s": ("sym", "x"),
+        "h": ("hard", "x"),
+    }
+    entries = [(name, *kinds[name]) for name in order.split()]
     path = _tar(tmp_path / "tie.tar", entries)
     with open_archive(path) as reader:
-        assert _terminal_names(reader) == {"s": "x", "h": later}
+        assert _terminal_names(reader) == finalized
     with open_archive(path, streaming=True) as reader:
         yielded = {
             m.name: (m.link_target_member.name if m.link_target_member else None)
             for m, _stream in reader.stream_members()
             if m.is_link
         }
-        assert yielded == {"s": "x", "h": later}
+        assert yielded == (streamed or finalized)
 
 
 @pytest.mark.parametrize("seed", range(20))

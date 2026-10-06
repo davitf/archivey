@@ -1986,9 +1986,10 @@ class BaseArchiveReader(ArchiveReader):
 
         A symlink takes the last entry of the bare name, then of the ``/`` spelling.
 
-        A hard link takes the latest entry listed before itself, across both spellings,
-        and never one listed after it, in any format or mode: a hard link names a file
-        already archived. ``tar(1)`` and ``unrar`` extract one by linking to what they
+        A hard link is always bounded by its own id, so a caller passes no other
+        ``before_id`` for one. It takes the latest entry listed before itself, across
+        both spellings, and never one listed after it, in any format or mode: a hard
+        link names a file already archived. ``tar(1)`` and ``unrar`` extract one by linking to what they
         have already written, and ``unrar`` fails a link whose target comes later ("You
         need to unpack the link target first"). The other formats store no hard-link
         record. A backward answer also never changes as a streaming walk lists more
@@ -2003,15 +2004,20 @@ class BaseArchiveReader(ArchiveReader):
             return None
         hardlink = member.type == MemberType.HARDLINK
         if hardlink:
+            assert before_id is None or before_id == member._member_id
             before_id = member._member_id
             if before_id is None:
                 return None
+        if before_id is None:
+            for name in link_target_name_keys(target_name):
+                candidates = self._listed_by_name.get(name)
+                if candidates:
+                    return candidates[-1]
+            return None
         best: ArchiveMember | None = None
         best_id = -1
         for name in link_target_name_keys(target_name):
             for candidate in reversed(self._listed_by_name.get(name, [])):
-                if before_id is None:
-                    return candidate
                 candidate_id = candidate._member_id
                 if candidate_id is None or candidate_id >= before_id:
                     continue
