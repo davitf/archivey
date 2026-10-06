@@ -91,7 +91,8 @@ growing the prefix through `[0, offset)`; non-seekable and expensive-seek source
 under the smaller of 1 MiB and the budget's prefix/far/scan ceiling, and record
 `BUDGET_EXHAUSTED` past it. A far signature that ends past a positive `max_far_bytes`
 SHALL be recorded as `far_magic` *budget exhausted* rather than searched in a window too
-short to hold it, unless the source is provably too short to hold it anyway. An SFX scan
+short to hold it, unless the source is provably too short to hold it anyway, and as *not
+enabled by policy* when `max_far_bytes` is 0. An SFX scan
 that misses in a window the budget made shorter than the 2 MiB structural bound SHALL be
 recorded as `sfx_scan` *budget exhausted*, on the same carve-out.
 

@@ -263,11 +263,12 @@ def _probe_inner_tar(
 
     limit = _INNER_TAR_MAX_PROBE_BYTES
     if workspace is not None:
-        # Output against the budget's face value: this is the only tier that charges
-        # output, and a pass that reaches it returns a format, so no earlier pass (the
-        # sibling-volume retry shares the receipt) has charged any. Input against what
-        # is left: a content probe and its completion check draw on the same allowance.
         budget = workspace.budget
+        # Off when either face value is zero. Cut short: output against the budget's
+        # face value, since this is the only tier that charges output and a pass that
+        # reaches it returns a format, so no earlier pass (the sibling-volume retry
+        # shares the receipt) has charged any. Input against what is left, since a
+        # content probe and its completion check draw on the same allowance.
         if _record_tier_limit(
             workspace,
             "inner_tar",
@@ -464,7 +465,11 @@ def _extension_corroborates(
     ext_match: tuple[ArchiveFormat, str] | None,
     resolved: ArchiveFormat,
 ) -> bool:
-    """Whether the filename agrees with ``resolved`` — the same test as "no conflict"."""
+    """Whether the filename agrees with ``resolved`` — the same test as "no conflict".
+
+    No extension (``None``) is not corroboration, so a caller testing for no conflict
+    handles ``None`` itself.
+    """
     if ext_match is None:
         return False
     ext_fmt = ext_match[0]
@@ -823,7 +828,8 @@ def _detect_format_body(
         # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the
         # tier is recorded as cut short, the same rule the near tier follows. A source
-        # provably too short to hold the signature loses nothing to the clamp.
+        # provably too short to hold the signature loses nothing to the clamp. A zero
+        # ``max_far_bytes`` turns the tier off, and it is recorded as not enabled.
         reachable_far: list[MagicSignature] = []
         unreachable_far: list[MagicSignature] = []
         for e in far:
