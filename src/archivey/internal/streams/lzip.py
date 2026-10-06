@@ -15,11 +15,13 @@ be concatenated freely. Each member carries its own sizes in a 20-byte trailer (
     Trailer (20 bytes): crc32(4 LE) + data_size(8 LE) + member_size(8 LE)
 
 Version 0 (lzip before 1.0, with a 12-byte trailer and no member size) and any later
-version are refused with :class:`UnsupportedFeatureError` by every path that reads a
-header: the forward decoder, and the backward index walk at each member start and at
-the bytes after the last member it finds. A full ``LZIP`` magic always starts a member,
-so a version-0 member after a version-1 one is refused too, not read past as trailing
-data, as ``lzip`` itself reports "Version 0 member format not supported" for it.
+version are refused with :class:`UnsupportedFeatureError` by the forward decoder, and
+by the backward index walk at each member header it reaches. A full ``LZIP`` magic
+always starts a member, so a version-0 member after a version-1 one is refused too,
+not read past as trailing data, as ``lzip`` itself reports "Version 0 member format
+not supported" for it. The walk cannot reach a version-0 member that has a member
+after it; it fails as corrupt there, the seek index degrades, and the forward decoder
+refuses the member (:func:`_iter_trailers_backwards`).
 
 Spec: https://www.nongnu.org/lzip/manual/lzip_manual.html#File-format
 """
@@ -70,8 +72,13 @@ _UNKNOWN_SIZE = b"\xff" * 8
 
 
 def _check_version(header: bytes, offset: int) -> None:
-    """Refuse a member header, magic already matched, whose version is not 1."""
-    if len(header) > 4 and header[4] != _VERSION:
+    """Refuse a member header, magic already matched, whose version is not 1.
+
+    A header shorter than :data:`_HEADER_SIZE` is not checked, even when it holds the
+    version byte: it is a cut-off member, and the forward decoder, which never starts a
+    member from fewer bytes, reports it as truncated. The caller reports it the same way.
+    """
+    if len(header) >= _HEADER_SIZE and header[4] != _VERSION:
         raise UnsupportedFeatureError(
             f"Unsupported lzip version {header[4]} in the member at offset {offset}: "
             f"only version {_VERSION} is read"
@@ -188,6 +195,13 @@ def _iter_trailers_backwards(
     :class:`UnsupportedFeatureError`: at each member start, after the last member
     (:func:`_data_end`), and first at ``stop_at``, since a version-0 trailer has no
     member size and the walk could not reach that member from its end.
+
+    A real version-0 member with a member after it is not reached either: the walk
+    reads the end of its LZMA data and its 12-byte trailer as a 20-byte trailer, and
+    fails on the member size it finds there with :class:`CorruptionError`. That error
+    degrades the seek index (:func:`build_index_backwards`), so a seek falls back to
+    the sequential read, and the forward decoder refuses the member. A seek therefore
+    never skips it, but the error from this walk is corruption, not the version.
     """
     stream.seek(stop_at)
     header = stream.read(_HEADER_SIZE)
@@ -286,7 +300,7 @@ class _LzipState:
     _IN_MEMBER = 1
     _NEED_TRAILER = 2
 
-    def __init__(self, limits: DecoderLimits, offset: int = 0) -> None:
+    def __init__(self, limits: DecoderLimits, offset: int) -> None:
         self._limits = limits
         # Source offset of the current member's header, for error messages.
         self._comp_offset = offset

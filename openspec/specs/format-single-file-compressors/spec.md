@@ -353,28 +353,19 @@ after the data decode as more codes.
 
 archivey SHALL read lzip version 1 only. A member whose header has the `LZIP` magic and
 any other version byte, version 0 (lzip before 1.0) included, SHALL raise
-`UnsupportedFeatureError`, not `CorruptionError`, and SHALL NOT be decoded.
+`UnsupportedFeatureError`, not `CorruptionError`, and SHALL NOT be decoded. A full
+`LZIP` magic SHALL start a member after a version-1 member as at the start of the file,
+so a version-0 member after a version-1 one is refused, not read past as trailing data.
+This matches `lzip`, which reports such a member as an unsupported version.
 
-The forward read and the backward trailer walk (size, CRC-32 and seek index) SHALL
-agree:
+A seek SHALL NOT skip a member the forward read refuses: a seek to or past it raises
+`UnsupportedFeatureError` too. The size and CRC-32 that the metadata probe reads at
+open are unknown for such a file, and the open-time one-byte read raises
+`UnsupportedFeatureError` when the first member is the one refused.
 
-- a full `LZIP` magic always starts a member, after a version-1 member as at the start
-  of the file. A version-0 member after a version-1 one is therefore refused, not read
-  past as trailing data. This matches `lzip`, which reports such a member as an
-  unsupported version;
-- the walk SHALL check the version at every member start it reaches, and at the bytes
-  after the last member it finds, so a seek SHALL NOT skip a member the forward read
-  would refuse;
-- the metadata probe at open treats the refusal as an unreadable index (size and
-  CRC-32 unknown), and the open-time one-byte read raises `UnsupportedFeatureError` when
-  the first member is the one refused.
-
-#### Scenario: lzip version matrix
+#### Scenario: lzip versions
 
 | Source | Expected |
 | --- | --- |
-| One member, version 0 | `open_archive` and a forward read raise `UnsupportedFeatureError` |
-| One member, version 2 or 255 | Same |
-| Version-0 member before, between or after version-1 members | A forward read raises `UnsupportedFeatureError` on reaching it |
-| Same, backward walk or a seek past the version-0 member | `UnsupportedFeatureError` |
-| Version-1 member + bytes that do not start with `LZIP` | Trailing data, as in the trailing-data requirement |
+| A member in version 0, 2 or 255, anywhere in the file | A read or a seek that reaches it raises `UnsupportedFeatureError` |
+| A version-1 member + `LZIP` and a version byte, with no dictionary byte | `TruncatedError` on a read and on a seek alike |

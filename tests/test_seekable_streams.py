@@ -748,10 +748,21 @@ _V0_CASES = {
         + make_lzip_member(b"two")
     ),
     "last": lambda: make_lzip_member(b"one") + _lzip_version_0_member(b"zero" * 50),
+    "first_real": lambda: (
+        _lzip_real_version_0_member(b"zero" * 50) + make_lzip_member(b"one")
+    ),
+    "middle_real": lambda: (
+        make_lzip_member(b"one")
+        + _lzip_real_version_0_member(b"zero" * 50)
+        + make_lzip_member(b"two")
+    ),
     "last_real": lambda: (
         make_lzip_member(b"one") + _lzip_real_version_0_member(b"zero" * 50)
     ),
 }
+# A real version-0 member with a version-1 member after it: the walk from the end
+# reaches the version-0 member's end, and its 12-byte trailer has no member size.
+_V0_UNREACHABLE = {"middle_real"}
 
 
 @pytest.mark.parametrize("case", sorted(_V0_CASES))
@@ -767,12 +778,12 @@ def test_lzip_version_0_member_is_unsupported_on_forward_read(case: str) -> None
             stream.read()
 
 
-@pytest.mark.parametrize("case", sorted(_V0_CASES))
+@pytest.mark.parametrize("case", sorted(set(_V0_CASES) - _V0_UNREACHABLE))
 def test_lzip_version_0_member_is_unsupported_on_index_scan(case: str) -> None:
-    """The backward walk refuses a version-0 member, as the forward decoder does.
+    """The backward walk refuses a version-0 member it reaches, as the forward decoder does.
 
-    Before, it checked only the magic at a member start, so a seek past a version-0
-    member served later members' bytes and never reached the refusal.
+    It reaches one at a member start, at the start of its range, or right after the
+    last member it finds.
     """
     from archivey.internal.streams.lzip import peek_index_summary
 
@@ -783,11 +794,54 @@ def test_lzip_version_0_member_is_unsupported_on_index_scan(case: str) -> None:
         peek_index_summary(io.BytesIO(data), len(data))
 
 
-def test_lzip_seek_past_a_version_0_member_is_unsupported() -> None:
-    data = _lzip_version_0_member(b"zero" * 50) + make_lzip_member(b"one")
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+@pytest.mark.parametrize("case", sorted(_V0_UNREACHABLE))
+def test_lzip_version_0_member_the_walk_cannot_reach_fails_the_walk(case: str) -> None:
+    """A real version-0 member before a version-1 one fails the walk as corruption.
+
+    The walk cannot find that member's start, so it cannot name its version. The
+    seek test below pins what keeps a seek right here: the failed walk degrades the
+    index, and the sequential read refuses the member.
+    """
+    from archivey.internal.streams.lzip import peek_index_summary
+
+    data = _V0_CASES[case]()
+    with raises_corruption_not_truncation():
+        _read_index_backwards(io.BytesIO(data), len(data))
+    with raises_corruption_not_truncation():
+        peek_index_summary(io.BytesIO(data), len(data))
+
+
+@pytest.mark.parametrize("case", sorted(_V0_CASES))
+def test_lzip_seek_past_a_version_0_member_is_unsupported(case: str) -> None:
+    from archivey.diagnostics import DiagnosticCode
+
+    collector, seen = _collect_diagnostics()
+    with LzipDecompressorStream(
+        io.BytesIO(_V0_CASES[case]()), collector=collector
+    ) as stream:
         with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-            stream.seek(200)
+            stream.seek(0, io.SEEK_END)
+            stream.read()
+    degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
+    assert bool(degraded) == (case in _V0_UNREACHABLE)
+
+
+def test_lzip_cut_header_after_a_member_is_truncated_on_every_path() -> None:
+    """Five bytes after a member cannot name the next member's version.
+
+    A sequential read calls the file truncated, and a seek must too.
+    """
+    data = make_lzip_member(b"x" * 4000) + b"LZIP\x00"
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.seek(0, io.SEEK_END)
+            stream.read()
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.seek(3000)
             stream.read()
 
 
