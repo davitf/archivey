@@ -266,8 +266,10 @@ class _TarInfo(tarfile.TarInfo):
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
         # the end of this member's data area. For a header preceded by GNU long-name or
         # PAX headers this runs once per header, innermost first; the outermost call
-        # runs last and sees the final offset, which a PAX ``size`` record may change.
+        # runs last and sees the final offset, which a PAX ``size`` record may change,
+        # and the final ``linkname``, which a long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
+        _drop_unweighed_link_name(info)
         return info
 
     def _proc_member(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
@@ -365,8 +367,9 @@ def _drop_unweighed_link_name(info: tarfile.TarInfo) -> None:
     """Clear ``linkname`` on a member that is not a link.
 
     A GNU long link name or PAX linkpath ahead of a header that is not a link has no
-    meaning, and no listing limit weighs it. Clearing it as the header is parsed keeps
-    it from being held for the rest of a batch, or on the retained ``TarInfo``.
+    meaning, and no listing limit weighs it. :meth:`_TarInfo.fromtarfile` clears it as
+    the header is parsed, so neither walk holds it in a batch or on the retained
+    ``TarInfo``.
     """
     if not (info.issym() or info.islnk()):
         info.linkname = ""
@@ -862,7 +865,6 @@ class TarReader(BaseArchiveReader):
                         _HeaderBudget(self._header_budget(text_bytes)) as budget,
                     ):
                         for info in tar_iter:
-                            _drop_unweighed_link_name(info)
                             batch.append(info)
                             text_bytes += _header_text_bytes(info)
                             budget.set(self._header_budget(text_bytes))
@@ -1084,29 +1086,7 @@ class TarReader(BaseArchiveReader):
             def _open(member: ArchiveMember) -> ArchiveStream | None:
                 if not member.is_file:
                     return None
-                info = member._raw
-                assert isinstance(info, tarfile.TarInfo), (
-                    "TAR member is missing its TarInfo handle"
-                )
-                sparse_error = _sparse_map_error(info)
-                if sparse_error is not None:
-                    # Raised on the first read, as a random-access open raises it: a
-                    # consumer that skips this member does not read the bad map, and
-                    # tarfile moves on to the next header by the member's stored end.
-                    def _refuse(error: CorruptionError = sparse_error) -> BinaryIO:
-                        raise error
-
-                    return self._wrap_member_stream(
-                        None, member.name, open_fn=_refuse, size=member.size
-                    )
-                with self._handle_guard():
-                    raw = self._tar.extractfile(info)
-                if raw is None:
-                    raw = BytesIO(b"")
-                stream: BinaryIO = ensure_binaryio(raw)
-                if self._handle_lock is not None:
-                    stream = LockedStream(stream, self._handle_lock)
-                return self._wrap_member_stream(stream, member.name, size=member.size)
+                return self._open_member_stream(member, defer_sparse_error=True)
 
             yield from self._drive_pass_streams(
                 self._begin_forward_pass(),
@@ -1159,9 +1139,7 @@ class TarReader(BaseArchiveReader):
         ``dev-docs/known-issues.md``.
         """
         if self._eof_header_rejected:
-            self._emit_eof_marker(
-                observed_bytes=512, observed_kind="nonzero", corrupt=True
-            )
+            self._emit_eof_marker(observed_bytes=512, observed_kind="nonzero")
             return
         fileobj = self._tar.fileobj
         if fileobj is None:
@@ -1174,16 +1152,12 @@ class TarReader(BaseArchiveReader):
         if len(chunk) == 512:
             # A non-null block where the second trailer block belongs: tarfile treated a
             # bad block as a clean end (or trailing junk followed a lone zero block).
-            self._emit_eof_marker(
-                observed_bytes=512, observed_kind="nonzero", corrupt=True
-            )
+            self._emit_eof_marker(observed_bytes=512, observed_kind="nonzero")
             return
         observed_kind: Literal["absent", "short"] = (
             "absent" if len(chunk) == 0 else "short"
         )
-        self._emit_eof_marker(
-            observed_bytes=len(chunk), observed_kind=observed_kind, corrupt=False
-        )
+        self._emit_eof_marker(observed_bytes=len(chunk), observed_kind=observed_kind)
 
     def _verify_nothing_but_zeros_to_eof(self) -> None:
         """Report a non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of the trailer.
@@ -1321,9 +1295,13 @@ class TarReader(BaseArchiveReader):
         *,
         observed_bytes: int,
         observed_kind: Literal["absent", "short", "nonzero"],
-        corrupt: bool,
     ) -> None:
-        if corrupt:
+        """Report a missing or damaged two-zero-block end-of-archive marker.
+
+        Unlike data after a complete trailer, a non-null block in the marker's place is
+        always corruption: tarfile read it as a clean end and shortened the listing.
+        """
+        if observed_kind == "nonzero":
             message = (
                 "TAR archive is corrupt: a non-null block appears where the "
                 "end-of-archive marker was expected. Stdlib tarfile treats a corrupt "
@@ -1378,10 +1356,6 @@ class TarReader(BaseArchiveReader):
             info, self._tar.encoding, self._tar.errors, self._tar.pax_headers
         )
 
-        # The random-access walk has already dropped a non-link's linkname as it
-        # parsed the header; the streaming walk parses one header at a time and
-        # drops it here.
-        _drop_unweighed_link_name(info)
         link_target = (
             info.linkname
             if member_type in (MemberType.SYMLINK, MemberType.HARDLINK)
@@ -1475,18 +1449,36 @@ class TarReader(BaseArchiveReader):
         return member
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        # The callee takes the handle guard inside this boundary.
+        with self._translated_errors(member.name):
+            return self._open_member_stream(member, defer_sparse_error=False)
+
+    def _open_member_stream(
+        self, member: ArchiveMember, *, defer_sparse_error: bool
+    ) -> ArchiveStream:
+        """Open ``member``'s data. A bad sparse map raises here, or with
+        ``defer_sparse_error`` on the first read: a forward-only consumer that skips
+        the member does not read the bad map, and tarfile moves on to the next header
+        by the member's stored end."""
         info = member._raw
         assert isinstance(info, tarfile.TarInfo), (
             "TAR member is missing its TarInfo handle"
         )
-        # Boundary outside the guard: translation/stamping never run while the
-        # shared-fileobj lock is held.
-        with self._translated_errors(member.name):
-            sparse_error = _sparse_map_error(info)
-            if sparse_error is not None:
+        sparse_error = _sparse_map_error(info)
+        if sparse_error is not None:
+            if not defer_sparse_error:
                 raise sparse_error
-            with self._handle_guard():
-                raw = self._tar.extractfile(info)
+
+            def _refuse(error: CorruptionError = sparse_error) -> BinaryIO:
+                raise error
+
+            return self._wrap_member_stream(
+                None, member.name, open_fn=_refuse, size=member.size
+            )
+        # Callers put their translation boundary outside this guard, so
+        # translation/stamping never run while the shared-fileobj lock is held.
+        with self._handle_guard():
+            raw = self._tar.extractfile(info)
         if raw is None:
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.
