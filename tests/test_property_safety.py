@@ -47,6 +47,7 @@ from archivey.internal.volumes import (
     _NUMBERED_VOLUME_RE,
     _OLD_RAR_CONTINUATION_RE,
     _RAR_PART_RE,
+    _VOLUME_SCHEMES,
     _numbered_part_number,
     _rar_part_number,
     discover_volume_siblings,
@@ -539,6 +540,17 @@ def test_volume_part_helpers_total(name: str) -> None:
     _NUMBERED_VOLUME_RE.match(name)
     _RAR_PART_RE.match(name)
     _OLD_RAR_CONTINUATION_RE.match(name)
+
+
+# Discovery classifies a name by the first scheme that matches, so the schemes'
+# trailing anchors must keep them disjoint: ``my.part1.zip.001`` is numbered only.
+@example(name="my.part1.zip.001")
+@example(name="my.part1.exe")
+@example(name="my.part1.r00")
+@given(name=_volume_style_names)
+def test_volume_schemes_are_disjoint(name: str) -> None:
+    matched = [p.pattern for p in _VOLUME_SCHEMES if p.match(name) is not None]
+    assert len(matched) <= 1, matched
 
 
 # ``rar_volume_name`` is the closed form of unrar's next-name walk: archivey stages a
