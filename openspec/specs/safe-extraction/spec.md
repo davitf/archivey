@@ -307,13 +307,14 @@ U+DC80–U+DCFF SHALL keep its `surrogateescape` meaning, one undecodable byte, 
 format: it is written as that byte, or percent-escaped by the portable-name rule. The
 path checks run on the name the disk spelling gives, before the portable-name rule, and
 a rejection by them names the stored member name. An error raised while writing the
-member names the name that is written: the stored name under `TRUSTED`, the escaped
-one under `STRICT` and `STANDARD`. Every error names a link target as stored, never in
-its disk spelling. The collision key and the overwrite policy see the name that is
-written. Under every policy a lone U+D800 and a name whose undecodable bytes are
-`ed a0 80` are therefore one file: both are `hi%ED%A0%80` under `STRICT` and
-`STANDARD`, and both are the bytes under `TRUSTED`. A name that cannot be encoded even
-so is a `FilterRejectionError`, never a raw `UnicodeEncodeError`.
+member, a deferred hardlink included, names the name from before the disk spelling:
+the stored name under `TRUSTED`, the escaped one under `STRICT` and `STANDARD`. Every
+error names a link target as stored, never in its disk spelling. The collision key and
+the overwrite policy see the spelling that reaches disk. Under every policy a lone
+U+D800 and a name whose undecodable bytes are `ed a0 80` are therefore one file: both
+are `hi%ED%A0%80` under `STRICT` and `STANDARD`, and both are the bytes under
+`TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
+raw `UnicodeEncodeError`.
 
 #### Scenario: lone surrogate matrix
 

@@ -448,6 +448,8 @@ class _Orphan:
     ``transformed`` is the policy/filter-transformed copy from the first pass: it supplies
     the on-disk identity (mode, timestamps) when the source's content is materialized at
     this link's path (see the ``safe-extraction`` "copy supplies the identity" rule).
+    ``spelled_from`` is ``transformed`` before its disk spelling, when that differs, so
+    an error names it as the first pass would (``_report_stored_spelling``).
     """
 
     result_index: int
@@ -455,6 +457,11 @@ class _Orphan:
     transformed: ArchiveMember
     dest_path: Path
     source: ArchiveMember
+    spelled_from: ArchiveMember | None = None
+
+    def report_stored_spelling(self, exc: ArchiveyError | OSError) -> None:
+        if isinstance(exc, ArchiveyError) and self.spelled_from is not None:
+            _report_stored_spelling(exc, self.transformed, self.spelled_from)
 
 
 @dataclass(frozen=True)
@@ -2220,7 +2227,14 @@ class ExtractionCoordinator:
             )
         # Re-readable: resolve in the second pass.
         self._state.orphans.append(
-            _Orphan(result_index, original, transformed, dest_path, source)
+            _Orphan(
+                result_index,
+                original,
+                transformed,
+                dest_path,
+                source,
+                spelled_from=self._current.spelled_from,
+            )
         )
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
 
@@ -2389,20 +2403,24 @@ class ExtractionCoordinator:
         # ``written_paths``.
         remaining: list[_Orphan] = []
         for index, orphan in enumerate(group):
-            resolved, prior, collided_with = self._resolve_collision(
-                orphan.original, orphan.transformed, orphan.dest_path
-            )
-            result = self._make_room(
-                orphan.original, orphan.transformed, resolved, atomic=True
-            )
-            if result is None:
-                self._write_file_atomic(stream, resolved, orphan.transformed)
-                self._state.source_paths.setdefault(source_member.member_id, []).append(
-                    resolved
+            try:
+                resolved, prior, collided_with = self._resolve_collision(
+                    orphan.original, orphan.transformed, orphan.dest_path
                 )
-                result = ExtractionResult(
-                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                result = self._make_room(
+                    orphan.original, orphan.transformed, resolved, atomic=True
                 )
+                if result is None:
+                    self._write_file_atomic(stream, resolved, orphan.transformed)
+                    self._state.source_paths.setdefault(
+                        source_member.member_id, []
+                    ).append(resolved)
+                    result = ExtractionResult(
+                        orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                    )
+            except (ArchiveyError, OSError) as exc:
+                orphan.report_stored_spelling(exc)
+                raise
             result = self._settle_placement(
                 result,
                 requested=orphan.dest_path,
@@ -2436,9 +2454,13 @@ class ExtractionCoordinator:
 
     def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
         """One link of ``_link_orphan_group``, which rechecks symlinks after it."""
-        resolved, prior, collided_with = self._resolve_collision(
-            orphan.original, orphan.transformed, orphan.dest_path
-        )
+        try:
+            resolved, prior, collided_with = self._resolve_collision(
+                orphan.original, orphan.transformed, orphan.dest_path
+            )
+        except (ArchiveyError, OSError) as exc:
+            orphan.report_stored_spelling(exc)
+            raise
         try:
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
@@ -2451,6 +2473,7 @@ class ExtractionCoordinator:
         except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
+            orphan.report_stored_spelling(exc)
             # FAILED, as for an orphaned source.
             error, status = self._classify(exc, orphan.original.name)
             # Nothing the second pass runs raises FilterRejectionError.
