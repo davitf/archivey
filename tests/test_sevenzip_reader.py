@@ -2723,6 +2723,38 @@ def _to_filetime_ticks(unix_seconds: int) -> int:
 
 
 @pytest.mark.parametrize(
+    ("slot", "field"),
+    [
+        ("last_write_time", "modified"),
+        ("last_access_time", "accessed"),
+        ("creation_time", "created"),
+    ],
+)
+def test_an_out_of_range_filetime_is_none_and_reported(slot: str, field: str) -> None:
+    """Each of the three 7z time slots reports a value past datetime's range."""
+    from dataclasses import replace
+
+    from archivey.diagnostics import MemberTimestampContext
+
+    record = replace(_created_slot_record(None), creation_time=None)
+    record = replace(record, **{slot: 2**64 - 1})
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(record, 0)
+        (diagnostic,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
+    assert getattr(member, field) is None
+    context = diagnostic.context
+    assert isinstance(context, MemberTimestampContext)
+    assert (context.field, context.source) == (field, "ntfs")
+    assert context.value_repr == str(2**64 - 1)
+    assert diagnostic.message == f"Invalid NTFS timestamp for 'a.txt': {2**64 - 1}"
+
+
+@pytest.mark.parametrize(
     ("attributes", "unix_written"),
     [
         (0x8000 | 0x20 | (0o100644 << 16), True),  # 7-Zip on Linux, p7zip
