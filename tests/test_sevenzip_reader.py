@@ -2741,6 +2741,29 @@ def test_unix_special_file_is_other(attributes: int, expected: MemberType) -> No
     assert member.type is expected
 
 
+@requires_binary("7z")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_real_7z_cli_fifo_is_other_and_not_extracted(tmp_path: Path) -> None:
+    """7-Zip and p7zip store a FIFO with its Unix mode and no data."""
+    src = tmp_path / "src"
+    src.mkdir()
+    os.mkfifo(src / "fifo")
+    (src / "reg.txt").write_bytes(b"hi")
+    archive = tmp_path / "fifo.7z"
+    subprocess.run(
+        ["7z", "a", str(archive), "fifo", "reg.txt"],
+        cwd=src,
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(archive) as reader:
+        types = {m.name: m.type for m in reader.members()}
+        assert types == {"fifo": MemberType.OTHER, "reg.txt": MemberType.FILE}
+        reader.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "fifo").exists()
+    assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
+
+
 def _to_filetime_ticks(unix_seconds: int) -> int:
     return (unix_seconds + 11_644_473_600) * 10_000_000
 

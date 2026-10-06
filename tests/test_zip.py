@@ -1818,10 +1818,11 @@ def test_unix_special_file_is_other(tmp_path: Path, file_type: int) -> None:
             info = zipfile.ZipInfo(name)
             info.create_system = 3
             info.external_attr = mode << 16
-            zf.writestr(info, b"" if name == "dev" else b"data")
+            zf.writestr(info, b"xyz" if name == "dev" else b"data")
     with open_archive(path) as ar:
         types = {m.name: m.type for m in ar.members()}
         assert types == {"dev": MemberType.OTHER, "f.txt": MemberType.FILE}
+        assert ar.get("dev").size == 3  # the stored size, not zeroed
         ar.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "dev").exists()
     assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
