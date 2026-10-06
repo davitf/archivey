@@ -19,8 +19,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, ListingLimits, OnError, open_archive
-from archivey.exceptions import ResourceLimitError
+from archivey import ArchiveyConfig, ListingLimits, MemberType, OnError, open_archive
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+)
+from archivey.exceptions import CorruptionError, ResourceLimitError
 from tests.conftest import requires_binary
 from tests.test_audit2_cross_format import _rar4_blocks, _rar5_blocks
 
@@ -94,7 +99,7 @@ def _listing(data: bytes) -> tuple[dict[str, bytes], type[BaseException], str]:
         assert report.error is not None  # precondition: the listing ends in damage
         contents = {}
         for member in report.members:
-            if member.is_file or member.type.value == "hardlink":
+            if member.is_file or member.type is MemberType.HARDLINK:
                 contents[member.name] = reader.read(member)
     return contents, type(report.error), str(report.error)
 
@@ -135,6 +140,7 @@ def test_streaming_extract_writes_the_same_prefix(
     tmp_path: Path, data: bytes, prefix: set[str]
 ) -> None:
     contents, error_type, message = _listing(data)
+    assert set(contents) == prefix  # precondition
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data), streaming=True) as reader:
         with pytest.raises(error_type) as excinfo:
@@ -213,4 +219,62 @@ def test_a_listing_limit_inside_the_prefix_still_writes_nothing(
     with open_archive(io.BytesIO(data), config=config) as reader:
         with pytest.raises(ResourceLimitError):
             reader.extract_all(dest)
+    assert _files_on_disk(dest) == {}
+
+
+@pytest.mark.parametrize("raise_unmatched", [False, True], ids=["default", "raise"])
+@pytest.mark.parametrize("listed_first", [False, True], ids=["fresh", "listed"])
+@pytest.mark.parametrize(("data", "prefix"), _CASES)
+def test_an_entry_unmatched_in_the_prefix_is_not_reported(
+    tmp_path: Path,
+    data: bytes,
+    prefix: set[str],
+    listed_first: bool,
+    raise_unmatched: bool,
+) -> None:
+    # The entry could match a member past the damage, which was never listed, so it
+    # is not reported unmatched: under RAISE the caller gets the listing's error, not
+    # DiagnosticRaisedError, and the prefix member is still written.
+    overrides = (
+        {DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: DiagnosticDisposition.RAISE}
+        if raise_unmatched
+        else {}
+    )
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(overrides=overrides))
+    contents, error_type, message = _listing(data)
+    first = sorted(prefix)[0]
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        if listed_first:
+            reader.members_report()
+        with pytest.raises(error_type) as excinfo:
+            reader.extract_all(dest, members=["typo.txt", first])
+        counts = reader.diagnostics.counts
+    assert str(excinfo.value) == message
+    assert counts.get(DiagnosticCode.MEMBER_SELECTOR_UNMATCHED, 0) == 0
+    assert _files_on_disk(dest) == {first: contents[first]}
+
+
+def test_a_fresh_corruption_error_from_the_pass_propagates_at_once(
+    tmp_path: Path,
+) -> None:
+    # Only the reader's own walk-error object marks listing damage. A pass that wraps
+    # it in a new CorruptionError is a member fault: it propagates at once, so the
+    # second pass does not run and the selected hard link stays unwritten.
+    data = _tar_with_hardlink()
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(data)) as reader:
+        real_pass = reader._stream_members
+
+        def wrapping_pass(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            try:
+                yield from real_pass(*args, **kwargs)
+            except CorruptionError as exc:
+                raise CorruptionError(f"wrapped: {exc}") from exc
+
+        reader._stream_members = wrapping_pass  # type: ignore[method-assign]
+        with pytest.raises(CorruptionError) as excinfo:
+            reader.extract_all(dest, members=["b.txt"])
+        assert excinfo.value is not reader._walk_error
+    assert str(excinfo.value).startswith("wrapped: ")
     assert _files_on_disk(dest) == {}

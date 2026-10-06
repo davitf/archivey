@@ -381,7 +381,7 @@ class BaseArchiveReader(ArchiveReader):
       RAR) iterates ``_listed_members()``, which does that in streaming and drains the
       shared walk in random access, so its members are the reader's own objects.
 
-    Everything else here (``_get_members_registered``, ``_resolve_link``,
+    Everything else here (``_materialize_members``, ``_resolve_link``,
     ``_open_with_link_follow``, ``_stamp_error_context``) is internal plumbing and is not
     an extension point.
     """
@@ -451,6 +451,9 @@ class BaseArchiveReader(ArchiveReader):
         # ``_iter_members()`` runs once for a walk that completes. ``_walk`` is the
         # backend's generator while the walk is unfinished; ``_walk_done`` is set when it
         # ends, cleanly or on terminal damage, and ``_walk_error`` holds that damage.
+        # Its object identity is a contract: extraction tells listing damage (write the
+        # prefix, then raise) from a member fault by ``exc is _walk_error``, so a pass
+        # that ends on the damage re-raises this object and never wraps it.
         # ``_walk_failure`` poisons a streaming walk that failed any other way, since
         # its prefix was already handed out and cannot be walked again. Until a
         # random-access walk ends, ``_walk_built`` keeps every member object it produced
@@ -684,14 +687,14 @@ class BaseArchiveReader(ArchiveReader):
         """Yield (member, stream) pairs in archive order; backs ``stream_members``.
 
         This default is for **random-access / fully-indexed** backends only (ZIP,
-        directory): it calls ``_get_members_registered()``, which eagerly drains
+        directory): it calls ``_materialize_members()``, which eagerly drains
         ``_iter_members()`` and builds the name map *before* yielding anything.
 
         Streaming / forward-only / solid backends **must override** this — it is a
         correctness requirement, not just an optimization. A non-seekable TAR or a solid
         7z/RAR cannot enumerate every member before reading data, so the override must
         produce ``(member, stream)`` pairs progressively from a single forward pass and
-        must **not** call ``_get_members_registered()``. The yielded stream is only valid
+        must **not** call ``_materialize_members()``. The yielded stream is only valid
         until the iterator advances (see the ``stream_members`` contract in
         ``archive-reading``); for non-file members it is ``None``.
 
@@ -1530,17 +1533,6 @@ class BaseArchiveReader(ArchiveReader):
             self._materialized = None
             self._state.fail_materialization()
             raise
-
-    def _get_members_registered(
-        self, *, enforce_listing_limits: bool = True
-    ) -> list[ArchiveMember]:
-        """Return the complete member list, raising on incomplete reports."""
-        report = self._materialize_members(
-            enforce_listing_limits=enforce_listing_limits
-        ).report
-        if report.error is not None:
-            raise report.error
-        return list(report.members)
 
     def _extraction_listing(self) -> ContextManager[None]:
         """Apply ``ListingLimits`` for an extraction over this random-access reader.

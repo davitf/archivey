@@ -943,6 +943,8 @@ write the members listed before the damage, in either access mode and for every 
 and then raise the listing's own error, under either `OnError`. No report is returned, so
 the members after the damage, which were never listed, have no result. This is the order
 `stream_members()` gives (the prefix, then the error), and what unrar and 7-Zip do.
+Ruled by the maintainer (davitf, 2026-10-03); the rationale and the rejected
+alternatives are in `dev-docs/formats/rar.md` §6.
 
 The listing limits SHALL still be checked before anything is written. A hardlink in the
 prefix whose source was not selected SHALL still be completed by the second pass before

@@ -122,11 +122,13 @@ short pointer to it:
   archive ends in a terminal listing failure (VISION damaged-input recipe).
 - `__iter__` / `stream_members` — yield recovered members then raise on the same
   failures (either access mode).
+- `extract_all` / `extract` — write the members listed before the damage, then raise
+  the same failure (either access mode; no report is returned).
 
 The docs SHALL state that diagnostics alone are not the primary signal for these
 failures, that an incomplete pass does not publish a complete member cache, and
-that RA extract-prep remains fail-closed (no partial writes from a corrupt
-archive). Salvage / `--salvage` remains out of scope and separately reserved.
+that extraction from a listing that ends in damage leaves the prefix's members on
+disk when it raises (per `safe-extraction`). Salvage / `--salvage` remains out of scope and separately reserved.
 
 #### Scenario: listing honesty documentation
 

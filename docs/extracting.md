@@ -218,14 +218,14 @@ universal path-safety check or a policy filter — is always recorded as `BLOCKE
 extraction continues, under either `STOP` or `CONTINUE`.
 
 An archive whose member list ends in damage (a TAR or RAR that is cut or corrupt
-partway, for example) does not fail closed. The members listed before the damage are
-written, and then the call raises the damage, usually `TruncatedError` or
-`CorruptionError`, under either `OnError`. No report is returned. This is what unrar and
-7-Zip do, and the order `stream_members()` gives. A hard link in that prefix still gets
-its content, because its source always comes before it. A 7z or ZIP keeps its member list
-in one index, so damage there fails `open_archive()` and nothing is written.
-
-A TAR archive has no index, so its extraction is one forward pass in either access mode.
+partway, for example) does not fail closed. A TAR has no index, so its member list is
+read during its one forward pass, in either access mode; a RAR lists header by header.
+The members listed before the damage are written, and then the call raises the damage,
+usually `TruncatedError` or `CorruptionError`, under either `OnError`. No report is
+returned. This is what unrar and 7-Zip do, and the order `stream_members()` gives. A hard
+link in that prefix still gets its content, because its source always comes before it. A
+7z or ZIP keeps its member list in one index, so damage there fails `open_archive()` and
+nothing is written.
 
 To abort the whole archive on the first unsafe member (fail-closed strict security),
 pass `abort_on`:
