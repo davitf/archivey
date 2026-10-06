@@ -774,7 +774,7 @@ class SevenZipReader(BaseArchiveReader):
                 ts_issues.append(issue)
         extra = (
             MemberExtra({EXTRA_IS_REPARSE_POINT: True})
-            if reparse_fallback is not None
+            if _is_windows_reparse_point(attrs)
             else MemberExtra()
         )
         ctime = None
@@ -874,8 +874,14 @@ class SevenZipReader(BaseArchiveReader):
         """For an entry flagged as a Windows reparse point, the type it reverts to when
         its data is not a link buffer (the bit is set for deduplication stubs and cloud
         placeholders too, whose content stays readable); ``None`` for any other entry.
+
+        A Unix mode of ``S_IFDIR`` in the high word types the entry a directory ahead of
+        the bit (`_member_type`), so it has no link target to settle or read.
         """
-        if not _is_windows_reparse_point(record.attributes):
+        attrs = record.attributes
+        if not _is_windows_reparse_point(attrs) or (
+            attrs is not None and stat.S_ISDIR(attrs >> 16)
+        ):
             return None
         return self._member_type_ignoring_reparse(record)
 
