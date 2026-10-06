@@ -882,13 +882,14 @@ def test_a_truncated_member_is_truncated_whatever_its_header_said(
     assert "encrypted" not in message.lower()
 
 
-def _graft_service_extra_area(data: bytes, extra: bytes) -> bytes:
+def _graft_service_extra_area(data: bytes, extra: bytes, *, gap: bytes = b"") -> bytes:
     """Give the first SERVICE header an extra area holding ``extra``.
 
     ``comment__.rar``'s ``CMT`` header has none, so the flag, the size vint and the
     bytes are all added here and the header CRC recomputed. Note ``extra`` must be
     at least two bytes: the walk allows one byte of trailing padding (as rarfile
     does), so a one-byte area is never walked and grafting one changes nothing.
+    ``gap`` goes between the fixed fields and the extra area, outside both.
     """
     pos = 8  # past the RAR5 signature
     while pos < len(data):
@@ -913,6 +914,7 @@ def _graft_service_extra_area(data: bytes, extra: bytes) -> bytes:
             + _vint(header_flags | 0x0001)
             + _vint(len(extra))
             + body[p - body_at :]
+            + gap
             + extra
         )
         rebuilt = (
@@ -1269,16 +1271,65 @@ def test_bytes_before_the_declared_extra_area_are_not_read_as_records(
 ) -> None:
     """A redirect record placed between the name and the declared area is not part of
     the area. Reading it made a plain file list as a symlink to a target the header
-    never declared."""
+    never declared.
+
+    ``unrar`` lists the member and says nothing. archivey lists it the same way but
+    reports the bytes: no writer leaves room between the fixed fields and the extra
+    area, so they mean the header is damaged or crafted, and a strict policy refuses.
+    """
     path = tmp_path / "gap.rar"
     path.write_bytes(
         _rar5_file_with_extra(gap=_redir_record(b"elsewhere"), extra=b"\x01\x64")
     )
+    gap_size = len(_redir_record(b"elsewhere"))
     with open_archive(path) as archive:
         (member,) = archive.members()
         assert member.type is MemberType.FILE
         assert member.link_target is None
-        assert not member.diagnostics
+        assert not member.is_encrypted, "the extra area was read to its end"
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        context = diagnostic.context
+        assert isinstance(context, MemberHeaderRecordContext)
+        assert not context.list_truncated
+        assert f"{gap_size} bytes between its fixed fields" in context.reason
+        assert f"{gap_size} bytes between its fixed fields" in diagnostic.message
+        assert "extra record" not in diagnostic.message, diagnostic.message
+
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(path, config=strict) as archive:
+            archive.members()
+
+
+def test_bytes_before_a_service_headers_extra_area_are_reported(
+    tmp_path: Path,
+) -> None:
+    """The same gap in a ``CMT`` header is reported in the service-header wording.
+    The area itself was read to its end, so the comment is still used."""
+    data = _graft_service_extra_area(
+        (_FIXTURES / "comment__.rar").read_bytes(), b"\x01\x64", gap=b"\x07\x07\x07"
+    )
+    path = tmp_path / "gap_comment.rar"
+    path.write_bytes(data)
+    with open_archive(path) as archive:
+        assert archive.info.comment == "This is a\nmulti-line comment"
+        (diagnostic,) = [
+            d
+            for d in archive.diagnostics.retained
+            if d.code == DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+    context = diagnostic.context
+    assert isinstance(context, MemberHeaderRecordContext)
+    assert context.member_name == "" and context.member_id is None
+    assert "CMT service header has 3 bytes between" in diagnostic.message, (
+        diagnostic.message
+    )
+
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(path, config=strict) as archive:
+            archive.members()
 
 
 def test_the_declared_extra_area_is_read_where_it_is(tmp_path: Path) -> None:
@@ -1308,6 +1359,68 @@ def test_an_extra_area_larger_than_its_header_is_a_corrupt_header(
     with raises_corruption_not_truncation(match="extra area"):
         with open_archive(path) as archive:
             archive.members()
+
+
+def _rar5_file_header_size(*, gap: bytes, extra: bytes) -> int:
+    """The whole FILE header :func:`_rar5_file_with_extra` builds: CRC, size vint and
+    body, which is what ``unrar`` compares the extra size with."""
+    framing = len(_rar5_header(1, _rar5_vint(0), b"")) + len(
+        _rar5_header(5, _rar5_vint(0), b"")
+    )
+    return len(_rar5_file_with_extra(gap=gap, extra=extra)) - 8 - framing
+
+
+@pytest.mark.parametrize(
+    ("below", "corrupt"), [(1, False), (0, True)], ids=["whole-minus-1", "whole"]
+)
+def test_the_extra_size_limit_is_the_whole_header(
+    tmp_path: Path, below: int, corrupt: bool
+) -> None:
+    """The extra size is compared with the whole header, CRC and size vint included.
+    One byte short of that is an overlap and lists; the whole header is corrupt. The
+    oracle below runs the same two sizes through ``unrar``."""
+    extra = _redir_record(b"target")
+    declared = _rar5_file_header_size(gap=b"", extra=extra) - below
+    path = tmp_path / "boundary.rar"
+    path.write_bytes(
+        _rar5_file_with_extra(gap=b"", extra=extra, declared_extra=declared)
+    )
+    if corrupt:
+        with raises_corruption_not_truncation(match="extra area"):
+            with open_archive(path) as archive:
+                archive.members()
+        return
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+        assert member.type is MemberType.FILE
+        (diagnostic,) = member.diagnostics
+        assert isinstance(diagnostic.context, MemberHeaderRecordContext)
+        assert "overlaps" in diagnostic.context.reason
+
+
+@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+@pytest.mark.parametrize(
+    ("below", "corrupt"), [(1, False), (0, True)], ids=["whole-minus-1", "whole"]
+)
+def test_unrar_draws_the_extra_size_limit_at_the_whole_header(
+    tmp_path: Path, below: int, corrupt: bool
+) -> None:
+    """``unrar`` 7.00's ``ExtraSize >= HeadSize`` counts the CRC and the size vint:
+    a size between the body length and the whole header lists, as it does here."""
+    extra = _redir_record(b"target")
+    declared = _rar5_file_header_size(gap=b"", extra=extra) - below
+    path = tmp_path / "boundary.rar"
+    path.write_bytes(
+        _rar5_file_with_extra(gap=b"", extra=extra, declared_extra=declared)
+    )
+    result = subprocess.run(
+        ["unrar", "lt", "-p-", str(path)], capture_output=True, text=True, check=False
+    )
+    output = result.stdout + result.stderr
+    assert ("Corrupt header" in output) is corrupt, output
+    if not corrupt:
+        assert result.returncode == 0, output
+        assert "Type: File" in output, output
 
 
 def test_an_extra_area_overlapping_the_fixed_fields_is_reported(

@@ -65,6 +65,7 @@ from archivey.internal.backends.rar_copy_sources import FileCopySources
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
+    RAR5_UNPLACED_BYTES,
     RAR_ID,
     DamagedServiceHeader,
     RarArchive,
@@ -1542,8 +1543,12 @@ class RarReader(BaseArchiveReader):
                 )
                 if archive.is_volume and not archive.needs_next_volume:
                     # A lone volume that says nothing follows it is a later
-                    # volume, or the only one, of a set; a RAR 1.5-4 later volume
-                    # whose first member starts there cannot be told from the first.
+                    # volume, or the only one, of a set. One that says another
+                    # follows is volume 1 here: the parse refuses a later volume
+                    # from its volume number (RAR5 MAIN, RAR 3.0+ end block) or a
+                    # first member that continues an earlier one. Only a RAR 1.5 /
+                    # 2.x later volume whose first member starts on its boundary
+                    # records neither, and lists as volume 1 of an incomplete set.
                     raise TruncatedError(
                         "Incomplete RAR multi-volume set: additional volumes required"
                     )
@@ -2375,7 +2380,11 @@ class RarReader(BaseArchiveReader):
             unknown_version = raw.unknown_compression_version()
             if unknown_version is not None:
                 # ``unrar p`` writes nothing for it ("Unknown method"), so it
-                # takes no room in the pipe and raises on its first read.
+                # takes no room in the pipe and raises on its first read. In a
+                # solid archive ``unrar`` stops at this member, so the members
+                # after it in the same stream fail as well, whatever offset they
+                # get: a known limit (dev-docs/formats/rar.md, the unknown
+                # compression version row).
                 def _refused() -> BinaryIO:
                     raise self._unknown_compression_error(member, unknown_version)
 
@@ -2406,8 +2415,10 @@ class RarReader(BaseArchiveReader):
 
         ``plan`` may keep a running cursor (the ``unrar`` pass does). So this driver
         calls it exactly once per member the shared output carries, in listing
-        order. It never calls it for a file copy or a non-payload member. Calling it
-        for any member the output does not carry would shift every later offset.
+        order. It never calls it for a file copy, a non-payload member, or a member
+        that runs into a missing volume (only the last member present can, so
+        skipping it shifts no later offset). Calling it for any member the output
+        does not carry would shift every later offset.
         """
         solid: SolidBlockReader | None = None
         sources = self._file_copy_sources(copies)
@@ -2602,16 +2613,28 @@ class RarReader(BaseArchiveReader):
         context_name = name if member is not None else ""
         for record, record_id, reason in info.skipped_header_records:
             named = record if record_id is None else f"{record} ({record_id})"
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
+            if record == RAR5_UNPLACED_BYTES:
+                message = (
+                    f"This RAR5 member's header has {reason}, which no writer "
+                    "leaves; they were not read, as unrar does not read them."
+                    if member is not None
+                    else f"This archive's {name} service header has {reason}, "
+                    "which no writer leaves; they were not read."
+                )
+            elif member is not None:
+                message = (
                     f"RAR5 extra record {named} is malformed and was dropped "
                     f"({reason}); the member is listed without what it carried."
-                    if member is not None
-                    else f"RAR5 extra record {named} in this archive's {name} "
+                )
+            else:
+                message = (
+                    f"RAR5 extra record {named} in this archive's {name} "
                     f"service header is malformed and was dropped ({reason}); "
                     f"the header was read without what it carried."
-                ),
+                )
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=message,
                 context=MemberHeaderRecordContext(
                     archive_name=self._archive_name,
                     member_name=context_name,
@@ -3141,8 +3164,9 @@ class RarReader(BaseArchiveReader):
         """
         return UnsupportedFeatureError(
             f"RAR member {quoted(member.name)} is compressed with {version}, which "
-            'unrar does not know (it reports "Unknown method"); it may need a newer '
-            "version of RAR.",
+            "neither RAR decompressor archivey runs is known to decode (unrar 7.00 "
+            'reports "Unknown method"), so switching decompressors does not help; it '
+            "may need a newer version of RAR.",
             archive_name=self._archive_name,
             member_name=member.name,
             source_format=ArchiveFormat.RAR,

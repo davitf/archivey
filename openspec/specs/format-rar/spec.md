@@ -591,7 +591,10 @@ under the set's own names (copied within `SpoolLimits` only where the filesystem
 refuses a link) on the first data read that needs it. For
 stream sources, data reads SHALL materialize ordered volumes for `unrar` when
 needed. Out-of-order volumes, and a set opened from a later volume, SHALL raise
-`UnsupportedFeatureError` or a truncated error instead of a partial result. A set
+`UnsupportedFeatureError` or a truncated error instead of a partial result. A later
+volume is one whose RAR5 MAIN or RAR 3.0+ end block records a volume number above 0, or
+whose first member continues an earlier volume; a RAR 1.5 / 2.x volume records neither,
+so one whose first member starts on its boundary reads as volume 1, as in `unrar`. A set
 whose last volume present says another follows SHALL list the members of the volumes
 present and then raise `TruncatedError` (the requirement below).
 
@@ -636,8 +639,11 @@ volume". A lone volume 1 opened as a stream or a path is such a set.
 
 The RAR5 extra area of a FILE header is a list of optional records, placed by its
 declared size: it is the header's last `extra_size` bytes, as `unrar` reads it, whatever
-lies between the end of the name and that point. An extra size not smaller than the
-header SHALL raise `CorruptionError` (`unrar`: "Corrupt header"). An area that would
+lies between the end of the name and that point. Bytes in between SHALL be skipped, as
+`unrar` skips them, and SHALL be reported as `MEMBER_HEADER_RECORD_SKIPPED`: no writer
+leaves them, so they mean a damaged or crafted header. An extra size not smaller than the
+whole header, its CRC and size field included, SHALL raise `CorruptionError` (`unrar`:
+"Corrupt header"). An area that would
 overlap the fields already read SHALL be left unread, as `unrar` ignores it, and the
 member SHALL be reported as having had its header cut short (below). The reader already
 ignores a record whose type it does not recognise. A record whose type it *does*
@@ -687,8 +693,9 @@ above SHALL NOT be read as justifying this.
   extra area
 - **WHEN** the archive is listed
 - **THEN** the member SHALL list as a plain file, not as a link, as in `unrar`
-- **AND** a header whose declared extra size is at least the header's size SHALL raise
-  `CorruptionError`
+- **AND** the member SHALL carry `MEMBER_HEADER_RECORD_SKIPPED` for the skipped bytes
+- **AND** a header whose declared extra size is at least the whole header's size SHALL
+  raise `CorruptionError`, and one byte less SHALL list the member
 
 #### Scenario: A record whose size cannot be used stops the walk
 
