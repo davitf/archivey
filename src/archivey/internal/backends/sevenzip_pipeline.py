@@ -108,6 +108,7 @@ from archivey.internal.streams.zstd_framing import (
 # Omitting max_members on the archive-level entry point means the ListingLimits
 # default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -1152,5 +1153,5 @@ def parse_sevenzip_archive(
     # O8: encrypted headers never legitimately decode to zero file records.
     # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
     if header_encrypted and not block.files:
-        raise EncryptionError("Password(s) rejected for the 7z header")
+        raise EncryptionError(HEADER_PASSWORD_REJECTED)
     return materialize_archive(signature, block, is_header_encrypted=header_encrypted)

@@ -31,7 +31,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoReader
+from archivey.internal.backends.iso_reader import IsoReader, _strip_version
 from archivey.internal.registry import get_registry
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
@@ -1856,3 +1856,33 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
         [member] = ar.members()
         assert member.name == "café.txt"
         assert member.raw_name == "café.txt".encode()
+
+
+@pytest.mark.parametrize(
+    ("name", "iso9660", "expected"),
+    [
+        ("FOO.;1", True, ("FOO", 1)),
+        ("FOO.;1", False, ("FOO.", 1)),
+        ("FOO;1", True, ("FOO", 1)),
+        ("FOO;1", False, ("FOO", 1)),
+        ("A.;12", True, ("A", 12)),
+        ("A.;12", False, ("A.", 12)),
+        # A bare ``;N`` is a plain ISO 9660 name; Joliet strips it to nothing.
+        (";1", True, (";1", None)),
+        (";1", False, ("", 1)),
+        # A lone dot is kept: it is the whole stem, not an empty extension.
+        (".;1", True, (".", 1)),
+        (".;1", False, (".", 1)),
+        ("..;3", True, (".", 3)),
+        ("..;3", False, ("..", 3)),
+        ("FOO.;", True, ("FOO.;", None)),
+        ("FOO.;", False, ("FOO.;", None)),
+        # A final newline is part of the name, so no version follows it.
+        ("FOO;1\n", True, ("FOO;1\n", None)),
+        ("FOO;1\n", False, ("FOO;1\n", None)),
+    ],
+)
+def test_strip_version_rules(
+    name: str, iso9660: bool, expected: tuple[str, int | None]
+) -> None:
+    assert _strip_version(name, iso9660=iso9660) == expected

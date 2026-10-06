@@ -1080,6 +1080,56 @@ and RAR5 lists and then emits `ARCHIVE_EOF_MARKER_MISSING`.
 | `-hp` RAR5 without a check value, cut after a header's first cipher block | `EncryptionError` at open |
 | Later volume of a set cut inside a header | `TruncatedError` naming that volume |
 
+### Requirement: A damaged end-of-archive block SHALL keep the listing
+
+When a RAR end-of-archive block (`ENDARC`) fails its header CRC, the archive SHALL open
+and list every member before it, and those members SHALL open and read as they would
+with an intact block. The damage is after the last member, so it SHALL be reported as
+`ARCHIVE_EOF_MARKER_MISSING` after the members, once per damaged volume (`format="rar"`,
+`expected_marker="end_of_archive_block"`, `observed_kind="nonzero"`, `observed_bytes`
+the offset where the block starts in its volume, `expected_bytes` 0).
+`members_report().error` SHALL be `None`, and `DiagnosticPolicy.strict()` SHALL refuse
+the archive after the listing is delivered. This SHALL hold for RAR 1.5-4 and RAR5, in
+both access modes. It matches `unrar` 7.00, which lists such an archive, tests each
+member OK, and then reports one error.
+
+The type of a header whose CRC failed is not proof either, since one flipped byte can
+make a MAIN or FILE header's type read as `ENDARC`. A CRC-failed header SHALL be taken
+as the end block only when its type reads as `ENDARC`, it has an end block's shape (no
+data area, and a header no larger than an end block's), and the file ends right after
+it. Any other CRC-failed header SHALL raise `CorruptionError`, as before this
+requirement.
+
+The walk SHALL NOT read the flags of a damaged block, so its next-volume flag SHALL NOT
+chain the walk to another volume. In a multi-volume set the walk SHALL continue past
+that volume only when a member header in it, whose CRC matched, marks its data as
+continuing in the next volume, which is the rule for a volume with no end block. When no
+member does, the set SHALL end at that volume: any later volumes the caller supplied are
+not read, and the diagnostic names the damaged volume. When a member does continue and
+no next volume is supplied, the open SHALL raise `TruncatedError`, as for any
+incomplete set.
+
+With encrypted headers, the damage is reported this way only once the header password
+is proven, as for a cut (see the previous requirement). Before that proof, a CRC
+mismatch in the end block reads the same as a wrong key, so the open SHALL raise the
+wrong-password `EncryptionError`. That happens when the end block is the first
+encrypted header of a RAR 1.5-4 archive, and in any RAR5 archive whose encryption
+record has no check value.
+
+#### Scenario: damaged end-of-archive block matrix
+
+| Case | Expected |
+| --- | --- |
+| Plain RAR 1.5-4 or RAR5, end block CRC mismatch | Full listing; members read; `ARCHIVE_EOF_MARKER_MISSING` after them; strict refuses |
+| MAIN or FILE header whose type byte is flipped to the end block's | `CorruptionError` at open |
+| Damaged end block followed by any byte | `CorruptionError` at open |
+| Damaged last header typed as the end block but with a data area or an oversized header | `CorruptionError` at open |
+| Damaged end block with its next-volume flag set, no member continues | Set ends at that volume; later volumes not read |
+| Volume 1 of a set damaged, its last member continues into volume 2 | Full set listing; one diagnostic naming volume 1 |
+| `-hp` RAR5 with a check value, or `-hp` RAR 1.5-4 after a header whose CRC16 matched | Full listing; `ARCHIVE_EOF_MARKER_MISSING` |
+| `-hp` RAR 1.5-4 whose end block is the first encrypted header | `EncryptionError` ("wrong password?") at open |
+| `-hp` RAR5 without a check value | `EncryptionError` ("wrong password?") at open |
+
 ### Requirement: Serve a solid pass's file copies from the source it decoded
 
 A solid `stream_members()` pass, and the extraction built on it, SHALL keep the bytes of

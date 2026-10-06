@@ -37,6 +37,15 @@ _SEP_SPLIT = re.compile(r"[\\/]")
 _SEP_KEEP_SPLIT = re.compile(r"([\\/])")
 
 
+def _map_segments(name: str, fn: Callable[[str], str]) -> str:
+    """``name`` with ``fn`` applied to each segment between separators (``/`` or
+    ``\\``); the separators are kept exactly as they are."""
+    return "".join(
+        part if part in ("/", "\\") else fn(part)
+        for part in _SEP_KEEP_SPLIT.split(name)
+    )
+
+
 def _is_absolute(name: str) -> bool:
     """Whether ``name`` is an absolute path: a POSIX root, a UNC share, or a drive letter."""
     if name.startswith("/") or name.startswith("\\"):
@@ -104,16 +113,37 @@ def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
 
 
 def _within(path: Path, root: Path) -> bool:
-    return path == root or path.is_relative_to(root)
+    return path.is_relative_to(root)
 
 
-def _resolve_or_none(path: Path) -> Path | None:
-    """``path.resolve()``, or ``None`` when a symlink loop stops it (Python before
-    3.13 raises ``RuntimeError`` for one)."""
+def _escapes(path: Path, root: Path) -> bool:
+    """Whether ``path`` resolves outside ``root``. A path that cannot be resolved (a
+    symlink loop; Python before 3.13 raises ``RuntimeError`` for one) counts as an
+    escape, as it does in the check after a link is created."""
     try:
-        return path.resolve()
+        return not _within(path.resolve(), root)
     except (OSError, RuntimeError):
-        return None
+        return True
+
+
+def _check_path_string(
+    value: str, *, member_name: str, what: str, link_target: str | None = None
+) -> None:
+    """Refuse a string that cannot name a filesystem path: a NUL, which the OS
+    truncates on, or a character the platform filesystem encoding cannot represent.
+    ``what`` is ``"member name"`` or ``"link target"``, for the message."""
+    if "\x00" in value:
+        raise FilterRejectionError(
+            f"Null byte in {what}", member_name=member_name, link_target=link_target
+        )
+    try:
+        os.fsencode(value)
+    except UnicodeEncodeError as exc:
+        raise FilterRejectionError(
+            f"{what.capitalize()} cannot be encoded for the filesystem",
+            member_name=member_name,
+            link_target=link_target,
+        ) from exc
 
 
 def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
@@ -174,19 +204,11 @@ def check_universal(
     # rejected (escaping and internal alike): a well-formed archive has no reason to carry
     # one. An absolute name reaching here was not re-rooted: STRICT, or a filter that
     # returned one (see reroot_absolute).
-    if "\x00" in name:
-        raise FilterRejectionError("Null byte in member name", member_name=name)
     # A name the platform filesystem encoding cannot represent (a lone surrogate outside
     # the surrogateescape range, on POSIX) can never be materialized under dest — and it
     # would otherwise crash the parent-resolution below with a raw UnicodeEncodeError.
     # (Windows' surrogatepass encoding represents lone surrogates, so this passes there.)
-    try:
-        os.fsencode(name)
-    except UnicodeEncodeError as exc:
-        raise FilterRejectionError(
-            "Member name cannot be encoded for the filesystem",
-            member_name=name,
-        ) from exc
+    _check_path_string(name, member_name=name, what="member name")
     if _is_absolute(name):
         raise FilterRejectionError("Absolute path not allowed", member_name=name)
     if ".." in _SEP_SPLIT.split(name):
@@ -237,47 +259,24 @@ def check_universal(
     # post-creation in the coordinator). A symlink target is relative to the link's own
     # directory; a hardlink target is archive-root relative. An absolute target makes the
     # join absolute, so it passes only when it names a path inside dest.
-    if member.link_target is not None:
-        target = member.link_target
-        if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            # Same string-level guards as for names: a NUL or an unencodable target
-            # cannot name a filesystem path, and would crash the resolves below with a
-            # raw ValueError / UnicodeEncodeError instead of a typed rejection.
-            if "\x00" in target:
-                raise FilterRejectionError(
-                    "Null byte in link target",
-                    member_name=name,
-                    link_target=target,
-                )
-            try:
-                os.fsencode(target)
-            except UnicodeEncodeError as exc:
-                raise FilterRejectionError(
-                    "Link target cannot be encoded for the filesystem",
-                    member_name=name,
-                    link_target=target,
-                ) from exc
+    target = member.link_target
+    if target is not None and member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
+        # Same string-level guards as for names: a NUL or an unencodable target
+        # cannot name a filesystem path, and would crash the resolves below with a
+        # raw ValueError / UnicodeEncodeError instead of a typed rejection.
+        _check_path_string(
+            target, member_name=name, what="link target", link_target=target
+        )
         if link_target_on_disk is not None:
             target = link_target_on_disk(target)
-        if member.type == MemberType.SYMLINK:
-            link_parent = (dest_root / name).parent
-            # A target that cannot be resolved (a loop) counts as an escape, as it
-            # does in the check after the link is created.
-            resolved_target = _resolve_or_none(link_parent / target)
-            if resolved_target is None or not _within(resolved_target, dest_root):
-                raise FilterRejectionError(
-                    "Symlink target escapes destination",
-                    member_name=name,
-                    link_target=member.link_target,
-                )
-        elif member.type == MemberType.HARDLINK:
-            resolved_target = _resolve_or_none(dest_root / target)
-            if resolved_target is None or not _within(resolved_target, dest_root):
-                raise FilterRejectionError(
-                    "Hardlink target escapes destination",
-                    member_name=name,
-                    link_target=member.link_target,
-                )
+        is_symlink = member.type == MemberType.SYMLINK
+        base = (dest_root / name).parent if is_symlink else dest_root
+        if _escapes(base / target, dest_root):
+            raise FilterRejectionError(
+                f"{'Symlink' if is_symlink else 'Hardlink'} target escapes destination",
+                member_name=name,
+                link_target=member.link_target,
+            )
 
 
 # --- Policy permission transforms (applied to a transient copy) ---------------------
@@ -361,6 +360,12 @@ _RESERVED_NAMES = frozenset(
 )
 
 
+def _is_reserved_segment(segment: str) -> bool:
+    """Whether ``segment`` names a Windows reserved device: its first dot-separated
+    component, stripped of surrounding whitespace the way Win32 strips it."""
+    return segment.partition(".")[0].strip().upper() in _RESERVED_NAMES
+
+
 def _sanitize_portable_name(name: str) -> str:
     """O7: rewrite a name carrying non-UTF-8 (surrogateescape) bytes to a deterministic
     portable spelling. Each surrogateescape char ``U+DC80``–``U+DCFF`` (a raw byte
@@ -404,25 +409,22 @@ def _strip_trailing_dot_space(name: str) -> str:
     and ``collision_key``: a TAR name keeps ``\\`` as a literal character, and Windows
     then writes it as a separator, so ``foo. \\bar`` must lose its trailing space too.
     The separators themselves are kept as they are; only the segments change."""
-    out: list[str] = []
-    for part in _SEP_KEEP_SPLIT.split(name):
-        if part in ("/", "\\"):
-            out.append(part)
-            continue
+
+    def strip(part: str) -> str:
         # Empty (from a leading/trailing/`//` separator) and the path-navigation spellings
         # "." / ".." are structural, not trailing-dot hazards — pass them through untouched
         # ("." is the never-empty root from normalize_member_name; ".." is caught earlier by
         # check_universal). Stripping them would wrongly collapse the segment to empty.
         if part in ("", ".", ".."):
-            out.append(part)
-            continue
+            return part
         stripped = part.rstrip(". ")
         if stripped == "":
             raise FilterRejectionError(
                 f"Path segment is entirely dots/spaces: {part!r}", member_name=name
             )
-        out.append(stripped)
-    return "".join(out)
+        return stripped
+
+    return _map_segments(name, strip)
 
 
 def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
@@ -463,8 +465,7 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
             continue
         # Reserved device names and ':' are unsafe (device capture / NTFS alternate data
         # stream), not merely awkward — rejected under STRICT and STANDARD on every platform.
-        stem = segment.split(".", 1)[0].strip().upper()
-        if stem in _RESERVED_NAMES:
+        if _is_reserved_segment(segment):
             raise FilterRejectionError(
                 f"Windows-reserved device name in path: {segment!r}", member_name=name
             )
@@ -522,8 +523,8 @@ def _sanitize_segment(segment: str) -> str:
     """A path segment made writable on Windows: ``:`` becomes ``_`` and a reserved
     device name gets ``_`` after its stem (``CON.txt`` → ``CON_.txt``)."""
     segment = segment.replace(":", "_")
-    stem, dot, rest = segment.partition(".")
-    if stem.strip().upper() in _RESERVED_NAMES:
+    if _is_reserved_segment(segment):
+        stem, dot, rest = segment.partition(".")
         return stem + "_" + dot + rest
     return segment
 
@@ -536,10 +537,7 @@ def _sanitize_path(name: str) -> str:
     # Only a rooted name loses its root. A drive-relative "a:b" is kept, and the
     # segment rewrite below turns its colon into "_".
     name = _collapse_dotdot(strip_absolute_root(name))
-    return "".join(
-        part if part in ("/", "\\") else _sanitize_segment(part)
-        for part in _SEP_KEEP_SPLIT.split(name)
-    )
+    return _map_segments(name, _sanitize_segment)
 
 
 def sanitize_names(member: ArchiveMember) -> ArchiveMember:

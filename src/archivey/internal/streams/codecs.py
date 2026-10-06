@@ -34,10 +34,12 @@ import struct
 import threading
 import weakref
 import zlib
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn
+from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn, TypeVar
 
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
@@ -71,6 +73,7 @@ from archivey.internal.streams.brotli_framing import (
     chain_proves_invalid,
     first_block_overruns_source,
 )
+from archivey.internal.streams.bzip2_resume import Bzip2Resume
 from archivey.internal.streams.decompress import (
     BrotliDecompressorStream,
     Deflate64DecompressorStream,
@@ -87,7 +90,6 @@ from archivey.internal.streams.decompressor_stream import (
     gzip_corruption,
     report_trailing_data,
 )
-from archivey.internal.streams.deflate_resume import ResumeReachedStreamEnd
 from archivey.internal.streams.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.ppmd_child import PpmdChildError
@@ -100,7 +102,7 @@ from archivey.internal.streams.rapidgzip_child import (
     rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
-from archivey.internal.streams.resume import ask_resume_offset
+from archivey.internal.streams.resume import ResumeReachedStreamEnd, ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ReadOnlyIOStream,
@@ -132,6 +134,8 @@ from archivey.types import (
     StreamFormat,
     crc32_digest,
 )
+
+_T = TypeVar("_T")
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -268,17 +272,29 @@ class _AcceleratorStream(DelegatingStream):
         latter forces the *complete* index, so asking the cost would change it. A partial
         index reports a resume point further back, which errs toward telling the caller.
         """
-        offsets = getattr(self._inner, "available_block_offsets", None)
-        if offsets is None:
-            return None
-        try:
-            known = offsets()
-        except Exception:  # noqa: BLE001 - a diagnostic probe never breaks a read
-            return None
+        known = self.available_block_offsets()
         preceding = [value for value in known.values() if value <= target]
         if not preceding:
             return None
         return max(preceding)
+
+    def available_block_offsets(self) -> dict[int, int]:
+        """The part of the decoder's index built so far, compressed bit offset to
+        decompressed offset; empty when it has none or the query fails.
+
+        Unlike :meth:`block_offsets` it forces nothing, and it still answers after a
+        read failed: measured on rapidgzip 0.16's bzip2 decoder, a stream cut in half
+        lists every block it decoded ahead of the reader before the error.
+        """
+        offsets = getattr(self._inner, "available_block_offsets", None)
+        if offsets is None:
+            return {}
+        try:
+            return dict(offsets())
+        # Empty is safe for both callers: the rewind diagnostic then reports a point
+        # further back, and a takeover starts at the origin.
+        except Exception:  # noqa: BLE001 - see the comment above
+            return {}
 
     def compressed_position(self) -> int | None:
         """How far into the source the decoder has read, in whole bytes, if it says.
@@ -769,6 +785,59 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
     return VerifyingStream(stream, {}, expected_size=size)
 
 
+@contextmanager
+def _restoring_position(source: CodecSource) -> Iterator[None]:
+    """Put a stream source back at its position on exit. A path has no position."""
+    if isinstance(source, (str, os.PathLike)):
+        yield
+        return
+    start = source.tell()
+    try:
+        yield
+    finally:
+        source.seek(start)
+
+
+@contextmanager
+def _peeking(source: CodecSource) -> Iterator[BinaryIO]:
+    """Read ``source`` without moving it: a path is opened afresh, and a stream's position
+    is put back on exit."""
+    if isinstance(source, (str, os.PathLike)):
+        with open(os.fspath(source), "rb") as f:
+            yield f
+        return
+    with _restoring_position(source):
+        yield source
+
+
+def _source_tail(
+    source: CodecSource, *, size: int, min_length: int
+) -> tuple[int | None, bytes | None]:
+    """``(source_byte_length, last size bytes)`` of ``source``, without moving it.
+
+    ``(length, None)`` when the source is shorter than ``min_length``, and
+    ``(None, None)`` when it cannot be read: a stream without ``seek``, ``tell`` or
+    ``read``, one that says it cannot seek, or a read that fails.
+    """
+    try:
+        if not isinstance(source, (str, os.PathLike)):
+            seekable = getattr(source, "seekable", None)
+            if any(
+                getattr(source, name, None) is None for name in ("seek", "tell", "read")
+            ):
+                return None, None
+            if seekable is not None and not seekable():
+                return None, None
+        with _peeking(source) as f:
+            length = f.seek(0, io.SEEK_END)
+            if length < min_length:
+                return length, None
+            f.seek(-size, io.SEEK_END)
+            return length, f.read(size)
+    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+        return None, None
+
+
 def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]:
     """Capture ``(source_byte_length, ISIZE_trailer)`` for the truncation backstop in one pass.
 
@@ -785,33 +854,10 @@ def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]
     file; callers needing a hard bound still prefer a container-declared size. Restores the
     source position for a caller-owned stream.
     """
-    try:
-        if isinstance(source, (str, os.PathLike)):
-            with open(os.fspath(source), "rb") as f:
-                length = f.seek(0, io.SEEK_END)
-                if length < 18:
-                    return length, None
-                f.seek(-4, io.SEEK_END)
-                return length, int.from_bytes(f.read(4), "little")
-        seek = getattr(source, "seek", None)
-        tell = getattr(source, "tell", None)
-        read = getattr(source, "read", None)
-        seekable = getattr(source, "seekable", None)
-        if seek is None or tell is None or read is None:
-            return None, None
-        if seekable is not None and not seekable():
-            return None, None
-        pos = tell()
-        try:
-            length = seek(0, io.SEEK_END)
-            if length < 18:
-                return length, None
-            seek(-4, io.SEEK_END)
-            return length, int.from_bytes(read(4), "little")
-        finally:
-            seek(pos)
-    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
-        return None, None
+    length, trailer = _source_tail(source, size=4, min_length=18)
+    if trailer is None:
+        return length, None
+    return length, int.from_bytes(trailer, "little")
 
 
 def _gzip_header_refused(source: CodecSource) -> bool:
@@ -837,15 +883,9 @@ def _gzip_header_refused(source: CodecSource) -> bool:
                 return True
         return False
 
-    if isinstance(source, (str, os.PathLike)):
-        with open(os.fspath(source), "rb") as f:
-            return refused(f)
-    start = source.tell()
-    try:
-        source.seek(0)
-        return refused(source)
-    finally:
-        source.seek(start)
+    with _peeking(source) as f:
+        f.seek(0)
+        return refused(f)
 
 
 def _gzip_isize_from_source(source: CodecSource) -> int | None:
@@ -1155,8 +1195,18 @@ def _stdlib_bzip2(
     )
 
 
+# Given the accelerator's stream after its error, the position delivered so far, and a
+# way to open a fresh view of the source: the points a standard-library takeover may
+# resume from, in ascending order.
+_ResumePoints = Callable[[BinaryIO, int, Callable[[], BinaryIO]], list[SeekPoint]]
+
+
 class _StdlibOnAcceleratorError(DelegatingStream):
     """Finish a rapidgzip decode with the standard library when rapidgzip fails on data.
+
+    The DEFLATE family (rapidgzip in a child process) and bzip2 (rapidgzip's bzip2
+    decoder, in this process) both use it; the defaults below are the DEFLATE family's,
+    and the bzip2 differences are at the end.
 
     rapidgzip decodes ahead in chunks and raises as soon as one fails, without handing
     over the output of the chunks before it: measured on rapidgzip 0.16, a 40 MB gzip
@@ -1206,8 +1256,19 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     and a resumed decode that reaches the end of its DEFLATE stream (appended bytes, or
     damage only a checksum shows) cannot check the stream's checksum, so it raises
     ``ResumeReachedStreamEnd`` and the standard library decodes from the start after all
-    (``_restart_without_resume``). The two switches that know the stream is whole
-    (``limit`` and ``switch_to_stdlib``) start from the start.
+    (``_restart_without_resume``). The two other switches (``limit`` and
+    ``switch_to_stdlib``) start from the start, because neither has a resume point to
+    use: ``limit`` takes the over-run verdict from the position before the read, and
+    the callers of ``switch_to_stdlib`` (the gzip ISIZE check, and the zlib Adler-32
+    check on a cut stream) know only the position delivered, not a block before it.
+
+    For bzip2, ``takes_over`` names the bzip2 decoder's data errors (it raises an opaque
+    ``RuntimeError('std::exception')`` on a cut stream, where the standard library
+    raises ``TruncatedError``), and ``resume_points`` gives the blocks it had indexed
+    before the error (``_bzip2_resume_points``; a block needs no window, see
+    ``bzip2_resume``). The decoder is in this process, so a seek that fails on data
+    leaves nothing to lose either; ``seek_takes_over`` switches there too, and the
+    standard library's seek gives the verdict.
     """
 
     readinto_passthrough = False
@@ -1221,6 +1282,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         open_stdlib: Callable[[CodecSource], BinaryIO],
         label: str,
         limit: int | None = None,
+        takes_over: Callable[[Exception], bool] | None = None,
+        resume_points: _ResumePoints | None = None,
+        seek_takes_over: bool = False,
     ) -> None:
         super().__init__(inner)
         self._reopen = reopen
@@ -1228,27 +1292,32 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._open_stdlib = open_stdlib
         self._label = label
         self._limit = limit
+        self._data_error = takes_over
+        self._resume_points = resume_points
+        self._seek_takes_over = seek_takes_over
         self._position = 0
         self.switched = False
 
+    @property
+    def accelerator(self) -> BinaryIO | None:
+        """The accelerator's stream, until the standard library takes over."""
+        return None if self.switched else self._inner
+
     def read(self, size: int = -1, /) -> bytes:
         try:
-            data = self._inner.read(size)
-        except ResumeReachedStreamEnd:
-            self._restart_without_resume()
-            data = self._inner.read(size)
+            data = self._restarting(lambda: self._inner.read(size))
         except Exception as exc:
             if not self._takes_over(exc):
                 raise
             self._switch(resume=True)
-            data = self._read_switched(size)
+            data = self._restarting(lambda: self._inner.read(size))
         if (
             self._limit is not None
             and not self.switched
             and self._position + len(data) > self._limit
         ):
             self._switch()
-            data = self._read_switched(size)
+            data = self._restarting(lambda: self._inner.read(size))
         self._position += len(data)
         return data
 
@@ -1256,33 +1325,37 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """Whether the standard library takes over after ``exc`` from rapidgzip."""
         if self.switched or from_callers_source(exc):
             return False
+        if self._data_error is not None:
+            return self._data_error(exc)
         return (
             crashed_on_data(exc) or _translate_rapidgzip(exc, self._label) is not None
         )
 
-    def _read_switched(self, size: int) -> bytes:
+    def _restarting(self, op: Callable[[], _T]) -> _T:
+        """Run ``op`` on the inner stream, and once more, on a decoder that starts from
+        the start, if a resumed standard-library decode reached the end of its
+        stream. Only a switched stream decodes with the standard library, so a failure
+        of the repeated call reaches ``read``/``seek`` with ``switched`` set, and they
+        pass it to the caller unchanged."""
         try:
-            return self._inner.read(size)
+            return op()
         except ResumeReachedStreamEnd:
             self._restart_without_resume()
-            return self._inner.read(size)
+            return op()
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        inner_seek = functools.partial(super().seek, offset, whence)
         try:
-            self._position = super().seek(offset, whence)
-        except ResumeReachedStreamEnd:
-            self._restart_without_resume()
-            self._position = super().seek(offset, whence)
+            self._position = self._restarting(inner_seek)
         except Exception as exc:
             # A seek runs rapidgzip's decode too; a crash there ends the child.
-            if self.switched or from_callers_source(exc) or not crashed_on_data(exc):
+            if self._seek_takes_over:
+                if not self._takes_over(exc):
+                    raise
+            elif self.switched or from_callers_source(exc) or not crashed_on_data(exc):
                 raise
             self._switch(resume=True)
-            try:
-                self._position = super().seek(offset, whence)
-            except ResumeReachedStreamEnd:
-                self._restart_without_resume()
-                self._position = super().seek(offset, whence)
+            self._position = self._restarting(inner_seek)
         return self._position
 
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -1295,10 +1368,13 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     def _switch(self, *, resume: bool = False) -> None:
         old = self._inner
-        point = None
-        if resume and isinstance(old, RapidgzipChildStream):
+        points: list[SeekPoint] = []
+        if resume and self._resume_points is not None:
+            points = self._resume_points(old, self._position, self._open_view)
+        elif resume and isinstance(old, RapidgzipChildStream):
             point = old.resume_point(self._position)
-        stdlib = self._open_stdlib_at(point)
+            points = [point] if point is not None else []
+        stdlib = self._open_stdlib_at(points)
         self._replace_inner(stdlib)
         self.switched = True
         try:
@@ -1306,21 +1382,27 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         except Exception:  # noqa: BLE001 - best-effort; the stdlib handle took over
             pass
 
-    def _open_stdlib_at(self, point: SeekPoint | None) -> BinaryIO:
-        """The standard-library decoder at the position delivered so far, starting from
-        ``point`` when one is given. ``point`` must lie at or before that position
-        (``resume_point`` picks it so): the seek ignores a point past it."""
+    def _open_view(self) -> BinaryIO:
+        """A fresh view of the source at offset 0 that leaves the accelerator's alone."""
+        if self._fallback_path is not None:
+            return open(self._fallback_path, "rb")
+        return self._reopen()
+
+    def _open_stdlib_at(self, points: Sequence[SeekPoint] = ()) -> BinaryIO:
+        """The standard-library decoder at the position delivered so far, resuming from
+        the newest of ``points``, in ascending order, at or before it. A point past it
+        would only serve a later seek: the seek here ignores it."""
         fallback: CodecSource = (
             self._fallback_path if self._fallback_path is not None else self._reopen()
         )
         stdlib = self._open_stdlib(fallback)
-        if point is not None and isinstance(stdlib, DecompressorStream):
-            stdlib.add_seek_points([point])
+        if points and isinstance(stdlib, DecompressorStream):
+            stdlib.add_seek_points(points)
         try:
             stdlib.seek(self._position)
         except ResumeReachedStreamEnd:
             stdlib.close()
-            return self._open_stdlib_at(None)
+            return self._open_stdlib_at()
         except BaseException:
             stdlib.close()
             raise
@@ -1328,9 +1410,14 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     def _restart_without_resume(self) -> None:
         """Replace a standard-library decoder whose resumed decode reached the end of
-        its DEFLATE stream with one that decodes from the start."""
+        its stream (``ResumeReachedStreamEnd``) with one that decodes from the start.
+
+        For bzip2 this decode gives the verdict: the resumed decode cannot tell the
+        end-of-stream marker's combined CRC from a damaged block, and raises on both.
+        """
+        assert self.switched, "only a standard-library decoder resumes"
         old = self._inner
-        self._replace_inner(self._open_stdlib_at(None))
+        self._replace_inner(self._open_stdlib_at())
         try:
             old.close()
         except Exception:  # noqa: BLE001 - best-effort; the new handle took over
@@ -1545,23 +1632,17 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
     the four-byte trailer) or cannot be read; :class:`_ZlibAdlerCheckStream` then goes
     straight to its standard-library confirmation. Restores a stream source's position.
     """
-    try:
-        if isinstance(source, (str, os.PathLike)):
-            with open(os.fspath(source), "rb") as f:
-                if f.seek(0, io.SEEK_END) < 6:
-                    return None
-                f.seek(-4, io.SEEK_END)
-                return int.from_bytes(f.read(4), "big")
-        pos = source.tell()
-        try:
-            if source.seek(0, io.SEEK_END) < 6:
-                return None
-            source.seek(-4, io.SEEK_END)
-            return int.from_bytes(source.read(4), "big")
-        finally:
-            source.seek(pos)
-    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+    trailer = _source_tail(source, size=4, min_length=6)[1]
+    if trailer is None:
         return None
+    return int.from_bytes(trailer, "big")
+
+
+class _ZlibStoppedShort(Exception):
+    """rapidgzip's output of a zlib stream ended where the standard library's goes on:
+    it has more output, or meets the end of the source inside the stream (a cut
+    stream). Control flow inside :class:`_ZlibAdlerCheckStream`; never reaches a
+    caller."""
 
 
 class _ZlibAdlerCheckStream(DelegatingStream):
@@ -1594,6 +1675,19 @@ class _ZlibAdlerCheckStream(DelegatingStream):
     the read or seek that reached the end raises :class:`_StreamChecksumError`. The
     second decode runs only on a mismatch.
 
+    A third cause is a cut stream: rapidgzip reads a zlib stream cut inside its body
+    as a shorter whole one, with no error, and can stop before output the standard
+    library still decodes. When that decode agrees with every byte delivered and then
+    goes on, or runs out of source, the read is handed to the standard library
+    (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError`` inside) at the position
+    delivered so far. It delivers what it delivers with the accelerator off, and
+    raises its own :class:`TruncatedError`, with one exception: when the container
+    declared a size, the ``VerifyingStream`` that ``_wrap_accelerated_length`` puts
+    outside this class owns the read that reaches that size. Its probe past the size
+    meets the cut, and a failed verifying event withholds that read's chunk (see
+    ``MemberVerifier.read`` in ``verify.py``), so up to one chunk fewer arrives than
+    with the accelerator off. The error type is the same.
+
     As in :class:`_GzipTruncationCheckStream`, the check runs on the call that reaches
     the end (ADR 0014: never from ``close()``), and a verdict once raised is raised again
     at every later end of data.
@@ -1603,12 +1697,14 @@ class _ZlibAdlerCheckStream(DelegatingStream):
 
     def __init__(
         self,
-        inner: BinaryIO,
+        inner: _StdlibOnAcceleratorError,
         *,
         reopen: Callable[[], BinaryIO],
         trailer: int | None,
     ) -> None:
         super().__init__(inner)
+        # The same object as ``_inner``, typed: the cut-stream handover calls it.
+        self._takeover = inner
         self._reopen = reopen
         self._trailer = trailer
         self._pos = 0
@@ -1630,10 +1726,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                 while more := self._inner.read(1 << 20):
                     self._count(more)
                     data += more
-                self._at_end()
+                data += self._at_end(size)
             return data
-        self._at_end()
-        return data
+        return self._at_end(size)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if whence == io.SEEK_CUR:
@@ -1669,29 +1764,52 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             want = 1 << 20 if target is None else min(1 << 20, target - self._pos)
             data = self._inner.read(want)
             if not data:
-                self._at_end()
+                # The rest of a cut stream, if any, is the read's after this seek.
+                self._at_end(0)
                 return
             self._count(data)
 
-    def _at_end(self) -> None:
+    def _at_end(self, size: int) -> bytes:
+        """Check the Adler-32 at the end of rapidgzip's output, and return what follows
+        it: nothing, or for a cut stream, the standard library's read of ``size``
+        (``0``: none yet) from the position reached."""
         if self._verdict is not None:
             raise self._verdict.with_traceback(None)
         if self._checked or self._pos < self._frontier:
-            return
+            return b""
         self._checked = True
         if self._trailer == self._adler:
-            return
+            return b""
         try:
             self._confirm_with_stdlib()
+        except _ZlibStoppedShort:
+            return self._hand_cut_stream_to_stdlib(size)
         except _StreamChecksumError as exc:
             self._verdict = exc
             raise
+        return b""
+
+    def _hand_cut_stream_to_stdlib(self, size: int) -> bytes:
+        self._takeover.switch_to_stdlib()
+        if size == 0:
+            return b""
+        data = self._inner.read(size)
+        self._pos += len(data)
+        return data
 
     def _confirm_with_stdlib(self) -> None:
+        """Decode the source again with the standard library, up to the output
+        rapidgzip delivered, and compare.
+
+        Raises :class:`_StreamChecksumError` when the two disagree on those bytes, and
+        :class:`_ZlibStoppedShort` when they agree and the standard library has more
+        to say past them: more output, or the end of the source inside the stream.
+        """
         produced = 0
         adler = 1
         decoder = zlib.decompressobj()
         pending = b""
+        stopped_short = False
         try:
             with self._reopen() as f:
                 while produced <= self._frontier:
@@ -1704,17 +1822,18 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     if not pending:
                         pending = f.read(1 << 16)
                         if not pending:
-                            raise _StreamChecksumError(
-                                "zlib stream is truncated: the source ends before the "
-                                "data the rapidgzip accelerator returned"
-                            )
+                            stopped_short = True
+                            break
                     # Bounded output per call: a damaged body can expand without limit.
                     out = decoder.decompress(pending, 1 << 20)
                     pending = decoder.unconsumed_tail
+                    # Only the bytes rapidgzip delivered are compared.
+                    adler = zlib.adler32(out[: self._frontier - produced], adler)
                     produced += len(out)
-                    adler = zlib.adler32(out, adler)
         except zlib.error as exc:
             raise _StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
+        if adler == self._adler and (stopped_short or produced > self._frontier):
+            raise _ZlibStoppedShort
         if produced != self._frontier or adler != self._adler:
             raise _StreamChecksumError(
                 "zlib stream is damaged: the data does not match its Adler-32 "
@@ -1789,6 +1908,16 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             return open(self._fallback_path, "rb")
         return self._reopen()
 
+    def _accelerator(self) -> BinaryIO | None:
+        """The accelerator, while it is still the decoder; ``None`` after a takeover,
+        where the standard library checks the end itself. After this class's own
+        fallback it is the standard library's stream, which has neither probe, and the
+        end check is already off."""
+        inner = self._inner
+        if isinstance(inner, _StdlibOnAcceleratorError):
+            return inner.accelerator
+        return inner
+
     def _check_end(self) -> None:
         """Check the combined CRCs, then look for trailing data."""
         self._end_unchecked = False
@@ -1806,7 +1935,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         end-of-stream marker starts) and 80 bits of the source at each of those places
         are enough to check it, without decoding anything again.
         """
-        offsets_fn = getattr(self._inner, "block_offsets", None)
+        offsets_fn = getattr(self._accelerator(), "block_offsets", None)
         offsets = offsets_fn() if offsets_fn is not None else None
         if not offsets:
             return
@@ -1819,15 +1948,10 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                     # follows is the next stream's header, or trailing bytes (which
                     # _check_trailing_data reports), and neither is checked here.
                     continue
-                view.seek(bit // 8)
-                raw = view.read(11)
-                shift = bit % 8
-                if len(raw) * 8 < shift + 80:
+                marker = _bzip2_marker_at(view, bit)
+                if marker is None:
                     continue
-                field = (int.from_bytes(raw, "big") >> (len(raw) * 8 - shift - 80)) & (
-                    (1 << 80) - 1
-                )
-                magic, crc = field >> 32, field & 0xFFFFFFFF
+                magic, crc = marker
                 if magic == _BZIP2_BLOCK_MAGIC:
                     combined = ((combined << 1) | (combined >> 31)) & 0xFFFFFFFF
                     combined ^= crc
@@ -1855,7 +1979,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         """
         if not self._config.report_trailing_data:
             return
-        end = getattr(self._inner, "compressed_position", lambda: None)()
+        end = getattr(self._accelerator(), "compressed_position", lambda: None)()
         if end is None:
             return
         with self._open_view() as view:
@@ -1911,6 +2035,67 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
 # is followed by a 32-bit CRC: the block's, or the stream's combined CRC.
 _BZIP2_BLOCK_MAGIC = 0x314159265359
 _BZIP2_EOS_MAGIC = 0x177245385090
+
+# How many blocks a bzip2 takeover keeps as resume points: the newest at or before the
+# reader, which it starts from, and those before it, which make a later seek back
+# cheap. A block point is a few bytes (no window), but each costs one read to check.
+_BZIP2_RESUME_POINTS = 8
+
+
+def _bzip2_marker_at(view: BinaryIO, bit: int) -> tuple[int, int] | None:
+    """The 48-bit magic and the 32-bit CRC after it, at bit offset ``bit`` of ``view``;
+    ``None`` when the source ends first."""
+    view.seek(bit // 8)
+    raw = view.read(11)
+    shift = bit % 8
+    if len(raw) * 8 < shift + 80:
+        return None
+    field = (int.from_bytes(raw, "big") >> (len(raw) * 8 - shift - 80)) & (
+        (1 << 80) - 1
+    )
+    return field >> 32, field & 0xFFFFFFFF
+
+
+def _bzip2_resume_points(
+    accelerator: BinaryIO, position: int, open_view: Callable[[], BinaryIO]
+) -> list[SeekPoint]:
+    """The blocks rapidgzip's bzip2 decoder had indexed before its error, at or before
+    ``position``, as points ``Bzip2ResumeDecoder`` starts from.
+
+    Only the accelerator's index knows where a block's output starts. Scanning the
+    source for the block magic would find where blocks are, but the decompressed offset
+    of each is known only by decoding everything before it, which is the decode from
+    the start a resume point saves. So with no indexed block before ``position`` the
+    takeover starts at the origin.
+
+    The index also lists each end-of-stream marker; the magic read at each offset keeps
+    only blocks. Offset 0 is left out, since the origin is already a point.
+    """
+    offsets = getattr(accelerator, "available_block_offsets", None)
+    if offsets is None:
+        return []
+    candidates = sorted(
+        (
+            (decoded, bit)
+            for bit, decoded in offsets().items()
+            if 0 < decoded <= position
+        ),
+        reverse=True,
+    )
+    points: list[SeekPoint] = []
+    if not candidates:
+        return points
+    with open_view() as view:
+        for decoded, bit in candidates:
+            marker = _bzip2_marker_at(view, bit)
+            if marker is None or marker[0] != _BZIP2_BLOCK_MAGIC:
+                continue
+            points.append(SeekPoint(decoded, bit // 8, Bzip2Resume(bit % 8)))
+            if len(points) == _BZIP2_RESUME_POINTS:
+                break
+    points.reverse()
+    return points
+
 
 # Bytes read per step while looking past an accelerator's end for the first byte that is
 # neither zero padding nor part of an empty stream.
@@ -2303,83 +2488,187 @@ class StoredCodec(StreamCodec):
         return None
 
 
-class GzipCodec(StreamCodec):
+class _DeflateFamilyCodec(StreamCodec):
+    """The rapidgzip accelerator plumbing that gzip, zlib and raw DEFLATE share.
+
+    rapidgzip decodes all three, in a child process (:func:`_open_rapidgzip`). This class
+    chooses the backend at open, builds the accelerated stream, and supplies the
+    translator and rewind wording that go with it. A subclass supplies its
+    standard-library decoder (:meth:`_open_stdlib`) and, where it has one, the check of
+    the end of the data that rapidgzip does not make (:meth:`_end_check`).
+    ``codec.value`` names the stream in messages.
+    """
+
+    # Whether rapidgzip reads the source clipped to the known compressed length
+    # (:func:`_bound_rapidgzip_source`). rapidgzip over-reads past the end of a raw
+    # DEFLATE or zlib stream looking for a concatenated member, and an AES pad after it
+    # would look like a second member.
+    _bounds_source: ClassVar[bool] = True
+
+    def open(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO:
+        if self._use_accelerator(source, config):
+            stream = self._open_accelerated(source, params, config)
+            if stream is not None:
+                return stream
+        return self._open_stdlib(source, config)
+
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
+        """The standard-library decoder, with the accelerator off and as its fallback."""
+        raise NotImplementedError
+
+    def _use_accelerator(self, source: CodecSource, config: StreamConfig) -> bool:
+        """Whether this open decodes through rapidgzip. Raises where ``ON`` asks for it
+        and cannot have it: rapidgzip is absent, or the source cannot seek."""
+        label = self.codec.value
+        _warn_if_auto_without_child(config)
+        if not _rapidgzip_enabled(config, available=_rapidgzip is not None):
+            return False
+        if _rapidgzip is None:
+            raise PackageNotInstalledError(
+                _RAPIDGZIP_REQUIREMENT.message(f"{label} random access")
+            )
+        _refuse_forward_only_accelerator(source, "use_rapidgzip", label)
+        return True
+
+    def _open_accelerated(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO | None:
+        """Open ``source`` through rapidgzip, or ``None`` where the standard library
+        decodes it instead: here, an ``AUTO`` open whose child could not start; a
+        subclass may add its own cases.
+
+        The layers, outermost first: :class:`_StdlibSeekContract`, the
+        ``VerifyingStream`` of a declared size (:func:`_wrap_accelerated_length`), the
+        codec's :meth:`_end_check`, and :class:`_StdlibOnAcceleratorError` over the
+        child.
+        """
+        label = self.codec.value
+        if self._bounds_source:
+            source_for_child = _bound_rapidgzip_source(source, params, config)
+        else:
+            source_for_child = source
+        accel_source, reopen = _accelerator_backstop_source(source_for_child)
+        # _refuse_forward_only_accelerator has refused a source that cannot seek.
+        assert reopen is not None
+        fallback_path = (
+            os.fspath(accel_source)
+            if isinstance(accel_source, (str, os.PathLike))
+            else None
+        )
+        end_check = self._end_check(source, config, accel_source, reopen, fallback_path)
+        child = _open_rapidgzip(accel_source, label, config)
+        if child is None:
+            return None
+        takeover = _StdlibOnAcceleratorError(
+            child,
+            reopen=reopen,
+            fallback_path=fallback_path,
+            open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
+            label=label,
+            limit=self._accelerated_limit(config),
+        )
+        stream: BinaryIO = takeover if end_check is None else end_check(takeover)
+        return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
+
+    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+        """The ``limit`` for :class:`_StdlibOnAcceleratorError`: ``None`` for a codec
+        whose stream ends where the standard library ends it. That class's docstring
+        says why only raw DEFLATE sets one."""
+        return None
+
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        reopen: Callable[[], BinaryIO],
+        fallback_path: str | None,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        """The wrapper that checks the end of the accelerated data, or ``None``.
+
+        Called before the child starts, so what it reads from the source it reads
+        while nothing else does. That is also why reading ``source`` here, outside the
+        lock that ``accel_source``'s views share, is sound: none of them has read yet.
+        ``source`` is the caller's; ``accel_source`` is what the child reads, ``reopen``
+        makes fresh views of it at offset 0, and ``fallback_path`` is its path when it
+        has one.
+        """
+        return None
+
+    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+        if _deflate_family_uses_accelerator(config):
+            return self._translate_accelerator
+        return self.translate
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        return _rapidgzip_rewind_warning(self.codec.value, config)
+
+    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
+        """Translate the rapidgzip accelerator's exceptions to the library's error types.
+
+        Falls through to :meth:`translate`: an ``AUTO`` open whose child could not start
+        decodes with the standard library.
+        """
+        return _translate_child_or_stdlib(exc, self.codec.value, self.translate)
+
+
+class GzipCodec(_DeflateFamilyCodec):
     codec = Codec.GZIP
     stream_format = StreamFormat.GZIP
     magic = (MagicSignature(0, b"\x1f\x8b", ArchiveFormat.GZ),)
+    # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
+    # declares a pack size to clip it to and no AES pad follows its data.
+    _bounds_source = False
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         # Prefer a container-declared size; otherwise note a readable ISIZE so AUTO can
         # still select rapidgzip with the dedicated ISIZE backstop (not VerifyingStream).
-        config = _config_with_gzip_isize(source, config)
-        _warn_if_auto_without_child(config)
-        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
-            if _rapidgzip is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("gzip random access")
-                )
-            _refuse_forward_only_accelerator(source, "use_rapidgzip", "gzip")
-            if _gzip_header_refused(source):
-                # The standard-library engine raises zlib's own error on the first
-                # read, as it does with the accelerator off.
-                return _stdlib_gzip(source, config)
-            if config.expected_decompressed_size is not None:
-                # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
-                accel_source, reopen = _accelerator_backstop_source(source)
-                stream = _open_rapidgzip(accel_source, "gzip", config)
-                if stream is None:
-                    return _stdlib_gzip(source, config)
-                # _refuse_forward_only_accelerator has refused a source that cannot seek.
-                assert reopen is not None
-                stream = _StdlibOnAcceleratorError(
-                    stream,
-                    reopen=reopen,
-                    fallback_path=(
-                        os.fspath(source)
-                        if isinstance(source, (str, os.PathLike))
-                        else None
-                    ),
-                    open_stdlib=lambda fallback: _stdlib_gzip(fallback, config),
-                    label="gzip",
-                )
-                return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
-            # Truncation backstop for **any** seekable source (path or caller-owned stream):
-            # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
-            # independent view (multi-member keeps the conservative further-magic bailout; the
-            # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
-            # per-read reopen is needed and `size < 18` truncation is preserved.
-            source_len, isize = _gzip_isize_and_length(source)
-            accel_source, reopen = _accelerator_backstop_source(source)
-            stream = _open_rapidgzip(accel_source, "gzip", config)
-            if stream is None:
-                return _stdlib_gzip(source, config)
-            # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert reopen is not None
-            fallback_path = (
-                os.fspath(source) if isinstance(source, (str, os.PathLike)) else None
-            )
-            return _StdlibSeekContract(
-                _GzipTruncationCheckStream(
-                    _StdlibOnAcceleratorError(
-                        stream,
-                        reopen=reopen,
-                        fallback_path=fallback_path,
-                        open_stdlib=lambda fallback: _stdlib_gzip(fallback, config),
-                        label="gzip",
-                    ),
-                    reopen=reopen,
-                    isize=isize,
-                    source_len=source_len,
-                    fallback_path=fallback_path,
-                    open_stdlib=lambda fallback: _stdlib_gzip(fallback, config),
-                )
-            )
+        return super().open(source, params, _config_with_gzip_isize(source, config))
+
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; multi-member chaining matches GzipFile
         # (NUL padding, a further member). O(n) rewind with a warning.
         return _stdlib_gzip(source, config)
+
+    def _open_accelerated(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO | None:
+        if _gzip_header_refused(source):
+            # The standard-library engine raises zlib's own error on the first
+            # read, as it does with the accelerator off.
+            return None
+        return super()._open_accelerated(source, params, config)
+
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        reopen: Callable[[], BinaryIO],
+        fallback_path: str | None,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        if config.expected_decompressed_size is not None:
+            # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
+            return None
+        # Truncation backstop for **any** seekable source (path or caller-owned stream):
+        # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
+        # independent view (multi-member keeps the conservative further-magic bailout; the
+        # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
+        # per-read reopen is needed and `size < 18` truncation is preserved.
+        source_len, isize = _gzip_isize_and_length(source)
+        return lambda stream: _GzipTruncationCheckStream(
+            stream,
+            reopen=reopen,
+            isize=isize,
+            source_len=source_len,
+            fallback_path=fallback_path,
+            open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
@@ -2394,19 +2683,6 @@ class GzipCodec(StreamCodec):
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")
         return None
-
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
-        if _deflate_family_uses_accelerator(config):
-            return self._translate_accelerator
-        return self.translate
-
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        # The accelerator gives indexed random access; only the stdlib fallback rewinds slowly.
-        return _rapidgzip_rewind_warning("gzip", config)
-
-    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        """Translate the rapidgzip accelerator's exceptions to the library's error types."""
-        return _translate_child_or_stdlib(exc, "gzip", self.translate)
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface gzip's stored filename (FNAME) and mtime.
@@ -2486,16 +2762,30 @@ class Bzip2Codec(StreamCodec):
             stream = _open_accelerator(_rapidgzip_bzip2, accel_source)
             # _refuse_forward_only_accelerator has refused a source that cannot seek.
             assert reopen is not None
+            fallback_path = (
+                os.fspath(accel_source)
+                if isinstance(accel_source, (str, os.PathLike))
+                else None
+            )
+            # A data error hands the read to the standard library, which delivers what
+            # it delivers with the accelerator off and raises its error; see
+            # _StdlibOnAcceleratorError.
+            takeover = _StdlibOnAcceleratorError(
+                stream,
+                reopen=reopen,
+                fallback_path=fallback_path,
+                open_stdlib=lambda fallback: _stdlib_bzip2(fallback, config),
+                label="bzip2",
+                takes_over=self._accelerator_data_error,
+                resume_points=_bzip2_resume_points,
+                seek_takes_over=True,
+            )
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
             return _StdlibSeekContract(
                 _Bzip2EmptyStreamCheck(
-                    stream,
+                    takeover,
                     reopen=reopen,
-                    fallback_path=(
-                        os.fspath(accel_source)
-                        if isinstance(accel_source, (str, os.PathLike))
-                        else None
-                    ),
+                    fallback_path=fallback_path,
                     config=config,
                 )
             )
@@ -2524,6 +2814,20 @@ class Bzip2Codec(StreamCodec):
             accelerator="rapidgzip",
             suggest_install=not _bzip2_uses_accelerator(config)
             and _rapidgzip_bzip2 is None,
+        )
+
+    def _accelerator_data_error(self, exc: Exception) -> bool:
+        """Whether ``exc`` is the bzip2 accelerator's verdict on the data, which the
+        standard library takes over from.
+
+        Not an ``EOFError`` or ``OSError``: :meth:`_translate_accelerator` maps those for
+        the standard-library engine behind it, and from the accelerator they would be
+        an I/O fault, not a verdict. Not an error from the caller's own source either.
+        """
+        if isinstance(exc, (EOFError, OSError)) or from_callers_source(exc):
+            return False
+        return isinstance(
+            self._translate_accelerator(exc), (CorruptionError, TruncatedError)
         )
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
@@ -2907,7 +3211,7 @@ class Lzma2Codec(_RawLzmaCodec):
     codec = Codec.LZMA2
 
 
-class _ZlibErrorCodec(StreamCodec):
+class _ZlibErrorCodec(_DeflateFamilyCodec):
     """Shared zlib/deflate error taxonomy for raw deflate and zlib-wrapped deflate."""
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
@@ -2925,58 +3229,15 @@ class _ZlibErrorCodec(StreamCodec):
 class DeflateCodec(_ZlibErrorCodec):
     codec = Codec.DEFLATE
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        _warn_if_auto_without_child(config)
-        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
-            if _rapidgzip is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("deflate random access")
-                )
-            _refuse_forward_only_accelerator(source, "use_rapidgzip", "deflate")
-            # rapidgzip auto-detects raw DEFLATE. Bound the input: it over-reads
-            # past EOS looking for a concatenated member (AES pad would look
-            # like a second member).
-            accel_source, reopen = _accelerator_backstop_source(
-                _bound_rapidgzip_source(source, params, config)
-            )
-            # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert reopen is not None
-            stream = _open_rapidgzip(accel_source, "deflate", config)
-            if stream is not None:
-                # zlib ends the member at the stream's final block; rapidgzip reads on
-                # into whatever follows. The standard library decides both a data
-                # error and output past the declared size (_StdlibOnAcceleratorError).
-                stream = _StdlibOnAcceleratorError(
-                    stream,
-                    reopen=reopen,
-                    fallback_path=(
-                        os.fspath(accel_source)
-                        if isinstance(accel_source, (str, os.PathLike))
-                        else None
-                    ),
-                    open_stdlib=lambda fallback: ZlibDecompressorStream(
-                        fallback, wbits=-15
-                    ),
-                    label="deflate",
-                    limit=config.expected_decompressed_size,
-                )
-                return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
 
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
-        if _deflate_family_uses_accelerator(config):
-            return self._translate_accelerator
-        return self.translate
-
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return _rapidgzip_rewind_warning("deflate", config)
-
-    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        # Falls through: an AUTO open whose child could not start decodes with the stdlib.
-        return _translate_child_or_stdlib(exc, "deflate", self.translate)
+    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+        # zlib ends the member at the stream's final block; rapidgzip reads on into
+        # whatever follows. The standard library decides both a data error and output
+        # past the declared size (_StdlibOnAcceleratorError).
+        return config.expected_decompressed_size
 
 
 def _zlib_header_plausible(prefix: bytes) -> bool:
@@ -3012,63 +3273,25 @@ class ZlibCodec(_ZlibErrorCodec):
     # No exact magic: zlib's 2-byte header is too unspecific, so it is recognized by a content
     # probe that gates on that header before decoding.
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        _warn_if_auto_without_child(config)
-        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
-            if _rapidgzip is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("zlib random access")
-                )
-            _refuse_forward_only_accelerator(source, "use_rapidgzip", "zlib")
-            # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
-            accel_source, reopen = _accelerator_backstop_source(
-                _bound_rapidgzip_source(source, params, config)
-            )
-            # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert reopen is not None
-            # Read through the view, which can move the caller's stream under it; put
-            # that back, since an AUTO open whose child cannot start decodes from it.
-            if isinstance(source, (str, os.PathLike)):
-                trailer = _zlib_adler_trailer(accel_source)
-            else:
-                start = source.tell()
-                trailer = _zlib_adler_trailer(accel_source)
-                source.seek(start)
-            stream = _open_rapidgzip(accel_source, "zlib", config)
-            if stream is not None:
-                stream = _StdlibOnAcceleratorError(
-                    stream,
-                    reopen=reopen,
-                    fallback_path=(
-                        os.fspath(accel_source)
-                        if isinstance(accel_source, (str, os.PathLike))
-                        else None
-                    ),
-                    open_stdlib=lambda fallback: _stdlib_zlib(fallback, config),
-                    label="zlib",
-                )
-                return _StdlibSeekContract(
-                    _wrap_accelerated_length(
-                        _ZlibAdlerCheckStream(stream, reopen=reopen, trailer=trailer),
-                        config,
-                    )
-                )
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return _stdlib_zlib(source, config)
 
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
-        if _deflate_family_uses_accelerator(config):
-            return self._translate_accelerator
-        return self.translate
-
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return _rapidgzip_rewind_warning("zlib", config)
-
-    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        # Falls through: an AUTO open whose child could not start decodes with the stdlib.
-        return _translate_child_or_stdlib(exc, "zlib", self.translate)
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        reopen: Callable[[], BinaryIO],
+        fallback_path: str | None,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        # Read through the view, which can move the caller's stream under it; put
+        # that back, since an AUTO open whose child cannot start decodes from it.
+        with _restoring_position(source):
+            trailer = _zlib_adler_trailer(accel_source)
+        return lambda stream: _ZlibAdlerCheckStream(
+            stream, reopen=reopen, trailer=trailer
+        )
 
     def content_probe(
         self,

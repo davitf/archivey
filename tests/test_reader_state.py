@@ -467,9 +467,8 @@ def test_memoized_terminals_match_a_fresh_walk_per_member(
     with open_archive(_tar(tmp_path / f"g{seed}.tar", entries)) as reader:
         assert isinstance(reader, BaseArchiveReader)
         members = reader.members()
-        materialized = reader._materialized
-        assert materialized is not None
-        by_name = materialized.by_name_lists
+        # Published, so _resolve_link below reads the complete name index.
+        assert reader._materialized is not None
         for member in members:
             if not (member.is_link and member.link_target):
                 continue
@@ -478,5 +477,5 @@ def test_memoized_terminals_match_a_fresh_walk_per_member(
             )
             fresh._member_id = member._member_id
             fresh._archive_id = member._archive_id
-            reader._resolve_link(fresh, by_name, {})
+            reader._resolve_link(fresh, {})
             assert member.link_target_member is fresh.link_target_member, member.name
