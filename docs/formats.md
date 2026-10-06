@@ -463,6 +463,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   bounded backward peek. Same for the `.xz` size, read from the stream index. For
   multi-member lzip the value is derived by combining per-trailer CRCs with each
   member's uncompressed size so it equals `crc32` of the concatenated payloads.
+- `.lz` is read in lzip format version 1, which every lzip since 1.0 writes. A member
+  in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
+  wherever it is in the file: a member that starts with the `LZIP` magic is never
+  skipped as trailing data.
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable

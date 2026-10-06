@@ -971,20 +971,20 @@ class ExtractionCoordinator:
                     # (same as a selector exclusion). Still counts as processed for progress.
                     pass
                 elif not original.is_current:
-                    recorded_index = len(results)
-                    results.append(
+                    recorded_index = self._append_result(
+                        results,
                         ExtractionResult(
                             original, None, ExtractionStatus.SUPERSEDED, None
-                        )
+                        ),
                     )
                 else:
-                    result_index = recorded_index = len(results)
-                    current_by_name[original.name] = result_index
-                    results.append(
-                        ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+                    result_index = recorded_index = self._append_result(
+                        results,
+                        ExtractionResult(original, None, ExtractionStatus.FAILED, None),
                     )
+                    current_by_name[original.name] = result_index
                     if original.is_anti:
-                        results[result_index] = self._write_member(
+                        written = self._write_member(
                             original,
                             transformed,
                             stream,
@@ -999,6 +999,7 @@ class ExtractionCoordinator:
                             result_index,
                             results,
                         )
+                        self._set_result(results, result_index, written)
                     else:
                         # Entry-count guard + ratio bookkeeping. Counted only once the
                         # selector and user filter have accepted the member (and the
@@ -1030,7 +1031,7 @@ class ExtractionCoordinator:
 
                             self._emit_progress = emit_progress
 
-                        results[result_index] = self._write_member(
+                        written = self._write_member(
                             original,
                             transformed,
                             stream,
@@ -1045,22 +1046,11 @@ class ExtractionCoordinator:
                             result_index,
                             results,
                         )
+                        self._set_result(results, result_index, written)
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
-                # A name the universal filter accepted but that the *destination
-                # filesystem* refuses at write time (EILSEQ on a UTF-8-only filesystem,
-                # ENAMETOOLONG for a name or link target over the limit) is caused by
-                # the archive, not the filesystem's state: see ``_typed_os_error``.
-                if isinstance(exc, OSError):
-                    # Before it is recorded or logged: a dry run's error names dest.
-                    self._rebase_os_error(exc)
-                error = _typed_os_error(exc, original.name)
-                status = (
-                    ExtractionStatus.BLOCKED
-                    if isinstance(error, FilterRejectionError)
-                    else ExtractionStatus.FAILED
-                )
+                error, status = self._classify(exc, original.name)
                 result = ExtractionResult(
                     original,
                     None,
@@ -1071,27 +1061,11 @@ class ExtractionCoordinator:
                 )
                 if results and results[-1].member is original:
                     recorded_index = len(results) - 1
-                    results[-1] = result
+                    self._set_result(results, recorded_index, result)
                 else:
-                    recorded_index = len(results)
-                    results.append(result)
-                # OnError governs failures only; a policy BLOCKED is always continued.
-                if self._stops_on_failure() and status is ExtractionStatus.FAILED:
-                    raise error
-                # ...unless the caller asked to be stopped by an unsafe member. This is
-                # the fail-closed strict-security opt-in; it applies under either OnError
-                # value, and propagates the original rejection unchanged. The BLOCKED
-                # result recorded just above is discarded with the rest of the report.
-                if (
-                    status is ExtractionStatus.BLOCKED
-                    and AbortOn.BLOCKED_MEMBER in self._abort_on
-                ):
-                    raise error
-                # No diagnostic: the result recorded above is the whole record of this
-                # outcome (the placement clause in ``diagnostics``). The WARNING log line
-                # that used to be the emission's projection goes out directly.
-                logger.warning(
-                    "Skipping %s %r: %s", original.type.value, original.name, error
+                    recorded_index = self._append_result(results, result)
+                self._stop_or_log(
+                    exc, error, status, kind=original.type.value, name=original.name
                 )
             finally:
                 self._emit_progress = None
@@ -1110,16 +1084,12 @@ class ExtractionCoordinator:
             # A portable rewrite is recorded on whatever result this member ended up with,
             # including a BLOCKED/FAILED one: the rewrite happened before the outcome.
             if presented_name is not None and recorded_index is not None:
-                results[recorded_index] = replace(
-                    results[recorded_index], presented_name=presented_name
+                self._set_result(
+                    results,
+                    recorded_index,
+                    replace(results[recorded_index], presented_name=presented_name),
                 )
 
-            if results and results[-1].member is original:
-                status = results[-1].status
-                if status is ExtractionStatus.EXTRACTED:
-                    self._members_extracted += 1
-                elif status is ExtractionStatus.BLOCKED:
-                    self._members_blocked += 1
             members_done += 1
             self._report_progress(
                 original,
@@ -1203,19 +1173,17 @@ class ExtractionCoordinator:
         if index in counted:
             member_bytes = counted.pop(index)
             tracker.refund(0 if content_kept else member_bytes)
-        # Progress tallies results, so they follow the revision (as in
-        # ``_mark_overwritten``).
-        if prior.status is ExtractionStatus.EXTRACTED:
-            self._members_extracted -= 1
-        elif prior.status is ExtractionStatus.BLOCKED:
-            self._members_blocked -= 1
         orphans[:] = [o for o in orphans if o.result_index != index]
-        results[index] = ExtractionResult(
-            prior.member,
-            None,
-            ExtractionStatus.SUPERSEDED,
-            None,
-            presented_name=prior.presented_name,
+        self._set_result(
+            results,
+            index,
+            ExtractionResult(
+                prior.member,
+                None,
+                ExtractionStatus.SUPERSEDED,
+                None,
+                presented_name=prior.presented_name,
+            ),
         )
 
     def _drop_stale_copies(
@@ -1510,7 +1478,6 @@ class ExtractionCoordinator:
         dest_path, prior, collided_with = self._resolve_collision(
             original, transformed, target, collision_map, dest
         )
-        redirected = prior is not None
         # Stashed for the failure handler: an ERROR-policy collision becomes a FAILED
         # result built there, and it has to carry the collision too.
         self._collided_with = collided_with
@@ -1541,10 +1508,43 @@ class ExtractionCoordinator:
                 self._mark_overwritten(results, prior)
             raise
 
+        return self._settle_placement(
+            result,
+            requested=requested,
+            target=target,
+            prior=prior,
+            collided_with=collided_with,
+            transformed=transformed,
+            results=results,
+            result_index=result_index,
+            collision_map=collision_map,
+            dest=dest,
+        )
+
+    def _settle_placement(
+        self,
+        result: ExtractionResult,
+        *,
+        requested: Path,
+        target: Path,
+        prior: _Claim | None,
+        collided_with: Path | None,
+        transformed: ArchiveMember,
+        results: list[ExtractionResult],
+        result_index: int,
+        collision_map: dict[str, _Claim],
+        dest: Path,
+    ) -> ExtractionResult:
+        """``result`` with its collision recorded, once the claims and earlier results
+        it affects are updated. Both passes; the caller records what it returns.
+
+        ``requested`` is the path the member asked for, ``target`` the path collision
+        resolution started from: ``requested`` moved under a renamed directory
+        (``_follow_renamed_dirs``), or ``requested`` itself."""
         # Record the intended destination. A REPLACE merge into a prior path is not a
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
-        if redirected and result.status is ExtractionStatus.EXTRACTED:
+        if prior is not None and result.status is ExtractionStatus.EXTRACTED:
             result = replace(
                 result, requested_path=result.path, collided_with=collided_with
             )
@@ -1562,8 +1562,10 @@ class ExtractionCoordinator:
                 self._written_dirs.setdefault(
                     self._collision_key(dest, result.path), []
                 ).append(result_index)
-                if not redirected and result.path != target:
-                    self._renamed_dirs[requested] = dest_path
+                # Written under a derived name rather than merged into a prior path:
+                # members inside it follow it there.
+                if prior is None and result.path != target:
+                    self._renamed_dirs[requested] = result.path
 
         self._register_collision_key(
             collision_map, dest, transformed, result, result_index
@@ -1617,17 +1619,7 @@ class ExtractionCoordinator:
 
         if transformed.type == MemberType.SYMLINK:
             result = self._write_symlink(original, transformed, dest_root, dest_path)
-            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
-                written_paths.add(result.path)
-                if self._links is not None and transformed.link_target is not None:
-                    self._links.track(
-                        result.path,
-                        self._link_target_on_disk(transformed.link_target),
-                        result_index,
-                    )
-            return result
-
-        if transformed.type == MemberType.HARDLINK:
+        elif transformed.type == MemberType.HARDLINK:
             result = self._write_hardlink(
                 original,
                 transformed,
@@ -1638,23 +1630,48 @@ class ExtractionCoordinator:
                 forward_only,
                 result_index,
             )
-            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
-                written_paths.add(result.path)
-            return result
-
-        if transformed.type == MemberType.FILE:
+        elif transformed.type == MemberType.FILE:
             result = self._write_file(
                 original, transformed, stream, dest_path, tracker, source_paths
             )
-            if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
-                written_paths.add(result.path)
-            return result
+        else:
+            # MemberType.OTHER is rejected by check_universal; nothing else should
+            # reach here.
+            raise ExtractionError(
+                f"Unsupported member type {transformed.type!r}",
+                member_name=transformed.name,
+            )
+        if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
+            written_paths.add(result.path)
+            if (
+                transformed.type == MemberType.SYMLINK
+                and self._links is not None
+                and transformed.link_target is not None
+            ):
+                self._links.track(
+                    result.path,
+                    self._link_target_on_disk(transformed.link_target),
+                    result_index,
+                )
+        return result
 
-        # MemberType.OTHER is rejected by check_universal; nothing else should reach here.
-        raise ExtractionError(
-            f"Unsupported member type {transformed.type!r}",
-            member_name=transformed.name,
-        )
+    def _make_room(
+        self,
+        original: ArchiveMember,
+        transformed: ArchiveMember,
+        dest_path: Path,
+        *,
+        atomic: bool,
+    ) -> ExtractionResult | None:
+        """Apply the OverwritePolicy at ``dest_path`` and create its parents; the
+        result if the policy declines, else ``None``. A check that skips the member
+        comes first, so it cannot remove an entry under ``OverwritePolicy.REPLACE``."""
+        if not self._prepare_destination(transformed, dest_path, atomic=atomic):
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
+        self._makedirs(dest_path.parent, transformed)
+        return None
 
     def _resolve_collision(
         self,
@@ -1705,11 +1722,11 @@ class ExtractionCoordinator:
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
             else None
         )
+        if collided is not None:
+            assert prior is not None
+            self._check_collision_abort(original, transformed, prior)
         if self._overwrite is OverwritePolicy.RENAME:
             if prior is not None or self._occupied(requested):
-                if collided is not None:
-                    assert prior is not None
-                    self._check_collision_abort(original, transformed, prior)
                 return (
                     self._derive_free_name(requested, transformed, collision_map, dest),
                     None,
@@ -1718,7 +1735,6 @@ class ExtractionCoordinator:
             return requested, None, None
         if collided is not None:
             assert prior is not None
-            self._check_collision_abort(original, transformed, prior)
             return prior.physical, prior, collided
         return requested, None, None
 
@@ -1762,6 +1778,46 @@ class ExtractionCoordinator:
         if self._on_error is OnError.CONTINUE:
             return False
         assert_never(self._on_error)
+
+    def _classify(
+        self, exc: ArchiveyError | OSError, member_name: str
+    ) -> tuple[ArchiveyError | OSError, ExtractionStatus]:
+        """The error to record for a member's failed work, and its status.
+
+        EILSEQ and ENAMETOOLONG come from the archive's name, not the filesystem's
+        state, so they become typed failures: see ``_typed_os_error``.
+        """
+        if isinstance(exc, OSError):
+            # Before it is recorded or logged: a dry run's error names dest.
+            self._rebase_os_error(exc)
+        error = _typed_os_error(exc, member_name)
+        if isinstance(error, FilterRejectionError):
+            return error, ExtractionStatus.BLOCKED
+        return error, ExtractionStatus.FAILED
+
+    def _stop_or_log(
+        self,
+        exc: ArchiveyError | OSError,
+        error: ArchiveyError | OSError,
+        status: ExtractionStatus,
+        *,
+        kind: str,
+        name: str,
+    ) -> None:
+        """Raise ``error`` (``exc`` as caught) if the run stops on it, else log it."""
+        # OnError governs failures only. A BLOCKED stops the run only under the
+        # fail-closed AbortOn.BLOCKED_MEMBER opt-in, under either OnError value; its
+        # recorded result is discarded with the rest of the report.
+        if (self._stops_on_failure() and status is ExtractionStatus.FAILED) or (
+            status is ExtractionStatus.BLOCKED
+            and AbortOn.BLOCKED_MEMBER in self._abort_on
+        ):
+            if error is exc:
+                raise error
+            raise error from exc
+        # No diagnostic: the recorded result is the whole record of this outcome (the
+        # placement clause in ``diagnostics``).
+        logger.warning("Skipping %s %r: %s", kind, name, error)
 
     def _check_collision_abort(
         self, original: ArchiveMember, transformed: ArchiveMember, prior: _Claim
@@ -1976,12 +2032,9 @@ class ExtractionCoordinator:
         tracker: BombTracker,
         source_paths: dict[int, list[Path]],
     ) -> ExtractionResult:
-        if not self._prepare_destination(transformed, dest_path, atomic=True):
-            return ExtractionResult(
-                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-            )
-
-        self._makedirs(dest_path.parent, transformed)
+        declined = self._make_room(original, transformed, dest_path, atomic=True)
+        if declined is not None:
+            return declined
         if stream is None and self._retyped:
             # The pass yielded this member as a link, with no data stream, before its
             # data showed it is a file. Random access opens it now. A forward-only pass
@@ -2097,7 +2150,7 @@ class ExtractionCoordinator:
             # nothing. There is nothing to write, and nothing here went wrong, so this
             # is a LINK_TARGET_UNAVAILABLE result rather than a per-member failure that
             # OnError.STOP would turn into an aborted extraction.
-            # Checked before _prepare_destination so a member we are not going to
+            # Checked before _make_room so a member we are not going to
             # write cannot unlink an existing destination under OverwritePolicy.REPLACE.
             return ExtractionResult(
                 original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
@@ -2117,12 +2170,9 @@ class ExtractionCoordinator:
                 member_name=transformed.name,
             )
 
-        if not self._prepare_destination(transformed, dest_path):
-            return ExtractionResult(
-                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-            )
-
-        self._makedirs(dest_path.parent, transformed)
+        declined = self._make_room(original, transformed, dest_path, atomic=False)
+        if declined is not None:
+            return declined
         # A symlink is target-independent: create it even if the target was filtered out,
         # appears later, or lies outside the archive — it may dangle. Only the escape
         # check below constrains it. An os.symlink failure (unsupported FS) propagates as
@@ -2201,11 +2251,9 @@ class ExtractionCoordinator:
             )
 
         if source.member_id in source_paths:
-            if not self._prepare_destination(transformed, dest_path, atomic=True):
-                return ExtractionResult(
-                    original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-                )
-            self._makedirs(dest_path.parent, transformed)
+            declined = self._make_room(original, transformed, dest_path, atomic=True)
+            if declined is not None:
+                return declined
             self._place_link(
                 source_paths, source.member_id, dest_path, transformed, tracker
             )
@@ -2294,19 +2342,20 @@ class ExtractionCoordinator:
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
-                if isinstance(exc, OSError):
-                    self._rebase_os_error(exc)
                 # One failed source, N failed links: the fan-out is recorded on the
                 # results themselves, so a caller can tell N separate failures from one
-                # failure seen N times without joining against a diagnostic.
-                error = _typed_os_error(exc, member.name)
+                # failure seen N times without joining against a diagnostic. The second
+                # pass records FAILED, so only OnError can stop it.
+                error, status = self._classify(exc, member.name)
+                # Nothing the second pass runs raises FilterRejectionError.
+                assert status is ExtractionStatus.FAILED
                 self._record_failure_group(results, group, error)
-                if self._stops_on_failure():
-                    if error is exc:
-                        raise
-                    raise error from exc
-                logger.warning(
-                    "Skipping orphaned hardlink source %r: %s", member.name, error
+                self._stop_or_log(
+                    exc,
+                    error,
+                    status,
+                    kind="orphaned hardlink source",
+                    name=member.name,
                 )
             finally:
                 self._close(stream)
@@ -2320,10 +2369,19 @@ class ExtractionCoordinator:
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.
         for source_id in needed:
-            err = ExtractionError("Hardlink source was not found on the second pass")
-            self._record_failure_group(results, orphans_by_source[source_id], err)
-            if self._stops_on_failure():
-                raise err
+            group = orphans_by_source[source_id]
+            name = group[0].source.name
+            err = ExtractionError(
+                "Hardlink source was not found on the second pass", member_name=name
+            )
+            self._record_failure_group(results, group, err)
+            self._stop_or_log(
+                err,
+                err,
+                ExtractionStatus.FAILED,
+                kind="orphaned hardlink source",
+                name=name,
+            )
 
     def _record_failure_group(
         self,
@@ -2363,6 +2421,8 @@ class ExtractionCoordinator:
         ``presented_name`` rewrite, and the ``requested_path`` the member asked for. A
         rebuild that does not supply them must not erase them — results are the sole
         record, so a dropped field is a fact lost rather than a fact reported elsewhere.
+        Unlike ``_set_result`` it moves no progress tally: ``_report_progress`` is
+        called only from the main member loop, which has finished by the second pass.
         """
         prior = results[index]
         if prior.presented_name is not None and new.presented_name is None:
@@ -2370,6 +2430,31 @@ class ExtractionCoordinator:
         if prior.requested_path is not None and new.requested_path is None:
             new = replace(new, requested_path=prior.requested_path)
         results[index] = new
+
+    def _append_result(
+        self, results: list[ExtractionResult], new: ExtractionResult
+    ) -> int:
+        """Record ``new`` as the next result, tallied, and return its index."""
+        self._tally(None, new.status)
+        results.append(new)
+        return len(results) - 1
+
+    def _set_result(
+        self, results: list[ExtractionResult], index: int, new: ExtractionResult
+    ) -> None:
+        """Replace recorded result ``index`` with ``new``. The progress tallies count
+        the results, so they follow the change; a report already sent is not resent."""
+        self._tally(results[index].status, new.status)
+        results[index] = new
+
+    def _tally(
+        self, old: ExtractionStatus | None, new: ExtractionStatus | None
+    ) -> None:
+        for status, step in ((old, -1), (new, 1)):
+            if status is ExtractionStatus.EXTRACTED:
+                self._members_extracted += step
+            elif status is ExtractionStatus.BLOCKED:
+                self._members_blocked += step
 
     def _materialize_orphan_source(
         self,
@@ -2393,15 +2478,11 @@ class ExtractionCoordinator:
         # inode, so the metadata must be applied to the file that carries the content. Each
         # link's destination is O2-collision-resolved against the map the main pass built
         # (a deferred link's key may have been claimed after it was orphaned).
-        writer: _Orphan | None = None
-        writer_path: Path | None = None
-        writer_prior: _Claim | None = None
-        writer_collided: Path | None = None
+        #
+        # Unlike the main pass, neither orphan path adds what it writes to
+        # ``written_paths``.
         remaining: list[_Orphan] = []
-        for orphan in group:
-            if writer is not None:
-                remaining.append(orphan)
-                continue
+        for index, orphan in enumerate(group):
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original,
                 orphan.transformed,
@@ -2409,44 +2490,33 @@ class ExtractionCoordinator:
                 collision_map,
                 dest,
             )
-            if self._prepare_destination(orphan.transformed, resolved, atomic=True):
-                writer, writer_path, writer_prior = orphan, resolved, prior
-                writer_collided = collided_with
-            else:
-                self._revise_result(
-                    results,
-                    orphan.result_index,
-                    ExtractionResult(
-                        orphan.original,
-                        None,
-                        ExtractionStatus.NOT_OVERWRITTEN,
-                        None,
-                        requested_path=orphan.dest_path,
-                        collided_with=collided_with,
-                    ),
+            result = self._make_room(
+                orphan.original, orphan.transformed, resolved, atomic=True
+            )
+            if result is None:
+                self._write_file_atomic(stream, resolved, orphan.transformed, tracker)
+                source_paths.setdefault(source_member.member_id, []).append(resolved)
+                result = ExtractionResult(
+                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
                 )
-        if writer is None or writer_path is None:
-            return  # every link's destination already exists under SKIP: nothing to write
-
-        self._makedirs(writer_path.parent, writer.transformed)
-        self._write_file_atomic(stream, writer_path, writer.transformed, tracker)
-        source_paths.setdefault(source_member.member_id, []).append(writer_path)
-        result = ExtractionResult(
-            writer.original,
-            writer_path,
-            ExtractionStatus.EXTRACTED,
-            None,
-            requested_path=(
-                writer_path if writer_prior is not None else writer.dest_path
-            ),
-            collided_with=writer_collided,
-        )
-        self._revise_result(results, writer.result_index, result)
-        if result.status is ExtractionStatus.EXTRACTED:
-            self._mark_overwritten(results, writer_prior)
-        self._register_collision_key(
-            collision_map, dest, writer.transformed, result, writer.result_index
-        )
+            result = self._settle_placement(
+                result,
+                requested=orphan.dest_path,
+                target=orphan.dest_path,
+                prior=prior,
+                collided_with=collided_with,
+                transformed=orphan.transformed,
+                results=results,
+                result_index=orphan.result_index,
+                collision_map=collision_map,
+                dest=dest,
+            )
+            self._revise_result(results, orphan.result_index, result)
+            if result.status is ExtractionStatus.EXTRACTED:
+                remaining = group[index + 1 :]
+                break
+        # Nothing remains when every link's destination already exists under SKIP:
+        # then nothing was written either.
         self._link_orphan_group(
             remaining,
             source_paths,
@@ -2507,30 +2577,23 @@ class ExtractionCoordinator:
             dest,
         )
         try:
-            if not self._prepare_destination(orphan.transformed, resolved, atomic=True):
-                self._revise_result(
-                    results,
-                    orphan.result_index,
-                    ExtractionResult(
-                        orphan.original,
-                        None,
-                        ExtractionStatus.NOT_OVERWRITTEN,
-                        None,
-                        requested_path=orphan.dest_path,
-                        collided_with=collided_with,
-                    ),
-                )
-                return
-            self._makedirs(resolved.parent, orphan.transformed)
-            self._place_link(
-                source_paths, source_id, resolved, orphan.transformed, tracker
+            result = self._make_room(
+                orphan.original, orphan.transformed, resolved, atomic=True
             )
+            if result is None:
+                self._place_link(
+                    source_paths, source_id, resolved, orphan.transformed, tracker
+                )
+                result = ExtractionResult(
+                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
+                )
         except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
-            if isinstance(exc, OSError):
-                self._rebase_os_error(exc)
-            error = _typed_os_error(exc, orphan.original.name)
+            # FAILED, as for an orphaned source.
+            error, status = self._classify(exc, orphan.original.name)
+            # Nothing the second pass runs raises FilterRejectionError.
+            assert status is ExtractionStatus.FAILED
             self._revise_result(
                 results,
                 orphan.result_index,
@@ -2543,27 +2606,24 @@ class ExtractionCoordinator:
                     collided_with=collided_with,
                 ),
             )
-            if self._stops_on_failure():
-                if error is exc:
-                    raise
-                raise error from exc
             # A single link's failure, not a source fan-out: no group id.
-            logger.warning("Skipping hardlink %r: %s", orphan.original.name, error)
+            name = orphan.original.name
+            self._stop_or_log(exc, error, status, kind="hardlink", name=name)
             return
-        result = ExtractionResult(
-            orphan.original,
-            resolved,
-            ExtractionStatus.EXTRACTED,
-            None,
-            requested_path=resolved if prior is not None else orphan.dest_path,
+        # Not added to ``written_paths``: see ``_materialize_orphan_source``.
+        result = self._settle_placement(
+            result,
+            requested=orphan.dest_path,
+            target=orphan.dest_path,
+            prior=prior,
             collided_with=collided_with,
+            transformed=orphan.transformed,
+            results=results,
+            result_index=orphan.result_index,
+            collision_map=collision_map,
+            dest=dest,
         )
         self._revise_result(results, orphan.result_index, result)
-        if result.status is ExtractionStatus.EXTRACTED:
-            self._mark_overwritten(results, prior)
-        self._register_collision_key(
-            collision_map, dest, orphan.transformed, result, orphan.result_index
-        )
 
     def _forget_source_path(self, path: Path) -> None:
         """Stop offering ``path`` as a hardlink source: something else is going there.
@@ -2601,8 +2661,7 @@ class ExtractionCoordinator:
 
         Called once per member, before the next one is handled, so no later member
         (or a progress callback) sees an escaping link. A removed link's result
-        becomes ``BLOCKED`` in place, and the progress tallies follow, as they do for
-        ``_mark_overwritten``: a report already sent for that member is not sent again.
+        becomes ``BLOCKED`` in place (``_set_result``).
 
         It runs in a ``finally``, so it returns the error that must end the run
         instead of raising it, which would replace the member's own error: the
@@ -2640,11 +2699,13 @@ class ExtractionCoordinator:
             self._written_paths.discard(link.dest_path)
             self._release_claim(collision_map, dest, link.dest_path)
             if prior.status is ExtractionStatus.EXTRACTED:
-                results[link.result_index] = replace(
-                    prior, path=None, status=ExtractionStatus.BLOCKED, error=error
+                self._set_result(
+                    results,
+                    link.result_index,
+                    replace(
+                        prior, path=None, status=ExtractionStatus.BLOCKED, error=error
+                    ),
                 )
-                self._members_extracted -= 1
-                self._members_blocked += 1
             logger.warning("Removed symlink %r: %s", prior.member.name, error)
         if outcome.unchecked:
             return _AlwaysStopResourceLimitError(
@@ -2699,22 +2760,23 @@ class ExtractionCoordinator:
         if clobbered.status is ExtractionStatus.SUPERSEDED:
             # A superseded copy the filesystem would not remove: it keeps its status.
             return
-        results[index] = replace(
-            clobbered,
-            path=None,
-            status=ExtractionStatus.OVERWRITTEN,
-            requested_path=(
-                clobbered.requested_path
-                if clobbered.requested_path is not None
-                else clobbered.path
+        # The clobbered member was tallied as EXTRACTED when it completed, and is
+        # no longer: ``_set_result`` moves the tally, or the final report would claim
+        # more extracted members than ``results`` contains.
+        self._set_result(
+            results,
+            index,
+            replace(
+                clobbered,
+                path=None,
+                status=ExtractionStatus.OVERWRITTEN,
+                requested_path=(
+                    clobbered.requested_path
+                    if clobbered.requested_path is not None
+                    else clobbered.path
+                ),
             ),
         )
-        # The clobbered member was tallied as EXTRACTED when it completed. It is no
-        # longer an EXTRACTED result, and ``members_extracted`` is defined as a tally of
-        # results — so the progress counter has to follow the revision, or the final
-        # report would claim more extracted members than ``results`` contains.
-        if clobbered.status is ExtractionStatus.EXTRACTED:
-            self._members_extracted -= 1
 
     # --- filesystem helpers --------------------------------------------------------
 
