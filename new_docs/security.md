@@ -53,3 +53,31 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 - **On Windows, a folder source is less protected.** Windows can't open a path without following
   links, so a subfolder swapped for a link during the listing can list files from outside the
   folder. Reading a file still checks it's the one listed.
+
+## Hardening
+
+RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
+when neither is installed. Keep it up to date. `unar` receives the password on its command line,
+where other users on the same machine can see it while it runs. Set
+`rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig` to never use it.
+
+Every limit has a default that lets large legitimate archives through. A higher limit lets a
+malicious archive use more memory, disk space or processing time before it's stopped, so if you know
+what your archives look like, lower the limits to fit them. They're set in `ArchiveyConfig`, and
+`extract_all` also takes `limits=` for one call.
+
+| Setting | Default | What it caps |
+|---|---|---|
+| `extraction_limits.max_extracted_bytes` | 2 GiB | Bytes one extraction writes |
+| `extraction_limits.max_entries` | 1,048,576 | Members one extraction writes |
+| `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands, checked once it has written 5 MiB |
+| `listing_limits.max_members` | 1,048,576 | Members an archive can list |
+| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets |
+| `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for |
+| `decoder_limits.max_key_derivation_rounds` | 2^27 | Password-hashing work per open archive |
+| `spool_limits.max_bytes` | 1 GiB | Temporary disk space, used when archivey needs a copy of the source, such as a pipe |
+
+Going over a limit raises `ResourceLimitError`.
+
+For archives from strangers, extract into an empty folder that nothing else uses, and check what
+came out before moving it anywhere else.
