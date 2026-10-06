@@ -15,8 +15,7 @@ import io
 import os
 import subprocess
 import sys
-import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -573,23 +572,10 @@ def test_fileno_forwards_for_a_caller_file(tmp_path: Path) -> None:
         assert ArchiveSource.for_stream(handle).fileno() == handle.fileno()
 
 
-def _open_named_fifo(path: Path, payload: bytes) -> io.BufferedReader:
-    """Open a named FIFO for reading, with a writer thread to unblock ``open()``."""
-    os.mkfifo(path)
-
-    def _fill() -> None:
-        try:
-            with open(path, "wb") as writer:
-                writer.write(payload)
-        except OSError:
-            pass
-
-    threading.Thread(target=_fill, daemon=True).start()
-    return open(path, "rb")  # type: ignore[return-value]
-
-
 @pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")
-def test_a_real_fifo_keeps_its_name_and_fileno(tmp_path: Path) -> None:
+def test_a_real_fifo_keeps_its_name_and_fileno(
+    tmp_path: Path, named_fifo_with_writer: Callable[[Path, bytes], None]
+) -> None:
     """``open(fifo, "rb")`` is a non-seekable ``BufferedReader`` that carries ``.name``.
 
     The caller's buffer reads for itself — no second full-count layer — and ``name``,
@@ -598,7 +584,8 @@ def test_a_real_fifo_keeps_its_name_and_fileno(tmp_path: Path) -> None:
     """
     fifo = tmp_path / "pipe-ish.tar"
     payload = b"hello from a named fifo"
-    with _open_named_fifo(fifo, payload) as raw:
+    named_fifo_with_writer(fifo, payload)
+    with open(fifo, "rb") as raw:
         assert raw.seekable() is False
         source = ArchiveSource.for_stream(raw)
         assert source_name(source) == str(fifo)
@@ -608,42 +595,6 @@ def test_a_real_fifo_keeps_its_name_and_fileno(tmp_path: Path) -> None:
         assert source.read(len(payload)) == payload
         source.close()
         assert not raw.closed
-
-
-@pytest.fixture
-def named_fifo_with_writer() -> Iterator[Callable[[Path, bytes], None]]:
-    """Make named FIFOs whose writer delivers a payload once the read end opens.
-
-    The writer thread blocks in ``open()`` until something opens the read end. A test
-    whose code under test raises before reading would leave it blocked for the rest
-    of the session, so teardown opens the read end itself and joins the writer.
-    """
-    writers: list[tuple[Path, threading.Thread]] = []
-
-    def make(path: Path, payload: bytes) -> None:
-        os.mkfifo(path)
-
-        def _fill() -> None:
-            try:
-                with open(path, "wb") as writer:
-                    writer.write(payload)
-            except OSError:
-                pass
-
-        thread = threading.Thread(target=_fill, daemon=True)
-        thread.start()
-        writers.append((path, thread))
-
-    yield make
-    for path, thread in writers:
-        if thread.is_alive():
-            # Non-blocking, so this returns at once even if the writer already left.
-            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-            try:
-                thread.join(timeout=5)
-            finally:
-                os.close(fd)
-        assert not thread.is_alive(), f"FIFO writer for {path} is still blocked"
 
 
 @pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")

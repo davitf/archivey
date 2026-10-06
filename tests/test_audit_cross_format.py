@@ -232,14 +232,18 @@ def _zip_month_13(tmp_path: Path) -> Path:
 
 def _tar_mtime_overflow(tmp_path: Path) -> Path:
     out = tmp_path / "mtime.tar"
-    with tarfile.open(out, "w") as tf:
+    # PAX on purpose: GNU stores the value as base-256 and USTAR refuses it.
+    with tarfile.open(out, "w", format=tarfile.PAX_FORMAT) as tf:
         info = tarfile.TarInfo("f.txt")
         info.size = 1
-        info.mtime = 2**62  # past datetime's range; tarfile stores it in a pax record
+        info.mtime = 2**62  # past datetime's range
         tf.addfile(info, io.BytesIO(b"x"))
     return out
 
 
+# ``field`` is per case because backends name it differently: RAR, 7z and ISO give the
+# member attribute ("modified"), ZIP and TAR the stored field ("date_time", "mtime").
+# See MemberTimestampContext.
 @pytest.mark.parametrize(
     ("build", "label", "field", "source", "value_re"),
     [
