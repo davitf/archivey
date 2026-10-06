@@ -18,7 +18,7 @@ import io
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import BinaryIO, NamedTuple
 
 from archivey.exceptions import (
     CorruptionError,
@@ -66,28 +66,42 @@ class WinZipAesInfo:
         return self.vendor_version == 2
 
 
-def iter_extra_fields(extra: bytes) -> Iterator[tuple[int, bytes, bool]]:
-    """Yield ``(tag, data, complete)`` for each field of a ZIP extra-field blob.
+class ExtraField(NamedTuple):
+    tag: int
+    data: bytes
+    complete: bool  # False: the declared size ran past the end of the blob
+
+
+def iter_extra_fields(extra: bytes) -> Iterator[ExtraField]:
+    """Yield each field of a ZIP extra-field blob, AES or not.
+
+    It is the one walk every ZIP extra-field parser uses. It lives here rather than
+    in ``zip_reader`` because ``zip_reader`` imports this module, so the reverse
+    import would be a cycle.
 
     A last field whose declared size runs past the blob comes back with the bytes
-    that are there and ``complete`` false; each caller decides what that means.
+    that are there and ``complete`` false; each caller decides what that means. The
+    readers get their blobs from ``zipfile.ZipInfo``, which already rejects such a
+    field (``BadZipFile: Corrupt extra field``), so today they never see it; the
+    flag keeps each caller's rule explicit for a path that parses the directory
+    itself. Trailing bytes too short for a header are ignored.
     """
     pos = 0
     while pos + 4 <= len(extra):
         tag, size = struct.unpack_from("<HH", extra, pos)
         data = extra[pos + 4 : pos + 4 + size]
-        yield tag, data, len(data) == size
+        yield ExtraField(tag, data, len(data) == size)
         pos += 4 + size
 
 
 def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:
     """Return AE info from a ZIP extra field blob, or ``None`` when absent/malformed."""
-    for hdr_id, data, complete in iter_extra_fields(extra):
-        if not complete:
+    for field in iter_extra_fields(extra):
+        if not field.complete:
             break
-        if hdr_id == _AES_EXTRA_ID and len(data) >= 7:
+        if field.tag == _AES_EXTRA_ID and len(field.data) >= 7:
             vendor_version, vendor_id, strength, actual_method = struct.unpack(
-                "<H2sBH", data[:7]
+                "<H2sBH", field.data[:7]
             )
             if vendor_id != b"AE" or strength not in (1, 2, 3):
                 return None

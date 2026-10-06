@@ -23,9 +23,11 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends.zip_aes import (
+    ExtraField,
     WinZipAesDecryptStream,
     WinZipAesInfo,
     derive_winzip_aes_keys,
+    iter_extra_fields,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
@@ -563,6 +565,31 @@ def test_parse_aes_extra_roundtrip() -> None:
     assert info.key_bits == 256
     assert info.actual_method == 8
     assert parse_winzip_aes_extra(b"") is None
+
+
+def test_iter_extra_fields_edge_shapes() -> None:
+    def tlv(tag: int, data: bytes, size: int | None = None) -> bytes:
+        return struct.pack("<HH", tag, len(data) if size is None else size) + data
+
+    two = tlv(0x0001, b"ab") + tlv(0x7075, b"xyz")
+    assert list(iter_extra_fields(two)) == [
+        ExtraField(0x0001, b"ab", True),
+        ExtraField(0x7075, b"xyz", True),
+    ]
+    # Over-declared last field: the bytes present, flagged incomplete.
+    assert list(iter_extra_fields(tlv(0x0001, b"ab") + tlv(0x9901, b"AE", 7))) == [
+        ExtraField(0x0001, b"ab", True),
+        ExtraField(0x9901, b"AE", False),
+    ]
+    # A zero-size field is complete and does not stop the walk.
+    assert list(iter_extra_fields(tlv(0x0017, b"") + tlv(0x0001, b"q"))) == [
+        ExtraField(0x0017, b"", True),
+        ExtraField(0x0001, b"q", True),
+    ]
+    # 1-3 stray trailing bytes cannot hold a header and are ignored.
+    for stray in (b"\x01", b"\x01\x02", b"\x01\x02\x03"):
+        assert list(iter_extra_fields(two + stray)) == list(iter_extra_fields(two))
+    assert list(iter_extra_fields(b"")) == []
 
 
 def test_aes_stream_guard_runs_before_the_cryptography_import(
