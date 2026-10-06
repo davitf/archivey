@@ -57,6 +57,14 @@ def _is_absolute(name: str) -> bool:
     return len(name) >= 2 and name[0] in string.ascii_letters and name[1] == ":"
 
 
+def _has_windows_root(target: str) -> bool:
+    """Whether ``target`` starts with a drive letter (``C:``, ``C:/x``, ``C:x``) or a UNC
+    root (two separators, ``//server/share`` or ``\\\\server\\share``)."""
+    if target[:1] in ("/", "\\") and target[1:2] in ("/", "\\"):
+        return True
+    return len(target) >= 2 and target[0] in string.ascii_letters and target[1] == ":"
+
+
 def _is_rooted(name: str) -> bool:
     """Whether ``name`` starts at a filesystem root: a leading ``/`` or ``\\`` (POSIX
     root, UNC share) or a drive letter followed by a separator (``C:/``, ``C:\\``).
@@ -334,9 +342,19 @@ def check_universal(
         _check_path_string(
             target, member_name=name, what="link target", link_target=target
         )
+        is_symlink = member.type == MemberType.SYMLINK
+        # A drive or UNC target leaves the destination on Windows and is a relative
+        # name on POSIX. It is refused on every OS so that one archive extracts the
+        # same way everywhere (maintainer ruling, 2026-10-06); unrar refuses an
+        # absolute Windows link target on POSIX too.
+        if is_symlink and _has_windows_root(target):
+            raise FilterRejectionError(
+                "Symlink target is a Windows drive or UNC path",
+                member_name=name,
+                link_target=member.link_target,
+            )
         if link_target_on_disk is not None:
             target = link_target_on_disk(target)
-        is_symlink = member.type == MemberType.SYMLINK
         base = (dest_root / name).parent if is_symlink else dest_root
         if _escapes(base / target, dest_root):
             raise FilterRejectionError(
@@ -500,14 +518,39 @@ def _strip_trailing_dot_space(name: str) -> str:
     return _map_segments(name, strip)
 
 
+def _reject_unsafe_segments(
+    path: str, *, member_name: str, where: str, link_target: str | None = None
+) -> None:
+    """Refuse a Windows-reserved device name or a ``:`` in any segment of ``path``.
+
+    Both are unsafe (device capture, NTFS alternate data stream), not merely awkward,
+    so ``STRICT`` and ``STANDARD`` refuse them on every platform.
+    """
+    for segment in _SEP_SPLIT.split(path):
+        if not segment:
+            continue
+        if _is_reserved_segment(segment):
+            raise FilterRejectionError(
+                f"Windows-reserved device name in {where}: {segment!r}",
+                member_name=member_name,
+                link_target=link_target,
+            )
+        if ":" in segment:
+            raise FilterRejectionError(
+                f"Colon in {where} segment (NTFS alternate data stream): {segment!r}",
+                member_name=member_name,
+                link_target=link_target,
+            )
+
+
 def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
     """Enforce the portable-name policy on ``member``'s final name.
 
     ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
-    names, ``:`` (NTFS alternate data stream), and bidi overrides — and **rewrite** the
-    merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3) and both levels
-    normalize non-representable bytes (O7). A lone surrogate outside U+DC80-U+DCFF is
+    names, ``:`` (NTFS alternate data stream), and bidi overrides, in the name and in a
+    symlink's target — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
+    trailing dots/spaces (O3) and both levels normalize non-representable bytes (O7). A lone surrogate outside U+DC80-U+DCFF is
     escaped too, as its UTF-8 bytes (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is
     the same on every OS; ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not
     rejecting) a legitimate-but-awkward name keeps extraction working; refusal is reserved for
@@ -535,20 +578,17 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
         _reject_bidi_override(
             member.link_target, member_name=name, what=f"link target of {name!r}"
         )
-    for segment in _SEP_SPLIT.split(name):
-        if not segment:
-            continue
-        # Reserved device names and ':' are unsafe (device capture / NTFS alternate data
-        # stream), not merely awkward — rejected under STRICT and STANDARD on every platform.
-        if _is_reserved_segment(segment):
-            raise FilterRejectionError(
-                f"Windows-reserved device name in path: {segment!r}", member_name=name
-            )
-        if ":" in segment:
-            raise FilterRejectionError(
-                f"Colon in path segment (NTFS alternate data stream): {segment!r}",
-                member_name=name,
-            )
+    _reject_unsafe_segments(name, member_name=name, where="path")
+    if member.type is MemberType.SYMLINK and member.link_target:
+        # On Windows a link to ``t:stream`` names an alternate data stream of ``t``, and
+        # one to ``NUL`` names the device, so a target segment is held to the rule a
+        # name segment is. A hardlink target names a member, whose name is checked.
+        _reject_unsafe_segments(
+            member.link_target,
+            member_name=name,
+            where="link target",
+            link_target=member.link_target,
+        )
 
     # A trailing dot/space is silently stripped by Win32 — a legitimate macOS/Linux name
     # (e.g. a folder ending in '.'), not an attack. STRICT rewrites it to the portable

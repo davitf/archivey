@@ -150,6 +150,7 @@ from archivey.internal.volumes import (
     next_rar_volume_name,
     rar_volume_name,
 )
+from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -383,6 +384,21 @@ _RAR5_XREDIR_REPARSE_POINTS = frozenset(
     {_RAR5_XREDIR_WINDOWS_SYMLINK, _RAR5_XREDIR_WINDOWS_JUNCTION}
 )
 
+
+def _rar5_redirect_target(file_redir: tuple[int, int, str]) -> str:
+    """The ``link_target`` of a RAR5 redirect record.
+
+    A Windows symlink or junction stores a Windows path, so it is normalized the way a
+    ZIP or 7z reparse buffer is (``\\??\\C:\\x`` gives ``C:/x``, ``..\\up`` gives
+    ``../up``), as unrar does on POSIX. A Unix symlink, a hard link and a file copy
+    keep the stored string: in those a backslash can be part of a name.
+    """
+    redir_type, _flags, target = file_redir
+    if redir_type in _RAR5_XREDIR_REPARSE_POINTS:
+        return normalize_windows_link_target(target)
+    return target
+
+
 # Read step for the confirmation pass over a cut-short member's stored bytes
 # (``RarReader._confirm_unsettled_plaintext``). Matches the verifier's own drain
 # step; the pass is bounded by the member, which is bounded by the source.
@@ -581,7 +597,7 @@ def _rar_member_extra_and_link(
     extra = MemberExtra()
     link_target: str | None = None
     if info.file_redir is not None:
-        link_target = info.file_redir[2]
+        link_target = _rar5_redirect_target(info.file_redir)
         if info.is_file_copy():
             extra[EXTRA_IS_FILE_COPY] = True
         if info.file_redir[0] in _RAR5_XREDIR_REPARSE_POINTS:
@@ -2871,7 +2887,7 @@ class RarReader(BaseArchiveReader):
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         if raw.file_redir is not None:
-            member.link_target = raw.file_redir[2]
+            member.link_target = _rar5_redirect_target(raw.file_redir)
             return
         # RAR4: symlink target stored as M0 member data (even when file_solid).
         if (

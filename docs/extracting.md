@@ -102,6 +102,15 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   extracted. A link that now escapes is removed, and its result, which a progress
   callback may already have seen as `EXTRACTED`, becomes `BLOCKED`. A `..` in a target
   that stays inside the destination is not refused.
+- **Windows link targets:** a symlink target with a drive letter (`C:/Windows`, `C:x`)
+  or a UNC root (`//server/share`) is refused at every policy and on every OS. Windows
+  would follow it out of the destination, and refusing it everywhere means an archive
+  extracts the same way wherever you extract it. A Windows symlink or junction from a
+  ZIP, 7z or RAR archive lists with `/` separators and without the `\??\` prefix
+  (`\??\C:\Windows` lists as `C:/Windows`, `..\up\x` as `../up/x`). Under `STRICT`
+  and `STANDARD`, a `:` or a Windows-reserved device name in a target segment
+  (`file:stream`, `sub/NUL`) is refused, as it is in a member name; `TRUSTED` leaves
+  those to the OS.
 - **Hardlink targets** are containment-checked and resolved positionally (an earlier
   same-named member), so a crafted duplicate-name archive cannot redirect a link.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never

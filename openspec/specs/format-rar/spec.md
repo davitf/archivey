@@ -82,10 +82,13 @@ walk.
 ### Requirement: Decode RAR member names
 
 A RAR5 name, and a RAR 1.5-4 name whose UTF-16 field decodes, SHALL be listed as that
-text. A RAR 1.5-4 name stored only as 8-bit bytes records no code page. The system
+text. A RAR5 name or redirect target that is not valid UTF-8 SHALL decode with
+`surrogateescape`, so two names that differ only in such bytes stay two members and
+extraction escapes the bytes by the portable-name rule, as for a TAR name. A RAR 1.5-4 name stored only as 8-bit bytes records no code page. The system
 SHALL decode it with the caller's `encoding=` when one was passed. Without one it SHALL
 try strict UTF-8 first, then cp437 (the OEM code page WinRAR writes) for a member whose
-host is MS-DOS, OS/2 or Win32, and windows-1252 for any other host. A RAR 1.5-4 name
+host is MS-DOS, OS/2 or Win32, and windows-1252 for any other host, with
+`surrogateescape` for the bytes windows-1252 leaves undefined. A RAR 1.5-4 name
 with the Unicode flag and no UTF-16 field declares UTF-8, so `encoding=` SHALL apply to
 it only when its bytes are not valid UTF-8. The system MUST NOT decode an 8-bit name as
 UTF-16LE. `raw_name` SHALL be the stored bytes in every case, and RAR SHALL NOT emit
@@ -113,6 +116,8 @@ refused naming `unar`, as it is in a RAR5 name.
 | RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
 | Any 8-bit name | `raw_name` is the stored bytes |
 | UTF-16 field holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`; `raw_name` is the 8-bit field; the member reads |
+| RAR5 `a\xffq.txt` and `a\xfeq.txt` | Two members, `a\udcffq.txt` and `a\udcfeq.txt`; each reads its own bytes through `unrar`, which reads both names as `a` |
+| 8-bit `b\x81.txt` and `b\x8d.txt` written on Unix | `b\udc81.txt` and `b\udc8d.txt` |
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
@@ -485,7 +490,10 @@ such source SHALL raise `LinkTargetNotFoundError` when read.
 Unix symlinks and Windows symlinks/junctions (`RAR5_XREDIR_UNIX_SYMLINK`,
 `RAR5_XREDIR_WINDOWS_SYMLINK`, `RAR5_XREDIR_WINDOWS_JUNCTION`) SHALL be
 exposed as `MemberType.SYMLINK` with `link_target` from the redirect and
-resolved by the format-independent link-following layer. Redirect members MUST
+resolved by the format-independent link-following layer. The target of a Windows
+symlink or junction SHALL be normalized as a ZIP or 7z reparse buffer's is: `\`
+becomes `/`, a leading `\??\` or `/??/` is dropped, and `UNC\` after it becomes
+`//`. A Unix symlink's target SHALL be kept as stored. Redirect members MUST
 NOT appear in the solid `unrar p` demux size map.
 
 #### Scenario: redirect matrix
@@ -504,7 +512,8 @@ The system SHALL set `ArchiveMember.link_target` during member registration /
 
 | Variant | Source of `link_target` |
 | --- | --- |
-| RAR5 symlink / Windows symlink / junction | native `file_redir` target string |
+| RAR5 symlink | native `file_redir` target string |
+| RAR5 Windows symlink / junction | native `file_redir` target string, normalized as a reparse buffer's (`\??\C:\Windows` → `C:/Windows`, `..\up\x` → `../up/x`) |
 | RAR5 hardlink / `FILE_COPY` | native `file_redir` target string (`MemberType.HARDLINK` / `MemberType.FILE`) |
 | RAR4 Unix symlink | stored member bytes (direct read when M0 / readable without `unrar`), only while `read_link_targets` is `True` |
 

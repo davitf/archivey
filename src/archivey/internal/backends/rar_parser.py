@@ -1248,7 +1248,8 @@ def _decode_rar3_8bit_name(
         except UnicodeError:
             pass
     fallback = "cp437" if host_os in _RAR3_OEM_HOSTS else "windows-1252"
-    return raw.decode(fallback, "replace")
+    # windows-1252 leaves five bytes undefined; surrogateescape keeps each one distinct.
+    return raw.decode(fallback, "surrogateescape")
 
 
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
@@ -2964,7 +2965,10 @@ def _parse_rar5_file_block(
     compress_info, pos = load_vint(hdata, pos)
     host_os_raw, pos = load_vint(hdata, pos)
     orig_filename, pos = _load_vstr(hdata, pos)
-    filename = orig_filename.decode("utf8", "replace").rstrip("/")
+    # surrogateescape, not replace: two names that differ only in bytes that are not
+    # UTF-8 stay two names, as they do in TAR, and the extraction name policy escapes
+    # those bytes (O7). unrar is addressed from ``orig_filename``, not from this.
+    filename = orig_filename.decode("utf8", "surrogateescape").rstrip("/")
 
     host_os = 2 if host_os_raw == _RAR5_OS_WINDOWS else 3  # RAR_OS_WIN32 / UNIX
     compress_type = _RAR3_M0 + ((compress_info >> 7) & 7)
@@ -3071,7 +3075,7 @@ def _parse_rar5_file_block(
                     file_redir = (
                         redir_type,
                         redir_flags,
-                        redir_name.decode("utf8", "replace"),
+                        redir_name.decode("utf8", "surrogateescape"),
                     )
                 elif xtype == _RAR5_XFILE_VERSION:
                     _vflags, xpos = load_vint(xdata, xpos)
