@@ -1096,7 +1096,7 @@ class TarReader(BaseArchiveReader):
             def _open(member: ArchiveMember) -> ArchiveStream | None:
                 if not member.is_file:
                     return None
-                return self._member_stream(member, defer_sparse_error=True)
+                return self._open_member_stream(member, defer_sparse_error=True)
 
             yield from self._drive_pass_streams(
                 self._begin_forward_pass(),
@@ -1459,12 +1459,11 @@ class TarReader(BaseArchiveReader):
         return member
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        # Boundary outside the guard: translation/stamping never run while the
-        # shared-fileobj lock is held.
+        # The callee takes the handle guard inside this boundary.
         with self._translated_errors(member.name):
-            return self._member_stream(member, defer_sparse_error=False)
+            return self._open_member_stream(member, defer_sparse_error=False)
 
-    def _member_stream(
+    def _open_member_stream(
         self, member: ArchiveMember, *, defer_sparse_error: bool
     ) -> ArchiveStream:
         """Open ``member``'s data. A bad sparse map raises here, or with
@@ -1486,6 +1485,8 @@ class TarReader(BaseArchiveReader):
             return self._wrap_member_stream(
                 None, member.name, open_fn=_refuse, size=member.size
             )
+        # Callers put their translation boundary outside this guard, so
+        # translation/stamping never run while the shared-fileobj lock is held.
         with self._handle_guard():
             raw = self._tar.extractfile(info)
         if raw is None:
