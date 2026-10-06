@@ -565,9 +565,10 @@ decode with `replace`, which also left the U+D800–U+DFFF arm of
 `_fix_rar3_astral_truncation` unreachable. 7-Zip 23.01 writes such a name as 7z's;
 `unrar` 7.00 on Linux cuts it at the first surrogate unit, a valid pair included
 (`hi\ud800.txt` → `hi`, measured), so its `-n` view of the name differs from archivey's;
-reads still pick the member by the stored 8-bit name. `raw_name` is always the stored bytes, and the decoding never
-changes which member a read returns, because the `unrar` mask is built from the stored
-name (§2.3). `USES_ENCODING` is true, so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`.
+reads still pick the member by the stored 8-bit name. `raw_name` is always the stored
+bytes, and the decoding never changes which member a read returns, because the `unrar`
+mask is built from the stored name (§2.3). `USES_ENCODING` is true, so RAR no longer
+emits `ENCODING_ARGUMENT_UNUSED`.
 Comments follow `unrar`: a RAR 2.9-4 `CMT` SERVICE header whose attribute field has bit 0
 set (`SUBHEAD_FLAGS_CMT_UNICODE`) is UTF-16LE, read in whole 2-byte units (an odd
 trailing byte is dropped, as `unrar` reads `CmtSize / 2` units) and cut at the first
