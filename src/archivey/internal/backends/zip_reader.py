@@ -83,6 +83,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.zip_aes import (
     WinZipAesInfo,
+    iter_extra_fields,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
@@ -543,15 +544,13 @@ def _zip_timestamps(
     extra = info.extra or b""
     if not extra:
         return modified, accessed, ntfs_ctime, ut_ctime, issues
-    pos = 0
-    while pos + 4 <= len(extra):
-        tag, length = struct.unpack("<HH", extra[pos : pos + 4])
-        field = extra[pos + 4 : pos + 4 + length]
-        if tag == 0x000A and ntfs_field is None:
-            ntfs_field = field
-        elif tag == 0x5455 and field and ut_field is None:
-            ut_field = field
-        pos += 4 + length
+    # A cut-short field is read for what it carries: the NTFS and UT walks below
+    # check every read against the field's actual length.
+    for field in iter_extra_fields(extra):
+        if field.tag == 0x000A and ntfs_field is None:
+            ntfs_field = field.data
+        elif field.tag == 0x5455 and field.data and ut_field is None:
+            ut_field = field.data
 
     if ntfs_field is not None:
         # Layout: 4 reserved bytes, then (tag, size) attributes; tag 1 carries the three
@@ -2256,14 +2255,11 @@ def _unicode_path_name(extra: bytes, stored_name: bytes) -> bytes | None:
     field counts, as in 7-Zip, and it counts only when it matches, holds valid UTF-8
     and is not empty; any other field is ignored.
     """
-    pos = 0
-    while pos + 4 <= len(extra):
-        tag, length = struct.unpack_from("<HH", extra, pos)
-        field = extra[pos + 4 : pos + 4 + length]
-        pos += 4 + length
-        if tag != _ZIP_EXTRA_UNICODE_PATH:
+    for extra_field in iter_extra_fields(extra):
+        if extra_field.tag != _ZIP_EXTRA_UNICODE_PATH:
             continue
-        if len(field) != length or length < 6 or field[0] != 1:
+        field = extra_field.data
+        if not extra_field.complete or len(field) < 6 or field[0] != 1:
             return None
         if struct.unpack_from("<I", field, 1)[0] != zlib.crc32(stored_name):
             return None
@@ -2282,14 +2278,10 @@ def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:
         return False
     if info.flag_bits & _ZIP_MASK_STRONG_ENCRYPTION:
         return True
-    extra = info.extra or b""
-    pos = 0
-    while pos + 4 <= len(extra):
-        tag, length = struct.unpack_from("<HH", extra, pos)
-        if tag == _ZIP_EXTRA_STRONG_ENCRYPTION:
-            return True
-        pos += 4 + length
-    return False
+    return any(
+        field.tag == _ZIP_EXTRA_STRONG_ENCRYPTION
+        for field in iter_extra_fields(info.extra or b"")
+    )
 
 
 def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
