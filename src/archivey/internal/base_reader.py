@@ -20,6 +20,7 @@ from typing import (
     Iterator,
     Literal,
     Mapping,
+    NamedTuple,
     NoReturn,
     Self,
 )
@@ -149,6 +150,34 @@ Windows input.
 Targets stored in a header (TAR's ``linkname``, RAR5's redirection record, Rock Ridge)
 are not read through this cap: the header parser has already allocated them, and
 ``ListingLimits.max_metadata_bytes`` weighs them at registration.
+"""
+
+
+_UnconfirmedEvidence = Literal["extension", "content_probe"]
+
+
+class _UnconfirmedWording(NamedTuple):
+    code: DiagnosticCode
+    evidence_text: str  # "identified only by {evidence_text}"
+    evidence_short: str  # "unconfirmed ({evidence_short})"
+
+
+_UNCONFIRMED_EVIDENCE: Mapping[_UnconfirmedEvidence, _UnconfirmedWording] = {
+    "extension": _UnconfirmedWording(
+        DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
+        "its file extension",
+        "extension only",
+    ),
+    "content_probe": _UnconfirmedWording(
+        DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
+        "a content probe",
+        "content probe only",
+    ),
+}
+"""A decode-failure diagnostic per unconfirmed evidence: its code and two phrasings.
+
+The extension code is also the empty-listing code, which
+``_emit_listed_empty_unconfirmed`` emits with its own message.
 """
 
 
@@ -385,7 +414,7 @@ class BaseArchiveReader(ArchiveReader):
       RAR) iterates ``_listed_members()``, which does that in streaming and drains the
       shared walk in random access, so its members are the reader's own objects.
 
-    Everything else here (``_get_members_registered``, ``_resolve_link``,
+    Everything else here (``_materialize_members``, ``_resolve_link``,
     ``_open_with_link_follow``, ``_stamp_error_context``) is internal plumbing and is not
     an extension point.
     """
@@ -455,6 +484,9 @@ class BaseArchiveReader(ArchiveReader):
         # ``_iter_members()`` runs once for a walk that completes. ``_walk`` is the
         # backend's generator while the walk is unfinished; ``_walk_done`` is set when it
         # ends, cleanly or on terminal damage, and ``_walk_error`` holds that damage.
+        # Its object identity is a contract: extraction tells listing damage (write the
+        # prefix, then raise) from a member fault by ``exc is _walk_error``, so a pass
+        # that ends on the damage re-raises this object and never wraps it.
         # ``_walk_failure`` poisons a streaming walk that failed any other way, since
         # its prefix was already handed out and cannot be walked again. Until a
         # random-access walk ends, ``_walk_built`` keeps every member object it produced
@@ -688,14 +720,14 @@ class BaseArchiveReader(ArchiveReader):
         """Yield (member, stream) pairs in archive order; backs ``stream_members``.
 
         This default is for **random-access / fully-indexed** backends only (ZIP,
-        directory): it calls ``_get_members_registered()``, which eagerly drains
+        directory): it calls ``_materialize_members()``, which eagerly drains
         ``_iter_members()`` and builds the name map *before* yielding anything.
 
         Streaming / forward-only / solid backends **must override** this — it is a
         correctness requirement, not just an optimization. A non-seekable TAR or a solid
         7z/RAR cannot enumerate every member before reading data, so the override must
         produce ``(member, stream)`` pairs progressively from a single forward pass and
-        must **not** call ``_get_members_registered()``. The yielded stream is only valid
+        must **not** call ``_materialize_members()``. The yielded stream is only valid
         until the iterator advances (see the ``stream_members`` contract in
         ``archive-reading``); for non-file members it is ``None``.
 
@@ -986,7 +1018,7 @@ class BaseArchiveReader(ArchiveReader):
             # Detection fell through to the filename because magic, the content probes
             # and far magic all declined — the same answer detect_format gives when it
             # refuses the bytes. No rescan is needed to know the format is unconfirmed.
-            self._emit_unconfirmed_format("extension", None)
+            self._emit_listed_empty_unconfirmed("extension", None)
             return
 
         if provenance.chosen_by != "argument" or provenance.source is None:
@@ -1014,85 +1046,60 @@ class BaseArchiveReader(ArchiveReader):
             detected = None
         if detected is self._format:
             return
-        self._emit_unconfirmed_format(
+        self._emit_listed_empty_unconfirmed(
             "argument", detected.display_name if detected is not None else None
         )
 
-    def _emit_unconfirmed_format(
+    def _emit_listed_empty_unconfirmed(
+        self,
+        chosen_by: Literal["argument", "extension"],
+        detected_format: str | None,
+    ) -> None:
+        format_name = self._format.display_name
+        detected_text = detected_format or "nothing (detection refuses these bytes)"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
+            if chosen_by == "argument"
+            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
+            message=f"Listed no members as {format_name}, which was chosen by "
+            f"{chosen_by} and not confirmed by the archive's bytes; "
+            f"content detection reports {detected_text}",
+            context=self._unconfirmed_context(chosen_by, detected_format),
+        )
+
+    def _unconfirmed_context(
         self,
         chosen_by: Literal["argument", "extension", "content_probe"],
         detected_format: str | None,
-        *,
-        escalate_as: type[BaseException] | None = None,
-        escalate_message: str | None = None,
-        escalate_kwargs: dict[str, object] | None = None,
-        read_failed: bool = False,
-    ) -> None:
-        # ``read_failed`` picks which event the code reports. Only ``"extension"``
-        # has both: an empty listing (False) and a failed decode (True). The probe
-        # code is only emitted on a failed read, so ``"content_probe"`` ignores the
-        # flag; ``"argument"`` only ever reports an empty listing.
-        if chosen_by == "argument":
-            code = DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
-        elif chosen_by == "extension":
-            code = DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
-        else:
-            code = DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
-        format_name = self._format.display_name
-        if chosen_by == "content_probe" or read_failed:
-            evidence = (
-                "a content probe"
-                if chosen_by == "content_probe"
-                else "its file extension"
-            )
-            message = (
-                f"Reading {format_name} failed (a decode failure or a limit), and it "
-                f"was identified only by {evidence}; the source may not be that "
-                f"format"
-            )
-        else:
-            detected_text = detected_format or "nothing (detection refuses these bytes)"
-            message = (
-                f"Listed no members as {format_name}, which was chosen by "
-                f"{chosen_by} and not confirmed by the archive's bytes; "
-                f"content detection reports {detected_text}"
-            )
-        self._diagnostics_collector.emit(
-            code=code,
-            message=message,
-            context=UnconfirmedFormatContext(
-                archive_name=self._archive_name,
-                format=format_name,
-                chosen_by=chosen_by,
-                detected_format=detected_format,
-            ),
-            escalate_as=escalate_as,
-            escalate_message=escalate_message,
-            escalate_kwargs=escalate_kwargs,
+    ) -> UnconfirmedFormatContext:
+        return UnconfirmedFormatContext(
+            archive_name=self._archive_name,
+            format=self._format.display_name,
+            chosen_by=chosen_by,
+            detected_format=detected_format,
         )
 
     def _mark_format_unconfirmed(
         self,
         exc: ArchiveyError,
-        chosen_by: Literal["extension", "content_probe"],
+        evidence: _UnconfirmedEvidence,
     ) -> None:
         """Stamp a decode failure under an unconfirmed format and emit its diagnostic.
 
-        ``chosen_by`` says what the format rested on: a content probe with nothing
+        ``evidence`` says what the format rested on: a content probe with nothing
         corroborating it (``PROBE_FORMAT_UNCONFIRMED``), or the filename alone, because
         every content signal declined (``EXTENSION_FORMAT_UNCONFIRMED``).
         """
+        code, evidence_text, evidence_short = _UNCONFIRMED_EVIDENCE[evidence]
         if not exc.format_unconfirmed:
-            format_name = (exc.source_format or self._format).display_name
+            # The stamped message speaks of the format the exception names, which a
+            # lower layer (a codec, the spool) may have set to something other than
+            # this reader's format; the diagnostic below speaks of the reader's.
+            stamped_format = (exc.source_format or self._format).display_name
             detail = exc.raw_message.rstrip(".")
-            evidence = (
-                "content probe only"
-                if chosen_by == "content_probe"
-                else "extension only"
-            )
             unconfirmed = (
-                f"Format identification was unconfirmed ({evidence}); "
-                f"the source may not be {format_name}."
+                f"Format identification was unconfirmed ({evidence_short}); "
+                f"the source may not be {stamped_format}."
             )
             if isinstance(exc, ResourceLimitError):
                 # A limit stops the read rather than the decoder failing on it, and a
@@ -1115,27 +1122,13 @@ class BaseArchiveReader(ArchiveReader):
 
         # Under pedantic() (default=RAISE), a bare emit would raise DiagnosticRaisedError
         # mid-raise and destroy the typed TruncatedError/CorruptionError/
-        # ResourceLimitError. escalate_as
-        # keeps that type when RAISE fires; under COLLECT we leave escalate_as unset so
-        # the already-stamped ``exc`` is re-raised by the caller.
-        escalate_as: type[BaseException] | None = None
-        escalate_kwargs: dict[str, object] | None = None
-        escalate_message: str | None = None
-        disposition = self._diagnostics_collector.policy.resolve(
-            DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
-            if chosen_by == "content_probe"
-            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
+        # ResourceLimitError. escalate_as keeps that type when RAISE fires; under
+        # COLLECT we leave it unset so the already-stamped ``exc`` is re-raised by the
+        # caller.
+        raising = (
+            self._diagnostics_collector.policy.resolve(code)
+            is DiagnosticDisposition.RAISE
         )
-        if disposition is DiagnosticDisposition.RAISE:
-            escalate_as = type(exc)
-            escalate_message = exc.raw_message
-            escalate_kwargs = {
-                "source_format": exc.source_format,
-                "archive_name": exc.archive_name,
-                "member_name": exc.member_name,
-                "link_target": exc.link_target,
-                "format_unconfirmed": True,
-            }
 
         # Set before emitting: under RAISE the emit does not return, and a flag set
         # afterwards would never be reached — every retried read would record the
@@ -1146,15 +1139,34 @@ class BaseArchiveReader(ArchiveReader):
         # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
         # stopped is stopped whether or not the diagnostic fires a second time.
         self._unconfirmed_failure_emitted = True
-        self._emit_unconfirmed_format(
-            chosen_by,
-            # An extension guess is what detection falls back to when it refuses the
-            # bytes, so it has no content answer to restate.
-            self._format.display_name if chosen_by == "content_probe" else None,
+        reader_format = self._format.display_name
+        escalate_as: type[BaseException] | None = None
+        escalate_message: str | None = None
+        escalate_kwargs: dict[str, object] | None = None
+        if raising:
+            escalate_as = type(exc)
+            escalate_message = exc.raw_message
+            escalate_kwargs = {
+                "source_format": exc.source_format,
+                "archive_name": exc.archive_name,
+                "member_name": exc.member_name,
+                "link_target": exc.link_target,
+                "format_unconfirmed": True,
+            }
+        self._diagnostics_collector.emit(
+            code=code,
+            message=f"Reading {reader_format} failed (a decode failure or a limit), and "
+            f"it was identified only by {evidence_text}; the source may not be that "
+            f"format",
+            context=self._unconfirmed_context(
+                evidence,
+                # An extension guess is what detection falls back to when it refuses
+                # the bytes, so it has no content answer to restate.
+                reader_format if evidence == "content_probe" else None,
+            ),
             escalate_as=escalate_as,
             escalate_message=escalate_message,
             escalate_kwargs=escalate_kwargs,
-            read_failed=True,
         )
 
     def _finalize_and_publish(
@@ -1559,17 +1571,6 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._progressive_enforce_listing_limits = previous
 
-    def _get_members_registered(
-        self, *, enforce_listing_limits: bool = True
-    ) -> list[ArchiveMember]:
-        """Return the complete member list, raising on incomplete reports."""
-        report = self._materialize_members(
-            enforce_listing_limits=enforce_listing_limits
-        ).report
-        if report.error is not None:
-            raise report.error
-        return list(report.members)
-
     def _extraction_listing(self) -> ContextManager[None]:
         """Apply ``ListingLimits`` for an extraction over this random-access reader.
 
@@ -1578,8 +1579,11 @@ class BaseArchiveReader(ArchiveReader):
         enforced, so nothing is written from an archive over them. A backend whose
         listing is itself a scan of the data may instead enforce them as members
         arrive during the pass (TAR), and not decode the archive twice.
+
+        A listing that ends in damage does not raise here: the pass writes the
+        members listed before it and then raises the damage, as a TAR pass does.
         """
-        self._get_members_registered(enforce_listing_limits=True)
+        self._materialize_members(enforce_listing_limits=True)
         return nullcontext()
 
     def _account_archive_comment(self, *, enforce: bool) -> None:
@@ -2877,10 +2881,9 @@ class BaseArchiveReader(ArchiveReader):
             exc, (CorruptionError, ResourceLimitError)
         ):
             return
-        if provenance.probe_only:
-            self._mark_format_unconfirmed(exc, "content_probe")
-        elif provenance.chosen_by == "extension":
-            self._mark_format_unconfirmed(exc, "extension")
+        evidence = provenance.unconfirmed_evidence
+        if evidence is not None:
+            self._mark_format_unconfirmed(exc, evidence)
 
     def io_stats(self) -> IoStats | None:
         """Return I/O counters if measurement is enabled, else ``None``.

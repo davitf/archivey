@@ -61,10 +61,14 @@ separator.
 
 A name SHALL decode as UTF-16LE with `surrogatepass`: a surrogate without its partner
 stays in `name` as that code unit, every member still lists, and `raw_name` encodes back
-to the stored units. Extraction writes such a name as 7-Zip does (`safe-extraction`,
-"Lone surrogates in a member name"). A unit in U+DC80–U+DCFF is the exception: in a
-Python `str` it cannot be told from a `surrogateescape` byte, so extraction takes it for
-one, as it does for every format, and does not write 7-Zip's three-byte form.
+to the stored units. Under `STRICT` and `STANDARD` extraction percent-escapes such a
+name as a non-portable one; under `TRUSTED` it writes the name as 7-Zip does
+(`safe-extraction`, "Lone surrogates in a member name"). A unit in U+DC80–U+DCFF is the
+exception under `TRUSTED`: in a Python `str` it cannot be told from a `surrogateescape`
+byte, so extraction takes it for one, as it does for every format, and does not write
+7-Zip's three-byte form. The archive comment SHALL decode the same way: a lone unit
+stays in `ArchiveInfo.comment`, and only a comment with an odd byte count is a
+`CorruptionError`.
 
 #### Scenario: native header matrix
 
@@ -76,6 +80,8 @@ one, as it does for every format, and does not write 7-Zip's three-byte form.
 | `FILES_INFO` holds an unknown property (ID `0x1A` or higher) | Property skipped; members read |
 | Stored name `dir\file.txt` | `name == "dir/file.txt"`; `raw_name` is the stored bytes, backslash included |
 | Stored name holds a lone surrogate (`hi` U+D800) | Every member lists; `name == "hi\ud800"`; never `CorruptionError` |
+| Comment holds a lone surrogate (`note` U+D800) | Archive opens; `ArchiveInfo.comment == "note\ud800"` |
+| Comment payload has an odd byte count | `CorruptionError` |
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 

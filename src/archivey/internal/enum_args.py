@@ -49,9 +49,15 @@ from typing import TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 
-__all__ = ["coerce_enum", "coerce_enum_collection", "normalize_spelling"]
+__all__ = [
+    "coerce_enum",
+    "coerce_enum_collection",
+    "normalize_spelling",
+    "spelling_table",
+]
 
 E = TypeVar("E", bound=Enum)
+T = TypeVar("T")
 
 
 def normalize_spelling(text: str) -> str:
@@ -66,6 +72,18 @@ def normalize_spelling(text: str) -> str:
     return text.strip().lower().replace("-", "_")
 
 
+def spelling_table(
+    *, fallback: Iterable[tuple[str, T]], preferred: Iterable[tuple[str, T]]
+) -> dict[str, T]:
+    """Normalized spelling -> value; ``preferred`` wins a tie, then the first one does."""
+    table: dict[str, T] = {}
+    for spelling, value in fallback:
+        table.setdefault(normalize_spelling(spelling), value)
+    for spelling, value in preferred:
+        table[normalize_spelling(spelling)] = value
+    return table
+
+
 @functools.cache
 def _lookup(enum_cls: type[E]) -> dict[str, E]:
     """Build (once per class) the normalized-spelling -> member map.
@@ -75,14 +93,10 @@ def _lookup(enum_cls: type[E]) -> dict[str, E]:
     such a tie; ``test_enum_arguments.py`` fails if one is introduced, rather than
     leaving the precedence to be discovered.
     """
-    table: dict[str, E] = {}
-    for member in enum_cls:
-        table.setdefault(normalize_spelling(member.name), member)
-    for member in enum_cls:
-        value = member.value
-        if isinstance(value, str):
-            table[normalize_spelling(value)] = member
-    return table
+    return spelling_table(
+        fallback=((m.name, m) for m in enum_cls),
+        preferred=((m.value, m) for m in enum_cls if isinstance(m.value, str)),
+    )
 
 
 def _takes(enum_cls: type[Enum], also_accepts: str | None) -> str:

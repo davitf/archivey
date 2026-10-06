@@ -137,9 +137,9 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 - **#333 follow-up — drop `read_exact` where the receiver is the source handle.**
   `ensure_full_count_reads` now makes every archive source full-count on both branches,
-  so `read_exact` against the source is a no-op wrapper around one `read(n)`. Of the 30
-  call sites in `src/`, roughly 15 are that shape (`zip_reader` `fp`, `sevenzip_parser`
-  `fp`, `rar_parser` `source`/`stream`, `detection_workspace`'s four handles,
+  so `read_exact` against the source is a no-op wrapper around one `read(n)`. Of the 40
+  call sites in `src/`, roughly a dozen are that shape (`zip_reader` `fp`, `sevenzip_parser`
+  `fp`, `rar_parser` `source`/`stream`, `detection_workspace`'s three call sites,
   `single_file_reader` `src`) and could become a plain `read(n)`, leaving one gather
   policy visible instead of two.
 

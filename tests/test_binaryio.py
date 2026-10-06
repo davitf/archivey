@@ -24,6 +24,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     read_within_reach,
     readinto_via_read,
+    resolve_seek,
     source_name,
 )
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
@@ -1042,3 +1043,47 @@ class TestSourceByteSize:
         from archivey.internal.streams.streamtools import source_byte_size
 
         assert source_byte_size(NonSeekableBytesIO(b"abc")) is None
+
+
+class TestResolveSeek:
+    """``resolve_seek`` follows ``io.BytesIO`` and asks for the end only on ``SEEK_END``."""
+
+    def _end(self) -> int:
+        self.end_calls += 1
+        return 10
+
+    def setup_method(self) -> None:
+        self.end_calls = 0
+
+    @pytest.mark.parametrize(
+        ("offset", "whence", "expected"),
+        [
+            (7, io.SEEK_SET, 7),
+            (99, io.SEEK_SET, 99),
+            (3, io.SEEK_CUR, 7),
+            (-4, io.SEEK_CUR, 0),
+            (-99, io.SEEK_CUR, 0),
+        ],
+    )
+    def test_set_and_cur_never_ask_for_the_end(
+        self, offset: int, whence: int, expected: int
+    ) -> None:
+        assert resolve_seek(offset, whence, pos=4, end=self._end) == expected
+        assert self.end_calls == 0
+
+    @pytest.mark.parametrize(
+        ("offset", "expected"), [(0, 10), (-3, 7), (5, 15), (-99, 0)]
+    )
+    def test_end_is_asked_once(self, offset: int, expected: int) -> None:
+        assert resolve_seek(offset, io.SEEK_END, pos=4, end=self._end) == expected
+        assert self.end_calls == 1
+
+    def test_negative_seek_set_raises(self) -> None:
+        with pytest.raises(ValueError, match="Negative seek position -1"):
+            resolve_seek(-1, io.SEEK_SET, pos=4, end=self._end)
+        assert self.end_calls == 0
+
+    def test_invalid_whence_raises(self) -> None:
+        with pytest.raises(ValueError, match="Invalid whence: 3"):
+            resolve_seek(0, 3, pos=4, end=self._end)
+        assert self.end_calls == 0

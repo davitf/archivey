@@ -11,7 +11,7 @@ import tarfile
 import time
 import zipfile
 import zlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +30,16 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal import volumes as volumes_mod
+from archivey.internal.backends.sevenzip_reader import _infer_nameless_member_name
+from archivey.internal.backends.zip_detect import is_zip_split_segment_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
     first_volume_for_stub,
     join_volumes,
-    next_old_rar_volume_name,
+    next_rar_volume_name,
+    rar_volume_name,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
@@ -295,7 +298,7 @@ def test_old_scheme_sfx_exe_opens_rnn_set(tmp_path: Path) -> None:
 def _old_scheme_names(first: str, count: int) -> list[str]:
     names = [first]
     while len(names) < count:
-        following = next_old_rar_volume_name(names[-1])
+        following = next_rar_volume_name(names[-1], old_numbering=True)
         assert following is not None
         names.append(following)
     return names
@@ -306,10 +309,48 @@ def test_old_scheme_volume_names_run_past_r99_and_z99() -> None:
     assert names[:3] == ["a.rar", "a.r00", "a.r01"]
     assert names[100:103] == ["a.r99", "a.s00", "a.s01"]
     assert names[900:903] == ["a.z99", "a.{00", "a.{01"]
-    assert next_old_rar_volume_name("a.exe") == "a.r00"
-    assert next_old_rar_volume_name("a.sfx") == "a.r00"
-    assert next_old_rar_volume_name("A.RAR") == "A.R00"
-    assert next_old_rar_volume_name("a.part1.rar.bak") is None
+    assert next_rar_volume_name("a.exe", old_numbering=True) == "a.r00"
+    assert next_rar_volume_name("a.sfx", old_numbering=True) == "a.r00"
+    assert next_rar_volume_name("A.RAR", old_numbering=True) == "A.R00"
+    assert next_rar_volume_name("a.part1.rar.bak", old_numbering=True) is None
+    # A name with no extension counts as ``.rar``.
+    assert next_rar_volume_name("archive", old_numbering=True) == "archive.r00"
+    assert next_rar_volume_name("archive.", old_numbering=True) == "archive.r00"
+
+
+@pytest.mark.parametrize(
+    ("index", "old_numbering", "expected"),
+    [
+        (1, False, "a.part1.rar"),
+        (12, False, "a.part12.rar"),
+        (1, True, "a.rar"),
+        (2, True, "a.r00"),
+        (101, True, "a.r99"),
+        (102, True, "a.s00"),
+        (901, True, "a.z99"),
+        (902, True, "a.{00"),
+        (1001, True, "a.{99"),
+        (1002, True, "a.|00"),
+    ],
+)
+def test_rar_volume_names_follow_the_set_scheme(
+    index: int, old_numbering: bool, expected: str
+) -> None:
+    assert rar_volume_name("a", index, old_numbering=old_numbering) == expected
+
+
+@pytest.mark.parametrize("old_numbering", [False, True])
+def test_rar_volume_names_are_the_names_unrar_walks(old_numbering: bool) -> None:
+    """Every staged name is the one unrar looks for after the one before it, so a
+    staged set of any length reads to its end (unrar stopped at 901 old-style
+    volumes when the 902nd was named ``partN``). The property test in
+    ``test_property_safety`` samples indexes; this sweep is the part it cannot
+    replace, since it is sure to cross the ``.z99`` -> ``.{00`` boundary."""
+    for index in range(1, 1500):
+        current = rar_volume_name("a", index, old_numbering=old_numbering)
+        assert next_rar_volume_name(
+            current, old_numbering=old_numbering
+        ) == rar_volume_name("a", index + 1, old_numbering=old_numbering)
 
 
 @pytest.mark.parametrize("first", ["archive.rar", "archive.exe"])
@@ -446,7 +487,7 @@ def _write_old_scheme_rar4_set(
         )
         (directory / name).write_bytes(volume)
         paths.append(directory / name)
-        following = next_old_rar_volume_name(name)
+        following = next_rar_volume_name(name, old_numbering=True)
         assert following is not None
         name = following
     return paths
@@ -1990,3 +2031,32 @@ def test_zero_padded_rar_part_names_past_six_digits_are_siblings(
         tmp_path / "x.part0000001.rar",
         tmp_path / "x.part0000002.rar",
     ]
+
+
+def _has_volume_scheme(name: str) -> bool:
+    return volumes_mod._volume_scheme_and_base(name) is not None
+
+
+def _strips_7z_suffix(name: str) -> bool:
+    return _infer_nameless_member_name(name) != f"{name}.uncompressed"
+
+
+@pytest.mark.parametrize(
+    ("accepts", "name"),
+    [
+        (_has_volume_scheme, "a.7z.001"),
+        (_has_volume_scheme, "a.part1.rar"),
+        (_has_volume_scheme, "a.r00"),
+        (is_zip_split_segment_name, "a.z01"),
+        (is_zip_split_segment_name, "a.zip.001"),
+        (_strips_7z_suffix, "a.7z"),
+    ],
+    ids=["numbered", "rar-part", "old-rar", "zip-zNN", "zip-NNN", "7z-stem"],
+)
+def test_name_patterns_do_not_accept_trailing_newline(
+    accepts: Callable[[str], bool], name: str
+) -> None:
+    # Python's ``$`` also matches before a final newline; the newline is part of
+    # the name, so the pattern must not see a part marker or suffix behind it.
+    assert accepts(name)
+    assert not accepts(name + "\n")

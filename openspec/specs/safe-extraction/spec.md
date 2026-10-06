@@ -231,7 +231,7 @@ read back.
 | `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
 | `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
-| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
+| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
 | SYMLINK/HARDLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
 | Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
 | `MemberType.OTHER` | `FilterRejectionError`; all policies |
@@ -288,31 +288,49 @@ of this requirement — it belongs to the future opt-in `SANITIZE` extraction po
 
 A member name or link target can hold a surrogate without its partner (U+D800–U+DFFF):
 7z names, RAR 1.5-4 UTF-16 names and Joliet names are UTF-16 code units, and NTFS allows
-any unit in a name. The rule below is the same for every format. Extraction SHALL
-write such a name as 7-Zip 23.01 does, under every policy. On POSIX each lone surrogate
-outside U+DC80–U+DCFF SHALL be written as its three-byte UTF-8 form (`surrogatepass`),
-so U+D800 becomes the bytes `ed a0 80`. On Windows the name SHALL be used as it is.
+any unit in a name. Listing and reading keep the unit in the name under every policy, and
+the rule below is the same for every format.
+
+Under `STRICT` and `STANDARD` such a name is not portable, and the portable-name rule
+(O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
+U+DC80–U+DCFF is taken as its three UTF-8 bytes (`surrogatepass`) and each byte is
+written `%XX`, so `hi\ud800` is written `hi%ED%A0%80` on every OS and
+`presented_name` records the stored name. Under `TRUSTED` extraction SHALL write the
+name as 7-Zip 23.01 does: on POSIX each such surrogate as its three-byte UTF-8 form
+(U+D800 becomes the bytes `ed a0 80`), on Windows the exact name. That on-disk spelling
+is not a rename, so `presented_name` stays unset for it. A link target is written the
+`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under `STRICT`
+and `STANDARD` a link to a member whose name was escaped therefore points at the
+unescaped spelling and dangles, as it already does for undecodable bytes; on a
+filesystem that accepts only UTF-8, such as APFS, creating that link fails.
 
 U+DC80–U+DCFF SHALL keep its `surrogateescape` meaning, one undecodable byte, for every
 format: it is written as that byte, or percent-escaped by the portable-name rule. The
-path checks, the collision key and the overwrite policy SHALL see the name that reaches
-disk, so a lone U+D800 and a name whose undecodable bytes are `ed a0 80` are one file.
-The on-disk spelling is not a rename: `presented_name` stays unset for it. A name that
-cannot be encoded even so is a `FilterRejectionError`, never a raw
-`UnicodeEncodeError`.
+path checks run on the name the disk spelling gives, before the portable-name rule, and
+a rejection by them names the stored member name. An error raised while writing the
+member, a deferred hardlink included, names the name from before the disk spelling:
+the stored name under `TRUSTED`, the escaped one under `STRICT` and `STANDARD`. Every
+error names a link target as stored, never in its disk spelling. The collision key and
+the overwrite policy see the spelling that reaches disk. Under every policy a lone
+U+D800 and a name whose undecodable bytes are `ed a0 80` are therefore one file: both
+are `hi%ED%A0%80` under `STRICT` and `STANDARD`, and both are the bytes under
+`TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
+raw `UnicodeEncodeError`.
 
 #### Scenario: lone surrogate matrix
 
-`tests/test_sevenzip_surrogate_names.py` pins the POSIX bytes against the `7z` tool;
+`tests/test_sevenzip_surrogate_names.py` compares both policies with the `7z` tool;
 `tests/test_utf16_surrogate_names.py` checks that RAR 1.5-4 and Joliet names extract to
 the same tree.
 
 | Case | Expected |
 | --- | --- |
-| `hi\ud800.txt` on POSIX, any policy | Written as `hi` + `ed a0 80` + `.txt`; `EXTRACTED`; `presented_name` unset |
-| `hi\ud800.txt` on Windows | Written under the exact name |
-| `hi\ud800` and `hi\udced\udca0\udc80` in one archive (POSIX) | One file; the second goes through the `OverwritePolicy` |
-| `lo\udc80.txt` under `STRICT` / `STANDARD` | Written `lo%80.txt`, as any undecodable byte is |
+| `hi\ud800.txt` under `STRICT` / `STANDARD`, any OS | Written `hi%ED%A0%80.txt`; `EXTRACTED`; `presented_name == "hi\ud800.txt"` |
+| `hi\ud800.txt` under `TRUSTED` on POSIX | Written as `hi` + `ed a0 80` + `.txt`, as 7-Zip writes it; `presented_name` unset |
+| `hi\ud800.txt` under `TRUSTED` on Windows | Written under the exact name |
+| `hi\ud800` and `hi\udced\udca0\udc80` in one archive, any policy | One file; the second goes through the `OverwritePolicy` |
+| `lo\udc80.txt` | `lo%80.txt` under `STRICT` / `STANDARD`; the byte `0x80` under `TRUSTED`, where 7-Zip writes `ed b2 80` |
+| `\ud800/../x` | `FilterRejectionError` whose `member_name` is `\ud800/../x` |
 
 ### Requirement: Skip non-current members by default
 
@@ -965,6 +983,36 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |
 
+### Requirement: A listing that ends in damage extracts its prefix, then raises
+
+When an archive's listing ends in terminal damage (`CorruptionError` / `TruncatedError`
+after a recovered prefix, per `archive-reading`), `extract_all()` and `extract()` SHALL
+write the members listed before the damage, in either access mode and for every format,
+and then raise the listing's own error, under either `OnError`. No report is returned, so
+the members after the damage, which were never listed, have no result. This is the order
+`stream_members()` gives (the prefix, then the error), and what unrar and 7-Zip do.
+Ruled by the maintainer (davitf, 2026-10-03); the rationale and the rejected
+alternatives are in `dev-docs/formats/rar.md` §6.
+
+The listing limits SHALL still be checked before anything is written. A hardlink in the
+prefix whose source was not selected SHALL still be completed by the second pass before
+the raise; a hardlink only points back, so its source is in the prefix. A member
+selection that the prefix satisfies SHALL NOT stop the pass before the damage, and its
+entries that match nothing in the prefix SHALL NOT be reported unmatched.
+
+#### Scenario: damaged listing matrix
+
+Pinned by `tests/test_extraction_damaged_listing.py`. A 7z or ZIP listing is one index
+read at open, so damage there fails the open.
+
+| Case | Expected |
+| --- | --- |
+| RAR4 / RAR5 / TAR listing cut or corrupt after N members, random access or streaming, listed first or not | The N members written, then the listing's error; no report |
+| Same, `members=` naming one prefix member | That member written, then the listing's error |
+| Same, `members=` naming a prefix hardlink whose source is not selected | The link written with the source's bytes, then the listing's error |
+| Same, `members=` naming a prefix member and an entry that matches nothing, `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | The prefix member written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
+| Same, prefix over a listing limit | `ResourceLimitError`; nothing written |
+
 ### Requirement: ExtractionReport is an immutable operation result
 
 The system SHALL define:
@@ -1148,9 +1196,9 @@ non-decodable bytes; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a
 public un-escape API is out of scope. Either way the outcome SHALL be deterministic and
-typed (never a bare `OSError`). A lone surrogate outside U+DC80–U+DCFF is not a byte
-and is not percent-escaped: it is written as described in "Lone surrogates in a member
-name".
+typed (never a bare `OSError`). A lone surrogate outside U+DC80–U+DCFF is escaped as
+its three UTF-8 bytes (`hi\ud800` → `hi%ED%A0%80`); "Lone surrogates in a member name"
+has the detail and the `TRUSTED` spelling.
 
 `ExtractionResult.requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution. A rename SHALL be observable as `requested_path != path and

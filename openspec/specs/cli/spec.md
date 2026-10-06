@@ -125,7 +125,8 @@ that wrapper contains exactly one top-level entry, the system SHALL hoist it to
 the cwd and remove the wrapper. The hoist SHALL NOT run when the wrapper was
 already there before the extraction (its only entry may be the operator's own),
 when the only entry is a symlink (the move changes the directory its target is
-read from), or when a symlink in the entry leaves the entry on the way to its target.
+read from), or when a symlink in the entry leaves the entry on the way to its target
+or part of the entry could not be listed (it may hold such a link).
 Extraction checked those links against the wrapper, and a path that climbs above the
 hoisted entry and back down through the wrapper's name (`top/k ->
 ../../.ssh/authorized_keys`, from `.ssh.tar`) climbs out of the cwd after the move. The
@@ -199,6 +200,7 @@ other processed statuses are omitted from that line).
 | `archivey -- -weird.zip` | Lists `-weird.zip` (default `list` inserted ahead of `--`) |
 | `archivey -- list` | Opens a file named `list`; a verb word after `--` is an archive path |
 | `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |
+| `archivey --policy strict x <archive>` or `archivey list <archive> --policy strict` (a verb's flag before the verb, or after a verb that does not take it) | Usage error naming the flag and the verb(s) it belongs to; a verb's own flags follow a verb that owns them |
 
 ### Requirement: Archive-derived text is escaped before terminal display
 
@@ -406,9 +408,10 @@ say that nothing was written. With no `-d`, it SHALL name the smart default dest
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,
 and use that place in the closing summary. Where a real run would keep that entry in
-the destination (the folder was already there, the entry is a symlink, or a symlink in
-it leaves it), it SHALL print `would keep in <stem>/:` with the same reason, judged
-from the symlinks the dry run created. It SHALL NOT check for collisions with entries
+the destination (the folder was already there, the entry is a symlink, a symlink in it
+leaves it, or part of the entry could not be listed, which here means part of the
+scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
+reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
 already at that place.
 
 #### Scenario: extract dry-run matrix

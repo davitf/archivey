@@ -67,6 +67,9 @@ encrypted members fail as if no password had been given.
 ### Notes
 
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
+- Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`) go before or after the
+  verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...) go after a verb that
+  owns them (`--policy` after `extract`, `--exclude` after `list`, `test` or `extract`).
 - A pattern naming a directory selects the directory and everything under it, as `tar`
   does: `archivey extract a.zip docs` and `archivey extract a.zip docs/` both extract
   `docs/` and its contents, but not a file named `docs.txt`. On Windows, `docs\sub`
@@ -89,7 +92,8 @@ encrypted members fail as if no password had been given.
   working directory. It skips the move when the wrapper folder was already there before the
   run, when the entry is a symlink, or when a symlink in it leaves it on the way to its
   target (or is absolute), because such a link would point somewhere else after the
-  move. It prints a line saying why the files stayed in the wrapper.
+  move. It also skips the move when part of the entry could not be listed, since it
+  may hold such a link. It prints a line saying why the files stayed in the wrapper.
 - `test` exits `1` when its summary reports members as not tested, or digests as not
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip

@@ -2,10 +2,11 @@
 
 A 7z name is a sequence of UTF-16 code units, and NTFS allows any 16-bit unit in a
 file name, so a 7z made on Windows can carry a surrogate that has no partner. The
-names decode with ``surrogatepass`` and keep the surrogate, as 7-Zip does. On POSIX,
-extraction writes the surrogate as its three-byte UTF-8 form (``ed a0 80`` for
-U+D800), which is what 7-Zip 23.01 writes on Linux. On Windows the name is used as
-it is.
+names decode with ``surrogatepass`` and keep the surrogate, as 7-Zip does. Under
+``STRICT`` and ``STANDARD`` extraction percent-escapes the surrogate's UTF-8 bytes,
+like any other name that is not portable (``hi%ED%A0%80``, on every OS). Under
+``TRUSTED`` it writes what 7-Zip writes: on POSIX the three-byte UTF-8 form
+(``ed a0 80`` for U+D800, as 7-Zip 23.01 does on Linux), on Windows the exact name.
 
 U+DC80-U+DCFF is the exception: in a Python ``str`` that range also means an
 undecodable byte (``surrogateescape``), and archivey reads it that way when it
@@ -20,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import zlib
 from pathlib import Path
 
@@ -28,9 +30,18 @@ import pytest
 import archivey
 from archivey.cli.exit_codes import EXIT_OK
 from archivey.cli.main import main
-from archivey.exceptions import ExtractionError, FilterRejectionError
-from archivey.internal.filters import disk_spelling
-from archivey.types import ExtractionPolicy, ExtractionStatus
+from archivey.exceptions import (
+    ExtractionError,
+    FilterRejectionError,
+    LinkTargetNotFoundError,
+)
+from archivey.internal.filters import apply_name_policy, disk_spelling
+from archivey.types import (
+    ArchiveMember,
+    ExtractionPolicy,
+    ExtractionStatus,
+    MemberType,
+)
 from tests.conftest import requires_binary
 
 _POSIX = sys.platform != "win32"
@@ -139,13 +150,37 @@ def test_a_member_with_a_surrogate_reads(archive: Path) -> None:
         assert [(m.name, s.read()) for m, s in reader.stream_members()] == _FILES
 
 
-@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
-@pytest.mark.parametrize("policy", list(ExtractionPolicy))
-def test_posix_extraction_writes_the_surrogate_as_utf8(
+_ESCAPED = {
+    b"hi%ED%A0%80.txt": b"high",
+    b"ok.txt": b"ok",
+    b"z%ED%BF%BF": b"last",
+    b"dir%ED%AF%BF/in.txt": b"nested",
+}
+
+
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_the_portable_policies_escape_the_surrogate(
     archive: Path, tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
+    """``STRICT`` and ``STANDARD`` escape the UTF-8 bytes, the same on every OS."""
     dest = tmp_path / "out"
     results = archivey.extract(archive, dest, policy=policy)
+    assert [r.status for r in results] == [ExtractionStatus.EXTRACTED] * len(_FILES)
+    assert _tree(dest) == _ESCAPED
+    by_name = {r.member.name: r for r in results}
+    written = by_name["hi\ud800.txt"]
+    assert written.path is not None
+    assert written.path.name == "hi%ED%A0%80.txt"
+    assert written.presented_name == "hi\ud800.txt"
+    assert by_name["ok.txt"].presented_name is None
+
+
+@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
+def test_trusted_posix_extraction_writes_the_surrogate_as_utf8(
+    archive: Path, tmp_path: Path
+) -> None:
+    dest = tmp_path / "out"
+    results = archivey.extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED] * len(_FILES)
     assert _tree(dest) == {
         b"hi\xed\xa0\x80.txt": b"high",
@@ -162,10 +197,7 @@ def test_posix_extraction_writes_the_surrogate_as_utf8(
     assert written.requested_path == written.path
 
 
-@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
-@requires_binary("7z")
-def test_posix_extraction_matches_the_7z_tool(archive: Path, tmp_path: Path) -> None:
-    """7-Zip 23.01 on Linux writes each lone surrogate as its UTF-8 form."""
+def _seven_zip_tree(archive: Path, tmp_path: Path) -> dict[bytes, bytes]:
     seven_zip = shutil.which("7z")
     assert seven_zip is not None
     theirs = tmp_path / "theirs"
@@ -176,9 +208,35 @@ def test_posix_extraction_matches_the_7z_tool(archive: Path, tmp_path: Path) -> 
         check=True,
         capture_output=True,
     )
+    return _tree(theirs)
+
+
+@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
+@requires_binary("7z")
+def test_trusted_posix_extraction_matches_the_7z_tool(
+    archive: Path, tmp_path: Path
+) -> None:
+    """7-Zip 23.01 on Linux writes each lone surrogate as its UTF-8 form."""
+    ours = tmp_path / "ours"
+    archivey.extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
+    assert _tree(ours) == _seven_zip_tree(archive, tmp_path)
+
+
+@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
+@requires_binary("7z")
+def test_the_default_policy_escapes_where_the_7z_tool_writes_bytes(
+    archive: Path, tmp_path: Path
+) -> None:
+    """At the default policy every surrogate name differs from 7-Zip's; ok.txt does not."""
     ours = tmp_path / "ours"
     archivey.extract(archive, ours)
-    assert _tree(ours) == _tree(theirs)
+    assert _tree(ours) == _ESCAPED
+    assert _seven_zip_tree(archive, tmp_path) == {
+        b"hi\xed\xa0\x80.txt": b"high",
+        b"ok.txt": b"ok",
+        b"z\xed\xbf\xbf": b"last",
+        b"dir\xed\xaf\xbf/in.txt": b"nested",
+    }
 
 
 @pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
@@ -188,38 +246,33 @@ def test_a_unit_in_the_escape_range_is_the_one_difference_from_the_7z_tool(
 ) -> None:
     """U+DC80-U+DCFF: 7-Zip writes its three UTF-8 bytes, archivey the one byte.
 
-    Measured with 7-Zip 23.01 on Linux. archivey writes the byte the unit stands for
-    in a ``str``, which the default policy escapes to ``%80``. Every other member is
-    written as 7-Zip writes it.
+    Measured with 7-Zip 23.01 on Linux, against ``TRUSTED``, the policy that otherwise
+    writes what 7-Zip writes. archivey writes the byte the unit stands for in a
+    ``str``; the default policy escapes that byte to ``lo%80.txt``.
     """
     archive = tmp_path / "low.7z"
     archive.write_bytes(_surrogate_7z([*_FILES, ("lo\udc80.txt", b"low")]))
-    seven_zip = shutil.which("7z")
-    assert seven_zip is not None
-    theirs = tmp_path / "theirs"
-    theirs.mkdir()
-    subprocess.run(
-        [seven_zip, "x", "-y", str(archive)],
-        cwd=theirs,
-        check=True,
-        capture_output=True,
-    )
     ours = tmp_path / "ours"
-    archivey.extract(archive, ours)
-    ours_tree, theirs_tree = _tree(ours), _tree(theirs)
-    assert ours_tree.pop(b"lo%80.txt") == b"low"
+    archivey.extract(archive, ours, policy=ExtractionPolicy.TRUSTED)
+    ours_tree, theirs_tree = _tree(ours), _seven_zip_tree(archive, tmp_path)
+    assert ours_tree.pop(b"lo\x80.txt") == b"low"
     assert theirs_tree.pop(b"lo\xed\xb2\x80.txt") == b"low"
     assert ours_tree == theirs_tree
     assert len(ours_tree) == len(_FILES)
+    default = tmp_path / "default"
+    archivey.extract(archive, default)
+    assert _tree(default)[b"lo%80.txt"] == b"low"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="APFS refuses the bytes")
 def test_a_utf8_only_filesystem_refusal_is_a_typed_failure(
     archive: Path, tmp_path: Path
 ) -> None:
-    """On APFS the name 7-Zip writes on Linux is refused: a typed failure, not a crash."""
+    """On APFS ``TRUSTED``'s bytes are refused: a typed failure, not a crash."""
     dest = tmp_path / "out"
-    results = archivey.extract(archive, dest, on_error="continue")
+    results = archivey.extract(
+        archive, dest, policy=ExtractionPolicy.TRUSTED, on_error="continue"
+    )
     by_name = {r.member.name: r for r in results}
     assert by_name["ok.txt"].status is ExtractionStatus.EXTRACTED
     for name in ("hi\ud800.txt", "z\udfff"):
@@ -234,31 +287,48 @@ def test_a_utf8_only_filesystem_refusal_is_a_typed_failure(
 
 
 @pytest.mark.skipif(_POSIX, reason="Windows keeps the exact name")
-def test_windows_extraction_uses_the_exact_name(archive: Path, tmp_path: Path) -> None:
+def test_trusted_windows_extraction_uses_the_exact_name(
+    archive: Path, tmp_path: Path
+) -> None:
     dest = tmp_path / "out"
-    archivey.extract(archive, dest)
+    archivey.extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
     assert (dest / "hi\ud800.txt").read_bytes() == b"high"
     assert (dest / "z\udfff").read_bytes() == b"last"
     assert (dest / "dir\udbff" / "in.txt").read_bytes() == b"nested"
 
 
-@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
-def test_a_surrogate_name_and_its_utf8_bytes_collide(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("policy", "written"),
+    [
+        (ExtractionPolicy.STRICT, b"hi%ED%A0%80"),
+        (ExtractionPolicy.STANDARD, b"hi%ED%A0%80"),
+        pytest.param(
+            ExtractionPolicy.TRUSTED,
+            b"hi\xed\xa0\x80",
+            marks=pytest.mark.skipif(
+                not _BYTE_NAMES, reason="needs a filesystem that takes any bytes"
+            ),
+        ),
+    ],
+)
+def test_a_surrogate_name_and_its_utf8_bytes_collide(
+    tmp_path: Path, policy: ExtractionPolicy, written: bytes
+) -> None:
     """``hi\\ud800`` and a name whose undecodable bytes are ``ed a0 80`` name one file.
 
-    The second is resolved by the overwrite policy, not written over the first.
+    ``STRICT`` and ``STANDARD`` escape both to ``hi%ED%A0%80``; ``TRUSTED`` writes
+    both as the bytes. The second is resolved by the overwrite policy, not written
+    over the first.
     """
     archive = tmp_path / "pair.7z"
     archive.write_bytes(
         _surrogate_7z([("hi\ud800", b"first"), ("hi\udced\udca0\udc80", b"second")])
     )
     dest = tmp_path / "out"
-    results = archivey.extract(
-        archive, dest, policy=ExtractionPolicy.TRUSTED, overwrite="skip"
-    )
+    results = archivey.extract(archive, dest, policy=policy, overwrite="skip")
     assert results[0].status is ExtractionStatus.EXTRACTED
     assert results[1].status is ExtractionStatus.NOT_OVERWRITTEN
-    assert _tree(dest) == {b"hi\xed\xa0\x80": b"first"}
+    assert _tree(dest) == {written: b"first"}
 
 
 def test_a_lone_surrogate_in_the_comment_does_not_refuse_the_archive(
@@ -285,6 +355,131 @@ def test_a_rejection_names_the_stored_member(tmp_path: Path) -> None:
     assert isinstance(blocked.error, FilterRejectionError)
     assert blocked.error.member_name == blocked.member.name == "\ud800/../x"
     assert "member='\\ud800/../x'" in str(blocked.error)
+
+
+def test_an_error_while_writing_names_the_member_as_listed(tmp_path: Path) -> None:
+    """A write-path error names the member before its disk spelling, under ``TRUSTED``.
+
+    A filter gives a hardlink a lone surrogate, and its target is not in the archive.
+    The error is raised after the name checks, by the hardlink write.
+    """
+    archive = tmp_path / "link.tar"
+    with tarfile.open(archive, "w") as tar:
+        info = tarfile.TarInfo("h")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "missing.txt"
+        tar.addfile(info)
+
+    def rename(member: ArchiveMember) -> ArchiveMember:
+        return member.replace(name=member.name + "\ud800")
+
+    with archivey.open_archive(archive) as reader:
+        (result,) = reader.extract_all(
+            tmp_path / "out",
+            policy=ExtractionPolicy.TRUSTED,
+            filter=rename,
+            on_error="continue",
+        )
+    assert isinstance(result.error, LinkTargetNotFoundError)
+    assert result.error.member_name == "h\ud800"
+    assert result.error.link_target == "missing.txt"
+
+
+@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
+@pytest.mark.parametrize(
+    "links",
+    [
+        # The source's bytes are written at the failing link: _materialize_orphan_source.
+        pytest.param(["h"], id="materialized"),
+        # `h1` takes the source's bytes, then `h2` is linked to it: _link_orphan.
+        pytest.param(["h1", "h2"], id="linked"),
+    ],
+)
+def test_a_deferred_hardlink_error_names_the_member_as_listed(
+    tmp_path: Path, links: list[str]
+) -> None:
+    """The second pass names a deferred hardlink as the first pass would.
+
+    The filter excludes the source, so its links are deferred to the second pass,
+    which writes the source's bytes at the first link and links the rest to it.
+    The last link gets a lone surrogate, and its destination is taken, so
+    ``OverwritePolicy.ERROR`` fails it there.
+    """
+    archive = tmp_path / "deferred.tar"
+    with tarfile.open(archive, "w") as tar:
+        source = tarfile.TarInfo("src")
+        source.size = 2
+        tar.addfile(source, io.BytesIO(b"ok"))
+        for name in links:
+            link = tarfile.TarInfo(name)
+            link.type = tarfile.LNKTYPE
+            link.linkname = "src"
+            tar.addfile(link)
+    failing = links[-1]
+
+    def rename(member: ArchiveMember) -> ArchiveMember | None:
+        if member.name == "src":
+            return None
+        if member.name == failing:
+            return member.replace(name=failing + "\ud800")
+        return member
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / os.fsdecode(failing.encode() + b"\xed\xa0\x80")).write_bytes(b"taken")
+    with archivey.open_archive(archive) as reader:
+        results = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            filter=rename,
+            on_error="continue",
+        )
+    (failed,) = [r for r in results if r.member.name == failing]
+    assert failed.error is not None
+    assert failed.error.member_name == failing + "\ud800"
+
+
+def _symlinks_tar(path: Path, links: list[tuple[str, str]]) -> None:
+    with tarfile.open(path, "w") as tar:
+        for name, target in links:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            tar.addfile(info)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink resolution")
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.TRUSTED])
+@pytest.mark.parametrize(
+    "links",
+    [
+        # Escapes through `d` once created: the check after creating `l` removes it.
+        pytest.param([("d", "."), ("l", "d/../s")], id="after-creation"),
+        # `a` arrives after `l` and makes it escape: the recheck removes `l`.
+        pytest.param([("l", "a/../s"), ("a", ".")], id="recheck"),
+    ],
+)
+def test_a_removed_symlink_names_its_target_as_listed(
+    tmp_path: Path, policy: ExtractionPolicy, links: list[tuple[str, str]]
+) -> None:
+    """The error for a symlink removed after creation names the target before its
+    disk spelling, under every policy: O7 does not rewrite link targets."""
+    archive = tmp_path / "links.tar"
+    _symlinks_tar(archive, links)
+
+    def add_surrogate(member: ArchiveMember) -> ArchiveMember:
+        if member.name != "l":
+            return member
+        return member.replace(link_target=f"{member.link_target}\ud800")
+
+    with archivey.open_archive(archive) as reader:
+        results = reader.extract_all(
+            tmp_path / "out", policy=policy, filter=add_surrogate, on_error="continue"
+        )
+    (removed,) = [r for r in results if r.member.name == "l"]
+    assert removed.status is ExtractionStatus.BLOCKED
+    assert isinstance(removed.error, FilterRejectionError)
+    assert removed.error.link_target == dict(links)["l"] + "\ud800"
 
 
 def test_a_low_surrogate_in_the_escape_range_is_a_byte(tmp_path: Path) -> None:
@@ -335,8 +530,7 @@ def test_cli_member_lines_escape_the_surrogate(
     argv = [verb, "-v", str(archive)] + (["-d", str(dest)] if verb == "extract" else [])
     code, out, err = _run_cli(argv)
     assert "hi\\ud800.txt" in out + err
-    if verb == "test" or _BYTE_NAMES or sys.platform == "win32":
-        assert code == EXIT_OK
+    assert code == EXIT_OK
     if verb == "extract":
         assert (dest / "ok.txt").read_bytes() == b"ok"
 
@@ -356,3 +550,31 @@ def test_disk_spelling(name: str, posix: str, monkeypatch: pytest.MonkeyPatch) -
     assert disk_spelling(name) == posix
     monkeypatch.setattr(sys, "platform", "win32")
     assert disk_spelling(name) == name
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+@pytest.mark.parametrize(
+    ("name", "escaped"),
+    [
+        ("hi\ud800", "hi%ED%A0%80"),
+        ("50%\udfff", "50%25%ED%BF%BF"),  # a literal % in a rewritten name is %25
+        ("caf\udce9", "caf%E9"),  # a surrogateescape byte stays one byte
+        ("\U00010000", "\U00010000"),  # a paired surrogate is a character
+    ],
+)
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_the_name_policy_escapes_a_lone_surrogate_on_every_os(
+    name: str,
+    escaped: str,
+    policy: ExtractionPolicy,
+    platform: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform)
+    member = ArchiveMember(
+        type=MemberType.FILE,
+        name=name,
+        raw_name=name.encode("utf-16le", "surrogatepass"),
+    )
+    assert apply_name_policy(member, policy).name == escaped
+    assert apply_name_policy(member, ExtractionPolicy.TRUSTED).name == name

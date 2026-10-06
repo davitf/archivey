@@ -195,16 +195,20 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   folder member may re-decode from the folder start.
 - **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
   hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
-  in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. On Linux and
-  other POSIX systems, extraction writes it as its three-byte UTF-8 form, the bytes 7-Zip
-  writes: `hi\ud800` becomes `hi` followed by `ed a0 80`. A filesystem that accepts only
-  valid UTF-8, such as APFS, refuses those bytes, and the member fails with
-  `ExtractionError`. On Windows the exact name is used. The CLI shows the name escaped,
-  as `hi\ud800`. One exception: a unit in U+DC80 to U+DCFF looks
-  the same as an undecodable byte (see
+  in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. The CLI shows
+  the name escaped, as `hi\ud800`. Under the `STRICT` and `STANDARD` policies, extraction
+  escapes the surrogate's UTF-8 bytes as it escapes any name that is not portable:
+  `hi\ud800` is written `hi%ED%A0%80` on every OS, and `presented_name` holds the
+  stored name. Under `TRUSTED` it writes what 7-Zip writes. On Linux and other POSIX
+  systems that is the three-byte UTF-8 form, `hi` followed by `ed a0 80`; a filesystem
+  that accepts only valid UTF-8, such as APFS, refuses those bytes, and the member fails
+  with `ExtractionError`. On Windows it is the exact name. One exception: a unit in
+  U+DC80 to U+DCFF looks the same as an undecodable byte (see
   [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)), so
   extraction writes it as that byte, where 7-Zip writes three bytes. `member.raw_name`
-  always holds the stored units.
+  always holds the stored units. The archive comment is UTF-16 too: a lone surrogate
+  stays in `ArchiveInfo.comment`, so be ready for it if you print the comment, and only
+  a comment with an odd byte count raises `CorruptionError`.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.
@@ -295,6 +299,16 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   archive whose encryption record has no password check value. RAR 1.5-4 archives may
   legitimately lack the end block, so a cut between their blocks still lists as
   complete.
+- **A damaged end-of-archive block keeps the listing.** When the block after the last
+  member fails its header checksum (RAR 1.5-4 or RAR5), every member is listed and
+  reads normally, and archivey emits `ARCHIVE_EOF_MARKER_MISSING` with
+  `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
+  is what `unrar t` does: each member tests OK, then it reports one error. A damaged
+  header counts as the end block only if it has an end block's shape and the file ends
+  right after it; any other damaged header still raises `CorruptionError`. The damaged
+  block's next-volume flag is not trusted, so a volume set goes on to the next volume
+  only when a member's own header says its data continues there. With encrypted headers
+  this needs the password proven, as above; before that it is `EncryptionError`.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.
@@ -467,6 +481,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   bounded backward peek. Same for the `.xz` size, read from the stream index. For
   multi-member lzip the value is derived by combining per-trailer CRCs with each
   member's uncompressed size so it equals `crc32` of the concatenated payloads.
+- `.lz` is read in lzip format version 1, which every lzip since 1.0 writes. A member
+  in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
+  wherever it is in the file: a member that starts with the `LZIP` magic is never
+  skipped as trailing data.
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable

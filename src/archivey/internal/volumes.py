@@ -28,6 +28,7 @@ from archivey.internal.streams.streamtools import (
     raise_if_text_stream,
     readinto_via_read,
     reject_source,
+    resolve_seek,
     source_name,
 )
 from archivey.terminal import display_path
@@ -79,19 +80,21 @@ SourceSequence = Sequence[SourceItem]
 # below has the same cap for the same reason.
 # The largest part the six-digit ``part`` groups below can hold.
 _MAX_VOLUME_PART = 999_999
+# This pattern and ``_RAR_PART_RE`` end in ``\Z``, not ``$``: ``$`` also matches before
+# a final newline, which would read ``name.7z.001\n`` as a volume name.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})$", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})\Z", re.IGNORECASE
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
 # ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
 # before ``.part`` is the set's base, so mixed extensions on one stem are one set.
 _RAR_PART_RE = re.compile(
-    r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)$", re.IGNORECASE
+    r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)\Z", re.IGNORECASE
 )
 # Any old-scheme continuation name. WinRAR and unrar go ``.rar``, ``.r00`` … ``.r99``,
 # then ``.s00`` … ``.z99`` and on past ``z`` (``.{00``, ``.|00`` …): the next name adds
-# one to the letter's character code (:func:`next_old_rar_volume_name`).
+# one to the letter's character code (:func:`next_rar_volume_name`).
 #
 # The shape is deliberately broad. It also matches Info-ZIP's ``backup.z01`` and
 # unrelated extensions such as ``cert.p12`` or ``image.e01``, so it only makes a name
@@ -109,27 +112,63 @@ _RAR_PART_RE = re.compile(
 # of another scheme or another base the check refuses the sequence as two sets. No
 # narrower pattern is sound. The name alone cannot tell ``beta.s00`` from
 # ``readme.p12``, and the walk can reach any letter before ``_MAX_VOLUME_PART`` stops
-# it.
-_OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}$")
+# it. ``\Z``, not ``$``: ``$`` also matches before a final newline.
+_OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}\Z")
 _OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 
 
-def next_old_rar_volume_name(name: str) -> str | None:
-    """The old-scheme name unrar looks for after ``name``, or ``None``.
+# unrar's new-scheme step: ``N`` in ``name.partN.rar`` goes up by one and keeps its
+# zero padding. It differs from ``_RAR_PART_RE``, which classifies a name rather than
+# predicting unrar: no digit cap, an empty base, any character (a newline too) in the
+# base. It accepts only ``.rar``, because ``next_rar_volume_name`` rewrites ``.exe``
+# and ``.sfx`` to ``.rar`` first.
+_UNRAR_PART_NAME_RE = re.compile(
+    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.IGNORECASE | re.DOTALL
+)
 
-    ``.rar`` (or an SFX ``.exe`` / ``.sfx``) is followed by ``.r00``; ``.r99`` by
-    ``.s00``; ``.z99`` by ``.{00``. The ``r`` of a ``.RAR`` keeps its case, as in
-    unrar's ``NextVolumeName``. Shared with the RAR backend, which predicts the names
-    unrar will walk.
+
+def rar_volume_name(stem: str, index: int, *, old_numbering: bool) -> str:
+    """File name of volume ``index`` (1-based) of a set archivey writes or links.
+
+    The closed form of :func:`next_rar_volume_name`'s walk from ``<stem>.rar`` or
+    ``<stem>.part1.rar``. Old-style names run ``.rar``, ``.r00`` … ``.z99`` and on
+    past ``z``; unrar reads a set of 1 500 volumes named that way. It does not follow
+    ``partN`` names for an old-style set, so those are never used for one.
+    """
+    if not old_numbering:
+        return f"{stem}.part{index}.rar"
+    if index == 1:
+        return f"{stem}.rar"
+    number = index - 2
+    return f"{stem}.{chr(ord('r') + number // 100)}{number % 100:02d}"
+
+
+def next_rar_volume_name(name: str, *, old_numbering: bool) -> str | None:
+    """The name unrar tries for the volume after ``name``, or ``None`` if unsure.
+
+    A subset of unrar's ``NextVolumeName``: an ``.exe``, ``.sfx`` or missing
+    extension counts as ``.rar``. The new scheme increments ``N`` in
+    ``name.partN.rar``. The old scheme goes ``.rar`` -> ``.r00``, ``.r99`` ->
+    ``.s00``, ``.z99`` -> ``.{00``, and the ``r`` of a ``.RAR`` keeps its case. Any
+    other shape is ``None``. Shared by old-scheme discovery and the RAR backend,
+    which predicts the names unrar will walk. The missing-extension case serves the
+    backend's caller-supplied names; discovery never reaches it, because its volume
+    1 always carries ``.rar``, ``.exe`` or ``.sfx``.
     """
     stem, dot, ext = name.rpartition(".")
     if not dot:
-        return None
-    lower = ext.lower()
-    if lower == "rar":
+        stem, ext = name, "rar"
+    elif ext.lower() in ("", "exe", "sfx"):
+        ext = "rar"
+    if not old_numbering:
+        match = _UNRAR_PART_NAME_RE.fullmatch(f"{stem}.{ext}")
+        if match is None:
+            return None
+        digits = match["num"]
+        number = str(int(digits) + 1).zfill(len(digits))
+        return f"{match['head']}{number}{match['ext']}"
+    if ext.lower() == "rar":
         return f"{stem}.{ext[0]}00"
-    if lower in ("exe", "sfx"):
-        return f"{stem}.r00"
     match = _OLD_RAR_EXT_RE.fullmatch(ext)
     if match is None:
         return None
@@ -235,7 +274,7 @@ def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
     volumes = [first]
     current = first.name
     while len(volumes) < _MAX_VOLUME_PART:
-        predicted = next_old_rar_volume_name(current)
+        predicted = next_rar_volume_name(current, old_numbering=True)
         if predicted is None:
             break
         following = _old_rar_listed_file(by_name, predicted, base)
@@ -622,17 +661,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
 
     def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
         self._checkClosed()
-        if whence == os.SEEK_SET:
-            new_pos = offset
-        elif whence == os.SEEK_CUR:
-            new_pos = self._pos + offset
-        elif whence == os.SEEK_END:
-            new_pos = self._size + offset
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-        if new_pos < 0:
-            raise ValueError("Negative seek position")
-        self._pos = new_pos
+        self._pos = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
         self._recompute_cursor()
         return self._pos
 
