@@ -1342,7 +1342,7 @@ class RarReader(BaseArchiveReader):
         The files may sit in different directories, or carry names that unrar's
         rule for this set (:func:`_unrar_finds_exactly`) does not continue, and
         unrar finds each later volume by name beside the one before. Each file is
-        linked (:meth:`_link_volumes`), so nothing is copied; a file the system will
+        linked (:meth:`_link_volumes`) rather than copied; only a file the system will
         not link is copied, and only those copies are charged to ``SpoolLimits``.
         Called under ``_materialize_lock`` from :meth:`_ensure_archive_path`.
         """
@@ -1380,9 +1380,10 @@ class RarReader(BaseArchiveReader):
         part-way, is not given a fresh allowance by the next read. Called under
         ``_materialize_lock``. ``what`` names the copy in the refusal; the first call
         that passes one fixes it (``None`` is a file-copy source kept by a solid pass,
-        :meth:`_try_spool`, which never refuses). Only a path source's files are ever
-        linked for ``unar``, so the link-fallback copy never follows a stream source's
-        copy on one reader.
+        :meth:`_try_spool`, which never refuses). Neither link fallback follows a
+        stream source's copy on one reader. Only a path source's files are ever linked
+        for ``unar``. For unrar, :meth:`_ensure_archive_path` either copies stream
+        volumes or stages explicit volume files, never both.
         """
         program = (
             "unar" if self._decompressor is RarDecompressor.UNAR else "RARLAB unrar"
