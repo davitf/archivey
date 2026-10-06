@@ -163,9 +163,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
-  Directories are not in the collision map, so a *file* `Foo` and a *directory* `foo/`
-  that differ only by case are not detected as a collision: the outcome depends on
-  whether the destination filesystem is case-sensitive.
+  Directories are not in the collision map, and archivey checks a directory member
+  against it only when a file or symlink already holds its destination. So a *file* `x`
+  collides with a *directory* `x/` stored after it, but not with one stored before it.
+  A *file* `Foo` and a later *directory* `foo/` that differ only by case collide only
+  on a case-insensitive filesystem.
 - **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
   with context; genuine I/O errors propagate unchanged; no handler swallows or
   reclassifies an unknown exception.
@@ -323,8 +325,9 @@ Archive order and identity matter more than “the” name.
 | Safe ≠ unlimited | Traversal, symlink escapes, and bombs are blocked; huge/hostile archives can still raise `ResourceLimitError` unless you raise limits. |
 | STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
 | Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — the clobbered member's result is revised to `OVERWRITTEN`. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
-| Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename). It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
-| `REPLACE` and directories | `REPLACE` removes an existing directory only when it is empty. A non-empty one fails that member with `ExtractionError`, so a later member cannot delete files the run already wrote or files you already had. |
+| Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename), for a directory member landing on a file as for a file. It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
+| `RENAME` and directories | When a file or symlink, yours or the run's, holds a directory member's name, archivey writes the directory as `name (1)/` and keeps the file. The members inside it follow it: `dd/f` lands at `dd (1)/f`, and its result reports `requested_path` `dd/f` and `path` `dd (1)/f`. The CLI reports the directory's rename once, not once per member. |
+| `REPLACE` and directories | `REPLACE` removes an existing directory only when it is empty. A non-empty one fails that member with `ExtractionError`, so a later member cannot delete files the run already wrote or files you already had. When the run wrote the empty directory it removes, that directory's result is revised to `OVERWRITTEN`, like any clobbered member. Its `collided_with` stays `None` and `AbortOn.NAME_COLLISION` does not fire, because directories are not in the collision map. |
 | Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. |
 | Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `file:ads`, …). |
 | `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |

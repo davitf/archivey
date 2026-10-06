@@ -493,6 +493,20 @@ class ExtractionCoordinator:
         # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
         # name may be the first free one again).
         self._rename_next: dict[str, int] = {}
+        # Directories RENAME wrote under a derived name: the path the member asked for ->
+        # the path it was written to. Members inside such a directory follow it there
+        # (``_follow_renamed_dirs``). Reset per ``run()``.
+        self._renamed_dirs: dict[Path, Path] = {}
+        # Directories this run wrote: collision key of the written path -> indices of the
+        # EXTRACTED results that report it. Not collision claims (directories merge, so
+        # they never go in the collision map), but keyed the same way, so a directory
+        # reached through the archive's own symlink or by a case variant is one entry.
+        # Kept so a REPLACE that removes an empty directory this run wrote can revise
+        # that result to OVERWRITTEN. Reset per ``run()``.
+        self._written_dirs: dict[str, list[int]] = {}
+        # The current run's results, for the revision above, which happens in
+        # ``_prepare_destination`` where no caller passes them.
+        self._results: list[ExtractionResult] = []
         # A streaming pass's superseded copies, left in place while the later copy of the
         # same name is handled so that copy can replace one atomically: path -> index of
         # the superseded result. Only for the length of one member; see
@@ -732,6 +746,8 @@ class ExtractionCoordinator:
     def _run(self, reader: "BaseArchiveReader", dest: Path) -> list[ExtractionResult]:
         forward_only = reader._streaming
         self._rename_next = {}
+        self._renamed_dirs = {}
+        self._written_dirs = {}
         self._stale = {}
         self._unremoved = {}
         self._streaming_now = None
@@ -812,6 +828,7 @@ class ExtractionCoordinator:
         )
 
         results: list[ExtractionResult] = []
+        self._results = results
         # source member_id -> list of on-disk paths holding that source's content.
         source_paths: dict[int, list[Path]] = {}
         written_paths: set[Path] = set()
@@ -991,11 +1008,11 @@ class ExtractionCoordinator:
                         tracker.start_member(original)
                         member_started = True
                         if self._on_progress is not None:
-                            # Capture counters for intra-member reports: members_done is
-                            # members fully completed *before* this one.
+                            # Capture members_done for intra-member reports: members fully
+                            # completed *before* this one. The outcome tallies are read
+                            # live: they change only when a member completes, except that
+                            # this member's REPLACE can revise an earlier result first.
                             done_so_far = members_done
-                            extracted_so_far = self._members_extracted
-                            blocked_so_far = self._members_blocked
                             current = original
 
                             def emit_progress() -> None:
@@ -1006,8 +1023,8 @@ class ExtractionCoordinator:
                                     done_so_far,
                                     members_total,
                                     member_bytes_written=tracker.member_bytes,
-                                    members_extracted=extracted_so_far,
-                                    members_blocked=blocked_so_far,
+                                    members_extracted=self._members_extracted,
+                                    members_blocked=self._members_blocked,
                                 )
 
                             self._emit_progress = emit_progress
@@ -1456,17 +1473,20 @@ class ExtractionCoordinator:
     ) -> ExtractionResult:
         requested = dest / transformed.name
         self._requested_path = requested
+        target = self._follow_renamed_dirs(
+            requested, is_dir=transformed.type == MemberType.DIRECTORY
+        )
 
         if original.is_anti:
             return replace(
                 self._apply_anti_item(
-                    original, requested, written_paths, collision_map, dest
+                    original, target, written_paths, collision_map, dest
                 ),
                 requested_path=requested,
             )
 
         dest_path, prior, collided_with = self._resolve_collision(
-            original, transformed, requested, collision_map, dest
+            original, transformed, target, collision_map, dest
         )
         redirected = prior is not None
         # Stashed for the failure handler: an ERROR-policy collision becomes a FAILED
@@ -1516,6 +1536,12 @@ class ExtractionCoordinator:
         # ``results`` instead of two members both reporting EXTRACTED at one path.
         if result.status is ExtractionStatus.EXTRACTED:
             self._mark_overwritten(results, prior)
+            if transformed.type == MemberType.DIRECTORY and result.path is not None:
+                self._written_dirs.setdefault(
+                    self._collision_key(dest, result.path), []
+                ).append(result_index)
+                if not redirected and result.path != target:
+                    self._renamed_dirs[requested] = dest_path
 
         self._register_collision_key(
             collision_map, dest, transformed, result, result_index
@@ -1631,16 +1657,24 @@ class ExtractionCoordinator:
         carry. A pre-existing on-disk obstacle is not a collision event and reports
         ``None``, as the diagnostic was also silent for it.
 
-        Directories are structural (parents recur, entries merge) and are not tracked as
-        content collisions. For a tracked member whose key is already claimed THIS run, a
-        collision is deterministic on every OS: route ERROR/SKIP/REPLACE to the prior path
-        so the existing OverwritePolicy machinery handles it uniformly, or derive a fresh
-        ``name (N)`` under RENAME. TRUSTED keys on the exact name and defers to the local
-        OS (no collision *event*, but RENAME still uses the map to avoid re-deriving
-        names). Shared by the main pass and the orphan second pass so deferred hardlinks
-        honour the map too.
+        Directories are structural (parents recur, entries merge) and are never claimed
+        in the map, so a directory member landing on a real directory merges into it.
+        One landing on an entry that is not a real directory (a file or a symlink) goes
+        through the same resolution as any other member: under every policy it collides
+        with a claim this run holds there, so ``collided_with``, the abort and a REPLACE
+        revision of the earlier member work as they do for files. Under RENAME it gets a
+        ``name (N)`` too, as removing that entry would lose it, and the members inside it
+        follow it there (``_follow_renamed_dirs``). For a tracked member whose key is
+        already claimed THIS run, a collision is deterministic on every OS: route
+        ERROR/SKIP/REPLACE to the prior path so the existing OverwritePolicy machinery
+        handles it uniformly, or derive a fresh ``name (N)`` under RENAME. TRUSTED keys
+        on the exact name and defers to the local OS (no collision *event*, but RENAME
+        still uses the map to avoid re-deriving names). Shared by the main pass and the
+        orphan second pass so deferred hardlinks honour the map too.
         """
-        if transformed.type == MemberType.DIRECTORY:
+        if transformed.type == MemberType.DIRECTORY and not self._blocks_directory(
+            requested
+        ):
             return requested, None, None
         key = self._collision_key(dest, requested)
         prior = collision_map.get(key)
@@ -1665,6 +1699,35 @@ class ExtractionCoordinator:
             self._check_collision_abort(original, transformed, prior)
             return prior.physical, prior, collided
         return requested, None, None
+
+    def _blocks_directory(self, path: Path) -> bool:
+        """Whether ``path`` holds an entry that is not a real directory: a file or a
+        symlink (to a directory too, as it is never written through), which a directory
+        member cannot merge into."""
+        if not self._occupied(path):
+            return False
+        try:
+            return not stat.S_ISDIR(os.lstat(path).st_mode)
+        except (OSError, ValueError):
+            return False
+
+    def _follow_renamed_dirs(self, requested: Path, *, is_dir: bool) -> Path:
+        """``requested`` moved under the derived name of the nearest directory RENAME
+        wrote elsewhere (``dd/f`` -> ``dd (1)/f``), or unchanged when none contains it.
+
+        Only a directory member also matches itself: a second ``dd/`` merges into
+        ``dd (1)/`` as directories always merge, which a streaming pass needs because
+        the first copy is still in place, superseded, when the second arrives. A file
+        that only shares the renamed directory's name is not inside it, and resolves
+        its own collision from the name it asked for (``dd (2)``, not ``dd (1) (1)``)."""
+        if not self._renamed_dirs:
+            return requested
+        candidates = (requested, *requested.parents) if is_dir else requested.parents
+        for ancestor in candidates:
+            renamed = self._renamed_dirs.get(ancestor)
+            if renamed is not None:
+                return renamed / requested.relative_to(ancestor)
+        return requested
 
     def _stops_on_failure(self) -> bool:
         """Whether ``OnError`` halts on a member failure.
@@ -2583,11 +2646,38 @@ class ExtractionCoordinator:
         can."""
         if prior is None or self._overwrite is not OverwritePolicy.REPLACE:
             return
-        clobbered = results[prior.result_index]
+        self._revise_to_overwritten(results, prior.result_index)
+
+    def _revise_removed_directory(self, removed: Path) -> None:
+        """Revise the directory results this run wrote at ``removed`` to OVERWRITTEN.
+
+        Looked up by collision key, so a result that reached the same directory through
+        a symlink or a case variant is found. A casefolded key can also cover a
+        different directory on a case-sensitive filesystem (``X/`` beside ``x/``), so a
+        result is revised only when its own path is gone; the others stay recorded."""
+        key = self._collision_key(self._dest, removed)
+        indices = self._written_dirs.pop(key, None)
+        if not indices:
+            return
+        kept: list[int] = []
+        for index in indices:
+            path = self._results[index].path
+            if path is not None and os.path.lexists(path):
+                kept.append(index)
+            else:
+                self._revise_to_overwritten(self._results, index)
+        if kept:
+            self._written_dirs[key] = kept
+
+    def _revise_to_overwritten(
+        self, results: list[ExtractionResult], index: int
+    ) -> None:
+        """Revise result ``index`` to OVERWRITTEN, keeping where it had written."""
+        clobbered = results[index]
         if clobbered.status is ExtractionStatus.SUPERSEDED:
             # A superseded copy the filesystem would not remove: it keeps its status.
             return
-        results[prior.result_index] = replace(
+        results[index] = replace(
             clobbered,
             path=None,
             status=ExtractionStatus.OVERWRITTEN,
@@ -2784,12 +2874,13 @@ class ExtractionCoordinator:
             self._overwrite is OverwritePolicy.REPLACE
             or self._overwrite is OverwritePolicy.RENAME
         ):
-            # REPLACE (and RENAME for the residual directory case — non-directory RENAME
-            # members are pre-resolved to a free path, so they never reach an existing
-            # entry here): never write-through a symlink. For an atomic FILE write,
-            # os.replace handles a file/symlink target atomically, so only a real
-            # directory must be removed up front. Otherwise unlink a symlink/file (bytes
-            # never follow the link). A directory is removed only when it is empty.
+            # REPLACE (RENAME members are pre-resolved to a free path, a directory
+            # member too when a file or symlink holds its name, so they reach an
+            # existing entry here only if it appeared after that check): never
+            # write-through a symlink. For an atomic FILE write, os.replace handles a
+            # file/symlink target atomically, so only a real directory must be removed
+            # up front. Otherwise unlink a symlink/file (bytes never follow the link). A
+            # directory is removed only when it is empty.
             if stat.S_ISDIR(existing):
                 # Only an empty directory is removed, as GNU tar does without
                 # --recursive-unlink. Removing a tree takes the members this run wrote
@@ -2805,6 +2896,13 @@ class ExtractionCoordinator:
                 self._note_link_change(dest_path)
                 os.rmdir(dest_path)
                 self._removed_existing = True
+                # A directory member of this run that wrote it no longer has it. This is
+                # not a collision event (directories are never claimed), so only the
+                # result is revised; ``collided_with`` is untouched. Only under REPLACE:
+                # RENAME reaches this arm only after a filesystem race, with nothing of
+                # this run's here, and OVERWRITTEN is a REPLACE outcome.
+                if self._overwrite is OverwritePolicy.REPLACE:
+                    self._revise_removed_directory(dest_path)
             else:
                 if moves_links:
                     self._note_link_change(dest_path)
