@@ -133,6 +133,7 @@ Three things about this path are worth knowing before you debug it:
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `terminal.py`; threat-model O9 |
 | Test-suite leak oracle (live children, owning streams; pipe fds as context) | `tests/leak_oracle.py` (autouse plugin); `tests/test_leak_oracle.py`; the shutdown-only accelerator diagnostic is still `scripts/accel_leak_trace.py` |
+| Why an xdist worker died silently in a rapidgzip cut-stream test; stress the child-process path | `scripts/rapidgzip_resume_stress.py` (named scenarios, per-test stall stacks of the worker and its children); `.github/workflows/rapidgzip-resume-stress.yml` (not required); [`investigations/rapidgzip-worker-deaths.md`](investigations/rapidgzip-worker-deaths.md) |
 | How close real archives come to the limits; which archives in a corpus fail or look odd | `scripts/scan_archives.py` (dry-runs a directory tree: CSV with a `flags` column, a log, and per-limit max/p99 against the defaults); `tests/test_scan_archives.py` |
 
 ---

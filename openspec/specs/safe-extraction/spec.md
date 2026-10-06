@@ -502,12 +502,29 @@ moves the entry itself, so a destination symlink is replaced rather than followe
 SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fresh,
 because neither can be staged: a symlink MUST be created at its final name for the
 escape re-validation's cycle check to resolve, and a directory cannot be renamed
-over a non-directory at all. Replacing an existing directory with any member type
-removes the directory first, and only an **empty** one: a directory that holds entries
-SHALL NOT be removed, and the replacing member SHALL fail with an `ExtractionError`
-governed by `OnError` (as GNU tar does without `--recursive-unlink`). Removing a tree
-would take the members this run wrote into it, which would still report `EXTRACTED`, and
-the caller's own files when the directory was already there.
+over a non-directory at all. `RENAME` is the exception for a DIRECTORY member: when its
+destination holds a file or a symlink (a symlink to a directory included, as it is never
+written through), that entry SHALL NOT be removed, and the directory SHALL be written
+under a derived name (see the cross-platform name-safety requirement). Every later member
+whose destination lies inside the directory's requested path SHALL follow it: `dd/f` is
+written at `dd (1)/f`, and reports `requested_path` `dd/f` and `path` `dd (1)/f`. A later
+DIRECTORY member with the directory's own name merges into `dd (1)/`, as directories
+merge. A non-directory member with that name is not inside the directory: it resolves its
+own collision from the name it asked for (`dd (2)`, not `dd (1) (1)`).
+
+Replacing an existing directory with any member type removes the directory first, and
+only an **empty** one: a directory that holds entries SHALL NOT be removed, and the
+replacing member SHALL fail with an `ExtractionError` governed by `OnError` (as GNU tar
+does without `--recursive-unlink`). Removing a tree would take the members this run wrote
+into it, which would still report `EXTRACTED`, and the caller's own files when the
+directory was already there. When a member of this run wrote the removed directory, under
+any spelling that reaches it (through a directory symlink the archive created, under every
+policy, or a case variant on a case-insensitive filesystem, under `STRICT` and `STANDARD`),
+that member's result SHALL be revised to `OVERWRITTEN`. Under `TRUSTED` the coordinator keys
+on the exact path and defers to the local OS (see the O2 collision requirement), so a case
+variant there is not recognized and the earlier result is not revised. Its `collided_with` stays `None`: DIRECTORY members are not claimed in the
+collision map, so this revises a result and is not a collision event, and
+`AbortOn.NAME_COLLISION` does not fire.
 
 A DIRECTORY member whose destination is a directory that was there before the run (the
 destination root, for a `./` member, when the call did not create it, or any directory
@@ -558,6 +575,7 @@ name-safety requirement.
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
 | `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
 | `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
+| `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`, with `collided_with=None`; no collision abort |
 | Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
 
 ### Requirement: Extraction as a Composable Module
@@ -796,8 +814,11 @@ different guarantee and is not required here.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and
-`requested_path != path and status == EXTRACTED` marks an `OverwritePolicy.RENAME`
-(see the cross-platform name-safety requirement). On an `OVERWRITTEN` result it
+`requested_path != path and status == EXTRACTED` marks a member that
+`OverwritePolicy.RENAME` moved (see the cross-platform name-safety requirement): either
+the member was renamed itself, or it lies inside a DIRECTORY member that was, and kept
+its path relative to that directory. An anti-item inside a renamed directory reports the
+same pair. Its `path` is where it deleted, not a rename. On an `OVERWRITTEN` result it
 retains the destination the member did write to, so a caller can join it to the
 replacing member's `path`.
 
@@ -1053,7 +1074,13 @@ directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`.
 and the location are fixed when the earlier member is written, and a collision SHALL be
 resolved at that location, so repointing `s` later does not move it. Such a collision
 SHALL apply `OverwritePolicy` deliberately and record the outcome on both members'
-`ExtractionResult`. `REPLACE`
+`ExtractionResult`. DIRECTORY members are not claimed in the map, as a directory merges
+into one already there. The coordinator looks a DIRECTORY member up in the map when its
+destination holds a non-directory entry. If a member of this run claimed that entry, the
+DIRECTORY member collides with it under every `OverwritePolicy`, as a file member
+would: `collided_with`, `AbortOn.NAME_COLLISION` and the `REPLACE` revision of the
+earlier member to `OVERWRITTEN` all apply. On a case-sensitive filesystem a file `Foo` and a
+directory `foo/` do not share an entry, so they do not collide. `REPLACE`
 SHALL NOT silently merge distinct members on case-insensitive filesystems: the earlier
 member's result SHALL be revised to `ExtractionStatus.OVERWRITTEN` so the merge is
 observable in `results`. Under `TRUSTED` the coordinator SHALL key on the exact `Path`
