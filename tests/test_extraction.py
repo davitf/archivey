@@ -210,6 +210,19 @@ def test_check_universal_rejects_symlink_escape(tmp_path: Path) -> None:
         check_universal(m, tmp_path)
 
 
+def test_check_universal_names_the_escaping_link_type(tmp_path: Path) -> None:
+    sym = _member("link", type=MemberType.SYMLINK, link_target="../outside.txt")
+    with pytest.raises(
+        FilterRejectionError, match="Symlink target escapes destination"
+    ):
+        check_universal(sym, tmp_path)
+    hard = _member("h", type=MemberType.HARDLINK, link_target="../outside.txt")
+    with pytest.raises(
+        FilterRejectionError, match="Hardlink target escapes destination"
+    ):
+        check_universal(hard, tmp_path)
+
+
 def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> None:
     m = _member("link", type=MemberType.SYMLINK, link_target="target\x00hidden")
     with pytest.raises(FilterRejectionError, match="Null byte in link target"):
