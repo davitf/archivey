@@ -47,8 +47,8 @@ with archivey.open_archive("download.zip") as archive:
     )
 ```
 
-These are the defaults. `policy` decides how much of
-what the archive says about names and permissions gets written as it is:
+These are the defaults. `policy` decides how much of what the archive says about names and
+permissions gets written as it is:
 
 | `policy` | Names | Permissions |
 |---|---|---|
