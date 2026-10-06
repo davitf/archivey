@@ -256,7 +256,15 @@ class ArchiveEofContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class MemberTimestampContext(_JsonSafeContext):
-    """A stored timestamp field was present but unusable / out of range."""
+    """A stored timestamp field was present but unusable / out of range.
+
+    ``source`` names the representation the value came from, such as ``"dos"``,
+    ``"ntfs"``, ``"tar"`` or ISO's ``"directory_record"``. ``field`` names the timestamp,
+    and its vocabulary differs by backend: RAR, 7z and ISO give the member attribute
+    (``"modified"``, ``"accessed"``, ``"created"``, ``"ctime"``), while ZIP and TAR give
+    the stored field's own name (ZIP ``"date_time"``, ``"mtime"``, ``"atime"``,
+    ``"ctime"``; TAR ``"mtime"``). ``value_repr`` is the stored value as text.
+    """
 
     kind: Literal["member_timestamp"] = "member_timestamp"
     archive_name: str | None = None
