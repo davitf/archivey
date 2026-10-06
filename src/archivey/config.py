@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import ClassVar
 
@@ -208,6 +208,26 @@ def _check_limit(
         )
 
 
+def _check_limit_fields(
+    limits: ExtractionLimits | ListingLimits | DecoderLimits | SpoolLimits, cls: str
+) -> None:
+    """Run :func:`_check_limit` on every field of a limits dataclass, in field order.
+
+    ``allow_none`` and ``allow_float`` are read off the field's annotation (a string,
+    under ``from __future__ import annotations``): ``int``, ``int | None`` or
+    ``float | None``.
+    """
+    for f in fields(limits):
+        annotation = str(f.type)
+        _check_limit(
+            getattr(limits, f.name),
+            cls=cls,
+            field_name=f.name,
+            allow_float="float" in annotation,
+            allow_none="None" in annotation,
+        )
+
+
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
@@ -262,20 +282,10 @@ class ExtractionLimits:
     UNLIMITED: ClassVar[ExtractionLimits]
 
     def __post_init__(self) -> None:
-        cls = "ExtractionLimits"
-        _check_limit(
-            self.max_extracted_bytes, cls=cls, field_name="max_extracted_bytes"
-        )
-        _check_limit(self.max_ratio, cls=cls, field_name="max_ratio", allow_float=True)
-        # Not ``| None``: the ratio guard reads it unconditionally, so a None here
-        # does not disable anything, it fails the comparison mid-extraction.
-        _check_limit(
-            self.ratio_activation_threshold,
-            cls=cls,
-            field_name="ratio_activation_threshold",
-            allow_none=False,
-        )
-        _check_limit(self.max_entries, cls=cls, field_name="max_entries")
+        # ``ratio_activation_threshold`` is not ``| None``: the ratio guard reads it
+        # unconditionally, so a None there would not disable anything, it would fail
+        # the comparison mid-extraction.
+        _check_limit_fields(self, "ExtractionLimits")
 
 
 ExtractionLimits.UNLIMITED = ExtractionLimits(
@@ -323,9 +333,7 @@ class ListingLimits:
     UNLIMITED: ClassVar[ListingLimits]
 
     def __post_init__(self) -> None:
-        cls = "ListingLimits"
-        _check_limit(self.max_members, cls=cls, field_name="max_members")
-        _check_limit(self.max_metadata_bytes, cls=cls, field_name="max_metadata_bytes")
+        _check_limit_fields(self, "ListingLimits")
 
 
 ListingLimits.UNLIMITED = ListingLimits(
@@ -523,18 +531,7 @@ class DecoderLimits:
     UNLIMITED: ClassVar[DecoderLimits]
 
     def __post_init__(self) -> None:
-        cls = "DecoderLimits"
-        _check_limit(self.max_decoder_memory, cls=cls, field_name="max_decoder_memory")
-        _check_limit(
-            self.max_key_derivation_rounds,
-            cls=cls,
-            field_name="max_key_derivation_rounds",
-        )
-        _check_limit(
-            self.max_ppmd_in_process_input,
-            cls=cls,
-            field_name="max_ppmd_in_process_input",
-        )
+        _check_limit_fields(self, "DecoderLimits")
 
 
 DecoderLimits.UNLIMITED = DecoderLimits(
@@ -597,7 +594,7 @@ class SpoolLimits:
     UNLIMITED: ClassVar[SpoolLimits]
 
     def __post_init__(self) -> None:
-        _check_limit(self.max_bytes, cls="SpoolLimits", field_name="max_bytes")
+        _check_limit_fields(self, "SpoolLimits")
 
 
 SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
@@ -746,36 +743,22 @@ class ArchiveyConfig:
         frozen and it *rewrites* the field rather than only inspecting it. The checks
         above reject without writing, so they need no such thing.
         """
-        check_instance(
-            self.extraction_limits,
-            ExtractionLimits,
-            call="ArchiveyConfig(extraction_limits=…)",
-            allow_none=False,
+        # The checks below run in this order, not field order: with several bad
+        # fields, the first check that fails is the error the caller sees.
+        instance_fields: tuple[tuple[str, type], ...] = (
+            ("extraction_limits", ExtractionLimits),
+            ("listing_limits", ListingLimits),
+            ("decoder_limits", DecoderLimits),
+            ("spool_limits", SpoolLimits),
+            ("diagnostic_policy", DiagnosticPolicy),
         )
-        check_instance(
-            self.listing_limits,
-            ListingLimits,
-            call="ArchiveyConfig(listing_limits=…)",
-            allow_none=False,
-        )
-        check_instance(
-            self.decoder_limits,
-            DecoderLimits,
-            call="ArchiveyConfig(decoder_limits=…)",
-            allow_none=False,
-        )
-        check_instance(
-            self.spool_limits,
-            SpoolLimits,
-            call="ArchiveyConfig(spool_limits=…)",
-            allow_none=False,
-        )
-        check_instance(
-            self.diagnostic_policy,
-            DiagnosticPolicy,
-            call="ArchiveyConfig(diagnostic_policy=…)",
-            allow_none=False,
-        )
+        for field_name, expected in instance_fields:
+            check_instance(
+                getattr(self, field_name),
+                expected,
+                call=f"ArchiveyConfig({field_name}=…)",
+                allow_none=False,
+            )
         if not isinstance(self.detection_budget, DetectionBudget):
             # A preset member, or its name, is converted here so the field always
             # holds the budget detection reads. The annotation stays the budget alone,

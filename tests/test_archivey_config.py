@@ -112,6 +112,34 @@ def test_strict_archive_eof_is_gone() -> None:
         ArchiveyConfig(strict_archive_eof=True)  # type: ignore[call-arg]
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "reported"),
+    [
+        # Each pair is in the opposite order as fields; the checked-first one wins.
+        (
+            {"use_rapidgzip": "sometimes", "extraction_limits": "none"},
+            "extraction_limits=",
+        ),
+        ({"read_link_targets": "yes", "detection_budget": "nope"}, "detection_budget="),
+        (
+            {"rar_decompressor": "x", "max_retained_diagnostic_references": -1},
+            "max_retained_diagnostic_references",
+        ),
+    ],
+)
+def test_config_with_several_bad_fields_reports_in_check_order(
+    kwargs: dict[str, object], reported: str
+) -> None:
+    with pytest.raises(archivey.ArchiveyUsageError) as exc_info:
+        ArchiveyConfig(**kwargs)  # type: ignore[arg-type]
+    assert reported in str(exc_info.value)
+
+
+def test_limits_with_several_bad_fields_report_the_first_field() -> None:
+    with pytest.raises(archivey.ArchiveyUsageError, match="max_extracted_bytes"):
+        ExtractionLimits(max_extracted_bytes="x", max_entries=-1)  # type: ignore[arg-type]
+
+
 def test_missing_eof_marker_warns_by_default(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
