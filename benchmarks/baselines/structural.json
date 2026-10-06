@@ -65,20 +65,20 @@
       "notes": "plain uncompressed TAR vs tarfile r: (not .tar.gz)"
     },
     "gzip_read_all": {
-      "bytes_decompressed": 65536,
-      "source_seek_count": 3,
+      "bytes_decompressed": 65537,
+      "source_seek_count": 6,
       "unpacked_bytes": 65536,
       "notes": ""
     },
     "z_text_read_all": {
       "bytes_decompressed": 65537,
-      "source_seek_count": 2,
+      "source_seek_count": 3,
       "unpacked_bytes": 65536,
       "notes": "pure-Python LZW; no stdlib peer; +1 byte is the one-byte probe read at open"
     },
     "z_zeros_read_all": {
       "bytes_decompressed": 262145,
-      "source_seek_count": 2,
+      "source_seek_count": 3,
       "unpacked_bytes": 262144,
       "notes": "pure-Python LZW; no stdlib peer; +1 byte is the one-byte probe read at open"
     },
@@ -92,7 +92,7 @@
       "bytes_decompressed": 131072,
       "source_seek_count": 0,
       "unpacked_bytes": 131072,
-      "notes": "rapidgzip accelerator ON; vs accel_off 0.80\u00d7"
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.20\u00d7"
     },
     "tarbz2_read_all_accel_off": {
       "bytes_decompressed": 131072,
@@ -104,7 +104,7 @@
       "bytes_decompressed": 131072,
       "source_seek_count": 0,
       "unpacked_bytes": 131072,
-      "notes": "rapidgzip accelerator ON; vs accel_off 0.57\u00d7"
+      "notes": "rapidgzip accelerator ON; vs accel_off 0.27\u00d7"
     },
     "sevenzip_open_list": {
       "bytes_decompressed": 0,

@@ -252,12 +252,15 @@ class SingleFileReader(BaseArchiveReader):
         assert src is not None
         if src.path is not None:
             with open(src.path, "rb") as f:
-                return fn(f)
+                return fn(self._track_source_seeks(f))
         if not src.seekable():
             return None
         pos = src.tell()
+        # The seek counter owns what it wraps, so under measurement it gets a non-owning
+        # view: wrapping the source itself would close it when the probe drops the wrapper.
+        handle = SlicingStream(src, start=0) if self._measure else src
         try:
-            return fn(src)
+            return fn(self._track_source_seeks(handle))
         finally:
             src.seek(pos)
 
