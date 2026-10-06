@@ -1065,6 +1065,27 @@ def test_far_budget_skip_is_not_recorded_for_a_source_too_short_for_the_iso_span
     assert not any(s.tier == "far_magic" for s in info.unavailable_tiers)
 
 
+def test_zero_far_budget_records_the_far_tier_as_not_enabled(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+
+    image = bytearray(40_000)
+    image[32768:32774] = b"\x01CD001"
+    path = tmp_path / "disc.iso"
+    path.write_bytes(bytes(image))
+    # A zero decode allowance adds a later tier's record, which pins the order.
+    budget = replace(BALANCED_BUDGET, max_far_bytes=0, max_decode_input=0)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.detected_by == "extension"
+    assert info.unavailable_tiers == (
+        TierSkip("far_magic", TierSkipReason.NOT_ENABLED_BY_POLICY),
+        TierSkip("content_probe", TierSkipReason.NOT_ENABLED_BY_POLICY),
+    )
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.far_bytes == 0
+
+
 def test_stub_volume_fallback_keeps_the_stub_pass_cost(tmp_path: Path) -> None:
     # S19-K3: the stub pass runs the full SFX scan; its receipt and skips used to be
     # dropped in favour of the cheap second pass on the sibling volume.
