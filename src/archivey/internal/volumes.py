@@ -133,11 +133,15 @@ _SCHEME_NAMES = (
 def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
     """Classify a name carrying a part marker, with the base its scheme reads.
 
-    ``None`` for a name no scheme claims, which includes an old-scheme volume 1 —
-    that one has no part marker and is handled separately, by
-    :func:`_is_old_scheme_first_volume_name`. The schemes are tried in order and the
-    first match wins, which is how ``my.part1.zip.001`` lands in the numbered scheme
-    on its full ``my.part1.zip`` base rather than under ``.part``.
+    ``None`` for a name no scheme claims, which includes an old-scheme volume 1.
+    That one has no part marker; callers test its suffix themselves.
+
+    The schemes cannot overlap, so their order does not matter. Each pattern's
+    trailing anchor rules out the others: a numbered name ends in digits,
+    ``_RAR_PART_RE`` requires a final ``.rar`` / ``.sfx`` / ``.exe``, and an old-scheme
+    continuation's last extension must start with a non-digit. That anchor is what
+    keeps ``my.part1.zip.001`` in the numbered scheme on its full ``my.part1.zip``
+    base rather than under ``.part``. ``test_volume_schemes_are_disjoint`` holds it.
     """
     for index, pattern in enumerate(_VOLUME_SCHEMES):
         match = pattern.match(name)
@@ -331,17 +335,21 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     """Return ordered sibling paths when ``path`` is part of a volume set, else ``None``."""
     name = path.name
     lower = name.lower()
-    parent = path.parent
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
     # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
-    # SFX first members (``*.exe.001``, ``*.part1.sfx``) match the patterns above.
+    # ``_volume_scheme_and_base`` also classifies SFX first members
+    # (``*.exe.001``, ``*.part1.sfx``).
     classified = _volume_scheme_and_base(name)
     if classified is None:
         # Old-scheme volume 1: ``<base>.rar``, or an SFX ``<base>.exe`` /
-        # ``<base>.sfx`` when no ``.rar`` is beside the continuations.
+        # ``<base>.sfx`` when no ``.rar`` is beside the continuations. This is
+        # ``_is_old_scheme_first_volume_name`` without its two regex guards: the
+        # classification just above already found that neither pattern matches,
+        # and this path should stay cheap.
         if not lower.endswith(_OLD_RAR_FIRST_VOLUME_SUFFIXES):
             return None
-        # A stub ``*.exe`` / ``*.sfx`` is maybe-volume only when ``<stem>.r00`` or
+        parent = path.parent
+        # A stub ``*.exe`` / ``*.sfx`` is a volume candidate only when ``<stem>.r00`` or
         # ``<stem>.R00`` exists (up to two ``is_file``, no ``iterdir``) so 7-Zip
         # ``vol.exe`` + ``vol.exe.001`` still falls through to stub-follow. The probe
         # matches the extension's case but spells the base as the stub does, so
@@ -358,6 +366,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     if not path.is_file():
         return None
     scheme, base = classified
+    parent = path.parent
 
     if scheme == _NUMBERED_SCHEME:
         siblings = sorted(
@@ -827,9 +836,9 @@ def _is_old_rar_first_volume_name_in(name: str, old_rar_bases: frozenset[str]) -
     volume 1 of such a set is not an entry point. That gap is discovery's, not this
     function's, and closing it would change behaviour.
 
-    Per-name first-match ordering is what keeps ``my.part1.zip.001`` in the numbered
-    scheme; this is that same hazard one level up, where a name has to be read against
-    the sequence around it rather than on its own.
+    For a single name, the patterns' trailing anchors keep ``my.part1.zip.001`` in
+    the numbered scheme. This is a similar hazard one level up, where a name has to be
+    read against the sequence around it rather than on its own.
     """
     if _RAR_PART_RE.match(name) is None:
         return False
