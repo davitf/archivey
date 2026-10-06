@@ -90,7 +90,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   entries are addressed by disk number — and is rejected with
   ``UnsupportedFeatureError``; rejoin it with the tool that made it.
 - Unsupported compression methods: listing succeeds; reading raises
-  ``UnsupportedFeatureError``.
+  ``UnsupportedFeatureError``. So does an LZMA member with ``lc + lp`` over 4, which
+  7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
+  restore method 2. Under ZipCrypto both read as the password-or-damage
+  ``EncryptionError`` instead, because those settings are encrypted.
+- An end record that disagrees with the central directory is a warning, not an error:
+  an entry count that does not match, an archive comment length past the end of the
+  file, or a directory entry whose name, extra field or comment runs past the
+  directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
+  which ``DiagnosticPolicy.strict()`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
 - An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
   extraction skips it. The mode is read only when "version made by" says Unix.

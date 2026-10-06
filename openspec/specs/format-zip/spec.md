@@ -79,6 +79,16 @@ HMAC covers the ciphertext, so the read that returns the member's last byte SHAL
 complete it by reading, without decrypting, the ciphertext the seeks skipped, and raise
 `CorruptionError` on a mismatch. A read that stops short of the end gives no verdict.
 
+Codec settings 7-Zip writes or names but this reader cannot decode SHALL raise
+`UnsupportedFeatureError`, not `CorruptionError`. An LZMA (method 14) member whose
+properties byte is a valid `lc`/`lp`/`pb` triple with `lc + lp` over 4 (`7z a -tzip
+-mm=LZMA:lc=8`; liblzma decodes up to 4) is one, decided by the same check as a 7z LZMA
+coder; a properties byte of 225 or more stays `CorruptionError`. A PPMd (method 98)
+member with restore method 2 is another (7-Zip: "Unsupported Method"); a restore method
+above 2 SHALL raise `CorruptionError` (7-Zip: "Data Error"). Under ZipCrypto these
+settings are decrypted data, so both SHALL raise `CorruptionError` there, which the
+password confirmation counts as the candidate failing (see below).
+
 #### Scenario: ZIP codec-layer decoding
 
 | Case | Expected |
@@ -88,6 +98,8 @@ complete it by reading, without decrypting, the ciphertext the seeks skipped, an
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
 | Corrupt member body | `CorruptionError` / `TruncatedError` |
+| LZMA member, `lc + lp` over 4 (`-mm=LZMA:lc=8`) | `UnsupportedFeatureError` naming `lc` and `lp` |
+| PPMd member, restore method 2 / 3–15 | `UnsupportedFeatureError` / `CorruptionError` |
 | Encrypted ZipCrypto member, any of the methods above | Decrypts natively, decodes via the codec layer; CRC verified through the fused verifier |
 | ZipCrypto or WinZip AES member, `seekable_members=True` | Seeks backward and forward; content matches a sequential read |
 
@@ -253,6 +265,38 @@ raises `TruncatedError`; every other split/spanned signal raises
 `UnsupportedFeatureError`. Neither surfaces `CorruptionError`,
 `FormatDetectionError`, or a raw stdlib `BadZipFile`.
 
+### Requirement: Check the ZIP end record against the central directory
+
+stdlib `zipfile` reads central-directory entries until it has consumed the directory
+size the end record gives, and ignores everything else the record says. The ZIP reader
+SHALL report, as `ARCHIVE_EOF_MARKER_MISSING` with `format="zip"`, emitted after the
+listing's last member so the listing completes, each of:
+
+- the entry count the end record declares (the ZIP64 record's when stdlib used it)
+  differs from the number of entries the central directory holds
+  (`expected_marker="end_of_central_directory"`, `observed_kind="nonzero"`). A classic
+  record counts in 16 bits, so its count is compared modulo 65536;
+- the archive comment length runs past the end of the file
+  (`expected_marker="end_of_central_directory"`, `observed_kind="short"`);
+- a central-directory entry's name, extra field or comment length runs past the
+  directory, so stdlib cuts that field at the directory's end
+  (`expected_marker="central_directory"`, `observed_kind="nonzero"`).
+
+None of them SHALL raise under the default policy; `strict()` refuses the archive.
+Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
+every member.
+
+#### Scenario: end record mismatches
+
+| Archive | Expected |
+| --- | --- |
+| Classic end record declares 2 or 4 entries, directory holds 3 | All 3 members listed and readable; one `ARCHIVE_EOF_MARKER_MISSING`, `expected_marker="end_of_central_directory"`, `observed_kind="nonzero"`, `observed_bytes` the record's offset |
+| ZIP64 end record declares 5 entries, directory holds 3 | Same, the message naming the ZIP64 record |
+| Comment length 5000, 8 comment bytes in the file | `observed_kind="short"`, `expected_bytes` 5022, `observed_bytes` 30 |
+| Last directory entry's extra or comment length runs past the directory | `expected_marker="central_directory"`; the message names the member and the field |
+| Consistent classic or ZIP64 end record | No diagnostic |
+| Any of the above under `strict()` | `DiagnosticRaisedError` from the listing |
+
 ### Requirement: Confirm multi-candidate ZipCrypto passwords
 
 For traditional ZipCrypto, the per-open verification byte is weak and the
@@ -318,7 +362,9 @@ overlap and other structural failures raise before decryption starts and SHALL b
 `CorruptionError` immediately, with no further password iteration; a payload the file
 cuts short stays `TruncatedError`. `UnsupportedFeatureError`,
 `PackageNotInstalledError`, `ResourceLimitError` and `OSError` values SHALL propagate
-unchanged, with one exception. On a ZipCrypto `LZMA` or `PPMd` member the codec
+unchanged, with two exceptions. The LZMA `lc + lp` and PPMd restore-method settings a
+ZipCrypto key decrypted raise `CorruptionError`, not `UnsupportedFeatureError` (see the
+codec-layer requirement), so a wrong key's garbage there is a candidate failure. On a ZipCrypto `LZMA` or `PPMd` member the codec
 settings (the LZMA properties, the PPMd order and memory size) are part of the encrypted
 data, so a wrong password that passes the one-byte check decrypts them to an arbitrary
 size. A `ResourceLimitError` those settings raise SHALL count as that candidate's

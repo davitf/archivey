@@ -3089,6 +3089,42 @@ LZMA_DICTIONARY_FILTERS: dict[int, str] = {
     lzma.FILTER_LZMA2: "LZMA2",
 }
 
+# stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
+# zipfile and py7zr rely on the same private helper. Bind once at import, loudly.
+_raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
+if _raw_decode_filter_properties is None:  # pragma: no cover
+    raise ImportError(
+        "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
+        "archivey needs to decode raw LZMA properties (ZIP method 14, 7z LZMA/LZMA2 "
+        "coders). Please report this to archivey (with your Python version)."
+    )
+_decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
+
+# liblzma's ``LZMA_LCLP_MAX``: the largest lc + lp its LZMA1 decoder takes.
+_LIBLZMA_LCLP_MAX = 4
+
+
+def decode_lzma_filter_properties(filter_id: int, props: bytes, *, what: str) -> dict:
+    """liblzma filter dict for a raw LZMA1/LZMA2 property blob.
+
+    7-Zip accepts LZMA1 ``lc + lp`` up to 12 (``-mm=LZMA:lc=8`` writes it, in 7z and in
+    ZIP method 14); liblzma decodes at most 4. Such a properties byte is well formed,
+    so it raises ``UnsupportedFeatureError`` naming ``what`` (the container's coder).
+    Any other blob liblzma refuses propagates as liblzma's own error, for the caller
+    to report as corruption in its own terms.
+    """
+    try:
+        return _decode_filter_properties(filter_id, props)
+    except (lzma.LZMAError, ValueError) as exc:
+        if filter_id == lzma.FILTER_LZMA1 and len(props) == 5 and props[0] < 9 * 5 * 5:
+            lc, lp = props[0] % 9, props[0] // 9 % 5
+            if lc + lp > _LIBLZMA_LCLP_MAX:
+                raise UnsupportedFeatureError(
+                    f"{what} with lc={lc}, lp={lp} is not supported: "
+                    f"liblzma decodes lc + lp up to {_LIBLZMA_LCLP_MAX}"
+                ) from exc
+        raise
+
 
 class _RawLzmaCodec(_LzmaErrorCodec):
     """Raw LZMA1/LZMA2 (FORMAT_RAW + properties); container-only (no standalone stream)."""
