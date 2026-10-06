@@ -388,10 +388,18 @@ def test_unrar_reads_a_compressed_rar4_name_with_a_surrogate_unit(
     archive, expected = _compressed_rar4_surrogate(tmp_path, (name,))
     with archivey.open_archive(archive, config=_UNRAR) as reader:
         assert reader.members()[0].name == name
+        lone_unit = any("\ud800" <= char <= "\udfff" for char in name)
+        if sys.platform == "win32" and lone_unit:
+            # Windows argv carries a valid pair exactly; a lone unit is refused there
+            # (what Windows unrar does with one is unmeasured).
+            with pytest.raises(UnsupportedFeatureError, match="unar"):
+                reader.read(name)
+            return
         assert reader.read(name) == expected[0]
 
 
 @requires_binary("unrar")
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows sends no `?` mask")
 def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
     tmp_path: Path,
 ) -> None:
