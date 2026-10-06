@@ -1342,9 +1342,8 @@ class RarReader(BaseArchiveReader):
         The files may sit in different directories, or carry names that unrar's
         rule for this set (:func:`_unrar_finds_exactly`) does not continue, and
         unrar finds each later volume by name beside the one before. Each file is
-        symlinked, or hard-linked where a symlink is not allowed (Windows without
-        the privilege), so nothing is copied. Where neither works the set is
-        copied, bounded by ``SpoolLimits`` like any other copy this reader makes.
+        linked (:meth:`_link_volumes`) rather than copied; only a file the system will
+        not link is copied, and only those copies are charged to ``SpoolLimits``.
         Called under ``_materialize_lock`` from :meth:`_ensure_archive_path`.
         """
         temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
@@ -1357,18 +1356,11 @@ class RarReader(BaseArchiveReader):
             for index in range(1, len(self._volume_paths) + 1)
         ]
         try:
-            try:
-                for src, dest in zip(self._volume_paths, names):
-                    _link_file(src.absolute(), dest)
-            except OSError:
-                for dest in names:
-                    dest.unlink(missing_ok=True)
-                budget = self._spool_budget("every volume")
-                sizes = [src.stat().st_size for src in self._volume_paths]
-                budget.check_total(sum(sizes))
-                for src, dest in zip(self._volume_paths, names):
-                    with src.open("rb") as handle, dest.open("wb") as out:
-                        budget.copy(handle, out)
+            self._link_volumes(
+                self._volume_paths,
+                names,
+                "each volume the system would not link beside the others",
+            )
         except BaseException:
             shutil.rmtree(temp_dir, ignore_errors=True)
             self._temp_dir = None
@@ -1388,9 +1380,10 @@ class RarReader(BaseArchiveReader):
         part-way, is not given a fresh allowance by the next read. Called under
         ``_materialize_lock``. ``what`` names the copy in the refusal; the first call
         that passes one fixes it (``None`` is a file-copy source kept by a solid pass,
-        :meth:`_try_spool`, which never refuses). Only a path source's files are ever
-        linked for ``unar``, so the link-fallback copy never follows a stream source's
-        copy on one reader.
+        :meth:`_try_spool`, which never refuses). Neither link fallback follows a
+        stream source's copy on one reader. Only a path source's files are ever linked
+        for ``unar``. For unrar, :meth:`_ensure_archive_path` either copies stream
+        volumes or stages explicit volume files, never both.
         """
         program = (
             "unar" if self._decompressor is RarDecompressor.UNAR else "RARLAB unrar"
@@ -1898,21 +1891,32 @@ class RarReader(BaseArchiveReader):
                 rar_volume_name("archive", index, old_numbering=old_numbering)
                 for index in range(1, len(volumes) + 1)
             ]
+        self._link_volumes(
+            volumes,
+            [temp_dir / name for name in names],
+            "each volume the system would not link into a private directory",
+        )
+        return temp_dir / names[0]
+
+    def _link_volumes(self, volumes: list[Path], dests: list[Path], what: str) -> None:
+        """Link each of ``volumes`` to its ``dests`` path; copy the ones that will not link.
+
+        Only the copies are charged to the spool budget, and their total is checked
+        before the first byte, so a limit below it refuses the read with nothing
+        copied. The caller removes the directory on failure.
+        """
         unlinked: list[tuple[Path, Path]] = []
-        for volume, name in zip(volumes, names, strict=True):
+        for volume, dest in zip(volumes, dests, strict=True):
             try:
-                _link_file(volume.absolute(), temp_dir / name)
+                _link_file(volume.absolute(), dest)
             except OSError:
-                unlinked.append((volume, temp_dir / name))
+                unlinked.append((volume, dest))
         if unlinked:
-            budget = self._spool_budget(
-                "each volume the system would not link into a private directory"
-            )
+            budget = self._spool_budget(what)
             budget.check_total(sum(volume.stat().st_size for volume, _ in unlinked))
             for volume, dest in unlinked:
                 with volume.open("rb") as src, dest.open("wb") as out:
                     budget.copy(src, out)
-        return temp_dir / names[0]
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
