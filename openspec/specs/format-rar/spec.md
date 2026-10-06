@@ -547,9 +547,10 @@ SHALL set `ArchiveInfo.is_encrypted` to `True`.
 ### Requirement: Reject unsupported RAR variants clearly
 
 Multi-volume RAR sets SHALL be supported by the volume contract, not rejected as
-an unsupported variant. Opening a later volume before the first volume of a set
-SHALL raise `UnsupportedFeatureError` (or a truncated/out-of-order error) rather
-than silently mis-joining members. Legacy RAR 1.5 / 2.x archives MUST NOT be
+an unsupported variant. A later volume opened as a stream, with nothing to number
+it, SHALL raise `UnsupportedFeatureError` (or a truncated/out-of-order error) rather
+than silently mis-joining members; one opened by path is numbered by its name and
+read as a set with volumes missing (below). Legacy RAR 1.5 / 2.x archives MUST NOT be
 rejected solely for extract version ≤ 20. Truly unreadable layouts (corrupt
 headers, unknown required crypto without the extra) continue to raise typed
 errors from their existing requirements.
@@ -566,7 +567,8 @@ member reads whatever version it declares, as in `unrar`.
 | Case | Expected |
 | --- | --- |
 | Multi-volume RAR4/RAR5 set is opened from volume 1 | Handled by the multi-volume requirement |
-| Multi-volume set opened from a later volume first | `UnsupportedFeatureError` or truncated/out-of-order error |
+| Multi-volume set opened from a later volume, by path | Same listing as from volume 1 |
+| Lone later volume opened as a stream | `UnsupportedFeatureError` or truncated/out-of-order error |
 | RAR 1.5 / 2.x archive is opened | Listing succeeds; not rejected for extract version |
 | Compressed RAR5 member with compression-info version 2 or more | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Compressed RAR 1.5-4 member with `UNP_VER` below 13 or above 29 | Listing succeeds; read raises `UnsupportedFeatureError` |
@@ -590,10 +592,10 @@ would not find by name beside the first SHALL be linked into a temporary directo
 under the set's own names (copied within `SpoolLimits` only where the filesystem
 refuses a link) on the first data read that needs it. For
 stream sources, data reads SHALL materialize ordered volumes for `unrar` when
-needed. Out-of-order volumes, and a set opened from a later volume, SHALL raise
-`UnsupportedFeatureError` or a truncated error instead of a partial result. A set
-whose last volume present says another follows SHALL list the members of the volumes
-present and then raise `TruncatedError` (the requirement below).
+needed. Out-of-order volumes SHALL raise `UnsupportedFeatureError` or a truncated
+error instead of a partial result. A set with volumes missing, at its start, in the
+middle or at its end, SHALL list the members of the volumes present and then raise
+`TruncatedError` (the requirement below).
 
 #### Scenario: volume matrix
 
@@ -606,20 +608,36 @@ present and then raise `TruncatedError` (the requirement below).
 | Read a member spanning volumes | Returned stream reassembles the member across boundaries |
 | Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
 | Out-of-order volume | Error instead of partial or garbled output |
-| Missing last volume | Members of the volumes present listed, then `TruncatedError` |
+| Missing volume (first, middle or last) | Members of the volumes present listed, then `TruncatedError` |
 
-### Requirement: A set missing its last volume SHALL list what it has, then raise
+### Requirement: A set with volumes missing SHALL list what it has, then raise
 
-When the last volume read says another follows (a member continues into it, or the end
-block's next-volume flag), and no further volume is supplied or discovered, the reader
-SHALL list every member whose header is in the volumes present and then raise
-`TruncatedError` naming the missing volume, the same "list, then raise" channel as a
-file cut inside a header. Members wholly inside the present volumes SHALL read normally,
-with either decompressor and in a solid pass. The member that runs into the missing
-volume SHALL raise `TruncatedError` when read, before any decompressor runs.
-`extract_all` SHALL write the members before it and then raise. This matches `unrar`
-7.00, whose `t` passes every complete member and fails the last one with "Cannot find
-volume". A lone volume 1 opened as a stream or a path is such a set.
+A volume is missing when the last volume read says another follows (a member continues
+into it, or the end block's next-volume flag) and none is supplied or discovered, or
+when discovery numbers the volumes present by name and a number is absent: volume 1, or
+one in the middle. The reader SHALL list every member whose header is in the volumes
+present, opened from any of them, and then raise `TruncatedError` naming the missing
+volumes, the same "list, then raise" channel as a file cut inside a header. Members
+wholly inside the present volumes SHALL read normally, with either decompressor. A
+member whose data runs into or out of a missing volume SHALL raise `TruncatedError` when
+read, before any decompressor runs; nothing SHALL be joined across a gap. In a solid
+archive every member past a missing volume SHALL raise `TruncatedError` too, since its
+data depends on the solid stream through it. `extract_all` SHALL write the members it
+can and raise at the first that cannot. This matches `unrar` 7.00: from before a gap,
+`t` passes every complete member and stops at the gap with "Cannot find volume"; from
+after it, it skips the member continued from the gap ("You need to start extraction
+from a previous volume") and tests the rest. A lone volume 1, as a stream or a path, is
+such a set, and so is a lone later volume opened by path. Archive-level data only
+volume 1 carries (the archive comment, an SFX stub) is absent when volume 1 is.
+
+#### Scenario: Missing middle or first volume
+
+- **GIVEN** a five-volume RAR5 set of stored members with volume 3, or volume 1, deleted
+- **WHEN** it is opened from any volume present
+- **THEN** the listing SHALL be the same from each, every member with a header in a
+  present volume, and SHALL end with `TruncatedError` naming the missing volume
+- **AND** every member wholly inside present volumes SHALL read back its original
+  bytes, and each member with data in the missing volume SHALL raise `TruncatedError`
 
 #### Scenario: Missing last volume
 

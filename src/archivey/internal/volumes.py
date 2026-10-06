@@ -280,8 +280,45 @@ def _old_rar_listed_file(
     return candidates[0] if candidates else None
 
 
+# Both RAR signatures start with these bytes; every volume of a set carries one.
+_RAR_MARKER_PREFIX = b"Rar!\x1a\x07"
+
+
+def rar_volume_number(name: str) -> int | None:
+    """The 1-based position of a RAR volume in its set, read from its name alone.
+
+    ``name.partN.rar`` (or ``.sfx`` / ``.exe``) is ``N``. In the old scheme volume 1
+    is ``<base>.rar`` / ``.exe`` / ``.sfx`` and ``.r00`` is volume 2, the closed form
+    of unrar's walk (:func:`rar_volume_name`). ``None`` for a name neither scheme
+    numbers: an old-scheme letter below ``r``, or past ``z`` in upper case, where
+    unrar's walk steps through punctuation that has no lower-case pair.
+    """
+    match = _RAR_PART_RE.match(name)
+    if match is not None:
+        return int(match.group("part"))
+    if _is_old_scheme_first_volume_name(name):
+        return 1
+    if _OLD_RAR_CONTINUATION_RE.match(name) is None:
+        return None
+    ext = name[name.rfind(".") + 1 :]
+    letter = ext[0].lower() if "A" <= ext[0] <= "Z" else ext[0]
+    offset = ord(letter) - ord("r")
+    if offset < 0:
+        return None
+    number = offset * 100 + int(ext[1:]) + 2
+    return number if number <= _MAX_VOLUME_PART else None
+
+
+def _starts_like_rar(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(_RAR_MARKER_PREFIX)) == _RAR_MARKER_PREFIX
+    except OSError:
+        return False
+
+
 def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
-    """Volume 1, then each name unrar would look for next, until one is missing.
+    """Volume 1, then each name unrar would look for next, then any past a gap.
 
     Volume 1 is ``<base>.rar``, else ``<base>.exe``, else ``<base>.sfx``. Every name,
     volume 1 included, is matched case-insensitively from one directory listing, as
@@ -292,6 +329,13 @@ def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
     that differ only in case, the one spelling ``base`` as given wins, then the one
     spelling the predicted name as given. The walk is bounded by ``_MAX_VOLUME_PART``, and by the listing: each step
     needs a file in it.
+
+    Past the first missing name, and when volume 1 itself is missing, the other
+    old-scheme names of the listing are placed by :func:`rar_volume_number`, so a
+    set with a gap is still one set (ruled 2026-10-06: list everything in the
+    volumes present). Those names are taken only when the file starts with a RAR
+    signature, because the shape alone also matches an Info-ZIP ``backup.z01`` or a
+    ``notes.t01``; the contiguous walk from volume 1 needs no such check, as before.
     """
     by_name: dict[str, list[Path]] = {}
     for candidate in parent.iterdir():
@@ -301,19 +345,34 @@ def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
         first = _old_rar_listed_file(by_name, f"{base}{suffix}", base)
         if first is not None:
             break
-    if first is None:
-        return None
-    volumes = [first]
-    current = first.name
-    while len(volumes) < _MAX_VOLUME_PART:
-        predicted = next_rar_volume_name(current, old_numbering=True)
-        if predicted is None:
-            break
-        following = _old_rar_listed_file(by_name, predicted, base)
-        if following is None:
-            break
-        volumes.append(following)
-        current = following.name
+    volumes: list[Path] = []
+    if first is not None:
+        volumes.append(first)
+        current = first.name
+        while len(volumes) < _MAX_VOLUME_PART:
+            predicted = next_rar_volume_name(current, old_numbering=True)
+            if predicted is None:
+                break
+            following = _old_rar_listed_file(by_name, predicted, base)
+            if following is None:
+                break
+            volumes.append(following)
+            current = following.name
+    # Past a gap, or with no volume 1: the rest of the listing, by number.
+    walked = len(volumes) + (0 if first is not None else 1)
+    folded = base.lower()
+    beyond: dict[int, Path] = {}
+    for lower_name in by_name:
+        match = _OLD_RAR_CONTINUATION_RE.match(lower_name)
+        if match is None or match.group("base") != folded:
+            continue
+        number = rar_volume_number(lower_name)
+        if number is None or number <= walked or number in beyond:
+            continue
+        candidate = _old_rar_listed_file(by_name, lower_name, base)
+        if candidate is not None and _starts_like_rar(candidate):
+            beyond[number] = candidate
+    volumes.extend(beyond[number] for number in sorted(beyond))
     return volumes if len(volumes) > 1 else None
 
 
@@ -386,9 +445,10 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
             _pick_rar_part(grouped[part], named_part, lower) for part in sorted(grouped)
         ]
 
-    # A continuation with no volume 1 beside it is a lone file — siblings[0] must be
-    # volume 1. So is one the walk from volume 1 does not reach, behind a gap or not
-    # an old-scheme name at all (`notes.a01` beside `notes.rar`).
+    # A continuation belongs to the set when the walk from volume 1 reaches it, or
+    # when it is a RAR volume past a gap or with volume 1 missing; ``siblings[0]`` is
+    # then the first volume present. An unrelated ``notes.a01`` beside ``notes.rar``
+    # is neither, and stays a lone file.
     volumes = _collect_old_rar_volumes(parent, base)
     if volumes is None:
         return None

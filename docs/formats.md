@@ -310,11 +310,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   block's next-volume flag is not trusted, so a volume set goes on to the next volume
   only when a member's own header says its data continues there. With encrypted headers
   this needs the password proven, as above; before that it is `EncryptionError`.
-- **A volume set missing its last volume lists what it has.** The members whose headers
-  are in the volumes present are listed and read normally, the member that runs into the
-  missing volume raises `TruncatedError` when read, and the listing then ends with
-  `TruncatedError` naming the missing volume — the same as a cut file, and what
-  `unrar t` does. `extract_all` writes the complete members and then raises.
+- **A volume set with a volume missing lists what it has.** Whether the missing volume
+  is the first, one in the middle or the last, the members whose headers are in the
+  volumes present are listed, opened from any of them, and those wholly inside them read
+  normally. A member with data in the missing volume raises `TruncatedError` when read,
+  and so does every member past the gap in a solid archive. The listing then ends with
+  `TruncatedError` naming the missing volumes — the same as a cut file, and what
+  `unrar t` does. A later volume opened on its own by path is read the same way, as a
+  set missing the rest; opened as a stream, with no name to number it, it is still
+  refused with "Need first volume".
 - **A member compressed with a version RAR does not know is unsupported.** A RAR5 member
   whose compression version is newer than RAR 7's, or a RAR 1.5-4 member whose unpack
   version is outside 13-29, lists normally and raises `UnsupportedFeatureError` when

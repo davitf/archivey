@@ -149,6 +149,7 @@ from archivey.internal.volumes import (
     discover_volume_siblings,
     next_rar_volume_name,
     rar_volume_name,
+    rar_volume_number,
 )
 from archivey.terminal import quoted
 from archivey.types import (
@@ -223,6 +224,26 @@ AUTO_CHOSE_UNAR_NOTE = (
 # unar 1.10 reads an old-style set as far as ``.z99`` and no further: ``lsar``
 # reports 901 volumes for a longer set, and the member is then short.
 _UNAR_MAX_OLD_STYLE_VOLUMES = 901
+
+
+def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
+    """Each volume's number in its set, when the names leave a gap; else ``None``.
+
+    Discovery returns the volumes present in order (``discover_volume_siblings``).
+    A set whose names number it ``1..N`` needs no numbers; one missing volume 1 or
+    a middle volume does, so the parse checks each volume against its own number and
+    the reader knows where the gaps are. Names that do not number the set, or not
+    in increasing order, leave it as given.
+    """
+    numbers = [rar_volume_number(path.name) for path in paths]
+    if any(number is None for number in numbers):
+        return None
+    known = [number for number in numbers if number is not None]
+    if any(later <= earlier for earlier, later in zip(known, known[1:])):
+        return None
+    if known == list(range(1, len(known) + 1)):
+        return None
+    return known
 
 
 def _unrar_finds_exactly(
@@ -1075,6 +1096,13 @@ class RarReader(BaseArchiveReader):
         # (``_spool_budget``) and kept, so a refused copy is not retried.
         self._spool: SpoolBudget | None = None
         self._volume_paths: list[Path] = []
+        # Each discovered volume's 1-based number in its set, read from its name,
+        # when the set has a gap: volume 1 missing, or one in the middle. ``None``
+        # for a set numbered 1..N, which is every set but those. See
+        # ``_segment_start``.
+        self._volume_numbers: list[int] | None = None
+        # A lone path whose name numbers it as a later volume (``x.part3.rar``).
+        self._lone_volume_number: int | None = None
         # Stream volumes, kept unmaterialized until unrar actually needs files.
         self._stream_volume_items: list[Path | BinaryIO] = []
         # Volume files (explicit or discovered) that unrar would not find by name from
@@ -1210,11 +1238,17 @@ class RarReader(BaseArchiveReader):
                 self._volume_paths = siblings
                 self._volume_count = len(siblings)
                 self._archive_path = siblings[0]
+                self._volume_numbers = _gapped_volume_numbers(siblings)
                 concat = ConcatenatedFile(siblings)
                 self._owned_concat = concat
                 return SharedSource(concat, wrap_handle=wrap)
             self._volume_paths = [path]
             self._archive_path = path
+            number = rar_volume_number(path.name)
+            if number is not None and number > 1:
+                # Possibly a later volume with none of its set beside it; only the
+                # parse can tell (``_parse_archive``).
+                self._lone_volume_number = number
             return SharedSource(source, wrap_handle=wrap)
 
         joined = source.joined
@@ -1251,7 +1285,7 @@ class RarReader(BaseArchiveReader):
         """
         if self._archive_path is None or self._stage_volume_paths:
             return
-        if _unrar_finds_exactly(
+        if self._volume_numbers is None and _unrar_finds_exactly(
             self._volume_paths,
             is_volume=self._archive.is_volume,
             old_numbering=self._archive.old_volume_naming,
@@ -1259,6 +1293,79 @@ class RarReader(BaseArchiveReader):
             return
         self._archive_path = None
         self._stage_volume_paths = True
+
+    def _volume_numbers_or_default(self) -> list[int]:
+        """Each volume's number in its set: ``_volume_numbers``, or ``1..N``."""
+        if self._volume_numbers is not None:
+            return self._volume_numbers
+        return list(range(1, len(self._volume_paths) + 1))
+
+    def _segment_start(self, info: RarMemberInfo) -> int | None:
+        """The first volume of the unbroken run that holds this member's header.
+
+        ``None`` for a set with no gap. ``unrar`` finds later volumes by name from
+        the one it is given and stops at the first that is missing, so a member
+        past a gap is read from the first volume after that gap; that is how
+        ``unrar`` itself reads such a set, opened there (measured on 7.00).
+        """
+        numbers = self._volume_numbers
+        if numbers is None:
+            return None
+        number = info.volume_index + 1
+        start = number
+        present = set(numbers)
+        while start - 1 in present:
+            start -= 1
+        return start
+
+    def _missing_data_error(
+        self, member: ArchiveMember, info: RarMemberInfo
+    ) -> TruncatedError | None:
+        """Why this member's data cannot be read for a missing volume, or ``None``.
+
+        Decided from the listing, before any decompressor runs. A member that runs
+        into a missing volume, or starts in one, has part of its data missing
+        (``split_after`` / ``split_before`` left on after the merge). In a solid
+        archive a member past a gap needs the solid stream that ran through the
+        missing volume; ``unrar`` reports checksum errors for those.
+        """
+        if info.split_after:
+            detail = "continues into a volume that is missing from the set"
+        elif info.split_before:
+            detail = "starts in a volume that is missing from the set"
+        elif (
+            self._archive.is_solid
+            and (start := self._segment_start(info)) is not None
+            and start > 1
+        ):
+            detail = (
+                "is in a solid archive past a missing volume, and its data depends "
+                "on the solid stream that ran through it"
+            )
+        else:
+            return None
+        return TruncatedError(
+            f"RAR member {quoted(member.name)} {detail}.",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
+
+    def _unrar_path_for(self, info: RarMemberInfo) -> Path:
+        """The volume ``unrar`` is pointed at to read this member.
+
+        Volume 1, or the staged first volume, for a set with no gap. Past a gap it
+        is the first volume of the member's run, under the staged names, which keep
+        each volume's own number so ``unrar`` stops at the next gap.
+        """
+        path = self._ensure_archive_path()
+        start = self._segment_start(info)
+        numbers = self._volume_numbers
+        if start is None or numbers is None or start == numbers[0]:
+            return path
+        return path.parent / rar_volume_name(
+            "archive", start, old_numbering=self._archive.old_volume_naming
+        )
 
     def _volume_set_size(self) -> int:
         """Volumes in this set, whether or not they are files yet."""
@@ -1341,9 +1448,9 @@ class RarReader(BaseArchiveReader):
         names = [
             temp_dir
             / rar_volume_name(
-                "archive", index, old_numbering=self._archive.old_volume_naming
+                "archive", number, old_numbering=self._archive.old_volume_naming
             )
-            for index in range(1, len(self._volume_paths) + 1)
+            for number in self._volume_numbers_or_default()
         ]
         try:
             try:
@@ -1487,6 +1594,7 @@ class RarReader(BaseArchiveReader):
                         max_members=max_members,
                         kdf_cache=self._kdf_cache,
                         name_encoding=self._encoding,
+                        volume_numbers=self._volume_numbers,
                     )
                 finally:
                     for handle in handles:
@@ -1522,13 +1630,30 @@ class RarReader(BaseArchiveReader):
             if self._volume_paths:
                 with self._volume_paths[0].open("rb") as handle:
                     handle.seek(self._origin)
-                    return parse_rar_archive(
-                        handle,
-                        password=password,
-                        max_members=max_members,
-                        kdf_cache=self._kdf_cache,
-                        name_encoding=self._encoding,
-                    )
+                    try:
+                        archive = parse_rar_archive(
+                            handle,
+                            password=password,
+                            max_members=max_members,
+                            kdf_cache=self._kdf_cache,
+                            name_encoding=self._encoding,
+                        )
+                    except UnsupportedFeatureError:
+                        # "Need first volume": a later volume alone. Its name says
+                        # which one, so it is read as a set missing the others.
+                        if self._lone_volume_number is None:
+                            raise
+                        self._volume_numbers = [self._lone_volume_number]
+                        handle.seek(self._origin)
+                        return parse_rar_volumes(
+                            [handle],
+                            password=password,
+                            max_members=max_members,
+                            kdf_cache=self._kdf_cache,
+                            name_encoding=self._encoding,
+                            volume_numbers=self._volume_numbers,
+                        )
+                    return archive
 
             view = self._shared.view(0)
             try:
@@ -1561,7 +1686,12 @@ class RarReader(BaseArchiveReader):
             # A set whose last volume present says another follows: list what the
             # volumes hold, then raise (``_iter_members``), as for a cut file.
             mark_missing_next_volume(
-                archive, volumes_read=max(self._volume_set_size(), 1)
+                archive,
+                volumes_read=(
+                    self._volume_numbers[-1]
+                    if self._volume_numbers
+                    else max(self._volume_set_size(), 1)
+                ),
             )
             # _first_candidate_str is the first configured candidate when
             # headers parsed without a password (data-only encryption; a wrong
@@ -1886,8 +2016,8 @@ class RarReader(BaseArchiveReader):
         else:
             old_numbering = self._archive.old_volume_naming
             names = [
-                rar_volume_name("archive", index, old_numbering=old_numbering)
-                for index in range(1, len(volumes) + 1)
+                rar_volume_name("archive", number, old_numbering=old_numbering)
+                for number in self._volume_numbers_or_default()
             ]
         unlinked: list[tuple[Path, Path]] = []
         for volume, name in zip(volumes, names, strict=True):
@@ -2450,11 +2580,15 @@ class RarReader(BaseArchiveReader):
             size = _member_stream_size(member)
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             slot: int | Callable[[], BinaryIO]
-            if raw.split_after:
-                # A member running into a missing volume is the last one the set
-                # has, so leaving it out of ``plan`` shifts no later offset.
+            missing = self._missing_data_error(member, raw)
+            if missing is not None:
+                # Every member from the first missing volume on is refused here,
+                # and the output ends at that volume, so leaving them out of
+                # ``plan`` shifts no offset a member before it is read at.
                 def _refused() -> BinaryIO:
-                    raise self._missing_continuation_error(member)
+                    error = self._missing_data_error(member, raw)
+                    assert error is not None
+                    raise error
 
                 slot = _refused
             else:
@@ -3112,22 +3246,6 @@ class RarReader(BaseArchiveReader):
             "solid prefix target missing from the payload walk; uses member identity"
         )
 
-    def _missing_continuation_error(self, member: ArchiveMember) -> TruncatedError:
-        """The refusal for a member whose data runs into a volume that is missing.
-
-        Only the last member of an incomplete set can still be ``split_after``
-        once the volumes are merged (:func:`mark_missing_next_volume`). Its bytes
-        stop at the end of the last volume present, which is a truncation;
-        ``unrar`` reports the missing volume for it and tests the rest.
-        """
-        return TruncatedError(
-            f"RAR member {quoted(member.name)} continues into a volume that is "
-            "missing from the set.",
-            archive_name=self._archive_name,
-            member_name=member.name,
-            source_format=ArchiveFormat.RAR,
-        )
-
     def _unknown_compression_error(
         self, member: ArchiveMember, version: str
     ) -> UnsupportedFeatureError:
@@ -3216,8 +3334,9 @@ class RarReader(BaseArchiveReader):
         assert isinstance(raw, RarMemberInfo)
         if raw.is_file_copy():
             return self._open_file_copy(member)
-        if raw.split_after:
-            raise self._missing_continuation_error(member)
+        missing = self._missing_data_error(member, raw)
+        if missing is not None:
+            raise missing
         unknown_version = raw.unknown_compression_version()
         if unknown_version is not None:
             raise self._unknown_compression_error(member, unknown_version)
@@ -3360,7 +3479,7 @@ class RarReader(BaseArchiveReader):
 
         # Only now: every refusal above is decided from the parsed member table and
         # spawns nothing, so a stream source must not be spooled to disk to reach one.
-        path = self._ensure_archive_path()
+        path = self._unrar_path_for(raw)
 
         def _spawn() -> BinaryIO:
             proc, stdout = open_unrar_p(

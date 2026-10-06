@@ -207,9 +207,9 @@ Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split
 byte stream; RAR parses self-describing volumes in order and stitches
 boundary-spanning members. Incomplete/out-of-order sets SHALL raise
 `UnsupportedFeatureError` or a truncated/corrupt error — never a partial result
-presented as complete. A RAR set whose last volume is missing lists the members the
-volumes present hold and then raises `TruncatedError`, the channel a cut file uses
-(`format-rar`).
+presented as complete. A RAR set with volumes missing (first, middle or last) lists
+the members the volumes present hold and then raises `TruncatedError`, the channel a
+cut file uses (`format-rar`).
 
 An explicitly passed sequence gets no discovery, so it SHALL be required to name the
 parts of one archive, and a sequence mixing two sets SHALL raise
@@ -272,7 +272,7 @@ self-describing.
 | `open_archive([alpha.rar, beta.rar])` | One stream over both; no part number, so no set to check |
 | `open_archive([a/alpha.zip.001, b/alpha.zip.002])` across directories | One archive in that order |
 | Missing volume | Raise at open or first dependent read; no partial member list presented as complete |
-| RAR set missing its last volume | Members in the volumes present listed, then `TruncatedError`; the member running into the missing volume raises `TruncatedError` when read |
+| RAR set missing a volume (first, middle or last) | Members in the volumes present listed, from any of them, then `TruncatedError`; a member with data in a missing volume raises `TruncatedError` when read |
 
 ### Requirement: Archive metadata access
 

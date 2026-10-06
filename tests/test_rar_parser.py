@@ -12,6 +12,7 @@ from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
@@ -508,11 +509,28 @@ def test_set_whose_last_volume_expects_another_is_truncated() -> None:
     assert member.split_after
 
 
-def test_lone_later_volume_path_needs_first_volume(tmp_path: Path) -> None:
+def test_lone_later_volume_path_lists_as_a_set_missing_volume_1(
+    tmp_path: Path,
+) -> None:
+    """Ruled 2026-10-06 (this used to refuse with "Need first volume"): a later
+    volume alone is a set missing the others. Its one member continues from volume 1,
+    so it lists and its read is a truncation."""
     lone = tmp_path / "lone.part2.rar"
     lone.write_bytes(_fixture("tinyvol.part2.rar").read_bytes())
+    with open_archive(lone) as archive:
+        report = archive.members_report()
+        assert [m.name for m in report.members] == ["payload.bin"]
+        assert isinstance(report.error, TruncatedError)
+        assert "volume 1 is missing" in str(report.error)
+        with pytest.raises(TruncatedError, match="starts in a volume that is missing"):
+            archive.read(report.members[0])
+
+
+def test_a_lone_later_volume_stream_still_needs_its_first_volume() -> None:
+    """A stream has no name to number it, so it stays refused."""
+    lone = _fixture("tinyvol.part2.rar").read_bytes()
     with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
-        open_archive(lone)
+        open_archive(io.BytesIO(lone))
 
 
 def test_rar5_cut_inside_a_multibyte_header_size_is_truncated() -> None:
