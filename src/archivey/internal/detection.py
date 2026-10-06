@@ -263,19 +263,18 @@ def _probe_inner_tar(
 
     limit = _INNER_TAR_MAX_PROBE_BYTES
     if workspace is not None:
-        budget = workspace.budget
-        if budget.max_decode_input <= 0 or budget.max_decode_output <= 0:
-            workspace.record_skip("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY)
-            return False
         # Output against the budget's face value: this is the only tier that charges
         # output, and a pass that reaches it returns a format, so no earlier pass (the
         # sibling-volume retry shares the receipt) has charged any. Input against what
         # is left: a content probe and its completion check draw on the same allowance.
-        if (
-            budget.max_decode_output < _INNER_TAR_PROBE_BYTES
-            or workspace.decode_input_left <= 0
+        budget = workspace.budget
+        if not _admit_tier(
+            workspace,
+            "inner_tar",
+            enabled=budget.max_decode_input > 0 and budget.max_decode_output > 0,
+            covered=budget.max_decode_output >= _INNER_TAR_PROBE_BYTES
+            and workspace.decode_input_left > 0,
         ):
-            workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
             return False
         limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
 
@@ -309,23 +308,38 @@ def _probe_inner_tar(
     return found
 
 
+def _admit_tier(
+    workspace: PrefixWorkspace,
+    tier: str,
+    *,
+    enabled: bool = True,
+    covered: bool = True,
+) -> bool:
+    """Whether ``tier`` may run: records it as not enabled when the budget turns it off
+    (a zero allowance), and as cut short when its allowance is below what it needs."""
+    if not enabled:
+        workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
+        return False
+    if not covered:
+        workspace.record_skip(tier, TierSkipReason.BUDGET_EXHAUSTED)
+        return False
+    return True
+
+
 def _decode_allowance_covers(
     workspace: PrefixWorkspace, input_bytes: int, tier: str
 ) -> bool:
     """Whether ``input_bytes`` of decoding still fits the call's decode allowance.
 
-    Records ``tier`` as not enabled when the budget allows no decoding at all, and as
-    cut short when an earlier tier spent what it allowed. For ``probe_completion`` only
-    the second is reachable: a zero allowance stops the content probes before any hit
-    asks for completion.
+    For ``probe_completion`` only the cut-short record is reachable: a zero allowance
+    stops the content probes before any hit asks for completion.
     """
-    if workspace.budget.max_decode_input <= 0:
-        workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
-        return False
-    if workspace.decode_input_left < input_bytes:
-        workspace.record_skip(tier, TierSkipReason.BUDGET_EXHAUSTED)
-        return False
-    return True
+    return _admit_tier(
+        workspace,
+        tier,
+        enabled=workspace.budget.max_decode_input > 0,
+        covered=workspace.decode_input_left >= input_bytes,
+    )
 
 
 def _probe_completes(
@@ -355,9 +369,10 @@ def _probe_completes(
         # probe already had the whole source and ran its completeness check.
         return True
     budget = workspace.budget
-    if budget.completion_window_bytes <= 0:
-        # Off by policy (``FAST``): say so, since the hit stands on the window alone.
-        workspace.record_skip("probe_completion", TierSkipReason.NOT_ENABLED_BY_POLICY)
+    # Off by policy (``FAST``): say so, since the hit stands on the window alone.
+    if not _admit_tier(
+        workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
+    ):
         return True
     if length > min(budget.completion_window_bytes, workspace.read_ceiling):
         # A size bound, not a disabled tier: nothing is recorded.
@@ -465,11 +480,9 @@ def _warn_on_conflict(
     resolved: ArchiveFormat,
     evidence: _ConflictEvidence,
 ) -> None:
-    if ext_match is None:
+    if ext_match is None or _extension_corroborates(ext_match, resolved):
         return
     ext_fmt, extension = ext_match
-    if ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved):
-        return
     message = (
         f"Format conflict for {name!r}: extension suggests {ext_fmt!r} but "
         f"{evidence.value} {resolved!r}; using that result over the extension."
@@ -740,6 +753,11 @@ def _detect_format_body(
     ext_fmt = ext_match[0] if ext_match is not None else None
 
     with PrefixWorkspace(source, budget, receipt) as workspace:
+
+        def conclude(info: FormatInfo, evidence: _ConflictEvidence) -> FormatInfo:
+            _warn_on_conflict(collector, name, ext_match, info.format, evidence)
+            return _attach_receipt(info, workspace)
+
         # Magic signals split by where they live: "near" ones fit in the default window;
         # "far" ones (ISO's CD001 at 32 769) need an extended peek taken on demand.
         near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
@@ -779,10 +797,7 @@ def _detect_format_body(
                 ext_match=ext_match,
                 workspace=workspace,
             )
-            _warn_on_conflict(
-                collector, name, ext_match, info.format, _ConflictEvidence.MAGIC
-            )
-            return _attach_receipt(info, workspace)
+            return conclude(info, _ConflictEvidence.MAGIC)
 
         # 2. Self-extracting archives.
         cue = executable_cue(data)
@@ -797,28 +812,26 @@ def _detect_format_body(
                 restrict_to_validated=data.startswith(b"#!"),
             )
             if sfx_info is not None:
-                _warn_on_conflict(
-                    collector,
-                    name,
-                    ext_match,
-                    sfx_info.format,
-                    _ConflictEvidence.SFX_SCAN,
-                )
-                return _attach_receipt(sfx_info, workspace)
+                return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
 
         # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the
         # tier is recorded as cut short, the same rule the near tier follows. A source
         # provably too short to hold the signature loses nothing to the clamp.
-        reachable_far: list[MagicSignature] = []
-        unreachable_far: list[MagicSignature] = []
-        for e in far:
-            fits = e.offset + len(e.magic) <= budget.max_far_bytes
-            (reachable_far if fits else unreachable_far).append(e)
-        if budget.max_far_bytes > 0 and any(
-            length is None or length >= e.offset + len(e.magic) for e in unreachable_far
-        ):
-            workspace.record_skip("far_magic", TierSkipReason.BUDGET_EXHAUSTED)
+        reachable_far = [
+            e for e in far if e.offset + len(e.magic) <= budget.max_far_bytes
+        ]
+        if far:
+            _admit_tier(
+                workspace,
+                "far_magic",
+                enabled=budget.max_far_bytes > 0,
+                covered=all(
+                    length is not None and length < e.offset + len(e.magic)
+                    for e in far
+                    if e not in reachable_far
+                ),
+            )
         if reachable_far:
             far_needed = max(e.offset + len(e.magic) for e in reachable_far)
             if length is not None and length < far_needed:
@@ -829,15 +842,10 @@ def _detect_format_body(
                 workspace.charge_far(len(far_data))
                 far_fmt = _match_magic(far_data, reachable_far)
                 if far_fmt is not None:
-                    _warn_on_conflict(
-                        collector, name, ext_match, far_fmt, _ConflictEvidence.MAGIC
-                    )
-                    return _attach_receipt(
+                    return conclude(
                         FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic"),
-                        workspace,
+                        _ConflictEvidence.MAGIC,
                     )
-        elif far and budget.max_far_bytes <= 0:
-            workspace.record_skip("far_magic", TierSkipReason.NOT_ENABLED_BY_POLICY)
 
         # 4. Content probes.
         if cue is not ExecutableCue.STRONG:
@@ -867,14 +875,7 @@ def _detect_format_body(
                         ext_match=ext_match,
                         workspace=workspace,
                     )
-                    _warn_on_conflict(
-                        collector,
-                        name,
-                        ext_match,
-                        info.format,
-                        _ConflictEvidence.CONTENT_PROBE,
-                    )
-                    return _attach_receipt(info, workspace)
+                    return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
         # 5. Extension-only guess.
         if ext_fmt is not None:
