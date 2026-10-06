@@ -80,6 +80,37 @@ def test_iso_long_form_tf_date_at_year_one_does_not_break_modified_utc() -> None
         member.modified_utc()
 
 
+def _traced_peak(run: Callable[[], None]) -> int:
+    """Peak traced bytes during a second call of ``run``.
+
+    One untraced call first, so lazy imports and first-use caches (which differ by
+    platform: 474 KB on Windows against 174 KB of image) are not counted.
+
+    Then no garbage collection inside the traced window. On free-threaded 3.13 a
+    collection allocates working memory in proportion to every live object in the
+    process, and tracemalloc counts it: with 300 000 live objects, as a long test run
+    can leave, one collection adds about 800 KB (2.35x becomes 6.9x for the
+    shared-continuation image). Whether the automatic collection fires inside the
+    window depends on what earlier tests allocated, so the peak depended on test order.
+    Free-threaded 3.14 and the GIL builds allocate almost nothing for a collection.
+    ``gc.collect()`` first also keeps earlier tests' garbage, and its finalizers, out
+    of the window.
+    """
+    run()
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    tracemalloc.start()
+    try:
+        run()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        if was_enabled:
+            gc.enable()
+    return peak
+
+
 def _peak_at_open(data: bytes, config: ArchiveyConfig) -> int:
     """Peak traced bytes while ``open_archive`` opens and lists ``data``.
 
@@ -93,29 +124,35 @@ def _peak_at_open(data: bytes, config: ArchiveyConfig) -> int:
         except ResourceLimitError:
             pass
 
-    # One untraced run first, so lazy imports and first-use caches (which differ by
-    # platform: 474 KB on Windows against 174 KB of image) are not counted.
-    #
-    # Then no garbage collection inside the traced window. On the free-threaded build a
-    # collection allocates working memory in proportion to every live object in the
-    # process, and tracemalloc counts it: with the 300 000 objects an earlier part of
-    # the test suite leaves alive, one collection adds about 800 KB (2.35x becomes 6.9x
-    # here). Whether the automatic collection fires inside the window depends on what
-    # earlier tests allocated, so the peak depended on test order. gc.collect() first
-    # also keeps earlier tests' garbage, and its finalizers, out of the window.
-    attempt()
-    gc.collect()
-    was_enabled = gc.isenabled()
-    gc.disable()
-    tracemalloc.start()
+    return _traced_peak(attempt)
+
+
+def test_traced_peak_leaves_out_collections_over_a_large_live_heap() -> None:
+    """A collection that comes due inside the window adds nothing to the peak.
+
+    The run allocates 5000 lists while 300 000 objects are alive and a collection is
+    due every few hundred allocations. On free-threaded 3.13 without the collector
+    disabled, the peak was 1.5 MB against 340 KB with no large heap. The GIL builds
+    and free-threaded 3.14 pass either way; this fails only where the cost exists.
+    """
+
+    def allocate() -> None:
+        kept = [[] for _ in range(5000)]
+        del kept
+
+    baseline = _traced_peak(allocate)
+    heap = [{"k": [index]} for index in range(150_000)]
+    threshold = gc.get_threshold()
+    # A second threshold of 0 makes every first-generation trigger collect, however
+    # many objects are alive; the free-threaded build otherwise waits for a quarter of
+    # the live heap.
+    gc.set_threshold(1, 0)
     try:
-        attempt()
-        _, peak = tracemalloc.get_traced_memory()
+        peak = _traced_peak(allocate)
     finally:
-        tracemalloc.stop()
-        if was_enabled:
-            gc.enable()
-    return peak
+        gc.set_threshold(*threshold)
+    del heap
+    assert peak < baseline * 5 // 4, (peak, baseline)
 
 
 # ---------------------------------------------------------------------------------
