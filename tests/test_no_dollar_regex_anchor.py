@@ -8,7 +8,9 @@ line, which is what it asks for.
 
 The scan reads the AST, so it sees implicitly concatenated literals as the one
 pattern Python compiles, and a ``$`` in a comment or docstring does not count.
-A pattern built at runtime (a name, an f-string) is not checked.
+A pattern built at runtime (a name, an f-string) is not checked, and neither
+is a ``$`` that ends an earlier alternation branch (``a$|b\\Z``): only the end
+of the whole pattern is.
 """
 
 from __future__ import annotations
