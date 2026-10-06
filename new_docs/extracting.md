@@ -143,3 +143,11 @@ Some limits apply before extraction starts, such as the number of members or how
 decompressor may use. Those are set when you open the archive, through
 `config=archivey.ArchiveyConfig(...)`, and the [reference](api.md#archivey.ArchiveyConfig) lists
 them.
+
+## What archivey doesn't protect against
+
+Nothing limits how long an extraction takes. If that matters to you, run it in a process you can
+stop. The limits apply to each archive separately, so if you extract archives found inside other
+archives, you need to bound the total yourself. Archivey also assumes that no other program
+changes the archive while it's being read, or the destination folder while files are written
+into it.
