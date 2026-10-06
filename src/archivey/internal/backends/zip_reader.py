@@ -65,8 +65,6 @@ from archivey.cost import (
 )
 from archivey.diagnostics import (
     DiagnosticCode,
-    EncryptedVerificationContext,
-    MemberTimestampContext,
     NameEncodingContext,
     raw_name_to_base64,
 )
@@ -103,7 +101,6 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
-from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
@@ -120,7 +117,6 @@ from archivey.internal.password_confirm import (
     REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
-    UnverifiedPasswordReadWatch,
     first_crc_match,
     plan_password_confirm,
     run_password_confirm_plan,
@@ -1126,21 +1122,7 @@ class ZipReader(BaseArchiveReader):
                 member, b"", fallback_type=fallback_type, member_id=index
             )
         for issue in ts_issues:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=issue.message,
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field=issue.field,
-                    source=issue.source,
-                    value_repr=issue.value_repr,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
+            self._emit_timestamp_invalid(member, index, issue)
         return member
 
     def _zipcrypto_check_byte(self, info: zipfile.ZipInfo) -> int:
@@ -1953,37 +1935,14 @@ class ZipReader(BaseArchiveReader):
         and only the CRC at EOF notices. A seek forfeits the check except under WinZip
         AES: its HMAC survives seeks, so only a read reaching the end counts.
         """
-
-        # Runs at close, not open: a ZIP member's name and id are fixed at listing,
-        # so reading them here gives the open-time values.
-        def report(reason: str) -> None:
-            missed = (
-                "gave up its integrity check by seeking"
-                if reason == "seek"
-                else "was closed before its integrity check was reached"
-            )
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
-                message=(
-                    f"Encrypted ZIP member {quoted(member.name)} {missed}, and the "
-                    f"password was accepted on a weaker check: the bytes read may have "
-                    f"been decrypted with a wrong password."
-                ),
-                context=EncryptedVerificationContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    check=check,
-                    reason=reason,
-                ),
-                member=member,
-                logger=integrity_logger,
-            )
-
-        return UnverifiedPasswordReadWatch(
+        return self._watch_unverified_read(
             stream,
+            member,
             size=info.file_size,
-            on_unverified=report,
+            check=check,
+            format_label="ZIP",
+            digest="integrity check",
+            why="the password was accepted on a weaker check",
             seek_forfeits=not cipher.is_aes,
         )
 

@@ -241,13 +241,19 @@ def test_lzma2_late_crc_seek_then_full_read_is_reported_as_a_seek(
         with reader.open(member) as stream:
             stream.seek(1)
             assert stream.read() == big[1:]
-        (context,) = [
-            d.context
+        (diagnostic,) = [
+            d
             for d in reader.diagnostics.retained
             if d.code is DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED
         ]
+        context = diagnostic.context
         assert isinstance(context, EncryptedVerificationContext)
         assert context.reason == "seek"
+        assert diagnostic.message == (
+            "Encrypted 7z member 'big.bin' gave up its checksum by seeking, and no "
+            "checksum confirmed the password: the bytes read may have been decrypted "
+            "with a wrong password."
+        )
 
 
 def test_copy_late_crc_is_walked_and_confirms(

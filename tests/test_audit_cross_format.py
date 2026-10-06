@@ -12,6 +12,7 @@ import bz2
 import io
 import lzma
 import os
+import re
 import stat
 import struct
 import subprocess
@@ -28,8 +29,9 @@ from archivey import open_archive
 from archivey.cli.exit_codes import EXIT_FAIL
 from archivey.cli.main import main
 from archivey.config import ArchiveyConfig, ListingLimits
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import ArchiveyUsageError, ResourceLimitError
+from archivey.terminal import quoted
 from tests.conftest import requires, requires_binary
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -222,22 +224,58 @@ def _iso_month_13(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize(
-    "build",
+    ("build", "label", "source", "value_re"),
     [
-        pytest.param(_rar4_month_13, id="rar4-dos-month-13"),
-        pytest.param(_rar5_filetime_overflow, id="rar5-filetime-overflow"),
-        pytest.param(_iso_month_13, id="iso-month-13", marks=requires("pycdlib")),
+        pytest.param(
+            _rar4_month_13,
+            "RAR DOS timestamp",
+            "dos",
+            "0x5daca824",
+            id="rar4-dos-month-13",
+        ),
+        pytest.param(
+            _rar5_filetime_overflow,
+            "NTFS timestamp",
+            "ntfs",
+            str(2**64 - 1),
+            id="rar5-filetime-overflow",
+        ),
+        # pycdlib stamps the build time, so only the patched month is fixed.
+        pytest.param(
+            _iso_month_13,
+            "ISO 9660 date",
+            "directory_record",
+            r"\(\d+, 13, \d+, \d+, \d+, \d+\)",
+            id="iso-month-13",
+            marks=requires("pycdlib"),
+        ),
     ],
 )
 def test_invalid_timestamp_is_none_and_reported(
-    build: Callable[[Path], Path], tmp_path: Path
+    build: Callable[[Path], Path],
+    label: str,
+    source: str,
+    value_re: str,
+    tmp_path: Path,
 ) -> None:
     archive = build(tmp_path)
     with open_archive(archive) as reader:
         member = next(m for m in reader.members() if m.is_file)
         counts = reader.diagnostics.counts
+        (diagnostic,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
     assert member.modified is None
     assert counts.get(DiagnosticCode.MEMBER_TIMESTAMP_INVALID, 0) == 1
+    context = diagnostic.context
+    assert isinstance(context, MemberTimestampContext)
+    assert (context.field, context.source) == ("modified", source)
+    assert re.fullmatch(value_re, context.value_repr)
+    assert diagnostic.message == (
+        f"Invalid {label} for {quoted(member.name)}: {context.value_repr}"
+    )
 
 
 # ---------------------------------------------------------------------------

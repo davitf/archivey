@@ -50,7 +50,6 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
-    MemberTimestampContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -90,7 +89,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     read_within_reach,
 )
-from archivey.internal.timestamps import unix_to_datetime
+from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -1431,21 +1430,12 @@ class TarReader(BaseArchiveReader):
             member_id=index,
         )
         if mtime_invalid:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=f"Invalid TAR mtime for {quoted(info.name)}: {info.mtime!r}",
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field="mtime",
-                    source="tar",
-                    value_repr=repr(info.mtime),
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=backends_logger,
+            value_repr = repr(info.mtime)
+            message = f"Invalid TAR mtime for {quoted(info.name)}: {value_repr}"
+            issue = TimestampIssue(
+                field="mtime", source="tar", value_repr=value_repr, message=message
             )
+            self._emit_timestamp_invalid(member, index, issue)
         return member
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
