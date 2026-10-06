@@ -2391,6 +2391,7 @@ class RarReader(BaseArchiveReader):
                     path,
                     password=password,
                     version_control=version_control,
+                    rar5=self._archive.version == 5,
                 )
                 # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
                 # and declared length via fused ArchiveStream verify), so the pipe-level
@@ -3333,6 +3334,7 @@ class RarReader(BaseArchiveReader):
                 password=data_password,
                 member=mask_name,
                 version_control=version_control,
+                rar5=self._archive.version == 5,
             )
             owned = _UnrarOwnedStream(
                 stdout,
