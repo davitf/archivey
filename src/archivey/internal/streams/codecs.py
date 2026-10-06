@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn, TypeVar
+from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, TypeVar
 
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
@@ -1033,35 +1033,60 @@ def _open_accelerator(
     return stream
 
 
+@dataclass(frozen=True)
+class _SourceViews:
+    """Fresh views of an accelerator's source at offset 0 that leave its cursor alone.
+
+    A path's views are fresh fds (:meth:`of_path`), a stream's are lock-sharing
+    ``SharedSource`` siblings. See the IDEAS.md entry "Let an ``ArchiveSource`` over a
+    file hand out independent handles".
+    """
+
+    view: Callable[[], BinaryIO]
+    # The source's path, when it has one; set only by of_path.
+    path: str | None = None
+
+    @classmethod
+    def of_path(cls, path: str) -> "_SourceViews":
+        return cls(lambda: open(path, "rb"), path)
+
+    def for_stdlib(self) -> CodecSource:
+        """The source for a standard-library decoder that takes over: the path, so that
+        it opens and owns its own fd, or else a fresh view (non-owning, like the
+        accelerator's own)."""
+        return self.path if self.path is not None else self.view()
+
+
 def _accelerator_backstop_source(
     source: CodecSource,
-) -> tuple[CodecSource, Callable[[], BinaryIO] | None]:
-    """Resolve ``(source to feed the accelerator, factory for independent views @ offset 0)``.
+) -> tuple[CodecSource, _SourceViews | None]:
+    """Resolve ``(source to feed the accelerator, independent views of it)``.
 
-    The accelerators' empty→stdlib fallbacks (gzip and bzip2) and the gzip multi-member scan
-    each need a fresh, position-isolated seekable stream over the whole compressed source that never
-    disturbs the live accelerator's cursor. How that is obtained depends on the source:
+    The accelerators' handovers to the standard library and their end checks (the gzip
+    multi-member scan, the zlib and bzip2 re-reads) each need a fresh, position-isolated
+    seekable stream over the whole compressed source that never disturbs the live
+    accelerator's cursor. How that is obtained depends on the source:
 
-    - **path** — hand the accelerator the path (its own fd); the factory opens a fresh
-      independent OS handle per call.
+    - **path** — hand the accelerator the path (its own fd); each view is a fresh
+      independent OS handle.
     - **locked ``SharedSource`` view** (the reader's seekable-stream path) — the accelerator
-      keeps reading that view; the factory mints a lock-sharing sibling view, so scan and
+      keeps reading that view; each view is a lock-sharing sibling, so scan and
       accelerator coordinate on one lock (a background rapidgzip worker reads the source).
     - **raw seekable stream** given directly — wrap once in a private ``SharedSource`` so the
-      accelerator and the factory's views share one lock; caller-owned, so never closed.
-    - **non-seekable** — no factory (``None``). The accelerated codecs never pass one:
+      accelerator and the views share one lock; caller-owned, so never closed.
+    - **non-seekable** — no views (``None``). The accelerated codecs never pass one:
       :func:`_refuse_forward_only_accelerator` refuses it first.
     """
     if isinstance(source, (str, os.PathLike)):
-        # os.fspath narrows to the concrete path for the reopen closure (the same tolerated
-        # ty fspath-overload idiom used elsewhere in this file for CodecSource paths).
+        # os.fspath narrows to the concrete path (the same tolerated ty fspath-overload
+        # idiom used elsewhere in this file for CodecSource paths).
         path = os.fspath(source)
-        return source, (lambda: open(path, "rb"))
+        return source, _SourceViews.of_path(path)
     if isinstance(source, SharedView):
-        return source, source.independent_view
+        return source, _SourceViews(source.independent_view)
     if is_seekable(source):
         shared = SharedSource(source)
-        return shared.view(0), (lambda: shared.view(0))
+        return shared.view(0), _SourceViews(lambda: shared.view(0))
     return source, None
 
 
@@ -1277,8 +1302,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self,
         inner: BinaryIO,
         *,
-        reopen: Callable[[], BinaryIO],
-        fallback_path: str | None,
+        views: _SourceViews,
         open_stdlib: Callable[[CodecSource], BinaryIO],
         label: str,
         limit: int | None = None,
@@ -1287,8 +1311,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         seek_takes_over: bool = False,
     ) -> None:
         super().__init__(inner)
-        self._reopen = reopen
-        self._fallback_path = fallback_path
+        self._views = views
         self._open_stdlib = open_stdlib
         self._label = label
         self._limit = limit
@@ -1370,32 +1393,18 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         old = self._inner
         points: list[SeekPoint] = []
         if resume and self._resume_points is not None:
-            points = self._resume_points(old, self._position, self._open_view)
+            points = self._resume_points(old, self._position, self._views.view)
         elif resume and isinstance(old, RapidgzipChildStream):
             point = old.resume_point(self._position)
             points = [point] if point is not None else []
-        stdlib = self._open_stdlib_at(points)
-        self._replace_inner(stdlib)
+        self._replace_inner(self._open_stdlib_at(points))
         self.switched = True
-        try:
-            old.close()
-        except Exception:  # noqa: BLE001 - best-effort; the stdlib handle took over
-            pass
-
-    def _open_view(self) -> BinaryIO:
-        """A fresh view of the source at offset 0 that leaves the accelerator's alone."""
-        if self._fallback_path is not None:
-            return open(self._fallback_path, "rb")
-        return self._reopen()
 
     def _open_stdlib_at(self, points: Sequence[SeekPoint] = ()) -> BinaryIO:
         """The standard-library decoder at the position delivered so far, resuming from
         the newest of ``points``, in ascending order, at or before it. A point past it
         would only serve a later seek: the seek here ignores it."""
-        fallback: CodecSource = (
-            self._fallback_path if self._fallback_path is not None else self._reopen()
-        )
-        stdlib = self._open_stdlib(fallback)
+        stdlib = self._open_stdlib(self._views.for_stdlib())
         if points and isinstance(stdlib, DecompressorStream):
             stdlib.add_seek_points(points)
         try:
@@ -1416,12 +1425,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         end-of-stream marker's combined CRC from a damaged block, and raises on both.
         """
         assert self.switched, "only a standard-library decoder resumes"
-        old = self._inner
         self._replace_inner(self._open_stdlib_at())
-        try:
-            old.close()
-        except Exception:  # noqa: BLE001 - best-effort; the new handle took over
-            pass
 
 
 class _GzipTruncationCheckStream(DelegatingStream):
@@ -1440,20 +1444,20 @@ class _GzipTruncationCheckStream(DelegatingStream):
        “further ``1f 8b 08`` ⇒ do not raise” rule (per-member ISIZE sum is deferred).
 
     ISIZE and the source length are **captured up front** (``isize`` / ``source_len``) so no
-    per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ raise on a
-    non-empty soft EOF (incomplete member); a value ⇒ compare; ``source_len is None``
-    (unreadable) ⇒ return without raising. ``reopen`` mints a fresh independent seekable stream
-    over the whole source at offset 0 for the multi-member scan (and, for a stream source, the
-    stdlib fallback), so neither disturbs the live accelerator's cursor — a path uses a fresh
-    fd, a stream a lock-sharing ``SharedSource`` sibling view. ``fallback_path`` (set only for a
-    path source) hands the stdlib engine the path so it owns/closes its own fd.
+    per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ a
+    non-empty soft EOF is an incomplete member, handed to the standard library like a
+    mismatch; a value ⇒ compare; ``source_len is None`` (unreadable) ⇒ return without
+    raising. ``views`` gives the multi-member scan and the stdlib fallback their own access
+    to the source (:class:`_SourceViews`), so neither disturbs the live accelerator's
+    cursor.
 
     A caller ``seek`` off the sequential frontier disarms both checks.
 
-    Once the ISIZE check has called the stream truncated, that verdict is kept: the
-    source has not changed, so every later end of data (a later read, or a re-read after a
-    seek back) raises the same error instead of reading as a clean, shorter stream. The
-    stdlib engine the empty-EOF arm switches to keeps its own verdict the same way.
+    An ISIZE mismatch hands the read to the standard library
+    (:meth:`_StdlibOnAcceleratorError.switch_to_stdlib`), which gives the verdict and keeps
+    it, as does the stdlib engine the empty-EOF arm switches to. The switch always installs
+    that engine: positioning it at the delivered offset defers any content fault to the
+    next read (``DecompressorStream.seek``), so a later read cannot see a clean EOF.
     """
 
     # Side-effecting read() (byte-total + EOF truncation check); disable
@@ -1462,25 +1466,24 @@ class _GzipTruncationCheckStream(DelegatingStream):
 
     def __init__(
         self,
-        inner: BinaryIO,
+        inner: _StdlibOnAcceleratorError,
         *,
-        reopen: Callable[[], BinaryIO],
+        views: _SourceViews,
         isize: int | None,
         source_len: int | None,
-        fallback_path: str | None,
         open_stdlib: Callable[[CodecSource], BinaryIO],
     ) -> None:
         super().__init__(inner)
-        self._reopen = reopen
+        # The same object as ``_inner`` until the empty-EOF arm replaces that, typed:
+        # the ISIZE check hands over through it.
+        self._takeover = inner
+        self._views = views
         self._isize = isize
         self._source_len = source_len
-        self._fallback_path = fallback_path
         self._open_stdlib = open_stdlib
         self._total = 0
         self._checked = False
         self._verify = True
-        # The truncation the ISIZE check raised, raised again at every later end of data.
-        self._truncation: TruncatedError | None = None
 
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
@@ -1488,12 +1491,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
         data = self._inner.read(size)
         if data:
             self._total += len(data)
-            if size < 0 and self._truncation is not None:
-                # A completing read of a stream already found truncated: reach the end,
-                # then raise its verdict rather than return the prefix as the whole.
-                while self._inner.read(1 << 20):
-                    pass
-                self._raise_truncation()
             if size < 0 and self._verify and not self._checked:
                 # Completing read (read/-1): observe soft EOF now and run ISIZE
                 # before returning. Callers that do only ``s.read(); s.close()`` must
@@ -1510,8 +1507,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 self._total += len(more)
                 data += more
             return data
-        if self._truncation is not None:
-            self._raise_truncation()
         if self._verify and not self._checked:
             self._checked = True
             if self._total == 0:
@@ -1519,12 +1514,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
             data = self._verify_not_truncated(size)
             self._total += len(data)
         return data
-
-    def _raise_truncation(self) -> NoReturn:
-        """Raise the recorded truncation again, with this raise's traceback only (a stored
-        instance re-raised as is would grow one traceback with every retry)."""
-        assert self._truncation is not None
-        raise self._truncation.with_traceback(None)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         result = super().seek(offset, whence)
@@ -1548,19 +1537,8 @@ class _GzipTruncationCheckStream(DelegatingStream):
         bytes (same contract as accelerator-off). The stdlib engine owns truncation
         after the switch — disarm the ISIZE backstop so faults stay on its read path.
         """
-        old = self._inner
-        # Path source: hand the stdlib engine the path so it owns/closes its own fd. Stream
-        # source: a fresh independent view at offset 0 (non-owning; the SharedSource/caller
-        # owns the underlying handle). Either way, decode from the start.
-        fallback: CodecSource = (
-            self._fallback_path if self._fallback_path is not None else self._reopen()
-        )
-        self._replace_inner(self._open_stdlib(fallback))
+        self._replace_inner(self._open_stdlib(self._views.for_stdlib()))
         self._verify = False
-        try:
-            old.close()
-        except Exception:  # noqa: BLE001 - best-effort; ownership moved to stdlib handle
-            pass
         data = self._inner.read(size)
         if data:
             self._total += len(data)
@@ -1572,7 +1550,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         That is ``b""`` unless the standard-library decoder took over to decide (an
         ISIZE mismatch, below), in which case it is that decoder's next read.
         """
-        if getattr(self._inner, "switched", False):
+        if self._takeover.switched:
             # The standard-library decoder finished the read; it owns truncation, and
             # the last four bytes of a file with something appended are not ISIZE.
             return b""
@@ -1580,46 +1558,30 @@ class _GzipTruncationCheckStream(DelegatingStream):
             # Source length unreadable (non-seekable / I/O error at capture): cannot verify,
             # so never invent a truncation we can't prove.
             return b""
-        if self._source_len < 18:
-            # Incomplete member (header-only / truncated before a full trailer). Empty
-            # delivery is handled by the stdlib fallback; non-empty soft EOF with a source
-            # this short is still truncation.
-            self._truncation = TruncatedError(
-                "gzip stream is truncated: compressed size is too small for a "
-                "complete gzip member (the rapidgzip accelerator did not raise)"
-            )
-            raise self._truncation
-        if self._isize is None:
-            return (
-                b""  # length known but ISIZE unread (should not happen for len >= 18)
-            )
-        if self._total % (1 << 32) == self._isize:
-            return b""
-        # Mismatch: truncation, unless this is a concatenated multi-member gzip (then the
-        # trailer is only the last member's size). Conservative scan: any further gzip
-        # header ⇒ do not raise (false-negative only; per-member ISIZE sum is deferred).
-        if self._has_additional_gzip_member():
-            return b""
-        switch = getattr(self._inner, "switch_to_stdlib", None)
-        if switch is not None:
-            # The last four bytes are not ISIZE when something was appended to the
-            # file, and rapidgzip reads past such bytes without a word. The
-            # standard-library decoder tells a cut file from an appended one: it
-            # carries on from here, and raises the truncation or reports the bytes.
-            switch()
-            return self._inner.read(size)
-        self._truncation = TruncatedError(
-            "gzip stream is truncated: the decompressed size does not match the ISIZE "
-            "trailer (the rapidgzip accelerator does not surface this truncation itself)"
-        )
-        raise self._truncation
+        # Below 18 bytes no gzip member is complete, so the delivered bytes are a
+        # truncation; otherwise an ISIZE mismatch is one, unless this is a concatenated
+        # multi-member gzip (then the trailer is only the last member's size).
+        # Conservative scan: any further gzip header => do not raise (false-negative
+        # only; per-member ISIZE sum is deferred).
+        if self._source_len >= 18:
+            if self._isize is None:
+                return b""  # length known but ISIZE unread (should not happen here)
+            if self._total % (1 << 32) == self._isize:
+                return b""
+            if self._has_additional_gzip_member():
+                return b""
+        # The last four bytes are not ISIZE when something was appended to the file,
+        # and rapidgzip reads past such bytes without a word. The standard-library
+        # decoder tells a cut file from an appended one, and keeps its verdict on later
+        # reads: it carries on from here, and raises the truncation or reports the bytes.
+        self._takeover.switch_to_stdlib()
+        return self._inner.read(size)
 
     def _has_additional_gzip_member(self) -> bool:
-        # A fresh independent view/handle at offset 0 — never seeks the live accelerator's
-        # source. For a stream this is a lock-sharing SharedSource sibling; for a path, a
-        # fresh fd. Closed via the context manager (a view close is a no-op mark).
+        # Closed via the context manager: a real fd close for a path source, a no-op
+        # mark for a shared view (see _SourceViews).
         try:
-            with self._reopen() as f:
+            with self._views.view() as f:
                 return gzip_has_additional_member(f)
         except OSError:
             return True  # cannot rule out a second member -> do not raise
@@ -1699,13 +1661,13 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         self,
         inner: _StdlibOnAcceleratorError,
         *,
-        reopen: Callable[[], BinaryIO],
+        views: _SourceViews,
         trailer: int | None,
     ) -> None:
         super().__init__(inner)
         # The same object as ``_inner``, typed: the cut-stream handover calls it.
         self._takeover = inner
-        self._reopen = reopen
+        self._views = views
         self._trailer = trailer
         self._pos = 0
         # Output bytes [0, _frontier) are covered by _adler.
@@ -1811,7 +1773,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         pending = b""
         stopped_short = False
         try:
-            with self._reopen() as f:
+            with self._views.view() as f:
                 while produced <= self._frontier:
                     if decoder.eof:
                         if produced == self._frontier:
@@ -1874,13 +1836,11 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         self,
         inner: BinaryIO,
         *,
-        reopen: Callable[[], BinaryIO],
-        fallback_path: str | None,
+        views: _SourceViews,
         config: StreamConfig,
     ) -> None:
         super().__init__(inner)
-        self._reopen = reopen
-        self._fallback_path = fallback_path
+        self._views = views
         self._config = config
         self._armed = True
         # The accelerator is still the decoder, and has not reached the end yet.
@@ -1901,12 +1861,6 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             return data
         self._end_unchecked = False  # the stdlib engine reports its own end
         return self._begin_stdlib_fallback(size)
-
-    def _open_view(self) -> BinaryIO:
-        """A fresh view of the source at offset 0 that leaves the decoder's cursor alone."""
-        if self._fallback_path is not None:
-            return open(self._fallback_path, "rb")
-        return self._reopen()
 
     def _accelerator(self) -> BinaryIO | None:
         """The accelerator, while it is still the decoder; ``None`` after a takeover,
@@ -1939,7 +1893,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         offsets = offsets_fn() if offsets_fn is not None else None
         if not offsets:
             return
-        with self._open_view() as view:
+        with self._views.view() as view:
             combined = 0
             stream_end = -1
             for bit in sorted(offsets):
@@ -1982,7 +1936,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         end = getattr(self._accelerator(), "compressed_position", lambda: None)()
         if end is None:
             return
-        with self._open_view() as view:
+        with self._views.view() as view:
             view.seek(end)
             # ``held`` is the start of an empty stream that the previous chunk cut, or
             # nothing. ``offset`` is the source offset of ``data[0]``.
@@ -2017,17 +1971,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         return ask_resume_offset(self._inner, target)
 
     def _begin_stdlib_fallback(self, size: int) -> bytes:
-        old = self._inner
-        # Path source: the stdlib engine opens and owns its own fd. Stream source: a fresh
-        # independent view at offset 0, non-owning like the accelerator's own view.
-        fallback: CodecSource = (
-            self._fallback_path if self._fallback_path is not None else self._reopen()
-        )
-        self._replace_inner(_stdlib_bzip2(fallback, self._config))
-        try:
-            old.close()
-        except Exception:  # noqa: BLE001 - best-effort; ownership moved to stdlib handle
-            pass
+        self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
         return self._inner.read(size)
 
 
@@ -2549,22 +2493,16 @@ class _DeflateFamilyCodec(StreamCodec):
             source_for_child = _bound_rapidgzip_source(source, params, config)
         else:
             source_for_child = source
-        accel_source, reopen = _accelerator_backstop_source(source_for_child)
+        accel_source, views = _accelerator_backstop_source(source_for_child)
         # _refuse_forward_only_accelerator has refused a source that cannot seek.
-        assert reopen is not None
-        fallback_path = (
-            os.fspath(accel_source)
-            if isinstance(accel_source, (str, os.PathLike))
-            else None
-        )
-        end_check = self._end_check(source, config, accel_source, reopen, fallback_path)
+        assert views is not None
+        end_check = self._end_check(source, config, accel_source, views)
         child = _open_rapidgzip(accel_source, label, config)
         if child is None:
             return None
         takeover = _StdlibOnAcceleratorError(
             child,
-            reopen=reopen,
-            fallback_path=fallback_path,
+            views=views,
             open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
             label=label,
             limit=self._accelerated_limit(config),
@@ -2583,17 +2521,15 @@ class _DeflateFamilyCodec(StreamCodec):
         source: CodecSource,
         config: StreamConfig,
         accel_source: CodecSource,
-        reopen: Callable[[], BinaryIO],
-        fallback_path: str | None,
+        views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
         """The wrapper that checks the end of the accelerated data, or ``None``.
 
         Called before the child starts, so what it reads from the source it reads
         while nothing else does. That is also why reading ``source`` here, outside the
         lock that ``accel_source``'s views share, is sound: none of them has read yet.
-        ``source`` is the caller's; ``accel_source`` is what the child reads, ``reopen``
-        makes fresh views of it at offset 0, and ``fallback_path`` is its path when it
-        has one.
+        ``source`` is the caller's; ``accel_source`` is what the child reads, and
+        ``views`` makes fresh views of it.
         """
         return None
 
@@ -2649,8 +2585,7 @@ class GzipCodec(_DeflateFamilyCodec):
         source: CodecSource,
         config: StreamConfig,
         accel_source: CodecSource,
-        reopen: Callable[[], BinaryIO],
-        fallback_path: str | None,
+        views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
         if config.expected_decompressed_size is not None:
             # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
@@ -2663,10 +2598,9 @@ class GzipCodec(_DeflateFamilyCodec):
         source_len, isize = _gzip_isize_and_length(source)
         return lambda stream: _GzipTruncationCheckStream(
             stream,
-            reopen=reopen,
+            views=views,
             isize=isize,
             source_len=source_len,
-            fallback_path=fallback_path,
             open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
         )
 
@@ -2756,24 +2690,18 @@ class Bzip2Codec(StreamCodec):
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
             # Bound the input: AES pad after EOS is trailing garbage that rapidgzip
             # prints to stderr outside DiagnosticCollector.
-            accel_source, reopen = _accelerator_backstop_source(
+            accel_source, views = _accelerator_backstop_source(
                 _bound_rapidgzip_source(source, params, config)
             )
             stream = _open_accelerator(_rapidgzip_bzip2, accel_source)
             # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert reopen is not None
-            fallback_path = (
-                os.fspath(accel_source)
-                if isinstance(accel_source, (str, os.PathLike))
-                else None
-            )
+            assert views is not None
             # A data error hands the read to the standard library, which delivers what
             # it delivers with the accelerator off and raises its error; see
             # _StdlibOnAcceleratorError.
             takeover = _StdlibOnAcceleratorError(
                 stream,
-                reopen=reopen,
-                fallback_path=fallback_path,
+                views=views,
                 open_stdlib=lambda fallback: _stdlib_bzip2(fallback, config),
                 label="bzip2",
                 takes_over=self._accelerator_data_error,
@@ -2782,12 +2710,7 @@ class Bzip2Codec(StreamCodec):
             )
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
             return _StdlibSeekContract(
-                _Bzip2EmptyStreamCheck(
-                    takeover,
-                    reopen=reopen,
-                    fallback_path=fallback_path,
-                    config=config,
-                )
+                _Bzip2EmptyStreamCheck(takeover, views=views, config=config)
             )
         # A rewind re-decompresses from the start; the outer ArchiveStream warns about
         # that (see rewind_warning). The [seekable] accelerator (above) gives real
@@ -3282,15 +3205,14 @@ class ZlibCodec(_ZlibErrorCodec):
         source: CodecSource,
         config: StreamConfig,
         accel_source: CodecSource,
-        reopen: Callable[[], BinaryIO],
-        fallback_path: str | None,
+        views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
         # Read through the view, which can move the caller's stream under it; put
         # that back, since an AUTO open whose child cannot start decodes from it.
         with _restoring_position(source):
             trailer = _zlib_adler_trailer(accel_source)
         return lambda stream: _ZlibAdlerCheckStream(
-            stream, reopen=reopen, trailer=trailer
+            stream, views=views, trailer=trailer
         )
 
     def content_probe(
