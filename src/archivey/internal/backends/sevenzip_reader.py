@@ -34,8 +34,6 @@ from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
-    EncryptedVerificationContext,
-    MemberTimestampContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -84,7 +82,6 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -103,7 +100,6 @@ from archivey.internal.password_confirm import (
     REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
-    UnverifiedPasswordReadWatch,
     plan_password_confirm,
     run_password_confirm_plan,
 )
@@ -830,21 +826,7 @@ class SevenZipReader(BaseArchiveReader):
                 member_id=index,
             )
         for issue in ts_issues:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=issue.message,
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field=issue.field,
-                    source="ntfs",
-                    value_repr=issue.value_repr,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
+            self._emit_timestamp_invalid(member, index, issue)
         # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
         # password check of its own, so a wrong password cannot be detected (matches
         # 7-Zip). Surface that as DIGEST_UNVERIFIABLE rather than silently implying
@@ -1116,35 +1098,14 @@ class SevenZipReader(BaseArchiveReader):
         assert isinstance(raw, _MemberRaw)
         if raw.folder_index not in self._folders_unconfirmed:
             return stream
-
-        def report(reason: str) -> None:
-            missed = (
-                "gave up its checksum by seeking"
-                if reason == "seek"
-                else "was closed before its checksum was reached"
-            )
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
-                message=(
-                    f"Encrypted 7z member {quoted(member.name)} {missed}, and no "
-                    f"checksum confirmed the password: the bytes read may have been "
-                    f"decrypted with a wrong password."
-                ),
-                context=EncryptedVerificationContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    check="confirm_budget_exhausted",
-                    reason=reason,
-                ),
-                member=member,
-                logger=integrity_logger,
-            )
-
-        return UnverifiedPasswordReadWatch(
+        return self._watch_unverified_read(
             stream,
+            member,
             size=_member_stream_size(member),
-            on_unverified=report,
+            check="confirm_budget_exhausted",
+            format_label="7z",
+            digest="checksum",
+            why="no checksum confirmed the password",
         )
 
     def _member_prefix(self, member: ArchiveMember) -> int:

@@ -17,7 +17,7 @@ import warnings
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Iterator, cast
 
 import pytest
 
@@ -31,6 +31,7 @@ from archivey import (
     extract,
     open_archive,
 )
+from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ExtractionError,
@@ -40,6 +41,7 @@ from archivey.exceptions import (
     NameRewrittenError,
     ResourceLimitError,
 )
+from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.extraction import (
     _CHUNK,
     BombTracker,
@@ -54,7 +56,8 @@ from archivey.internal.filters import (
     transform_standard,
     transform_strict,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.corruption_util import raises_corruption_not_truncation
 
 # ---------------------------------------------------------------------------
@@ -2146,6 +2149,46 @@ def test_streaming_duplicate_name_unremoved_copy_still_collides(
     ]
 
 
+def test_streaming_duplicate_name_renames_onto_an_unremoved_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parking a held copy frees its derived name for RENAME's next scan."""
+    archive = _tar_bytes(
+        [
+            ("file", "A.txt", b"upper"),
+            ("file", "a.txt", b"one"),
+            ("file", "a.txt", b"two"),
+            ("file", "A.TXT", b"caps"),
+            ("file", "a.txt", b"three"),
+        ]
+    )
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def refusing_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(str(path)) == dest / "a (1).txt":
+            raise PermissionError(errno.EACCES, "refused", str(path))
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    seen: list[str] = []
+
+    def drop_second_copy(member: ArchiveMember) -> ArchiveMember | None:
+        seen.append(member.name)
+        return None if len(seen) == 3 else member
+
+    monkeypatch.setattr(os, "unlink", refusing_unlink)
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        reader.extract_all(
+            dest,
+            filter=drop_second_copy,
+            policy=ExtractionPolicy.STANDARD,
+            overwrite=OverwritePolicy.RENAME,
+        )
+    tree = _tree(dest)
+    tree.pop(("hardlinks",), None)
+    assert tree == {"A.txt": b"upper", "A (2).TXT": b"caps", "a (1).txt": b"three"}
+
+
 def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(
     tmp_path: Path,
 ) -> None:
@@ -2166,6 +2209,53 @@ def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(
                 on_error=OnError.CONTINUE,
                 limits=ExtractionLimits(max_extracted_bytes=100_000),
             )
+
+
+class _FileThenAntiReader(BaseArchiveReader):
+    """``a.txt`` then an anti-item for it, with no upfront member list, so a streaming
+    pass learns of the anti-item only when it arrives."""
+
+    _MEMBER_LIST_UPFRONT = False
+
+    def _iter_members(self) -> Iterator[ArchiveMember]:
+        yield ArchiveMember(type=MemberType.FILE, name="a.txt", size=5)
+        yield ArchiveMember(type=MemberType.ANTI, name="a.txt")
+
+    def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        return self._wrap_member_stream(io.BytesIO(b"first"), member.name, size=5)
+
+    def _get_archive_info(self) -> ArchiveInfo:
+        return ArchiveInfo(
+            format=ArchiveFormat.SEVEN_Z,
+            format_version=None,
+            is_solid=False,
+            member_count=None,
+            comment=None,
+            is_encrypted=False,
+            is_multivolume=False,
+            cost=CostReceipt(
+                listing_cost=ListingCost.REQUIRES_SCANNING,
+                access_cost=AccessCost.DIRECT,
+                stream_capability=StreamCapability.SEEKABLE,
+            ),
+        )
+
+    def _close_archive(self) -> None:
+        pass
+
+
+def test_streaming_duplicate_name_anti_item_removes_the_written_copy(
+    tmp_path: Path,
+) -> None:
+    """An anti-item supersedes the written copy of its name; it does not land on it."""
+    outcomes = {}
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        with _FileThenAntiReader(ArchiveFormat.SEVEN_Z, streaming, "x.7z") as reader:
+            results = reader.extract_all(dest).results
+        outcomes[streaming] = ([r.status for r in results], _tree(dest))
+    assert "a.txt" not in outcomes[False][1]
+    assert outcomes[True] == outcomes[False]
 
 
 def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:

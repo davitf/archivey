@@ -37,7 +37,7 @@ import threading
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal, NamedTuple
@@ -48,9 +48,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
-    EncryptedVerificationContext,
     MemberHeaderRecordContext,
-    MemberTimestampContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -133,7 +131,6 @@ from archivey.internal.password import (
     _PasswordCandidatesExhausted,
     wrong_password_error,
 )
-from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
@@ -2147,21 +2144,8 @@ class RarReader(BaseArchiveReader):
         )
         self._emit_header_record_diagnostics(info, member.name, member, index)
         for issue in info.timestamp_issues:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=issue.message,
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field=_timestamp_field_name(info, issue.field),
-                    source=issue.source,
-                    value_repr=issue.value_repr,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
+            field = _timestamp_field_name(info, issue.field)
+            self._emit_timestamp_invalid(member, index, replace(issue, field=field))
         # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
@@ -3405,33 +3389,14 @@ class RarReader(BaseArchiveReader):
         enc = raw.file_encryption
         if enc is not None and _psw_check_usable(enc):
             return stream
-
-        def report(reason: str) -> None:
-            missed = (
-                "gave up its checksum by seeking"
-                if reason == "seek"
-                else "was closed before its checksum was reached"
-            )
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
-                message=(
-                    f"Encrypted RAR member {quoted(member.name)} {missed}, and it "
-                    f"carries no password check: the bytes read may have been "
-                    f"decrypted with a wrong password."
-                ),
-                context=EncryptedVerificationContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    check="no_password_check",
-                    reason=reason,
-                ),
-                member=member,
-                logger=integrity_logger,
-            )
-
-        return UnverifiedPasswordReadWatch(
-            stream, size=_member_stream_size(member), on_unverified=report
+        return self._watch_unverified_read(
+            stream,
+            member,
+            size=_member_stream_size(member),
+            check="no_password_check",
+            format_label="RAR",
+            digest="checksum",
+            why="it carries no password check",
         )
 
     def _unar_password(

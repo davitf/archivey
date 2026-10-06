@@ -538,7 +538,6 @@ def parse_rar_archive(
         password=password,
         kdf_cache=kdf_cache if kdf_cache is not None else RarKdfCache(),
         volume_index=0,
-        allow_continuation=False,
         use_qo=use_qo,
         max_members=max_members,
         name_encoding=name_encoding,
@@ -583,21 +582,12 @@ def parse_rar_volumes(
             password=password,
             kdf_cache=kdf_cache,
             volume_index=index,
-            allow_continuation=index > 0,
             use_qo=use_qo,
             max_members=max_members,
             name_encoding=name_encoding,
             password_proven=password_proven,
         )
         password_proven = part.password_proven
-        # Reject sets that do not start at volume 1.
-        if index == 0 and (
-            (part.members and part.members[0].split_before)
-            or any(m.split_before and m.volume_index == 0 for m in part.members)
-        ):
-            raise UnsupportedFeatureError(
-                "Need first volume of multi-volume RAR archive"
-            )
 
         for member in part.members:
             member.header_offset += base_offset
@@ -641,10 +631,7 @@ def parse_rar_volumes(
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
             for member in part.members:
-                if member.split_before and merged.members:
-                    _merge_split_member(merged.members[-1], member)
-                else:
-                    _append_member(merged.members, member, max_members=max_members)
+                _emit_file_member(merged.members, member, max_members=max_members)
 
         # Size of this volume for absolute offset adjustment.
         pos = volume.tell()
@@ -652,16 +639,10 @@ def parse_rar_volumes(
         volume.seek(pos)
         base_offset += end
 
-        if part.needs_next_volume:
-            if index + 1 >= len(volumes):
-                raise TruncatedError(
-                    "Incomplete RAR multi-volume set: end of archive expects another volume"
-                )
-            continue
-
-        # Archive is complete; ignore trailing unused volume paths if any were listed.
-        merged.needs_next_volume = False
-        return merged
+        merged.needs_next_volume = part.needs_next_volume
+        if not part.needs_next_volume:
+            # Archive is complete; ignore trailing unused volume paths if any were listed.
+            break
 
     assert merged is not None
     if merged.needs_next_volume:
@@ -721,7 +702,6 @@ def _parse_rar_volume(
     password: str | bytes | None,
     kdf_cache: RarKdfCache,
     volume_index: int,
-    allow_continuation: bool,
     use_qo: bool = True,
     max_members: int | None,
     name_encoding: str | None = None,
@@ -733,9 +713,8 @@ def _parse_rar_volume(
     ``parse_rar_volumes`` calls it once per volume and merges split members.
     ``volume_index`` is the 0-based position in that set, not a RAR format
     version: RAR3-on-disk is ``archive.version == 4``, RAR5 is ``5``.
-    ``allow_continuation`` is False on the first volume so a ``split_before``
-    member is refused there ("Need first volume") rather than listed as a
-    fragment.
+    A ``split_before`` member on the first volume is refused ("Need first
+    volume") rather than listed as a fragment.
     ``password_proven`` carries an earlier RAR 1.5-4 volume's proof of the header
     password into this volume's walk (:attr:`RarArchive.password_proven`).
     """
@@ -763,12 +742,11 @@ def _parse_rar_volume(
             name_encoding=name_encoding,
             password_proven=password_proven,
         )
-    if (
-        not allow_continuation
-        and archive.members
-        and archive.members[0].split_before
-        and volume_index == 0
-    ):
+    # RAR5 normally refuses a later volume earlier, from MAIN's volume number;
+    # this check covers RAR 1.5-4, which records none, and a RAR5 MAIN without one.
+    # The emit rule appends a split_before member only to an empty list, so
+    # members[0] is the only place a continuation can show on volume 1.
+    if volume_index == 0 and archive.members and archive.members[0].split_before:
         raise UnsupportedFeatureError("Need first volume of multi-volume RAR archive")
     return archive
 
@@ -1949,15 +1927,7 @@ def _parse_rar3(
                 # File-version history rows (FILE_VERSION) are kept as members.
                 if flags & _RAR3_FILE_COMMENT:
                     member.comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
-                if member.split_before:
-                    if members:
-                        _merge_split_member(members[-1], member)
-                    else:
-                        # Continuation without a prior part in this volume.
-                        _append_member(members, member, max_members=max_members)
-                else:
-                    _append_member(members, member, max_members=max_members)
-                if member.split_after:
+                if _emit_file_member(members, member, max_members=max_members):
                     needs_next_volume = True
             elif (
                 block_type == _RAR3_SUB
@@ -2533,35 +2503,21 @@ def _try_list_via_rar5_qo(
         return None
 
 
-def _adopt_rar5_file_members(
-    members: list[RarMemberInfo],
-    incoming: list[RarMemberInfo],
-    *,
-    max_members: int | None,
-) -> bool:
-    """Append FILE members with the same split-merge as the header walk.
-
-    Returns whether any member has ``split_after`` (volume continuation).
-    """
-    needs_next = False
-    for member in incoming:
-        if _emit_rar5_file_member(members, member, max_members=max_members):
-            needs_next = True
-    return needs_next
-
-
-def _emit_rar5_file_member(
+def _emit_file_member(
     members: list[RarMemberInfo],
     member: RarMemberInfo,
     *,
     max_members: int | None,
 ) -> bool:
-    """Split-merge one FILE into ``members``. Returns ``split_after``."""
-    if member.split_before:
-        if members:
-            _merge_split_member(members[-1], member)
-        else:
-            _append_member(members, member, max_members=max_members)
+    """Merge a ``split_before`` FILE into the previous member, else append it.
+
+    Both header walks, the QO run and the cross-volume merge use this one rule. A
+    continuation is appended only when ``members`` is empty: in a header walk that is
+    the first member of a volume, which :func:`_parse_rar_volume` refuses on volume 1.
+    Returns ``split_after``.
+    """
+    if member.split_before and members:
+        _merge_split_member(members[-1], member)
     else:
         _append_member(members, member, max_members=max_members)
     return member.split_after
@@ -2599,7 +2555,10 @@ def _emit_and_skip_qo_run(
         if nxt <= pos:
             return None
         pos = nxt
-    needs_next = _adopt_rar5_file_members(members, run, max_members=max_members)
+    needs_next = False
+    for member in run:
+        if _emit_file_member(members, member, max_members=max_members):
+            needs_next = True
     seen_file_offsets.update(m.header_offset for m in run)
     _seek_to(source, pos)
     return needs_next
@@ -2796,7 +2755,7 @@ def _parse_rar5(
                 # QO copies are emitted in `_emit_and_skip_qo_run` before this
                 # read; this branch is holes, FILE after QO, and the no-QO walk.
                 if member.header_offset not in seen_file_offsets:
-                    if _emit_rar5_file_member(members, member, max_members=max_members):
+                    if _emit_file_member(members, member, max_members=max_members):
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE:

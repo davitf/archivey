@@ -542,14 +542,8 @@ class _RunState:
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
     # Hardlinks whose source was not on disk yet, for the second pass.
     orphans: list[_Orphan] = field(default_factory=list)
-    # A streaming pass's superseded copies, left in place while the later copy of the
-    # same name is handled so that copy can replace one atomically: path -> index of
-    # the superseded result. Only for the length of one member; see
-    # ``_supersede_written_copy``.
-    stale: dict[Path, int] = field(default_factory=dict)
-    # Superseded copies the filesystem refused to remove, by archive name. The next
-    # member of that name parks them in ``stale`` again, so it can still replace
-    # the run's own leftover instead of meeting it as a pre-existing entry.
+    # Superseded copies the filesystem refused to remove, by archive name, as in
+    # ``_MemberState.parked``: the next member of that name parks them again.
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
     # Directories ``_makedirs`` created this run, as parents of what it wrote.
     created_dirs: set[Path] = field(default_factory=set)
@@ -583,7 +577,7 @@ class _RunState:
 
 @dataclass
 class _MemberState:
-    """What the member being handled publishes from deep in its write path.
+    """What the member being handled shares with its write path, in both directions.
 
     ``_run_pass`` builds a new one per member, and one for the orphan second pass,
     so nothing carries over.
@@ -610,6 +604,10 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
+    # A streaming pass's earlier copies of this member's name, left in place while it
+    # is handled so it can replace one atomically: path -> index of the superseded
+    # result. See ``_park_earlier_copies``.
+    parked: dict[Path, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -1022,7 +1020,7 @@ class ExtractionCoordinator:
         # be written (or tried). Random access stamps last-entry-wins before the pass, so
         # a shadowed copy reaches the SUPERSEDED branch below and is never recorded here.
         # A streaming pass learns of the later copy only when it arrives; see
-        # ``_supersede_written_copy``.
+        # ``_park_earlier_copies``.
         current_by_name: dict[str, int] = {}
 
         copies = FileCopyPass(keep_source=self._keep_copy_source)
@@ -1043,21 +1041,10 @@ class ExtractionCoordinator:
             current = self._current = _MemberState()
             link_error: ArchiveyError | None = None
             try:
-                for held, held_index in state.unremoved.pop(original.name, {}).items():
-                    # Unless another member has since replaced it under its own claim.
-                    key = self._claimed_key(held)
-                    claim = state.collision_map.get(key)
-                    if (
-                        claim is not None
-                        and claim.path == held
-                        and claim.result_index == held_index
-                    ):
-                        state.stale[held] = held_index
-                        del state.collision_map[key]
-                earlier = current_by_name.get(original.name)
-                if earlier is not None:
-                    self._supersede_written_copy(earlier)
-                    del current_by_name[original.name]
+                self._park_earlier_copies(
+                    original.name, current_by_name.get(original.name)
+                )
+                current_by_name.pop(original.name, None)
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
                 # even if the filter returns the member.
@@ -1132,8 +1119,8 @@ class ExtractionCoordinator:
                 )
             finally:
                 self._close(stream)
-                if state.stale:
-                    self._drop_stale_copies(original)
+                if current.parked:
+                    self._drop_parked_copies(original.name, recorded_index)
                 link_error = self._recheck_links()
             if link_error is not None:
                 raise link_error
@@ -1169,27 +1156,41 @@ class ExtractionCoordinator:
         if listing_damage:
             raise listing_damage[0]
 
+    def _park_earlier_copies(self, name: str, earlier: int | None) -> None:
+        """Park every earlier non-directory copy of ``name`` still on disk for the
+        member of that name now being handled (streaming only): result ``earlier``,
+        taken back now, and any an earlier take-back could not remove, unless another
+        member has since replaced it under its own claim. A superseded directory is
+        never parked; see ``_supersede_written_copy``.
+
+        Random access never writes a shadowed copy; a streaming pass finds out only
+        when the later copy arrives. A parked path counts as free (``_occupied``,
+        ``_prepare_destination``), so the member replaces it atomically under any
+        overwrite policy, and ``_drop_parked_copies`` removes the rest afterwards.
+        """
+        state = self._state
+        parked = self._current.parked
+        for path, index in state.unremoved.pop(name, {}).items():
+            claim = state.collision_map.get(self._claimed_key(path))
+            if claim is not None and claim.path == path and claim.result_index == index:
+                parked[path] = index
+                self._release_claim(path)
+        if earlier is not None:
+            self._supersede_written_copy(earlier)
+
     def _supersede_written_copy(self, index: int) -> None:
         """Take back an earlier copy of a name the archive holds again (streaming only).
 
-        Random access knows every duplicate before it writes anything, so the shadowed
-        copy is reported ``SUPERSEDED`` and never written. A streaming pass finds out
-        when the later copy arrives, after the earlier one was already handled. The
-        earlier result becomes ``SUPERSEDED`` here, before the later copy is filtered:
-        random access supersedes it whatever then happens to the later copy.
-
-        The earlier copy's file stays where it is while the later copy is handled, as
-        ``stale``: the destination checks treat that path as free, so the later
-        copy replaces it atomically, under any overwrite policy. If the later copy does
-        not land there, ``_drop_stale_copies`` removes it once the member is done. Its
-        claim, its place in the hardlink source lists and its bomb-limit counts are
-        released now. A hardlink already made to it is its own directory entry and
-        stays, and its bytes stay counted against the byte cap while it holds them. A
-        directory is removed now if it is empty; one that other members were written
-        into stays, as their parent, as it would in random access. An orphaned hardlink
-        waiting on the second pass is dropped with the result it would fill. An error
-        recorded on the earlier result is dropped with it: random access never tried
-        that copy.
+        The earlier result becomes ``SUPERSEDED`` here, before the later copy is
+        filtered: random access supersedes it whatever then happens to the later copy.
+        Its file is parked (see ``_park_earlier_copies``). Its claim, its place in the
+        hardlink source lists and its bomb-limit counts are released now. A hardlink
+        already made to it is its own directory entry and stays, and its bytes stay
+        counted against the byte cap while it holds them. A directory is removed now if
+        it is empty; one that other members were written into stays, as their parent,
+        as it would in random access. An orphaned hardlink waiting on the second pass
+        is dropped with the result it would fill. An error recorded on the earlier
+        result is dropped with it: random access never tried that copy.
         """
         state = self._state
         prior = state.results[index]
@@ -1210,7 +1211,7 @@ class ExtractionCoordinator:
                     state.written_paths.discard(path)
             else:
                 state.written_paths.discard(path)
-                state.stale[path] = index
+                self._current.parked[path] = index
         if index in state.counted:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
@@ -1226,28 +1227,31 @@ class ExtractionCoordinator:
             ),
         )
 
-    def _drop_stale_copies(self, original: ArchiveMember) -> None:
-        """Remove each parked superseded copy unless the member just handled replaced it.
+    def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
+        """Remove each parked copy of ``name`` unless the member just handled, recorded
+        at ``result_index``, landed on it.
 
         A removal the filesystem refuses is logged, not raised: this runs in a
         ``finally``, where raising would replace the member's own error. The entry is
         then still the run's own, so it goes back into ``written_paths`` (an anti-item
         can still delete it) and into the collision map (a different name on the same
-        key still collides with it), and is held for the next member of the same name.
-        Its claim points at its ``SUPERSEDED`` result, which ``_mark_overwritten``
-        leaves as it is.
+        key still collides with it), and is held in ``unremoved`` for the next member
+        of the same name. Its claim points at its ``SUPERSEDED`` result, which
+        ``_mark_overwritten`` leaves as it is.
         """
         state = self._state
-        stale, state.stale = state.stale, {}
-        latest = state.results[-1] if state.results else None
+        parked, self._current.parked = self._current.parked, {}
+        latest = state.results[result_index] if result_index is not None else None
+        # Only a path the member wrote: an anti-item also reports EXTRACTED at its
+        # name, but writes nothing there.
         landed = (
             latest.path
             if latest is not None
-            and latest.member is original
             and latest.status is ExtractionStatus.EXTRACTED
+            and latest.path in state.written_paths
             else None
         )
-        for path, index in stale.items():
+        for path, index in parked.items():
             if path == landed:
                 continue
             if path.is_symlink():
@@ -1263,13 +1267,13 @@ class ExtractionCoordinator:
                 )
                 state.written_paths.add(path)
                 self._claim(path, index)
-                state.unremoved.setdefault(original.name, {})[path] = index
+                state.unremoved.setdefault(name, {})[path] = index
             else:
                 state.written_paths.discard(path)
 
     def _occupied(self, path: Path) -> bool:
-        """Whether ``path`` holds an entry, not counting a superseded copy in waiting."""
-        return path not in self._state.stale and os.path.lexists(path)
+        """Whether ``path`` holds an entry, not counting a parked superseded copy."""
+        return path not in self._current.parked and os.path.lexists(path)
 
     # --- selection / transform -----------------------------------------------------
 
@@ -2636,7 +2640,8 @@ class ExtractionCoordinator:
         """Revise result ``index`` to OVERWRITTEN, keeping where it had written."""
         clobbered = self._state.results[index]
         if clobbered.status is ExtractionStatus.SUPERSEDED:
-            # A superseded copy the filesystem would not remove: it keeps its status.
+            # A superseded copy still on disk (a file the filesystem would not remove, or
+            # a directory other members were written into): it keeps its status.
             return
         # The clobbered member was tallied as EXTRACTED when it completed, and is
         # no longer: ``_set_result`` moves the tally, or the final report would claim
@@ -2765,32 +2770,29 @@ class ExtractionCoordinator:
         # Replacing a symlink or a directory can move where an earlier link resolves;
         # the member's handler rechecks the links once the member is done.
         moves_links = stat.S_ISLNK(existing) or stat.S_ISDIR(existing)
-        if dest_path in self._state.stale:
-            # A superseded copy of this same name that this run wrote: the member
-            # replaces it under any policy, as random access would never have written it.
-            # Never a directory (see ``_supersede_written_copy``).
-            if moves_links:
-                self._note_link_change(dest_path)
-            if not atomic:
-                dest_path.unlink()
-            self._forget_source_path(dest_path)
-            return True
-
-        # A real directory being (re)created as a directory is fine under any policy.
-        if member.type == MemberType.DIRECTORY and stat.S_ISDIR(existing):
-            return True
-
-        if self._overwrite is OverwritePolicy.ERROR:
-            raise ExtractionError(
-                f"Destination already exists: {display_path(self._shown(dest_path))}",
-                member_name=member.name,
-            )
-        if self._overwrite is OverwritePolicy.SKIP:
-            return False
-        if (
-            self._overwrite is OverwritePolicy.REPLACE
-            or self._overwrite is OverwritePolicy.RENAME
-        ):
+        # A parked copy of this name (``_park_earlier_copies``) skips the policy: the
+        # member replaces it under any policy, as random access would never have
+        # written it.
+        parked = dest_path in self._current.parked
+        if not parked:
+            # A real directory recreated as a directory is fine under any policy.
+            if member.type == MemberType.DIRECTORY and stat.S_ISDIR(existing):
+                return True
+            if self._overwrite is OverwritePolicy.ERROR:
+                raise ExtractionError(
+                    "Destination already exists: "
+                    f"{display_path(self._shown(dest_path))}",
+                    member_name=member.name,
+                )
+            if self._overwrite is OverwritePolicy.SKIP:
+                return False
+            if (
+                self._overwrite is not OverwritePolicy.REPLACE
+                and self._overwrite is not OverwritePolicy.RENAME
+            ):
+                # What follows destroys the existing entry, so a policy nobody taught
+                # this chain must not inherit it: an unknown member stops here.
+                assert_never(self._overwrite)
             # REPLACE (RENAME members are pre-resolved to a free path, a directory
             # member too when a file or symlink holds its name, so they reach an
             # existing entry here only if it appeared after that check): never
@@ -2820,17 +2822,19 @@ class ExtractionCoordinator:
                 # this run's here, and OVERWRITTEN is a REPLACE outcome.
                 if self._overwrite is OverwritePolicy.REPLACE:
                     self._revise_removed_directory(dest_path)
-            else:
-                if moves_links:
-                    self._note_link_change(dest_path)
-                if not atomic:
-                    dest_path.unlink()
-                    self._current.removed_existing = True
-            self._forget_source_path(dest_path)
-            return True
-        # This arm destroys the existing entry, so a policy nobody taught this chain
-        # must not inherit it: an unknown member stops here.
-        assert_never(self._overwrite)
+                self._forget_source_path(dest_path)
+                return True
+        # Reached by a parked copy of this name (never a directory), and by REPLACE or
+        # RENAME over an existing file or symlink.
+        if moves_links:
+            self._note_link_change(dest_path)
+        if not atomic:
+            dest_path.unlink()
+            # A parked copy's result is already SUPERSEDED: nothing to revise.
+            if not parked:
+                self._current.removed_existing = True
+        self._forget_source_path(dest_path)
+        return True
 
     def _write_file_atomic(
         self, stream: BinaryIO | None, dest_path: Path, member: ArchiveMember

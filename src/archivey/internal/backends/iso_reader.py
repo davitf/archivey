@@ -74,7 +74,6 @@ from archivey.cost import (
 from archivey.diagnostics import (
     DiagnosticCode,
     MemberHeaderRecordContext,
-    MemberTimestampContext,
     NameEncodingContext,
     raw_name_to_base64,
 )
@@ -103,6 +102,7 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
 )
+from archivey.internal.timestamps import TimestampIssue
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -1541,23 +1541,15 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        # The message names the normalized name, so it is built here, not in
+        # ``_timestamps``.
         for field, source, value_repr in invalid_dates:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=(
-                    f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
-                ),
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field=field,
-                    source=source,
-                    value_repr=value_repr,
-                ),
-                member=member,
-                attach_to_member=True,
+            message = f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
+            issue = TimestampIssue(
+                field=field, source=source, value_repr=value_repr, message=message
             )
+            # ISO sends every diagnostic to the collector's default logger; so does this.
+            self._emit_timestamp_invalid(member, index, issue, log=None)
         if id(record) in self._joliet_named:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
