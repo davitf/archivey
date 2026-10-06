@@ -28,7 +28,6 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -151,7 +150,8 @@ from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
-    next_old_rar_volume_name,
+    next_rar_volume_name,
+    rar_volume_name,
 )
 from archivey.terminal import quoted
 from archivey.types import (
@@ -223,61 +223,9 @@ AUTO_CHOSE_UNAR_NOTE = (
 )
 
 
-def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
-    """File name of volume ``index`` (1-based) of a set written or linked to disk.
-
-    Used for a stream set copied for either program, and for the set linked into
-    ``unar``'s private directory (``RarReader._unar_archive_path``).
-
-    Old-style names run ``.rar``, ``.r00`` … ``.r99``, ``.s00`` … ``.z99`` and on
-    past ``z`` (``.{00``, ``.|00`` …), because unrar's next-volume rule just adds one
-    to the letter's character code; it reads a set of 1 500 volumes named that way.
-    It does not follow ``partN`` names for an old-style set, so those are never used
-    for one. ``unar`` stops after volume 901 whatever the names, and is refused for
-    a longer set (:data:`_UNAR_MAX_OLD_STYLE_VOLUMES`).
-    """
-    if not old_style:
-        return f"{stem}.part{index}.rar"
-    if index == 1:
-        return f"{stem}.rar"
-    number = index - 2
-    return f"{stem}.{chr(ord('r') + number // 100)}{number % 100:02d}"
-
-
 # unar 1.10 reads an old-style set as far as ``.z99`` and no further: ``lsar``
 # reports 901 volumes for a longer set, and the member is then short.
 _UNAR_MAX_OLD_STYLE_VOLUMES = 901
-
-
-_UNRAR_PART_NAME_RE = re.compile(
-    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.I
-)
-
-
-def _unrar_next_volume_name(name: str, *, old_numbering: bool) -> str | None:
-    """The name unrar tries for the volume after ``name``, or ``None`` if unsure.
-
-    A subset of unrar's ``NextVolumeName``: an ``.exe`` or ``.sfx`` extension
-    counts as ``.rar``; the old scheme goes ``.rar`` -> ``.r00`` -> ``.r01`` ...
-    ``.r99`` -> ``.s00``, and the new one increments ``N`` in ``name.partN.rar``.
-    Any other shape is ``None``, and the caller then stages the set rather than
-    predict unrar's walk. When the predicted name is missing, unrar retries once
-    with the old-scheme name of the current volume; :func:`_unrar_finds_exactly`
-    accounts for that retry.
-    """
-    stem, dot, ext = name.rpartition(".")
-    if not dot:
-        name = f"{name}.rar"
-    elif ext.lower() in ("", "exe", "sfx"):
-        name = f"{stem}.rar"
-    if not old_numbering:
-        match = _UNRAR_PART_NAME_RE.fullmatch(name)
-        if match is None:
-            return None
-        digits = match["num"]
-        number = str(int(digits) + 1).zfill(len(digits))
-        return f"{match['head']}{number}{match['ext']}"
-    return next_old_rar_volume_name(name)
 
 
 def _unrar_finds_exactly(
@@ -303,12 +251,12 @@ def _unrar_finds_exactly(
     try:
         current = paths[0]
         for index in range(1, len(paths) + 1):
-            name = _unrar_next_volume_name(current.name, old_numbering=old_numbering)
+            name = next_rar_volume_name(current.name, old_numbering=old_numbering)
             if name is None:
                 return False
             candidate = current.parent / name
             if index == len(paths):
-                retry = _unrar_next_volume_name(current.name, old_numbering=True)
+                retry = next_rar_volume_name(current.name, old_numbering=True)
                 return not os.path.lexists(candidate) and (
                     retry is not None and not os.path.lexists(current.parent / retry)
                 )
@@ -1355,7 +1303,7 @@ class RarReader(BaseArchiveReader):
         paths: list[Path] = []
         try:
             for index, item in enumerate(items, start=1):
-                dest = temp_dir / _stream_volume_name(
+                dest = temp_dir / rar_volume_name(
                     stem, index, old_style=self._archive.old_volume_naming
                 )
                 # A file volume goes through the budget too, not ``shutil.copy2``:
@@ -1395,7 +1343,7 @@ class RarReader(BaseArchiveReader):
         self._temp_dir = temp_dir
         names = [
             temp_dir
-            / _stream_volume_name(
+            / rar_volume_name(
                 "archive", index, old_style=self._archive.old_volume_naming
             )
             for index in range(1, len(self._volume_paths) + 1)
@@ -1852,7 +1800,7 @@ class RarReader(BaseArchiveReader):
         ``report2023.rar``, it reads the pair as one set and returns the neighbour's
         data. So ``unar`` never gets the caller's path. It gets a private directory
         holding exactly the volumes archivey found, under the names
-        :func:`_stream_volume_name` gives them; a single archive is ``archive.rar``
+        :func:`rar_volume_name` gives them; a single archive is ``archive.rar``
         there, with no name another file could continue.
 
         Each volume is linked, not copied (:func:`_link_file`). Where the system
@@ -1939,7 +1887,7 @@ class RarReader(BaseArchiveReader):
         else:
             old_style = self._archive.old_volume_naming
             names = [
-                _stream_volume_name("archive", index, old_style=old_style)
+                rar_volume_name("archive", index, old_style=old_style)
                 for index in range(1, len(volumes) + 1)
             ]
         unlinked: list[tuple[Path, Path]] = []

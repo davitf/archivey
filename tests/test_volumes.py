@@ -36,7 +36,7 @@ from archivey.internal.volumes import (
     discover_volume_siblings,
     first_volume_for_stub,
     join_volumes,
-    next_old_rar_volume_name,
+    next_rar_volume_name,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
@@ -295,7 +295,7 @@ def test_old_scheme_sfx_exe_opens_rnn_set(tmp_path: Path) -> None:
 def _old_scheme_names(first: str, count: int) -> list[str]:
     names = [first]
     while len(names) < count:
-        following = next_old_rar_volume_name(names[-1])
+        following = next_rar_volume_name(names[-1], old_numbering=True)
         assert following is not None
         names.append(following)
     return names
@@ -306,10 +306,10 @@ def test_old_scheme_volume_names_run_past_r99_and_z99() -> None:
     assert names[:3] == ["a.rar", "a.r00", "a.r01"]
     assert names[100:103] == ["a.r99", "a.s00", "a.s01"]
     assert names[900:903] == ["a.z99", "a.{00", "a.{01"]
-    assert next_old_rar_volume_name("a.exe") == "a.r00"
-    assert next_old_rar_volume_name("a.sfx") == "a.r00"
-    assert next_old_rar_volume_name("A.RAR") == "A.R00"
-    assert next_old_rar_volume_name("a.part1.rar.bak") is None
+    assert next_rar_volume_name("a.exe", old_numbering=True) == "a.r00"
+    assert next_rar_volume_name("a.sfx", old_numbering=True) == "a.r00"
+    assert next_rar_volume_name("A.RAR", old_numbering=True) == "A.R00"
+    assert next_rar_volume_name("a.part1.rar.bak", old_numbering=True) is None
 
 
 @pytest.mark.parametrize("first", ["archive.rar", "archive.exe"])
@@ -446,7 +446,7 @@ def _write_old_scheme_rar4_set(
         )
         (directory / name).write_bytes(volume)
         paths.append(directory / name)
-        following = next_old_rar_volume_name(name)
+        following = next_rar_volume_name(name, old_numbering=True)
         assert following is not None
         name = following
     return paths

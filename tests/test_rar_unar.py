@@ -45,6 +45,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
+from archivey.internal.volumes import next_rar_volume_name, rar_volume_name
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_unar_probe import GOOD_UNAR_EXTRACT
@@ -990,7 +991,7 @@ def test_stream_volume_set_reads_with_unar(names: tuple[str, ...]) -> None:
 def test_stream_volume_names_follow_the_set_scheme(
     index: int, old_style: bool, expected: str
 ) -> None:
-    assert rar_reader._stream_volume_name("a", index, old_style=old_style) == expected
+    assert rar_volume_name("a", index, old_style=old_style) == expected
 
 
 @pytest.mark.parametrize("old_style", [False, True])
@@ -999,10 +1000,10 @@ def test_stream_volume_names_are_the_names_unrar_walks(old_style: bool) -> None:
     staged set of any length reads to its end (unrar stopped at 901 old-style
     volumes when the 902nd was named ``partN``)."""
     for index in range(1, 1500):
-        current = rar_reader._stream_volume_name("a", index, old_style=old_style)
-        assert rar_reader._unrar_next_volume_name(
+        current = rar_volume_name("a", index, old_style=old_style)
+        assert next_rar_volume_name(
             current, old_numbering=old_style
-        ) == rar_reader._stream_volume_name("a", index + 1, old_style=old_style)
+        ) == rar_volume_name("a", index + 1, old_style=old_style)
 
 
 def test_unrar_name_walk_on_an_unencodable_next_name_is_not_found(
