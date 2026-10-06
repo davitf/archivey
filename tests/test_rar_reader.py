@@ -1735,6 +1735,7 @@ def _rar3_file_block(
     extract_version: int = 20,
     trailing_subblock: bytes = b"",
     attributes: int = 0o100644,
+    crc32: int = 0,
 ) -> bytes:
     """Build one RAR3 FILE block with a valid 16-bit header CRC.
 
@@ -1752,7 +1753,7 @@ def _rar3_file_block(
         pack_lo,
         unp_lo,
         3,  # Unix
-        0,  # crc32
+        crc32,
         0,  # dos time
         extract_version,
         method,
