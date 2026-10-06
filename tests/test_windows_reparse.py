@@ -980,35 +980,37 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "reason", "in_archive"),
+    ("fields", "value", "reason", "in_archive"),
     [
         pytest.param(
-            "is_encrypted", True, "target_data_encrypted", True, id="encrypted"
+            ("is_encrypted",), True, "target_data_encrypted", True, id="encrypted"
         ),
         pytest.param(
-            "split_after", True, "target_data_split_across_volumes", True, id="split"
+            ("split_after",), True, "target_data_split_across_volumes", True, id="split"
         ),
         # The parts of a target split across volumes are merged into one member
         # before this branch sees it, so once the final part is in, neither split
         # flag is left set: only ``spanned_volumes`` says its data is not in one
         # place. This case only checks the reason; the next test does the read.
         pytest.param(
-            "spanned_volumes",
+            ("spanned_volumes",),
             True,
             "target_data_split_across_volumes",
             True,
             id="spanned",
         ),
         pytest.param(
-            "compress_type", 0x33, "target_data_compressed", True, id="compressed"
+            ("compress_type",), 0x33, "target_data_compressed", True, id="compressed"
         ),
         # Both sizes: only one of them zero is a damaged header, not an empty target.
-        pytest.param("file_size compress_size", 0, "no_target_data", False, id="empty"),
+        pytest.param(
+            ("file_size", "compress_size"), 0, "no_target_data", False, id="empty"
+        ),
     ],
 )
 def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     monkeypatch: pytest.MonkeyPatch,
-    field: str,
+    fields: tuple[str, ...],
     value: object,
     reason: str,
     in_archive: bool,
@@ -1032,7 +1034,7 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)  # type: ignore[arg-type]
         if self.is_symlink:
-            for name in field.split():
+            for name in fields:
                 setattr(self, name, value)
 
     monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)

@@ -1216,6 +1216,11 @@ member (`LinkTargetNotFoundError`) rather than report `LINK_TARGET_UNAVAILABLE`.
 `SYMLINK_TARGET_UNAVAILABLE` is in `ARCHIVE_INTEGRITY_CODES`, so
 `DiagnosticPolicy.strict()` refuses the archive.
 
+For a RAR3/4 stored target, a declared size that differs from the packed size is damage
+rather than an oversized target: it SHALL be refused before the cap is consulted, and is
+reported as the damaged-target requirement says (`reason="target_data_damaged"`), not as
+`target_too_long`.
+
 A Windows reparse buffer stored as member data SHALL be read as far as its own header
 declares: the 8-byte header, then the payload length its 16-bit `ReparseDataLength`
 states (plus one byte, so a member that is exactly one buffer reaches end of stream and
@@ -1383,9 +1388,9 @@ When a backend reads a symlink's target from the member's data and that read rai
 data past the declared size, data the file cuts short), link finalization SHALL NOT
 raise it. ZIP and 7z verify that read like any member read. RAR3/4 reads the target
 bytes straight out of the archive, after refusing a header whose declared size differs
-from its packed size, and holds them to the member's data CRC32. The link SHALL stay listed with its type and
-`link_target` unset, the other links SHALL still be resolved, and
-`SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with `reason="target_data_damaged"` and a
+from its packed size, and holds them to the member's data CRC32. The link SHALL stay
+listed with its type and `link_target` unset, the other links SHALL still be resolved,
+and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with `reason="target_data_damaged"` and a
 message naming the fault. The member SHALL NOT be memoized as resolved: opening the link,
 following it, or extracting it SHALL read the target again and raise the fault itself,
 and extraction SHALL record that link as a per-member failure. `SYMLINK_TARGET_UNAVAILABLE`
