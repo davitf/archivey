@@ -60,8 +60,10 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
     spelling, so it is the one to prefer if one ever appears.
     """
     return spelling_table(
-        ((name, fmt) for fmt, name in _FORMAT_NAMES.items()),
-        ((ext, fmt) for fmt in _FORMAT_NAMES if (ext := fmt.file_extension())),
+        fallback=((name, fmt) for fmt, name in _FORMAT_NAMES.items()),
+        preferred=(
+            (fmt.file_extension(), fmt) for fmt in _FORMAT_NAMES if fmt.file_extension()
+        ),
     )
 
 
@@ -171,6 +173,7 @@ def coerce_stream_or_archive_format(
         fmt = _archive_format_spellings().get(spelling)
         if fmt is not None:
             return fmt
+        # The same cached table ``coerce_enum`` reads.
         stream = _lookup(StreamFormat).get(spelling)
         if stream is not None:
             return stream

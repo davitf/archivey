@@ -73,14 +73,14 @@ def normalize_spelling(text: str) -> str:
 
 
 def spelling_table(
-    names: Iterable[tuple[str, T]], preferred: Iterable[tuple[str, T]]
+    *, fallback: Iterable[tuple[str, T]], preferred: Iterable[tuple[str, T]]
 ) -> dict[str, T]:
-    """Normalized spelling -> member; a ``preferred`` spelling wins a tie with a name."""
+    """Normalized spelling -> value; ``preferred`` wins a tie, then the first one does."""
     table: dict[str, T] = {}
-    for spelling, member in names:
-        table.setdefault(normalize_spelling(spelling), member)
-    for spelling, member in preferred:
-        table[normalize_spelling(spelling)] = member
+    for spelling, value in fallback:
+        table.setdefault(normalize_spelling(spelling), value)
+    for spelling, value in preferred:
+        table[normalize_spelling(spelling)] = value
     return table
 
 
@@ -94,8 +94,8 @@ def _lookup(enum_cls: type[E]) -> dict[str, E]:
     leaving the precedence to be discovered.
     """
     return spelling_table(
-        ((m.name, m) for m in enum_cls),
-        ((m.value, m) for m in enum_cls if isinstance(m.value, str)),
+        fallback=((m.name, m) for m in enum_cls),
+        preferred=((m.value, m) for m in enum_cls if isinstance(m.value, str)),
     )
 
 
