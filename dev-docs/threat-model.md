@@ -302,7 +302,11 @@ archive declares.
   plus each Rock Ridge continuation area against `max_metadata_bytes`. A continuation
   area is weighed every time it is parsed: `pycdlib` accepts any number of records whose
   `CE` names one area and parses it again for each, which made a 174 KB image peak at
-  about 10.7 MB before.
+  about 10.7 MB before. A third hook, on `PyCdlib._parse_path_table`, weighs each path
+  table's declared size (little- and big-endian, both parsed) with its tree before
+  `pycdlib` reads it, and refuses a table that runs past the image as
+  `CorruptionError` whatever the limits: `pycdlib` parses a table into one object per
+  8-byte record, about 29 times its size, and a 16 MiB table peaked at 471 MiB before.
 - TAR has no member table, so the caps bind the header walk: `tar_reader.py` pulls
   headers in batches that stop one header past what either cap has left, PAX keywords
   and values included. `tarfile` reads a PAX extended or global header, or a GNU long
@@ -376,7 +380,8 @@ record measured, so roughly 1 GiB at the default `max_members`. The UDF descript
 `::test_listing_limits_count_directory_record_bytes_at_open`;
 `tests/test_audit2_iso_dir_detect.py::test_iso_listing_limits_bound_the_memory_spent_at_open`,
 `::test_iso_shared_continuation_area_does_not_multiply_memory_at_open`,
-`::test_iso_max_metadata_bytes_counts_a_shared_continuation_each_time`.
+`::test_iso_max_metadata_bytes_counts_a_shared_continuation_each_time`;
+`tests/test_iso_metadata_bounds.py`.
 
 #### Allocations sized by a header field
 
@@ -396,7 +401,13 @@ An fsspec `size` attribute is a hint, not a fact, and is stepped. A short read t
 fails in the library and is translated to `CorruptionError`. The ISO reader passes every
 source to `open_fp` as an `ArchiveSource`, a path included, so there is always something
 of archivey's under pycdlib; `open_archive` closes the source if the reader never
-finishes constructing. This bounds one read; how many records and continuation areas
+finishes constructing. Two sizes are checked before the read rather than left to the
+source, because the source bounds them only by the image: a Rock Ridge `CE` entry's
+area must end inside its logical block, as pycdlib itself requires after its read and
+the Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB image is
+refused without the read (545 MiB peak before); and a path table must end inside the
+image ([Listing](#listing) weighs it against `max_metadata_bytes` too). This bounds one
+read; how many records and continuation areas
 `pycdlib` builds from those reads is the listing budget's ([Listing](#listing)).
 
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
@@ -405,7 +416,9 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 **Tests.** `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`;
 `tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
 `::test_a_path_source_refuses_the_same_image`,
-`::test_a_refused_path_source_does_not_hold_its_handle`.
+`::test_a_refused_path_source_does_not_hold_its_handle`;
+`tests/test_iso_metadata_bounds.py::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
+`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`.
 
 #### Decoder memory
 

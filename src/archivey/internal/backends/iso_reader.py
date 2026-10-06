@@ -29,8 +29,11 @@ is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever
 ``dev-docs/formats/iso.md`` §4. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
 (:func:`_install_pycdlib_system_use_filter`) and ``pycdlib.dr.DirectoryRecord.parse``
 (:func:`_install_pycdlib_record_counter`, which weighs what pycdlib parses against
-``ListingLimits``), but both wrappers act only inside this module's own ``open_fp``
-call, so other users of pycdlib see no change.
+``ListingLimits`` and refuses a Rock Ridge ``CE`` area past its block before pycdlib
+reads it), and ``pycdlib.pycdlib.PyCdlib._parse_path_table``
+(:func:`_install_pycdlib_path_table_bound`, which bounds a path table by the image and
+the same budget before pycdlib reads it), but every wrapper acts only inside this
+module's own ``open_fp`` call, so other users of pycdlib see no change.
 """
 
 from __future__ import annotations
@@ -60,7 +63,9 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
     from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
     from pycdlib.dr import DirectoryRecord
+    from pycdlib.headervd import PrimaryOrSupplementaryVD
     from pycdlib.inode import Inode
+    from pycdlib.pycdlib import PyCdlib
     from pycdlib.pycdlibio import PyCdlibIO
     from pycdlib.rockridge import RockRidge
 
@@ -422,8 +427,9 @@ class _ParseBudget:
     record but ``.`` and ``..`` counts as a member, including the extra records of a
     multi-extent file and the ``rr_moved`` scaffolding the listing hides. The bytes are
     the directory records as stored, System Use areas included, plus each Rock Ridge
-    continuation area every time pycdlib parses it, which is more than the text a
-    listing keeps.
+    continuation area every time pycdlib parses it, plus the tree's little- and
+    big-endian path tables, which pycdlib reads whole and parses into one object per
+    record (at least 8 bytes each). That is more than the text a listing keeps.
     """
 
     def __init__(self, limits: ListingLimits) -> None:
@@ -453,13 +459,22 @@ class _ParseBudget:
     def add_continuation(self, nbytes: int) -> None:
         self._add_bytes(nbytes)
 
+    def add_path_table(self, vd: object, nbytes: int) -> None:
+        # Called before pycdlib reads the table, so an over-budget size is refused
+        # before the read and the parse, not after.
+        self._tree = id(vd)
+        self._add_bytes(nbytes)
+
     def _add_bytes(self, nbytes: int) -> None:
         total = self._bytes.get(self._tree, 0) + nbytes
         self._bytes[self._tree] = total
         check_metadata_budget(
             self._limits,
             total,
-            detail=f"ISO directory tree has {total} bytes of directory records",
+            detail=(
+                f"ISO directory tree has {total} bytes of path tables and "
+                "directory records"
+            ),
         )
 
 
@@ -497,6 +512,8 @@ def _install_pycdlib_record_counter() -> None:
         if budget is not None:
             budget.add_record(vd, len(record))
         result = original(self, vd, record, parent, xa)
+        if _SYSTEM_USE_NOTES.get() is not None:
+            _check_continuation_entry(self, vd)
         if budget is not None and not (self.is_dot() or self.is_dotdot()):
             budget.add_member()
         return result
@@ -505,7 +522,96 @@ def _install_pycdlib_record_counter() -> None:
     _PYCDLIB_RECORD_COUNTER_INSTALLED = True
 
 
+def _check_continuation_entry(record: DirectoryRecord, vd: object) -> None:
+    """Refuse a Rock Ridge ``CE`` entry whose area runs past its block, before the read.
+
+    pycdlib reads a record's continuation area right after parsing the record, for
+    the length the ``CE`` entry declares (up to 4 GiB), and only then refuses an area
+    that does not fit in one logical block (``track_rr_ce_entry``). The Linux kernel
+    refuses the same entry (``rock_continue``). Raising here, between the parse and
+    the read, gives the same refusal without the read.
+    """
+    rr = record.rock_ridge
+    ce = None if rr is None else rr.dr_entries.ce_record
+    if ce is None:
+        return
+    block_size = cast("PrimaryOrSupplementaryVD", vd).logical_block_size()
+    if ce.offset_cont_area + ce.len_cont_area > block_size:
+        raise CorruptionError(
+            "Error reading ISO image: Rock Ridge continuation area of "
+            f"{ce.len_cont_area} bytes at offset {ce.offset_cont_area} of block "
+            f"{ce.bl_cont_area} runs past the {block_size}-byte block"
+        )
+
+
 _install_pycdlib_record_counter()
+
+_PYCDLIB_PATH_TABLE_BOUND_INSTALLED = False
+
+
+def _install_pycdlib_path_table_bound() -> None:
+    """Bound each path table before pycdlib reads and parses it, during our opens.
+
+    pycdlib reads the size a volume descriptor declares in one read and parses it
+    into one ``PathTableRecord`` per record, at least 8 bytes each, about 29 times
+    the size in memory; it does this twice per tree (little- and big-endian), before
+    it walks any directory. The source bounds the read to the image, not the parse.
+    A table that runs past the end of the image is ``CorruptionError``, as pycdlib's
+    own parse of the short read would have it, and the size is weighed against
+    ``max_metadata_bytes`` with the tree it indexes. Installed once and transparent
+    outside ``IsoReader``'s ``open_fp``, like the hooks above.
+    """
+    global _PYCDLIB_PATH_TABLE_BOUND_INSTALLED
+    if pycdlib is None or _PYCDLIB_PATH_TABLE_BOUND_INSTALLED:
+        return
+    import pycdlib.pycdlib as pcd_module
+
+    original = pcd_module.PyCdlib._parse_path_table
+
+    def parse_path_table(self: PyCdlib, ptr_size: int, extent: int) -> object:
+        if _SYSTEM_USE_NOTES.get() is not None:
+            _check_path_table(self, ptr_size, extent)
+        return original(self, ptr_size, extent)
+
+    setattr(pcd_module.PyCdlib, "_parse_path_table", parse_path_table)
+    _PYCDLIB_PATH_TABLE_BOUND_INSTALLED = True
+
+
+def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
+    """Refuse a path table past the image or over the parse budget; see above."""
+    cdfp = cast("BinaryIO", getattr(iso, "_cdfp"))
+    block_size = cast(int, getattr(iso, "logical_block_size"))
+    position = cdfp.tell()
+    image_length = cdfp.seek(0, io.SEEK_END)
+    cdfp.seek(position)
+    start = extent * block_size
+    if start + ptr_size > image_length:
+        raise CorruptionError(
+            f"Error reading ISO image: the path table at block {extent} declares "
+            f"{ptr_size} bytes and the image holds {max(0, image_length - start)} "
+            "from there"
+        )
+    budget = _PARSE_BUDGET.get()
+    if budget is None:
+        return
+    # The descriptor whose table this is; pycdlib parses the PVD's, then Joliet's.
+    descriptors = [getattr(iso, "pvd"), *cast("list[object]", getattr(iso, "svds"))]
+    vd = next(
+        (
+            vd
+            for vd in descriptors
+            if extent
+            in (
+                getattr(vd, "path_table_location_le", None),
+                getattr(vd, "path_table_location_be", None),
+            )
+        ),
+        descriptors[0],
+    )
+    budget.add_path_table(vd, ptr_size)
+
+
+_install_pycdlib_path_table_bound()
 
 # Exceptions that mean "this ISO structure is bad", translated to CorruptionError. A
 # genuine OSError from the underlying handle (file not found, permission, physical media

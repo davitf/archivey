@@ -316,8 +316,8 @@ class ListingLimits:
     ``stream_members`` / ``streaming=True`` / forward-only iteration do not
     enforce these caps. 7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its
     comments against ``max_metadata_bytes`` (the declared sizes of compressed RAR
-    1.5/2.x comments before decoding them), and ISO the directory records ``pycdlib``
-    parses, so ``open_archive`` raises and none is an escape hatch.
+    1.5/2.x comments before decoding them), and ISO the directory records and path
+    tables ``pycdlib`` parses, so ``open_archive`` raises and none is an escape hatch.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than the whole ``max_metadata_bytes``, before reading it.
     """
