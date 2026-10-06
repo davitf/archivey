@@ -1304,7 +1304,7 @@ class RarReader(BaseArchiveReader):
         try:
             for index, item in enumerate(items, start=1):
                 dest = temp_dir / rar_volume_name(
-                    stem, index, old_style=self._archive.old_volume_naming
+                    stem, index, old_numbering=self._archive.old_volume_naming
                 )
                 # A file volume goes through the budget too, not ``shutil.copy2``:
                 # its size was read when the set was joined, and a file that grew
@@ -1344,7 +1344,7 @@ class RarReader(BaseArchiveReader):
         names = [
             temp_dir
             / rar_volume_name(
-                "archive", index, old_style=self._archive.old_volume_naming
+                "archive", index, old_numbering=self._archive.old_volume_naming
             )
             for index in range(1, len(self._volume_paths) + 1)
         ]
@@ -1885,9 +1885,9 @@ class RarReader(BaseArchiveReader):
         if len(volumes) == 1:
             names = ["archive.rar"]
         else:
-            old_style = self._archive.old_volume_naming
+            old_numbering = self._archive.old_volume_naming
             names = [
-                rar_volume_name("archive", index, old_style=old_style)
+                rar_volume_name("archive", index, old_numbering=old_numbering)
                 for index in range(1, len(volumes) + 1)
             ]
         unlinked: list[tuple[Path, Path]] = []

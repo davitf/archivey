@@ -115,14 +115,16 @@ _OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 
 
 # unrar's new-scheme step: ``N`` in ``name.partN.rar`` goes up by one and keeps its
-# zero padding. Broader than ``_RAR_PART_RE`` (no digit cap, an empty base), since it
-# predicts unrar rather than classifying a name.
+# zero padding. It differs from ``_RAR_PART_RE``, which classifies a name rather than
+# predicting unrar: no digit cap, an empty base, any character (a newline too) in the
+# base. It accepts only ``.rar``, because ``next_rar_volume_name`` rewrites ``.exe``
+# and ``.sfx`` to ``.rar`` first.
 _UNRAR_PART_NAME_RE = re.compile(
-    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.I
+    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.IGNORECASE | re.DOTALL
 )
 
 
-def rar_volume_name(stem: str, index: int, *, old_style: bool) -> str:
+def rar_volume_name(stem: str, index: int, *, old_numbering: bool) -> str:
     """File name of volume ``index`` (1-based) of a set archivey writes or links.
 
     The closed form of :func:`next_rar_volume_name`'s walk from ``<stem>.rar`` or
@@ -130,7 +132,7 @@ def rar_volume_name(stem: str, index: int, *, old_style: bool) -> str:
     past ``z``; unrar reads a set of 1 500 volumes named that way. It does not follow
     ``partN`` names for an old-style set, so those are never used for one.
     """
-    if not old_style:
+    if not old_numbering:
         return f"{stem}.part{index}.rar"
     if index == 1:
         return f"{stem}.rar"
@@ -146,7 +148,9 @@ def next_rar_volume_name(name: str, *, old_numbering: bool) -> str | None:
     ``name.partN.rar``. The old scheme goes ``.rar`` -> ``.r00``, ``.r99`` ->
     ``.s00``, ``.z99`` -> ``.{00``, and the ``r`` of a ``.RAR`` keeps its case. Any
     other shape is ``None``. Shared by old-scheme discovery and the RAR backend,
-    which predicts the names unrar will walk.
+    which predicts the names unrar will walk. The missing-extension case serves the
+    backend's caller-supplied names; discovery never reaches it, because its volume
+    1 always carries ``.rar``, ``.exe`` or ``.sfx``.
     """
     stem, dot, ext = name.rpartition(".")
     if not dot:

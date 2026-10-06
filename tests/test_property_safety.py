@@ -542,20 +542,28 @@ def test_volume_part_helpers_total(name: str) -> None:
 
 
 # ``rar_volume_name`` is the closed form of unrar's next-name walk: archivey stages a
-# set under these names, and unrar must find each one from the one before it. The
-# stem excludes a newline, which ``_UNRAR_PART_NAME_RE``'s ``.`` does not match.
+# set under these names, and unrar must find each one from the one before it.
+# A newline in the stem defeated the ``.partN`` pattern's ``.`` until it took
+# ``re.DOTALL``, and the walk stopped after volume 1.
+@example(stem="a\nb", index=1, old_numbering=False)
 @given(
-    stem=st.text(st.characters(blacklist_characters="\n/"), max_size=12),
+    # Name punctuation is drawn often, so stems like ``x.part3`` come up.
+    stem=st.text(
+        st.one_of(
+            st.sampled_from(".partPART0189"), st.characters(blacklist_characters="/")
+        ),
+        max_size=12,
+    ),
     index=st.integers(min_value=1, max_value=1499),
-    old_style=st.booleans(),
+    old_numbering=st.booleans(),
 )
 def test_rar_volume_name_is_the_next_name_unrar_walks(
-    stem: str, index: int, old_style: bool
+    stem: str, index: int, old_numbering: bool
 ) -> None:
-    current = rar_volume_name(stem, index, old_style=old_style)
-    assert next_rar_volume_name(current, old_numbering=old_style) == rar_volume_name(
-        stem, index + 1, old_style=old_style
-    )
+    current = rar_volume_name(stem, index, old_numbering=old_numbering)
+    assert next_rar_volume_name(
+        current, old_numbering=old_numbering
+    ) == rar_volume_name(stem, index + 1, old_numbering=old_numbering)
 
 
 @given(
