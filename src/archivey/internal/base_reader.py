@@ -20,6 +20,7 @@ from typing import (
     Iterator,
     Literal,
     Mapping,
+    NamedTuple,
     NoReturn,
     Self,
 )
@@ -152,13 +153,22 @@ are not read through this cap: the header parser has already allocated them, and
 """
 
 
-_UNCONFIRMED_EVIDENCE: dict[str, tuple[DiagnosticCode, str, str]] = {
-    "extension": (
+_UnconfirmedEvidence = Literal["extension", "content_probe"]
+
+
+class _UnconfirmedWording(NamedTuple):
+    code: DiagnosticCode
+    evidence_text: str  # "identified only by {evidence_text}"
+    evidence_short: str  # "unconfirmed ({evidence_short})"
+
+
+_UNCONFIRMED_EVIDENCE: Mapping[_UnconfirmedEvidence, _UnconfirmedWording] = {
+    "extension": _UnconfirmedWording(
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
         "its file extension",
         "extension only",
     ),
-    "content_probe": (
+    "content_probe": _UnconfirmedWording(
         DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
         "a content probe",
         "content probe only",
@@ -1065,7 +1075,7 @@ class BaseArchiveReader(ArchiveReader):
     def _mark_format_unconfirmed(
         self,
         exc: ArchiveyError,
-        evidence: Literal["extension", "content_probe"],
+        evidence: _UnconfirmedEvidence,
     ) -> None:
         """Stamp a decode failure under an unconfirmed format and emit its diagnostic.
 
@@ -1075,11 +1085,14 @@ class BaseArchiveReader(ArchiveReader):
         """
         code, evidence_text, evidence_short = _UNCONFIRMED_EVIDENCE[evidence]
         if not exc.format_unconfirmed:
-            format_name = (exc.source_format or self._format).display_name
+            # The stamped message speaks of the format the exception names, which a
+            # lower layer (a codec, the spool) may have set to something other than
+            # this reader's format; the diagnostic below speaks of the reader's.
+            stamped_format = (exc.source_format or self._format).display_name
             detail = exc.raw_message.rstrip(".")
             unconfirmed = (
                 f"Format identification was unconfirmed ({evidence_short}); "
-                f"the source may not be {format_name}."
+                f"the source may not be {stamped_format}."
             )
             if isinstance(exc, ResourceLimitError):
                 # A limit stops the read rather than the decoder failing on it, and a
@@ -1119,29 +1132,34 @@ class BaseArchiveReader(ArchiveReader):
         # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
         # stopped is stopped whether or not the diagnostic fires a second time.
         self._unconfirmed_failure_emitted = True
-        format_name = self._format.display_name
-        self._diagnostics_collector.emit(
-            code=code,
-            message=f"Reading {format_name} failed (a decode failure or a limit), and "
-            f"it was identified only by {evidence_text}; the source may not be that "
-            f"format",
-            context=self._unconfirmed_context(
-                evidence,
-                # An extension guess is what detection falls back to when it refuses
-                # the bytes, so it has no content answer to restate.
-                format_name if evidence == "content_probe" else None,
-            ),
-            escalate_as=type(exc) if raising else None,
-            escalate_message=exc.raw_message if raising else None,
-            escalate_kwargs={
+        reader_format = self._format.display_name
+        escalate_as: type[BaseException] | None = None
+        escalate_message: str | None = None
+        escalate_kwargs: dict[str, object] | None = None
+        if raising:
+            escalate_as = type(exc)
+            escalate_message = exc.raw_message
+            escalate_kwargs = {
                 "source_format": exc.source_format,
                 "archive_name": exc.archive_name,
                 "member_name": exc.member_name,
                 "link_target": exc.link_target,
                 "format_unconfirmed": True,
             }
-            if raising
-            else None,
+        self._diagnostics_collector.emit(
+            code=code,
+            message=f"Reading {reader_format} failed (a decode failure or a limit), and "
+            f"it was identified only by {evidence_text}; the source may not be that "
+            f"format",
+            context=self._unconfirmed_context(
+                evidence,
+                # An extension guess is what detection falls back to when it refuses
+                # the bytes, so it has no content answer to restate.
+                reader_format if evidence == "content_probe" else None,
+            ),
+            escalate_as=escalate_as,
+            escalate_message=escalate_message,
+            escalate_kwargs=escalate_kwargs,
         )
 
     def _finalize_and_publish(
