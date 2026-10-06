@@ -14,7 +14,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from archivey import ArchiveFormat, ArchiveyConfig, ExtractionReport, open_archive
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    ExtractionReport,
+    PasswordInput,
+    open_archive,
+)
 
 
 def open_and_extract(
@@ -23,7 +29,7 @@ def open_and_extract(
     *,
     format: ArchiveFormat | str | None = None,
     streaming: bool = False,
-    password: Any = None,
+    password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
     **extract_kwargs: Any,

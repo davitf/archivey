@@ -46,7 +46,9 @@ and SHALL NOT take a `config=`; `limits=` overrides only the extraction limits.
 
 Selection, filter ordering, one-pass selected extraction, reader-config
 inheritance, and per-call limits precedence retain their existing contracts.
-There is no single-member `reader.extract()` method.
+There is no single-member `reader.extract()` method, and no top-level
+`archivey.extract()`: opening the archive and calling `extract_all()` is the one way to
+extract (ADR 0019).
 
 #### Scenario: extract_all matrix
 
@@ -65,12 +67,8 @@ archive-wide ratio/live-ratio, and entry-count guards. Policy, overwrite,
 `on_error`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
-`extract_all()` runs under the config the reader was opened with and takes no
-`config=` of its own. It always returns `ExtractionReport` with an accumulated
-immutable result tuple on success; there is no no-tracking mode.
-
-There is no top-level `archivey.extract()`. Opening the archive and calling
-`extract_all()` is the one way to extract (ADR 0019).
+`extract_all()` always returns `ExtractionReport` with an accumulated immutable result
+tuple on success; there is no no-tracking mode.
 
 #### Scenario: limits/config matrix
 

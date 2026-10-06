@@ -5,8 +5,8 @@ Four public functions took a format argument, and three of them accepted a
 pair — without noticing: ``format_availability()`` fabricated a ``FormatAvailability``
 whose ``format`` field violated its own declared type, and ``open_archive()`` /
 ``extract()`` (since removed, ADR 0019) let an ``AttributeError`` naming a private
-attribute cross the public boundary. ``open_stream()`` accepts both types by design, but silently *ignored* a
-value that was neither and auto-detected instead.
+attribute cross the public boundary. ``open_stream()`` accepts both types by design,
+but silently *ignored* a value that was neither and auto-detected instead.
 
 The type checkers already reject all four calls (both run over ``src/`` only, so an
 untyped caller is the exposure). These tests cover what happens when the call is made

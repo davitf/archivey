@@ -614,7 +614,8 @@ SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
-    """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`open_stream`.
+    """Library tuning knobs passed as ``config=`` to :func:`open_archive`,
+    :func:`open_stream` and :func:`detect_format`.
 
     Per-call operationals (``format``, ``streaming``, ``password``, extraction's
     ``members``/``filter``/``policy``/…) stay keyword arguments — not fields here.

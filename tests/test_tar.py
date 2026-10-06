@@ -2031,7 +2031,6 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
 def test_extract_enforces_listing_limits_as_members_arrive(tmp_path: Path) -> None:
     """Without listing first, ``max_members`` still refuses the extraction, at the
     member that crosses it, before that member is written."""
-
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w") as t:
         for i in range(5):
