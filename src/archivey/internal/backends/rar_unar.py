@@ -55,9 +55,13 @@ REFUSE_RAR15 = (
     "unar 1.10 returns no data, and reports success, for a member compressed with the "
     "RAR 1.5 algorithm. " + _USE_UNRAR
 )
+# Worded for the member, not for ``unar``: the bounds were measured on ``unrar``
+# 7.00 only, and refusing on them is the conservative direction for ``unar`` too.
+# Same words as ``RarReader._unknown_compression_error``.
 REFUSE_UNKNOWN_COMPRESSION = (
-    "it is compressed with {version}, which unrar does not know (it reports "
-    '"Unknown method"); it may need a newer version of RAR.'
+    "it is compressed with {version}, which neither RAR decompressor archivey runs "
+    'is known to decode (unrar 7.00 reports "Unknown method"), so switching '
+    "decompressors does not help; it may need a newer version of RAR."
 )
 REFUSE_RAR5_SOLID_AFTER_EMPTY = (
     "unar 1.10 crashes, or reports success with no data, on a RAR5 solid archive when a "

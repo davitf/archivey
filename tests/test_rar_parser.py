@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -492,6 +494,51 @@ def test_set_not_starting_at_volume_one_needs_first_volume(
             [io.BytesIO(lone), io.BytesIO(_fixture(rest).read_bytes())],
             password=None,
         )
+
+
+def _rar4_volume_renumbered(data: bytes, number: int) -> bytes:
+    """A RAR 1.5-4 volume with its MAIN first-volume flag cleared and its end
+    block's 0-based volume number set to ``number``, CRC16s fixed.
+
+    ``tinyvol_rnn.rar`` renumbered 1 is what a middle volume 2 looks like when
+    volume 1 ended on a member boundary: its first member does not continue an
+    earlier one, and it says another volume follows. ``unrar l`` reports it as
+    "volume 2" (measured, 7.00).
+    """
+    out = bytearray(data)
+    pos = 7
+    while pos + 7 <= len(out):
+        block_type, flags, size = struct.unpack_from("<BHH", out, pos + 2)
+        add = 0
+        if flags & 0x8000 or block_type == 0x74:
+            (add,) = struct.unpack_from("<I", out, pos + 7)
+        if block_type == 0x73:
+            struct.pack_into("<H", out, pos + 3, flags & ~0x0100)
+        if block_type == 0x7B:
+            assert flags & 0x000A == 0x000A  # data CRC, then the volume number
+            struct.pack_into("<H", out, pos + 11, number)
+        if block_type in (0x73, 0x7B):
+            crc = zlib.crc32(bytes(out[pos + 2 : pos + size])) & 0xFFFF
+            struct.pack_into("<H", out, pos, crc)
+        pos += size + add
+    return bytes(out)
+
+
+def test_rar4_later_volume_starting_on_a_member_boundary_needs_first_volume() -> None:
+    """No member continues from an earlier volume, so only the end block's volume
+    number tells it from volume 1. It is refused like any later volume, rather than
+    listed as volume 1 of a set "missing volume 2"."""
+    data = _fixture("tinyvol_rnn.rar").read_bytes()
+    later = _rar4_volume_renumbered(data, 1)
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        parse_rar_archive(io.BytesIO(later), password=None)
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        open_archive(io.BytesIO(later))
+    # Volume number 0 is volume 1: the renumbering alone changes nothing.
+    first = parse_rar_archive(
+        io.BytesIO(_rar4_volume_renumbered(data, 0)), password=None
+    )
+    assert first.is_volume and first.needs_next_volume
 
 
 def test_set_whose_last_volume_expects_another_is_truncated() -> None:

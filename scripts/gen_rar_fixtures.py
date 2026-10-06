@@ -580,6 +580,43 @@ def _build_unar_drop(rar5_bin: Path, out_dir: Path) -> None:
         print(f"wrote {out.relative_to(REPO_ROOT)}")
 
 
+def _cut_set_payload(index: int, size: int) -> bytes:
+    """Member ``index`` of the ``tinyvol_cut*`` sets: text that compresses about
+    twofold. ``tests/test_rar_missing_last_volume.py`` rebuilds the same bytes."""
+    digest = b"".join(
+        hashlib.sha256(f"{index}:{block}".encode()).digest()
+        for block in range(size // 32 + 1)
+    )
+    return bytes(b"abcdefgh \n"[byte % 10] for byte in digest[:size])
+
+
+# ``tinyvol_cut*``: (stem, member size, ``rar`` switches). Four members over several
+# volumes; the last volume is deleted, so the fourth member runs into it.
+_CUT_SETS: tuple[tuple[str, int, tuple[str, ...]], ...] = (
+    ("tinyvol_cut", 1000, ("-m0", "-v1500b")),
+    ("tinyvol_cut_solid", 2000, ("-s", "-m3", "-v900b")),
+)
+
+
+def _build_missing_last_volume(rar5_bin: Path, out_dir: Path) -> None:
+    """Volume sets with their last volume deleted, stored and solid."""
+    for stem, size, extra in _CUT_SETS:
+        for stale in out_dir.glob(f"{stem}.part*.rar"):
+            stale.unlink()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            names = [f"{letter}.txt" for letter in "abcd"]
+            for index, name in enumerate(names):
+                (root / name).write_bytes(_cut_set_payload(index, size))
+            _rar_a(rar5_bin, out_dir / f"{stem}.rar", names, cwd=root, extra=extra)
+        volumes = sorted(out_dir.glob(f"{stem}.part*.rar"))
+        if len(volumes) < 4:
+            raise RuntimeError(f"expected {stem} to span at least four volumes")
+        volumes[-1].unlink()
+        for volume in volumes[:-1]:
+            print(f"wrote {volume.relative_to(REPO_ROOT)}")
+
+
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -784,6 +821,8 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
             out.unlink()
         for part in parts:
             print(f"wrote {part.relative_to(REPO_ROOT)}")
+
+    _build_missing_last_volume(rar5_bin, out_dir)
 
     # --- RAR4 (needs -ma4) ---
     # Classic extension volumes (name.rar + name.r00…): RAR4-only via -vn.

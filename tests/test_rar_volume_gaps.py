@@ -16,6 +16,7 @@ the rest.
 
 from __future__ import annotations
 
+import io
 import random
 import re
 import shutil
@@ -26,10 +27,12 @@ import pytest
 
 from archivey import ArchiveyConfig, open_archive
 from archivey.config import RarDecompressor
-from archivey.exceptions import TruncatedError
+from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from tests.conftest import binary_refusal
+from tests.test_rar_parser import _rar4_volume_renumbered
 from tests.test_volumes import _OLD_SCHEME_PAYLOAD, _write_old_scheme_rar4_set
 
+_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _NAMES = [f"f{index}.bin" for index in range(1, 9)]
 
 
@@ -204,3 +207,24 @@ def test_unrar_reads_past_the_gap_from_the_volume_after_it(tmp_path: Path) -> No
     after = set().union(*per_volume[3:]) - touched
     for name in after:
         assert re.search(rf"{re.escape(name)}\s.*OK", output), (name, output)
+
+
+def test_a_lone_rar4_later_volume_on_a_member_boundary_lists_by_path(
+    tmp_path: Path,
+) -> None:
+    """No member continues into it, so only the RAR 3.0+ end block's volume number
+    marks it as a later volume. The parse refuses it ("Need first volume"); opened by
+    path, the reader catches that and reads it under its name's number, as for any
+    other lone later volume. As a stream it has no name and stays refused."""
+    data = (_FIXTURES / "tinyvol_rnn.rar").read_bytes()
+    with open_archive(_FIXTURES / "tinyvol_rnn.rar") as archive:
+        first_volume = [m.name for m in archive.members_report().members]
+    lone = tmp_path / "tinyvol_rnn.r00"  # volume 2 by name
+    lone.write_bytes(_rar4_volume_renumbered(data, 1))
+    with open_archive(lone) as archive:
+        report = archive.members_report()
+        assert [m.name for m in report.members] == first_volume
+        assert isinstance(report.error, TruncatedError)
+        assert "volume 1 is missing" in str(report.error), report.error
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        open_archive(io.BytesIO(lone.read_bytes()))

@@ -21,6 +21,7 @@ from archivey import ArchiveyConfig, open_archive
 from archivey.config import RarDecompressor
 from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from archivey.internal.backends.rar_parser import load_vint, parse_rar_archive
+from archivey.internal.backends.rar_unar import UnarRarPolicy
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
 from tests.conftest import binary_refusal
 
@@ -90,14 +91,38 @@ def _config(decompressor: str) -> ArchiveyConfig:
 def test_an_unknown_rar5_version_is_unsupported_not_truncated(
     tmp_path: Path, decompressor: str
 ) -> None:
-    """Refused before any process runs, so it needs neither program installed."""
+    """Refused before any process runs, so it needs neither program installed. The
+    message is the same whichever decompressor is selected: switching does not help,
+    so it must not read as a refusal of one program."""
     data = (_FIXTURES / "hostile_argv__.rar").read_bytes()
     path = _write(tmp_path, "v2.rar", _set_rar5_version(data, 1, 2))
     with open_archive(path, config=_config(decompressor)) as archive:
         member = archive.members()[1]
-        with pytest.raises(UnsupportedFeatureError, match="compression version 2"):
+        with pytest.raises(
+            UnsupportedFeatureError, match="compression version 2"
+        ) as caught:
             with archive.open(member) as stream:
                 stream.read()
+    message = str(caught.value)
+    assert "neither RAR decompressor" in message, message
+    assert "switching decompressors does not help" in message, message
+    assert "rar_decompressor" not in message, message
+
+
+def test_the_unar_solid_pass_refusal_names_no_one_program() -> None:
+    """The ``unar`` solid pass refuses such a member from its own policy, which an
+    ``open`` never reaches (the reader refuses first). Its words are the reader's:
+    the bounds were measured on ``unrar`` only, and switching does not help."""
+    data = (_FIXTURES / "hostile_argv__.rar").read_bytes()
+    archive = parse_rar_archive(
+        io.BytesIO(_set_rar5_version(data, 1, 2)), password=None
+    )
+    target = archive.members[1]
+    refusal = UnarRarPolicy(archive).member_refusal(target)
+    assert refusal is not None
+    assert "compression version 2" in refusal, refusal
+    assert "neither RAR decompressor" in refusal, refusal
+    assert "switching decompressors does not help" in refusal, refusal
 
 
 @pytest.mark.parametrize("decompressor", ["unrar", "unar"])
