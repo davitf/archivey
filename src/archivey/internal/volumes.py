@@ -116,6 +116,39 @@ _RAR_PART_RE = re.compile(
 _OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}\Z")
 _OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 
+# The three volume naming schemes, each with a ``base`` group. All three branches of
+# ``discover_volume_siblings`` group candidates on ``base.lower()``, so an explicit
+# sequence is held to the same grouping in all three.
+_NUMBERED_SCHEME, _RAR_PART_SCHEME, _OLD_RAR_SCHEME = range(3)
+_VOLUME_SCHEMES = (_NUMBERED_VOLUME_RE, _RAR_PART_RE, _OLD_RAR_CONTINUATION_RE)
+# Each entry describes the shape a name matched, not what the file is: the third
+# also matches ``notes.e01``, so it must not claim ``.r00``.
+_SCHEME_NAMES = (
+    "name.EXT.NNN",
+    "name.partN.rar",
+    "name.xNN (the old RAR scheme's shape: .r00, .s01, ...)",
+)
+
+
+def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
+    """Classify a name carrying a part marker, with the base its scheme reads.
+
+    ``None`` for a name no scheme claims, which includes an old-scheme volume 1 —
+    that one has no part marker and is handled separately, by
+    :func:`_is_old_scheme_first_volume_name`. The schemes are tried in order and the
+    first match wins, which is how ``my.part1.zip.001`` lands in the numbered scheme
+    on its full ``my.part1.zip`` base rather than under ``.part``.
+    """
+    for index, pattern in enumerate(_VOLUME_SCHEMES):
+        match = pattern.match(name)
+        if match is not None:
+            return index, match.group("base")
+    return None
+
+
+# Volume 1 of an old-scheme set, in order of preference.
+_OLD_RAR_FIRST_VOLUME_SUFFIXES = (".rar", ".exe", ".sfx")
+
 
 # unrar's new-scheme step: ``N`` in ``name.partN.rar`` goes up by one and keeps its
 # zero padding. It differs from ``_RAR_PART_RE``, which classifies a name rather than
@@ -217,12 +250,7 @@ def _is_old_scheme_first_volume_name(name: str) -> bool:
         or _RAR_PART_RE.match(name) is not None
     ):
         return False
-    lower = name.lower()
-    return lower.endswith(".rar") or lower.endswith(".exe") or lower.endswith(".sfx")
-
-
-# Volume 1 of an old-scheme set, in order of preference.
-_OLD_RAR_FIRST_VOLUME_SUFFIXES = (".rar", ".exe", ".sfx")
+    return name.lower().endswith(_OLD_RAR_FIRST_VOLUME_SUFFIXES)
 
 
 def _old_rar_listed_file(
@@ -285,103 +313,84 @@ def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
     return volumes if len(volumes) > 1 else None
 
 
+def _siblings_with_base(
+    parent: Path, pattern: re.Pattern[str], base: str
+) -> list[Path]:
+    """The files in ``parent`` that ``pattern`` reads with ``base``, case-folded."""
+    folded = base.lower()
+    return [
+        candidate
+        for candidate in parent.iterdir()
+        if candidate.is_file()
+        and (match := pattern.match(candidate.name)) is not None
+        and match.group("base").lower() == folded
+    ]
+
+
 def discover_volume_siblings(path: Path) -> list[Path] | None:
     """Return ordered sibling paths when ``path`` is part of a volume set, else ``None``."""
     name = path.name
     lower = name.lower()
+    parent = path.parent
     # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
     # not volume-shaped. Saves a ``stat`` per open_archive (perf review L3).
     # SFX first members (``*.exe.001``, ``*.part1.sfx``) match the patterns above.
-    # A stub ``*.exe`` / ``*.sfx`` is maybe-volume only when ``<stem>.r00`` or
-    # ``<stem>.R00`` exists (up to two ``is_file``, no ``iterdir``) so 7-Zip
-    # ``vol.exe`` + ``vol.exe.001`` still falls through to stub-follow. The probe
-    # matches the extension's case but spells the base as the stub does, so
-    # ``archive.exe`` beside ``ARCHIVE.R00`` is not an entry point (the set is still
-    # found from ``ARCHIVE.R00``). Closing that would cost an ``iterdir`` on every
-    # ``.exe`` / ``.sfx`` open.
-    maybe_volume = (
-        _NUMBERED_VOLUME_RE.match(name) is not None
-        or _RAR_PART_RE.match(name) is not None
-        or _OLD_RAR_CONTINUATION_RE.match(name) is not None
-        or lower.endswith(".rar")
-    )
-    if (
-        not maybe_volume
-        and _is_old_scheme_first_volume_name(name)
-        and any(
-            (path.parent / f"{path.stem}.{letter}00").is_file() for letter in ("r", "R")
-        )
-    ):
-        maybe_volume = True
-    if not maybe_volume:
-        return None
+    classified = _volume_scheme_and_base(name)
+    if classified is None:
+        # Old-scheme volume 1: ``<base>.rar``, or an SFX ``<base>.exe`` /
+        # ``<base>.sfx`` when no ``.rar`` is beside the continuations.
+        if not lower.endswith(_OLD_RAR_FIRST_VOLUME_SUFFIXES):
+            return None
+        # A stub ``*.exe`` / ``*.sfx`` is maybe-volume only when ``<stem>.r00`` or
+        # ``<stem>.R00`` exists (up to two ``is_file``, no ``iterdir``) so 7-Zip
+        # ``vol.exe`` + ``vol.exe.001`` still falls through to stub-follow. The probe
+        # matches the extension's case but spells the base as the stub does, so
+        # ``archive.exe`` beside ``ARCHIVE.R00`` is not an entry point (the set is
+        # still found from ``ARCHIVE.R00``). Closing that would cost an ``iterdir``
+        # on every ``.exe`` / ``.sfx`` open.
+        if not lower.endswith(".rar") and not any(
+            (parent / f"{path.stem}.{letter}00").is_file() for letter in ("r", "R")
+        ):
+            return None
+        if not path.is_file():
+            return None
+        return _collect_old_rar_volumes(parent, name[: name.rfind(".")])
     if not path.is_file():
         return None
-    parent = path.parent
+    scheme, base = classified
 
-    match = _NUMBERED_VOLUME_RE.match(name)
-    if match is not None:
-        base = match.group("base")
+    if scheme == _NUMBERED_SCHEME:
         siblings = sorted(
-            (
-                candidate
-                for candidate in parent.iterdir()
-                if candidate.is_file()
-                and (vol_match := _NUMBERED_VOLUME_RE.match(candidate.name)) is not None
-                and vol_match.group("base").lower() == base.lower()
-            ),
+            _siblings_with_base(parent, _NUMBERED_VOLUME_RE, base),
             key=lambda candidate: _numbered_part_number(candidate.name),
         )
         return siblings if len(siblings) > 1 else None
 
-    match = _RAR_PART_RE.match(name)
-    if match is not None:
-        base = match.group("base")
+    if scheme == _RAR_PART_SCHEME:
         grouped: dict[int, list[Path]] = {}
-        for candidate in parent.iterdir():
-            if not candidate.is_file():
-                continue
-            part_match = _RAR_PART_RE.match(candidate.name)
-            if part_match is None or part_match.group("base").lower() != base.lower():
-                continue
-            grouped.setdefault(int(part_match.group("part")), []).append(candidate)
+        for candidate in _siblings_with_base(parent, _RAR_PART_RE, base):
+            grouped.setdefault(_rar_part_number(candidate.name), []).append(candidate)
         if len(grouped) <= 1:
             return None
-        named_part = int(match.group("part"))
-        named_lower = name.lower()
+        named_part = _rar_part_number(name)
         return [
-            _pick_rar_part(grouped[part], named_part, named_lower)
-            for part in sorted(grouped)
+            _pick_rar_part(grouped[part], named_part, lower) for part in sorted(grouped)
         ]
 
-    if _is_old_scheme_first_volume_name(name):
-        # Volume 1 is `<base>.rar`, or an SFX `<base>.exe` / `<base>.sfx` when no
-        # `.rar` is beside the continuations.
-        return _collect_old_rar_volumes(parent, name[: name.rfind(".")])
-    continuation = _OLD_RAR_CONTINUATION_RE.match(name)
-    if continuation is not None:
-        # A continuation with no volume 1 beside it is a lone file — siblings[0]
-        # must be volume 1. So is one the walk from volume 1 does not reach, behind
-        # a gap or not an old-scheme name at all (`notes.a01` beside `notes.rar`).
-        volumes = _collect_old_rar_volumes(parent, continuation.group("base"))
-        if volumes is None:
-            return None
-        if any(volume.name.lower() == lower for volume in volumes):
-            return volumes
+    # A continuation with no volume 1 beside it is a lone file — siblings[0] must be
+    # volume 1. So is one the walk from volume 1 does not reach, behind a gap or not
+    # an old-scheme name at all (`notes.a01` beside `notes.rar`).
+    volumes = _collect_old_rar_volumes(parent, base)
+    if volumes is None:
         return None
-
+    if any(volume.name.lower() == lower for volume in volumes):
+        return volumes
     return None
 
 
 def is_sfx_stub_name(name: str) -> bool:
     """True for ``*.exe`` / ``*.sfx`` names that are not already volume-shaped."""
-    if (
-        _NUMBERED_VOLUME_RE.match(name) is not None
-        or _RAR_PART_RE.match(name) is not None
-    ):
-        return False
-    lower = name.lower()
-    return lower.endswith(".exe") or lower.endswith(".sfx")
+    return _is_old_scheme_first_volume_name(name) and not name.lower().endswith(".rar")
 
 
 def first_volume_for_stub(path: Path) -> Path | None:
@@ -793,36 +802,6 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
         f"Out-of-order multi-volume set for {base}: parts "
         f"{_enumerate_parts(numbered)} — concatenation needs them in ascending order"
     )
-
-
-# The three volume naming schemes, each with a ``base`` group. All three branches of
-# ``discover_volume_siblings`` group candidates on ``base.lower()``, so an explicit
-# sequence is held to the same grouping in all three.
-_NUMBERED_SCHEME, _RAR_PART_SCHEME, _OLD_RAR_SCHEME = range(3)
-_VOLUME_SCHEMES = (_NUMBERED_VOLUME_RE, _RAR_PART_RE, _OLD_RAR_CONTINUATION_RE)
-# Each entry describes the shape a name matched, not what the file is: the third
-# also matches ``notes.e01``, so it must not claim ``.r00``.
-_SCHEME_NAMES = (
-    "name.EXT.NNN",
-    "name.partN.rar",
-    "name.xNN (the old RAR scheme's shape: .r00, .s01, ...)",
-)
-
-
-def _volume_scheme_and_base(name: str) -> tuple[int, str] | None:
-    """Classify a name carrying a part marker, with the base its scheme reads.
-
-    ``None`` for a name no scheme claims, which includes an old-scheme volume 1 —
-    that one has no part marker and is handled separately, by
-    :func:`_is_old_scheme_first_volume_name`. The schemes are tried in order and the
-    first match wins, which is how ``my.part1.zip.001`` lands in the numbered scheme
-    on its full ``my.part1.zip`` base rather than under ``.part``.
-    """
-    for index, pattern in enumerate(_VOLUME_SCHEMES):
-        match = pattern.match(name)
-        if match is not None:
-            return index, match.group("base")
-    return None
 
 
 def _old_rar_bases(paths: Sequence[Path]) -> frozenset[str]:
