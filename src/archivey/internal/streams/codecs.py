@@ -3152,7 +3152,8 @@ class _RawLzmaCodec(_LzmaErrorCodec):
         # its known output size says. liblzma cannot tell that from the input, so
         # reading on would ask for input past the end and fail as truncated; stop at
         # the size instead, and look for an end marker there (_LzmaEndAtSize).
-        return _LzmaEndAtSize(decoded, size=params.unpack_size)
+        capped = SlicingStream(decoded, length=params.unpack_size, owns_inner=True)
+        return _LzmaEndAtSize(capped, decoded=decoded, size=params.unpack_size)
 
 
 class LzmaDataAfterEndError(CorruptionError):
@@ -3185,8 +3186,10 @@ class _LzmaEndAtSize(DelegatingStream):
 
     readinto_passthrough = False
 
-    def __init__(self, decoded: BinaryIO, *, size: int) -> None:
-        super().__init__(SlicingStream(decoded, length=size, owns_inner=True))
+    def __init__(self, capped: BinaryIO, *, decoded: BinaryIO, size: int) -> None:
+        # ``capped`` is ``decoded`` sliced at ``size``; this owns it (the default),
+        # and it owns ``decoded``.
+        super().__init__(capped)
         self._decoded = decoded
         self._size = size
         self._checked = False
@@ -3202,6 +3205,10 @@ class _LzmaEndAtSize(DelegatingStream):
             except (ArchiveyError, lzma.LZMAError, EOFError):
                 pass
         return data
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # The slice starts at the decoder's 0, so the offsets are the codec's.
+        return ask_resume_offset(self._inner, target)
 
 
 class LzmaCodec(_RawLzmaCodec):
