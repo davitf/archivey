@@ -1389,7 +1389,7 @@ class ExtractionCoordinator:
                 rerooted_from = None  # the filter chose this name; it is not a rewrite
         transformed = self._as_written(original, transformed)
         # The checks run on the name that reaches disk; the name policy below runs on
-        # the stored one, so it does not take a lone surrogate for a byte.
+        # the stored one, so its escape of a lone surrogate is the same on every OS.
         self._check_universal(transformed, dest_root)
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has

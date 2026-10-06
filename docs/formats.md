@@ -195,13 +195,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   folder member may re-decode from the folder start.
 - **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
   hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
-  in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. On Linux and
-  other POSIX systems, extraction writes it as its three-byte UTF-8 form, the bytes 7-Zip
-  writes: `hi\ud800` becomes `hi` followed by `ed a0 80`. A filesystem that accepts only
-  valid UTF-8, such as APFS, refuses those bytes, and the member fails with
-  `ExtractionError`. On Windows the exact name is used. The CLI shows the name escaped,
-  as `hi\ud800`. One exception: a unit in U+DC80 to U+DCFF looks
-  the same as an undecodable byte (see
+  in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. The CLI shows
+  the name escaped, as `hi\ud800`. Under the `STRICT` and `STANDARD` policies, extraction
+  escapes the surrogate's UTF-8 bytes as it escapes any name that is not portable:
+  `hi\ud800` is written `hi%ED%A0%80` on every OS, and `presented_name` holds the
+  stored name. Under `TRUSTED` it writes what 7-Zip writes. On Linux and other POSIX
+  systems that is the three-byte UTF-8 form, `hi` followed by `ed a0 80`; a filesystem
+  that accepts only valid UTF-8, such as APFS, refuses those bytes, and the member fails
+  with `ExtractionError`. On Windows it is the exact name. One exception: a unit in
+  U+DC80 to U+DCFF looks the same as an undecodable byte (see
   [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)), so
   extraction writes it as that byte, where 7-Zip writes three bytes. `member.raw_name`
   always holds the stored units.

@@ -156,14 +156,28 @@ def _surrogate_as_bytes(match: re.Match[str]) -> str:
     )
 
 
+def _lone_surrogates_as_bytes(text: str) -> str:
+    """``text`` with each lone surrogate outside U+DC80-U+DCFF as its UTF-8 bytes.
+
+    U+D800 becomes ``ed a0 80`` (``surrogatepass``), returned as surrogateescape
+    characters, so ``os.fsencode`` gives exactly those bytes and the O7 escape sees
+    three undecodable bytes. U+DC80-U+DCFF is left alone: in a ``str`` it already
+    means one undecodable byte, for every format.
+    """
+    if _LONE_SURROGATE.search(text) is None:
+        return text
+    return _LONE_SURROGATE.sub(_surrogate_as_bytes, text)
+
+
 def disk_spelling(text: str) -> str:
     """``text`` as ``os`` calls need it to write the name 7-Zip writes.
 
     On POSIX, each lone surrogate outside the surrogateescape range becomes its UTF-8
-    form (``surrogatepass``): U+D800 becomes the bytes ``ed a0 80``, which is what
-    7-Zip 23.01 writes on Linux. The bytes are returned as surrogateescape characters,
-    so ``os.fsencode`` gives exactly those bytes and every ``os`` call accepts the
-    result. Without this, ``os.fsencode`` raises ``UnicodeEncodeError``.
+    form (:func:`_lone_surrogates_as_bytes`): U+D800 becomes the bytes ``ed a0 80``,
+    which is what 7-Zip 23.01 writes on Linux. Without this, ``os.fsencode`` raises
+    ``UnicodeEncodeError``. Under ``STRICT`` and ``STANDARD`` the name policy has
+    already escaped such a name, so this changes a member name only under
+    ``TRUSTED``; it changes a link target under every policy.
 
     U+DC80-U+DCFF is left alone: in a ``str`` it means one undecodable byte, for every
     format, and ``os.fsencode`` writes that byte. A 7z name with a lone unit in that
@@ -171,17 +185,18 @@ def disk_spelling(text: str) -> str:
 
     On Windows the text is returned unchanged: the filesystem takes the code units.
     """
-    if sys.platform == "win32" or _LONE_SURROGATE.search(text) is None:
+    if sys.platform == "win32":
         return text
-    return _LONE_SURROGATE.sub(_surrogate_as_bytes, text)
+    return _lone_surrogates_as_bytes(text)
 
 
 def disk_spelled(member: ArchiveMember) -> ArchiveMember:
     """``member`` with its name and link target in :func:`disk_spelling`.
 
     The same member when nothing changes. The extraction coordinator gives this to
-    the path checks and to the write, but not to the name policy, which would
-    otherwise percent-escape the bytes as undecodable ones.
+    the path checks and to the write, but not to the name policy: the policy escapes a
+    lone surrogate itself, the same way on every OS, and the disk spelling differs
+    between POSIX and Windows.
     """
     name = disk_spelling(member.name)
     target = member.link_target
@@ -422,6 +437,12 @@ def _sanitize_portable_name(name: str) -> str:
     NFC/NFD forms) is representable on every filesystem and is returned unchanged; its
     cross-platform folding is the collision-tracking concern, not a representability one.
 
+    A lone surrogate outside U+DC80-U+DCFF (a 7z name can keep one) is not a byte,
+    and this function leaves it alone. ``apply_name_policy`` first spells it as its
+    UTF-8 bytes, so it arrives here as three of them and ``hi\\ud800`` is written
+    ``hi%ED%A0%80`` on every OS. ``TRUSTED`` skips both steps and writes 7-Zip's bytes
+    (``disk_spelling``).
+
     The escaping is therefore reversible within a rewritten name, not across names: a
     stored ``%FF`` is returned verbatim and a raw ``0xFF`` byte is also written ``%FF``.
     The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can:
@@ -483,8 +504,10 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides — and **rewrite** the
     merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3) and both levels
-    normalize non-representable bytes (O7). Rewriting (not rejecting) a
-    legitimate-but-awkward name keeps extraction working; refusal is reserved for
+    normalize non-representable bytes (O7). A lone surrogate outside U+DC80-U+DCFF is
+    escaped too, as its UTF-8 bytes (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is
+    the same on every OS; ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not
+    rejecting) a legitimate-but-awkward name keeps extraction working; refusal is reserved for
     structures that cannot be safely written. Raises :class:`FilterRejectionError` (so the
     coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a
     rewritten ``.replace()`` copy.
@@ -531,7 +554,7 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     # faithful. The O2 collision map catches any clash the rewrite creates.
     if policy is ExtractionPolicy.STRICT:
         name = _strip_trailing_dot_space(name)
-    name = _sanitize_portable_name(name)
+    name = _sanitize_portable_name(_lone_surrogates_as_bytes(name))
     if name != member.name:
         return member.replace(name=name)
     return member

@@ -61,10 +61,12 @@ separator.
 
 A name SHALL decode as UTF-16LE with `surrogatepass`: a surrogate without its partner
 stays in `name` as that code unit, every member still lists, and `raw_name` encodes back
-to the stored units. Extraction writes such a name as 7-Zip does (`safe-extraction`,
-"Lone surrogates in a member name"). A unit in U+DC80–U+DCFF is the exception: in a
-Python `str` it cannot be told from a `surrogateescape` byte, so extraction takes it for
-one, as it does for every format, and does not write 7-Zip's three-byte form.
+to the stored units. Under `STRICT` and `STANDARD` extraction percent-escapes such a
+name as a non-portable one; under `TRUSTED` it writes the name as 7-Zip does
+(`safe-extraction`, "Lone surrogates in a member name"). A unit in U+DC80–U+DCFF is the
+exception under `TRUSTED`: in a Python `str` it cannot be told from a `surrogateescape`
+byte, so extraction takes it for one, as it does for every format, and does not write
+7-Zip's three-byte form.
 
 #### Scenario: native header matrix
 
