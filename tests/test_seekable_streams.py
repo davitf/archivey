@@ -22,6 +22,7 @@ from archivey.exceptions import (
     CorruptionError,
     PackageNotInstalledError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.config import AcceleratorMode, DecoderLimits, StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
@@ -719,6 +720,139 @@ def test_lzip_short_trailing_data_after_a_member_is_allowed(trailing: bytes) -> 
     compressed = make_lzip_member(b"hi") + trailing
     with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
         assert stream.read() == b"hi"
+
+
+def _lzip_version_0_member(data: bytes) -> bytes:
+    """A member whose header says version 0; the rest is the version-1 layout.
+
+    A real version-0 member also has a 12-byte trailer with no ``member_size``. Both
+    paths refuse at the header, so the tests that need a real one build it below.
+    """
+    member = bytearray(make_lzip_member(data))
+    member[4] = 0
+    return bytes(member)
+
+
+def _lzip_real_version_0_member(data: bytes) -> bytes:
+    """A version-0 member as lzip 0.x wrote it: the trailer has no ``member_size``."""
+    member = make_lzip_member(data)
+    return b"LZIP\x00" + member[5:-8]
+
+
+_V0_CASES = {
+    "only": lambda: _lzip_version_0_member(b"zero" * 50),
+    "first": lambda: _lzip_version_0_member(b"zero" * 50) + make_lzip_member(b"one"),
+    "middle": lambda: (
+        make_lzip_member(b"one")
+        + _lzip_version_0_member(b"zero" * 50)
+        + make_lzip_member(b"two")
+    ),
+    "last": lambda: make_lzip_member(b"one") + _lzip_version_0_member(b"zero" * 50),
+    "first_real": lambda: (
+        _lzip_real_version_0_member(b"zero" * 50) + make_lzip_member(b"one")
+    ),
+    "middle_real": lambda: (
+        make_lzip_member(b"one")
+        + _lzip_real_version_0_member(b"zero" * 50)
+        + make_lzip_member(b"two")
+    ),
+    "last_real": lambda: (
+        make_lzip_member(b"one") + _lzip_real_version_0_member(b"zero" * 50)
+    ),
+}
+# A real version-0 member strictly between two version-1 members: the walk from the
+# end reaches the version-0 member's end, and its 12-byte trailer has no member size.
+# One at the start of the file is reached by the walk's check at the start of its range.
+_V0_UNREACHABLE = {"middle_real"}
+
+
+@pytest.mark.parametrize("case", sorted(_V0_CASES))
+def test_lzip_version_0_member_is_unsupported_on_forward_read(case: str) -> None:
+    """A version-0 member is refused as unsupported, never decoded or read past.
+
+    ``lzip -d`` (1.24.1) reports "Version 0 member format not supported" and exits 2
+    for each of these layouts, after printing the members before it; a full ``LZIP``
+    magic always starts a member here.
+    """
+    with LzipDecompressorStream(io.BytesIO(_V0_CASES[case]())) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
+            stream.read()
+
+
+@pytest.mark.parametrize("case", sorted(set(_V0_CASES) - _V0_UNREACHABLE))
+def test_lzip_version_0_member_is_unsupported_on_index_scan(case: str) -> None:
+    """The backward walk refuses a version-0 member it reaches, as the forward decoder does.
+
+    It reaches one at a member start, at the start of its range, or right after the
+    last member it finds.
+    """
+    from archivey.internal.streams.lzip import peek_index_summary
+
+    data = _V0_CASES[case]()
+    with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
+        _read_index_backwards(io.BytesIO(data), len(data))
+    with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
+        peek_index_summary(io.BytesIO(data), len(data))
+
+
+@pytest.mark.parametrize("case", sorted(_V0_UNREACHABLE))
+def test_lzip_version_0_member_the_walk_cannot_reach_fails_the_walk(case: str) -> None:
+    """A real version-0 member strictly between two version-1 members fails the walk.
+
+    The walk raises corruption there: it cannot find that member's start, so it cannot
+    name its version. The seek test below pins what keeps a seek right here: the failed
+    walk degrades the index, and the sequential read refuses the member.
+    """
+    from archivey.internal.streams.lzip import peek_index_summary
+
+    data = _V0_CASES[case]()
+    with raises_corruption_not_truncation():
+        _read_index_backwards(io.BytesIO(data), len(data))
+    with raises_corruption_not_truncation():
+        peek_index_summary(io.BytesIO(data), len(data))
+
+
+@pytest.mark.parametrize("case", sorted(_V0_CASES))
+def test_lzip_seek_past_a_version_0_member_is_unsupported(case: str) -> None:
+    from archivey.diagnostics import DiagnosticCode
+
+    collector, seen = _collect_diagnostics()
+    with LzipDecompressorStream(
+        io.BytesIO(_V0_CASES[case]()), collector=collector
+    ) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
+            stream.seek(0, io.SEEK_END)
+            stream.read()
+    degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
+    assert bool(degraded) == (case in _V0_UNREACHABLE)
+
+
+def test_lzip_cut_header_after_a_member_is_truncated_on_every_path() -> None:
+    """Five bytes after a member cannot name the next member's version.
+
+    A sequential read calls the file truncated, and a seek must too.
+    """
+    data = make_lzip_member(b"x" * 4000) + b"LZIP\x00"
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.seek(0, io.SEEK_END)
+            stream.read()
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.seek(3000)
+            stream.read()
+
+
+@pytest.mark.parametrize("version", [2, 255])
+def test_lzip_future_version_is_unsupported(version: int) -> None:
+    member = bytearray(make_lzip_member(b"x"))
+    member[4] = version
+    with LzipDecompressorStream(io.BytesIO(bytes(member))) as stream:
+        with pytest.raises(UnsupportedFeatureError, match=f"lzip version {version} "):
+            stream.read()
 
 
 def test_lzip_peek_index_summary_matches_the_payload() -> None:
