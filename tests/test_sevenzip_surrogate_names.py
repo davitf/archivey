@@ -385,6 +385,49 @@ def test_an_error_while_writing_names_the_member_as_listed(tmp_path: Path) -> No
     assert result.error.link_target == "missing.txt"
 
 
+def _symlinks_tar(path: Path, links: list[tuple[str, str]]) -> None:
+    with tarfile.open(path, "w") as tar:
+        for name, target in links:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            tar.addfile(info)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink resolution")
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.TRUSTED])
+@pytest.mark.parametrize(
+    "links",
+    [
+        # Escapes through `d` once created: the check after creating `l` removes it.
+        pytest.param([("d", "."), ("l", "d/../s")], id="after-creation"),
+        # `a` arrives after `l` and makes it escape: the recheck removes `l`.
+        pytest.param([("l", "a/../s"), ("a", ".")], id="recheck"),
+    ],
+)
+def test_a_removed_symlink_names_its_target_as_listed(
+    tmp_path: Path, policy: ExtractionPolicy, links: list[tuple[str, str]]
+) -> None:
+    """The error for a symlink removed after creation names the target before its
+    disk spelling, under every policy: O7 does not rewrite link targets."""
+    archive = tmp_path / "links.tar"
+    _symlinks_tar(archive, links)
+
+    def add_surrogate(member: ArchiveMember) -> ArchiveMember:
+        if member.name != "l":
+            return member
+        return member.replace(link_target=f"{member.link_target}\ud800")
+
+    with archivey.open_archive(archive) as reader:
+        results = reader.extract_all(
+            tmp_path / "out", policy=policy, filter=add_surrogate, on_error="continue"
+        )
+    (removed,) = [r for r in results if r.member.name == "l"]
+    assert removed.status is ExtractionStatus.BLOCKED
+    assert isinstance(removed.error, FilterRejectionError)
+    assert removed.error.link_target == dict(links)["l"] + "\ud800"
+
+
 def test_a_low_surrogate_in_the_escape_range_is_a_byte(tmp_path: Path) -> None:
     """U+DC80-U+DCFF lists as stored, and extracts as the byte it stands for.
 

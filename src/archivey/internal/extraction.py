@@ -411,8 +411,9 @@ def _report_stored_spelling(
     """Rename ``exc`` from the disk spelling ``on_disk`` back to ``member``'s names.
 
     A lone surrogate is checked and written as its UTF-8 bytes (``disk_spelled``), but
-    an error names the member and its link target as listed, so a caller can match
-    it, and one skip does not print two names for one member.
+    an error names the name and link target from before that step, so one skip does
+    not print two names for one member. Under ``STRICT`` and ``STANDARD`` the name
+    policy has already escaped the name, so only the link target changes back.
     """
     if exc.member_name == on_disk.name:
         exc.member_name = member.name
@@ -585,6 +586,9 @@ class ExtractionCoordinator:
         # so a later member that changes such a path gets them rechecked. Set per
         # ``run()``.
         self._links: LinkWatch | None = None
+        # The stored target of each tracked symlink whose target was disk-spelled, by
+        # result index, so a recheck error names it as listed. Set per ``run()``.
+        self._stored_targets: dict[int, str] = {}
         self._dest_root = Path()
         # Dry run only, set per ``run()``: the directory the pass extracts into, inside
         # a private scratch directory, and the destination the caller named, which
@@ -842,6 +846,7 @@ class ExtractionCoordinator:
         # Rechecks share the entry-count bound: a hostile archive can make each member
         # recheck every link so far, and max_entries is what bounds members.
         self._links = LinkWatch(dest_root, self._limits.max_entries)
+        self._stored_targets = {}
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
 
@@ -1710,6 +1715,9 @@ class ExtractionCoordinator:
                     self._link_target_on_disk(transformed.link_target),
                     result_index,
                 )
+                spelled_from = self._spelled_from
+                if spelled_from is not None and spelled_from.link_target is not None:
+                    self._stored_targets[result_index] = spelled_from.link_target
         return result
 
     def _make_room(
@@ -2750,7 +2758,10 @@ class ExtractionCoordinator:
             error = FilterRejectionError(
                 message,
                 member_name=prior.member.name,
-                link_target=self._shown_targets.get(link.target, link.target),
+                link_target=self._stored_targets.get(
+                    link.result_index,
+                    self._shown_targets.get(link.target, link.target),
+                ),
             )
             first = first or error
             self._written_paths.discard(link.dest_path)
