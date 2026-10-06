@@ -91,6 +91,9 @@ it only when its bytes are not valid UTF-8. The system MUST NOT decode an 8-bit 
 UTF-16LE. `raw_name` SHALL be the stored bytes in every case, and RAR SHALL NOT emit
 `ENCODING_ARGUMENT_UNUSED`. How a name is decoded SHALL NOT change which member a read
 returns: the `unrar` mask is built from the stored name, not from the decoded text.
+A RAR 1.5-4 UTF-16 field SHALL decode with `surrogatepass`: a surrogate without its
+partner stays in `name` as that code unit, and a valid pair decodes as one character.
+Extraction writes such a name by `safe-extraction` "Lone surrogates in a member name".
 
 #### Scenario: RAR name decoding matrix
 
@@ -103,6 +106,7 @@ returns: the `unrar` mask is built from the stored name, not from the decoded te
 | Unicode flag, no UTF-16 field, valid UTF-8, `encoding=` passed | UTF-8 |
 | RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
 | Any 8-bit name | `raw_name` is the stored bytes |
+| UTF-16 field holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`; `raw_name` is the 8-bit field; the member reads |
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 

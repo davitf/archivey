@@ -565,6 +565,20 @@ def _byte_ascii_runs(raw: bytes) -> tuple[str, ...]:
     return tuple(run.decode("ascii") for run in re.split(rb"[\x80-\xff]+", raw))
 
 
+def _decode_joliet(ident: bytes) -> str:
+    """A Joliet identifier as text; never raises.
+
+    The identifier is UTF-16BE code units, and NTFS lets a name hold a surrogate
+    without its partner, so the decode uses ``surrogatepass``: the unit stays in the
+    name, as the 7z reader keeps it, and extraction decides what reaches disk. A valid
+    pair still decodes as one character. An odd trailing byte is not a unit and
+    becomes U+FFFD.
+    """
+    cut = len(ident) - len(ident) % 2
+    name = ident[:cut].decode("utf-16_be", errors="surrogatepass")
+    return name + "\ufffd" if cut < len(ident) else name
+
+
 def _text_ascii_runs(name: str) -> tuple[str, ...]:
     """The ASCII text of a decoded name, split where non-ASCII characters are."""
     return tuple(re.split(r"[^\x00-\x7f]+", name))
@@ -1211,10 +1225,10 @@ class IsoReader(BaseArchiveReader):
         )
         if counterpart is None:
             return None
-        try:
-            name = bytes(counterpart.file_identifier()).decode("utf-16_be")
-        except UnicodeDecodeError:
+        ident = bytes(counterpart.file_identifier())
+        if len(ident) % 2:
             return None
+        name = _decode_joliet(ident)
         match = _VERSION_SUFFIX.search(name)
         if match is not None:
             name = name[: match.start()]
@@ -1293,7 +1307,7 @@ class IsoReader(BaseArchiveReader):
 
     @staticmethod
     def _joliet_text(record: DirectoryRecord) -> str:
-        name = bytes(record.file_identifier()).decode("utf-16_be", errors="replace")
+        name = _decode_joliet(bytes(record.file_identifier()))
         match = _VERSION_SUFFIX.search(name)
         return name if match is None else name[: match.start()]
 
@@ -1301,9 +1315,11 @@ class IsoReader(BaseArchiveReader):
         """One directory record's own name in the selected namespace, and its bytes.
 
         Decoding never raises: a name that is not valid in its namespace's encoding is
-        rendered (surrogateescape for the byte namespaces, U+FFFD for Joliet's UTF-16)
-        rather than costing the listing. The bytes are the name as stored for the byte
-        namespaces, and the UTF-8 of the decoded name for Joliet, as before.
+        rendered (surrogateescape for the byte namespaces; for Joliet's UTF-16, a lone
+        surrogate kept as that unit and an odd trailing byte as U+FFFD) rather than
+        costing the listing. The bytes are the name as stored for the byte namespaces,
+        and the UTF-8 of the decoded name for Joliet, a lone surrogate as its three
+        bytes.
         """
         if self._namespace == "rock_ridge":
             nm = _nm_name(record)
@@ -1318,8 +1334,8 @@ class IsoReader(BaseArchiveReader):
             return self._decode_bytes_name(ident), ident
         ident = bytes(record.file_identifier())
         if self._namespace == "joliet":
-            name = ident.decode("utf-16_be", errors="replace")
-            return name, name.encode("utf-8", errors="surrogateescape")
+            name = _decode_joliet(ident)
+            return name, name.encode("utf-8", errors="surrogatepass")
         return self._decode_bytes_name(ident), ident
 
     def _is_rr_moved(self, record: DirectoryRecord) -> bool:

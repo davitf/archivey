@@ -499,7 +499,14 @@ whose host is MS-DOS, OS/2 or Win32 and windows-1252 for any other host (§7 has
 evidence). A Unicode-flagged name with no UTF-16 field declares UTF-8, so there
 `encoding=` applies only when the bytes are not valid UTF-8. The 8-bit field is never
 tried as UTF-16LE: almost any even-length byte string decodes that way, so `caf\xe9.txt`
-used to list as `慣琮瑸`. `raw_name` is always the stored bytes, and the decoding never
+used to list as `慣琮瑸`. The UTF-16 field decodes with `surrogatepass`, as 7z names do
+(7z.md §2): a lone surrogate stays in `name`, and extraction writes it by the
+cross-format rule in `safe-extraction` ("Lone surrogates in a member name"). It used to
+decode with `replace`, which also left the U+D800–U+DFFF arm of
+`_fix_rar3_astral_truncation` unreachable. 7-Zip 23.01 writes such a name as 7z's;
+`unrar` 7.00 on Linux cuts it at the first surrogate unit, a valid pair included
+(`hi\ud800.txt` → `hi`, measured), so its `-n` view of the name differs from archivey's;
+reads still pick the member by the stored 8-bit name. `raw_name` is always the stored bytes, and the decoding never
 changes which member a read returns, because the `unrar` mask is built from the stored
 name (§2.3). `USES_ENCODING` is true, so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`.
 Comments follow `unrar`: a RAR 2.9-4 `CMT` SERVICE header whose attribute field has bit 0

@@ -1539,7 +1539,11 @@ def _decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
                 pos += k
     except IndexError:
         return None
-    return out.decode("utf-16le", "replace")
+    # surrogatepass: the field is UTF-16 code units, and NTFS lets a name hold a
+    # surrogate without its partner. The unit stays in the name, as the 7z reader
+    # keeps it; extraction decides what reaches disk. ``out`` has an even length, so
+    # the decode cannot fail, and a valid pair still decodes as one character.
+    return out.decode("utf-16le", "surrogatepass")
 
 
 def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
