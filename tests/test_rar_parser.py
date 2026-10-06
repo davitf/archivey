@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from archivey.exceptions import CorruptionError, EncryptionError
+from archivey import open_archive
+from archivey.exceptions import (
+    CorruptionError,
+    EncryptionError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.backends.rar_parser import (
     RarKdfCache,
     _HeaderDecryptStream,
@@ -460,6 +465,39 @@ def test_volume_set_header_cut_names_the_volume() -> None:
     archive = parse_rar_volumes([io.BytesIO(part1), io.BytesIO(part2)], password=None)
     assert archive.truncated is not None
     assert "header that starts at byte 25 (volume 2 of the set" in archive.truncated
+
+
+@pytest.mark.parametrize(
+    ("first", "rest"),
+    [
+        # RAR5: MAIN's volume number says this is not the first volume.
+        ("tinyvol.part2.rar", "tinyvol.part1.rar"),
+        # RAR4 has no volume number; the first FILE continues an earlier volume.
+        ("tinyvol_rnn.r00", "tinyvol_rnn.rar"),
+    ],
+)
+def test_set_not_starting_at_volume_one_needs_first_volume(
+    first: str, rest: str
+) -> None:
+    """A later volume alone, or listed first, is refused rather than listed as a
+    fragment of a member."""
+    lone = _fixture(first).read_bytes()
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        parse_rar_archive(io.BytesIO(lone), password=None)
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        parse_rar_volumes([io.BytesIO(lone)], password=None)
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        parse_rar_volumes(
+            [io.BytesIO(lone), io.BytesIO(_fixture(rest).read_bytes())],
+            password=None,
+        )
+
+
+def test_lone_later_volume_path_needs_first_volume(tmp_path: Path) -> None:
+    lone = tmp_path / "lone.part2.rar"
+    lone.write_bytes(_fixture("tinyvol.part2.rar").read_bytes())
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        open_archive(lone)
 
 
 def test_rar5_cut_inside_a_multibyte_header_size_is_truncated() -> None:
