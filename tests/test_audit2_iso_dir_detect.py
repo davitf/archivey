@@ -193,7 +193,33 @@ def test_iso_shared_continuation_area_does_not_multiply_memory_at_open() -> None
     # Every name is ~1.9 KB, all from one 2 KiB sector. The listing budget is 10
     # members; what open_archive() spends should not scale with the number of
     # records pointing at that sector.
-    assert peak < 4 * len(data), (peak, len(data))
+    if peak >= 4 * len(data):
+        import gc
+
+        counts = gc.get_count()
+        threads = [t.name for t in threading.enumerate()]
+        tracemalloc.start(30)
+        attempt()
+        _, peak_again = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        collected = gc.collect()
+        tracemalloc.start(30)
+        attempt()
+        _, peak_after_gc = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        gc.disable()
+        try:
+            tracemalloc.start(30)
+            attempt()
+            _, peak_no_gc = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+        finally:
+            gc.enable()
+        pytest.fail(
+            f"DIAG peak={peak} again={peak_again} after_gc={peak_after_gc} "
+            f"no_gc={peak_no_gc} collected={collected} counts={counts} "
+            f"threads={threads}"
+        )
 
 
 def _count_record_parses(monkeypatch: pytest.MonkeyPatch) -> list[int]:
