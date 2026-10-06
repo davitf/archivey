@@ -595,11 +595,11 @@ class SevenZipReader(BaseArchiveReader):
 
         The pass yields no stream for it, and its folder decoder only moves when a later
         member is read, so without this the bytes go by unread and EOF finalization
-        would decode the folder again to get them. A streaming pass under
-        ``read_link_targets`` reads them now, through its own decoder, and keeps them
-        for finalization. Otherwise the pass only offers its decoder for this one
-        member, which is how ``extract_all`` reads an accepted link without a second
-        decode.
+        would decode the folder again to get them. A pass under ``read_link_targets``
+        (streaming or random access; both finalize links at the end) reads them now,
+        through its own decoder, and keeps them for finalization. Otherwise the pass
+        only offers its decoder for this one member, which is how ``extract_all``
+        reads an accepted link without a second decode.
         """
 
         def opener() -> ArchiveStream:
@@ -608,8 +608,7 @@ class SevenZipReader(BaseArchiveReader):
             )
 
         if (
-            self._streaming
-            and self._config.read_link_targets
+            self._config.read_link_targets
             and member.link_target is None
             and not member._link_target_resolved
         ):

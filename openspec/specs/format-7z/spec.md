@@ -556,12 +556,14 @@ covered by the bullets below.
 
 - Random-access listing (`members()`, `scan_members()`) SHALL decode no more of the
   folder for link targets than the end of its last link member.
-- A streaming pass SHALL read link targets through its own folder decode. Per folder,
+- A `stream_members()` pass, in either access mode, SHALL read link targets through its
+  own folder decode, and a pass that reaches its end SHALL leave every link target it
+  read set on the members it yielded. Per folder,
   the pass SHALL decode from the start to the later of the end of the consumer's reads and
   the end of the last link member it reads, and SHALL decode nothing more at EOF. This
   holds when the consumer reads no data, when a link is the last member with data in its
   folder, and when a link is alone in its folder.
-- Which links a streaming pass reads when the caller's selector excludes them is set by
+- Which links a pass reads when the caller's selector excludes them is set by
   `archive-reading`, "Bounded-memory sequential streaming via stream_members".
 - With `read_link_targets=False`, listing and a pass advancing SHALL decode nothing for
   link targets. `extract_all` still reads the targets of the links it accepts. It always
@@ -577,6 +579,7 @@ covered by the bullets below.
 | `members()` on a solid 7z with links before, between and after its file members | Decoded bytes equal each folder's last-link end offset, not the sum of every link's end offset |
 | Streaming pass over the same 7z, reading every stream | Every link target resolved; decoded bytes equal the folder sizes, each folder decoded once |
 | Streaming pass over the same 7z, reading no stream | Every link target resolved; decoded bytes equal each folder's last-link end offset |
+| Random-access pass over the same 7z, no `members()` call, reading every stream or none | As the two streaming rows: every link target resolved on the yielded members, same decoded bytes |
 | Non-solid 7z (`-ms=off`) with links | Each link's own folder decoded once, in both modes |
 | `read_link_targets=False`, `members()` then a pass reading no stream | No bytes decoded for link targets |
 | `read_link_targets=False`, `extract_all()` accepting every member, either mode | Each folder decoded once; accepted links resolved; no second decode for their targets |

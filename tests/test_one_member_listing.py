@@ -712,17 +712,31 @@ def test_7z_listing_decodes_a_folder_once_up_to_its_last_link() -> None:
         assert _decoded(reader) == _LINK_ENDS[-1] != sum(_LINK_ENDS)
 
 
+@pytest.mark.parametrize("streaming", _MODES)
 @pytest.mark.parametrize("read_streams", [True, False], ids=["read-all", "read-none"])
-def test_7z_streaming_pass_reads_links_through_its_own_decode(
-    read_streams: bool,
+def test_7z_pass_reads_links_through_its_own_decode(
+    read_streams: bool, streaming: bool
 ) -> None:
-    with enable_measurement(), open_archive(_LINKS_SOLID, streaming=True) as reader:
-        for _member, stream in reader.stream_members():
+    """A pass to the end sets the targets on the members it yielded, in both modes.
+
+    Random access used to leave them unset until ``members()`` was called, which then
+    decoded the folder a second time for them.
+    """
+    with (
+        enable_measurement(),
+        open_archive(_LINKS_SOLID, streaming=streaming) as reader,
+    ):
+        yielded = []
+        for member, stream in reader.stream_members():
+            yielded.append(member)
             if read_streams and stream is not None:
                 stream.read()
+        # The yielded objects themselves, before anything else could resolve them.
+        assert _link_targets(yielded) == _EXPECTED_TARGETS
+        expected = _FOLDER_SIZE if read_streams else _LINK_ENDS[-1]
+        assert _decoded(reader) == expected
         members = reader.scan_members()
         assert _link_targets(members) == _EXPECTED_TARGETS
-        expected = _FOLDER_SIZE if read_streams else _LINK_ENDS[-1]
         assert _decoded(reader) == expected
 
 

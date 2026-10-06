@@ -1500,15 +1500,20 @@ class BaseArchiveReader(ArchiveReader):
 
         Streaming pulls through the shared forward pass, so the pass registers,
         finalizes and publishes like every other backend's. Random access drains the
-        walk first and resolves no links, which is today's timing for a solid pass.
+        walk first; a pass that reaches the end then finalizes its links and publishes
+        the listing as the streaming pass does, so a 7z or RAR4 symlink whose target is
+        its data has that target after the pass in both modes. A pass abandoned early
+        never gets here and resolves nothing.
         """
         if self._streaming:
             yield from self._begin_forward_pass()
             return
         self._ensure_walked(enforce=False)
         yield from list(self._listed)
-        if self._walk_error is not None:
-            raise self._walk_error
+        error = self._walk_error
+        self._finalize_pass_links(error=error)
+        if error is not None:
+            raise error
 
     def _materialize_members(
         self, *, enforce_listing_limits: bool = True
@@ -2249,10 +2254,11 @@ class BaseArchiveReader(ArchiveReader):
             member.link_target_member = terminal
 
     def _finalize_pass_links(self, *, error: ArchiveyError | None = None) -> None:
-        """Resolve all links after a streaming forward pass reaches EOF or terminal damage."""
+        """Resolve all links after a forward pass reaches EOF or terminal damage."""
         if self._materialized is not None:
             return
-        # Also ends TAR's one-pass stream_members() on a random-access reader, which
+        # Also ends a random-access reader's stream_members() pass (TAR's one-pass
+        # walk, and the 7z and solid RAR passes over ``_listed_members()``), which
         # opens no child scope either.
         self._finalize_and_publish(
             error,
