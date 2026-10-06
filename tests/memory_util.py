@@ -10,8 +10,9 @@ garbage) on CPython 3.13.16t. Whether the automatic collection fires inside a gi
 window depends on what earlier tests allocated, so a peak test can fail in the full
 suite and never alone. The ISO shared-continuation-area test in
 ``test_audit2_iso_dir_detect.py`` did, on the free-threaded CI job, peaking at 5.3x
-to 6.5x the image against a 4x bound (6.9x to 9.3x locally). The same collection adds 28 to 110 KB on free-threaded
-3.14.8 and almost nothing on a GIL build.
+to 6.5x the image against a 4x bound (6.9x to 9.3x locally). On free-threaded 3.14.8
+an automatic collection over the same 300 000 objects added about 110 KB (a bare
+``gc.collect()`` over 600 000 containers, 28 KB), and on a GIL build almost nothing.
 """
 
 from __future__ import annotations

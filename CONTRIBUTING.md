@@ -400,11 +400,13 @@ security fixes one line each, other bug fixes summarized in one line).
   leaked children via `Popen.terminate` — `os.WNOHANG` does not exist on
   Windows, and using it hid the leak report behind an `AttributeError`.
   `@pytest.mark.allow_resource_leaks` skips the fail, not the reap.
-- **Measure memory with `tests/memory_util.traced_peak`.** Do not start and stop
-  `tracemalloc` by hand. On free-threaded 3.13 a garbage collection that runs inside the
-  window adds memory in proportion to every live object in the process, so a peak
-  bound fails in the full serial suite and never alone. The helper collects first and
-  keeps the collector off while it measures; its module docstring has the numbers.
+- **Measure a memory peak with `tests/memory_util.traced_peak`.** Do not start and stop
+  `tracemalloc` by hand for a peak. On free-threaded 3.13 a garbage collection that runs
+  inside the window adds memory in proportion to every live object in the process, so a
+  peak bound fails in the full serial suite and never alone. The helper collects first
+  and keeps the collector off while it measures; its module docstring has the numbers.
+  A test that bounds retained memory (`test_audit_tar_streams.py`, `test_codecs.py`) is
+  unaffected: the collector's working memory is freed by the time the collection ends.
 - **Hit the corner cases.** Especially corrupt, truncated, and encrypted archives;
   wrong passwords; empty/zero-length members; unusual names and metadata; non-seekable
   sources. When porting or writing a reader, deliberately trigger each error path so the
