@@ -1390,9 +1390,7 @@ class ExtractionCoordinator:
         transformed = self._as_written(original, transformed)
         # The checks run on the name that reaches disk; the name policy below runs on
         # the stored one, so it does not take a lone surrogate for a byte.
-        check_universal(
-            disk_spelled(transformed), dest_root, link_target_on_disk=self._on_disk
-        )
+        self._check_universal(transformed, dest_root)
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet: `read_link_targets=False`, or a streaming pass whose own read
@@ -1411,11 +1409,7 @@ class ExtractionCoordinator:
             if original.link_target is not None:
                 if transformed is not original:
                     transformed = transformed.replace(link_target=original.link_target)
-                check_universal(
-                    disk_spelled(transformed),
-                    dest_root,
-                    link_target_on_disk=self._on_disk,
-                )
+                self._check_universal(transformed, dest_root)
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
@@ -1443,6 +1437,27 @@ class ExtractionCoordinator:
             )
         # After a re-root, the stored name is the one the caller will recognise.
         return disk_spelled(portable), rerooted_from or transformed.name
+
+    def _check_universal(self, member: ArchiveMember, dest_root: Path) -> None:
+        """``check_universal`` on the disk spelling, reporting the stored names.
+
+        A lone surrogate is checked as the bytes that reach disk (``disk_spelled``),
+        but an error names ``member.name`` and its link target as listed, so a caller
+        can match it to the member, and one skip does not print two names.
+        """
+        on_disk = disk_spelled(member)
+        try:
+            check_universal(on_disk, dest_root, link_target_on_disk=self._on_disk)
+        except ExtractionError as exc:
+            if on_disk is not member:
+                if exc.member_name == on_disk.name:
+                    exc.member_name = member.name
+                if (
+                    exc.link_target is not None
+                    and exc.link_target == on_disk.link_target
+                ):
+                    exc.link_target = member.link_target
+            raise
 
     @staticmethod
     def _needs_target_read(original: ArchiveMember, transformed: ArchiveMember) -> bool:
