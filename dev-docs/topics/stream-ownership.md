@@ -105,6 +105,8 @@ should likewise not be a `DelegatingStream`.
 `subclass_closes_inner` is kept, not folded into `owns_inner`. Both values own;
 the flag is the close *mechanism*. Eliminating it would double-close the
 accelerator / unrar pipe, or force a new oracle key that is easy to forget.
+`_replace_inner` honours the flag the same way: it closes the inner it swaps out
+unless the subclass closes that one itself.
 
 ## 3. What is left of mandatory-explicit keywords
 

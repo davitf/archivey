@@ -126,6 +126,34 @@ def test_replace_inner_recaches_seekable() -> None:
     assert s.seekable() is False
 
 
+def test_replace_inner_closes_the_old_inner() -> None:
+    old = io.BytesIO(b"x")
+    s = DelegatingStream(old)
+    s._replace_inner(io.BytesIO(b"y"))
+    assert old.closed
+    assert s.read() == b"y"
+
+
+def test_replace_inner_survives_an_old_inner_that_fails_to_close() -> None:
+    class _FailingClose(io.BytesIO):
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    s = DelegatingStream(_FailingClose(b"x"))
+    new = io.BytesIO(b"y")
+    s._replace_inner(new)
+    assert s._inner is new
+    assert s.read() == b"y"
+
+
+def test_replace_inner_leaves_the_old_inner_to_a_subclass_that_closes_it() -> None:
+    old = io.BytesIO(b"x")
+    s = DelegatingStream(old, subclass_closes_inner=True)
+    s._replace_inner(io.BytesIO(b"y"))
+    assert not old.closed
+    s.close()
+
+
 def test_delegating_base_close_closes_inner() -> None:
     inner = io.BytesIO(b"data")
     s = DelegatingStream(inner)
