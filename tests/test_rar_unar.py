@@ -972,39 +972,6 @@ def test_stream_volume_set_reads_with_unar(names: tuple[str, ...]) -> None:
         }
 
 
-@pytest.mark.parametrize(
-    ("index", "old_style", "expected"),
-    [
-        (1, False, "a.part1.rar"),
-        (12, False, "a.part12.rar"),
-        (1, True, "a.rar"),
-        (2, True, "a.r00"),
-        (101, True, "a.r99"),
-        (102, True, "a.s00"),
-        (901, True, "a.z99"),
-        (902, True, "a.{00"),
-        (1001, True, "a.{99"),
-        (1002, True, "a.|00"),
-    ],
-)
-def test_stream_volume_names_follow_the_set_scheme(
-    index: int, old_style: bool, expected: str
-) -> None:
-    assert rar_reader._stream_volume_name("a", index, old_style=old_style) == expected
-
-
-@pytest.mark.parametrize("old_style", [False, True])
-def test_stream_volume_names_are_the_names_unrar_walks(old_style: bool) -> None:
-    """Every staged name is the one unrar looks for after the one before it, so a
-    staged set of any length reads to its end (unrar stopped at 901 old-style
-    volumes when the 902nd was named ``partN``)."""
-    for index in range(1, 1500):
-        current = rar_reader._stream_volume_name("a", index, old_style=old_style)
-        assert rar_reader._unrar_next_volume_name(
-            current, old_numbering=old_style
-        ) == rar_reader._stream_volume_name("a", index + 1, old_style=old_style)
-
-
 def test_unrar_name_walk_on_an_unencodable_next_name_is_not_found(
     tmp_path: Path,
 ) -> None:

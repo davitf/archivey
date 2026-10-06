@@ -200,6 +200,7 @@ other processed statuses are omitted from that line).
 | `archivey -- -weird.zip` | Lists `-weird.zip` (default `list` inserted ahead of `--`) |
 | `archivey -- list` | Opens a file named `list`; a verb word after `--` is an archive path |
 | `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |
+| `archivey --policy strict x <archive>` or `archivey list <archive> --policy strict` (a verb's flag before the verb, or after a verb that does not take it) | Usage error naming the flag and the verb(s) it belongs to; a verb's own flags follow a verb that owns them |
 
 ### Requirement: Archive-derived text is escaped before terminal display
 

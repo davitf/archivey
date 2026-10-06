@@ -678,9 +678,9 @@ def test_cli_list_unencrypted_format_without_password(
 
 def test_c_is_not_integrity_alias(sample_zip: Path) -> None:
     # Integrity check is `test`/`t`; letter `c` is reserved for future `create`.
-    from archivey.cli.main import _VERBS
+    from archivey.cli.main import _grammar
 
-    assert "c" not in _VERBS
+    assert "c" not in _grammar().verbs
     assert main(["t", str(sample_zip)]) == EXIT_OK
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
 
@@ -2394,6 +2394,84 @@ def test_inject_default_list_puts_verb_before_separator() -> None:
     assert _inject_default_list(["--", "list"]) == ["list", "--", "list"]
     # A spelled verb before ``--`` is left alone.
     assert _inject_default_list(["list", "--", "a.zip"]) == ["list", "--", "a.zip"]
+
+
+def test_inject_default_list_skips_only_pre_verb_option_values() -> None:
+    # A value-taking option the main parser knows: its value is not the verb.
+    assert _inject_default_list(["--password", "list", "a.zip"]) == [
+        "--password",
+        "list",
+        "list",
+        "a.zip",
+    ]
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--abort-on", "--policy", "--overwrite", "-d", "--dest", "--exclude"],
+)
+def test_verb_option_before_verb_is_named_as_unrecognized(
+    flag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The main parser does not know a verb's options, so it does not consume their
+    # value. The value is then the first positional, and an injection that skipped it
+    # blamed the value as an invalid verb instead of naming the misplaced flag.
+    assert main([flag, "blocked-member", "x", "a.zip"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert f"unrecognized arguments: {flag}" in err
+    assert "invalid choice" not in err
+    # ...and names the verb it belongs to.
+    assert f"({flag} is an option of '" in err
+    assert "; it goes after " in err
+
+
+def test_verb_option_hint_names_every_verb_that_takes_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--policy=strict", "a.zip"]) == EXIT_USAGE
+    assert (
+        "(--policy is an option of 'extract'; "
+        "it goes after that verb: archivey extract ARCHIVE --policy ...)"
+    ) in capsys.readouterr().err
+    assert main(["--exclude", "p", "a.zip"]) == EXIT_USAGE
+    assert (
+        "(--exclude is an option of 'list', 'test', 'extract'; "
+        "it goes after one of those verbs)"
+    ) in capsys.readouterr().err
+
+
+def test_verb_option_after_another_verb_is_not_called_misplaced(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The flag already follows a verb, just not one that takes it.
+    assert main(["list", str(sample_zip), "--policy", "strict"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "(--policy is an option of 'extract';" in err
+    assert "put it after the verb" not in err
+
+
+def test_tar_flag_hint_matches_whole_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # ``--my-list`` contains ``-l`` but is not the tar spelling of ``l``.
+    assert main(["x", "a.zip", "--my-list"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: --my-list" in err
+    assert "archivey l" not in err
+    # A stray positional is not a bundle either, even when its letters include i/l/t.
+    assert main(["info", "a.zip", "list"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: list" in err
+    assert "bare words" not in err
+
+
+@pytest.mark.parametrize(("bundle", "verb"), [("-xvf", "x"), ("-tzf", "t")])
+def test_tar_flag_hint_matches_short_option_bundles(
+    bundle: str, verb: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ``tar -xvf`` habit: the bundle's first verb letter is the verb meant.
+    assert main([bundle, "a.tar"]) == EXIT_USAGE
+    assert f"try 'archivey {verb} ARCHIVE'" in capsys.readouterr().err
 
 
 def test_double_dash_lists_dash_named_archive(
