@@ -3993,6 +3993,12 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
             assert spawns == ["a*.txt", "a*.txt"]
 
 
+_SEPARATOR_OR_DIR_GLOB = (
+    "unrar reads with a backslash, or with a glob in a directory component, "
+    "cannot be read through unrar"
+)
+
+
 @requires_binary("unrar")
 def test_wildcard_dirglob_and_backslash_names_are_refused(
     monkeypatch: pytest.MonkeyPatch,
@@ -4019,7 +4025,7 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
                 continue
             assert archive.read(name) == expected
         before = list(spawns)
-        with pytest.raises(UnsupportedFeatureError):
+        with pytest.raises(UnsupportedFeatureError, match=_SEPARATOR_OR_DIR_GLOB):
             archive.read("d*/x.txt")
         assert spawns == before
 
@@ -4029,7 +4035,7 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
         before = list(spawns)
         for name in _WILDCARD_BACKSLASH_REFUSED:
             assert name in files
-            with pytest.raises(UnsupportedFeatureError):
+            with pytest.raises(UnsupportedFeatureError, match=_SEPARATOR_OR_DIR_GLOB):
                 archive.read(name)
         assert spawns == before
 
