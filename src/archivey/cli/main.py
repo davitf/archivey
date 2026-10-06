@@ -6,6 +6,7 @@ import argparse
 import errno
 import functools
 import os
+import re
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
@@ -153,11 +154,13 @@ def _unrecognized_hints(tokens: list[str]) -> str:
     """Hints for unrecognized options: a tar-style verb flag, a verb's own flag."""
     opts = [tok.split("=", 1)[0] for tok in tokens]
     hints = ""
-    # Tar users type -x/-l/-t; verbs here are bare words.
-    for flag, verb in _VERB_FLAG_HINTS.items():
-        if flag in opts:
-            hints += f" (verbs are bare words — try 'archivey {verb} ARCHIVE')"
-            break
+    # Tar users type -x/-l/-t, often bundled (-xvf); verbs here are bare words. Only a
+    # single-dash bundle of letters counts, so ``--my-list`` is not ``-l``.
+    bundles = [o[1:] for o in opts if re.fullmatch(r"-[A-Za-z]+", o)]
+    flags = [f"-{ch}" for bundle in bundles for ch in bundle]
+    verb = next((_VERB_FLAG_HINTS[f] for f in flags if f in _VERB_FLAG_HINTS), None)
+    if verb is not None:
+        hints += f" (verbs are bare words — try 'archivey {verb} ARCHIVE')"
     # Name the owning verb only: the flag may already follow some other verb.
     verb_options = _grammar().verb_options
     for opt in opts:

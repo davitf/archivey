@@ -2431,6 +2431,20 @@ def test_tar_flag_hint_matches_whole_options(
     err = capsys.readouterr().err
     assert "unrecognized arguments: --my-list" in err
     assert "archivey l" not in err
+    # A stray positional is not a bundle either, even when its letters include i/l/t.
+    assert main(["info", "a.zip", "list"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: list" in err
+    assert "bare words" not in err
+
+
+@pytest.mark.parametrize(("bundle", "verb"), [("-xvf", "x"), ("-tzf", "t")])
+def test_tar_flag_hint_matches_short_option_bundles(
+    bundle: str, verb: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ``tar -xvf`` habit: the bundle's first verb letter is the verb meant.
+    assert main([bundle, "a.tar"]) == EXIT_USAGE
+    assert f"try 'archivey {verb} ARCHIVE'" in capsys.readouterr().err
 
 
 def test_double_dash_lists_dash_named_archive(
