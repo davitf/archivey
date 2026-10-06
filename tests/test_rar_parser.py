@@ -12,6 +12,7 @@ from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
@@ -490,6 +491,14 @@ def test_set_not_starting_at_volume_one_needs_first_volume(
         parse_rar_volumes(
             [io.BytesIO(lone), io.BytesIO(_fixture(rest).read_bytes())],
             password=None,
+        )
+
+
+def test_set_whose_last_volume_expects_another_is_truncated() -> None:
+    """The set ends but its last volume says another follows."""
+    with pytest.raises(TruncatedError, match="end of archive expects another volume"):
+        parse_rar_volumes(
+            [io.BytesIO(_fixture("tinyvol_rnn.rar").read_bytes())], password=None
         )
 
 

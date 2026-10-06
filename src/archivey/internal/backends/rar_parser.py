@@ -742,6 +742,8 @@ def _parse_rar_volume(
             name_encoding=name_encoding,
             password_proven=password_proven,
         )
+    # RAR5 normally refuses a later volume earlier, from MAIN's volume number;
+    # this check covers RAR 1.5-4, which records none, and a RAR5 MAIN without one.
     # The emit rule appends a split_before member only to an empty list, so
     # members[0] is the only place a continuation can show on volume 1.
     if volume_index == 0 and archive.members and archive.members[0].split_before:
@@ -2506,8 +2508,9 @@ def _emit_file_member(
     """Merge a ``split_before`` FILE into the previous member, else append it.
 
     Both header walks, the QO run and the cross-volume merge use this one rule. A
-    continuation with nothing before it (the first member of a volume) is appended;
-    on volume 1 :func:`_parse_rar_volume` then refuses it. Returns ``split_after``.
+    continuation is appended only when ``members`` is empty: in a header walk that is
+    the first member of a volume, which :func:`_parse_rar_volume` refuses on volume 1.
+    Returns ``split_after``.
     """
     if member.split_before and members:
         _merge_split_member(members[-1], member)
