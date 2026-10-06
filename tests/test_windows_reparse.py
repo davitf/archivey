@@ -15,9 +15,7 @@ import struct
 import subprocess
 import tarfile
 import tempfile
-import tracemalloc
 import zipfile
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,6 +43,7 @@ from archivey.internal.windows_reparse import (
 )
 from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
+from tests.memory_util import traced_peak
 
 _JUNCTION_DIR = Path(__file__).parent / "fixtures" / "external" / "junction"
 
@@ -636,16 +635,6 @@ def test_a_reparse_target_over_the_link_cap_is_refused(tmp_path: Path) -> None:
         assert _unavailable_reasons(opened) == ["target_too_long"]
 
 
-def _peak_traced_bytes(action: Callable[[], object]) -> int:
-    """The tracemalloc peak while ``action`` runs, in bytes."""
-    tracemalloc.start()
-    try:
-        action()
-        return tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
-
-
 # Deflated zeros: a ~64 KiB member that decodes to 64 MiB.
 _LARGE_CONTENT = b"\0" * (64 << 20)
 
@@ -668,7 +657,7 @@ def test_a_large_non_link_reparse_member_keeps_all_its_content(
         info.compress_type = zipfile.ZIP_DEFLATED
         zf.writestr(info, _LARGE_CONTENT)
     with open_archive(archive) as opened:
-        assert _peak_traced_bytes(opened.members) < 8 << 20
+        assert traced_peak(opened.members) < 8 << 20
         (member,) = opened.members()
         assert member.type is MemberType.FILE
         with opened.open(member) as stream:
