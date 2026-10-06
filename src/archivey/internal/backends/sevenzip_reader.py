@@ -116,7 +116,6 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
-from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
