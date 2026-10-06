@@ -8,6 +8,7 @@ directory backend. Every fixture is built in the test; nothing is committed.
 
 from __future__ import annotations
 
+import gc
 import gzip
 import io
 import os
@@ -105,7 +106,10 @@ def test_iso_listing_limits_bound_the_memory_spent_at_open() -> None:
 
     # One untraced run first, so lazy imports and first-use caches (which differ
     # by platform: 474 KB on Windows against 174 KB of image) are not counted.
+    # Then collect, so garbage left by earlier tests is not finalized (and its
+    # finalizers' allocations counted) inside the traced window.
     attempt()
+    gc.collect()
     tracemalloc.start()
     try:
         attempt()
@@ -182,7 +186,10 @@ def test_iso_shared_continuation_area_does_not_multiply_memory_at_open() -> None
 
     # One untraced run first, so lazy imports and first-use caches (which differ
     # by platform: 474 KB on Windows against 174 KB of image) are not counted.
+    # Then collect, so garbage left by earlier tests is not finalized (and its
+    # finalizers' allocations counted) inside the traced window.
     attempt()
+    gc.collect()
     tracemalloc.start()
     try:
         attempt()
