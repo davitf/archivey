@@ -385,10 +385,14 @@ def test_open_long_cycle_raises_read_error(tmp_path: Path) -> None:
 
 
 def _tar(path: Path, entries: list[tuple[str, str, str | None]]) -> Path:
-    """``entries`` are ``(name, kind, target)``; kind is "file", "sym" or "hard"."""
+    """``entries`` are ``(name, kind, target)``; kind is "file", "dir", "sym" or "hard"."""
     with tarfile.open(path, "w") as tf:
         for name, kind, target in entries:
             info = tarfile.TarInfo(name)
+            if kind == "dir":
+                info.type = tarfile.DIRTYPE
+                tf.addfile(info)
+                continue
             if kind == "file":
                 data = f"payload:{name}".encode()
                 info.size = len(data)
@@ -445,6 +449,29 @@ def test_converging_chains_share_the_memo(tmp_path: Path) -> None:
     with open_archive(_tar(tmp_path / "branch.tar", entries)) as reader:
         assert _terminal_names(reader) == {"a": "end", "b": "end", "m": "end"}
         assert reader.read("b") == b"payload:end"
+
+
+# A target ``x`` names both a file ``x`` and a directory ``x/``. A symlink prefers the
+# bare name whatever the order; a hard link takes the later of the two.
+@pytest.mark.parametrize("dir_first", [False, True])
+def test_link_target_tie_break_between_file_and_directory(
+    tmp_path: Path, dir_first: bool
+) -> None:
+    both: list[tuple[str, str, str | None]] = [("x", "file", None), ("x/", "dir", None)]
+    if dir_first:
+        both.reverse()
+    entries = [*both, ("s", "sym", "x"), ("h", "hard", "x")]
+    later = both[-1][0]
+    path = _tar(tmp_path / "tie.tar", entries)
+    with open_archive(path) as reader:
+        assert _terminal_names(reader) == {"s": "x", "h": later}
+    with open_archive(path, streaming=True) as reader:
+        yielded = {
+            m.name: (m.link_target_member.name if m.link_target_member else None)
+            for m, _stream in reader.stream_members()
+            if m.is_link
+        }
+        assert yielded == {"s": "x", "h": later}
 
 
 @pytest.mark.parametrize("seed", range(20))
