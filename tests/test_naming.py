@@ -143,8 +143,7 @@ def test_link_target_backslash_is_literal() -> None:
 
 
 def test_infer_member_name_from_archive() -> None:
-    import re
-
+    from archivey.internal.backends.sevenzip_reader import _SEVENZIP_STEM_SUFFIX_RE
     from archivey.internal.naming import infer_member_name_from_archive
 
     assert infer_member_name_from_archive(None) == "data"
@@ -157,7 +156,7 @@ def test_infer_member_name_from_archive() -> None:
     assert (
         infer_member_name_from_archive(
             "archive.7z.001",
-            strip_suffix_re=re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE),
+            strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE,
         )
         == "archive"
     )

@@ -170,12 +170,14 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
     )
 
 
+# ``\Z``, not ``$``: ``$`` also matches before a final newline, which would strip the
+# suffix from ``name.7z\n`` and leave the newline in the member name.
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?\Z", re.IGNORECASE)
+
+
 # The folder settles a wrong key inside the confirm prefix when a REJECTING_CODECS
 # codec decodes the AES output. Filters never reject: ``MethodKind.LZMA_FAMILY`` also
 # holds Delta and BCJ, which is why the check is by codec and not by method kind.
-
-
 def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
     """Whether a decoder of the decrypted bytes rejects random input (confirm rung 3).
 

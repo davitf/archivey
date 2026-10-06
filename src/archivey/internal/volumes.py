@@ -79,6 +79,8 @@ SourceSequence = Sequence[SourceItem]
 # below has the same cap for the same reason.
 # The largest part the six-digit ``part`` groups below can hold.
 _MAX_VOLUME_PART = 999_999
+# This pattern and ``_RAR_PART_RE`` end in ``\Z``, not ``$``: ``$`` also matches before
+# a final newline, which would read ``name.7z.001\n`` as a volume name.
 _NUMBERED_VOLUME_RE = re.compile(
     r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})\Z", re.IGNORECASE
 )
@@ -109,7 +111,7 @@ _RAR_PART_RE = re.compile(
 # of another scheme or another base the check refuses the sequence as two sets. No
 # narrower pattern is sound. The name alone cannot tell ``beta.s00`` from
 # ``readme.p12``, and the walk can reach any letter before ``_MAX_VOLUME_PART`` stops
-# it.
+# it. ``\Z``, not ``$``: ``$`` also matches before a final newline.
 _OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}\Z")
 _OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 

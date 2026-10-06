@@ -116,7 +116,7 @@ _SKIP_NAMES = frozenset(
 )
 
 _PART_RE = re.compile(
-    r"\.part(?P<num>[2-9]\d*)\.rar$|\.part0*(?P<num2>[2-9]\d*)\.rar$",
+    r"\.part(?P<num>[2-9]\d*)\.rar\Z|\.part0*(?P<num2>[2-9]\d*)\.rar\Z",
     re.IGNORECASE,
 )
 
