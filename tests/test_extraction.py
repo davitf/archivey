@@ -1398,6 +1398,37 @@ def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED]
 
 
+def test_orphan_written_file_blocks_a_later_orphan_under_it(tmp_path: Path) -> None:
+    # The second pass records what it writes as the run's own, as the main pass does:
+    # a later orphan that needs that file as a parent directory gets the same error
+    # naming the file, not a bare FileExistsError.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("file", "s1", b"one"),
+                ("file", "s2", b"two"),
+                ("hard", "a", "s1"),
+                ("hard", "a/b", "s2"),
+            ]
+        )
+    )
+
+    def drop_sources(m: ArchiveMember) -> ArchiveMember | None:
+        return None if m.name in ("s1", "s2") else m
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            tmp_path / "out", filter=drop_sources, on_error=OnError.CONTINUE
+        ).results
+    by_name = {res.member.name: res for res in results}
+    assert by_name["a"].status is ExtractionStatus.EXTRACTED
+    failed = by_name["a/b"]
+    assert failed.status is ExtractionStatus.FAILED
+    assert isinstance(failed.error, ExtractionError)
+    assert "'a' is a non-directory already extracted" in str(failed.error)
+
+
 def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
     from tests.streams_util import NonSeekableBytesIO
 
