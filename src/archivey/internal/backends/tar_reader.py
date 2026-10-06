@@ -1306,6 +1306,11 @@ class TarReader(BaseArchiveReader):
         observed_bytes: int,
         observed_kind: Literal["absent", "short", "nonzero"],
     ) -> None:
+        """Report a missing or damaged two-zero-block end-of-archive marker.
+
+        Unlike data after a complete trailer, a non-null block in the marker's place is
+        always corruption: tarfile read it as a clean end and shortened the listing.
+        """
         if observed_kind == "nonzero":
             message = (
                 "TAR archive is corrupt: a non-null block appears where the "
