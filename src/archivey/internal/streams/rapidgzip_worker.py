@@ -226,7 +226,42 @@ def _serve(channel: _Channel, stream: Any) -> None:
             return
 
 
+def disable_core_dumps() -> None:
+    """Ask the system not to write a core dump when this process aborts.
+
+    rapidgzip aborts this process on every stream that ends early (the reason it runs
+    here), so a core is expected and useless. It is also large: with every core
+    decoding, the address space is several GB, and the kernel writes all of it.
+    ``RLIMIT_CORE`` of 0 stops a core file, but not a core piped to a crash handler
+    (``core_pattern`` starting with ``|``: apport, systemd-coredump), which the kernel
+    feeds whatever the limit. Until the handler has read it, this process stays alive
+    with its pipes open, and the parent waits: measured, 2 to 4 s per abort with a
+    handler that only drains the pipe, and longer with one that compresses or stores
+    it. Linux skips the dump entirely for a process that is not dumpable.
+    ``ppmd_worker.py`` has a copy, since neither worker can import the other;
+    ``tests/test_worker_scripts.py`` keeps the two the same.
+
+    Best effort: anything missing (no ``resource`` on Windows, a Python built without
+    ``ctypes``, no ``prctl``) is skipped.
+    """
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+
+            pr_set_dumpable = 4
+            ctypes.CDLL(None).prctl(pr_set_dumpable, 0, 0, 0, 0)
+        except (ImportError, OSError, AttributeError):
+            pass
+
+
 def main() -> None:
+    disable_core_dumps()
     # A terminal's Ctrl-C signals the whole foreground process group, this child too.
     # The parent decides what an interrupt means; here it would kill the process with
     # rapidgzip's threads running, which aborts it and reads as a decoder crash.
