@@ -1446,16 +1446,18 @@ class _GzipTruncationCheckStream(DelegatingStream):
     ISIZE and the source length are **captured up front** (``isize`` / ``source_len``) so no
     per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ a
     non-empty soft EOF is an incomplete member, handed to the standard library like a
-    mismatch; a value ⇒ compare; ``source_len is None``
-    (unreadable) ⇒ return without raising. ``views`` gives the multi-member scan and the
-    stdlib fallback their own access to the source (:class:`_SourceViews`), so neither
-    disturbs the live accelerator's cursor.
+    mismatch; a value ⇒ compare; ``source_len is None`` (unreadable) ⇒ return without
+    raising. ``views`` gives the multi-member scan and the stdlib fallback their own access
+    to the source (:class:`_SourceViews`), so neither disturbs the live accelerator's
+    cursor.
 
     A caller ``seek`` off the sequential frontier disarms both checks.
 
     An ISIZE mismatch hands the read to the standard library
     (:meth:`_StdlibOnAcceleratorError.switch_to_stdlib`), which gives the verdict and keeps
-    it, as does the stdlib engine the empty-EOF arm switches to.
+    it, as does the stdlib engine the empty-EOF arm switches to. The switch always installs
+    that engine: positioning it at the delivered offset defers any content fault to the
+    next read (``DecompressorStream.seek``), so a later read cannot see a clean EOF.
     """
 
     # Side-effecting read() (byte-total + EOF truncation check); disable

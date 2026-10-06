@@ -188,13 +188,15 @@ source that is seekable, `_GzipTruncationCheckStream` backs it up:
    raises the truncation (or reports bytes appended to the file), unless a further
    `1f 8b 08` appears anywhere in the file, in which case the file may be multi-member and
    nothing is raised.
-3. A source shorter than 18 bytes that yielded bytes is truncated; a source whose length
-   cannot be read is never called truncated.
+3. A source shorter than 18 bytes that still yielded bytes is handed to the standard
+   library engine as well, which raises the truncation. A source whose length cannot be
+   read is never called truncated.
 
 A seek away from the sequential position disarms the check. Once the standard library
-engine has raised, it raises again at every later end of data. A container member does not need it: the
-container declared the size, and `VerifyingStream` checks length and CRC. A bare zlib or
-raw DEFLATE stream has neither, which is why `AUTO` never gives one to `rapidgzip`.
+engine has raised, it raises again at every later end of data. A container member does
+not need it: the container declared the size, and `VerifyingStream` checks length and
+CRC. A bare zlib or raw DEFLATE stream has neither, which is why `AUTO` never gives one to
+`rapidgzip`.
 
 **The zlib Adler-32 check.** `rapidgzip` does not check a zlib stream's Adler-32: a damaged
 body or trailer decodes with no error, sometimes short. `_ZlibAdlerCheckStream` keeps an

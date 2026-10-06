@@ -240,7 +240,8 @@ class DelegatingStream(ReadOnlyIOStream):
     def _replace_inner(self, inner: BinaryIO) -> None:
         """Swap the inner stream, recaching anything derived from it, and close the old
         one best-effort: the new one has taken over. A ``subclass_closes_inner`` stream
-        closes the old one itself, as it does in ``close``."""
+        closes the old one itself, as it does in ``close``; this method does not hand
+        it back, so such a subclass captures ``self._inner`` before the call."""
         old, self._inner = self._inner, inner
         self._seekable = is_seekable(inner)
         if self._subclass_closes_inner:
