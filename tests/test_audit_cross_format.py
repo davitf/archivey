@@ -1,9 +1,8 @@
 """Cross-format audit: a protection one backend applies and another skips.
 
-Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` with the
-gap it pins, so a fix turns it into an XPASS failure and the marker has to go. The
-per-backend audits cover each format in depth; these are the cells of the protection
-matrix where formats disagree with each other or with the published docs.
+The per-backend audits cover each format in depth; these tests pin the cells of the
+protection matrix where formats disagreed with each other or with the published docs,
+so each format keeps the promised behaviour.
 """
 
 from __future__ import annotations
