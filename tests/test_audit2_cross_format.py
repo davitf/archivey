@@ -599,7 +599,7 @@ def test_rar_plain_cut_at_a_header_boundary_is_not_a_cut(
 # ---------------------------------------------------------------------------
 # Maintainer ruling 2026-10-03. The block sits after the last member, so damage to
 # it is terminal damage after the members: they list, open and read, the reader
-# reports ARCHIVE_EOF_MARKER_MISSING once after them (observed_kind="nonzero": a
+# reports ARCHIVE_EOF_MARKER_MISSING after them (observed_kind="nonzero": a
 # block is there, but it is not a valid end block), and a strict policy refuses.
 # Measured on unrar 7.00 with one CRC byte of the end block flipped in
 # basic_nonsolid__rar4.rar and basic_nonsolid__.rar: `unrar l` lists all six
@@ -631,7 +631,8 @@ def _edit_endarc(
     block_pos, header_end = _endarc_block(data, version)
     if version == 4:
         if next_volume:
-            struct.pack_into("<H", out, block_pos + 3, out[block_pos + 3] | 0x0001)
+            flags = struct.unpack_from("<H", out, block_pos + 3)[0]
+            struct.pack_into("<H", out, block_pos + 3, flags | 0x0001)
         crc = zlib.crc32(out[block_pos + 2 : header_end]) & 0xFFFF
         struct.pack_into("<H", out, block_pos, crc)
     else:
@@ -682,7 +683,10 @@ def test_rar_damaged_endarc_keeps_the_listing(
     assert context.format == "rar"
     assert context.expected_marker == "end_of_archive_block"
     assert context.observed_kind == "nonzero"
+    assert context.observed_bytes == _endarc_block(data, version)[0]
     assert "header CRC" in diagnostics[0].message
+    # A lone archive has no next volume, so the message does not mention one.
+    assert "next-volume" not in diagnostics[0].message
 
 
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
@@ -714,7 +718,7 @@ def test_rar_intact_endarc_emits_no_eof_warning(fixture: str, version: int) -> N
         (_RAR_FIXTURES / fixture).read_bytes(), version, damage_crc=False
     )
     archive = parse_rar_archive(io.BytesIO(data), password=None)
-    assert archive.end_block_damaged_volumes == []
+    assert archive.end_block_damaged_volumes == {}
     with open_archive(io.BytesIO(data)) as reader:
         reader.members()
         assert not _eof_marker_diagnostics(reader.diagnostics)
@@ -733,14 +737,15 @@ def test_rar_damaged_endarc_next_volume_flag_is_not_followed(
     damaged = _edit_endarc(data, version, next_volume=True)
     archive = parse_rar_archive(io.BytesIO(damaged), password=None)
     assert not archive.needs_next_volume
-    assert archive.end_block_damaged_volumes == [0]
+    endarc_at = _endarc_block(data, version)[0]
+    assert archive.end_block_damaged_volumes == {0: endarc_at}
     # A set ends at the damaged volume: the bytes passed as volume 2 are not read,
     # so they need not even be RAR.
     merged = parse_rar_volumes(
         [io.BytesIO(damaged), io.BytesIO(b"not a RAR volume")], password=None
     )
     assert [m.filename for m in merged.members] == [m.filename for m in archive.members]
-    assert merged.end_block_damaged_volumes == [0]
+    assert merged.end_block_damaged_volumes == {0: endarc_at}
 
 
 @pytest.mark.parametrize(
@@ -771,7 +776,8 @@ def test_rar_volume_set_damaged_endarc_continues_on_a_split_member(
         )
         diagnostics = _eof_marker_diagnostics(reader.diagnostics)
     assert len(diagnostics) == 1
-    assert "volume(s) 1 " in diagnostics[0].message
+    assert "volume 1," in diagnostics[0].message
+    assert "next-volume flag was not followed" in diagnostics[0].message
 
 
 def _rar3_hp_damaged_endarc(data: bytes) -> bytes:
@@ -889,6 +895,84 @@ def test_rar5_header_encrypted_damaged_endarc_with_no_check_value_is_a_wrong_pas
     with pytest.raises(EncryptionError, match=r"wrong password\?"):
         with open_archive(io.BytesIO(damaged), password=_HP_PASSWORD) as reader:
             reader.members()
+
+
+def _flip_block_type_to_endarc(data: bytes, version: int, which: str) -> bytes:
+    """Overwrite one block's type byte with the end block's type, leaving the rest
+    of the header (and so its CRC) as it was. ``which`` is ``"main"`` or
+    ``"second_file"``."""
+    if version == 4:
+        blocks, file_type, type_at, end_type = _rar4_blocks(data), 0x74, 2, 0x7B
+        main_type = 0x73
+    else:
+        blocks, file_type, end_type, main_type = _rar5_blocks(data), 2, 5, 1
+        type_at = 4 + 1  # CRC32, then a one-byte size vint in the fixtures
+    if which == "main":
+        block_pos = next(b[0] for b in blocks if b[1] == main_type)
+    else:
+        block_pos = [b[0] for b in blocks if b[1] == file_type][1]
+    out = bytearray(data)
+    assert out[block_pos + type_at] in (file_type, main_type)  # precondition
+    out[block_pos + type_at] = end_type
+    return bytes(out)
+
+
+@pytest.mark.parametrize("which", ["main", "second_file"])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
+def test_rar_header_whose_type_byte_reads_as_endarc_stays_corruption(
+    fixture: str, version: int, streaming: bool, which: str
+) -> None:
+    """The type of a header whose CRC failed is not data either: one flipped byte
+    turns a MAIN or FILE header's type into the end block's. Such a header has
+    members after it, so it is not taken for the end of the archive, and the
+    walk raises CorruptionError as for any other damaged header. unrar 7.00 on
+    the second_file cases lists only file1.txt and `unrar t` exits 3."""
+    data = _flip_block_type_to_endarc(
+        (_RAR_FIXTURES / fixture).read_bytes(), version, which
+    )
+    with pytest.raises(CorruptionError):
+        with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+            _members_and_bytes(reader)
+
+
+@pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
+def test_rar_damaged_endarc_followed_by_bytes_stays_corruption(
+    fixture: str, version: int
+) -> None:
+    """A damaged end block is taken as one only where the file ends right after
+    it, which a header with members after it cannot fake."""
+    data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version) + b"\0"
+    with pytest.raises(CorruptionError):
+        parse_rar_archive(io.BytesIO(data), password=None)
+
+
+@pytest.mark.parametrize("shape", ["data_area", "oversized"])
+@pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
+def test_rar_damaged_last_block_not_shaped_as_an_end_block_stays_corruption(
+    fixture: str, version: int, shape: str
+) -> None:
+    """At the end of the file, a damaged header typed as the end block is still
+    refused when its shape is not an end block's: it declares a data area (RAR5
+    data-area flag, RAR3 long-block flag, as a FILE header does), or its header
+    is longer than an end block's."""
+    out = bytearray(_edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version))
+    block_pos, header_end = _endarc_block(bytes(out), version)
+    assert header_end == len(out)  # precondition: the end block is last
+    if version == 4:
+        # long block: a 4-byte data size of 0 follows the 7-byte header
+        size, extra = (11, 4) if shape == "data_area" else (40, 33)
+        if shape == "data_area":
+            out[block_pos + 4] |= 0x80
+        struct.pack_into("<H", out, block_pos + 5, size)
+        out += bytes(extra)
+    elif shape == "data_area":
+        out[block_pos + 6] |= 0x02  # block flags: data area
+    else:
+        out[block_pos + 4] += 1  # one-byte size vint: one byte past the end flags
+        out += b"\0"
+    with pytest.raises(CorruptionError):
+        parse_rar_archive(io.BytesIO(bytes(out)), password=None)
 
 
 # ---------------------------------------------------------------------------

@@ -1085,12 +1085,20 @@ and RAR5 lists and then emits `ARCHIVE_EOF_MARKER_MISSING`.
 When a RAR end-of-archive block (`ENDARC`) fails its header CRC, the archive SHALL open
 and list every member before it, and those members SHALL open and read as they would
 with an intact block. The damage is after the last member, so it SHALL be reported as
-`ARCHIVE_EOF_MARKER_MISSING` once, after the members (`format="rar"`,
-`expected_marker="end_of_archive_block"`, `observed_kind="nonzero"`, both byte counts 0).
+`ARCHIVE_EOF_MARKER_MISSING` after the members, once per damaged volume (`format="rar"`,
+`expected_marker="end_of_archive_block"`, `observed_kind="nonzero"`, `observed_bytes`
+the offset where the block starts in its volume, `expected_bytes` 0).
 `members_report().error` SHALL be `None`, and `DiagnosticPolicy.strict()` SHALL refuse
 the archive after the listing is delivered. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes. It matches `unrar` 7.00, which lists such an archive, tests each
 member OK, and then reports one error.
+
+The type of a header whose CRC failed is not proof either, since one flipped byte can
+make a MAIN or FILE header's type read as `ENDARC`. A CRC-failed header SHALL be taken
+as the end block only when its type reads as `ENDARC`, it has an end block's shape (no
+data area, and a header no larger than an end block's), and the file ends right after
+it. Any other CRC-failed header SHALL raise `CorruptionError`, as before this
+requirement.
 
 The walk SHALL NOT read the flags of a damaged block, so its next-volume flag SHALL NOT
 chain the walk to another volume. In a multi-volume set the walk SHALL continue past
@@ -1113,6 +1121,9 @@ record has no check value.
 | Case | Expected |
 | --- | --- |
 | Plain RAR 1.5-4 or RAR5, end block CRC mismatch | Full listing; members read; `ARCHIVE_EOF_MARKER_MISSING` after them; strict refuses |
+| MAIN or FILE header whose type byte is flipped to the end block's | `CorruptionError` at open |
+| Damaged end block followed by any byte | `CorruptionError` at open |
+| Damaged last header typed as the end block but with a data area or an oversized header | `CorruptionError` at open |
 | Damaged end block with its next-volume flag set, no member continues | Set ends at that volume; later volumes not read |
 | Volume 1 of a set damaged, its last member continues into volume 2 | Full set listing; one diagnostic naming volume 1 |
 | `-hp` RAR5 with a check value, or `-hp` RAR 1.5-4 after a header whose CRC16 matched | Full listing; `ARCHIVE_EOF_MARKER_MISSING` |

@@ -243,6 +243,9 @@ _RAR5_XREDIR_FILE_COPY = 5
 _RAR5_ENDARC_NEXT_VOLUME = 0x01
 
 _RAR3_ENDARC_NEXT_VOLUME = 0x0001
+# 7-byte common header, then optional data CRC (4), volume number (2) and the
+# reserved space RAR 2.x writers leave (7).
+_RAR3_ENDARC_MAX_HEADER = 7 + 4 + 2 + 7
 
 _RAR5_OS_WINDOWS = 0
 _RAR5_OS_UNIX = 1
@@ -473,17 +476,23 @@ class RarArchive:
     #: ``truncated`` already reports the cut, nor for RAR 1.5-4, whose writers
     #: may omit the block.
     end_block_missing_volumes: list[int] = field(default_factory=list)
-    #: 0-based indices of the volumes whose end-of-archive block failed its header
-    #: CRC. The block sits after the last member, so the walk keeps the members
-    #: before it and stops there; the reader reports the damage as
-    #: ``ARCHIVE_EOF_MARKER_MISSING`` after the members, and a strict policy refuses.
-    #: The block's flags are not data once its CRC fails, so its next-volume flag is
-    #: not read: ``needs_next_volume`` is then set only by a member header (CRC
-    #: intact) whose data continues, as for a volume with no end block. Both
-    #: formats. Never set where the header password is unproven: there a CRC
-    #: mismatch reads the same as a wrong key, so the walk raises the wrong-password
-    #: ``EncryptionError`` instead.
-    end_block_damaged_volumes: list[int] = field(default_factory=list)
+    #: 0-based volume index -> byte offset, within that volume, where its
+    #: end-of-archive block starts (its salt or IV first, when headers are
+    #: encrypted), for the volumes whose end block failed its header CRC. A header whose
+    #: CRC failed is taken for the end block only if all three hold: its type reads
+    #: as the end block, it has an end block's shape (no data area, a header no
+    #: larger than an end block's), and the file ends right after it. One flipped
+    #: byte cannot make a MAIN or FILE header pass: either the shape fails or
+    #: blocks follow it. Anything else stays a ``CorruptionError``. The block sits
+    #: after the last member, so the walk keeps the members before it and stops
+    #: there; the reader reports the damage as ``ARCHIVE_EOF_MARKER_MISSING`` after
+    #: the members, and a strict policy refuses. The block's flags are not data once
+    #: its CRC fails, so its next-volume flag is not read: ``needs_next_volume`` is
+    #: then set only by a member header (CRC intact) whose data continues, as for a
+    #: volume with no end block. Both formats. Never set where the header password
+    #: is unproven: there a CRC mismatch reads the same as a wrong key, so the walk
+    #: raises the wrong-password ``EncryptionError`` instead.
+    end_block_damaged_volumes: dict[int, int] = field(default_factory=dict)
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
@@ -630,7 +639,7 @@ def parse_rar_volumes(
             merged.truncated = merged.truncated or part.truncated
             merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
-            merged.end_block_damaged_volumes.extend(part.end_block_damaged_volumes)
+            merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
             for member in part.members:
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
@@ -866,6 +875,42 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
         raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
 
 
+def _ends_at(source: BinaryIO, pos: int) -> bool:
+    """Whether the file ends exactly at ``pos``; the read position is kept."""
+    here = source.tell()
+    end = source.seek(0, io.SEEK_END)
+    source.seek(here)
+    return pos == end
+
+
+def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
+    """Whether a RAR 1.5-4 header has an end block's shape, whatever its CRC.
+
+    An end block has no data area, so no ``LONG_BLOCK`` flag, and its header is 7
+    bytes plus at most a data CRC (4), a volume number (2) and 7 reserved bytes:
+    20 at most. Every FILE header carries ``LONG_BLOCK`` and is larger than that.
+    """
+    return not flags & _RAR3_LONG_BLOCK and header_size <= _RAR3_ENDARC_MAX_HEADER
+
+
+def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
+    """Whether a RAR5 header from ``pos`` (its type field) has an end block's shape.
+
+    That is the type, block flags with neither an extra nor a data area, then the
+    end-of-archive flags, and nothing after them. A FILE or service header declares
+    a data area; a MAIN header passes this, and the end-of-file check rejects it.
+    """
+    try:
+        _type, pos = load_vint(hdata, pos)
+        block_flags, pos = load_vint(hdata, pos)
+        if block_flags & (_RAR5_FLAG_EXTRA | _RAR5_FLAG_DATA):
+            return False
+        _end_flags, pos = load_vint(hdata, pos)
+    except CorruptionError:
+        return False
+    return pos == len(hdata)
+
+
 def _data_past_end(source: BinaryIO) -> str | None:
     """Why the walk reached end of file inside a block's packed data, or ``None``.
 
@@ -898,13 +943,24 @@ def _encrypted_header_cut(start: int) -> str:
 
 
 class _RarEndBlockCrcError(CorruptionError):
-    """A RAR5 end-of-archive block failed its header CRC; private signal for the walk.
+    """A RAR5 header shaped as an end block failed its CRC; private signal for the walk.
 
     :func:`_read_rar5_block` raises this in place of the generic CRC error when the
-    block's type field reads as the end block. The walk keeps the members before
-    it when the header password is proven or headers are plain, and otherwise
-    treats it as any other CRC mismatch. The flags past the type are not read.
+    header's type reads as the end block and its shape is an end block's (see
+    :func:`_rar5_end_block_shaped`). The walk keeps the members before it only if
+    the file also ends at ``data_offset`` and the header password is proven or
+    headers are plain; otherwise it raises ``generic``, the error a header of any
+    other type would have raised. The end-of-archive flags are not used.
     """
+
+    def __init__(self, header_offset: int, data_offset: int) -> None:
+        super().__init__(
+            f"RAR5 end-of-archive header CRC mismatch at offset {header_offset}"
+        )
+        self.data_offset = data_offset
+        self.generic = CorruptionError(
+            f"RAR5 header CRC mismatch at offset {header_offset}"
+        )
 
 
 class _RarHeaderCutError(TruncatedError):
@@ -1661,7 +1717,7 @@ def _parse_rar3(
     members: list[RarMemberInfo] = []
     needs_next_volume = False
     truncated: str | None = None
-    end_block_damaged = False
+    end_block_damaged_at: int | None = None
     # Set once an encrypted header decrypted with a matching CRC16, in this volume or
     # an earlier one of the set (the caller passes that in). The walk treats a
     # mismatch as proof of a wrong password, so a match proves the password the same
@@ -1798,10 +1854,18 @@ def _parse_rar3(
                     raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
+                # The type was read from the same unverified bytes, so a MAIN or
+                # FILE header with one flipped byte reads as ENDARC too. Only a
+                # header shaped as an end block, with nothing after it, is one.
+                if not (
+                    _rar3_end_block_shaped(flags, header_size)
+                    and _ends_at(source, data_offset)
+                ):
+                    raise CorruptionError("RAR3 ENDARC header CRC mismatch")
                 # Damage after the last member: keep the listing, and do not read
                 # the flags, the next-volume flag among them. unrar lists such an
                 # archive and tests every member OK, then reports one error.
-                end_block_damaged = True
+                end_block_damaged_at = header_start
                 break
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
             break
@@ -1899,7 +1963,11 @@ def _parse_rar3(
         needs_next_volume=needs_next_volume,
         old_volume_naming=old_volume_naming,
         truncated=truncated,
-        end_block_damaged_volumes=[volume_index] if end_block_damaged else [],
+        end_block_damaged_volumes=(
+            {volume_index: end_block_damaged_at}
+            if end_block_damaged_at is not None
+            else {}
+        ),
         password_proven=password_proven,
     )
 
@@ -2522,7 +2590,7 @@ def _parse_rar5(
     damaged_service_headers_omitted = 0
     truncated: str | None = None
     end_block_seen = False
-    end_block_damaged = False
+    end_block_damaged_at: int | None = None
 
     while True:
         header_fd: _Readable = source
@@ -2579,10 +2647,13 @@ def _parse_rar5(
                         "Failed to decrypt RAR5 headers (wrong password?)"
                     ) from exc
             if isinstance(exc, _RarEndBlockCrcError):
-                # As in the RAR3 walk: damage after the last member keeps the
-                # listing, and the block's next-volume flag is not read.
+                # As in the RAR3 walk: only a block with nothing after it is the
+                # end block. Damage after the last member keeps the listing, and
+                # the block's next-volume flag is not read.
+                if not _ends_at(source, exc.data_offset):
+                    raise exc.generic from None
                 end_block_seen = True
-                end_block_damaged = True
+                end_block_damaged_at = header_start
                 break
             if isinstance(exc, _RarHeaderCutError) and not isinstance(
                 header_fd, _HeaderDecryptStream
@@ -2752,7 +2823,11 @@ def _parse_rar5(
         end_block_missing_volumes=(
             [volume_index] if not end_block_seen and truncated is None else []
         ),
-        end_block_damaged_volumes=[volume_index] if end_block_damaged else [],
+        end_block_damaged_volumes=(
+            {volume_index: end_block_damaged_at}
+            if end_block_damaged_at is not None
+            else {}
+        ),
     )
 
 
@@ -2808,10 +2883,8 @@ def _read_rar5_block(
             damaged_type, _ = load_vint(hdata, pos)
         except CorruptionError:
             damaged_type = None
-        if damaged_type == _RAR5_ENDARC:
-            raise _RarEndBlockCrcError(
-                f"RAR5 end-of-archive header CRC mismatch at offset {header_offset}"
-            )
+        if damaged_type == _RAR5_ENDARC and _rar5_end_block_shaped(hdata, pos):
+            raise _RarEndBlockCrcError(header_offset, data_offset)
         raise CorruptionError(f"RAR5 header CRC mismatch at offset {header_offset}")
 
     block_type, pos = load_vint(hdata, pos)
