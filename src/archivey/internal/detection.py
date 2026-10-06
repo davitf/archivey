@@ -770,11 +770,18 @@ def _detect_format_body(
         near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
         far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
         near_span = max((e.offset + len(e.magic) for e in near), default=0)
-        if near and budget.max_prefix_bytes < near_span:
+        if near:
             # A "near" magic past the budgeted prefix is unsearchable — record it rather
             # than silently incomplete-searching (DETECTION_LIMIT and max_prefix_bytes
-            # are independent constants that happen both to be 4 096 today).
-            workspace.record_skip("near_magic", TierSkipReason.BUDGET_EXHAUSTED)
+            # are independent constants that happen both to be 4 096 today). A zero
+            # ``max_prefix_bytes`` turns the tier off. The record only: the match still
+            # runs on whatever the prefix holds.
+            _record_tier_limit(
+                workspace,
+                "near_magic",
+                enabled=budget.max_prefix_bytes > 0,
+                covered=budget.max_prefix_bytes >= near_span,
+            )
         near_needed = min(
             budget.max_prefix_bytes,
             max(DETECTION_LIMIT, near_span),

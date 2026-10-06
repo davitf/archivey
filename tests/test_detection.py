@@ -1292,6 +1292,20 @@ def test_zero_max_scan_bytes_records_sfx_scan_not_enabled(tmp_path: Path) -> Non
     assert sfx == [TierSkip("sfx_scan", TierSkipReason.NOT_ENABLED_BY_POLICY)]
 
 
+def test_zero_max_prefix_bytes_records_near_magic_not_enabled(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    budget = replace(BALANCED_BUDGET, max_prefix_bytes=0)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.detected_by == "extension"
+    near = [s for s in info.unavailable_tiers if s.tier == "near_magic"]
+    assert near == [TierSkip("near_magic", TierSkipReason.NOT_ENABLED_BY_POLICY)]
+
+
 @pytest.mark.parametrize("as_str", [False, True])
 def test_detect_format_reports_directory_for_a_directory_path(
     tmp_path: Path, as_str: bool

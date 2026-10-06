@@ -95,7 +95,9 @@ short to hold it, unless the source is provably too short to hold it anyway, and
 enabled by policy* when `max_far_bytes` is 0. An SFX scan
 that misses in a window the budget made shorter than the 2 MiB structural bound SHALL be
 recorded as `sfx_scan` *budget exhausted*, on the same carve-out, and as *not enabled by
-policy* when `max_scan_bytes` is 0.
+policy* when `max_scan_bytes` is 0. A near signature that ends past `max_prefix_bytes` SHALL be
+recorded as `near_magic` *budget exhausted*, and as *not enabled by policy* when
+`max_prefix_bytes` is 0.
 
 A receipt is within its budget when each bounded counter is at most `passes` times its
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field
