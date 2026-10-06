@@ -338,6 +338,24 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
             ar.open(next(iter(ar)))
 
 
+def test_lzma_member_with_invalid_properties_is_corrupt_at_open() -> None:
+    """Out-of-range method-14 LZMA properties raise ``lzma.LZMAError`` while the ZIP
+    reader peels the header, before the codec layer runs; it must read as corruption.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_LZMA) as zf:
+        zf.writestr("a.txt", b"hello" * 100)
+    raw = bytearray(buf.getvalue())
+    # Body: version (2), properties size (2), then the lc/lp/pb properties byte.
+    props_at = 30 + len("a.txt") + 4
+    assert raw[props_at] == 0x5D
+    raw[props_at] = 0xFF
+    with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.ZIP) as ar:
+        with pytest.raises(CorruptionError) as info:
+            ar.open(ar.get("a.txt"))
+    assert info.value.member_name == "a.txt"
+
+
 def test_unencrypted_member_read_indexerror_is_not_truncated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
