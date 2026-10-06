@@ -352,6 +352,38 @@ def test_child_decoder_round_trip_and_errors() -> None:
         bad.decode(b"\x00" * 16, 10)
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl and /proc")
+def test_the_child_writes_no_core_dump() -> None:
+    """The child crashes by design on hostile input, and its core is about the model
+    the archive declared (up to 2 GiB by default). A crash handler that
+    ``core_pattern`` pipes to gets it whatever ``RLIMIT_CORE`` says, while the parent
+    waits. The child turns its dumps off: a core limit of 0, and not dumpable, which
+    is what stops a piped dump."""
+    child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    try:
+        assert child._proc is not None
+        limits = Path(f"/proc/{child._proc.pid}/limits").read_text()
+    finally:
+        child.close()
+    core = next(line for line in limits.splitlines() if line.startswith("Max core"))
+    assert core.split()[4:6] == ["0", "0"], core
+    # Whether a process is dumpable shows only to itself (PR_GET_DUMPABLE), so the
+    # worker's function is run in a fresh interpreter.
+    probe = textwrap.dedent(
+        """
+        import ctypes
+        from archivey.internal.streams.ppmd_worker import disable_core_dumps
+        disable_core_dumps()
+        print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))  # PR_GET_DUMPABLE
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "0"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 def test_a_sigint_to_the_child_does_not_stop_it() -> None:
     """A terminal's Ctrl-C signals the whole foreground process group, the decoder child
