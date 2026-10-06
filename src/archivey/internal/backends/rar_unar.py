@@ -55,6 +55,10 @@ REFUSE_RAR15 = (
     "unar 1.10 returns no data, and reports success, for a member compressed with the "
     "RAR 1.5 algorithm. " + _USE_UNRAR
 )
+REFUSE_UNKNOWN_COMPRESSION = (
+    "it is compressed with {version}, which unrar does not know (it reports "
+    '"Unknown method"); it may need a newer version of RAR.'
+)
 REFUSE_RAR5_SOLID_AFTER_EMPTY = (
     "unar 1.10 crashes, or reports success with no data, on a RAR5 solid archive when a "
     "member with data follows an empty file, a directory or a link. " + _USE_UNRAR
@@ -258,6 +262,9 @@ class UnarRarPolicy:
 
     def member_refusal(self, info: RarMemberInfo) -> str | None:
         """Why ``unar`` must not read this member on its own, or ``None``."""
+        version = info.unknown_compression_version()
+        if version is not None:
+            return REFUSE_UNKNOWN_COMPRESSION.format(version=version)
         if _rar4_encrypted(self._archive, info):
             return REFUSE_RAR4_ENCRYPTED
         if self._archive_refusal == REFUSE_HEADER_ENCRYPTED_VOLUMES:

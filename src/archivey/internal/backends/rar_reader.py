@@ -76,6 +76,7 @@ from archivey.internal.backends.rar_parser import (
     _Rar3Comment,
     convert_blake2sp_to_mac,
     convert_crc_to_mac,
+    mark_missing_next_volume,
     parse_rar_archive,
     parse_rar_volumes,
     rar5_hash_key,
@@ -1539,7 +1540,10 @@ class RarReader(BaseArchiveReader):
                     kdf_cache=self._kdf_cache,
                     name_encoding=self._encoding,
                 )
-                if archive.needs_next_volume or archive.is_volume:
+                if archive.is_volume and not archive.needs_next_volume:
+                    # A lone volume that says nothing follows it is a later
+                    # volume, or the only one, of a set; a RAR 1.5-4 later volume
+                    # whose first member starts there cannot be told from the first.
                     raise TruncatedError(
                         "Incomplete RAR multi-volume set: additional volumes required"
                     )
@@ -1554,12 +1558,11 @@ class RarReader(BaseArchiveReader):
                 if not self._passwords.has_passwords():
                     raise
                 archive = self._passwords.attempt(None, parse)
-            # Incomplete set opened as a lone volume-1 path with no siblings.
-            if archive.needs_next_volume and self._volume_set_size() <= 1:
-                raise TruncatedError(
-                    "Incomplete RAR multi-volume set: end of archive expects "
-                    "another volume"
-                )
+            # A set whose last volume present says another follows: list what the
+            # volumes hold, then raise (``_iter_members``), as for a cut file.
+            mark_missing_next_volume(
+                archive, volumes_read=max(self._volume_set_size(), 1)
+            )
             # _first_candidate_str is the first configured candidate when
             # headers parsed without a password (data-only encryption; a wrong
             # guess is rejected by PswCheck or unrar exit 11). After
@@ -2366,8 +2369,18 @@ class RarReader(BaseArchiveReader):
 
         pipe_offset = 0
 
-        def _plan(member: ArchiveMember, raw: RarMemberInfo, size: int, _: bool) -> int:
-            # ``unrar p`` writes every payload member, in listing order.
+        def _plan(
+            member: ArchiveMember, raw: RarMemberInfo, size: int, _: bool
+        ) -> int | Callable[[], BinaryIO]:
+            unknown_version = raw.unknown_compression_version()
+            if unknown_version is not None:
+                # ``unrar p`` writes nothing for it ("Unknown method"), so it
+                # takes no room in the pipe and raises on its first read.
+                def _refused() -> BinaryIO:
+                    raise self._unknown_compression_error(member, unknown_version)
+
+                return _refused
+            # ``unrar p`` writes every other payload member, in listing order.
             nonlocal pipe_offset
             member_offset = pipe_offset
             pipe_offset += size
@@ -2436,7 +2449,16 @@ class RarReader(BaseArchiveReader):
                 return None
             size = _member_stream_size(member)
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
-            slot = plan(member, raw, size, bool(hashes))
+            slot: int | Callable[[], BinaryIO]
+            if raw.split_after:
+                # A member running into a missing volume is the last one the set
+                # has, so leaving it out of ``plan`` shifts no later offset.
+                def _refused() -> BinaryIO:
+                    raise self._missing_continuation_error(member)
+
+                slot = _refused
+            else:
+                slot = plan(member, raw, size, bool(hashes))
             open_fn: Callable[[], BinaryIO]
             if isinstance(slot, int):
                 offset = slot
@@ -3090,6 +3112,42 @@ class RarReader(BaseArchiveReader):
             "solid prefix target missing from the payload walk; uses member identity"
         )
 
+    def _missing_continuation_error(self, member: ArchiveMember) -> TruncatedError:
+        """The refusal for a member whose data runs into a volume that is missing.
+
+        Only the last member of an incomplete set can still be ``split_after``
+        once the volumes are merged (:func:`mark_missing_next_volume`). Its bytes
+        stop at the end of the last volume present, which is a truncation;
+        ``unrar`` reports the missing volume for it and tests the rest.
+        """
+        return TruncatedError(
+            f"RAR member {quoted(member.name)} continues into a volume that is "
+            "missing from the set.",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
+
+    def _unknown_compression_error(
+        self, member: ArchiveMember, version: str
+    ) -> UnsupportedFeatureError:
+        """The refusal for a member compressed with a version ``unrar`` cannot decode.
+
+        ``unrar`` reports "Unknown method" and writes nothing for such a member,
+        which used to surface as a truncation. The data is not short: it is in a
+        format newer than the decoder, so this is ``UnsupportedFeatureError``, as
+        for lzip version 0. Raised before any process is spawned, for both
+        decompressors (see :meth:`RarMemberInfo.unknown_compression_version`).
+        """
+        return UnsupportedFeatureError(
+            f"RAR member {quoted(member.name)} is compressed with {version}, which "
+            'unrar does not know (it reports "Unknown method"); it may need a newer '
+            "version of RAR.",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
+
     def _check_dictionary_memory(
         self, member: ArchiveMember, cost: _DictionaryCost
     ) -> None:
@@ -3158,6 +3216,11 @@ class RarReader(BaseArchiveReader):
         assert isinstance(raw, RarMemberInfo)
         if raw.is_file_copy():
             return self._open_file_copy(member)
+        if raw.split_after:
+            raise self._missing_continuation_error(member)
+        unknown_version = raw.unknown_compression_version()
+        if unknown_version is not None:
+            raise self._unknown_compression_error(member, unknown_version)
 
         if self._can_direct_read(raw):
             if raw.compress_size != raw.file_size:

@@ -1210,3 +1210,165 @@ def test_the_cut_short_diagnostic_names_what_actually_stopped_the_walk(
     assert "more than" not in stand_in.message.lower(), (
         "the cap stopped none of these, so the message must not name it"
     )
+
+
+# --- The extra area is placed by its declared size -----------------------------
+#
+# A FILE header's extra area is its last ``extra_size`` bytes. ``unrar`` 7.00 places
+# it there (``ProcessExtra50``) and refuses a size that does not fit in the header
+# ("Corrupt header"). The walk used to start right after the name instead, so bytes
+# between the name and the declared area were read as records, and a broken size
+# was not noticed at all.
+
+_REDIR_UNIX_SYMLINK = 1
+
+
+def _redir_record(target: bytes) -> bytes:
+    body = (
+        _rar5_vint(_XTYPE_REDIR)
+        + _rar5_vint(_REDIR_UNIX_SYMLINK)
+        + _rar5_vint(0)  # redirect flags
+        + _rar5_vint(len(target))
+        + target
+    )
+    return _rar5_vint(len(body)) + body
+
+
+def _rar5_file_with_extra(
+    *, gap: bytes, extra: bytes, declared_extra: int | None = None
+) -> bytes:
+    """A one-member RAR5 archive: ``gap`` sits between the name and the extra area.
+
+    ``declared_extra`` overrides the extra-size vint (same one-byte width) without
+    moving any bytes, and the header CRC is computed over the result.
+    """
+    name = b"member"
+    body = (
+        _rar5_vint(0)  # file_flags: no mtime, no CRC
+        + _rar5_vint(7)  # unpacked size
+        + _rar5_vint(0o100644)  # attributes
+        + _rar5_vint(0)  # compression info: stored
+        + _rar5_vint(1)  # host OS: Unix
+        + _rar5_vint(len(name))
+        + name
+        + gap
+    )
+    size = len(extra) if declared_extra is None else declared_extra
+    assert len(extra) < 128 and size < 128, "the extra-size vint must stay one byte"
+    full = _rar5_vint(2) + _rar5_vint(0x0001) + _rar5_vint(size) + body + extra
+    size_vint = _rar5_vint(len(full))
+    crc = binascii.crc32(size_vint + full) & 0xFFFFFFFF
+    file_header = crc.to_bytes(4, "little") + size_vint + full
+    main = _rar5_header(1, _rar5_vint(0), b"")
+    end = _rar5_header(5, _rar5_vint(0), b"")
+    return b"Rar!\x1a\x07\x01\x00" + main + file_header + end
+
+
+def test_bytes_before_the_declared_extra_area_are_not_read_as_records(
+    tmp_path: Path,
+) -> None:
+    """A redirect record placed between the name and the declared area is not part of
+    the area. Reading it made a plain file list as a symlink to a target the header
+    never declared."""
+    path = tmp_path / "gap.rar"
+    path.write_bytes(
+        _rar5_file_with_extra(gap=_redir_record(b"elsewhere"), extra=b"\x01\x64")
+    )
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+        assert member.type is MemberType.FILE
+        assert member.link_target is None
+        assert not member.diagnostics
+
+
+def test_the_declared_extra_area_is_read_where_it_is(tmp_path: Path) -> None:
+    """The control for the test above: the same record inside the declared area is a
+    symlink."""
+    path = tmp_path / "placed.rar"
+    path.write_bytes(
+        _rar5_file_with_extra(gap=b"\x00\x00", extra=_redir_record(b"target"))
+    )
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+        assert member.type is MemberType.SYMLINK
+        assert member.link_target == "target"
+
+
+def test_an_extra_area_larger_than_its_header_is_a_corrupt_header(
+    tmp_path: Path,
+) -> None:
+    """``unrar`` reports "Corrupt header" when the extra size is not smaller than the
+    header. There is no place to start the walk, so this is damage, not a cut."""
+    path = tmp_path / "too_big.rar"
+    path.write_bytes(
+        _rar5_file_with_extra(
+            gap=b"", extra=_redir_record(b"target"), declared_extra=100
+        )
+    )
+    with raises_corruption_not_truncation(match="extra area"):
+        with open_archive(path) as archive:
+            archive.members()
+
+
+def test_an_extra_area_overlapping_the_fixed_fields_is_reported(
+    tmp_path: Path,
+) -> None:
+    """A size that fits in the header but reaches back over the fields already read.
+    ``unrar`` ignores the extras and lists the member from its fixed fields; so does
+    this, through the stop reason, so the unread area is reported and the member is
+    not presented as plaintext on its say-so."""
+    extra = _redir_record(b"target")
+    path = tmp_path / "overlap.rar"
+    path.write_bytes(
+        _rar5_file_with_extra(gap=b"", extra=extra, declared_extra=len(extra) + 4)
+    )
+    with open_archive(path) as archive:
+        (member,) = archive.members()
+        assert member.type is MemberType.FILE
+        assert member.link_target is None
+        assert member.is_encrypted
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        context = diagnostic.context
+        assert isinstance(context, MemberHeaderRecordContext)
+        assert context.list_truncated
+        assert "overlaps" in context.reason
+
+
+@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+@pytest.mark.parametrize(
+    ("gap", "extra", "declared", "expected_type", "corrupt"),
+    [
+        (_redir_record(b"elsewhere"), b"\x01\x64", None, "File", False),
+        (b"\x00\x00", _redir_record(b"target"), None, "Unix symbolic link", False),
+        (b"", _redir_record(b"target"), 100, None, True),
+        (b"", _redir_record(b"target"), 15, "File", False),
+    ],
+    ids=["gap", "placed", "too-big", "overlap"],
+)
+def test_unrar_places_the_extra_area_the_same_way(
+    tmp_path: Path,
+    gap: bytes,
+    extra: bytes,
+    declared: int | None,
+    expected_type: str | None,
+    corrupt: bool,
+) -> None:
+    """The oracle for the four cases above."""
+    path = tmp_path / "oracle.rar"
+    path.write_bytes(
+        _rar5_file_with_extra(gap=gap, extra=extra, declared_extra=declared)
+    )
+    result = subprocess.run(
+        ["unrar", "lt", "-p-", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    if corrupt:
+        assert "Corrupt header" in output, output
+        assert "member" not in result.stdout.split("Details:")[-1], output
+    else:
+        assert result.returncode == 0, output
+        assert f"Type: {expected_type}" in output, output

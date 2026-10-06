@@ -190,6 +190,11 @@ _RAR5_DICT_BASE = 0x20000
 _RAR5_DICT_SHIFT = 10
 _RAR5_ALGO_MASK = 0x3F
 _RAR5_ALGO_RAR50 = 0
+# The newest RAR5 compression-info version ``unrar`` 7.00 decodes (1: RAR 7.0).
+_RAR5_ALGO_NEWEST = 1
+# The ``UNP_VER`` range ``unrar`` 7.00 accepts for RAR 1.5-4 compressed data.
+_RAR3_UNP_VER_OLDEST = 13
+_RAR3_UNP_VER_NEWEST = 29
 
 _RAR5_ENC_HAS_CHECKVAL = 0x01
 _RAR5_XENC_CHECKVAL = 0x01
@@ -342,6 +347,9 @@ class RarMemberInfo:
     # and the reader checks it against ``DecoderLimits.max_decoder_memory`` before
     # a decompressor runs.
     dictionary_size: int = 0
+    # RAR5 only: the compression-info version field (bits 0-5). ``None`` for RAR
+    # 1.5-4, whose version is ``extract_version``.
+    rar5_algorithm_version: int | None = None
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
@@ -408,6 +416,29 @@ class RarMemberInfo:
             and redir[0] == _RAR5_XREDIR_FILE_COPY
             and not self.is_directory
         )
+
+    def unknown_compression_version(self) -> str | None:
+        """The compression version this member declares and ``unrar`` cannot decode.
+
+        ``None`` when the data can be decoded, or is stored: a stored member is
+        copied whatever version it declares. Otherwise a short description of the
+        version, for a message. The bounds are ``unrar`` 7.00's, measured: RAR5
+        compression-info versions 0 (RAR 5.0) and 1 (RAR 7.0), and RAR 1.5-4
+        ``UNP_VER`` 13 to 29. Outside them ``unrar`` reports "Unknown method" and
+        "You may need a newer version of RAR" and writes nothing.
+        """
+        if self.compress_type == _RAR3_M0:
+            return None
+        if self.rar5_algorithm_version is not None:
+            if self.rar5_algorithm_version > _RAR5_ALGO_NEWEST:
+                return f"RAR5 compression version {self.rar5_algorithm_version}"
+            return None
+        version = self.extract_version
+        if version is not None and not (
+            _RAR3_UNP_VER_OLDEST <= version <= _RAR3_UNP_VER_NEWEST
+        ):
+            return f"RAR compression version {version}"
+        return None
 
     def is_file_version_history(self) -> bool:
         """True for a prior ``-ver`` revision (presented as ``path;n``)."""
@@ -646,11 +677,26 @@ def parse_rar_volumes(
             break
 
     assert merged is not None
-    if merged.needs_next_volume:
-        raise TruncatedError(
-            "Incomplete RAR multi-volume set: end of archive expects another volume"
-        )
+    mark_missing_next_volume(merged, volumes_read=len(volumes))
     return merged
+
+
+def mark_missing_next_volume(archive: RarArchive, *, volumes_read: int) -> None:
+    """Record a set whose last volume read says another follows, as a truncation.
+
+    The members of the volumes present are kept and the listing ends with
+    ``TruncatedError``, the same channel as a cut single file: ``unrar`` lists
+    and tests the members it has and fails only on the one that runs into the
+    missing volume. That member keeps ``split_after`` set, which is what the
+    reader refuses its data on. A cut the walk already recorded is the earlier
+    fault and keeps its own message.
+    """
+    if not archive.needs_next_volume or archive.truncated is not None:
+        return
+    archive.truncated = (
+        "Incomplete RAR multi-volume set: end of archive expects another volume "
+        f"(volume {volumes_read + 1} is missing)"
+    )
 
 
 def _append_damaged_service_header(
@@ -2988,6 +3034,29 @@ def _parse_rar5_file_block(
     stop_reason: str | None = None
 
     if extra_size:
+        # The extra area is the header's last ``extra_size`` bytes, wherever the
+        # fixed fields end — the same rule as the MAIN locator walk, and the one
+        # ``unrar`` applies (``ProcessExtra50``). Walking on from the end of the
+        # name instead reads the wrong bytes as records whenever the two disagree.
+        extra_start = len(hdata) - extra_size
+        if extra_start <= 0:
+            # ``unrar`` 7.00 checks ``ExtraSize >= HeadSize`` when it reads the
+            # size and reports "Corrupt header": an extra area that does not fit
+            # in its own header is not one a walk can place.
+            raise CorruptionError(
+                f"RAR5 header at offset {header_offset} declares an extra area of "
+                f"{extra_size} bytes in a {len(hdata)}-byte header"
+            )
+        if extra_start < pos:
+            # The area would overlap the fields already read. ``unrar`` ignores
+            # the extras then and lists the member from its fixed fields. Do the
+            # same, but through the stop reason: an unread area may hold the
+            # encryption record, so the member is ``encryption_unknown`` rather
+            # than silently plaintext.
+            stop_reason = "its extra area overlaps the header's fixed fields"
+            pos = len(hdata)
+        else:
+            pos = extra_start
         # Walk extras until near end (allow 1 byte of padding like rarfile).
         while pos < len(hdata) - 1:
             if len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS:
@@ -3148,6 +3217,7 @@ def _parse_rar5_file_block(
         dictionary_size=0
         if is_directory and not is_symlink
         else _rar5_dictionary_size(compress_info),
+        rar5_algorithm_version=compress_info & _RAR5_ALGO_MASK,
         skipped_header_records=tuple(skipped_records),
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
