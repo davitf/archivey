@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn, TypeVar
+from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, TypeVar
 
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
@@ -1452,10 +1452,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
 
     A caller ``seek`` off the sequential frontier disarms both checks.
 
-    Once the ISIZE check has called the stream truncated, that verdict is kept: the
-    source has not changed, so every later end of data (a later read, or a re-read after a
-    seek back) raises the same error instead of reading as a clean, shorter stream. The
-    stdlib engine the empty-EOF arm switches to keeps its own verdict the same way.
+    An ISIZE mismatch hands the read to the standard library
+    (:meth:`_StdlibOnAcceleratorError.switch_to_stdlib`), which gives the verdict and keeps
+    it, as does the stdlib engine the empty-EOF arm switches to.
     """
 
     # Side-effecting read() (byte-total + EOF truncation check); disable
@@ -1464,7 +1463,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
 
     def __init__(
         self,
-        inner: BinaryIO,
+        inner: _StdlibOnAcceleratorError,
         *,
         views: _SourceViews,
         isize: int | None,
@@ -1472,6 +1471,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
         open_stdlib: Callable[[CodecSource], BinaryIO],
     ) -> None:
         super().__init__(inner)
+        # The same object as ``_inner`` until the empty-EOF arm replaces that, typed:
+        # the ISIZE check hands over through it.
+        self._takeover = inner
         self._views = views
         self._isize = isize
         self._source_len = source_len
@@ -1479,8 +1481,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
         self._total = 0
         self._checked = False
         self._verify = True
-        # The truncation the ISIZE check raised, raised again at every later end of data.
-        self._truncation: TruncatedError | None = None
 
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
@@ -1488,12 +1488,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
         data = self._inner.read(size)
         if data:
             self._total += len(data)
-            if size < 0 and self._truncation is not None:
-                # A completing read of a stream already found truncated: reach the end,
-                # then raise its verdict rather than return the prefix as the whole.
-                while self._inner.read(1 << 20):
-                    pass
-                self._raise_truncation()
             if size < 0 and self._verify and not self._checked:
                 # Completing read (read/-1): observe soft EOF now and run ISIZE
                 # before returning. Callers that do only ``s.read(); s.close()`` must
@@ -1510,8 +1504,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 self._total += len(more)
                 data += more
             return data
-        if self._truncation is not None:
-            self._raise_truncation()
         if self._verify and not self._checked:
             self._checked = True
             if self._total == 0:
@@ -1519,12 +1511,6 @@ class _GzipTruncationCheckStream(DelegatingStream):
             data = self._verify_not_truncated(size)
             self._total += len(data)
         return data
-
-    def _raise_truncation(self) -> NoReturn:
-        """Raise the recorded truncation again, with this raise's traceback only (a stored
-        instance re-raised as is would grow one traceback with every retry)."""
-        assert self._truncation is not None
-        raise self._truncation.with_traceback(None)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         result = super().seek(offset, whence)
@@ -1561,7 +1547,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         That is ``b""`` unless the standard-library decoder took over to decide (an
         ISIZE mismatch, below), in which case it is that decoder's next read.
         """
-        if getattr(self._inner, "switched", False):
+        if self._takeover.switched:
             # The standard-library decoder finished the read; it owns truncation, and
             # the last four bytes of a file with something appended are not ISIZE.
             return b""
@@ -1573,11 +1559,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
             # Incomplete member (header-only / truncated before a full trailer). Empty
             # delivery is handled by the stdlib fallback; non-empty soft EOF with a source
             # this short is still truncation.
-            self._truncation = TruncatedError(
+            raise TruncatedError(
                 "gzip stream is truncated: compressed size is too small for a "
                 "complete gzip member (the rapidgzip accelerator did not raise)"
             )
-            raise self._truncation
         if self._isize is None:
             return (
                 b""  # length known but ISIZE unread (should not happen for len >= 18)
@@ -1589,19 +1574,12 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # header ⇒ do not raise (false-negative only; per-member ISIZE sum is deferred).
         if self._has_additional_gzip_member():
             return b""
-        switch = getattr(self._inner, "switch_to_stdlib", None)
-        if switch is not None:
-            # The last four bytes are not ISIZE when something was appended to the
-            # file, and rapidgzip reads past such bytes without a word. The
-            # standard-library decoder tells a cut file from an appended one: it
-            # carries on from here, and raises the truncation or reports the bytes.
-            switch()
-            return self._inner.read(size)
-        self._truncation = TruncatedError(
-            "gzip stream is truncated: the decompressed size does not match the ISIZE "
-            "trailer (the rapidgzip accelerator does not surface this truncation itself)"
-        )
-        raise self._truncation
+        # The last four bytes are not ISIZE when something was appended to the file,
+        # and rapidgzip reads past such bytes without a word. The standard-library
+        # decoder tells a cut file from an appended one: it carries on from here, and
+        # raises the truncation or reports the bytes.
+        self._takeover.switch_to_stdlib()
+        return self._inner.read(size)
 
     def _has_additional_gzip_member(self) -> bool:
         # Closed via the context manager: a real fd close for a path source, a no-op

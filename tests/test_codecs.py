@@ -1964,8 +1964,10 @@ def test_verify_wrong_width_digest_mismatches_not_raises() -> None:
 def _make_gzip_check_stream(inner, path):
     """Wire a ``_GzipTruncationCheckStream`` over a path source, mirroring ``GzipCodec.open``.
 
-    ``inner`` stands in for the accelerator's decompressed output; the backstop reads ISIZE
-    and scans the real gzip file at ``path`` via a fresh independent handle.
+    ``inner`` stands in for the accelerator's decompressed output, under the
+    ``_StdlibOnAcceleratorError`` that hands an ISIZE mismatch to the standard library;
+    the backstop reads ISIZE and scans the real gzip file at ``path`` via a fresh
+    independent handle.
     """
     from archivey.internal.config import DEFAULT_STREAM_CONFIG
     from archivey.internal.streams.codecs import (
@@ -1973,16 +1975,33 @@ def _make_gzip_check_stream(inner, path):
         _GzipTruncationCheckStream,
         _SourceViews,
         _stdlib_gzip,
+        _StdlibOnAcceleratorError,
     )
 
     source_len, isize = _gzip_isize_and_length(str(path))
+    views = _SourceViews.of_path(str(path))
+
+    def open_stdlib(fallback):
+        return _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG)
+
     return _GzipTruncationCheckStream(
-        inner,
-        views=_SourceViews.of_path(str(path)),
+        _StdlibOnAcceleratorError(
+            inner, views=views, open_stdlib=open_stdlib, label="gzip"
+        ),
+        views=views,
         isize=isize,
         source_len=source_len,
-        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
+        open_stdlib=open_stdlib,
     )
+
+
+def _cut_gzip_file(tmp_path):
+    """A gzip file cut inside its deflate data, and the whole payload it was cut from."""
+    payload = b"".join(f"line {i:05d} of the payload\n".encode() for i in range(4000))
+    whole = gzip.compress(payload)
+    path = tmp_path / "cut.gz"
+    path.write_bytes(whole[: len(whole) // 2])
+    return payload, path
 
 
 def test_gzip_truncation_check_read0_mid_stream_is_not_eof(tmp_path) -> None:
@@ -2036,11 +2055,10 @@ def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> No
 
 
 def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
-    payload = b"hello world" * 100
-    path = tmp_path / "f.gz"
-    path.write_bytes(gzip.compress(payload))
+    payload, path = _cut_gzip_file(tmp_path)
 
-    # Simulate an accelerator that silently stopped short of the real payload.
+    # Simulate an accelerator that silently stopped short on a cut file: the ISIZE
+    # mismatch hands the read to the standard library, which raises at the cut.
     # Completing read(-1) observes soft EOF and raises TruncatedError there
     # (ADR 0014 — not on a later empty read / close).
     stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
@@ -2059,9 +2077,7 @@ def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
     # A seek that does not leave the sequential frontier (tell()-style seek(0, SEEK_CUR),
     # or a seek to the current offset) keeps the ISIZE check armed, so a short
     # accelerator output is still caught on the completing read.
-    payload = b"hello world" * 100
-    path = tmp_path / "f.gz"
-    path.write_bytes(gzip.compress(payload))
+    payload, path = _cut_gzip_file(tmp_path)
 
     stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     stream.read(16)

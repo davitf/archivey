@@ -32,6 +32,7 @@ from archivey.internal.streams.codecs import (
     _GzipTruncationCheckStream,
     _SourceViews,
     _stdlib_gzip,
+    _StdlibOnAcceleratorError,
     _TrappingSource,
     open_codec_stream,
 )
@@ -41,7 +42,11 @@ from tests.corruption_util import (
 )
 
 if TYPE_CHECKING:
+    from typing import BinaryIO
+
     from _typeshed import WriteableBuffer
+
+    from archivey.internal.streams.codecs import CodecSource
 
 _GZ_ON = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
 _BZ_ON = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON)
@@ -701,17 +706,26 @@ def test_indexed_bzip2_seek_before_read_still_raises(
 
 
 def _soft_short_backstop() -> tuple[_GzipTruncationCheckStream, bytes]:
-    """The gzip backstop over an inner that ends early without raising, as rapidgzip
-    does on some cuts: a prefix, then a clean EOF, with the ISIZE of the whole payload."""
-    payload = b"the quick brown fox jumps over the lazy dog.\n" * 2000
+    """The gzip backstop, as ``GzipCodec.open`` builds it, over a cut file and an inner
+    that ends early without raising, as rapidgzip does on some cuts: a prefix, then a
+    clean EOF."""
+    payload = b"".join(f"line {i:05d} of the payload\n".encode() for i in range(4000))
     whole = gzip.compress(payload)
-    prefix = payload[: len(payload) // 3]
+    cut = whole[: len(whole) // 2]
+    prefix = payload[: len(payload) // 8]
+    views = _SourceViews(lambda: io.BytesIO(cut))
+
+    def open_stdlib(fallback: CodecSource) -> BinaryIO:
+        return _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG)
+
     stream = _GzipTruncationCheckStream(
-        io.BytesIO(prefix),
-        views=_SourceViews(lambda: io.BytesIO(whole)),
-        isize=len(payload),
-        source_len=len(whole),
-        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
+        _StdlibOnAcceleratorError(
+            io.BytesIO(prefix), views=views, open_stdlib=open_stdlib, label="gzip"
+        ),
+        views=views,
+        isize=int.from_bytes(cut[-4:], "little"),
+        source_len=len(cut),
+        open_stdlib=open_stdlib,
     )
     return stream, prefix
 
@@ -726,23 +740,33 @@ def _drain(stream: _GzipTruncationCheckStream, read_all: bool, got: bytearray) -
 
 @pytest.mark.parametrize("read_all", [True, False], ids=["read_all", "chunked"])
 def test_gzip_backstop_keeps_raising_after_its_own_truncation(read_all: bool) -> None:
-    """Once the ISIZE backstop has called a stream truncated, a later read raises the same
-    error instead of reading as a clean, empty end, and a seek back re-reads the prefix
-    to the same error, not to a clean EOF."""
+    """The ISIZE backstop hands a soft EOF on a cut file to the standard library, which
+    raises the truncation; a later read raises the same error instead of reading as a
+    clean, empty end, and a seek back re-reads the prefix to the same error, not to a
+    clean EOF."""
     stream, prefix = _soft_short_backstop()
-    with pytest.raises(TruncatedError, match="ISIZE") as first:
-        _drain(stream, read_all, bytearray())
+    got = bytearray()
+    with pytest.raises(TruncatedError) as first:
+        _drain(stream, read_all, got)
     with pytest.raises(TruncatedError) as again:
         stream.read(4096)
     assert again.value is first.value
     assert stream.seek(0) == 0
-    got = bytearray()
-    with pytest.raises(TruncatedError) as reread:
-        _drain(stream, read_all, got)
-    assert reread.value is first.value
-    # A chunked re-read delivers the prefix again before the error; read() raises
-    # without returning it, as it did the first time.
-    assert bytes(got) == (b"" if read_all else prefix)
+    reread = bytearray()
+    with pytest.raises(TruncatedError) as second:
+        _drain(stream, read_all, reread)
+    # The seek restarts the standard library's decoder, which reaches the same error
+    # again at the same place: a new instance, of the same type, with the same message.
+    assert type(second.value) is type(first.value)
+    assert str(second.value) == str(first.value)
+    # A chunked read delivers what the standard library decodes before the cut, past
+    # the accelerator's prefix, and the re-read delivers it again before the error;
+    # read() raises without returning it, both times.
+    if read_all:
+        assert got == reread == b""
+    else:
+        assert bytes(got).startswith(prefix) and len(got) > len(prefix)
+        assert reread == got
 
 
 class _SourceFailingMidway(io.BytesIO):
