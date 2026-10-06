@@ -256,9 +256,12 @@ marks them — `FILE_ATTRIBUTE_REPARSE_POINT`, `0x400` in the low (DOS) word of
 `0xA000000C`), and that tag is not in any header: it is the first field of the
 `REPARSE_DATA_BUFFER`, which archivers store as the member's *content*. So archivey
 reads it exactly where it already reads a symlink target, in `_ensure_link_target`,
-and `extra["is_junction"]` is a listing-time flag whose source is read-time data. The
-parsing lives in `archivey.internal.windows_reparse`, shared with the 7z backend, which
-has the same problem for the same reason.
+and `extra["is_junction"]` is a listing-time flag whose source is read-time data. The 7z
+backend has the same problem for the same reason and shares the whole path: the parsing
+in `archivey.internal.windows_reparse`, and in `BaseArchiveReader` the capped read
+(`_link_target_from_data`), the settle of a reparse point stored with no data
+(`_settle_empty_reparse_point`) and the report when encryption blocks the read. Each
+backend supplies only which members are reparse points and what type one reverts to.
 
 Two things follow, both measured against archives built on a Windows runner
 (`tests/fixtures/external/README.md` §`junction/`, and `tests/test_windows_reparse.py`):

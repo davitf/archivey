@@ -632,10 +632,11 @@ def _zip_created(
     return None, stored
 
 
-def _is_windows_reparse_point(
+def _reparse_fallback_type(
     info: zipfile.ZipInfo, create_system: CreateSystem
-) -> bool:
-    """True when this entry is flagged as a Windows reparse point (handbook §2.2.1).
+) -> MemberType | None:
+    """For an entry flagged as a Windows reparse point (handbook §2.2.1), the type it
+    reverts to when its data is not a link buffer; ``None`` for any other entry.
 
     The bit lives in the low (DOS attribute) word of ``external_attr``, and only a
     DOS/Windows creator puts a Win32 attribute word there. Every other creator writes
@@ -648,9 +649,11 @@ def _is_windows_reparse_point(
     named a link. What the data turns out to be decides that, in
     ``BaseArchiveReader._apply_reparse_data``.
     """
-    return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
+    if create_system not in _DOS_ATTRIBUTE_SYSTEMS or not (
         info.external_attr & FILE_ATTRIBUTE_REPARSE_POINT
-    )
+    ):
+        return None
+    return MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
 
 
 class ZipReader(BaseArchiveReader):
@@ -942,16 +945,18 @@ class ZipReader(BaseArchiveReader):
         # normalize_member_name, which is how 7z already presents the same member.
         # The type is provisional: the data decides, in `_apply_reparse_data`, whether
         # the entry really holds a link buffer, and a member that does not goes back to
-        # the type below.
-        is_reparse_point = _is_windows_reparse_point(info, create_system)
+        # `reparse_fallback`.
+        reparse_fallback = _reparse_fallback_type(info, create_system)
+        is_reparse_point = reparse_fallback is not None
 
-        if info.is_dir():
-            fallback_type = MemberType.DIRECTORY
+        if is_reparse_point:
+            member_type = MemberType.SYMLINK
+        elif info.is_dir():
+            member_type = MemberType.DIRECTORY
         elif is_unix and stat.S_ISLNK(full_mode):
-            fallback_type = MemberType.SYMLINK
+            member_type = MemberType.SYMLINK
         else:
-            fallback_type = MemberType.FILE
-        member_type = MemberType.SYMLINK if is_reparse_point else fallback_type
+            member_type = MemberType.FILE
         # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
@@ -1111,16 +1116,9 @@ class ZipReader(BaseArchiveReader):
             # this backend knows that, so only this backend says so.
             link_stored_as_directory=is_reparse_point and info.is_dir(),
         )
-        if is_reparse_point and info.file_size == 0:
-            # A writer that stores no data for a reparse point has recorded no target
-            # for it, and that is knowable from the header alone — no read, and so no
-            # dependence on this being a seekable pass. Deciding it here rather than in
-            # the link-target hook is what makes streaming agree: that hook runs at EOF,
-            # after extraction has already decided what to do with the member, which
-            # left a 7-Zip junction raising instead of taking the recorded outcome.
-            self._apply_reparse_data(
-                member, b"", fallback_type=fallback_type, member_id=index
-            )
+        self._settle_empty_reparse_point(
+            member, reparse_fallback=reparse_fallback, member_id=index
+        )
         for issue in ts_issues:
             self._emit_timestamp_invalid(member, index, issue)
         return member
@@ -2027,65 +2025,33 @@ class ZipReader(BaseArchiveReader):
                 target_in_archive=True,
             )
             return
-        # A Windows reparse point stores a REPARSE_DATA_BUFFER rather than a bare
-        # path, and that buffer is where the junction tag lives. Decoding it as UTF-8
-        # would report ~92 bytes of binary as this member's link target.
-        create_system = _CREATE_SYSTEM_BY_VALUE.get(
-            info.create_system, CreateSystem.UNKNOWN
+        # A symlink's target is its (possibly encrypted) file data. A missing/wrong
+        # password, or data that fails its check under an unconfirmed ZipCrypto
+        # password, leaves link_target unset (following the link later fails with
+        # LinkTargetNotFoundError). A CorruptionError or TruncatedError propagates, and
+        # listing reports the link as damaged (`_report_damaged_link_target`); other
+        # errors surface translated like any member-read error.
+        self._link_target_from_data(
+            member,
+            lambda: self._open_member(member),
+            reparse_fallback=_reparse_fallback_type(
+                info,
+                _CREATE_SYSTEM_BY_VALUE.get(info.create_system, CreateSystem.UNKNOWN),
+            ),
         )
-        is_reparse_point = _is_windows_reparse_point(info, create_system)
-        # What the member would be if its data turns out not to be a link buffer —
-        # the same test `_to_member` used before the reparse bit overrode it.
-        fallback_type = MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
-        # The zero-data case does not appear here: `_to_member` settles it while the
-        # member is being typed, so this hook is never reached for one.
-        # A symlink's target is its (possibly encrypted) file data. Listing must stay
-        # usable without a password, so a missing/wrong password, or data that fails
-        # its check under an unconfirmed ZipCrypto password, leaves link_target
-        # unset (following the link later fails with LinkTargetNotFoundError). A
-        # CorruptionError or TruncatedError propagates, and listing reports the link
-        # as damaged (`_report_damaged_link_target`); other errors surface translated
-        # like any member-read error.
-        # The read is capped (`_read_link_target_data`): the data is compressed, so an
-        # uncapped read let a few hundred KiB of archive decode to gigabytes here.
-        try:
-            data = self._read_link_target_data(
-                member,
-                lambda: self._open_member(member),
-                is_reparse_point=is_reparse_point,
-            )
-            if data is None:
-                return
-            if is_reparse_point:
-                self._apply_reparse_data(member, data, fallback_type=fallback_type)
-            else:
-                member.link_target = data.decode("utf-8", errors="surrogateescape")
-        except EncryptionError as exc:
-            if _is_unverified_data_error(exc):
-                # Only ZipCrypto's check byte vouched for the password, and the data
-                # then failed: a wrong password or a damaged member, and nothing here
-                # can say which.
-                reason = "password_or_damage"
-                message = (
-                    f"The symlink target of {quoted(member.name)} failed its integrity "
-                    f"check; the password may be wrong or the member may be corrupt. "
-                    f"Leaving link_target unset."
-                )
-            else:
-                reason = "password_required"
-                message = (
-                    f"Cannot read the symlink target of {quoted(member.name)} without "
-                    f"the correct password; leaving link_target unset."
-                )
-            self._emit_link_target_unavailable(
-                member,
-                reason=reason,
-                message=message,
-                # The archive does carry the target; it is locked, not missing. So this
-                # member fails the way the encrypted file next to it does, rather than
-                # disappearing from the output under a status that reads as success.
-                target_in_archive=True,
-            )
+
+    def _locked_link_target_report(
+        self, member: ArchiveMember, exc: EncryptionError
+    ) -> tuple[str, str]:
+        if not _is_unverified_data_error(exc):
+            return super()._locked_link_target_report(member, exc)
+        # Only ZipCrypto's check byte vouched for the password, and the data then
+        # failed: a wrong password or a damaged member, and nothing here can say which.
+        return "password_or_damage", (
+            f"The symlink target of {quoted(member.name)} failed its integrity "
+            f"check; the password may be wrong or the member may be corrupt. "
+            f"Leaving link_target unset."
+        )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The member carries its own ZipInfo (`_raw`), so data access needs no name/id map

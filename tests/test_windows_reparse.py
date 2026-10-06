@@ -754,6 +754,7 @@ def test_a_directory_reparse_point_with_no_data_stays_a_link(tmp_path: Path) -> 
         (member,) = opened.members()
         assert member.type is MemberType.SYMLINK
         assert member.link_target is None
+        assert _unavailable_reasons(opened) == ["reparse_data_absent"]
 
 
 def test_the_reparse_bit_is_read_only_from_a_dos_creator(tmp_path: Path) -> None:

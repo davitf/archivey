@@ -1944,6 +1944,78 @@ class BaseArchiveReader(ArchiveReader):
             return header + read_exact(stream, reparse_payload_length(header) + 1)
         return read_exact(stream, MAX_LINK_TARGET_BYTES + 1)
 
+    def _link_target_from_data(
+        self,
+        member: ArchiveMember,
+        open_data: Callable[[], ContextManager[ReadableStream]],
+        *,
+        reparse_fallback: MemberType | None,
+    ) -> None:
+        """Fill ``link_target`` from the member's data (ZIP, 7z).
+
+        ``reparse_fallback`` is ``None`` for a plain symlink. For a Windows reparse
+        point it is the ``fallback_type`` of :meth:`_apply_reparse_data`: the data is
+        a REPARSE_DATA_BUFFER, which decoded as UTF-8 would be reported as the target.
+        """
+        # The zero-data reparse point does not appear here:
+        # `_settle_empty_reparse_point` settles it while the member is being typed.
+        # The read is capped (`_read_link_target_data`): the data is compressed, so an
+        # uncapped read let a small archive decode to gigabytes here.
+        try:
+            data = self._read_link_target_data(
+                member, open_data, is_reparse_point=reparse_fallback is not None
+            )
+        except EncryptionError as exc:
+            # A symlink's target is its file data, so without the password there is
+            # nothing to decode. Listing has to stay usable without one, so the member
+            # keeps its type and the reason travels on the diagnostics channel instead
+            # — silence here would make extraction skip the link with no explanation.
+            reason, message = self._locked_link_target_report(member, exc)
+            self._emit_link_target_unavailable(
+                member,
+                reason=reason,
+                message=message,
+                # The archive does carry the target; it is locked, not missing. So this
+                # member fails the way the encrypted file next to it does, rather than
+                # disappearing from the output under a status that reads as success.
+                target_in_archive=True,
+            )
+            return
+        if data is None:
+            return
+        if reparse_fallback is not None:
+            self._apply_reparse_data(member, data, fallback_type=reparse_fallback)
+        else:
+            member.link_target = data.decode("utf-8", errors="surrogateescape")
+
+    def _locked_link_target_report(
+        self, member: ArchiveMember, exc: EncryptionError
+    ) -> tuple[str, str]:
+        """The ``(reason, message)`` for a link target its encryption kept unread."""
+        return "password_required", (
+            f"Cannot read the symlink target of {quoted(member.name)} without the "
+            f"correct password; leaving link_target unset."
+        )
+
+    def _settle_empty_reparse_point(
+        self,
+        member: ArchiveMember,
+        *,
+        reparse_fallback: MemberType | None,
+        member_id: int,
+    ) -> None:
+        """Settle, while it is typed, a reparse point the writer stored no data for."""
+        if reparse_fallback is not None and member.size == 0:
+            # A writer that stores no data for a reparse point has recorded no target
+            # for it, and that is knowable from the header alone — no read, and so no
+            # dependence on this being a seekable pass. Deciding it here rather than in
+            # the link-target hook is what makes streaming agree: that hook runs at EOF,
+            # after extraction has already decided what to do with the member, which
+            # left a 7-Zip junction raising instead of taking the recorded outcome.
+            self._apply_reparse_data(
+                member, b"", fallback_type=reparse_fallback, member_id=member_id
+            )
+
     def _apply_reparse_data(
         self,
         member: ArchiveMember,

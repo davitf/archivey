@@ -24,6 +24,7 @@ from archivey.config import (
     PasswordInput,
     PasswordRequest,
 )
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -2643,6 +2644,41 @@ def _created_slot_record(attributes: int | None) -> SevenZipFileRecord:
         compressed_size=None,
         is_encrypted=False,
     )
+
+
+def _unix_directory_record_with_reparse_bit() -> SevenZipFileRecord:
+    return SevenZipFileRecord(
+        filename="tree",
+        emptystream=True,
+        is_anti=False,
+        is_directory=True,
+        is_empty_file=False,
+        attributes=0x8000 | 0x400 | (0o040755 << 16),
+        creation_time=None,
+        last_access_time=None,
+        last_write_time=None,
+        folder_index=None,
+        file_in_folder=None,
+        uncompressed_size=0,
+        crc32=None,
+        compressed_size=None,
+        is_encrypted=False,
+    )
+
+
+def test_a_unix_directory_with_the_reparse_bit_is_a_plain_directory() -> None:
+    """The high word's S_IFDIR types the entry, so the low word's 0x400 makes no link.
+
+    The member stays flagged as a reparse point, since the bit is in the header, but
+    with nothing typed as a link there is no link target to report missing.
+    """
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_unix_directory_record_with_reparse_bit(), 0)
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert member.type is MemberType.DIRECTORY
+    assert member.is_reparse_point
+    assert DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE not in codes
 
 
 def _to_filetime_ticks(unix_seconds: int) -> int:
