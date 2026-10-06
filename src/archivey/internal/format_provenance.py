@@ -55,3 +55,14 @@ class FormatProvenance:
     corroborated by a matching extension or an inner-TAR upgrade leave it ``False`` and
     are not stamped.
     """
+
+    @property
+    def unconfirmed_evidence(self) -> Literal["extension", "content_probe"] | None:
+        """What a decode failure's ``format_unconfirmed`` stamp rests on, if anything.
+
+        The two cases cannot overlap: ``core`` sets ``probe_only`` only for a content-probe
+        detection and ``chosen_by="extension"`` only for an extension one.
+        """
+        if self.probe_only:
+            return "content_probe"
+        return "extension" if self.chosen_by == "extension" else None
