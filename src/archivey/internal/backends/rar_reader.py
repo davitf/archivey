@@ -2389,7 +2389,13 @@ class RarReader(BaseArchiveReader):
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
         returns the member's offset in that output, or an ``open_fn`` that serves it
-        some other way.
+        some other way. A plain ``int | Callable`` is enough for that answer; no slot
+        type is needed.
+
+        ``plan`` may keep a running cursor (the ``unrar`` pass does). So this driver
+        calls it exactly once per member the shared output carries, in listing
+        order. It never calls it for a file copy or a non-payload member. Calling it
+        for any member the output does not carry would shift every later offset.
         """
         solid: SolidBlockReader | None = None
         sources = self._file_copy_sources(copies)
