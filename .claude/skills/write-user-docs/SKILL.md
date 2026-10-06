@@ -15,7 +15,8 @@ description: |
 How the `new_docs/` rewrite was written (PR #523, started 2026-09-29), kept so the next
 pages are written the same way. The maintainer found the old `docs/` too flat, too
 prescriptive and too detailed. This process fixed that by working in small agreed steps
-and by putting one writing goal above the rest: the page must read as if a person wrote it.
+and by putting "reads as if a person wrote it" above the sentence rules, below only
+accuracy and clarity.
 
 This skill is for **published user docs**. Chat, PR comments and briefs still use
 [`unslop`](../unslop/SKILL.md). Code comments and exception messages still use
@@ -40,10 +41,13 @@ This skill is for **published user docs**. Chat, PR comments and briefs still us
 4. **Show the final text before committing it.** Once the maintainer picks and edits,
    post the paragraph as it will appear, and commit only after they accept it. If you
    committed early, say so and post it anyway for edits. Don't roll back.
-5. **Commit each agreed section** to the page's draft PR, so the PR always holds only
+5. **Treat the maintainer's questions as fact checks.** "Are you sure about opening vs
+   seeking?" changed a page. Answer by running code, not from memory, and say what you
+   ran.
+6. **Commit each agreed section** to the page's draft PR, so the PR always holds only
    agreed text. Read the maintainer's inline PR comments too. Reply on each thread, fix
    it, and resolve it.
-6. **When a page is done**, ask for a review (the `review` label) for fresh eyes, merge
+7. **When a page is done**, ask for a review (the `review` label) for fresh eyes, merge
    it, and start the next pages in a new PR.
 
 ## Verify every behaviour claim by running it
@@ -62,8 +66,24 @@ every policy rather than per policy. So:
 
 ## Voice
 
-Precedence when rules disagree: **the maintainer > sounds like a person > grounding >
-Diátaxis > sentence rules > STE.**
+Precedence when rules disagree, settled from the maintainer's choices in #523:
+
+**the maintainer > true > can't be misread > sounds like a person > grounding > Diátaxis >
+sentence rules > STE.**
+
+1. **True, and no bigger than true.** A sentence that isn't quite accurate gets cut, not
+   reworded around ("just remove it"). Scope claims to what holds: "whenever possible",
+   not "most". Don't imply the opposite case is unsafe ("even for untrusted archives"
+   suggests trusted ones aren't safe). Don't sell what every library already does, and
+   don't gloat ("helps you" was too much). Be honest about what a workaround can't do:
+   "be careful with archives inside archives", not "bound the total yourself" when the
+   user can't bound the ratio. Say "best effort" when something is: `on_progress` can stop
+   an extraction, but only between chunks.
+2. **Can't be misread.** STE's rules were dropped, but its goal stayed. Read each word as
+   a stranger would. "Calls" read as "decisions". "RAR archives list" makes the archive do
+   the listing ("can be listed"). "Limits apply to one archive at a time" reads as
+   concurrency ("apply to each archive separately"). "Works out" became "identifies".
+3. **Sounds like a person.** Within the first two, natural wins over rule-following.
 
 Rulings from the maintainer in #523's thread:
 
@@ -72,27 +92,44 @@ Rulings from the maintainer in #523's thread:
   stream inside the loop".
 - No imperative-as-conditional. Write "If you use X, Y happens", never "Use X and Y
   happens".
-- Never use a term before the page defines it. A first page may stay vague ("on some
-  archives this is slow") and link to the page that explains why.
-- Don't name a mechanism the reader hasn't met. Instead of "checksum", write "damage may
-  go unnoticed".
-- Watch for wording that suggests the wrong concept. "Limits apply to one archive at a
-  time" reads as concurrency, so write "limits apply to each archive separately".
-- Be honest about what a workaround can't do. Write "be careful with archives inside
-  archives", not "bound the total yourself" when the user can't bound the ratio.
-- Say "best effort" when something is best effort. Example: `on_progress` can stop an
-  extraction, but only between chunks.
+- Never use a term before the page defines it. Don't name a mechanism the reader hasn't
+  met: instead of "checksum", write "damage may go unnoticed"; instead of "its block",
+  say what the reader sees.
+- Vague about how, specific about what happens. A first page can skip the mechanism and
+  link to it, but it names the consequence: "reading a member may require decompressing
+  all other members before it, which is slow", not "on some archives this is slow".
 - Headings name the topic plainly ("Extracting", not "Safe extraction").
-- If a section is getting too detailed for its subject, move it to its own page and
-  leave a one-line pointer behind. Don't link to a page that doesn't exist yet.
+
+## Shaping a page
+
+- **Code and tables before prose.** "The code is immediately understandable, more than a
+  paragraph." Give an example for each form an argument takes (a list, a function), a
+  table of values and effects for each option, and a table of examples when behaviour
+  depends on the input.
+- **Follow the user's choices.** Start with the call the reader makes, then the arguments
+  they choose, then what each choice does. Every argument of the call appears on the
+  page, and each section says which argument it explains.
+- **Answer the reader's "why" and "what if".** Find the objection a reader will have and
+  answer it on the page: "why don't you just let me do everything", "why refuse reads
+  that would be cheap", "will I be left with half a file". Give the reason in terms of
+  what it saves the user, such as surprises in production instead of during development.
+- **Link, don't list.** Don't repeat fields the code example already shows. Link to the
+  reference for the full list.
+- **One subject per paragraph.** When one point carries much more detail than the others,
+  the change of subject is jarring: split the paragraph and put the lighter point first.
+  When a section outgrows its page, move it to its own page and leave a one-line pointer.
+  Don't link to a page that doesn't exist yet.
+- **Sound current.** Name tools the reader actually uses (uv alongside pip), and lead
+  with the fact that matters (the PyPI name). Describe the core first, then what an
+  extra adds.
 
 Mechanics:
 
 - No em dashes. Use commas, full stops, or a colon introducing a list.
 - Never put a bidi control character in a doc or a chat message. Describe it in words,
   because a real one reverses the rest of the line where it's displayed.
-- Tables for option → effect and example → outcome. Show defaults in a code block with
-  one short comment per argument, then explain the values.
+- Show defaults in a code block with one short comment per argument, then explain the
+  values.
 - Mention that string options are enum values once, where the options are introduced.
 - Mix sentence lengths. A short paragraph is fine.
 
