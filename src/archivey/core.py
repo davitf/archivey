@@ -186,7 +186,9 @@ def _refuse_unjoined_volume_names(
         error = incomplete_lone_numbered_volume_error(archive_name)
         if error is not None:
             raise error
-    if is_zip_split_segment_name(archive_name) and format in (None, ArchiveFormat.ZIP):
+    if is_zip_split_segment_name(archive_name) and (
+        format is None or format == ArchiveFormat.ZIP
+    ):
         raise UnsupportedFeatureError(
             ZIP_MULTI_VOLUME_MSG,
             archive_name=archive_name,
@@ -197,10 +199,18 @@ def _refuse_unjoined_volume_names(
 def _follow_stub_volume(
     slot: _SourceSlot, format: ArchiveFormat | None, config: ArchiveyConfig | None
 ) -> ResolvedSource | None:
-    """Switch ``slot`` from a stub-only ``.exe`` / ``.sfx`` to the split set beside it."""
+    """Switch ``slot`` from a stub-only ``.exe`` / ``.sfx`` to the split set beside it.
+
+    Returns the resolved first volume, or ``None`` when no split volume sits beside
+    the stub (``slot`` is then unchanged). Raises :class:`ArchiveyUsageError` when
+    ``format`` names a different container than the volume's, and the volume-name
+    refusals of :func:`_refuse_unjoined_volume_names`.
+    """
     stub = slot.current.path
-    alt = None if stub is None else first_volume_for_stub(stub)
-    if stub is None or alt is None:
+    if stub is None:
+        return None
+    alt = first_volume_for_stub(stub)
+    if alt is None:
         return None
     if format is not None:
         try:
@@ -208,6 +218,9 @@ def _follow_stub_volume(
                 alt, config=probe_config(config), follow_stub_volumes=False
             )
         except FormatDetectionError:
+            # This probe only catches a confident container mismatch. A volume it
+            # cannot identify proves no conflict; the real detection after the
+            # switch reports it, to the caller's own collector.
             pass
         else:
             if info.format.container != format.container:
@@ -488,7 +501,7 @@ def _open_resolved(
                 follow_stub_volumes=False,
             )
         except FormatDetectionError:
-            followed = _follow_stub_volume(slot, None, config)
+            followed = _follow_stub_volume(slot, format, config)
             if followed is None:
                 raise
             resolved = followed
