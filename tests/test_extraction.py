@@ -1398,16 +1398,23 @@ def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
     assert [r.status for r in results] == [ExtractionStatus.EXTRACTED]
 
 
-def test_orphan_written_file_blocks_a_later_orphan_under_it(tmp_path: Path) -> None:
+@pytest.mark.parametrize("linked", [False, True], ids=["written", "linked"])
+def test_orphan_written_file_blocks_a_later_orphan_under_it(
+    tmp_path: Path, linked: bool
+) -> None:
     # The second pass records what it writes as the run's own, as the main pass does:
     # a later orphan that needs that file as a parent directory gets the same error
-    # naming the file, not a bare FileExistsError.
+    # naming the file, not a bare FileExistsError. With ``linked``, an earlier link
+    # ``x`` carries the content and ``a`` is linked to it, so ``a`` is recorded by the
+    # link path rather than the write path.
+    first_links = [("hard", "x", "s1")] if linked else []
     src = tmp_path / "a.tar"
     src.write_bytes(
         _tar_bytes(
             [
                 ("file", "s1", b"one"),
                 ("file", "s2", b"two"),
+                *first_links,
                 ("hard", "a", "s1"),
                 ("hard", "a/b", "s2"),
             ]
