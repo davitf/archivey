@@ -1991,6 +1991,20 @@ def test_hoist_names_the_free_name_a_rename_chose(
     assert _summary_lines(err)[0].endswith("→ a (1).txt")
 
 
+def test_summary_names_the_free_name_a_rename_chose_without_a_hoist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An indexed archive with one top extracts straight into cwd, no hoist; the
+    summary still names where the rename put it, not the operator's ``top.txt``."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "top.txt").write_bytes(b"MINE")
+    archive = _zip(tmp_path / "a.zip", {"top.txt": b"ARCHIVE"})
+    assert main(["x", str(archive), "--overwrite", "rename"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert (tmp_path / "top (1).txt").read_bytes() == b"ARCHIVE"
+    assert _summary_lines(err)[0].endswith("→ top (1).txt")
+
+
 def test_hoist_names_no_destination_when_skip_discards_the_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

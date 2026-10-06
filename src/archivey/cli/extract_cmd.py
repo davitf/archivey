@@ -529,9 +529,10 @@ def _summary_dest_label(
 ) -> str:
     """Closing summary destination; prefer the single extracted top when dest is cwd.
 
-    Returned terminal-safe. The single top is a member's own name, and the target is
-    either the operator's ``-d`` or a wrapper named after the archive file — any of
-    which can carry control bytes, and this is the last line the operator reads.
+    The single top is the name the run wrote, which a rename can move off the member's
+    own name: naming the member's would point at the operator's file. Returned
+    terminal-safe: the top, the operator's ``-d`` and a wrapper named after the archive
+    file can all carry control bytes, and this is the last line the operator reads.
 
     A dry run wrote nothing to look at, so it answers from what its scratch tree held:
     the target is a directory the run would create, and the single top's kind is the
@@ -540,9 +541,15 @@ def _summary_dest_label(
         if dry_run or target.is_dir():
             return f"{escape_path(target)}/"
         return escape_path(target)
-    tops = _top_level_names(
-        [r.member for r in report if r.status is ExtractionStatus.EXTRACTED]
-    )
+    if dry_run:
+        tops = {name for name, _ in _dry_run_top_level(report)}
+    else:
+        written = (
+            _relative_name(r.path, target) or r.member.name.strip("/")
+            for r in report
+            if r.status is ExtractionStatus.EXTRACTED
+        )
+        tops = {name.split("/", 1)[0] for name in written} - {""}
     if len(tops) == 1:
         only = next(iter(tops))
         if dry_run:
