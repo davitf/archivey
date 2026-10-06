@@ -83,7 +83,7 @@ fills SHALL be `None` and `MEMBER_TIMESTAMP_INVALID` SHALL name the record in `f
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
 | PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the record name |
-| PAX `mtime` not a number (tarfile reads it as `0`) | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
+| PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 
 ### Requirement: Extract TAR hardlinks with a pull-based coordinator

@@ -434,7 +434,8 @@ def _pax_time(
     ``tarfile`` folds the PAX ``mtime`` into ``TarInfo.mtime`` itself, but leaves the
     access and inode-change times, and libarchive's ``LIBARCHIVE.creationtime``
     extension keyword (not a standard PAX record), only in ``pax_headers``; surface
-    them here.
+    them here. The ``mtime`` record is read back here too, for the one case the fold
+    hides: a record that is not a number, which ``tarfile`` turns into ``0``.
 
     Returns ``(None, None)`` when the record is absent, and ``(None, TimestampIssue)``
     when it is present but not a number or outside ``datetime``'s range, so a bad
@@ -451,16 +452,23 @@ def _pax_time(
         value = unix_to_datetime(seconds)
     if value is not None:
         return value, None
-    return None, _pax_time_issue(info, key, raw)
+    return None, _tar_time_issue(info, key, repr(raw), pax_record=True)
 
 
-def _pax_time_issue(info: tarfile.TarInfo, key: str, raw: str) -> TimestampIssue:
-    value_repr = repr(raw)
+def _tar_time_issue(
+    info: tarfile.TarInfo, key: str, value_repr: str, *, pax_record: bool
+) -> TimestampIssue:
+    """The ``MEMBER_TIMESTAMP_INVALID`` finding for one TAR time field.
+
+    ``value_repr`` is the raw PAX record for a record, and ``TarInfo.mtime`` for the
+    folded ``mtime`` that ``datetime`` cannot hold.
+    """
+    label = f"PAX {key}" if pax_record else key
     return TimestampIssue(
         field=key,
         source="tar",
         value_repr=value_repr,
-        message=f"Invalid TAR PAX {key} for {quoted(info.name)}: {value_repr}",
+        message=f"Invalid TAR {label} for {quoted(info.name)}: {value_repr}",
     )
 
 
@@ -1388,14 +1396,8 @@ class TarReader(BaseArchiveReader):
         modified = unix_to_datetime(info.mtime)
         timestamp_issues: list[TimestampIssue] = []
         if modified is None:
-            value_repr = repr(info.mtime)
             timestamp_issues.append(
-                TimestampIssue(
-                    field="mtime",
-                    source="tar",
-                    value_repr=value_repr,
-                    message=f"Invalid TAR mtime for {quoted(info.name)}: {value_repr}",
-                )
+                _tar_time_issue(info, "mtime", repr(info.mtime), pax_record=False)
             )
         elif info.mtime == 0 and "mtime" in info.pax_headers:
             # tarfile turns a PAX mtime that is not a number into 0 with no error, so

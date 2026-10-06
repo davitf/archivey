@@ -1968,6 +1968,22 @@ def test_bad_pax_time_is_reported(
         assert diagnostic.context.field == key
 
 
+def test_several_bad_pax_times_on_one_member_are_each_reported(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bad_times.tar"
+    keys = ("atime", "ctime", "LIBARCHIVE.creationtime")
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("t.txt")
+        info.pax_headers = dict.fromkeys(keys, "nan")
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert (member.accessed, member.ctime, member.created) == (None, None, None)
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 3
+        assert sorted(d.context.field for d in member.diagnostics) == sorted(keys)
+
+
 def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
     path = tmp_path / "epoch.tar"
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
