@@ -68,7 +68,7 @@
       "bytes_decompressed": 65537,
       "source_seek_count": 6,
       "unpacked_bytes": 65536,
-      "notes": ""
+      "notes": "+1 byte is the one-byte probe read at open"
     },
     "z_text_read_all": {
       "bytes_decompressed": 65537,
