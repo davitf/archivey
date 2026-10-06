@@ -2393,9 +2393,9 @@ def test_verb_option_before_verb_is_named_as_unrecognized(
     err = capsys.readouterr().err
     assert f"unrecognized arguments: {flag}" in err
     assert "invalid choice" not in err
-    # ...and says where it goes.
-    assert "put it after the verb: archivey " in err
-    assert f"ARCHIVE {flag} ...)" in err
+    # ...and names the verb it belongs to.
+    assert f"({flag} is an option of '" in err
+    assert "; it goes after " in err
 
 
 def test_verb_option_hint_names_every_verb_that_takes_it(
@@ -2403,11 +2403,34 @@ def test_verb_option_hint_names_every_verb_that_takes_it(
 ) -> None:
     assert main(["--policy=strict", "a.zip"]) == EXIT_USAGE
     assert (
-        "(an option of 'extract'; put it after the verb: archivey extract ARCHIVE "
-        in (capsys.readouterr().err)
-    )
+        "(--policy is an option of 'extract'; "
+        "it goes after that verb: archivey extract ARCHIVE --policy ...)"
+    ) in capsys.readouterr().err
     assert main(["--exclude", "p", "a.zip"]) == EXIT_USAGE
-    assert "an option of 'list', 'test', 'extract';" in capsys.readouterr().err
+    assert (
+        "(--exclude is an option of 'list', 'test', 'extract'; "
+        "it goes after one of those verbs)"
+    ) in capsys.readouterr().err
+
+
+def test_verb_option_after_another_verb_is_not_called_misplaced(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The flag already follows a verb, just not one that takes it.
+    assert main(["list", str(sample_zip), "--policy", "strict"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "(--policy is an option of 'extract';" in err
+    assert "put it after the verb" not in err
+
+
+def test_tar_flag_hint_matches_whole_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # ``--my-list`` contains ``-l`` but is not the tar spelling of ``l``.
+    assert main(["x", "a.zip", "--my-list"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: --my-list" in err
+    assert "archivey l" not in err
 
 
 def test_double_dash_lists_dash_named_archive(

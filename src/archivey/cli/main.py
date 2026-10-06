@@ -83,6 +83,9 @@ def _inject_default_list(argv: list[str]) -> list[str]:
         # Bare "-" is the reserved stdin positional, not an option (F6).
         if tok.startswith("-") and tok != "-":
             key = tok.split("=", 1)[0]
+            # Only the main parser's own options (today just ``--password``): before
+            # the verb argparse does not know a verb's options, so it does not consume
+            # their value, and skipping it would blame that value as a bad verb.
             if key in grammar.value_options and "=" not in tok:
                 skip_next = True
             i += 1
@@ -91,6 +94,42 @@ def _inject_default_list(argv: list[str]) -> list[str]:
             return argv[:i] + ["list"] + argv[i:]
         return argv
     return argv
+
+
+class _Grammar(NamedTuple):
+    """What the default-verb injection and the usage errors read from the parser."""
+
+    # Every verb word: aliases and reserved verbs too.
+    verbs: frozenset[str]
+    # The main parser's own value-taking options (see ``_inject_default_list``).
+    value_options: frozenset[str]
+    # A verb-only option → the verbs that take it.
+    verb_options: dict[str, tuple[str, ...]]
+
+
+@functools.cache
+def _grammar() -> _Grammar:
+    parser = build_parser()
+    main_actions = [a for a in parser._actions if a.option_strings]
+    shared = {opt for a in main_actions for opt in a.option_strings}
+    value_options = frozenset(
+        opt for a in main_actions if a.nargs != 0 for opt in a.option_strings
+    )
+    sub = cast(
+        "argparse._SubParsersAction[argparse.ArgumentParser]",
+        next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
+    )
+    owners: dict[str, list[str]] = {}
+    seen: set[int] = set()
+    for verb, verb_parser in sub.choices.items():
+        if id(verb_parser) in seen:  # an alias: the verb's name came first
+            continue
+        seen.add(id(verb_parser))
+        for action in verb_parser._actions:
+            for opt in set(action.option_strings) - shared:
+                owners.setdefault(opt, []).append(verb)
+    verb_options = {opt: tuple(verbs) for opt, verbs in owners.items()}
+    return _Grammar(frozenset(sub.choices), value_options, verb_options)
 
 
 class _ArchiveyArgumentParser(argparse.ArgumentParser):
@@ -104,34 +143,35 @@ class _ArchiveyArgumentParser(argparse.ArgumentParser):
             names = message[len(required) :].split(", ")
             kept = [name for name in names if name != _PATTERNS_METAVAR]
             message = required + ", ".join(kept or names)
-        # Tar users type -x/-l/-t; verbs here are bare words.
-        for flag, verb in _VERB_FLAG_HINTS.items():
-            if flag in message and "unrecognized arguments" in message:
-                message = (
-                    f"{message} (verbs are bare words — try 'archivey {verb} ARCHIVE')"
-                )
-                break
-        else:
-            message += _verb_option_hint(message)
+        unrecognized = "unrecognized arguments: "
+        if message.startswith(unrecognized):
+            message += _unrecognized_hints(message[len(unrecognized) :].split())
         super().error(message)
 
 
-def _verb_option_hint(message: str) -> str:
-    """Say where an unrecognized option goes when it is a verb's (``--policy`` → x)."""
-    unrecognized = "unrecognized arguments: "
-    if not message.startswith(unrecognized):
-        return ""
+def _unrecognized_hints(tokens: list[str]) -> str:
+    """Hints for unrecognized options: a tar-style verb flag, a verb's own flag."""
+    opts = [tok.split("=", 1)[0] for tok in tokens]
+    hints = ""
+    # Tar users type -x/-l/-t; verbs here are bare words.
+    for flag, verb in _VERB_FLAG_HINTS.items():
+        if flag in opts:
+            hints += f" (verbs are bare words — try 'archivey {verb} ARCHIVE')"
+            break
+    # Name the owning verb only: the flag may already follow some other verb.
     verb_options = _grammar().verb_options
-    for tok in message[len(unrecognized) :].split():
-        opt = tok.split("=", 1)[0]
+    for opt in opts:
         if opt in verb_options:
             verbs = verb_options[opt]
             owners = ", ".join(f"'{verb}'" for verb in verbs)
-            return (
-                f" (an option of {owners}; put it after the verb: "
-                f"archivey {verbs[0]} ARCHIVE {opt} ...)"
+            where = (
+                f"after that verb: archivey {verbs[0]} ARCHIVE {opt} ..."
+                if len(verbs) == 1
+                else "after one of those verbs"
             )
-    return ""
+            hints += f" ({opt} is an option of {owners}; it goes {where})"
+            break
+    return hints
 
 
 def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
@@ -237,13 +277,18 @@ class _Common(TypedDict):
 _Runner = Callable[[argparse.Namespace, _Common], int]
 
 
-def _selection(args: argparse.Namespace) -> dict[str, Any]:
+class _Selection(TypedDict):
     """Member-selection kwargs of the verbs that read members (``--salvage`` refused)."""
-    return {
-        "patterns": list(args.patterns),
-        "exclude": list(args.exclude),
-        "salvage": False,
-    }
+
+    patterns: list[str]
+    exclude: list[str]
+    salvage: bool
+
+
+def _selection(args: argparse.Namespace) -> _Selection:
+    return _Selection(
+        patterns=list(args.patterns), exclude=list(args.exclude), salvage=False
+    )
 
 
 # The runners look their run_* up by name when called, so tests can patch it.
@@ -448,44 +493,6 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(_reserved_message=hint)
 
     return parser
-
-
-class _Grammar(NamedTuple):
-    """What the default-verb injection and the usage errors read from the parser."""
-
-    # Every verb word: aliases and reserved verbs too.
-    verbs: frozenset[str]
-    # The main parser's value-taking options. Not a verb's: before the verb argparse
-    # does not know those, so it does not consume their value either, and skipping it
-    # would blame the value as a bad verb.
-    value_options: frozenset[str]
-    # A verb-only option → the verbs that take it.
-    verb_options: dict[str, tuple[str, ...]]
-
-
-@functools.cache
-def _grammar() -> _Grammar:
-    parser = build_parser()
-    main_actions = [a for a in parser._actions if a.option_strings]
-    shared = {opt for a in main_actions for opt in a.option_strings}
-    value_options = frozenset(
-        opt for a in main_actions if a.nargs != 0 for opt in a.option_strings
-    )
-    sub = cast(
-        "argparse._SubParsersAction[argparse.ArgumentParser]",
-        next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
-    )
-    owners: dict[str, list[str]] = {}
-    seen: set[int] = set()
-    for verb, verb_parser in sub.choices.items():
-        if id(verb_parser) in seen:  # an alias: the verb's name came first
-            continue
-        seen.add(id(verb_parser))
-        for action in verb_parser._actions:
-            for opt in set(action.option_strings) - shared:
-                owners.setdefault(opt, []).append(verb)
-    verb_options = {opt: tuple(verbs) for opt, verbs in owners.items()}
-    return _Grammar(frozenset(sub.choices), value_options, verb_options)
 
 
 def _print_version(*, verbose: bool, out: TextIO) -> None:
