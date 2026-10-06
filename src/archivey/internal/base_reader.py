@@ -174,7 +174,11 @@ _UNCONFIRMED_EVIDENCE: Mapping[_UnconfirmedEvidence, _UnconfirmedWording] = {
         "content probe only",
     ),
 }
-"""A decode-failure diagnostic per unconfirmed evidence: its code and two phrasings."""
+"""A decode-failure diagnostic per unconfirmed evidence: its code and two phrasings.
+
+The extension code is also the empty-listing code, which
+``_emit_listed_empty_unconfirmed`` emits with its own message.
+"""
 
 
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
