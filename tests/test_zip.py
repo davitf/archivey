@@ -346,8 +346,9 @@ def test_lzma_member_with_invalid_properties_is_corrupt_at_open() -> None:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_LZMA) as zf:
         zf.writestr("a.txt", b"hello" * 100)
     raw = bytearray(buf.getvalue())
+    name_len, extra_len = struct.unpack("<HH", bytes(raw[26:30]))
     # Body: version (2), properties size (2), then the lc/lp/pb properties byte.
-    props_at = 30 + len("a.txt") + 4
+    props_at = 30 + name_len + extra_len + 4
     assert raw[props_at] == 0x5D
     raw[props_at] = 0xFF
     with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.ZIP) as ar:

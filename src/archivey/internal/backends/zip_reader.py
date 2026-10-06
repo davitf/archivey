@@ -832,15 +832,18 @@ class ZipReader(BaseArchiveReader):
             return None
         if isinstance(exc, NotImplementedError):
             # zipfile raises NotImplementedError for a version or feature it does not
-            # handle. Member bodies no longer go through zipfile's own decoders (every
+            # handle. Member bodies do not go through zipfile's own decoders (every
             # member decodes through the codec layer; `_member_codec` refuses an unknown
             # method and `_open_member` refuses bit 5, compressed patched data, as
             # UnsupportedFeatureError themselves), so this arm is a backstop for any
             # zipfile call that still raises it. Either way the entry is unreadable.
             return UnsupportedFeatureError(f"Unsupported ZIP entry feature: {exc!r}")
         if isinstance(exc, lzma.LZMAError):
-            # The method-14 LZMA properties in the member body are out of range
-            # (_zip_lzma_params). The codec layer types the decoder's own errors.
+            # The method-14 LZMA properties at the start of the member body are out of
+            # range (_zip_lzma_params), so the body cannot be decompressed. Under
+            # ZipCrypto a wrong key that passed the check byte decrypts them to
+            # garbage, and the password ladder counts a candidate failure only from
+            # an ArchiveyError. The codec layer types the decoder's own errors.
             return CorruptionError(f"Error decompressing ZIP member: {exc!r}")
         if isinstance(exc, UnicodeDecodeError):
             # The local-header check (_local_data_region) decodes the local name to
