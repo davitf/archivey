@@ -169,9 +169,22 @@ single monolithic flag:
     ``offset_data + roundup(size)`` (that formula is wrong for sparse). When the probe
     is unavailable it SHALL fall back to the trailing-block check.
   - In **streaming** mode (no probe) the backend SHALL detect a rejected header via the
-    block following tarfile's stop being full and non-null. A rejected **final** header
+    block following tarfile's stop being full and non-null, when tarfile did not stop
+    on a zero block (below). A rejected **final** header
     (no data after it) is NOT detectable this way and surfaces as a missing trailer
     instead — see the streaming limitation below.
+- **Damaged second trailer block → ordinary diagnostic.** When tarfile stopped on a
+  zero block (the first trailer block) after at least one member, and the block after
+  it is full and non-null, the listing is whole and only the end-of-archive marker is
+  damaged. Every member SHALL be listed and readable in both access modes, and the
+  backend SHALL emit `ARCHIVE_EOF_MARKER_MISSING` with `observed_kind="nonzero"` under
+  ordinary diagnostic disposition, with no escalation of its own: a warning by default,
+  `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
+  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`. GNU tar ("A lone zero
+  block") and 7-Zip list the same archive with a warning. The backend SHALL tell this
+  case from a rejected header by the error tarfile's last header parse raised, not by
+  the bytes read, so it holds in streaming too. With no member before the zero block
+  the non-null block stays `CorruptionError`.
 - **Missing / short trailer → ordinary diagnostic.** A stream that ended cleanly on a member
   boundary with no valid two-block trailer (`observed_kind="absent"` for EOF,
   `"short"` for a partial block) is the irreducibly ambiguous residual: a
@@ -222,6 +235,7 @@ the gap for streaming too. The system SHALL NOT claim otherwise.
 | Partial trailing block | both | `short` | Warn as above; pass completes | `DiagnosticRaisedError` after delivery |
 | Rejected non-first header, data follows | both | `nonzero` | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Rejected **final** header, nothing after | random-access | `nonzero` (via probe) | `CorruptionError` after delivery | `CorruptionError` after delivery |
+| Zero block, then a non-null block, after at least one member | both | `nonzero` | `ARCHIVE_EOF_MARKER_MISSING`; every member listed and read; `extract_all` writes every member | `DiagnosticRaisedError` after delivery |
 | Rejected **final** header, nothing after | streaming | `absent` (limitation) | Warn; pass completes | `DiagnosticRaisedError` after delivery |
 | Truncation inside member data / partial header | both | — | `TruncatedError` during iteration | `TruncatedError` during iteration |
 | Corruption during `extract_all` | both | `nonzero` | Salvageable members written, then `CorruptionError` | same |

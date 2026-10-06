@@ -59,9 +59,10 @@ one, so duplicate names are ordinary and the last one is current.
 corrupt header after the first, and a source that simply ran out all end tarfile's walk
 the same way, with no exception. archivey reconstructs the reason from the block tarfile
 stopped on (§2.2), and the result has three outcomes: a non-null block where a header
-belonged is corruption; a missing or short trailer is a warning, because a complete
-tar written without a trailer and a tar truncated exactly at a member boundary are the
-same bytes; bytes after a good trailer are trailing data. An empty tar is nothing but
+belonged is corruption; a missing, short or damaged trailer is a warning, because a
+complete tar written without a trailer and a tar truncated exactly at a member boundary
+are the same bytes, and a zero block followed by a damaged one still ends a whole
+listing; bytes after a good trailer are trailing data. An empty tar is nothing but
 zeros, so a zero-filled file of any block-aligned length is a valid empty archive
 ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). Two tars joined
 with `cat` list as the first one plus a trailing-data diagnostic, because the first
@@ -151,9 +152,16 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
      it is `CorruptionError` whatever the diagnostic policy, and the same is true when
      that block is the last one in the file.
   2. Otherwise read the next block. tarfile has already consumed the first trailer block,
-     so this is the second. A null block is a good trailer. A non-null block is
-     `CorruptionError`. A short or empty read emits `ARCHIVE_EOF_MARKER_MISSING` under
-     the ordinary policy, a warning by default.
+     so this is the second. A null block is a good trailer. A short or empty read emits
+     `ARCHIVE_EOF_MARKER_MISSING` under the ordinary policy, a warning by default. A
+     non-null block depends on what tarfile stopped on, which `_TarInfo.fromtarfile`
+     records on the `_TarFile` because `TarFile.next()` swallows the error: after a zero
+     block, with at least one member listed, the listing is whole and only the
+     end-of-archive marker is damaged, so it is `ARCHIVE_EOF_MARKER_MISSING`
+     (`observed_kind="nonzero"`) under the ordinary policy, as GNU tar ("A lone zero
+     block") and 7-Zip list it with a warning (maintainer ruling, 2026-10-06). After a
+     rejected header, or with no member before the zero block, it is
+     `CorruptionError`.
   3. After a good trailer, scan up to 1 MiB for a non-zero byte and emit
      `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar` pads to 10 KiB
      records. On a compressed tar the tail is decompressed to look at it, and a tail
@@ -414,6 +422,7 @@ extraction checks (§2.4).
 | Feed tarfile archivey's own decompressor, never `r:gz` | One codec layer for every format: the same seek points, accelerators, ratio guard, diagnostics and error translation as a bare `.gz` | tarfile's built-in modes, which cover four codecs and bypass all of that |
 | Classify the end from the block the walk stopped on | tarfile does not report why it stopped. The last read is the only evidence that needs no backward seek, which on a compressed tar would mean decoding again | Computing the next header's offset from `offset_data + size`, which is wrong for sparse members; treating every early end as a warning |
 | A rejected header is `CorruptionError` whatever the policy; a missing trailer is a warning | A complete tar never stops on a non-null block, so that one is certain. A missing trailer is ambiguous by construction | One disposition for both, which is either too loud for ordinary trailer-less tars or silent about corruption |
+| A zero block followed by a non-null one is a warning, not corruption (maintainer ruling, 2026-10-06) | The zero block ends the members, so the listing is whole and only the marker is damaged. GNU tar and 7-Zip list such an archive with a warning and exit 0; a damaged RAR end-of-archive block is handled the same way. `strict()` refuses it | `CorruptionError`, as before the ruling, which in random access threw away a whole listing |
 | A zero-filled file is a valid empty tar | It is byte-identical to one, at every block-aligned length ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)) | Refusing zero-member tars; a length rule |
 | Report trailing data, do not read past it | Two archives in one file is a fact worth reporting, and listing both would present members from an archive the caller did not name | `ignore_zeros=True`, which is how `tar -i` reads concatenated archives |
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
@@ -456,6 +465,7 @@ extraction checks (§2.4).
 | End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |
 | Missing trailer warns, and raises under `RAISE` | `::test_missing_eof_blocks_warns_by_default`, `::test_missing_eof_blocks_raise_disposition_raises`, and the `_streaming_` pair |
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
+| A zero block then a damaged block lists and reads every member, warns, extracts everything, and raises under `strict()`, in both modes | `::test_damaged_second_eof_block_lists_every_member`, `::test_damaged_second_eof_block_gzip_lists_every_member`, `::test_damaged_second_eof_block_extracts_every_member`, `::test_damaged_second_eof_block_refused_under_strict`, `::test_zero_block_then_junk_with_no_member_stays_corruption` |
 | The streaming last-block gap | `::test_corrupt_final_header_streaming_warns_not_corruption` |
 | Rejected header wins over `IGNORE` and `RAISE` | `::test_corrupt_final_header_ignore_disposition_still_raises`, `::test_corrupt_mid_header_raise_disposition_still_corruption` |
 | `extract_all` writes the salvageable members, then raises, in both modes | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |

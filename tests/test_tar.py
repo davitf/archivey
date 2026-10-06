@@ -27,6 +27,7 @@ from archivey import (
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     DiagnosticDisposition,
     DiagnosticPolicy,
@@ -994,6 +995,109 @@ def test_corrupt_mid_header_streaming_extract_writes_then_raises(
     assert (dest / "a.txt").exists()
     assert (dest / "a.txt").read_bytes() == b"aaa"
     assert not (dest / "b.txt").exists()
+
+
+# A zero block, then a damaged second end-of-archive block: GNU tar ("A lone zero block")
+# and 7-Zip list every member with a warning and exit 0. The second block is damaged by
+# one stray byte, or holds a header-shaped run of junk.
+_DAMAGED_SECOND_BLOCKS = {
+    "stray_byte": b"\x00" * 100 + b"\x01" + b"\x00" * 411,
+    "junk_header": b"A" * 100 + b"\x00" * 412,
+}
+
+
+def _tar_damaged_second_eof_block(damage: bytes) -> bytes:
+    data = _tar_three()
+    end = _tar_content_end(data)
+    return data[:end] + b"\x00" * 512 + damage + b"\x00" * (512 * 8)
+
+
+def _eof_marker_contexts(ar: Any) -> list[ArchiveEofContext]:
+    contexts = [
+        d.context
+        for d in ar.diagnostics.retained
+        if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+    ]
+    assert all(isinstance(c, ArchiveEofContext) for c in contexts)
+    return contexts
+
+
+_THREE = {"a.txt": b"aaa", "b.txt": b"b" * 4000, "c.txt": b"ccc"}
+
+
+@pytest.mark.parametrize("damage", _DAMAGED_SECOND_BLOCKS, ids=str)
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_damaged_second_eof_block_lists_every_member(
+    streaming: bool, damage: str
+) -> None:
+    # The listing ends at the zero block, so it is whole: only the end-of-archive
+    # marker is damaged. That is the ARCHIVE_EOF_MARKER_MISSING diagnostic, not the
+    # CorruptionError a rejected header gets.
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS[damage])
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        read = {m.name: stream.read() for m, stream in ar.stream_members() if stream}
+        contexts = _eof_marker_contexts(ar)
+        if not streaming:
+            assert [m.name for m in ar.members()] == list(_THREE)
+            assert {m.name: ar.read(m) for m in ar.members()} == _THREE
+    assert read == _THREE
+    assert len(contexts) == 1
+    assert contexts[0].format == "tar"
+    assert contexts[0].expected_marker == "two_zero_blocks"
+    assert contexts[0].observed_kind == "nonzero"
+
+
+def test_damaged_second_eof_block_gzip_lists_every_member(tmp_path: Path) -> None:
+    import gzip
+
+    path = tmp_path / "damaged-end.tar.gz"
+    path.write_bytes(
+        gzip.compress(
+            _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+        )
+    )
+    with open_archive(path) as ar:
+        assert [m.name for m in ar.members()] == list(_THREE)
+        assert len(_eof_marker_contexts(ar)) == 1
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_damaged_second_eof_block_refused_under_strict(streaming: bool) -> None:
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(
+        source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
+    ) as ar:
+        with pytest.raises(DiagnosticRaisedError):
+            list(ar.stream_members())
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_damaged_second_eof_block_extracts_every_member(
+    tmp_path: Path, streaming: bool
+) -> None:
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["junk_header"])
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    dest = tmp_path / "out"
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        ar.extract_all(dest)
+        assert len(_eof_marker_contexts(ar)) == 1
+    assert {p.name: p.read_bytes() for p in dest.iterdir()} == _THREE
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_zero_block_then_junk_with_no_member_stays_corruption(
+    streaming: bool,
+) -> None:
+    # With no member before the zero block there is no listing to keep, and a file
+    # that is a zero block and then junk is not shown to be a tar at all.
+    data = b"\x00" * 512 + b"A" * 100 + b"\x00" * (512 * 9 - 100)
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with raises_corruption_not_truncation():
+        with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+            list(ar.stream_members())
 
 
 def test_padded_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:

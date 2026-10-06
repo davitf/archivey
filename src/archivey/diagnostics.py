@@ -224,7 +224,10 @@ class ArchiveEofContext(_JsonSafeContext):
     Four checks share this shape, told apart by ``expected_marker``:
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
-      missing, short, or a non-null block.
+      missing, short, or a non-null block. ``observed_kind="nonzero"`` that is not
+      escalated means the first trailer block is zero and the second is not: every
+      member is listed. A rejected header has the same ``observed_kind`` and raises
+      ``CorruptionError``.
     - ``"end_of_archive_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a RAR5 archive, or
       a volume of a RAR5 set, ends without the end-of-archive block its writers always
       put last, so the file was most likely cut at a header boundary. ``format`` is

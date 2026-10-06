@@ -119,6 +119,12 @@ Two facts make `nonzero` a trustworthy hard-fail trigger:
    that case degrades to `absent` under the trailing check alone.) Random access closes that
    final-block gap with `_EofProbeStream` (Decision 2); streaming still has the gap.
 
+> **Note (2026-10-06):** the maintainer ruled one `nonzero` shape differently: a zero
+> block (the first trailer block) followed by a non-null block, after at least one
+> member. The listing is whole there, so it is now `ARCHIVE_EOF_MARKER_MISSING` under the
+> ordinary policy (strict refuses), not `CorruptionError`, matching GNU tar and 7-Zip.
+> See the archived `tar-damaged-second-eof-block` change. A rejected header is unchanged.
+
 So `nonzero` ≈ "the tar iteration finished early on an invalid block" — exactly the case
 worth raising on by default. `absent`/`short` remain the irreducibly ambiguous bucket that
 must stay lenient by default to honor Phase 5 / GNU tar, and that the opt-in flag escalates
