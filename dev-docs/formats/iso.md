@@ -118,7 +118,11 @@ volume descriptor tree, and weighs the bytes of each record, plus each Rock Ridg
 continuation area every time `pycdlib` parses it, against `max_metadata_bytes`. A hook on
 `PyCdlib._parse_path_table` adds each path table's declared size to the same count
 before `pycdlib` reads the table, once for the little-endian table and once for the
-big-endian one, since `pycdlib` parses both. Crossing
+big-endian one, since `pycdlib` parses both, and a hook on `PathTableRecord.parse`
+counts each path-table entry against `max_members` as `pycdlib` parses it, refusing a
+table of more than `max_members + 1` entries (maintainer ruling, 2026-10-06). Real
+images never notice: every entry is a directory, and every directory but the root is a
+member the listing counts anyway. Crossing
 either raises `ResourceLimitError` from `open_archive`, before any member is listed or
 streamed. The counts are a superset of the listing's (a multi-extent file's extra records
 and `rr_moved` count), so an image right at a cap can be refused at open;
@@ -375,9 +379,10 @@ ISO-specific only. General extraction and name hazards are §2.4.
   passed 6.4 GB. The source bounded the read, not the parse. The path-table hook (§2.2)
   now refuses a table that runs past the end of the image as `CorruptionError` (what
   `pycdlib`'s parse of the short read raised, after the parse), with any
-  `ListingLimits`, and weighs it against `max_metadata_bytes` before the read. Under the
-  default 64 MiB budget a table can still cost about 29 times its size, as records cost
-  15 to 20 times theirs.
+  `ListingLimits`, weighs it against `max_metadata_bytes` before the read, and counts its
+  entries against `max_members` as they are parsed. The byte budget alone let a table of
+  the whole 64 MiB through (about 1.8 GB); the entry count caps one table near 240 MB at
+  the default `max_members`, about 230 bytes an entry.
 - **A Rock Ridge `CE` entry sizes `pycdlib`'s read.** `pycdlib` read the continuation
   area for the length the entry declares, up to 4 GiB, and only then refused an area
   that does not fit in its logical block: a 512 MiB area was read (545 MiB peak) before
@@ -481,7 +486,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag is not a chain; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_is_not_one_file`, `::test_the_raw_directory_walk_crosses_sector_padding` |
 | No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
 | Cycle guard in `pycdlib`'s own walk, in all three trees | `::test_pycdlib_directory_cycle_does_not_hang` |
-| Path table bounded by the image and `max_metadata_bytes`, both tables weighed; a `CE` area past its block refused before the read, and one ending at the block end opens | `tests/test_iso_metadata_bounds.py` |
+| Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, and one ending at the block end opens | `tests/test_iso_metadata_bounds.py` |
 | Directory length bound; path sources go through the source; handles released on failure | `::test_directory_data_length_does_not_drive_the_allocation`, `::test_a_path_source_is_read_through_the_archive_source`, `::test_a_refused_path_source_does_not_hold_its_handle`, `::test_a_failure_after_open_fp_is_translated_and_releases` |
 | Corrupt input is `CorruptionError`; handle `OSError` is not | `::test_corrupt_iso_raises`, `::test_filesystem_oserror_propagates_unwrapped` |
 | Listing reads nothing after open, on an image with no repeated identifier and no file ending at the image end | `::test_listing_reads_nothing_from_the_image` |

@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from pycdlib.dr import DirectoryRecord
     from pycdlib.headervd import PrimaryOrSupplementaryVD
     from pycdlib.inode import Inode
+    from pycdlib.path_table_record import PathTableRecord
     from pycdlib.pycdlib import PyCdlib
     from pycdlib.pycdlibio import PyCdlibIO
     from pycdlib.rockridge import RockRidge
@@ -441,6 +442,8 @@ class _ParseBudget:
         # The tree of the record parsed last: pycdlib parses a record's continuation
         # area right after the record, and ``RockRidge.parse`` is not told the tree.
         self._tree = 0
+        # Entries pycdlib has parsed from the path table it is parsing now.
+        self._path_table_entries = 0
 
     def add_record(self, vd: object, nbytes: int) -> None:
         self._tree = id(vd)
@@ -463,7 +466,27 @@ class _ParseBudget:
         # Called before pycdlib reads the table, so an over-budget size is refused
         # before the read and the parse, not after.
         self._tree = id(vd)
+        self._path_table_entries = 0
         self._add_bytes(nbytes)
+
+    def add_path_table_entry(self) -> None:
+        """Count one path-table entry pycdlib parsed against ``max_members``.
+
+        Every entry names a directory, and every directory but the root is a member,
+        so a table of more than ``max_members + 1`` entries indexes a tree the
+        listing would refuse anyway; an image the listing accepts never reaches this.
+        Counting as pycdlib parses bounds what one table costs by the member cap
+        (about 230 bytes an entry) rather than by its size (29 times it for 8-byte
+        entries), since ``max_metadata_bytes`` alone let a table of the whole budget
+        through.
+        """
+        self._path_table_entries += 1
+        max_members = self._limits.max_members
+        if max_members is not None and self._path_table_entries > max_members + 1:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} "
+                f"(ISO path table holds more than {max_members + 1} directories)"
+            )
 
     def _add_bytes(self, nbytes: int) -> None:
         total = self._bytes.get(self._tree, 0) + nbytes
@@ -558,8 +581,10 @@ def _install_pycdlib_path_table_bound() -> None:
     it walks any directory. The source bounds the read to the image, not the parse.
     A table that runs past the end of the image is ``CorruptionError``, as pycdlib's
     own parse of the short read would have it, and the size is weighed against
-    ``max_metadata_bytes`` with the tree it indexes. Installed once and transparent
-    outside ``IsoReader``'s ``open_fp``, like the hooks above.
+    ``max_metadata_bytes`` with the tree it indexes. A second wrapper, on
+    ``PathTableRecord.parse``, counts each entry against ``max_members`` as pycdlib
+    parses it (:meth:`_ParseBudget.add_path_table_entry`). Installed once and
+    transparent outside ``IsoReader``'s ``open_fp``, like the hooks above.
     """
     global _PYCDLIB_PATH_TABLE_BOUND_INSTALLED
     if pycdlib is None or _PYCDLIB_PATH_TABLE_BOUND_INSTALLED:
@@ -574,6 +599,18 @@ def _install_pycdlib_path_table_bound() -> None:
         return original(self, ptr_size, extent)
 
     setattr(pcd_module.PyCdlib, "_parse_path_table", parse_path_table)
+
+    from pycdlib import path_table_record as ptr_mod
+
+    original_entry = ptr_mod.PathTableRecord.parse
+
+    def parse_entry(self: PathTableRecord, data: bytes) -> None:
+        budget = _PARSE_BUDGET.get()
+        if budget is not None:
+            budget.add_path_table_entry()
+        original_entry(self, data)
+
+    setattr(ptr_mod.PathTableRecord, "parse", parse_entry)
     _PYCDLIB_PATH_TABLE_BOUND_INSTALLED = True
 
 

@@ -307,6 +307,11 @@ archive declares.
   `pycdlib` reads it, and refuses a table that runs past the image as
   `CorruptionError` whatever the limits: `pycdlib` parses a table into one object per
   8-byte record, about 29 times its size, and a 16 MiB table peaked at 471 MiB before.
+  Bytes alone still let a table of the whole budget through (about 1.8 GB at the
+  default), so a hook on `PathTableRecord.parse` also counts each entry against
+  `max_members` and refuses a table of more than `max_members + 1` entries, capping one
+  table near 240 MB at the default (maintainer ruling, 2026-10-06). Real images never
+  notice: every entry is a directory, and every directory but the root is a member.
 - TAR has no member table, so the caps bind the header walk: `tar_reader.py` pulls
   headers in batches that stop one header past what either cap has left, PAX keywords
   and values included. `tarfile` reads a PAX extended or global header, or a GNU long

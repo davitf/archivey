@@ -123,6 +123,44 @@ def test_both_path_tables_count_against_max_metadata_bytes() -> None:
         open_archive(io.BytesIO(data), config=ArchiveyConfig(listing_limits=limits))
 
 
+def test_path_table_entries_over_max_members_are_refused_as_pycdlib_parses_them() -> (
+    None
+):
+    """Each entry is a directory, so a table of more than ``max_members + 1`` is refused.
+
+    A 1 MiB table of 8-byte entries fits the default ``max_metadata_bytes``; parsed
+    whole it cost about 30 MB. Counted against ``max_members=1000`` it stops after
+    1001 entries.
+    """
+    data = _with_path_table_size(2**20, image_size=2 * 2**20)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=1000))
+
+    with pytest.raises(
+        ResourceLimitError, match=r"max_members=1000 \(ISO path table holds more"
+    ):
+        open_archive(io.BytesIO(data), config=config)
+    peak = _peak_at_open(data, config, ResourceLimitError)
+    assert peak < 2 * len(data), (peak, len(data))
+
+
+def test_an_image_whose_directories_fill_max_members_still_opens() -> None:
+    """Real images never notice: the path table holds the root plus the members."""
+    import pycdlib
+
+    count = 300
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    for index in range(count):
+        iso.add_directory(f"/D{index}")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=count))
+    with open_archive(io.BytesIO(out.getvalue()), config=config) as reader:
+        assert len(reader.members()) == count
+
+
 # --- the Rock Ridge continuation area ---------------------------------------------
 
 
