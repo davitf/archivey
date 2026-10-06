@@ -2718,6 +2718,29 @@ def test_a_unix_directory_with_the_reparse_bit_is_a_plain_directory() -> None:
     assert DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE not in codes
 
 
+@pytest.mark.parametrize(
+    ("attributes", "expected"),
+    [
+        (0x8000 | 0x20 | (0o020644 << 16), MemberType.OTHER),  # char device
+        (0x8000 | 0x20 | (0o060660 << 16), MemberType.OTHER),  # block device
+        (0x8000 | 0x20 | (0o010644 << 16), MemberType.OTHER),  # FIFO
+        (0x8000 | 0x20 | (0o140755 << 16), MemberType.OTHER),  # socket
+        (0x8000 | 0x20 | (0o100644 << 16), MemberType.FILE),
+        # No 0x8000: a Windows attribute word with stray bits above 0xFFFF
+        # (0x20000000 is STRICTLY_SEQUENTIAL), not a Unix mode.
+        (0x20000020, MemberType.FILE),
+        (0o020644 << 16, MemberType.FILE),
+    ],
+)
+def test_unix_special_file_is_other(attributes: int, expected: MemberType) -> None:
+    """p7zip stores a FIFO or device with its Unix mode and no data. It is OTHER, as
+    in TAR and ISO, so extraction refuses it rather than writing an empty file."""
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_created_slot_record(attributes), 0)
+    assert member.type is expected
+
+
 def _to_filetime_ticks(unix_seconds: int) -> int:
     return (unix_seconds + 11_644_473_600) * 10_000_000
 

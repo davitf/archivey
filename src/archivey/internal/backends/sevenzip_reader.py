@@ -117,6 +117,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.unix_mode import is_special_file_mode
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
@@ -135,6 +136,7 @@ from archivey.types import (
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _S_IFMT = 0o170000
+_FILE_ATTRIBUTE_UNIX_EXTENSION = 0x8000
 
 
 def _written_on_unix(attrs: int | None) -> bool:
@@ -839,6 +841,13 @@ class SevenZipReader(BaseArchiveReader):
                     return MemberType.SYMLINK
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
+                if attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION and is_special_file_mode(
+                    unix_mode
+                ):
+                    # A device, FIFO or socket (7-Zip and p7zip store them with no
+                    # data). The 0x8000 flag is required too: a Windows attribute
+                    # above 0xFFFF can put stray file-type bits in the high word.
+                    return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
                 # filesystem, not that the tag named a link — the tag is in the member's

@@ -79,7 +79,12 @@ class MemberType(Enum):
 
 Windows NTFS junctions SHALL surface as `MemberType.SYMLINK` with
 `extra["is_junction"] == True`. `MemberType.OTHER` SHALL always be rejected by
-extraction regardless of policy. `MemberType.ANTI` SHALL be a deletion/tombstone
+extraction regardless of policy. A member whose stored Unix mode names a device, FIFO,
+socket or unknown file type SHALL be `MemberType.OTHER` in every format that stores
+one (TAR, ISO Rock Ridge, ZIP from a Unix creator, 7z with `0x8000` and the mode in the
+attribute's high word, RAR from a Unix host), even where the format's own tool writes
+it as an empty regular file (unzip, 7-Zip): an empty file in its place would hide what
+the archive said it was. `MemberType.ANTI` SHALL be a deletion/tombstone
 marker (`is_file` false, no payload); it SHALL NOT be treated as `OTHER`.
 
 A link the source filesystem held as a Windows reparse point — a junction, a Windows
@@ -99,6 +104,7 @@ link keeps the flag alongside its re-typed `MemberType`.
 | Case | Expected |
 | --- | --- |
 | TAR contains a device node or FIFO † | `member.type == MemberType.OTHER` |
+| ZIP (Unix creator), 7z (`0x8000` set) or RAR (Unix host) entry whose mode is a device, FIFO or socket † | `member.type == MemberType.OTHER`; `size` keeps the stored value |
 | ZIP whose member carries a junction's reparse data † | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True`; `link_target` is the buffer's substitute name |
 | ZIP whose member has the reparse bit and no reparse data | `member.type == MemberType.SYMLINK`; `link_target is None`; `is_junction` unset, the tag that would establish it being in the data that was not written |
 | 7z ANTI-bit entry † | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |
@@ -116,6 +122,10 @@ produces it is untested, and so is the behaviour a real one would get.
 
 - **A TAR device node or FIFO.** Nothing builds one; the `OTHER` mapping is exercised
   through a member constructed in the test.
+- **A ZIP, 7z or RAR device, FIFO or socket.** p7zip 16.02 does store FIFOs and devices
+  in a .7z (with no data), but Info-ZIP's zip and rar skip them, so the tests set the
+  mode in a constructed record (7z), a `ZipInfo` (ZIP) or a rewritten fixture header
+  (RAR).
 - **A junction's reparse data in a ZIP.** A junction is always a directory reparse
   point, and the writers measured here store no reparse data for a directory (the row
   below it is what they write instead), so the only ZIPs carrying a junction buffer are
