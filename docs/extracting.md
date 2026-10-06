@@ -10,8 +10,11 @@ with archivey.open_archive("archive.zip") as reader:
 # policy=ExtractionPolicy.STRICT, overwrite=ERROR, on_error=STOP
 ```
 
-To extract from a pipe or a socket, pass `streaming=True` to `open_archive`: extraction
-is a single forward pass, so it needs no random access.
+To extract a TAR or a single-file compressed stream from a pipe or a socket, pass
+`streaming=True` to `open_archive`: extraction is a single forward pass, so it needs no
+random access. ZIP, ISO, 7z and RAR keep their index away from the front of the file, so
+they cannot be read from a pipe in either mode; save them to a file or a `BytesIO` first
+([Non-seekable sources](access-and-cost.md#non-seekable-sources)).
 
 ## Trust boundaries
 
