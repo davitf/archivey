@@ -150,7 +150,11 @@ interpreter, and no `try` can catch it. So gzip, zlib and raw DEFLATE go through
 `RapidgzipChildStream` (`internal/streams/rapidgzip_child.py`), which runs
 `rapidgzip_worker.py` in a separate Python (`python -P`, importing nothing from archivey).
 The abort then costs the member, not the caller. bzip2 has not been seen to abort and stays
-in-process ([`bzip2.md`](bzip2.md) §2.3).
+in-process ([`bzip2.md`](bzip2.md) §2.3). The child turns off its own core dumps before it
+imports `rapidgzip`: an expected abort is no use to anyone as a core, and a crash handler
+that `core_pattern` pipes to (apport, systemd-coredump) gets the whole address space, about
+4 GB with every core decoding, whatever `RLIMIT_CORE` says, while the parent waits for it
+([`investigations/rapidgzip-worker-deaths.md`](../investigations/rapidgzip-worker-deaths.md)).
 
 What crosses the boundary:
 
