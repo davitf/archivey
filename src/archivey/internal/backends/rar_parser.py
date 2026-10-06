@@ -908,6 +908,76 @@ def _plain_header_cut(start: int) -> str:
     )
 
 
+def _no_header(source: BinaryIO, start: int, *, encrypted_cut: bool) -> str | None:
+    """Why the walk found no header at ``start``, or ``None`` for a clean end.
+
+    ``encrypted_cut``: part of a salt/IV, or a whole one with no ciphertext behind it,
+    was read. That is a cut, and needs no password to tell.
+    """
+    if encrypted_cut:
+        return _encrypted_header_cut(start)
+    return _data_past_end(source)
+
+
+def _header_failure(
+    exc: CorruptionError,
+    header_fd: _Readable,
+    start: int,
+    *,
+    proven: bool,
+    version: str,
+) -> str | None:
+    """Classify a header read that failed; ``None`` means re-raise ``exc``.
+
+    Neither format has a verifier for every header: a wrong key decrypts a garbage
+    header that fails its size or CRC checks, so in an encrypted header that is an
+    :class:`EncryptionError` and password candidates keep iterating. Once the key is
+    proven (a matching CRC16 in RAR3, a check value in RAR5), a failure there is
+    damage, and one that ran out of ciphertext is a cut. Unproven, a garbage size
+    reads to the end of the file as well, so that stays a wrong password. A plain
+    header the file holds only part of is a cut: unrar lists the members before it
+    and reports an unexpected end of archive.
+
+    :raises EncryptionError: (from :func:`wrong_password_error`) for a failure in an
+        encrypted header while the password is unproven.
+    """
+    if isinstance(header_fd, _HeaderDecryptStream):
+        if not proven:
+            raise wrong_password_error(
+                f"Failed to decrypt {version} headers (wrong password?)"
+            ) from exc
+        if header_fd.hit_eof:
+            return _encrypted_header_cut(start)
+    elif isinstance(exc, _RarHeaderCutError):
+        return _plain_header_cut(start)
+    return None
+
+
+def _check_rar3_crc(
+    header_crc: int,
+    data: bytes,
+    what: str,
+    *,
+    encrypted: bool,
+    proven: bool,
+) -> bool:
+    """Check a RAR3 header's CRC16 and return the updated password proof.
+
+    RAR3 has no header password verifier: a mismatch in an encrypted header is a wrong
+    password until a match has proven the key.
+    """
+    calc = _crc32(data) & 0xFFFF
+    if header_crc != calc:
+        if encrypted and not proven:
+            raise wrong_password_error(
+                "Failed to decrypt RAR3 headers (wrong password?)"
+            )
+        raise CorruptionError(
+            f"RAR3 {what} header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
+        )
+    return proven or encrypted
+
+
 def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> None:
     """Skip past a packed-data region, translating hostile sizes to CorruptionError."""
     _seek_to(source, _packed_span_end(data_offset, add_size))
@@ -1648,20 +1718,10 @@ def _parse_rar3(
 
     while True:
         header_fd: _Readable = source
-        # RAR3 has no header password verifier: on a wrong password the decrypted block
-        # header is garbage that fails the size/CRC checks below, indistinguishable from
-        # corruption. When this block is encrypted, surface such failures as
-        # EncryptionError so password candidates keep iterating (see _read_rar5_block).
-        # Once ``password_proven`` is set, a header that runs out of bytes part-way
-        # is a cut instead, and any other failure is the CorruptionError it is, as in
-        # the RAR5 walk with a verified check value.
         block_encrypted = has_header_encryption
         header_start = source.tell()
         if has_header_encryption:
-            if password is None:
-                raise EncryptionError(
-                    "RAR archive has encrypted headers but no password was provided"
-                )
+            assert password is not None  # MAIN raised without one
             # Nothing here depends on the password being right: the salt read and the
             # key derivation fail the same way for every candidate, so their errors
             # (a spent derivation budget) propagate as they are. A wrong password
@@ -1672,11 +1732,7 @@ def _parse_rar3(
             # omit ENDARC, and unrar lists such a file and exits 0 (rar.md §1).
             salt = read_exact(source, 8)
             if len(salt) < 8:
-                truncated = (
-                    _encrypted_header_cut(header_start)
-                    if salt
-                    else _data_past_end(source)
-                )
+                truncated = _no_header(source, header_start, encrypted_cut=bool(salt))
                 break
             header_fd = _rar3_decrypt_header(source, salt, password, kdf_cache)
 
@@ -1684,12 +1740,8 @@ def _parse_rar3(
             header_offset = header_fd.tell()
             buf = read_exact(header_fd, _S_BLK_HDR.size)
             if not buf:
-                # Behind a salt, no ciphertext block at all means the file was cut
-                # inside this header; that needs no password to tell.
-                truncated = (
-                    _encrypted_header_cut(header_start)
-                    if block_encrypted
-                    else _data_past_end(source)
+                truncated = _no_header(
+                    source, header_start, encrypted_cut=block_encrypted
                 )
                 break
             if len(buf) < _S_BLK_HDR.size:
@@ -1710,24 +1762,13 @@ def _parse_rar3(
             else:
                 hdata = buf
         except CorruptionError as exc:
-            if block_encrypted:
-                if (
-                    password_proven
-                    and isinstance(header_fd, _HeaderDecryptStream)
-                    and header_fd.hit_eof
-                ):
-                    truncated = _encrypted_header_cut(header_start)
-                    break
-                if not password_proven:
-                    raise wrong_password_error(
-                        "Failed to decrypt RAR3 headers (wrong password?)"
-                    ) from exc
-            elif isinstance(exc, _RarHeaderCutError):
-                # A plain header the file holds only part of: unrar lists the
-                # members before it and reports an unexpected end of archive.
-                truncated = _plain_header_cut(header_start)
-                break
-            raise
+            # ``header_fd`` is the decrypt stream exactly when ``block_encrypted``.
+            truncated = _header_failure(
+                exc, header_fd, header_start, proven=password_proven, version="RAR3"
+            )
+            if truncated is None:
+                raise
+            break
         # HeaderDecryptStream.tell() reports the underlying ciphertext position
         # (including AES block padding), which is the correct data_offset.
         data_offset = header_fd.tell()
@@ -1753,29 +1794,26 @@ def _parse_rar3(
                     raise EncryptionError(
                         "RAR archive has encrypted headers but no password was provided"
                     )
-            calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
-            if header_crc != calc:
-                if block_encrypted and not password_proven:
-                    raise wrong_password_error(
-                        "Failed to decrypt RAR3 headers (wrong password?)"
-                    )
-                raise CorruptionError(
-                    f"RAR3 MAIN header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
-                )
-            password_proven = password_proven or block_encrypted
+            password_proven = _check_rar3_crc(
+                header_crc,
+                hdata[2:crc_pos],
+                "MAIN",
+                encrypted=block_encrypted,
+                proven=password_proven,
+            )
             if flags & _RAR3_MAIN_COMMENT:
                 comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
             _seek_after_packed(source, data_offset, add_size)
             continue
 
         if block_type == _RAR3_ENDARC:
-            calc = _crc32(hdata[2:header_size]) & 0xFFFF
-            if header_crc != calc:
-                if block_encrypted and not password_proven:
-                    raise wrong_password_error(
-                        "Failed to decrypt RAR3 headers (wrong password?)"
-                    )
-                raise CorruptionError("RAR3 ENDARC header CRC mismatch")
+            password_proven = _check_rar3_crc(
+                header_crc,
+                hdata[2:header_size],
+                "ENDARC",
+                encrypted=block_encrypted,
+                proven=password_proven,
+            )
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
             break
 
@@ -1793,16 +1831,13 @@ def _parse_rar3(
                 is_service=(block_type == _RAR3_SUB),
                 name_encoding=name_encoding,
             )
-            calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
-            if header_crc != calc:
-                if block_encrypted and not password_proven:
-                    raise wrong_password_error(
-                        "Failed to decrypt RAR3 headers (wrong password?)"
-                    )
-                raise CorruptionError(
-                    f"RAR3 FILE header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
-                )
-            password_proven = password_proven or block_encrypted
+            password_proven = _check_rar3_crc(
+                header_crc,
+                hdata[2:crc_pos],
+                "FILE",
+                encrypted=block_encrypted,
+                proven=password_proven,
+            )
 
             if block_type == _RAR3_FILE:
                 # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
@@ -2478,15 +2513,12 @@ def _parse_rar5(
 
     is_solid = False
     is_volume = False
-    has_header_encryption = False
     comment: str | None = None
     members: list[RarMemberInfo] = []
     hdr_enc: _Rar5HdrEnc | None = None
-    # Whether a check value positively confirmed the header password. When False and
-    # headers are encrypted, a wrong password and genuine corruption are
-    # indistinguishable (no verifier), so a decrypted-header structural failure is
-    # reported as EncryptionError rather than CorruptionError (see _check_rar5_password).
-    password_verified = False
+    # Whether a check value positively confirmed the header password; see
+    # _header_failure and _check_rar5_password.
+    password_proven = False
     needs_next_volume = False
     seen_file_offsets: set[int] = set()
     qo_by_off: dict[int, RarMemberInfo] = {}
@@ -2499,21 +2531,13 @@ def _parse_rar5(
         header_fd: _Readable = source
         header_start = source.tell()
         if hdr_enc is not None:
-            has_header_encryption = True
-            if password is None:
-                raise EncryptionError(
-                    "RAR archive has encrypted headers but no password was provided"
-                )
+            assert password is not None  # the ENCRYPTION block raised without one
             # See the RAR3 walk: the IV read and key derivation do not depend on the
             # password, so their errors are not a wrong password. No IV at all is the
             # walk's end, as for a plain header; part of one is a cut.
             iv = read_exact(source, 16)
             if len(iv) < 16:
-                truncated = (
-                    _encrypted_header_cut(header_start)
-                    if iv
-                    else _data_past_end(source)
-                )
+                truncated = _no_header(source, header_start, encrypted_cut=bool(iv))
                 break
             header_fd = _rar5_decrypt_header(source, iv, hdr_enc, password, kdf_cache)
 
@@ -2529,38 +2553,19 @@ def _parse_rar5(
                 needs_next_volume = True
             continue
 
-        # A wrong password produces a garbage decrypted header that fails the block CRC
-        # (or advertises an absurd size). Without a check value to prove the key, that is
-        # indistinguishable from corruption, so surface it as EncryptionError so password
-        # candidates keep iterating. A verified key means a failure here is real corruption.
-        # A file that ends inside an encrypted header is a cut, not a clean end: behind
-        # an IV, no ciphertext at all needs no password to tell, and with a verified
-        # key a header that runs out of bytes part-way is one too. Unverified, a
-        # garbage size reads to the end of the file as well, so that stays a wrong
-        # password.
         try:
             parsed = _read_rar5_block(header_fd)
         except CorruptionError as exc:
-            if isinstance(header_fd, _HeaderDecryptStream):
-                if password_verified and header_fd.hit_eof:
-                    truncated = _encrypted_header_cut(header_start)
-                    break
-                if not password_verified:
-                    raise wrong_password_error(
-                        "Failed to decrypt RAR5 headers (wrong password?)"
-                    ) from exc
-            elif isinstance(exc, _RarHeaderCutError):
-                # A plain header the file holds only part of, its CRC and size
-                # vint included: unrar lists the members before it and reports an
-                # unexpected end of archive.
-                truncated = _plain_header_cut(header_start)
-                break
-            raise
+            # A plain cut includes one inside the CRC or the size vint.
+            truncated = _header_failure(
+                exc, header_fd, header_start, proven=password_proven, version="RAR5"
+            )
+            if truncated is None:
+                raise
+            break
         if parsed is None:
-            truncated = (
-                _encrypted_header_cut(header_start)
-                if isinstance(header_fd, _HeaderDecryptStream)
-                else _data_past_end(source)
+            truncated = _no_header(
+                source, header_start, encrypted_cut=hdr_enc is not None
             )
             break
         (
@@ -2634,8 +2639,12 @@ def _parse_rar5(
                 raise UnsupportedFeatureError(
                     f"Unsupported RAR5 header encryption cipher: {algo}"
                 )
-            if check_value is not None and password is not None:
-                password_verified = _check_rar5_password(
+            if password is None:
+                raise EncryptionError(
+                    "RAR archive has encrypted headers but no password was provided"
+                )
+            if check_value is not None:
+                password_proven = _check_rar5_password(
                     check_value, kdf_count, salt, password, kdf_cache=kdf_cache
                 )
             hdr_enc = _Rar5HdrEnc(
@@ -2645,11 +2654,6 @@ def _parse_rar5(
                 salt=salt,
                 check_value=check_value,
             )
-            has_header_encryption = True
-            if password is None:
-                raise EncryptionError(
-                    "RAR archive has encrypted headers but no password was provided"
-                )
             _seek_after_packed(source, data_offset, add_size)
             continue
 
@@ -2703,7 +2707,7 @@ def _parse_rar5(
     return RarArchive(
         version=5,
         is_solid=is_solid,
-        has_header_encryption=has_header_encryption,
+        has_header_encryption=hdr_enc is not None,
         comment=comment,
         members=members,
         sfx_offset=sfx_offset,
