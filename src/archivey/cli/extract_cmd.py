@@ -332,7 +332,9 @@ def _links_stay_inside(
     absolute target always blocks. A path that ends at nothing is walked by name. A
     directory that cannot be listed blocks too: what is under it was not checked.
 
-    ``links`` and ``readlink`` come from the disk, read lazily, or a dry run's record.
+    ``links`` is every symlink under ``root`` with its target, and ``readlink`` answers
+    each step from the same source. An ``OSError`` raised while ``links`` is listed
+    blocks: so a disk listing must be passed unconsumed, not as a list built first.
     """
     try:
         return all(
@@ -344,6 +346,11 @@ def _links_stay_inside(
         # A directory the walk cannot list could hold anything: keep the tree
         # where it is rather than move what was not looked at.
         return False
+
+
+def _disk_links_stay_inside(root: Path) -> bool:
+    """:func:`_links_stay_inside` for a tree on disk, listed and read as it is walked."""
+    return _links_stay_inside(root, _disk_links(root))
 
 
 def _recorded_links_stay_inside(top: str, links: tuple[tuple[str, str], ...]) -> bool:
@@ -363,8 +370,9 @@ def _keep_reason(
 ) -> str | None:
     """Why the hoist leaves the wrapper's single entry in place, or ``None`` to move it.
 
-    ``links_leave`` says whether a symlink in the entry leaves it on the way to its
-    target (:func:`_links_stay_inside`); it runs only when nothing earlier settled it.
+    ``links_leave`` says whether a symlink in the entry may leave it on the way to its
+    target, which includes a tree that could not be fully walked
+    (:func:`_links_stay_inside`); it runs only when nothing earlier settled it.
     """
     if wrapper_existed:
         # The directory is the operator's, and its only entry may be their own file.
@@ -375,7 +383,9 @@ def _keep_reason(
         # name the operator's own `passwd`, and `b -> ../etc/passwd` one outside it.
         return "its only entry is a symlink, which the move would repoint"
     if links_leave():
-        return "a symlink in it points outside it, and would point elsewhere if moved"
+        return (
+            "it may hold a symlink that points outside it, which a move would repoint"
+        )
     return None
 
 
@@ -412,7 +422,7 @@ def maybe_hoist_single_root(
     reason = _keep_reason(
         wrapper_existed,
         child.is_symlink(),
-        lambda: child.is_dir() and not _links_stay_inside(child, _disk_links(child)),
+        lambda: child.is_dir() and not _disk_links_stay_inside(child),
     )
     if reason is not None:
         print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)

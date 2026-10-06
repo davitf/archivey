@@ -125,7 +125,8 @@ that wrapper contains exactly one top-level entry, the system SHALL hoist it to
 the cwd and remove the wrapper. The hoist SHALL NOT run when the wrapper was
 already there before the extraction (its only entry may be the operator's own),
 when the only entry is a symlink (the move changes the directory its target is
-read from), or when a symlink in the entry leaves the entry on the way to its target.
+read from), or when a symlink in the entry leaves the entry on the way to its target
+or part of the entry could not be listed (it may hold such a link).
 Extraction checked those links against the wrapper, and a path that climbs above the
 hoisted entry and back down through the wrapper's name (`top/k ->
 ../../.ssh/authorized_keys`, from `.ssh.tar`) climbs out of the cwd after the move. The
