@@ -89,8 +89,17 @@ host is MS-DOS, OS/2 or Win32, and windows-1252 for any other host. A RAR 1.5-4 
 with the Unicode flag and no UTF-16 field declares UTF-8, so `encoding=` SHALL apply to
 it only when its bytes are not valid UTF-8. The system MUST NOT decode an 8-bit name as
 UTF-16LE. `raw_name` SHALL be the stored bytes in every case, and RAR SHALL NOT emit
-`ENCODING_ARGUMENT_UNUSED`. How a name is decoded SHALL NOT change which member a read
-returns: the `unrar` mask is built from the stored name, not from the decoded text.
+`ENCODING_ARGUMENT_UNUSED`. How a name with no UTF-16 field is decoded SHALL NOT change
+which member a read returns: its `unrar` mask is built from the stored name, not from the
+decoded text. A RAR 1.5-4 UTF-16 field SHALL decode with `surrogatepass`: a surrogate
+without its partner stays in `name` as that code unit, and a valid pair decodes as one
+character. Extraction writes such a name by `safe-extraction` "Lone surrogates in a
+member name". `unrar` matches the field unit by unit (a valid pair is two units). On
+POSIX, where the mask goes out as UTF-8 bytes that cannot carry a surrogate unit, a read
+through `unrar` SHALL send each unit as `?` in the mask, and SHALL refuse with
+`UnsupportedFeatureError` naming `unar` when a unit is in a directory component. On
+Windows the mask SHALL carry a valid pair's units as they are, and a lone unit SHALL be
+refused naming `unar`, as it is in a RAR5 name.
 
 #### Scenario: RAR name decoding matrix
 
@@ -103,6 +112,7 @@ returns: the `unrar` mask is built from the stored name, not from the decoded te
 | Unicode flag, no UTF-16 field, valid UTF-8, `encoding=` passed | UTF-8 |
 | RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
 | Any 8-bit name | `raw_name` is the stored bytes |
+| UTF-16 field holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`; `raw_name` is the 8-bit field; the member reads |
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
@@ -894,7 +904,9 @@ NOT change what a successful read returns.
 A glob name whose mask matches **no** other member SHALL be unaffected and SHALL read
 without the flag. A name with no `*` or `?` SHALL NOT be refused by this requirement,
 whatever else its mask selects (`Return a named member's own bytes when its mask selects
-others`).
+others`), unless the mask built for it holds a `?` that the name does not: on POSIX a
+RAR 1.5-4 UTF-16 name sends each surrogate unit as `?` (`Decode RAR member names`), and
+that mask falls under this requirement like a stored glob.
 
 A call site that builds no include mask SHALL be unaffected, whatever the member names
 are. In particular a solid `stream_members()` pass uses one unnamed `unrar p` pipe
@@ -916,6 +928,7 @@ refused.
 | `only*.dat`, whose mask matches nothing else, default config | Reads normally; no refusal |
 | Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
 | A name with no `*` or `?`, even one shared with an earlier member | Not refused in either configuration |
+| POSIX: `hi` U+D800 `.txt` after `hiX.txt`, default config | `UnsupportedFeatureError` naming the flag; with the flag, the member's own bytes |
 
 ### Requirement: Read RAR member data with unar
 

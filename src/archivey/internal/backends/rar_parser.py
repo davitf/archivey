@@ -346,7 +346,8 @@ class RarMemberInfo:
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
     # A RAR3 name whose Unicode field decoded, as decoded: what ``unrar`` compares
-    # a ``-n`` mask against. ``filename`` can differ from it
+    # a ``-n`` mask against, once ``unrar_member_view`` splits a valid pair into
+    # its two units. ``filename`` can differ from it
     # (``_fix_rar3_astral_truncation``). ``None`` for RAR5 and for a RAR3 name
     # ``unrar`` reads from the 8-bit field.
     rar3_unicode_name: str | None = None
@@ -1668,7 +1669,11 @@ def _decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
                 pos += k
     except IndexError:
         return None
-    return out.decode("utf-16le", "replace")
+    # surrogatepass: the field is UTF-16 code units, and NTFS lets a name hold a
+    # surrogate without its partner. The unit stays in the name, as the 7z reader
+    # keeps it; extraction decides what reaches disk. ``out`` has an even length, so
+    # the decode cannot fail, and a valid pair still decodes as one character.
+    return out.decode("utf-16le", "surrogatepass")
 
 
 def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:

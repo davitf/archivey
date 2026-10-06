@@ -353,7 +353,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   which code page they are in. Archivey decodes it with `encoding=` when you pass one.
   Otherwise it tries UTF-8, then cp437 for a member written on DOS or Windows (WinRAR
   writes the OEM code page) and windows-1252 for one written elsewhere. `raw_name` is
-  always the stored bytes. `encoding=` has no effect on a RAR5 name.
+  always the stored bytes. `encoding=` has no effect on a RAR5 name. A RAR 1.5-4
+  UTF-16 name can hold a surrogate without its partner, as a 7z name can: archivey
+  keeps it in `member.name` and extracts it as it does a 7z name (see 7z above).
+  `unrar` 7.00 on Linux instead extracts the name cut at that unit, so `hi\ud800.txt`
+  becomes `hi`. If you read such a member through `unrar`, archivey selects it with
+  `?` in place of each unit. When that pattern also matches an earlier member, the
+  read raises `UnsupportedFeatureError` unless you set
+  `rar_allow_glob_member_concatenation`, as it does for a member name that holds `*`
+  or `?`.
 - **Comments.** A RAR 1.5-4 comment is 8-bit text that does not say which code page
   it is in. Archivey reads it up to the first NUL, as UTF-8 if it is valid and as
   windows-1252 otherwise. The one exception is a RAR 2.9-4 comment flagged as
@@ -418,7 +426,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   when the image has a Joliet tree and the two line up, with a
   `member_name_encoding_inferred` diagnostic, and is escaped otherwise (see
   [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)). Joliet
-  names are UTF-16 and ignore `encoding=`.
+  names are UTF-16 and ignore `encoding=`. A Joliet name can hold a surrogate without
+  its partner, as a 7z name can: archivey keeps it in `member.name` and extracts it as
+  it does a 7z name (see 7z above).
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty

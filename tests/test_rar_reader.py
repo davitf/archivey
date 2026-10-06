@@ -3341,6 +3341,12 @@ def test_rar3_rle_name_zero_correction_keeps_hi_byte() -> None:
     assert decoded == "\u0461\u0462"
 
 
+def test_rar3_unicode_name_keeps_a_lone_surrogate_unit() -> None:
+    """A unit without its partner stays as that unit, never U+FFFD."""
+    # hi=0xD8, flags=0x40 (opcode 1: low byte 0x00 under ``hi``).
+    assert _decode_rar3_unicode_name(b"a", b"\xd8\x40\x00") == "\ud800"
+
+
 def _reference_decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str | None:
     """Per-byte transcription of the pre-rewrite ``_UnicodeFilename.decode``.
 
@@ -3426,7 +3432,9 @@ def _reference_decode_rar3_unicode_name(std_name: bytes, encdata: bytes) -> str 
                     put(lo, 0)
     if failed:
         return None
-    return buf.decode("utf-16le", "replace")
+    # The one deliberate change from the old class: a lone surrogate unit stays in
+    # the name (``surrogatepass``), as the parser now keeps it.
+    return buf.decode("utf-16le", "surrogatepass")
 
 
 def test_rar3_unicode_name_decode_matches_reference_and_stays_bounded() -> None:
@@ -3458,6 +3466,7 @@ def test_rar3_unicode_name_decode_matches_reference_and_stays_bounded() -> None:
     @example(b"x" * 129, b"\x00\xc0\x7f")  # plain run k=129
     @example(b"x" * 129, b"\x04\xc0\xff\x05")  # correction run k=129, c=5
     @example(b"x" * 129, b"\x04\xc0\xff\x00")  # correction run k=129, c=0
+    @example(b"a", b"\xd8\x40\x00")  # one unit, U+D800 with no partner
     def inner(std_name: bytes, encdata: bytes) -> None:
         got = _decode_rar3_unicode_name(std_name, encdata)
         assert got == _reference_decode_rar3_unicode_name(std_name, encdata)

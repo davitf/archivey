@@ -331,3 +331,12 @@ def test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning(
     assert rar_unrar.unrar_member_refusal(b"caf\xe9.txt") is None
     with pytest.raises(UnsupportedFeatureError, match="UTF-8 locale"):
         rar_unrar.open_unrar_p("a.rar", member="café.txt")
+
+
+def test_windows_mask_counts_an_astral_character_as_two_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows ``wchar_t`` is a UTF-16 unit, so one ``?`` cannot take U+1F600 whole."""
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    assert not rar_unrar.unrar_mask_selects("./pair?.txt", "pair\U0001f600.txt")
+    assert rar_unrar.unrar_mask_selects("./pair??.txt", "pair\U0001f600.txt")

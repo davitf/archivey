@@ -169,10 +169,15 @@ What is ISO-specific in turning a record into a member:
   names a record there decodes as that record's name does, so a link keeps naming its
   target's member; an absolute target points outside the image and stays escaped. The
   `MEMBER_NAME_ENCODING_INFERRED` context leaves both encoding fields empty, because no
-  decode of the stored bytes made the name. Joliet decodes as UTF-16BE with U+FFFD for
-  anything invalid and ignores `encoding=`. Decoding never raises. Backslash is an
+  decode of the stored bytes made the name. Joliet decodes as UTF-16BE with
+  `surrogatepass` (`_decode_joliet`), as 7z names do: a lone surrogate stays in the
+  name, for the Joliet namespace and for a Rock Ridge name that borrows it, and
+  extraction writes it by the cross-format rule in `safe-extraction` ("Lone surrogates
+  in a member name"); 7-Zip 23.01 writes it as it does a 7z name. Only an odd trailing
+  byte becomes U+FFFD. Joliet ignores `encoding=`. Decoding never raises. Backslash is an
   ordinary character. `raw_name` is the stored bytes in the Rock Ridge and plain
-  namespaces, and the UTF-8 of the decoded path in Joliet.
+  namespaces, and the UTF-8 of the decoded path in Joliet (a lone surrogate as its three
+  `surrogatepass` bytes).
 - **System Use entries.** `pycdlib` refuses the whole image on any System Use entry it
   cannot parse, so while archivey opens an image the bytes it hands `pycdlib` are
   filtered first (`_SystemUseNotes.filter`). An entry of a type `pycdlib` does not know

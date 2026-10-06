@@ -3161,8 +3161,9 @@ class RarReader(BaseArchiveReader):
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
         # built from the name as unrar reads it, which is not always the presented
         # ``member.name``: unrar cuts a RAR5 name at its first byte that is not
-        # UTF-8, and an 8-bit RAR3 name goes to unrar as its stored bytes (on
-        # Windows, as unrar's own OEM reading of them).
+        # UTF-8, an 8-bit RAR3 name goes to unrar as its stored bytes (on
+        # Windows, as unrar's own OEM reading of them), and a RAR3 Unicode name
+        # sends each surrogate unit as ``?``.
         presented = _presented_filename(raw)
         version_control = raw.is_file_version_history()
         names = self._unrar_names()
@@ -3171,8 +3172,23 @@ class RarReader(BaseArchiveReader):
             view,
             raw.orig_filename,
             stored_is_8bit=self._archive.version == 4 and raw.rar3_unicode_name is None,
+            surrogates_as_wildcards=raw.rar3_unicode_name is not None,
         )
         refusal = unrar_member_refusal(mask_name)
+        if (
+            refusal is None
+            and raw.rar3_unicode_name is not None
+            and sys.platform != "win32"
+            and view is not None
+            and _surrogate_in_directory_part(view)
+        ):
+            # Sent as ``?``, that unit would make a directory glob, which the check
+            # below refuses with a reason about backslashes and globs.
+            refusal = (
+                "a directory in its name holds a UTF-16 surrogate unit, which can "
+                "reach unrar only as a glob in that directory, and archivey cannot "
+                "size what a directory glob selects"
+            )
         if refusal is None and (
             "\0" in presented
             or (raw.orig_filename is not None and b"\0" in raw.orig_filename)
@@ -3264,8 +3280,8 @@ class RarReader(BaseArchiveReader):
             if self._archive.is_solid:
                 message = (
                     f"Reading RAR member {quoted(member.name)} is refused: its "
-                    "stored name is an unrar include mask that also matches "
-                    "earlier members. Names like this are almost always "
+                    "name, as unrar is given it, is an include mask that also "
+                    "matches earlier members. Names like this are almost always "
                     "constructed. Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True "
                     "to read it anyway."
@@ -3273,8 +3289,9 @@ class RarReader(BaseArchiveReader):
             else:
                 message = (
                     f"Reading RAR member {quoted(member.name)} would decompress "
-                    f"{glob_prefix} bytes of earlier members first: its stored "
-                    "name is an unrar include mask that also matches them. Set "
+                    f"{glob_prefix} bytes of earlier members first: its name, as "
+                    "unrar is given it, is an include mask that also matches them. "
+                    "Set "
                     "ArchiveyConfig.rar_allow_glob_member_concatenation=True to "
                     "read it anyway."
                 )
@@ -3719,3 +3736,9 @@ class RarReadBackend(ReadBackend):
 
 
 register_reader(RarReadBackend)
+
+
+def _surrogate_in_directory_part(view: str) -> bool:
+    """True when a directory component of ``view`` holds a UTF-16 surrogate unit."""
+    directory = view.replace("\\", "/").rstrip("/").rpartition("/")[0]
+    return any("\ud800" <= char <= "\udfff" for char in directory)

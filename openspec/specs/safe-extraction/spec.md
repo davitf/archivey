@@ -287,8 +287,9 @@ of this requirement — it belongs to the future opt-in `SANITIZE` extraction po
 ### Requirement: Lone surrogates in a member name
 
 A member name or link target can hold a surrogate without its partner (U+D800–U+DFFF):
-7z names are UTF-16 code units, and NTFS allows any unit in a name. Listing and reading
-keep the unit in the name under every policy.
+7z names, RAR 1.5-4 UTF-16 names and Joliet names are UTF-16 code units, and NTFS allows
+any unit in a name. Listing and reading keep the unit in the name under every policy, and
+the rule below is the same for every format.
 
 Under `STRICT` and `STANDARD` such a name is not portable, and the portable-name rule
 (O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
@@ -318,7 +319,9 @@ raw `UnicodeEncodeError`.
 
 #### Scenario: lone surrogate matrix
 
-`tests/test_sevenzip_surrogate_names.py` compares both policies with the `7z` tool.
+`tests/test_sevenzip_surrogate_names.py` compares both policies with the `7z` tool;
+`tests/test_utf16_surrogate_names.py` checks that RAR 1.5-4 and Joliet names extract to
+the same tree.
 
 | Case | Expected |
 | --- | --- |
