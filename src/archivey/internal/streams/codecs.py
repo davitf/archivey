@@ -605,15 +605,19 @@ class CodecParams:
     - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
       to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark. Raw
       LZMA1/LZMA2 stop reading at it; pass it only for a stream with no end marker
-      (ZIP LZMA with bit 1 clear), since it also hides output past that size.
+      (ZIP LZMA with bit 1 clear), since it also hides output past that size. Raw
+      DEFLATE under rapidgzip hands over to zlib at it, when the container sets no
+      ``StreamConfig.expected_decompressed_size`` (a 7z coder).
     - ``pack_size`` — known compressed length for the PPMd coder input (7z pack stream /
       ZIP compressed size / sized view). Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
-    - ``single_stream`` — the coder's data is one bzip2 stream (a ZIP member), so the
-      standard-library decoder ends at its end-of-stream marker rather than reading a
-      further stream as a concatenated file. The accelerator does not honour it; the
-      container's size and CRC check gives the verdict on what it reads.
+    - ``single_stream`` — the coder's data is one bzip2 stream (a ZIP member or a 7z
+      coder), so the standard-library decoder ends at its end-of-stream marker rather
+      than reading a further stream as a concatenated file. The accelerator does not
+      honour it; the container's size and CRC check gives the verdict on what it reads.
+      Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
+      end marker.
     """
 
     filters: list[dict] | None = None
@@ -2505,12 +2509,14 @@ class _DeflateFamilyCodec(StreamCodec):
             views=views,
             open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
             label=label,
-            limit=self._accelerated_limit(config),
+            limit=self._accelerated_limit(params, config),
         )
         stream: BinaryIO = takeover if end_check is None else end_check(takeover)
         return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
 
-    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+    def _accelerated_limit(
+        self, params: CodecParams, config: StreamConfig
+    ) -> int | None:
         """The ``limit`` for :class:`_StdlibOnAcceleratorError`: ``None`` for a codec
         whose stream ends where the standard library ends it. That class's docstring
         says why only raw DEFLATE sets one."""
@@ -3111,10 +3117,18 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                     limits=config.decoder_limits,
                     what=f"{LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
                 )
-        decoded = ensure_binaryio(
-            lzma.LZMAFile(
-                source, mode="rb", format=lzma.FORMAT_RAW, filters=params.filters
-            )
+        filters = params.filters
+        # One stream: the coder's data ends at its end marker, as 7-Zip reads it.
+        # ``LZMAFile`` would start a second raw stream on the bytes after it and
+        # deliver that as content. What follows the marker ends the data; the
+        # container's declared size and CRC give the verdict on what was read.
+        decoded: BinaryIO = FramedDecompressorStream(
+            source,
+            lambda: lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters),
+            codec_name="lzma",
+            magic=_NO_FURTHER_STREAM,
+            collector=config.collector,
+            report_trailing_data=config.report_trailing_data,
         )
         if params.unpack_size is None:
             return decoded
@@ -3156,11 +3170,16 @@ class DeflateCodec(_ZlibErrorCodec):
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
 
-    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+    def _accelerated_limit(
+        self, params: CodecParams, config: StreamConfig
+    ) -> int | None:
         # zlib ends the member at the stream's final block; rapidgzip reads on into
         # whatever follows. The standard library decides both a data error and output
-        # past the declared size (_StdlibOnAcceleratorError).
-        return config.expected_decompressed_size
+        # past the declared size (_StdlibOnAcceleratorError). ZIP declares the size
+        # as the member's; a 7z coder declares it as its unpack size.
+        if config.expected_decompressed_size is not None:
+            return config.expected_decompressed_size
+        return params.unpack_size
 
 
 def _zlib_header_plausible(prefix: bytes) -> bool:

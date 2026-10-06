@@ -777,7 +777,7 @@ def _execute_stage(
 
     ``owns_input`` is consumed only by ``_FilterStage`` (``owns_inner``): True when
     ``stream`` is a private earlier output rather than a borrowed pack view. Other
-    stages ignore it: stdlib ``LZMAFile`` does not close a passed-in
+    stages ignore it: the raw LZMA decoder stream does not close a passed-in
     fileobj, so ``[AES, LZMA]`` still leaves the AES decrypt stream to GC.
     ``AesDecryptStream`` borrows the pack view (``owns_inner`` default).
     """
@@ -794,6 +794,9 @@ def _execute_stage(
                 properties=stage.properties,
                 unpack_size=stage.unpack_size,
                 pack_size=stage.pack_size,
+                # A coder's data is one stream, as 7-Zip reads it: a bzip2 coder
+                # ends at its first end-of-stream marker (raw LZMA always does).
+                single_stream=True,
             ),
             collector=collector,
             seekable=seekable,
@@ -851,8 +854,8 @@ def open_folder_pipeline(
     chain, so it closes the previous stage's output — the LZMA1 cap slice, or an
     ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on stages do not close
     their input: ``[AES, LZMA]`` (the common encrypted shape) still leaves the AES
-    stream unclosed, because stdlib ``LZMAFile`` does not close a passed-in fileobj.
-    The AES stream borrows the pack view (``owns_inner`` default) and holds no OS
+    stream unclosed, because the raw LZMA decoder stream does not close a passed-in
+    fileobj. The AES stream borrows the pack view (``owns_inner`` default) and holds no OS
     handle. Wiring codec stages to close it is a follow-up; seek does not depend on it.
 
     In a BCJ2 folder, ``seekable`` also applies to every branch, because the

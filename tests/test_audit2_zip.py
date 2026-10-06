@@ -12,6 +12,7 @@ from __future__ import annotations
 import bz2
 import hashlib
 import io
+import lzma
 import os
 import struct
 import sys
@@ -49,6 +50,7 @@ class _Entry:
     header_offset: int | None = None  # central-directory value; default the real one
     extract_version: int = 20
     external_attr: int = 0o100644 << 16
+    flags: int = 0  # general-purpose bit flags, both headers
 
 
 def _build_zip(entries: list[_Entry]) -> bytes:
@@ -64,7 +66,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             "<4sHHHHHIIIHH",
             b"PK\x03\x04",
             e.extract_version,
-            0,  # flags
+            e.flags,
             e.method,
             0,  # time
             0x21,  # date: 1980-01-01
@@ -88,7 +90,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             20,  # version made by
             3,  # create system: Unix
             e.extract_version,
-            0,  # flags
+            e.flags,
             e.method,
             0,
             0x21,
@@ -479,6 +481,60 @@ def test_bzip2_second_stream_that_breaks_the_crc_raises(
     # the accelerator's output fails the CRC.
     blob = _two_bzip2_streams(_BZ_PAYLOAD * 2, crc=zlib.crc32(_BZ_PAYLOAD))
     assert _is_corruption(_outcome(blob, **open_kwargs))
+
+
+# ---------------------------------------------------------------------------------------
+# S1: an LZMA (method 14) member and the bytes after its end marker.
+#
+# A member is one raw LZMA stream. It ended where liblzma's file reader ended it, which
+# starts a second raw stream on the bytes after an end marker and reads it as content;
+# 7-Zip reports "Data Error". Now it ends at the marker, as a bzip2 member does (Z8).
+# ---------------------------------------------------------------------------------------
+
+_LZMA_EOS_FLAG = 0x0002  # general-purpose bit 1: the stream carries an end marker
+_LZMA1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
+
+
+def _two_lzma_streams(plain: bytes, *, flags: int = _LZMA_EOS_FLAG) -> bytes:
+    # Python's raw LZMA1 encoder always writes the end marker.
+    stream = lzma.compress(_BZ_PAYLOAD, format=lzma.FORMAT_RAW, filters=[_LZMA1])
+    props = lzma._encode_filter_properties(_LZMA1)  # type: ignore[attr-defined]
+    # ZIP LZMA header: version 16.3, properties length, properties.
+    header = bytes([16, 3]) + len(props).to_bytes(2, "little") + props
+    entry = _Entry(
+        b"a",
+        header + stream + stream,
+        method=14,
+        plain=plain,
+        extract_version=63,
+        flags=flags,
+    )
+    return _build_zip([entry])
+
+
+def test_lzma_member_ends_at_its_end_marker() -> None:
+    # Size and CRC cover both streams. `7z t`: "Data Error"; zipfile: bad CRC. The
+    # member ends 240 bytes short of its declared size: TruncatedError, as for bzip2.
+    blob = _two_lzma_streams(_BZ_PAYLOAD * 2)
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf, pytest.raises(zipfile.BadZipFile):
+        zf.read("a")
+    assert _outcome(blob) == ("raise", archivey.exceptions.TruncatedError)
+
+
+def test_lzma_member_with_a_second_stream_after_its_end_marker_reads() -> None:
+    # Size and CRC cover the first stream: what follows the end marker ends the
+    # member silently, as for bzip2 and DEFLATE (it was read on, past the size).
+    blob = _two_lzma_streams(_BZ_PAYLOAD)
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        assert zf.read("a") == _BZ_PAYLOAD
+    assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
+
+
+def test_lzma_member_without_the_end_marker_flag_stops_at_its_size() -> None:
+    # Bit 1 clear: the stream ends where the declared size says, so what follows it
+    # is cut there, whatever it is. Unchanged by S1.
+    blob = _two_lzma_streams(_BZ_PAYLOAD, flags=0)
+    assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
 
 
 # ---------------------------------------------------------------------------------------
