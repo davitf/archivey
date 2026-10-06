@@ -208,23 +208,38 @@ def _check_limit(
         )
 
 
+# The annotations a limits field may have, as (allow_float, allow_none).
+_LIMIT_ANNOTATIONS: dict[str, tuple[bool, bool]] = {
+    "int": (False, False),
+    "int | None": (False, True),
+    "float | None": (True, True),
+}
+
+
 def _check_limit_fields(
-    limits: ExtractionLimits | ListingLimits | DecoderLimits | SpoolLimits, cls: str
+    limits: ExtractionLimits | ListingLimits | DecoderLimits | SpoolLimits, *, cls: str
 ) -> None:
     """Run :func:`_check_limit` on every field of a limits dataclass, in field order.
 
-    ``allow_none`` and ``allow_float`` are read off the field's annotation (a string,
-    under ``from __future__ import annotations``): ``int``, ``int | None`` or
-    ``float | None``.
+    ``allow_float`` and ``allow_none`` come from the field's annotation (a string,
+    under ``from __future__ import annotations``), which must be one of
+    ``_LIMIT_ANNOTATIONS``. ``cls`` is passed in rather than read from
+    ``type(limits)``, so a user subclass still gets the documented class in the message.
     """
     for f in fields(limits):
-        annotation = str(f.type)
+        flags = _LIMIT_ANNOTATIONS.get(str(f.type))
+        if flags is None:
+            raise AssertionError(
+                f"{cls}.{f.name} is annotated {f.type!r}, which _check_limit_fields "
+                f"does not know; spell it as one of {sorted(_LIMIT_ANNOTATIONS)}."
+            )
+        allow_float, allow_none = flags
         _check_limit(
             getattr(limits, f.name),
             cls=cls,
             field_name=f.name,
-            allow_float="float" in annotation,
-            allow_none="None" in annotation,
+            allow_float=allow_float,
+            allow_none=allow_none,
         )
 
 
@@ -282,10 +297,8 @@ class ExtractionLimits:
     UNLIMITED: ClassVar[ExtractionLimits]
 
     def __post_init__(self) -> None:
-        # ``ratio_activation_threshold`` is not ``| None``: the ratio guard reads it
-        # unconditionally, so a None there would not disable anything, it would fail
-        # the comparison mid-extraction.
-        _check_limit_fields(self, "ExtractionLimits")
+        # allow_none and allow_float come from the field annotations.
+        _check_limit_fields(self, cls="ExtractionLimits")
 
 
 ExtractionLimits.UNLIMITED = ExtractionLimits(
@@ -333,7 +346,7 @@ class ListingLimits:
     UNLIMITED: ClassVar[ListingLimits]
 
     def __post_init__(self) -> None:
-        _check_limit_fields(self, "ListingLimits")
+        _check_limit_fields(self, cls="ListingLimits")
 
 
 ListingLimits.UNLIMITED = ListingLimits(
@@ -531,7 +544,7 @@ class DecoderLimits:
     UNLIMITED: ClassVar[DecoderLimits]
 
     def __post_init__(self) -> None:
-        _check_limit_fields(self, "DecoderLimits")
+        _check_limit_fields(self, cls="DecoderLimits")
 
 
 DecoderLimits.UNLIMITED = DecoderLimits(
@@ -594,7 +607,7 @@ class SpoolLimits:
     UNLIMITED: ClassVar[SpoolLimits]
 
     def __post_init__(self) -> None:
-        _check_limit_fields(self, "SpoolLimits")
+        _check_limit_fields(self, cls="SpoolLimits")
 
 
 SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
