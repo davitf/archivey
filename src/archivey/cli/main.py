@@ -53,18 +53,6 @@ _VERBS = frozenset(
     }
 )
 
-# Options that take a following value (for default-list injection).
-_VALUE_OPTIONS = frozenset(
-    {
-        "--password",
-        "--overwrite",
-        "--policy",
-        "-d",
-        "--dest",
-        "--exclude",
-    }
-)
-
 _TOP_EPILOG = """\
 examples:
   archivey archive.zip                  list members
@@ -384,6 +372,17 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(_run="reserved", _reserved_message=hint)
 
     return parser
+
+
+# The main parser's value-taking options, whose value is never the verb (default-list
+# injection). Not a verb's own: before the verb argparse does not know them, so it does
+# not consume their value either, and skipping it would blame the value as a bad verb.
+_VALUE_OPTIONS = frozenset(
+    opt
+    for action in build_parser()._actions
+    if action.nargs != 0
+    for opt in action.option_strings
+)
 
 
 def _print_version(*, verbose: bool, out: TextIO) -> None:

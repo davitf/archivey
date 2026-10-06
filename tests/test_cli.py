@@ -2369,6 +2369,32 @@ def test_inject_default_list_puts_verb_before_separator() -> None:
     assert _inject_default_list(["list", "--", "a.zip"]) == ["list", "--", "a.zip"]
 
 
+def test_inject_default_list_skips_only_pre_verb_option_values() -> None:
+    # A value-taking option the main parser knows: its value is not the verb.
+    assert _inject_default_list(["--password", "list", "a.zip"]) == [
+        "--password",
+        "list",
+        "list",
+        "a.zip",
+    ]
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--abort-on", "--policy", "--overwrite", "-d", "--dest", "--exclude"],
+)
+def test_verb_option_before_verb_is_named_as_unrecognized(
+    flag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The main parser does not know a verb's options, so it does not consume their
+    # value. The value is then the first positional, and an injection that skipped it
+    # blamed the value as an invalid verb instead of naming the misplaced flag.
+    assert main([flag, "blocked-member", "x", "a.zip"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert f"unrecognized arguments: {flag}" in err
+    assert "invalid choice" not in err
+
+
 def test_double_dash_lists_dash_named_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
