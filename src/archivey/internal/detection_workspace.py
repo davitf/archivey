@@ -62,7 +62,9 @@ class PrefixWorkspace:
         self._buf = bytearray()
         self._closed = False
         # A random-access handle: a path's own (owned, closed on exit) or a seekable
-        # caller stream (borrowed, restored to ``_entry_pos`` on exit).
+        # caller stream (borrowed, restored to ``_entry_pos`` on exit). Until close,
+        # ``_handle is not None`` exactly when ``_entry_pos is not None``; close drops
+        # the handle and keeps ``_entry_pos`` for ``remaining_known``.
         self._handle: BinaryIO | None = None
         self._owns_handle = False
         self._entry_pos: int | None = None
@@ -273,15 +275,13 @@ class PrefixWorkspace:
     def _cheap_random_access_handle(self) -> BinaryIO | None:
         """Handle for O(1) probe seeks, or ``None`` to fall back to capped buffering.
 
-        Paths are always cheap. A bare seekable stream (``BytesIO``,
-        file object) is treated as cheap. :class:`~archivey.ArchiveStream` is not:
+        A path's own handle and a bare seekable stream (``BytesIO``, file object)
+        are treated as cheap. :class:`~archivey.ArchiveStream` is not:
         many codecs service a backward restore by re-decoding, so probes prefer the
         capped buffer path there. Richer "is this seek cheap?" pricing (round trips /
         ``nearest_resume_offset``) stays in ``dev-docs/IDEAS.md``.
         """
-        if self._handle is None or (
-            not self._owns_handle and self._seek_is_expensive(self._handle)
-        ):
+        if self._handle is None or self._seek_is_expensive(self._handle):
             return None
         return self._handle
 
@@ -335,12 +335,14 @@ class PrefixWorkspace:
         if self._closed:
             return
         self._closed = True
+        handle, self._handle = self._handle, None
         try:
-            if self._owns_handle and self._handle is not None:
-                self._handle.close()
-                self._handle = None
-            elif self._handle is not None and self._entry_pos is not None:
-                self._handle.seek(self._entry_pos)
+            if handle is not None:
+                assert self._entry_pos is not None
+                if self._owns_handle:
+                    handle.close()
+                else:
+                    handle.seek(self._entry_pos)
         finally:
             if self._owned_source is not None:
                 self._owned_source.close()

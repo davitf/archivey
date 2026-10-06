@@ -314,6 +314,17 @@ def test_seekable_stream_restored_on_error_path() -> None:
     assert src.backward_seeks >= 1  # the restore seek itself
 
 
+def test_borrowed_stream_stays_at_entry_after_close() -> None:
+    src = InstrumentedBytesIO(b"\x00" * 1000)
+    src.seek(100)
+    ws = PrefixWorkspace(src, BALANCED_BUDGET)
+    ws.ensure(64)
+    ws.close()
+    assert src.tell() == 100
+    ws.ensure(128)
+    assert src.tell() == 100
+
+
 def test_remaining_known_from_entry_position() -> None:
     payload = b"\x00" * 10_000
     src = InstrumentedBytesIO(payload)
