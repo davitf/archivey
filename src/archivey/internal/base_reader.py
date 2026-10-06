@@ -152,6 +152,21 @@ are not read through this cap: the header parser has already allocated them, and
 """
 
 
+_UNCONFIRMED_EVIDENCE: dict[str, tuple[DiagnosticCode, str, str]] = {
+    "extension": (
+        DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
+        "its file extension",
+        "extension only",
+    ),
+    "content_probe": (
+        DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
+        "a content probe",
+        "content probe only",
+    ),
+}
+"""A decode-failure diagnostic per unconfirmed evidence: its code and two phrasings."""
+
+
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     """Stamp is_current for duplicate names (last same-name entry wins).
 
@@ -986,7 +1001,7 @@ class BaseArchiveReader(ArchiveReader):
             # Detection fell through to the filename because magic, the content probes
             # and far magic all declined — the same answer detect_format gives when it
             # refuses the bytes. No rescan is needed to know the format is unconfirmed.
-            self._emit_unconfirmed_format("extension", None)
+            self._emit_listed_empty_unconfirmed("extension", None)
             return
 
         if provenance.chosen_by != "argument" or provenance.source is None:
@@ -1014,84 +1029,56 @@ class BaseArchiveReader(ArchiveReader):
             detected = None
         if detected is self._format:
             return
-        self._emit_unconfirmed_format(
+        self._emit_listed_empty_unconfirmed(
             "argument", detected.display_name if detected is not None else None
         )
 
-    def _emit_unconfirmed_format(
+    def _emit_listed_empty_unconfirmed(
+        self,
+        chosen_by: Literal["argument", "extension"],
+        detected_format: str | None,
+    ) -> None:
+        format_name = self._format.display_name
+        detected_text = detected_format or "nothing (detection refuses these bytes)"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
+            if chosen_by == "argument"
+            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
+            message=f"Listed no members as {format_name}, which was chosen by "
+            f"{chosen_by} and not confirmed by the archive's bytes; "
+            f"content detection reports {detected_text}",
+            context=self._unconfirmed_context(chosen_by, detected_format),
+        )
+
+    def _unconfirmed_context(
         self,
         chosen_by: Literal["argument", "extension", "content_probe"],
         detected_format: str | None,
-        *,
-        escalate_as: type[BaseException] | None = None,
-        escalate_message: str | None = None,
-        escalate_kwargs: dict[str, object] | None = None,
-        read_failed: bool = False,
-    ) -> None:
-        # ``read_failed`` picks which event the code reports. Only ``"extension"``
-        # has both: an empty listing (False) and a failed decode (True). The probe
-        # code is only emitted on a failed read, so ``"content_probe"`` ignores the
-        # flag; ``"argument"`` only ever reports an empty listing.
-        if chosen_by == "argument":
-            code = DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
-        elif chosen_by == "extension":
-            code = DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
-        else:
-            code = DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
-        format_name = self._format.display_name
-        if chosen_by == "content_probe" or read_failed:
-            evidence = (
-                "a content probe"
-                if chosen_by == "content_probe"
-                else "its file extension"
-            )
-            message = (
-                f"Reading {format_name} failed (a decode failure or a limit), and it "
-                f"was identified only by {evidence}; the source may not be that "
-                f"format"
-            )
-        else:
-            detected_text = detected_format or "nothing (detection refuses these bytes)"
-            message = (
-                f"Listed no members as {format_name}, which was chosen by "
-                f"{chosen_by} and not confirmed by the archive's bytes; "
-                f"content detection reports {detected_text}"
-            )
-        self._diagnostics_collector.emit(
-            code=code,
-            message=message,
-            context=UnconfirmedFormatContext(
-                archive_name=self._archive_name,
-                format=format_name,
-                chosen_by=chosen_by,
-                detected_format=detected_format,
-            ),
-            escalate_as=escalate_as,
-            escalate_message=escalate_message,
-            escalate_kwargs=escalate_kwargs,
+    ) -> UnconfirmedFormatContext:
+        return UnconfirmedFormatContext(
+            archive_name=self._archive_name,
+            format=self._format.display_name,
+            chosen_by=chosen_by,
+            detected_format=detected_format,
         )
 
     def _mark_format_unconfirmed(
         self,
         exc: ArchiveyError,
-        chosen_by: Literal["extension", "content_probe"],
+        evidence: Literal["extension", "content_probe"],
     ) -> None:
         """Stamp a decode failure under an unconfirmed format and emit its diagnostic.
 
-        ``chosen_by`` says what the format rested on: a content probe with nothing
+        ``evidence`` says what the format rested on: a content probe with nothing
         corroborating it (``PROBE_FORMAT_UNCONFIRMED``), or the filename alone, because
         every content signal declined (``EXTENSION_FORMAT_UNCONFIRMED``).
         """
+        code, evidence_text, evidence_short = _UNCONFIRMED_EVIDENCE[evidence]
         if not exc.format_unconfirmed:
             format_name = (exc.source_format or self._format).display_name
             detail = exc.raw_message.rstrip(".")
-            evidence = (
-                "content probe only"
-                if chosen_by == "content_probe"
-                else "extension only"
-            )
             unconfirmed = (
-                f"Format identification was unconfirmed ({evidence}); "
+                f"Format identification was unconfirmed ({evidence_short}); "
                 f"the source may not be {format_name}."
             )
             if isinstance(exc, ResourceLimitError):
@@ -1115,27 +1102,13 @@ class BaseArchiveReader(ArchiveReader):
 
         # Under pedantic() (default=RAISE), a bare emit would raise DiagnosticRaisedError
         # mid-raise and destroy the typed TruncatedError/CorruptionError/
-        # ResourceLimitError. escalate_as
-        # keeps that type when RAISE fires; under COLLECT we leave escalate_as unset so
-        # the already-stamped ``exc`` is re-raised by the caller.
-        escalate_as: type[BaseException] | None = None
-        escalate_kwargs: dict[str, object] | None = None
-        escalate_message: str | None = None
-        disposition = self._diagnostics_collector.policy.resolve(
-            DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
-            if chosen_by == "content_probe"
-            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
+        # ResourceLimitError. escalate_as keeps that type when RAISE fires; under
+        # COLLECT we leave it unset so the already-stamped ``exc`` is re-raised by the
+        # caller.
+        raising = (
+            self._diagnostics_collector.policy.resolve(code)
+            is DiagnosticDisposition.RAISE
         )
-        if disposition is DiagnosticDisposition.RAISE:
-            escalate_as = type(exc)
-            escalate_message = exc.raw_message
-            escalate_kwargs = {
-                "source_format": exc.source_format,
-                "archive_name": exc.archive_name,
-                "member_name": exc.member_name,
-                "link_target": exc.link_target,
-                "format_unconfirmed": True,
-            }
 
         # Set before emitting: under RAISE the emit does not return, and a flag set
         # afterwards would never be reached — every retried read would record the
@@ -1146,15 +1119,29 @@ class BaseArchiveReader(ArchiveReader):
         # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
         # stopped is stopped whether or not the diagnostic fires a second time.
         self._unconfirmed_failure_emitted = True
-        self._emit_unconfirmed_format(
-            chosen_by,
-            # An extension guess is what detection falls back to when it refuses the
-            # bytes, so it has no content answer to restate.
-            self._format.display_name if chosen_by == "content_probe" else None,
-            escalate_as=escalate_as,
-            escalate_message=escalate_message,
-            escalate_kwargs=escalate_kwargs,
-            read_failed=True,
+        format_name = self._format.display_name
+        self._diagnostics_collector.emit(
+            code=code,
+            message=f"Reading {format_name} failed (a decode failure or a limit), and "
+            f"it was identified only by {evidence_text}; the source may not be that "
+            f"format",
+            context=self._unconfirmed_context(
+                evidence,
+                # An extension guess is what detection falls back to when it refuses
+                # the bytes, so it has no content answer to restate.
+                format_name if evidence == "content_probe" else None,
+            ),
+            escalate_as=type(exc) if raising else None,
+            escalate_message=exc.raw_message if raising else None,
+            escalate_kwargs={
+                "source_format": exc.source_format,
+                "archive_name": exc.archive_name,
+                "member_name": exc.member_name,
+                "link_target": exc.link_target,
+                "format_unconfirmed": True,
+            }
+            if raising
+            else None,
         )
 
     def _finalize_and_publish(
@@ -2877,10 +2864,9 @@ class BaseArchiveReader(ArchiveReader):
             exc, (CorruptionError, ResourceLimitError)
         ):
             return
-        if provenance.probe_only:
-            self._mark_format_unconfirmed(exc, "content_probe")
-        elif provenance.chosen_by == "extension":
-            self._mark_format_unconfirmed(exc, "extension")
+        evidence = provenance.unconfirmed_evidence
+        if evidence is not None:
+            self._mark_format_unconfirmed(exc, evidence)
 
     def io_stats(self) -> IoStats | None:
         """Return I/O counters if measurement is enabled, else ``None``.
