@@ -2342,41 +2342,77 @@ class RarReader(BaseArchiveReader):
             and m._raw.is_file_version_history()
             for m in self._members
         )
+
+        def _spawn() -> BinaryIO:
+            password = self._archive_data_password()
+            path = self._ensure_archive_path()
+            proc, stdout = open_unrar_p(
+                path,
+                password=password,
+                version_control=version_control,
+                rar5=self._archive.version == 5,
+            )
+            # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
+            # and declared length via fused ArchiveStream verify), so the pipe-level
+            # unrar exit code is redundant for corruption and is suppressed here to
+            # avoid legacy-format false positives; wrong-password (11) still maps,
+            # and so does RAR4's wrong-password exit 2/3 with nothing emitted,
+            # which is why the pipe is told whether the archive is encrypted.
+            return _UnrarOwnedStream(
+                stdout,
+                proc,
+                has_verifiable_hash=True,
+                encrypted=self._archive_has_encryption,
+            )
+
+        pipe_offset = 0
+
+        def _plan(member: ArchiveMember, raw: RarMemberInfo, size: int, _: bool) -> int:
+            # ``unrar p`` writes every payload member, in listing order.
+            nonlocal pipe_offset
+            member_offset = pipe_offset
+            pipe_offset += size
+            return member_offset
+
+        yield from self._drive_solid_pass(copies, _spawn, _plan)
+
+    def _drive_solid_pass(
+        self,
+        copies: FileCopyPass,
+        spawn: Callable[[], BinaryIO],
+        plan: Callable[
+            [ArchiveMember, RarMemberInfo, int, bool], int | Callable[[], BinaryIO]
+        ],
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        """The solid pass over one process's output, demultiplexed by offset.
+
+        ``spawn`` starts the process and returns its output stream. ``plan`` gets each
+        payload member, its stream size and whether it has a digest to check, and
+        returns the member's offset in that output, or an ``open_fn`` that serves it
+        some other way. A plain ``int | Callable`` is enough for that answer; no slot
+        type is needed.
+
+        ``plan`` may keep a running cursor (the ``unrar`` pass does). So this driver
+        calls it exactly once per member the shared output carries, in listing
+        order. It never calls it for a file copy or a non-payload member. Calling it
+        for any member the output does not carry would shift every later offset.
+        """
         solid: SolidBlockReader | None = None
         sources = self._file_copy_sources(copies)
         pass_costs = self._pass_dictionary_costs()
 
         def _pipe() -> SolidBlockReader:
-            """Spawn ``unrar p`` on the first read into the pass, not at pass start.
+            """Spawn the process on the first read into the pass, not at pass start.
 
             A caller that iterates the pass without reading any member — listing a
             solid RAR through ``stream_members``, or an extraction whose selector
-            matches nothing — never spawns ``unrar`` and is never asked for a
+            matches nothing — never spawns a process and is never asked for a
             password. The stream-source copy lives here too, so that caller also
             writes nothing.
             """
             nonlocal solid
             if solid is None:
-                password = self._archive_data_password()
-                path = self._ensure_archive_path()
-                proc, stdout = open_unrar_p(
-                    path,
-                    password=password,
-                    version_control=version_control,
-                    rar5=self._archive.version == 5,
-                )
-                # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
-                # and declared length via fused ArchiveStream verify), so the pipe-level
-                # unrar exit code is redundant for corruption and is suppressed here to
-                # avoid legacy-format false positives; wrong-password (11) still maps,
-                # and so does RAR4's wrong-password exit 2/3 with nothing emitted,
-                # which is why the pipe is told whether the archive is encrypted.
-                owned = _UnrarOwnedStream(
-                    stdout,
-                    proc,
-                    has_verifiable_hash=True,
-                    encrypted=self._archive_has_encryption,
-                )
+                owned = spawn()
                 with _close_on_error(owned):
                     tracked = self._track_decompressed(owned)
                 with _close_on_error(tracked):
@@ -2385,10 +2421,7 @@ class RarReader(BaseArchiveReader):
                     )
             return solid
 
-        pipe_offset = 0
-
         def _open(member: ArchiveMember) -> ArchiveStream | None:
-            nonlocal pipe_offset
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_copy():
@@ -2403,26 +2436,27 @@ class RarReader(BaseArchiveReader):
             if not raw.is_payload_file() or not member.is_file:
                 return None
             size = _member_stream_size(member)
-            # Capture the pipe offset for this member, then advance the running
-            # cursor. The pipe itself is spawned, and the skip-decode to this
-            # offset run, on the first read; verify is fused into the outer
-            # ArchiveStream so a never-opened handle skips verify on close (no
-            # solid positioning, and no ``unrar``, for unread members).
-            member_offset = pipe_offset
-            pipe_offset += size
-            if sources is not None and sources.is_source(id(member)):
-                sources.register(id(member), member_offset, size)
-            cost = pass_costs[id(member)]
-
-            def open_fn() -> BinaryIO:
-                # Checked on the first read, as the spawn is: a pass that skips this
-                # member is not refused for it.
-                self._check_dictionary_memory(member, cost)
-                return self._watch_unverified(
-                    _pipe().open_member(member_offset, size, lazy=True), member
-                )
-
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
+            slot = plan(member, raw, size, bool(hashes))
+            open_fn: Callable[[], BinaryIO]
+            if isinstance(slot, int):
+                offset = slot
+                if sources is not None and sources.is_source(id(member)):
+                    sources.register(id(member), offset, size)
+                cost = pass_costs[id(member)]
+
+                def open_fn() -> BinaryIO:
+                    # Checked on the first read, as the spawn is: a pass that skips
+                    # this member is not refused for it. Verify is fused into the
+                    # outer ArchiveStream, so a never-opened handle skips verify on
+                    # close (no solid positioning, and no process, for unread members).
+                    self._check_dictionary_memory(member, cost)
+                    return self._watch_unverified(
+                        _pipe().open_member(offset, size, lazy=True), member
+                    )
+
+            else:
+                open_fn = slot
             # Registered like the base class's lazy pass streams, so the pass takes
             # the one live-stream slot and is refused beside a live ``open()``.
             return self._register_public_stream(
@@ -3496,7 +3530,7 @@ class RarReader(BaseArchiveReader):
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """The solid pass over one all-entries ``unar`` run.
 
-        Same shape as the ``unrar`` pass in :meth:`_iter_with_data`: one process, spawned
+        Driven by :meth:`_drive_solid_pass`, as the ``unrar`` pass is: one process, spawned
         on the first read, demultiplexed by :class:`SolidBlockReader`. The offsets come
         from :meth:`UnarRarPolicy.solid_pass_offset` because ``unar`` emits a different
         set of entries than ``unrar p`` (history rows always, RAR3/4 symlink targets
@@ -3511,118 +3545,51 @@ class RarReader(BaseArchiveReader):
         of one entry writes that entry exactly or not at all, which the size check
         catches.
         """
-        solid: SolidBlockReader | None = None
-        sources = self._file_copy_sources(copies)
-        pass_costs = self._pass_dictionary_costs()
 
-        def _pipe() -> SolidBlockReader:
-            nonlocal solid
-            if solid is None:
-                password = self._unar_password(None, self._archive_data_password())
-                path = self._unar_archive_path(None)
-                proc, stdout = open_unar_stdout(
-                    path,
-                    policy.solid_pass_indexes,
-                    purpose=UNAR_PURPOSE,
-                    password=password,
-                )
-                # Every member read from this pipe is checked against its declared
-                # size and its stored CRC32 or BLAKE2sp; a member without one is read
-                # by its own run instead (``_open``). unar 1.10.1 drops a compressed
-                # RAR5 member when a Huffman lookup peeks past its packed data, exit 0
-                # (``scripts/find_unar_probe_member.py``); the bytes
-                # then read in its place are later members' or stale window bytes,
-                # which the digest catches and the size check often does not. The
-                # exit status adds nothing. A wrong password gives no output at all,
-                # reported as such when a password was needed.
-                owned = UnarOutputStream(
-                    stdout,
-                    proc,
-                    has_verifiable_digest=True,
-                    empty_means_wrong_password=(
-                        self._archive_has_encryption and policy.solid_pass_emits_data()
-                    ),
-                )
-                with _close_on_error(owned):
-                    tracked = self._track_decompressed(owned)
-                with _close_on_error(tracked):
-                    solid = SolidBlockReader(
-                        tracked if sources is None else sources.tee(tracked)
-                    )
-            return solid
+        def _spawn() -> BinaryIO:
+            password = self._unar_password(None, self._archive_data_password())
+            path = self._unar_archive_path(None)
+            proc, stdout = open_unar_stdout(
+                path,
+                policy.solid_pass_indexes,
+                purpose=UNAR_PURPOSE,
+                password=password,
+            )
+            # Every member read from this pipe is checked against its declared
+            # size and its stored CRC32 or BLAKE2sp; a member without one is read
+            # by its own run instead (``_plan``). unar 1.10.1 drops a compressed
+            # RAR5 member when a Huffman lookup peeks past its packed data, exit 0
+            # (``scripts/find_unar_probe_member.py``); the bytes
+            # then read in its place are later members' or stale window bytes,
+            # which the digest catches and the size check often does not. The
+            # exit status adds nothing. A wrong password gives no output at all,
+            # reported as such when a password was needed.
+            return UnarOutputStream(
+                stdout,
+                proc,
+                has_verifiable_digest=True,
+                empty_means_wrong_password=(
+                    self._archive_has_encryption and policy.solid_pass_emits_data()
+                ),
+            )
 
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:
             raise self._unar_refused(member, reason)
 
-        def _read(
-            member: ArchiveMember, offset: int, size: int, cost: _DictionaryCost
-        ) -> BinaryIO:
-            # Checked on the first read, as the spawn is.
-            self._check_dictionary_memory(member, cost)
-            return self._watch_unverified(
-                _pipe().open_member(offset, size, lazy=True), member
-            )
-
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
-            raw = member._raw
-            assert isinstance(raw, RarMemberInfo)
-            if raw.is_file_copy():
-                # As in the ``unrar`` pass: not in the pipe, read from its kept source.
-                return self._pass_file_copy_stream(
-                    member,
-                    sources,
-                    lambda end: _pipe().open_member(end, 0),
-                    pass_costs,
-                )
-            if not raw.is_payload_file() or not member.is_file:
-                return None
-            size = _member_stream_size(member)
+        def _plan(
+            member: ArchiveMember, raw: RarMemberInfo, size: int, has_digest: bool
+        ) -> int | Callable[[], BinaryIO]:
             refusal = policy.solid_pass_refusal(raw)
-            hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
-            open_fn: Callable[[], BinaryIO]
             if refusal is not None:
-                open_fn = lambda: _refuse(member, refusal)  # noqa: E731
-            elif not hashes:
+                return lambda: _refuse(member, refusal)
+            if not has_digest:
                 # No digest would catch misplaced bytes from the shared run (above).
-                open_fn = lambda: self._watch_unverified(  # noqa: E731
+                return lambda: self._watch_unverified(
                     self._unar_member_spawner(member, raw, policy)(), member
                 )
-            else:
-                offset = policy.solid_pass_offset(raw)
-                if sources is not None and sources.is_source(id(member)):
-                    sources.register(id(member), offset, size)
-                cost = pass_costs[id(member)]
-                open_fn = lambda: _read(member, offset, size, cost)  # noqa: E731
-            # Registered for the live-stream gate, as in the ``unrar`` pass.
-            return self._register_public_stream(
-                self._wrap_member_stream(
-                    None,
-                    member.name,
-                    open_fn=open_fn,
-                    size=member.size,
-                    track_output=False,
-                    seekable=False,
-                    expected_hashes=hashes,
-                    expected_size=vsize,
-                    digest_transforms=transforms,
-                    verify_member=verify_member,
-                )
-            )
+            return policy.solid_pass_offset(raw)
 
-        def _cleanup() -> None:
-            try:
-                if solid is not None:
-                    solid.close()
-            finally:
-                if sources is not None:
-                    sources.close()
-
-        yield from self._drive_pass_streams(
-            self._listed_members(),
-            open_member=_open,
-            close_previous=True,
-            cleanup=_cleanup,
-        )
+        yield from self._drive_solid_pass(copies, _spawn, _plan)
 
     def _get_archive_info(self) -> ArchiveInfo:
         is_solid = self._archive.is_solid
