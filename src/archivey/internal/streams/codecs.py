@@ -1035,11 +1035,20 @@ def _open_accelerator(
 
 @dataclass(frozen=True)
 class _SourceViews:
-    """Fresh views of an accelerator's source at offset 0 that leave its cursor alone."""
+    """Fresh views of an accelerator's source at offset 0 that leave its cursor alone.
+
+    A path's views are fresh fds (:meth:`of_path`), a stream's are lock-sharing
+    ``SharedSource`` siblings. See the IDEAS.md entry "Let an ``ArchiveSource`` over a
+    file hand out independent handles".
+    """
 
     view: Callable[[], BinaryIO]
-    # The source's path, when it has one.
+    # The source's path, when it has one; set only by of_path.
     path: str | None = None
+
+    @classmethod
+    def of_path(cls, path: str) -> "_SourceViews":
+        return cls(lambda: open(path, "rb"), path)
 
     def for_stdlib(self) -> CodecSource:
         """The source for a standard-library decoder that takes over: the path, so that
@@ -1069,10 +1078,10 @@ def _accelerator_backstop_source(
       :func:`_refuse_forward_only_accelerator` refuses it first.
     """
     if isinstance(source, (str, os.PathLike)):
-        # os.fspath narrows to the concrete path for the view closure (the same tolerated
-        # ty fspath-overload idiom used elsewhere in this file for CodecSource paths).
+        # os.fspath narrows to the concrete path (the same tolerated ty fspath-overload
+        # idiom used elsewhere in this file for CodecSource paths).
         path = os.fspath(source)
-        return source, _SourceViews(lambda: open(path, "rb"), path)
+        return source, _SourceViews.of_path(path)
     if isinstance(source, SharedView):
         return source, _SourceViews(source.independent_view)
     if is_seekable(source):
@@ -1595,7 +1604,8 @@ class _GzipTruncationCheckStream(DelegatingStream):
         raise self._truncation
 
     def _has_additional_gzip_member(self) -> bool:
-        # Closed via the context manager (a view close is a no-op mark).
+        # Closed via the context manager: a real fd close for a path source, a no-op
+        # mark for a shared view (see _SourceViews).
         try:
             with self._views.view() as f:
                 return gzip_has_additional_member(f)

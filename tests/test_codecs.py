@@ -1978,7 +1978,7 @@ def _make_gzip_check_stream(inner, path):
     source_len, isize = _gzip_isize_and_length(str(path))
     return _GzipTruncationCheckStream(
         inner,
-        views=_SourceViews(lambda: open(str(path), "rb"), str(path)),
+        views=_SourceViews.of_path(str(path)),
         isize=isize,
         source_len=source_len,
         open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
