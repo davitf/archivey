@@ -118,13 +118,17 @@ def _placeheld(text: str) -> str:
     return text
 
 
-def _swap_placeholders(image: bytes, *, rock_ridge: dict[str, bytes]) -> bytes:
+def _swap_placeholders(
+    image: bytes, *, rock_ridge: dict[str, bytes], symlinks: tuple[tuple[str, str], ...]
+) -> bytes:
     for unit, placeholder in _PLACEHOLDERS:
         old = placeholder.encode("utf-16_be")
         image = image.replace(old, unit.encode("utf-16_be", "surrogatepass"))
     for placeholder_name, stored in rock_ridge.items():
         old = placeholder_name.encode()
-        assert len(old) == len(stored) and old in image
+        # Its NM record, and the SL record of each symlink that targets it.
+        expected = 1 + sum(target == placeholder_name for _, target in symlinks)
+        assert len(old) == len(stored) and image.count(old) == expected
         image = image.replace(old, stored)
     return image
 
@@ -173,7 +177,9 @@ def _joliet_iso(
     out = io.BytesIO()
     iso.write_fp(out)
     iso.close()
-    return _swap_placeholders(out.getvalue(), rock_ridge=rock_ridge or {})
+    return _swap_placeholders(
+        out.getvalue(), rock_ridge=rock_ridge or {}, symlinks=symlinks
+    )
 
 
 # --- listing --------------------------------------------------------------------
@@ -391,8 +397,8 @@ def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
 ) -> None:
     """``hi?.txt`` selects ``hiX.txt`` too, so ``unrar`` pipes the earlier member first.
 
-    The second member's 8-bit name is a mask that ``unrar`` does not match against
-    ``hi`` U+D800 ``.txt``, so that read has nothing to skip.
+    The last member's 8-bit name ``hi`` is an exact mask that ``unrar`` does not match
+    against ``hi`` U+D800 ``.txt`` before it, so that read has nothing to skip.
     """
     names = ("hiX.txt", "hi\ud800.txt", "hi")
     archive, expected = _compressed_rar4_surrogate(tmp_path, names)
@@ -406,6 +412,18 @@ def test_unrar_sizes_a_read_past_a_surrogate_name_the_mask_also_selects(
     )
     with archivey.open_archive(archive, config=config) as reader:
         assert [reader.read(name) for name in names] == expected
+
+
+@requires_binary("unrar")
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows argv carries the unit")
+def test_unrar_refuses_a_surrogate_unit_in_a_directory_and_names_unar(
+    tmp_path: Path,
+) -> None:
+    """The unit would reach ``unrar`` as a directory glob, which cannot be sized."""
+    archive, _ = _compressed_rar4_surrogate(tmp_path, ("dir\ud800/f.txt",))
+    with archivey.open_archive(archive, config=_UNRAR) as reader:
+        with pytest.raises(UnsupportedFeatureError, match="surrogate unit.*unar"):
+            reader.read("dir\ud800/f.txt")
 
 
 @requires_binary("unar")

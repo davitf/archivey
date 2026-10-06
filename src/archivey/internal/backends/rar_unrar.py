@@ -471,15 +471,18 @@ def unrar_member_argument(
     ``/`` in the mask; the bytes follow the name.
 
     ``surrogates_as_wildcards`` is for a RAR 1.5-4 Unicode name. Its view holds
-    UTF-16 code units, and no argv encoding carries a surrogate unit to ``unrar``,
-    so each becomes ``?``, which matches exactly one unit. The mask can then select
-    other members too, which the reader sizes like any glob's siblings.
+    UTF-16 code units. On POSIX the mask goes out as UTF-8 bytes, and ``unrar``'s
+    ``mbstowcs`` rejects a surrogate's UTF-8 form, so each unit becomes ``?``, which
+    matches exactly one unit. The mask can then select other members too, which the
+    reader handles like any glob's siblings. Windows argv is UTF-16 and carries a
+    valid pair as it is, so there the view is the mask (a lone unit is refused by
+    :func:`unrar_member_refusal`).
     """
     if stored_is_8bit and stored is not None and sys.platform != "win32":
         return stored.replace(b"\\", b"/").rstrip(b"/")
     if view is None:
         return None
-    if surrogates_as_wildcards:
+    if surrogates_as_wildcards and sys.platform != "win32":
         view = "".join("?" if "\ud800" <= c <= "\udfff" else c for c in view)
     if sys.platform == "win32":
         view = view.replace("\\", "/")
@@ -615,8 +618,8 @@ def unrar_member_refusal(member: str | bytes | None) -> str | None:
         )
     if isinstance(member, str) and any(0xD800 <= ord(c) <= 0xDFFF for c in member):
         # unrar decodes an encoded surrogate in a RAR5 name, but no argv encoding
-        # can carry one back to it. (A RAR 1.5-4 name's units are sent as ``?``,
-        # see :func:`unrar_member_argument`, so only RAR5 reaches this.)
+        # can carry one back to it. (On POSIX a RAR 1.5-4 name's units are sent as
+        # ``?``, see :func:`unrar_member_argument`, so only RAR5 reaches this there.)
         return (
             "unrar reads its name with a UTF-16 surrogate in it, which cannot be "
             "passed back to unrar as a mask"

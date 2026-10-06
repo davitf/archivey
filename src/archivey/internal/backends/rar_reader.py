@@ -3175,6 +3175,20 @@ class RarReader(BaseArchiveReader):
             surrogates_as_wildcards=raw.rar3_unicode_name is not None,
         )
         refusal = unrar_member_refusal(mask_name)
+        if (
+            refusal is None
+            and raw.rar3_unicode_name is not None
+            and sys.platform != "win32"
+            and view is not None
+            and _surrogate_in_directory_part(view)
+        ):
+            # Sent as ``?``, that unit would make a directory glob, which the check
+            # below refuses with a reason about backslashes and globs.
+            refusal = (
+                "a directory in its name holds a UTF-16 surrogate unit, which can "
+                "reach unrar only as a glob in that directory, and archivey cannot "
+                "size what a directory glob selects"
+            )
         if refusal is None and (
             "\0" in presented
             or (raw.orig_filename is not None and b"\0" in raw.orig_filename)
@@ -3722,3 +3736,9 @@ class RarReadBackend(ReadBackend):
 
 
 register_reader(RarReadBackend)
+
+
+def _surrogate_in_directory_part(view: str) -> bool:
+    """True when a directory component of ``view`` holds a UTF-16 surrogate unit."""
+    directory = view.replace("\\", "/").rstrip("/").rpartition("/")[0]
+    return any("\ud800" <= char <= "\udfff" for char in directory)
