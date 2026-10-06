@@ -170,7 +170,7 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
     )
 
 
-_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?\Z", re.IGNORECASE)
 # The folder settles a wrong key inside the confirm prefix when a REJECTING_CODECS
 # codec decodes the AES output. Filters never reject: ``MethodKind.LZMA_FAMILY`` also
 # holds Delta and BCJ, which is why the check is by codec and not by method kind.

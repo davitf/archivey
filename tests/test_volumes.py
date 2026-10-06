@@ -30,6 +30,8 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal import volumes as volumes_mod
+from archivey.internal.backends.sevenzip_reader import _infer_nameless_member_name
+from archivey.internal.backends.zip_detect import is_zip_split_segment_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.volumes import (
     ConcatenatedFile,
@@ -2029,3 +2031,26 @@ def test_zero_padded_rar_part_names_past_six_digits_are_siblings(
         tmp_path / "x.part0000001.rar",
         tmp_path / "x.part0000002.rar",
     ]
+
+
+def _strips_7z_suffix(name: str) -> bool:
+    return _infer_nameless_member_name(name) != f"{name}.uncompressed"
+
+
+@pytest.mark.parametrize(
+    ("accepts", "name"),
+    [
+        (lambda n: volumes_mod._volume_scheme_and_base(n) is not None, "a.7z.001"),
+        (lambda n: volumes_mod._volume_scheme_and_base(n) is not None, "a.part1.rar"),
+        (lambda n: volumes_mod._volume_scheme_and_base(n) is not None, "a.r00"),
+        (is_zip_split_segment_name, "a.z01"),
+        (is_zip_split_segment_name, "a.zip.001"),
+        (_strips_7z_suffix, "a.7z"),
+    ],
+    ids=["numbered", "rar-part", "old-rar", "zip-zNN", "zip-NNN", "7z-stem"],
+)
+def test_name_patterns_do_not_accept_trailing_newline(accepts: Any, name: str) -> None:
+    # Python's ``$`` also matches before a final newline; the newline is part of
+    # the name, so the pattern must not see a part marker or suffix behind it.
+    assert accepts(name)
+    assert not accepts(name + "\n")

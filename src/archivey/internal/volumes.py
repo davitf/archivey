@@ -80,14 +80,14 @@ SourceSequence = Sequence[SourceItem]
 # The largest part the six-digit ``part`` groups below can hold.
 _MAX_VOLUME_PART = 999_999
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})$", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})\Z", re.IGNORECASE
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
 # ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
 # before ``.part`` is the set's base, so mixed extensions on one stem are one set.
 _RAR_PART_RE = re.compile(
-    r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)$", re.IGNORECASE
+    r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)\Z", re.IGNORECASE
 )
 # Any old-scheme continuation name. WinRAR and unrar go ``.rar``, ``.r00`` … ``.r99``,
 # then ``.s00`` … ``.z99`` and on past ``z`` (``.{00``, ``.|00`` …): the next name adds
@@ -110,7 +110,7 @@ _RAR_PART_RE = re.compile(
 # narrower pattern is sound. The name alone cannot tell ``beta.s00`` from
 # ``readme.p12``, and the walk can reach any letter before ``_MAX_VOLUME_PART`` stops
 # it.
-_OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}$")
+_OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}\Z")
 _OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 
 
