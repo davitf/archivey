@@ -31,6 +31,7 @@ from archivey.internal.streams.unix_compress import UnixCompressDecompressorStre
 from archivey.internal.streams.xz import XzDecompressorStream, _read_xz_index_backwards
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.memory_util import traced_peak
 from tests.streams_util import (
     CountingBytesIO,
     make_lzip_member,
@@ -873,19 +874,16 @@ def test_lzip_peek_index_summary_holds_no_per_member_state() -> None:
     26 bytes is the smallest member the scan accepts, so a file of them declares one
     member per 26 bytes; the probe must not allocate in proportion to that count.
     """
-    import tracemalloc
-
     from archivey.internal.streams.lzip import peek_index_summary
 
     block = b"LZIP" + bytes([1, 20]) + struct.pack("<IQQ", 0, 0, 26)
     count = 20_000
     data = block * count
-    tracemalloc.start()
-    try:
+
+    def probe() -> None:
         assert peek_index_summary(io.BytesIO(data), len(data)) == (0, 0)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+
+    peak = traced_peak(probe)
     # A per-member list costs well over 100 bytes an entry (~2 MB here).
     assert peak < 200_000, peak
 

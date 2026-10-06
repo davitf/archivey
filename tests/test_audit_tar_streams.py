@@ -29,6 +29,7 @@ from archivey import (
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError, CorruptionError, ResourceLimitError
 from tests.conftest import requires, requires_zstd
+from tests.memory_util import traced_peak
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -370,16 +371,16 @@ def test_unix_compress_dictionary_memory_is_bounded() -> None:
     while 64 KiB reads are served."""
     codes = 6_000
     data = _lzw_run_bomb(codes)
-    tracemalloc.start()
-    try:
-        total = 0
+    total = 0
+
+    def read_all() -> None:
+        nonlocal total
         with open_archive(io.BytesIO(data), format=ArchiveFormat.Z) as ar:
             with ar.open(ar.members()[0]) as stream:
                 while chunk := stream.read(65536):
                     total += len(chunk)
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+
+    peak = traced_peak(read_all)
     assert total == codes * (codes + 1) // 2
     assert peak < 8_000_000, f"peak {peak} bytes for 64 KiB reads"
 

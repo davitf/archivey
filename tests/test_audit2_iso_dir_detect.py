@@ -8,7 +8,6 @@ directory backend. Every fixture is built in the test; nothing is committed.
 
 from __future__ import annotations
 
-import gc
 import gzip
 import io
 import os
@@ -17,7 +16,6 @@ import struct
 import subprocess
 import sys
 import threading
-import tracemalloc
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,6 +25,7 @@ from archivey import ArchiveFormat, detect_format, open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.exceptions import FormatDetectionError, ResourceLimitError
 from tests.conftest import requires
+from tests.memory_util import traced_peak
 
 # --- ISO builders --------------------------------------------------------------
 
@@ -80,6 +79,25 @@ def test_iso_long_form_tf_date_at_year_one_does_not_break_modified_utc() -> None
         member.modified_utc()
 
 
+def _peak_at_open(data: bytes, config: ArchiveyConfig) -> int:
+    """Peak traced bytes while ``open_archive`` opens and lists ``data``.
+
+    A run that ``ResourceLimitError`` stops counts the same as one that completes.
+    """
+
+    def attempt() -> None:
+        try:
+            with open_archive(io.BytesIO(data), config=config) as archive:
+                archive.members()
+        except ResourceLimitError:
+            pass
+
+    # One untraced run first, so lazy imports and first-use caches (which differ by
+    # platform: 474 KB on Windows against 174 KB of image) are not counted.
+    attempt()
+    return traced_peak(attempt)
+
+
 # ---------------------------------------------------------------------------------
 # I2: ListingLimits do not bound what pycdlib builds at open
 # ---------------------------------------------------------------------------------
@@ -97,25 +115,7 @@ def test_iso_listing_limits_bound_the_memory_spent_at_open() -> None:
     data = _build_iso(populate)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
 
-    def attempt() -> None:
-        try:
-            with open_archive(io.BytesIO(data), config=config) as archive:
-                archive.members()
-        except ResourceLimitError:
-            pass
-
-    # One untraced run first, so lazy imports and first-use caches (which differ
-    # by platform: 474 KB on Windows against 174 KB of image) are not counted.
-    # Then collect, so garbage left by earlier tests is not finalized (and its
-    # finalizers' allocations counted) inside the traced window.
-    attempt()
-    gc.collect()
-    tracemalloc.start()
-    try:
-        attempt()
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    peak = _peak_at_open(data, config)
 
     # 7z and RAR refuse at open once the member count passes max_members; the cost
     # of an over-limit ISO should likewise be about the budget, not a multiple of
@@ -177,29 +177,12 @@ def test_iso_shared_continuation_area_does_not_multiply_memory_at_open() -> None
     data = _shared_continuation_image(1000)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
 
-    def attempt() -> None:
-        try:
-            with open_archive(io.BytesIO(data), config=config) as archive:
-                archive.members()
-        except ResourceLimitError:
-            pass
-
-    # One untraced run first, so lazy imports and first-use caches (which differ
-    # by platform: 474 KB on Windows against 174 KB of image) are not counted.
-    # Then collect, so garbage left by earlier tests is not finalized (and its
-    # finalizers' allocations counted) inside the traced window.
-    attempt()
-    gc.collect()
-    tracemalloc.start()
-    try:
-        attempt()
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+    peak = _peak_at_open(data, config)
 
     # Every name is ~1.9 KB, all from one 2 KiB sector. The listing budget is 10
     # members; what open_archive() spends should not scale with the number of
-    # records pointing at that sector.
+    # records pointing at that sector. Free-threaded 3.13 peaks at 2.35x (409 725
+    # bytes), alone and in the full serial suite.
     assert peak < 4 * len(data), (peak, len(data))
 
 

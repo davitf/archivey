@@ -17,7 +17,6 @@ import stat
 import struct
 import subprocess
 import tarfile
-import tracemalloc
 import zipfile
 import zlib
 from collections.abc import Callable
@@ -33,6 +32,7 @@ from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import ArchiveyUsageError, ResourceLimitError
 from archivey.terminal import quoted
 from tests.conftest import requires, requires_binary
+from tests.memory_util import traced_peak
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -331,14 +331,13 @@ def test_tar_pax_header_costs_the_metadata_cap_not_the_header(tmp_path: Path) ->
 
     cap = 64 * 1024
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=cap))
-    tracemalloc.start()
-    try:
+
+    def attempt() -> None:
         with pytest.raises(ResourceLimitError):
             with open_archive(archive, config=config) as reader:
                 reader.members()
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+
+    peak = traced_peak(attempt)
     # "an over-limit tar costs the cap rather than the archive, PAX keywords and
     # values included" (threat model O1). Generous slack: 1/4 of the value.
     assert peak < value_size // 4, f"peak {peak} bytes for a {cap}-byte cap"
