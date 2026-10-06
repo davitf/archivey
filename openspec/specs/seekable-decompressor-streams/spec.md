@@ -201,12 +201,13 @@ then has more output, or meets the end of the source inside the stream (a cut st
 read SHALL be handed to the standard library at the delivered position, so the bytes and the
 `TruncatedError` match `use_rapidgzip=OFF`. One stated exception: with a container-declared
 size, the read that reaches it is the verifying stage's verifying event, and when the probe past
-the size meets a cut trailer that read's chunk is withheld; the error is still `TruncatedError`. Raw DEFLATE carries no checksum, so there is no backstop for the deflate
-accelerator path. A DEFLATE-family member decoded inside a container (e.g. a ZIP member) SHALL
-rely on the container's own checksum (CRC-32 via the shared verifying stage) to catch
-truncation/corruption. A standalone deflate stream accelerated by rapidgzip MAY therefore miss a
-truncation that stdlib `zlib` would report; this is an accepted limitation of the accelerator
-path, and corruption inside a DEFLATE block SHALL still surface as `CorruptionError`.
+the size meets a cut trailer that read's chunk is withheld; the error is still `TruncatedError`.
+Raw DEFLATE carries no checksum, so there is no backstop for the deflate accelerator path. A
+DEFLATE-family member decoded inside a container (e.g. a ZIP member) SHALL rely on the
+container's own checksum (CRC-32 via the shared verifying stage) to catch truncation/corruption.
+A standalone deflate stream accelerated by rapidgzip MAY therefore miss a truncation that stdlib
+`zlib` would report; this is an accepted limitation of the accelerator path, and corruption
+inside a DEFLATE block SHALL still surface as `CorruptionError`.
 
 #### Scenario: accelerator error matrix
 

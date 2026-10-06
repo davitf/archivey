@@ -396,7 +396,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 ./scripts/test.sh tests/test_codecs.py tests/test_single_file.py \
     tests/test_rapidgzip_deflate_zlib.py tests/test_accelerator_corruption.py \
     tests/test_accelerator_truncation_abort.py tests/test_accelerator_shutdown.py \
-    tests/test_accelerator_bug3_trap.py -k "gzip or zlib or deflate or rapidgzip or accelerat"
+    tests/test_accelerator_bug3_trap.py tests/test_accelerator_takeover.py \
+    -k "gzip or zlib or deflate or rapidgzip or accelerat"
 ```
 
 | Claim | Pinned by |

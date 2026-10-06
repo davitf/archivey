@@ -262,7 +262,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 ./scripts/test.sh tests/test_single_file.py tests/test_accelerator_corruption.py \
     tests/test_accelerator_truncation_abort.py tests/test_seekable_streams.py \
     tests/test_detection.py tests/test_exception_handlers.py \
-    tests/test_stream_trailing_data.py tests/test_accelerator_takeover.py -k "bz"
+    tests/test_stream_trailing_data.py tests/test_accelerator_takeover.py \
+    tests/test_bzip2_resume.py -k "bz"
 ```
 
 | Claim | Pinned by |
@@ -272,8 +273,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A seek before the first read does not bypass the check | `::test_indexed_bzip2_seek_before_read_still_raises` |
 | Empty streams anywhere in the file are data in every accelerator and access mode; bytes after them report at the same offset | `tests/test_stream_trailing_data.py::test_empty_bzip2_streams_are_part_of_the_data`, `::test_bytes_after_empty_bzip2_streams_are_reported_past_them`, `::test_the_accelerator_scan_finds_empty_streams_across_its_reads` |
 | Accelerator errors become `CorruptionError`; intact files read clean | `::test_indexed_bzip2_corrupt_translates_to_corruption`, `::test_indexed_bzip2_intact_reads_clean` |
-| A cut or damaged stream delivers the same bytes and error with the accelerator off, `AUTO` and `ON`, for a cut in the first block, a later block, the end marker and a second stream; seeks after a takeover | `tests/test_accelerator_takeover.py::test_a_cut_bzip2_reads_as_it_does_with_the_accelerator_off`, `::test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off`, `::test_after_a_takeover_seeks_back_and_forward_read_the_data` |
-| A resume from any block reproduces the data and never gives a verdict at the stream's end | `tests/test_accelerator_takeover.py::test_every_block_resumes_to_the_stream_end`, `::test_the_bit_shifter_matches_a_whole_shift` |
+| A cut or damaged stream delivers the same bytes and error with the accelerator off, `AUTO` and `ON`, for a cut in the first block, a later block, the end marker and a second stream; seeks after a takeover | `tests/test_accelerator_takeover.py::test_a_cut_bzip2_reads_as_it_does_with_the_accelerator_off`, `::test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off`, `::test_after_a_bzip2_takeover_seeks_back_and_forward_read_the_data` |
+| A resume from any block reproduces the data and never gives a verdict at the stream's end | `tests/test_bzip2_resume.py::test_every_block_resumes_to_the_stream_end`, `::test_the_bit_shifter_matches_a_whole_shift` |
 | The caller's source exception reaches the caller unchanged | `::test_bzip2_callers_source_exception_reaches_the_caller_unchanged`, `tests/test_exception_handlers.py::test_bzip2_accelerator_traps_a_failing_caller_source` |
 | bzip2 stays in-process | `tests/test_accelerator_truncation_abort.py::test_bzip2_stays_in_process` |
 | The rewind report with the accelerator off; `ON` without the package | `tests/test_seekable_streams.py::test_bzip2_accelerator_off_warns_on_rewind`, `::test_bzip2_accelerator_on_without_package_raises` |

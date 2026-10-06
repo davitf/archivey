@@ -287,7 +287,9 @@ class _AcceleratorStream(DelegatingStream):
             return {}
         try:
             return dict(offsets())
-        except Exception:  # noqa: BLE001 - only resume points; none means the origin
+        # Empty is safe for both callers: the rewind diagnostic then reports a point
+        # further back, and a takeover starts at the origin.
+        except Exception:  # noqa: BLE001 - see the comment above
             return {}
 
     def compressed_position(self) -> int | None:
@@ -1231,8 +1233,11 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     and a resumed decode that reaches the end of its DEFLATE stream (appended bytes, or
     damage only a checksum shows) cannot check the stream's checksum, so it raises
     ``ResumeReachedStreamEnd`` and the standard library decodes from the start after all
-    (``_restart_without_resume``). The two switches that know the stream is whole
-    (``limit`` and ``switch_to_stdlib``) start from the start.
+    (``_restart_without_resume``). The two other switches (``limit`` and
+    ``switch_to_stdlib``) start from the start, because neither has a resume point to
+    use: ``limit`` takes the over-run verdict from the position before the read, and
+    the callers of ``switch_to_stdlib`` (the gzip ISIZE check, and the zlib Adler-32
+    check on a cut stream) know only the position delivered, not a block before it.
 
     For bzip2, ``takes_over`` names the bzip2 decoder's data errors (it raises an opaque
     ``RuntimeError('std::exception')`` on a cut stream, where the standard library
@@ -1386,7 +1391,11 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     def _restart_without_resume(self) -> None:
         """Replace a standard-library decoder whose resumed decode reached the end of
-        its DEFLATE stream with one that decodes from the start."""
+        its stream (``ResumeReachedStreamEnd``) with one that decodes from the start.
+
+        For bzip2 this decode gives the verdict: the resumed decode cannot tell the
+        end-of-stream marker's combined CRC from a damaged block, and raises on both.
+        """
         old = self._inner
         self._replace_inner(self._open_stdlib_at())
         try:
@@ -1665,7 +1674,12 @@ class _ZlibAdlerCheckStream(DelegatingStream):
     goes on, or runs out of source, the read is handed to the standard library
     (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError`` inside) at the position
     delivered so far. It delivers what it delivers with the accelerator off, and
-    raises its own :class:`TruncatedError`.
+    raises its own :class:`TruncatedError`, with one exception: when the container
+    declared a size, the ``VerifyingStream`` that ``_wrap_accelerated_length`` puts
+    outside this class owns the read that reaches that size. Its probe past the size
+    meets the cut, and a failed verifying event withholds that read's chunk (see
+    ``MemberVerifier.read`` in ``verify.py``), so up to one chunk fewer arrives than
+    with the accelerator off. The error type is the same.
 
     As in :class:`_GzipTruncationCheckStream`, the check runs on the call that reaches
     the end (ADR 0014: never from ``close()``), and a verdict once raised is raised again
@@ -1676,12 +1690,14 @@ class _ZlibAdlerCheckStream(DelegatingStream):
 
     def __init__(
         self,
-        inner: BinaryIO,
+        inner: _StdlibOnAcceleratorError,
         *,
         reopen: Callable[[], BinaryIO],
         trailer: int | None,
     ) -> None:
         super().__init__(inner)
+        # The same object as ``_inner``, typed: the cut-stream handover calls it.
+        self._takeover = inner
         self._reopen = reopen
         self._trailer = trailer
         self._pos = 0
@@ -1767,13 +1783,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         return b""
 
     def _hand_cut_stream_to_stdlib(self, size: int) -> bytes:
-        switch = getattr(self._inner, "switch_to_stdlib", None)
-        if switch is None:
-            raise _StreamChecksumError(
-                "zlib stream is truncated: the source ends before the data the "
-                "rapidgzip accelerator returned"
-            )
-        switch()
+        self._takeover.switch_to_stdlib()
         if size == 0:
             return b""
         data = self._inner.read(size)

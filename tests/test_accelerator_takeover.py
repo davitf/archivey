@@ -155,8 +155,11 @@ def test_a_cut_bzip2_reads_as_it_does_with_the_accelerator_off(
     assert got[0] == off[0]
 
 
+@pytest.mark.parametrize("chunk", [1 << 16, -1])
+@pytest.mark.parametrize("source", ["path", "file"])
+@pytest.mark.parametrize("mode", _MODES, ids=lambda m: m.name)
 def test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off(
-    tmp_path: Path,
+    tmp_path: Path, mode: AcceleratorMode, source: str, chunk: int
 ) -> None:
     """A damaged block after a resume point: the resumed decode cannot tell the damage
     from the end of the stream, so the takeover decodes from the start, which raises at
@@ -164,20 +167,12 @@ def test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off(
     blob = bytearray(_bzip2())
     bits = _block_bits(bytes(blob))
     blob[(bits[9] + bits[10]) // 16] ^= 0x55
-    off = _read(
-        Codec.BZIP2,
-        bytes(blob),
-        _bzip2_config(AcceleratorMode.OFF),
-        "file",
-        1 << 16,
-        tmp_path,
-    )
+    off_config = _bzip2_config(AcceleratorMode.OFF)
+    off = _read(Codec.BZIP2, bytes(blob), off_config, source, chunk, tmp_path)
     assert off[1] is CorruptionError
-    for mode in _MODES:
-        got = _read(
-            Codec.BZIP2, bytes(blob), _bzip2_config(mode), "file", 1 << 16, tmp_path
-        )
-        assert (len(got[0]), got[1]) == (len(off[0]), off[1])
+    got = _read(Codec.BZIP2, bytes(blob), _bzip2_config(mode), source, chunk, tmp_path)
+    assert (len(got[0]), got[1]) == (len(off[0]), off[1])
+    assert got[0] == off[0]
 
 
 @pytest.mark.parametrize("chunk", [1 << 16, -1])
@@ -228,16 +223,17 @@ def _decompressor(stream: object) -> DecompressorStream:
 
 
 @pytest.mark.parametrize("mode", _MODES, ids=lambda m: m.name)
-def test_after_a_takeover_seeks_back_and_forward_read_the_data(
+def test_after_a_bzip2_takeover_seeks_back_and_forward_read_the_data(
     mode: AcceleratorMode,
 ) -> None:
     """The takeover resumes at a block, and keeps the blocks before it as seek points: a
     seek back before them decodes from the start, a seek forward resumes again, and the
     cut still raises.
 
-    The cut is near the end: rapidgzip decodes ahead of the reader, and on a cut it
-    meets before the first read returns, the reader is at 0 and the takeover starts
-    at the origin."""
+    The cut is near the end of the stream, so the reader is already past a block when
+    the accelerator fails. A cut that the accelerator meets before the first read
+    returns would leave the reader at 0; the takeover would then start at the origin,
+    and there would be no resume point to test."""
     blob = _bzip2_cut("end-of-stream")
     data = _payload()
     with open_codec_stream(
