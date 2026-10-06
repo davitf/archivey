@@ -297,6 +297,16 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   archive whose encryption record has no password check value. RAR 1.5-4 archives may
   legitimately lack the end block, so a cut between their blocks still lists as
   complete.
+- **A damaged end-of-archive block keeps the listing.** When the block after the last
+  member fails its header checksum (RAR 1.5-4 or RAR5), every member is listed and
+  reads normally, and archivey emits `ARCHIVE_EOF_MARKER_MISSING` with
+  `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
+  is what `unrar t` does: each member tests OK, then it reports one error. A damaged
+  header counts as the end block only if it has an end block's shape and the file ends
+  right after it; any other damaged header still raises `CorruptionError`. The damaged
+  block's next-volume flag is not trusted, so a volume set goes on to the next volume
+  only when a member's own header says its data continues there. With encrypted headers
+  this needs the password proven, as above; before that it is `EncryptionError`.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.

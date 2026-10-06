@@ -217,9 +217,15 @@ overwrite conflicts under `ERROR`). A policy **block** — an unsafe member refu
 universal path-safety check or a policy filter — is always recorded as `BLOCKED` and
 extraction continues, under either `STOP` or `CONTINUE`.
 
-A TAR archive has no index, so its extraction is one forward pass in either access
-mode. It does not fail closed: when a TAR is corrupt or truncated partway, the members
-read before the fault are already written, and then the call raises.
+An archive whose member list ends in damage (a TAR or RAR that is cut or corrupt
+partway, for example) does not fail closed. A TAR has no index, so its member list is
+read during its one forward pass, in either access mode; a RAR lists header by header.
+The members listed before the damage are written, and then the call raises the damage,
+usually `TruncatedError` or `CorruptionError`, under either `OnError`. No report is
+returned. This is what unrar and 7-Zip do, and the order `stream_members()` gives. A hard
+link in that prefix still gets its content, because its source always comes before it. A
+7z or ZIP keeps its member list in one index, so damage there fails `open_archive()` and
+nothing is written.
 
 To abort the whole archive on the first unsafe member (fail-closed strict security),
 pass `abort_on`:
@@ -351,8 +357,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
   does not list first: it checks the limits as each member arrives in its one pass, so
-  members before the one that crosses a cap are already written when it raises. A
-  damaged TAR behaves the same way (see above). `stream_members()` / `streaming=True`
+  members before the one that crosses a cap are already written when it raises.
+  `stream_members()` / `streaming=True`
   stay unguarded by design, except on 7z, RAR and ISO where `max_members` is checked
   at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z, RAR or
   ISO. For 7z and RAR that parse bound is a member count, not a byte budget:

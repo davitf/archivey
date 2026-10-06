@@ -229,7 +229,12 @@ class ArchiveEofContext(_JsonSafeContext):
       a volume of a RAR5 set, ends without the end-of-archive block its writers always
       put last, so the file was most likely cut at a header boundary. ``format`` is
       ``"rar"``, ``observed_kind`` is ``"absent"`` and both byte counts are 0: the
-      block has no fixed size.
+      block has no fixed size. The same marker with ``observed_kind="nonzero"``
+      reports an end-of-archive block that is there but fails its header CRC; the
+      members before it are all listed, ``observed_bytes`` is the offset where that
+      block starts in its volume, and ``expected_bytes`` is 0. That offset counts
+      from the volume's first byte, unlike member offsets, which count across the
+      whole set; the message names the volume.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — the trailer was complete but a
       non-zero byte follows it within the first MiB past it, so the file carries
       something the listing did not account for. ``observed_bytes`` is that byte's
