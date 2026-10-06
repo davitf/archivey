@@ -445,6 +445,13 @@ def test_rar4_header_encrypted_bad_size_after_a_proven_key_is_corruption(
         parse_rar_archive(io.BytesIO(data), password=password)
 
 
+def _rar3_endarc_next_volume(plain: bytearray) -> None:
+    """Set ENDARC_NEXT_VOLUME in a decrypted RAR3 end block and fix its CRC16."""
+    flags = struct.unpack_from("<H", plain, 3)[0] | 0x0001
+    struct.pack_into("<H", plain, 3, flags)
+    struct.pack_into("<H", plain, 0, zlib.crc32(plain[2:7]) & 0xFFFF)
+
+
 @requires("cryptography")
 def test_rar4_header_encrypted_later_volume_cut_in_its_first_header_is_truncated() -> (
     None
@@ -458,13 +465,9 @@ def test_rar4_header_encrypted_later_volume_cut_in_its_first_header_is_truncated
     archive cut at byte 60. ``rar`` 7 cannot write RAR 1.5-4 (no ``-ma4``), so no
     committed RAR 1.5-4 ``-hp`` volume set exists."""
     complete = _hp_fixture("encrypted_header__rar4.rar")
-
-    def next_volume(plain: bytearray) -> None:
-        flags = struct.unpack_from("<H", plain, 3)[0] | 0x0001  # ENDARC_NEXT_VOLUME
-        struct.pack_into("<H", plain, 3, flags)
-        struct.pack_into("<H", plain, 0, zlib.crc32(plain[2:7]) & 0xFFFF)
-
-    volume1 = _rar3_reencrypt_header(complete, len(complete) - 24, 16, next_volume)
+    volume1 = _rar3_reencrypt_header(
+        complete, len(complete) - 24, 16, _rar3_endarc_next_volume
+    )
     archive = parse_rar_volumes(
         [io.BytesIO(volume1), io.BytesIO(complete[:60])], password=_HP_PASSWORD
     )
@@ -475,6 +478,41 @@ def test_rar4_header_encrypted_later_volume_cut_in_its_first_header_is_truncated
         "encrypted header that starts at byte 20 (volume 2 of the set"
         in archive.truncated
     )
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    ("password", "error", "message"),
+    [
+        pytest.param(
+            _HP_PASSWORD,
+            CorruptionError,
+            "RAR3 FILE header CRC mismatch",
+            id="right-password",
+        ),
+        _WRONG_PASSWORD_CASE,
+    ],
+)
+def test_rar4_header_encrypted_end_block_proves_the_key_for_the_next_volume(
+    password: str, error: type[Exception], message: str
+) -> None:
+    """Volume 1's only encrypted header is its end block. Its CRC16 match proves the
+    password like any other header's, so damage in volume 2's first encrypted header
+    is corruption, not a wrong password.
+
+    Volume 1 is the fixture's MARK and MAIN (20 bytes) and its end block, re-encrypted
+    to carry the next-volume flag. Volume 2 is the fixture with bit 0 of byte 60
+    flipped, inside its first encrypted header's ciphertext (salt at 20)."""
+    complete = _hp_fixture("encrypted_header__rar4.rar")
+    volume1 = _rar3_reencrypt_header(
+        complete[:20] + complete[-24:], 20, 16, _rar3_endarc_next_volume
+    )
+    volume2 = bytearray(complete)
+    volume2[60] ^= 1
+    with pytest.raises(error, match=message):
+        parse_rar_volumes(
+            [io.BytesIO(volume1), io.BytesIO(bytes(volume2))], password=password
+        )
 
 
 @requires("cryptography")

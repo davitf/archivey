@@ -211,6 +211,17 @@ ignores a tail that fails to decode, re-raises it, because the checksum covers m
 already handed out. A stream never read to its end is not checked, and the standard library
 does not check one either: it verifies the trailer only when it consumes the end.
 
+A cut zlib stream is the third cause of a mismatch: `rapidgzip` reads a stream cut inside
+its body as a shorter whole one, with no error, and sometimes stops before output the
+standard library still decodes (a cut 200 bytes in gave nothing where the standard library
+gave 582 bytes). When the standard library's decode agrees with every byte delivered and
+then has more output, or runs out of source inside the stream, the read goes to the
+standard library at the delivered position (`switch_to_stdlib`), so the bytes and the
+`TruncatedError` are those of `use_rapidgzip=OFF` (maintainer ruling, 2026-10-03). One
+exception remains: with a container-declared size, the read that reaches it is the
+`VerifyingStream`'s verifying event, and when its probe past the size meets a cut Adler-32
+that read's chunk is withheld, as any failed verifying event withholds its chunk.
+
 **What of a cut stream a caller gets back.** The same bytes with `rapidgzip` as without it.
 The standard library engine delivers everything up to the last complete block before the
 cut. `rapidgzip` decodes ahead in parallel, so it can reach the cut and abort while the
@@ -389,7 +400,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 ./scripts/test.sh tests/test_codecs.py tests/test_single_file.py \
     tests/test_rapidgzip_deflate_zlib.py tests/test_accelerator_corruption.py \
     tests/test_accelerator_truncation_abort.py tests/test_accelerator_shutdown.py \
-    tests/test_accelerator_bug3_trap.py -k "gzip or zlib or deflate or rapidgzip or accelerat"
+    tests/test_accelerator_bug3_trap.py tests/test_accelerator_takeover.py \
+    -k "gzip or zlib or deflate or rapidgzip or accelerat"
 ```
 
 | Claim | Pinned by |
@@ -408,6 +420,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | How the child's death is reported; no child → fallback and one warning | `::test_a_child_death_is_reported_by_how_it_ended`, `::test_a_child_killed_from_outside_ends_the_stream`, `::test_without_a_child_auto_uses_stdlib_and_on_refuses`, `::test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto`, `::test_an_auto_fallback_warns_once_per_process` |
 | The caller's source exception reaches the caller | `::test_an_exception_from_the_callers_source_reaches_the_caller_unchanged` |
 | The ISIZE backstop and the empty-end fallback | `tests/test_accelerator_corruption.py::test_rapidgzip_truncation_is_reported`, `::test_rapidgzip_silent_empty_fallback_recovers_prefix`, `::test_rapidgzip_isize_soft_short_raises_on_readall`, `::test_rapidgzip_multimember_not_flagged`, `::test_gzip_backstop_keeps_raising_after_its_own_truncation` |
+| A cut zlib stream delivers the bytes and error of `OFF` under `ON` and `AUTO`, cut in the first block, a later block or the trailer; the declared-size exception | `tests/test_accelerator_takeover.py::test_a_cut_zlib_reads_as_it_does_with_the_accelerator_off` |
 | A cut bare zlib stream under `ON` without a size raises | `tests/test_rapidgzip_deflate_zlib.py::test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size` |
 | Close guard on shutdown; one accelerator library | `tests/test_accelerator_shutdown.py::test_accelerator_shutdown_canary`, `::test_archivey_uses_single_accelerator_library` |
 

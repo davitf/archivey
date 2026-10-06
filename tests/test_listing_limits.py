@@ -356,6 +356,42 @@ def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) 
         assert sum(len(t.linkname) for t in tar.members) == 0
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+@pytest.mark.parametrize("fmt", ["gnu", "pax"])
+def test_tar_link_name_drop_covers_both_walks_and_both_long_name_records(
+    tmp_path: Path, fmt: str, streaming: bool
+) -> None:
+    """A long link name is dropped from a regular file's header and kept on a symlink.
+
+    tarfile applies a GNU LONGLINK block or a PAX ``linkpath`` record to the header
+    that follows, after the nested header read returns. The drop happens in the
+    outermost read, so it must see that final link name in both walks.
+    """
+    import tarfile
+
+    tar_path = tmp_path / f"longlink-{fmt}.tar"
+    target = "t" * 200
+    tar_format = tarfile.GNU_FORMAT if fmt == "gnu" else tarfile.PAX_FORMAT
+    with tarfile.open(tar_path, "w", format=tar_format) as tf:
+        regular = tarfile.TarInfo(name="regular")
+        regular.linkname = target
+        tf.addfile(regular)
+        link = tarfile.TarInfo(name="link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = target
+        tf.addfile(link)
+    with open_archive(tar_path, streaming=streaming) as reader:
+        if streaming:
+            members = {m.name: m for m, _ in reader.stream_members()}
+        else:
+            members = {m.name: m for m in reader.members()}
+        # The headers tarfile keeps are what the listing limits do not weigh.
+        held = {t.name: t.linkname for t in reader._tar.members}  # type: ignore[attr-defined]
+    assert held == {"regular": "", "link": target}
+    assert members["regular"].link_target is None
+    assert members["link"].link_target == target
+
+
 def test_tar_header_batch_returns_to_full_size_past_max_members(tmp_path: Path) -> None:
     """Past the cap the batch goes back to full size instead of one header.
 
