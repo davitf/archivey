@@ -45,7 +45,7 @@ from enum import Enum
 from typing import Literal, NoReturn, overload
 
 from archivey.exceptions import ArchiveyUsageError
-from archivey.internal.enum_args import normalize_spelling
+from archivey.internal.enum_args import _lookup, normalize_spelling, spelling_table
 from archivey.types import _FORMAT_NAMES, ArchiveFormat, ContainerFormat, StreamFormat
 
 __all__ = ["coerce_archive_format", "coerce_stream_or_archive_format"]
@@ -59,24 +59,10 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
     today — the test asserts that — but the extension is the documented, CLI-facing
     spelling, so it is the one to prefer if one ever appears.
     """
-    table: dict[str, ArchiveFormat] = {}
-    for fmt, name in _FORMAT_NAMES.items():
-        table.setdefault(normalize_spelling(name), fmt)
-    for fmt in _FORMAT_NAMES:
-        extension = fmt.file_extension()
-        if extension:
-            table[normalize_spelling(extension)] = fmt
-    return table
-
-
-@functools.cache
-def _stream_format_spellings() -> dict[str, StreamFormat]:
-    table: dict[str, StreamFormat] = {}
-    for member in StreamFormat:
-        table.setdefault(normalize_spelling(member.name), member)
-    for member in StreamFormat:
-        table[normalize_spelling(member.value)] = member
-    return table
+    return spelling_table(
+        ((name, fmt) for fmt, name in _FORMAT_NAMES.items()),
+        ((ext, fmt) for fmt in _FORMAT_NAMES if (ext := fmt.file_extension())),
+    )
 
 
 def _accepted_archive_formats() -> str:
@@ -185,7 +171,7 @@ def coerce_stream_or_archive_format(
         fmt = _archive_format_spellings().get(spelling)
         if fmt is not None:
             return fmt
-        stream = _stream_format_spellings().get(spelling)
+        stream = _lookup(StreamFormat).get(spelling)
         if stream is not None:
             return stream
     raise ArchiveyUsageError(
