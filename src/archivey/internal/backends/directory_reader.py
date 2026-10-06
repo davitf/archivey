@@ -116,7 +116,10 @@ class _Identity(NamedTuple):
 
     @classmethod
     def of(cls, st: os.stat_result) -> _Identity | None:
-        """``st``'s identity, or ``None`` for ``st_ino`` 0, which is no identity."""
+        """``st``'s identity, or ``None`` for ``st_ino`` 0, which is no identity.
+
+        Windows' scandir data, some FUSE and network mounts report 0 for every file.
+        """
         return cls(st.st_dev, st.st_ino) if st.st_ino else None
 
 
@@ -372,12 +375,10 @@ class DirectoryReader(BaseArchiveReader):
                 subdirs.append((member, Path(entry_path), _Identity.of(st)))
             elif stat.S_ISREG(st.st_mode):
                 first_name = None
-                # st_ino 0 is "no identity" (Windows' scandir data, some FUSE and
-                # network mounts): grouping on it would link unrelated files.
-                if st.st_nlink > 1 and st.st_ino != 0:
-                    first_name = first_names.setdefault(
-                        (st.st_dev, st.st_ino), rel_path
-                    )
+                identity = _Identity.of(st)
+                # Grouping files with no identity would link unrelated ones.
+                if st.st_nlink > 1 and identity is not None:
+                    first_name = first_names.setdefault(identity, rel_path)
                 if first_name is not None and first_name != rel_path:
                     yield self._make_member(
                         rel_path, st, MemberType.HARDLINK, first_name
@@ -386,7 +387,7 @@ class DirectoryReader(BaseArchiveReader):
                     # The listing's identity rides on the member (`_raw`), so opening it
                     # can refuse whatever was put at that path since (threat-model O21).
                     yield self._make_member(
-                        rel_path, st, MemberType.FILE, None, identity=_Identity.of(st)
+                        rel_path, st, MemberType.FILE, None, identity=identity
                     )
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
@@ -409,7 +410,9 @@ class DirectoryReader(BaseArchiveReader):
         nothing to compare, so it is opened one component at a time from the root
         instead, each with ``O_NOFOLLOW``, and a symlink anywhere on the path fails.
         So is a path too long to open whole (``ENAMETOOLONG``, deeper than
-        ``PATH_MAX``), which then still gets the identity check.
+        ``PATH_MAX``), which then still gets the identity check. The walk opens the
+        last component ``O_DIRECTORY`` too, and with no identity that is the only
+        refusal of a non-directory swapped in.
 
         A symlink in the way fails in the kernel (``ENOTDIR`` on Linux, ``ELOOP``
         elsewhere); that is reported like a replaced directory, with the kernel's
@@ -625,9 +628,10 @@ class DirectoryReader(BaseArchiveReader):
     def _open_nofollow(self, name: str, leaf_flags: int) -> int:
         """POSIX: open ``name`` under the root one component at a time, following nothing.
 
-        Each directory on the way is opened ``O_DIRECTORY | O_NOFOLLOW``, and ``name``
-        itself ``O_NOFOLLOW | leaf_flags``: ``O_DIRECTORY`` for a directory to scan,
-        ``O_NONBLOCK`` for a member to read.
+        The root is opened without ``O_NOFOLLOW``: the caller chose it, and it may be
+        a symlink. Each directory on the way is opened ``O_DIRECTORY | O_NOFOLLOW``,
+        and the last component ``O_NOFOLLOW | leaf_flags``: ``O_DIRECTORY`` for a
+        directory to scan, ``O_NONBLOCK`` for a member to read.
         """
         *dirs, leaf = name.split("/")
         fd = os.open(self._root, os.O_RDONLY | _O_DIRECTORY | os.O_CLOEXEC)
