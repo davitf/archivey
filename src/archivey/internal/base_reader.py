@@ -860,9 +860,10 @@ class BaseArchiveReader(ArchiveReader):
     def _track_source_seeks(self, source: BinaryIO) -> BinaryIO:
         """Wrap the source to count seeks when measurement is on; identity otherwise.
 
-        The counter owns its inner, but closing it only closes the
-        :class:`ArchiveSource` underneath, which the reader closes anyway and which
-        never closes the caller's object.
+        The counter owns and closes what it is given. So pass it the reader's own
+        :class:`ArchiveSource` (which the reader closes anyway, and which never closes
+        the caller's object) or a non-owning view over it, never a borrowed stream
+        directly. The single-file reader's metadata probes wrap a view for this reason.
         """
         counter = self._seek_counter
         if counter is None:

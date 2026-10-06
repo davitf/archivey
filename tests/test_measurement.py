@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import io
 import zipfile
 from collections.abc import Callable
@@ -194,6 +195,24 @@ def test_measurement_on_counts_zip_decompressed_bytes(tmp_path: Path) -> None:
                     stream.read()
             assert reader.bytes_decompressed == len(payload_a) + len(payload_b)
             assert reader.source_seek_count > 0
+
+
+@pytest.mark.parametrize("shape", ["path", "stream"])
+def test_single_file_open_counts_metadata_probe_seeks(
+    tmp_path: Path, shape: str
+) -> None:
+    """The metadata probes seek the source at open, and those seeks are counted.
+
+    For a .gz: the compressed-size probe seeks to the end (1), the header peek seeks
+    to 0 (1), and the open-time validation decode repositions the shared source for
+    the ISIZE tail read (1) and for its first data read (1).
+    """
+    path = tmp_path / "a.gz"
+    path.write_bytes(gzip.compress(b"payload" * 100))
+    source = path if shape == "path" else io.BytesIO(path.read_bytes())
+    with enable_measurement(), open_archive(source) as reader:
+        assert isinstance(reader, BaseArchiveReader)
+        assert reader.source_seek_count == 4
 
 
 def _build_solid_7z(tmp_path: Path) -> tuple[Path, int]:
