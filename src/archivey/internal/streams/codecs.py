@@ -1444,8 +1444,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
        “further ``1f 8b 08`` ⇒ do not raise” rule (per-member ISIZE sum is deferred).
 
     ISIZE and the source length are **captured up front** (``isize`` / ``source_len``) so no
-    per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ raise on a
-    non-empty soft EOF (incomplete member); a value ⇒ compare; ``source_len is None``
+    per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ a
+    non-empty soft EOF is an incomplete member, handed to the standard library like a
+    mismatch; a value ⇒ compare; ``source_len is None``
     (unreadable) ⇒ return without raising. ``views`` gives the multi-member scan and the
     stdlib fallback their own access to the source (:class:`_SourceViews`), so neither
     disturbs the live accelerator's cursor.
@@ -1555,29 +1556,22 @@ class _GzipTruncationCheckStream(DelegatingStream):
             # Source length unreadable (non-seekable / I/O error at capture): cannot verify,
             # so never invent a truncation we can't prove.
             return b""
-        if self._source_len < 18:
-            # Incomplete member (header-only / truncated before a full trailer). Empty
-            # delivery is handled by the stdlib fallback; non-empty soft EOF with a source
-            # this short is still truncation.
-            raise TruncatedError(
-                "gzip stream is truncated: compressed size is too small for a "
-                "complete gzip member (the rapidgzip accelerator did not raise)"
-            )
-        if self._isize is None:
-            return (
-                b""  # length known but ISIZE unread (should not happen for len >= 18)
-            )
-        if self._total % (1 << 32) == self._isize:
-            return b""
-        # Mismatch: truncation, unless this is a concatenated multi-member gzip (then the
-        # trailer is only the last member's size). Conservative scan: any further gzip
-        # header ⇒ do not raise (false-negative only; per-member ISIZE sum is deferred).
-        if self._has_additional_gzip_member():
-            return b""
+        # Below 18 bytes no gzip member is complete, so the delivered bytes are a
+        # truncation; otherwise an ISIZE mismatch is one, unless this is a concatenated
+        # multi-member gzip (then the trailer is only the last member's size).
+        # Conservative scan: any further gzip header => do not raise (false-negative
+        # only; per-member ISIZE sum is deferred).
+        if self._source_len >= 18:
+            if self._isize is None:
+                return b""  # length known but ISIZE unread (should not happen here)
+            if self._total % (1 << 32) == self._isize:
+                return b""
+            if self._has_additional_gzip_member():
+                return b""
         # The last four bytes are not ISIZE when something was appended to the file,
         # and rapidgzip reads past such bytes without a word. The standard-library
-        # decoder tells a cut file from an appended one: it carries on from here, and
-        # raises the truncation or reports the bytes.
+        # decoder tells a cut file from an appended one, and keeps its verdict on later
+        # reads: it carries on from here, and raises the truncation or reports the bytes.
         self._takeover.switch_to_stdlib()
         return self._inner.read(size)
 

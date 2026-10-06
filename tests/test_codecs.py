@@ -2073,6 +2073,20 @@ def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
         stream.read()
 
 
+def test_gzip_truncation_check_hands_a_too_short_file_to_the_stdlib(tmp_path) -> None:
+    # Below 18 bytes no gzip member is complete. An accelerator that still delivered
+    # bytes from such a file hands over like an ISIZE mismatch, and the standard
+    # library keeps raising the truncation on later reads.
+    payload, path = _cut_gzip_file(tmp_path)
+    path.write_bytes(path.read_bytes()[:15])
+
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:5]), path)
+    with pytest.raises(TruncatedError):
+        stream.read(-1)
+    with pytest.raises(TruncatedError):
+        stream.read()
+
+
 def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
     # A seek that does not leave the sequential frontier (tell()-style seek(0, SEEK_CUR),
     # or a seek to the current offset) keeps the ISIZE check armed, so a short
