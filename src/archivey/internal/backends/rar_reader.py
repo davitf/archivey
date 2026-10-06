@@ -31,7 +31,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 import zlib
@@ -89,16 +88,13 @@ from archivey.internal.backends.rar_unar import (
     uses_no_dictionary,
 )
 from archivey.internal.backends.rar_unrar import (
-    _unrar_glob_demux_ok,
+    UnrarRefusal,
     decompress_rar3_blob,
     find_rarlab_unrar,
     open_unrar_p,
-    unrar_mask_is_usable,
+    plan_unrar_mask,
     unrar_mask_keys,
     unrar_mask_selects,
-    unrar_mask_view,
-    unrar_member_argument,
-    unrar_member_refusal,
     unrar_member_view,
     unrar_selection_keys,
 )
@@ -3162,20 +3158,19 @@ class RarReader(BaseArchiveReader):
         if raw.is_file_copy():
             return self._open_file_copy(member)
 
-        if self._can_direct_read(raw) and raw.compress_size != raw.file_size:
-            # A plaintext stored member packs exactly its own bytes; only encryption
-            # (padding to the AES block) makes the two sizes differ, and encrypted
-            # members never take this path. ``unrar`` trusts the packed size here,
-            # the size check trusts the unpacked one, and neither is the member.
-            raise CorruptionError(
-                f"This stored RAR member declares {raw.file_size} bytes but packs "
-                f"{raw.compress_size}; a stored member's two sizes must match.",
-                archive_name=self._archive_name,
-                member_name=member.name,
-                source_format=ArchiveFormat.RAR,
-            )
-
         if self._can_direct_read(raw):
+            if raw.compress_size != raw.file_size:
+                # A plaintext stored member packs exactly its own bytes; only encryption
+                # (padding to the AES block) makes the two sizes differ, and encrypted
+                # members never take this path. ``unrar`` trusts the packed size here,
+                # the size check trusts the unpacked one, and neither is the member.
+                raise CorruptionError(
+                    f"This stored RAR member declares {raw.file_size} bytes but packs "
+                    f"{raw.compress_size}; a stored member's two sizes must match.",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                )
             inner: BinaryIO = self._direct_view(raw)
             return self._wrap_payload_stream(inner, member)
 
@@ -3198,79 +3193,29 @@ class RarReader(BaseArchiveReader):
         # UTF-8, an 8-bit RAR3 name goes to unrar as its stored bytes (on
         # Windows, as unrar's own OEM reading of them), and a RAR3 Unicode name
         # sends each surrogate unit as ``?``.
-        presented = _presented_filename(raw)
         version_control = raw.is_file_version_history()
         names = self._unrar_names()
-        view = names.views[names.positions[id(member)]]
-        mask_name = unrar_member_argument(
-            view,
+        mask = plan_unrar_mask(
+            names.views[names.positions[id(member)]],
             raw.orig_filename,
+            _presented_filename(raw),
             stored_is_8bit=self._archive.version == 4 and raw.rar3_unicode_name is None,
             surrogates_as_wildcards=raw.rar3_unicode_name is not None,
         )
-        refusal = unrar_member_refusal(mask_name)
-        if (
-            refusal is None
-            and raw.rar3_unicode_name is not None
-            and sys.platform != "win32"
-            and view is not None
-            and _surrogate_in_directory_part(view)
-        ):
-            # Sent as ``?``, that unit would make a directory glob, which the check
-            # below refuses with a reason about backslashes and globs.
-            refusal = (
-                "a directory in its name holds a UTF-16 surrogate unit, which can "
-                "reach unrar only as a glob in that directory, and archivey cannot "
-                "size what a directory glob selects"
-            )
-        if refusal is None and (
-            "\0" in presented
-            or (raw.orig_filename is not None and b"\0" in raw.orig_filename)
-        ):
-            # unrar cuts the name at the NUL; the name is refused rather than read
-            # through the part before it.
-            refusal = unrar_member_refusal("\0")
-        mask_view = None if mask_name is None else unrar_mask_view(mask_name)
-        if refusal is None and (
-            mask_view is None or not unrar_mask_is_usable(mask_view)
-        ):
-            refusal = (
-                "unrar reads its name as empty, or as a path with no name in it"
-                if view is not None
-                else "its name cannot be read the way unrar reads it on this system"
-            )
-        # ``mask_name is None`` always comes with a refusal; it is tested here so the
-        # checkers narrow it before ``open_unrar_p``, where ``member=None`` means "no
-        # ``-n`` mask at all", every member piped.
-        if mask_name is None or mask_view is None or refusal is not None:
-            raise self._unrar_name_refused(member, refusal or "no mask")
-        glob_mask = "?" in mask_view
-        # ``\\`` in the mask is a separator to Windows unrar and a literal on
-        # POSIX, so the same ``-n./`` mask selects a different set; Windows CI
-        # read nothing for ``a\\b_TGT.txt``. On POSIX a RAR5 Windows-host
-        # ``\\`` is read as ``_`` (measured in test_rar_unrar_names.py), which
-        # the mask already reflects. On Windows every RAR5 ``\\`` becomes ``_``
-        # by the unrar source, which is unmeasured there, so a stored backslash
-        # is still refused on Windows.
-        if (
-            "\\" in mask_view
-            or (sys.platform == "win32" and "\\" in presented)
-            or (glob_mask and not _unrar_glob_demux_ok(mask_view[2:]))
-        ):
+        if isinstance(mask, UnrarRefusal):
+            if mask.kind == "name":
+                raise self._unrar_name_refused(member, mask.reason)
             raise UnsupportedFeatureError(
-                "RAR member names that unrar reads with a backslash, or with a "
-                "glob in a directory component, cannot be read through unrar: "
-                "Windows unrar treats a backslash as a separator, and a "
-                "directory glob selects members archivey cannot size.",
+                mask.reason,
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
         glob_prefix, shares_mask, dictionary_cost = self._unrar_selection(
-            member, mask_view, version_control=version_control
+            member, mask.view, version_control=version_control
         )
         if (
-            glob_mask
+            mask.is_glob
             and glob_prefix
             and not self._config.rar_allow_glob_member_concatenation
         ):
@@ -3355,7 +3300,7 @@ class RarReader(BaseArchiveReader):
             proc, stdout = open_unrar_p(
                 path,
                 password=data_password,
-                member=mask_name,
+                member=mask.name,
                 version_control=version_control,
                 rar5=self._archive.version == 5,
             )
@@ -3370,7 +3315,7 @@ class RarReader(BaseArchiveReader):
             # prefix skip failed; close is idempotent.
             with _close_on_error(owned):
                 tracked = self._track_decompressed(owned)
-                if glob_mask or shares_mask:
+                if mask.is_glob or shares_mask:
                     return _bounded_member_pipe(
                         tracked,
                         prefix=glob_prefix,
@@ -3703,9 +3648,3 @@ class RarReadBackend(ReadBackend):
 
 
 register_reader(RarReadBackend)
-
-
-def _surrogate_in_directory_part(view: str) -> bool:
-    """True when a directory component of ``view`` holds a UTF-16 surrogate unit."""
-    directory = view.replace("\\", "/").rstrip("/").rpartition("/")[0]
-    return any("\ud800" <= char <= "\udfff" for char in directory)
