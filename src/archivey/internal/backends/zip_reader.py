@@ -171,10 +171,6 @@ if TYPE_CHECKING:
 # which maps every byte and therefore never fails — no further fallbacks are reachable).
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
-# bz2 uses OSError for this decoder-specific failure. Match the complete message so an
-# unrelated filesystem/source OSError remains a genuine I/O error and propagates unchanged.
-_BZIP2_INVALID_DATA = "Invalid data stream"
-
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
 # then the high byte of the DOS time rather than of the CRC-32.
 _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
@@ -315,14 +311,11 @@ def _closed_archive_error() -> ArchiveyUsageError:
 # cannot drift apart.
 _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     zipfile.BadZipFile,
-    RuntimeError,
     io.UnsupportedOperation,
     NotImplementedError,
-    zlib.error,
     lzma.LZMAError,
     UnicodeDecodeError,
     ValueError,
-    OSError,
 )
 
 
@@ -830,12 +823,6 @@ class ZipReader(BaseArchiveReader):
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, zipfile.BadZipFile):
             return CorruptionError(f"Error reading ZIP archive: {exc!r}")
-        if isinstance(exc, RuntimeError):
-            text = str(exc).lower()
-            if "password required" in text:
-                return EncryptionError("Password required to read this ZIP member")
-            if "bad password" in text:
-                return wrong_password_error("Wrong password for this ZIP member")
         if isinstance(exc, io.UnsupportedOperation):
             if "seek" in str(exc):
                 return StreamNotSeekableError("ZIP archives require a seekable source")
@@ -851,10 +838,9 @@ class ZipReader(BaseArchiveReader):
             # UnsupportedFeatureError themselves), so this arm is a backstop for any
             # zipfile call that still raises it. Either way the entry is unreadable.
             return UnsupportedFeatureError(f"Unsupported ZIP entry feature: {exc!r}")
-        if isinstance(exc, (zlib.error, lzma.LZMAError)):
-            # Corruption inside a member body: stdlib zipfile surfaces the codec's own error
-            # (zlib.error "invalid distance too far back", lzma.LZMAError "Corrupt input
-            # data") rather than BadZipFile for a deflate/bzip2/LZMA member.
+        if isinstance(exc, lzma.LZMAError):
+            # The method-14 LZMA properties in the member body are out of range
+            # (_zip_lzma_params). The codec layer types the decoder's own errors.
             return CorruptionError(f"Error decompressing ZIP member: {exc!r}")
         if isinstance(exc, UnicodeDecodeError):
             # The local-header check (_local_data_region) decodes the local name to
@@ -870,11 +856,6 @@ class ZipReader(BaseArchiveReader):
             # this arm, in _reraise_member_error (it cannot be returned from here:
             # ArchiveyUsageError is deliberately not an ArchiveyError).
             return CorruptionError(f"Corrupt ZIP member offset/structure: {exc!r}")
-        if isinstance(exc, OSError) and str(exc) == _BZIP2_INVALID_DATA:
-            # The stdlib bz2 decompressor signals a corrupt bzip2 member body as
-            # OSError("Invalid data stream") (a bz2 quirk). Message-scoped so a genuine I/O
-            # OSError still propagates unchanged (error-handling: I/O is not reclassified).
-            return CorruptionError(f"Corrupt bzip2 ZIP member: {exc!r}")
         if isinstance(exc, EOFError):
             # Short input, from any decoder a member read reaches. The codec layer maps
             # its own EOFError and no ZIP path is known to raise a bare one now; this
