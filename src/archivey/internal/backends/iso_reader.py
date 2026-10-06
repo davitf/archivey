@@ -1530,7 +1530,10 @@ class IsoReader(BaseArchiveReader):
         # ``_timestamps``.
         for field, source, value_repr in invalid_dates:
             message = f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
-            issue = TimestampIssue(field, source, value_repr, message)
+            issue = TimestampIssue(
+                field=field, source=source, value_repr=value_repr, message=message
+            )
+            # ISO sends every diagnostic to the collector's default logger; so does this.
             self._emit_timestamp_invalid(member, index, issue, log=None)
         if id(record) in self._joliet_named:
             self._diagnostics_collector.emit(

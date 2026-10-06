@@ -1829,7 +1829,9 @@ class BaseArchiveReader(ArchiveReader):
         member: ArchiveMember,
         *,
         size: int,
-        check: str,
+        check: Literal[
+            "weak_open_check", "confirm_budget_exhausted", "no_password_check"
+        ],
         format_label: str,
         digest: str,
         why: str,

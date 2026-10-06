@@ -1432,7 +1432,9 @@ class TarReader(BaseArchiveReader):
         if mtime_invalid:
             value_repr = repr(info.mtime)
             message = f"Invalid TAR mtime for {quoted(info.name)}: {value_repr}"
-            issue = TimestampIssue("mtime", "tar", value_repr, message)
+            issue = TimestampIssue(
+                field="mtime", source="tar", value_repr=value_repr, message=message
+            )
             self._emit_timestamp_invalid(member, index, issue)
         return member
 

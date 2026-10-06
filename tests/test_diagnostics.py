@@ -30,6 +30,7 @@ from archivey import (
 )
 from archivey.diagnostics import (
     DiagnosticSummary,
+    MemberTimestampContext,
     NameNormalizationContext,
     ScanRaceContext,
 )
@@ -693,7 +694,16 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
             on_error=OnError.CONTINUE,
             config=ArchiveyConfig(diagnostic_policy=policy),
         )
-    assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+    diagnostic = ei.value.diagnostic
+    assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+    assert diagnostic.message == "Invalid TAR mtime for 'a.txt': -1099511627776.0"
+    context = diagnostic.context
+    assert isinstance(context, MemberTimestampContext)
+    assert (context.field, context.source, context.value_repr) == (
+        "mtime",
+        "tar",
+        "-1099511627776.0",
+    )
 
 
 def test_eof_marker_raise_yields_diagnostic_error() -> None:
