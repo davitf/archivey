@@ -150,9 +150,16 @@ value SHALL be captured up front (when the source is first inspected for backsto
 so no per-read reopen of a path is required and a non-path source needs no seek while the
 accelerator is live. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
 rewind the seekable source and re-decode through the stdlib gzip engine so recoverable prefixes
-stream and truncation still raises from a read (never `close()`). A conservative multi-member
-scan SHALL prevent valid concatenated gzip streams from being misreported when the trailer
-records only the last member.
+stream and truncation still raises from a read (never `close()`). A seek SHALL NOT turn the
+backstop off: the length compared is that of rapidgzip's whole output, which the read that
+meets its end gives whatever seeks came before. On a mismatch the read SHALL be handed to the
+standard library decoder, whose verdict it then gives (`TruncatedError` for a cut,
+`CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except where
+a further gzip member follows the first: then the trailer records only the last member, and
+the backstop SHALL stand down. A `1f 8b 08` in the file SHALL count as a further member only
+when zlib's gzip decoder accepts the header there and decodes from it without an error, to the
+member's verified end or through a bounded probe; three bytes that turn up by chance in a
+compressed body, or a member the source ends inside, SHALL NOT silence the backstop.
 
 A **caller-owned** source driven through the accelerator SHALL NOT be closed by the accelerator
 or its truncation wrapper (archivey never closes a source the caller owns); the accelerator's
@@ -166,9 +173,11 @@ Windows status) is a verdict on the data — `TruncatedError` when rapidgzip's a
 truncation, else `CorruptionError`; SIGKILL is `ResourceLimitError`; any other end is
 `ReadError`.
 
-A fault signal, like a data error rapidgzip reports, SHALL hand the read to the standard
-library decoder, which delivers what it would have delivered with the accelerator off: the same
-bytes before the error, and the same error. rapidgzip decodes ahead of the reader, so when it
+A fault signal, like a data error rapidgzip reports on a read or a seek, SHALL hand the read
+or seek to the standard library decoder, which delivers what it would have delivered with the
+accelerator off: the same bytes before the error, and the same error. A seek through a valid
+gzip with NUL padding after its last member, which rapidgzip fails on, therefore lands as it
+does with the accelerator off. rapidgzip decodes ahead of the reader, so when it
 dies the reader can be far short of the fault. The standard library SHALL start at the last
 DEFLATE block boundary from rapidgzip's index at or before the position delivered to the
 caller, among the boundaries the stream still keeps, with the 32 KiB of output before it as its
@@ -199,7 +208,13 @@ a reader that skips is still covered), a mismatch the standard library confirms 
 SHALL re-raise it. Where the standard library agrees with every byte rapidgzip delivered and
 then has more output, or meets the end of the source inside the stream (a cut stream), the
 read SHALL be handed to the standard library at the delivered position, so the bytes and the
-`TruncatedError` match `use_rapidgzip=OFF`. One stated exception: with a container-declared
+`TruncatedError` match `use_rapidgzip=OFF`. Where the standard library's decode ends the first
+zlib stream before the bytes rapidgzip delivered (rapidgzip decodes on into a second stream)
+and the caller has no byte past that end yet, the read or seek SHALL be handed to the
+standard library at that end, so a completing read returns the first stream and the rest is
+reported as trailing data, as with `use_rapidgzip=OFF`. A caller that already has bytes past
+that end MAY keep the rapidgzip reading, which the decode of the following streams confirms.
+One stated exception: with a container-declared
 size, the read that reaches it is the verifying stage's verifying event, and when the probe past
 the size meets a cut trailer that read's chunk is withheld; the error is still `TruncatedError`.
 Raw DEFLATE carries no checksum, so there is no backstop for the deflate accelerator path. A
@@ -228,6 +243,9 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated standalone deflate through rapidgzip | Corruption in a block → `CorruptionError`; a clean mid-stream cut MAY return a short read undetected (no checksum backstop) |
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
+| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF` |
+| Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
+| Two zlib streams through rapidgzip, completing read or seek to the end | The first stream, and a trailing-data report, as with the accelerator `OFF` |
 | Valid empty gzip through rapidgzip | Succeeds with zero bytes |
 
 ### Requirement: Accelerator lifecycle is safe at shutdown
