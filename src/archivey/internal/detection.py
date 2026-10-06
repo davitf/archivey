@@ -268,7 +268,7 @@ def _probe_inner_tar(
         # sibling-volume retry shares the receipt) has charged any. Input against what
         # is left: a content probe and its completion check draw on the same allowance.
         budget = workspace.budget
-        if not _admit_tier(
+        if _record_tier_limit(
             workspace,
             "inner_tar",
             enabled=budget.max_decode_input > 0 and budget.max_decode_output > 0,
@@ -308,22 +308,26 @@ def _probe_inner_tar(
     return found
 
 
-def _admit_tier(
+def _record_tier_limit(
     workspace: PrefixWorkspace,
     tier: str,
     *,
     enabled: bool = True,
     covered: bool = True,
 ) -> bool:
-    """Whether ``tier`` may run: records it as not enabled when the budget turns it off
-    (a zero allowance), and as cut short when its allowance is below what it needs."""
+    """Record ``tier`` as not enabled when ``enabled`` is false, else as cut short when
+    ``covered`` is false; return whether a record was made.
+
+    Most callers skip the tier on a record. The far tier takes the record but not the
+    decision: it still searches the signatures its window reaches.
+    """
     if not enabled:
         workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
-        return False
+        return True
     if not covered:
         workspace.record_skip(tier, TierSkipReason.BUDGET_EXHAUSTED)
-        return False
-    return True
+        return True
+    return False
 
 
 def _decode_allowance_covers(
@@ -331,10 +335,12 @@ def _decode_allowance_covers(
 ) -> bool:
     """Whether ``input_bytes`` of decoding still fits the call's decode allowance.
 
-    For ``probe_completion`` only the cut-short record is reachable: a zero allowance
-    stops the content probes before any hit asks for completion.
+    When it does not, records ``tier`` as not enabled (the budget allows no decoding)
+    or as cut short (an earlier tier spent the allowance). For ``probe_completion``
+    only the cut-short record is reachable: a zero allowance stops the content probes
+    before any hit asks for completion.
     """
-    return _admit_tier(
+    return not _record_tier_limit(
         workspace,
         tier,
         enabled=workspace.budget.max_decode_input > 0,
@@ -370,7 +376,7 @@ def _probe_completes(
         return True
     budget = workspace.budget
     # Off by policy (``FAST``): say so, since the hit stands on the window alone.
-    if not _admit_tier(
+    if _record_tier_limit(
         workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
     ):
         return True
@@ -818,18 +824,20 @@ def _detect_format_body(
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the
         # tier is recorded as cut short, the same rule the near tier follows. A source
         # provably too short to hold the signature loses nothing to the clamp.
-        reachable_far = [
-            e for e in far if e.offset + len(e.magic) <= budget.max_far_bytes
-        ]
+        reachable_far: list[MagicSignature] = []
+        unreachable_far: list[MagicSignature] = []
+        for e in far:
+            fits = e.offset + len(e.magic) <= budget.max_far_bytes
+            (reachable_far if fits else unreachable_far).append(e)
         if far:
-            _admit_tier(
+            # The record only: the signatures the window reaches are searched anyway.
+            _record_tier_limit(
                 workspace,
                 "far_magic",
                 enabled=budget.max_far_bytes > 0,
                 covered=all(
                     length is not None and length < e.offset + len(e.magic)
-                    for e in far
-                    if e not in reachable_far
+                    for e in unreachable_far
                 ),
             )
         if reachable_far:
