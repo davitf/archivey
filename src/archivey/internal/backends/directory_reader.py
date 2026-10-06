@@ -114,6 +114,11 @@ class _Identity(NamedTuple):
     dev: int
     ino: int
 
+    @classmethod
+    def of(cls, st: os.stat_result) -> _Identity | None:
+        """``st``'s identity, or ``None`` for ``st_ino`` 0, which is no identity."""
+        return cls(st.st_dev, st.st_ino) if st.st_ino else None
+
 
 def _file_attributes(path: str) -> int:
     """Windows' ``st_file_attributes`` of ``path`` itself (0 elsewhere).
@@ -364,8 +369,7 @@ class DirectoryReader(BaseArchiveReader):
                 member = self._make_member(
                     rel_path + "/", st, MemberType.DIRECTORY, None
                 )
-                identity = _Identity(st.st_dev, st.st_ino) if st.st_ino else None
-                subdirs.append((member, Path(entry_path), identity))
+                subdirs.append((member, Path(entry_path), _Identity.of(st)))
             elif stat.S_ISREG(st.st_mode):
                 first_name = None
                 # st_ino 0 is "no identity" (Windows' scandir data, some FUSE and
@@ -381,10 +385,8 @@ class DirectoryReader(BaseArchiveReader):
                 else:
                     # The listing's identity rides on the member (`_raw`), so opening it
                     # can refuse whatever was put at that path since (threat-model O21).
-                    # st_ino 0 is no identity, so nothing is recorded for it.
-                    identity = _Identity(st.st_dev, st.st_ino) if st.st_ino else None
                     yield self._make_member(
-                        rel_path, st, MemberType.FILE, None, identity=identity
+                        rel_path, st, MemberType.FILE, None, identity=_Identity.of(st)
                     )
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
@@ -420,7 +422,7 @@ class DirectoryReader(BaseArchiveReader):
         name = rel_prefix.rstrip("/")
         try:
             if expected is None:
-                return self._open_directory_nofollow(name)
+                return self._open_nofollow(name, _O_DIRECTORY)
             try:
                 fd = os.open(
                     directory,
@@ -432,7 +434,7 @@ class DirectoryReader(BaseArchiveReader):
                 # Past PATH_MAX the whole path cannot be opened; walk it one component
                 # at a time instead, as reading a member does. The identity check
                 # below still applies.
-                fd = self._open_directory_nofollow(name)
+                fd = self._open_nofollow(name, _O_DIRECTORY)
         except OSError as exc:
             if exc.errno in (errno.ENOTDIR, errno.ELOOP):
                 raise _changed_since_listing(name, "was replaced", "scanning") from exc
@@ -441,23 +443,6 @@ class DirectoryReader(BaseArchiveReader):
             st = os.fstat(fd)
             if (st.st_dev, st.st_ino) != expected:
                 raise _changed_since_listing(name, "was replaced", "scanning")
-        except BaseException:
-            os.close(fd)
-            raise
-        return fd
-
-    def _open_directory_nofollow(self, name: str) -> int:
-        """POSIX: open directory ``name`` under the root one component at a time."""
-        fd = os.open(self._root, os.O_RDONLY | _O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            for component in name.split("/"):
-                next_fd = os.open(
-                    component,
-                    os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=fd,
-                )
-                os.close(fd)
-                fd = next_fd
         except BaseException:
             os.close(fd)
             raise
@@ -609,7 +594,7 @@ class DirectoryReader(BaseArchiveReader):
         """
         path = os.path.join(self._root, name)
         if _HAS_NOFOLLOW:
-            fd = self._open_nofollow(name)
+            fd = self._open_nofollow(name, os.O_NONBLOCK)
         else:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
         try:
@@ -637,8 +622,13 @@ class DirectoryReader(BaseArchiveReader):
             raise
         return fd
 
-    def _open_nofollow(self, name: str) -> int:
-        """POSIX: open ``name`` under the root one component at a time, following nothing."""
+    def _open_nofollow(self, name: str, leaf_flags: int) -> int:
+        """POSIX: open ``name`` under the root one component at a time, following nothing.
+
+        Each directory on the way is opened ``O_DIRECTORY | O_NOFOLLOW``, and ``name``
+        itself ``O_NOFOLLOW | leaf_flags``: ``O_DIRECTORY`` for a directory to scan,
+        ``O_NONBLOCK`` for a member to read.
+        """
         *dirs, leaf = name.split("/")
         fd = os.open(self._root, os.O_RDONLY | _O_DIRECTORY | os.O_CLOEXEC)
         try:
@@ -651,9 +641,7 @@ class DirectoryReader(BaseArchiveReader):
                 os.close(fd)
                 fd = next_fd
             return os.open(
-                leaf,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                dir_fd=fd,
+                leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | leaf_flags, dir_fd=fd
             )
         finally:
             os.close(fd)
