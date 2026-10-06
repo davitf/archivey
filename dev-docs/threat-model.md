@@ -422,7 +422,8 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 `tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
 `::test_a_path_source_refuses_the_same_image`,
 `::test_a_refused_path_source_does_not_hold_its_handle`;
-`tests/test_iso_metadata_bounds.py::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
+`tests/test_iso_metadata_bounds.py`:
+`::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
 `::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`.
 
 #### Decoder memory
