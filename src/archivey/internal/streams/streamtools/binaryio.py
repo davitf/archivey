@@ -22,6 +22,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
+    Callable,
     NoReturn,
     Protocol,
     TypeGuard,
@@ -68,6 +69,26 @@ def ask_resume_offset(inner: object | None, target: int) -> int | None:
         return None
     offset = ask(target)
     return offset if isinstance(offset, int) else None
+
+
+def resolve_seek(offset: int, whence: int, *, pos: int, end: Callable[[], int]) -> int:
+    """Resolve a seek target as ``io.BytesIO`` does.
+
+    ``pos`` is read only for ``SEEK_CUR`` and ``end`` is called only for ``SEEK_END``,
+    so a caller may pass anything for the one that does not apply. A relative seek
+    that underflows clamps to the origin; only an explicitly negative ``SEEK_SET``
+    raises. Callers probing backwards from the end (``ZipFile``'s
+    ``seek(-22, SEEK_END)`` EOCD probe on a short source) rely on the clamp.
+    """
+    if whence == io.SEEK_SET:
+        if offset < 0:
+            raise ValueError(f"Negative seek position {offset}")
+        return offset
+    if whence == io.SEEK_CUR:
+        return max(0, pos + offset)
+    if whence == io.SEEK_END:
+        return max(0, end() + offset)
+    raise ValueError(f"Invalid whence: {whence}")
 
 
 def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:

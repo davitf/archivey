@@ -30,6 +30,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
     is_seekable,
     read_exact,
+    resolve_seek,
     source_byte_size,
 )
 
@@ -297,33 +298,9 @@ class SlicingStream(ReadOnlyIOStream):
 
         assert self._start is not None  # always set for seekable streams
         start_abs = self._start
-
-        if whence == io.SEEK_SET:
-            new_relative = offset
-        elif whence == io.SEEK_CUR:
-            new_relative = self._pos + offset
-        elif whence == io.SEEK_END:
-            bound = self._effective_length
-            if bound is None:
-                # No bound: the slice ends where the underlying stream does,
-                # so probe that end on demand.
-                with self._io_guard:
-                    self._raise_if_closed()
-                    end_relative = self._stream.seek(0, io.SEEK_END) - start_abs
-            else:
-                end_relative = bound
-            new_relative = end_relative + offset
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-
-        if new_relative < 0:
-            # Match BytesIO: a relative seek (SEEK_CUR/SEEK_END) that underflows clamps
-            # to the origin; only an explicitly negative SEEK_SET raises. Callers probing
-            # backwards from the end (e.g. ZipFile's ``seek(-22, SEEK_END)`` EOCD probe
-            # on a short source) rely on the clamp rather than a raw ``ValueError``.
-            if whence == io.SEEK_SET:
-                raise ValueError("Negative seek position")
-            new_relative = 0
+        new_relative = resolve_seek(
+            offset, whence, pos=self._pos, end=self._end_relative
+        )
 
         # Seeking past a defined end is allowed (reads clamp to empty), matching BytesIO.
         if not self._seek_before_read:
@@ -333,6 +310,18 @@ class SlicingStream(ReadOnlyIOStream):
         # Re-seek mode: only update _pos — the next read re-seeks under the guard.
         self._pos = new_relative
         return self._pos
+
+    def _end_relative(self) -> int:
+        """Return the slice's length, the target of ``seek(0, SEEK_END)``."""
+        bound = self._effective_length
+        if bound is not None:
+            return bound
+        # No bound: the slice ends where the underlying stream does,
+        # so probe that end on demand.
+        assert self._start is not None
+        with self._io_guard:
+            self._raise_if_closed()
+            return self._stream.seek(0, io.SEEK_END) - self._start
 
     def seekable(self) -> bool:
         return self._seekable
