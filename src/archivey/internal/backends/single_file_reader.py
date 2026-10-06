@@ -241,28 +241,32 @@ class SingleFileReader(BaseArchiveReader):
             self._header_cache = self._read_source_prefix(length)
         return self._header_cache[:length]
 
-    def _with_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
+    def _on_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
         """Run ``fn`` on a seekable handle over the source; restore stream position.
 
         Path sources get a fresh FD. Seekable streams are passed through with the caller's
         position restored afterward. Non-seekable sources return ``None`` without calling
-        ``fn`` (never forces a decode pass).
+        ``fn`` (never forces a decode pass). ``OSError`` propagates.
         """
         src = self._source
         assert src is not None
+        if src.path is not None:
+            with open(src.path, "rb") as f:
+                return fn(f)
+        if not src.seekable():
+            return None
+        pos = src.tell()
         try:
-            if src.path is not None:
-                with open(src.path, "rb") as f:
-                    return fn(f)
-            if src.seekable():
-                pos = src.tell()
-                try:
-                    return fn(src)
-                finally:
-                    src.seek(pos)
+            return fn(src)
+        finally:
+            src.seek(pos)
+
+    def _with_seekable_source(self, fn: Callable[[BinaryIO], _T | None]) -> _T | None:
+        """:meth:`_on_seekable_source` for a metadata probe: ``OSError`` gives ``None``."""
+        try:
+            return self._on_seekable_source(fn)
         except OSError:
             return None
-        return None
 
     def _probe_compressed_size(self) -> int | None:
         """Byte length of the compressed source, when one ``SEEK_END`` can answer it.
@@ -284,17 +288,17 @@ class SingleFileReader(BaseArchiveReader):
     def _read_source_prefix(self, length: int) -> bytes:
         src = self._source
         assert src is not None  # always set in __init__
-        if src.path is not None:
-            with open(src.path, "rb") as f:
-                return f.read(length)
-        if not src.seekable():
+        if src.path is None and not src.seekable():
             return src.peek(length)
-        # open_archive normalizes the origin (a mid-positioned stream is rebased so
-        # tell() == 0 at the archive's first byte), so 0 is the archive start.
-        pos = src.tell()
-        src.seek(0)
-        data = read_exact(src, length)
-        src.seek(pos)
+
+        def read(f: BinaryIO) -> bytes:
+            # open_archive normalizes the origin (a mid-positioned stream is rebased so
+            # tell() == 0 at the archive's first byte), so 0 is the archive start.
+            f.seek(0)
+            return read_exact(f, length)
+
+        data = self._on_seekable_source(read)
+        assert data is not None  # the source is a path or seekable
         return data
 
     def _probe_lzip_index(self) -> tuple[int, int] | None:
@@ -374,36 +378,27 @@ class SingleFileReader(BaseArchiveReader):
         def stamp(exc: ArchiveyError) -> None:
             self._stamp_error_context(exc, member_name)
 
+        src = self._source
+        assert src is not None  # always set in __init__
+        codec_source: str | BinaryIO
         if self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
             # single-file archive). The view is non-owning; the SharedSource outlives it.
-            view = self._shared.view(0)
-            counted = self._wrap_compressed_input(view)
-            raw = open_codec_stream(
-                self._codec,
-                counted,
-                config=self._codec_config,
-                stamp=stamp,
-                collector=self._diagnostics_collector,
-            )
+            codec_source = self._wrap_compressed_input(self._shared.view(0))
+        elif src.path is not None:
+            codec_source = str(src.path)
         else:
-            src = self._source
-            assert src is not None  # always set in __init__
-            codec_source: str | BinaryIO
-            if src.path is not None:
-                codec_source = str(src.path)
-            else:
-                # Count compressed bytes pulled from a non-seekable stream so the live
-                # ratio guard has a denominator (a path / seekable stream keeps its cheap
-                # static size).
-                codec_source = self._wrap_compressed_input(src)
-            raw = open_codec_stream(
-                self._codec,
-                codec_source,
-                config=self._codec_config,
-                stamp=stamp,
-                collector=self._diagnostics_collector,
-            )
+            # Count compressed bytes pulled from a non-seekable stream so the live
+            # ratio guard has a denominator (a path / seekable stream keeps its cheap
+            # static size).
+            codec_source = self._wrap_compressed_input(src)
+        raw = open_codec_stream(
+            self._codec,
+            codec_source,
+            config=self._codec_config,
+            stamp=stamp,
+            collector=self._diagnostics_collector,
+        )
         # Wrap so the handle carries the reader's diagnostic collector/operation id.
         # (open_codec_stream already returns an ArchiveStream; nesting is fine.)
         return self._wrap_member_stream(raw, member_name, size=self._member.size)
