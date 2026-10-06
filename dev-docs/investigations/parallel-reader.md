@@ -64,7 +64,8 @@ archivey-owned byte ranges still go through `SharedSource.view`.
 ## 2. Member-cache one-time-build safety
 
 `BaseArchiveReader._materialize_members` publishes a single `_Materialized`
-holder (`MemberListReport` + name index) once. After population the report is
+holder (the `MemberListReport`; the name index is the reader's own
+`_listed_by_name`) once. After population the report is
 read-mostly; the race is only the first build.
 
 **Active design (`reader-concurrency-coordination`):** under `MemberStreams.CONCURRENT`,
