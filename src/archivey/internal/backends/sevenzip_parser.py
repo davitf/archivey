@@ -144,6 +144,86 @@ class SevenZipFolder:
     digest_defined: bool
 
 
+@dataclass(frozen=True, slots=True)
+class FolderGraph:
+    """Which coder owns each stream of a folder, and which out-stream feeds each input.
+
+    In-streams and out-streams are numbered across the folder in coder order. Building
+    one validates nothing, so listing can walk a folder that decoding would refuse;
+    :func:`check_bind_pairs` and :func:`check_packed_indices` are the validators.
+    """
+
+    in_base: list[int]  # each coder's first in-stream
+    in_owner: dict[int, int]
+    out_owner: dict[int, int]
+    bound: dict[int, int]  # in-stream -> the out-stream it reads
+
+    @classmethod
+    def of(cls, folder: SevenZipFolder) -> FolderGraph:
+        in_base: list[int] = []
+        in_owner: dict[int, int] = {}
+        out_owner: dict[int, int] = {}
+        for index, coder in enumerate(folder.coders):
+            in_base.append(len(in_owner))
+            for _ in range(coder.num_in_streams):
+                in_owner[len(in_owner)] = index
+            for _ in range(coder.num_out_streams):
+                out_owner[len(out_owner)] = index
+        return cls(in_base, in_owner, out_owner, dict(folder.bind_pairs))
+
+    def producer(self, in_stream: int) -> int | None:
+        """The coder whose output ``in_stream`` reads, or None when it is not bound."""
+        out_stream = self.bound.get(in_stream)
+        return None if out_stream is None else self.out_owner.get(out_stream)
+
+    def consumers(self, coder: int) -> list[int]:
+        """The coders that read one of ``coder``'s outputs."""
+        return [
+            self.in_owner[in_stream]
+            for in_stream, out_stream in self.bound.items()
+            if in_stream in self.in_owner and self.out_owner.get(out_stream) == coder
+        ]
+
+    def roots(self) -> list[int]:
+        """The coders none of whose outputs another coder reads."""
+        consumed = {
+            self.out_owner.get(out_stream) for out_stream in self.bound.values()
+        }
+        return [coder for coder in range(len(self.in_base)) if coder not in consumed]
+
+
+def check_bind_pairs(
+    bind_pairs: list[tuple[int, int]], total_in: int, total_out: int
+) -> None:
+    """Refuse bind pairs that reuse or leave the folder's in- or out-streams.
+
+    With distinct, in-range out-streams and one fewer pair than out-streams, exactly
+    one out-stream stays unbound: the folder output.
+    """
+    if (
+        len({in_stream for in_stream, _ in bind_pairs}) != len(bind_pairs)
+        or len({out_stream for _, out_stream in bind_pairs}) != len(bind_pairs)
+        or any(
+            not (0 <= in_stream < total_in and 0 <= out_stream < total_out)
+            for in_stream, out_stream in bind_pairs
+        )
+    ):
+        raise CorruptionError("7z folder has an invalid coder bind pair")
+
+
+def check_packed_indices(
+    packed_indices: list[int], bound_in_streams: set[int], total_in: int
+) -> None:
+    """Refuse packed indices unless every in-stream is exactly one of packed or bound."""
+    if (
+        len(set(packed_indices)) != len(packed_indices)
+        or any(not 0 <= index < total_in for index in packed_indices)
+        or not bound_in_streams.isdisjoint(packed_indices)
+        or len(packed_indices) + len(bound_in_streams) != total_in
+    ):
+        raise CorruptionError("7z folder has an invalid packed-stream index")
+
+
 @dataclass(slots=True)
 class SevenZipFileRecord:
     filename: str
@@ -707,6 +787,7 @@ __all__ = [
     "MAX_NEXT_HEADER_SIZE",
     "SIGNATURE_HEADER_SIZE",
     "EncodedHeader",
+    "FolderGraph",
     "HeaderBlock",
     "PlainHeader",
     "SevenZipArchive",
@@ -715,6 +796,8 @@ __all__ = [
     "SevenZipFolder",
     "SignatureHeaderFields",
     "SignatureInfo",
+    "check_bind_pairs",
+    "check_packed_indices",
     "compression_method_for_coder",
     "crc32",
     "empty_archive",
@@ -910,28 +993,15 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
             f"{total_in} coder in-streams"
         )
     bind_pairs = [(cur.uint64(), cur.uint64()) for _ in range(num_bind_pairs)]
+    check_bind_pairs(bind_pairs, total_in, total_out)
     bound_in_streams = {in_stream for in_stream, _ in bind_pairs}
-    bound_out_streams = {out_stream for _, out_stream in bind_pairs}
-    if (
-        len(bound_in_streams) != num_bind_pairs
-        or len(bound_out_streams) != num_bind_pairs
-        or any(index >= total_in for index in bound_in_streams)
-        or any(index >= total_out for index in bound_out_streams)
-    ):
-        # Distinct, in-range out-streams leave exactly one unbound: the folder output.
-        raise CorruptionError("7z folder has an invalid coder bind pair")
     if num_packed_streams == 1:
         packed_indices = [
             index for index in range(total_in) if index not in bound_in_streams
         ]
     else:
         packed_indices = [cur.uint64() for _ in range(num_packed_streams)]
-        if (
-            len(set(packed_indices)) != num_packed_streams
-            or any(index >= total_in for index in packed_indices)
-            or not bound_in_streams.isdisjoint(packed_indices)
-        ):
-            raise CorruptionError("7z folder has an invalid packed-stream index")
+        check_packed_indices(packed_indices, bound_in_streams, total_in)
 
     return SevenZipFolder(
         coders=coders,

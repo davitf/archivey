@@ -50,6 +50,11 @@ class SevenZipMethod:
     # False for a filter Python's lzma refuses: it never joins a liblzma chain.
     in_liblzma_chain: bool = True
 
+    @property
+    def is_filter(self) -> bool:
+        """Delta or a branch filter: a coder that outputs as many bytes as it reads."""
+        return self.algorithm is CompressionAlgorithm.DELTA or self.is_branch_filter
+
 
 def _bcj(
     short: bytes,
