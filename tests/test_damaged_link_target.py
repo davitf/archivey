@@ -208,35 +208,54 @@ def test_damaged_rar4_link_target_under_strict_policy_refuses_the_listing() -> N
             ar.members()
 
 
-def _rar4_symlink_declaring_more_than_it_packs() -> bytes:
-    """A RAR3 symlink that packs ``a.txt`` and declares 40 unpacked bytes.
+def _rar4_symlink_with_sizes(packed: bytes, declared: int) -> bytes:
+    """A RAR3 stored symlink packing ``packed`` whose header declares ``declared``.
 
-    The data CRC32 is forged over the 40 bytes an in-place read of the declared size
-    returns: the 5 packed bytes, the end-of-archive block, then trailing bytes that
+    The data CRC32 is forged over the bytes an in-place read of the declared size
+    returns: the packed bytes, the end-of-archive block, then trailing bytes that
     belong to no member. So only the size check can refuse it.
     """
     main_hdr, end_hdr = _rar3_main_and_end()
-    packed = b"a.txt"
-    trailing = b"/etc/shadow-and-more-attacker-bytes"
-    overrun = (packed + end_hdr + trailing)[:40]
+    trailing = b"/etc/shadow-and-more-attacker-bytes" * 200
+    read = (packed + end_hdr + trailing)[:declared]
     block = _rar3_file_block(
         b"link",
         flags=0,
         pack_lo=len(packed),
-        unp_lo=40,
+        unp_lo=declared,
         attributes=0o120777,
-        crc32=zlib.crc32(overrun),
+        crc32=zlib.crc32(read),
     )
     return b"Rar!\x1a\x07\x00" + main_hdr + block + packed + end_hdr + trailing
 
 
-def test_rar4_link_target_declaring_more_than_it_packs_is_refused() -> None:
-    """A stored target is its packed bytes; a larger declared size is damage.
+@pytest.mark.parametrize(
+    ("packed", "declared"),
+    [
+        pytest.param(b"a.txt", 40, id="declares-more"),
+        # Over the link-target cap: still damage, not an oversized target.
+        pytest.param(b"a.txt", 5000, id="declares-more-than-the-cap"),
+        # Declares nothing but packs a target: damage, not a link with no target.
+        pytest.param(b"/etc/motd", 0, id="declares-zero"),
+    ],
+)
+def test_rar4_link_target_whose_sizes_disagree_is_refused(
+    tmp_path: Path, packed: bytes, declared: int
+) -> None:
+    """A stored target is its packed bytes; a declared size that differs is damage.
 
-    Reading the declared size would take the end-of-archive block and the bytes after
-    it as the target, and with the CRC forged over them nothing else would notice.
+    Reading a larger declared size would take the end-of-archive block and the bytes
+    after it as the target, and with the CRC forged over them nothing else would
+    notice. Either way the link fails at extraction rather than being written or
+    reported as an archive that recorded no target.
     """
-    with open_archive(io.BytesIO(_rar4_symlink_declaring_more_than_it_packs())) as ar:
+    blob = _rar4_symlink_with_sizes(packed, declared)
+    with open_archive(io.BytesIO(blob)) as ar:
         _assert_listed_targetless(ar)
         with raises_corruption_not_truncation():
             ar.open(ar.get("link"))
+    with open_archive(io.BytesIO(blob)) as ar:
+        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.FAILED
+    assert is_corruption_not_truncation(result.error)

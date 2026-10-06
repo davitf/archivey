@@ -1382,8 +1382,8 @@ When a backend reads a symlink's target from the member's data and that read rai
 `CorruptionError` or `TruncatedError` (a CRC or HMAC mismatch, a decompressor failure,
 data past the declared size, data the file cuts short), link finalization SHALL NOT
 raise it. ZIP and 7z verify that read like any member read. RAR3/4 reads the target
-bytes straight out of the archive with no check, so it has nothing to fail: a damaged
-RAR3/4 target is returned as it is stored. The link SHALL stay listed with its type and
+bytes straight out of the archive, after refusing a header whose declared size differs
+from its packed size, and holds them to the member's data CRC32. The link SHALL stay listed with its type and
 `link_target` unset, the other links SHALL still be resolved, and
 `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with `reason="target_data_damaged"` and a
 message naming the fault. The member SHALL NOT be memoized as resolved: opening the link,
@@ -1403,3 +1403,5 @@ This holds in random access and at the end of a streaming pass alike.
 | WinZip AES symlink with a failing HMAC, one password or several | Listed targetless with `reason="target_data_damaged"` |
 | 7z symlink whose data fails its CRC | Listed targetless with `reason="target_data_damaged"` |
 | ZIP symlink whose data outruns its declared size | Listed targetless; the message names the declared size |
+| RAR3/4 stored symlink whose data fails its CRC32 | Listed targetless with `reason="target_data_damaged"` |
+| RAR3/4 stored symlink whose declared size differs from its packed size, either way | Listed targetless with `reason="target_data_damaged"`; nothing is read past the packed data |

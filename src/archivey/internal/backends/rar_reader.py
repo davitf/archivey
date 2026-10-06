@@ -2878,7 +2878,9 @@ class RarReader(BaseArchiveReader):
             raw.compress_type == _RAR_METHOD_STORED
             and not raw.is_encrypted
             and not raw.encryption_unknown
-            and raw.file_size > 0
+            # Either size: a header where only one is zero is damage, refused below,
+            # not an archive that recorded no target.
+            and (raw.file_size > 0 or raw.compress_size > 0)
             and _data_is_in_one_place(raw)
         ):
             # Unlike the member read, a solid flag does not hold the target back: a
@@ -2886,16 +2888,12 @@ class RarReader(BaseArchiveReader):
             # the reason chain below: only the RAR5 extra-area walk sets it, and a
             # RAR5 symlink has ``file_redir`` and returned above.
             #
-            # Stored, so the read is the header's own size and cannot amplify; it is
-            # still held to the cap every data-stored target is, and an oversized one
-            # is refused before any of it is read.
-            if raw.file_size > MAX_LINK_TARGET_BYTES:
-                self._emit_link_target_too_long(member)
-                return
             # A stored target is its packed bytes, so the two sizes must agree, as
             # ``_open_member`` requires of any stored member. A header that declares
             # more would have the read take the next header, and whatever follows
-            # it, as the target.
+            # it, as the target. This comes before the cap below, so a header whose
+            # sizes disagree is reported as damage rather than as an oversized target
+            # it does not hold.
             if raw.file_size != raw.compress_size:
                 raise CorruptionError(
                     "The stored symlink target's declared size "
@@ -2905,15 +2903,22 @@ class RarReader(BaseArchiveReader):
                     member_name=member.name,
                     source_format=ArchiveFormat.RAR,
                 )
+            # Stored, so the read is the header's own size and cannot amplify; it is
+            # still held to the cap every data-stored target is, and an oversized one
+            # is refused before any of it is read.
+            if raw.file_size > MAX_LINK_TARGET_BYTES:
+                self._emit_link_target_too_long(member)
+                return
             view = self._shared.view(raw.data_offset, raw.file_size)
             try:
                 data = view.read()
             finally:
                 view.close()
             # The header's data CRC32 covers these bytes, and the header CRC does not,
-            # so this is the only check a damaged target meets. Held to it as ZIP and
-            # 7z hold theirs: a mismatch raises, and link finalization lists the link
-            # targetless (`_report_damaged_link_target`) while open/extract re-raise.
+            # so past the size check above this is the only check a damaged target
+            # meets. Held to it as ZIP and 7z hold theirs: a mismatch raises, and link
+            # finalization lists the link targetless (`_report_damaged_link_target`)
+            # while open/extract re-raise.
             # A short read is caught by the same comparison. Encrypted members never
             # reach here, so the CRC is never a RAR5 key-tweaked one.
             if raw.crc32 is not None and zlib.crc32(data) != raw.crc32:

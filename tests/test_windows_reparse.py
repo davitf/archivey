@@ -1002,7 +1002,8 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
         pytest.param(
             "compress_type", 0x33, "target_data_compressed", True, id="compressed"
         ),
-        pytest.param("file_size", 0, "no_target_data", False, id="empty"),
+        # Both sizes: only one of them zero is a damaged header, not an empty target.
+        pytest.param("file_size compress_size", 0, "no_target_data", False, id="empty"),
     ],
 )
 def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
@@ -1031,7 +1032,8 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)  # type: ignore[arg-type]
         if self.is_symlink:
-            setattr(self, field, value)
+            for name in field.split():
+                setattr(self, name, value)
 
     monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
 
