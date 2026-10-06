@@ -2872,6 +2872,10 @@ class RarReader(BaseArchiveReader):
             and raw.file_size > 0
             and not raw.split_before
             and not raw.split_after
+            # A target split across volumes was merged into one member whose
+            # ``data_offset`` is in the first volume: reading ``file_size`` bytes
+            # from there runs past that volume's part into the next header.
+            and not raw.spanned_volumes
         ):
             # Stored, so the read is the header's own size and cannot amplify; it is
             # still held to the cap every data-stored target is, and an oversized one
@@ -2917,7 +2921,7 @@ class RarReader(BaseArchiveReader):
                 "its data is encrypted and this reader does not decrypt it in place"
             )
             in_archive = True
-        elif raw.split_before or raw.split_after:
+        elif raw.split_before or raw.split_after or raw.spanned_volumes:
             reason = "target_data_split_across_volumes"
             detail = "its data is split across volumes"
             in_archive = True

@@ -988,6 +988,16 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
         pytest.param(
             "split_after", True, "target_data_split_across_volumes", True, id="split"
         ),
+        # A part of a target split across volumes is merged into the member before
+        # this branch sees it, so neither split flag is left set: only
+        # ``spanned_volumes`` says its data is not in one place.
+        pytest.param(
+            "spanned_volumes",
+            True,
+            "target_data_split_across_volumes",
+            True,
+            id="spanned",
+        ),
         pytest.param(
             "compress_type", 0x33, "target_data_compressed", True, id="compressed"
         ),
