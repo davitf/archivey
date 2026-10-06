@@ -34,11 +34,12 @@ import struct
 import threading
 import weakref
 import zlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn
+from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, NoReturn, TypeVar
 
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
@@ -132,6 +133,8 @@ from archivey.types import (
     StreamFormat,
     crc32_digest,
 )
+
+_T = TypeVar("_T")
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -786,6 +789,59 @@ def _wrap_accelerated_length(stream: BinaryIO, config: StreamConfig) -> BinaryIO
     return VerifyingStream(stream, {}, expected_size=size)
 
 
+@contextmanager
+def _restoring_position(source: CodecSource) -> Iterator[None]:
+    """Put a stream source back at its position on exit. A path has no position."""
+    if isinstance(source, (str, os.PathLike)):
+        yield
+        return
+    start = source.tell()
+    try:
+        yield
+    finally:
+        source.seek(start)
+
+
+@contextmanager
+def _peeking(source: CodecSource) -> Iterator[BinaryIO]:
+    """Read ``source`` without moving it: a path is opened afresh, and a stream's position
+    is put back on exit."""
+    if isinstance(source, (str, os.PathLike)):
+        with open(os.fspath(source), "rb") as f:
+            yield f
+        return
+    with _restoring_position(source):
+        yield source
+
+
+def _source_tail(
+    source: CodecSource, *, size: int, min_length: int
+) -> tuple[int | None, bytes | None]:
+    """``(source_byte_length, last size bytes)`` of ``source``, without moving it.
+
+    ``(length, None)`` when the source is shorter than ``min_length``, and
+    ``(None, None)`` when it cannot be read: a stream without ``seek``, ``tell`` or
+    ``read``, one that says it cannot seek, or a read that fails.
+    """
+    try:
+        if not isinstance(source, (str, os.PathLike)):
+            seekable = getattr(source, "seekable", None)
+            if any(
+                getattr(source, name, None) is None for name in ("seek", "tell", "read")
+            ):
+                return None, None
+            if seekable is not None and not seekable():
+                return None, None
+        with _peeking(source) as f:
+            length = f.seek(0, io.SEEK_END)
+            if length < min_length:
+                return length, None
+            f.seek(-size, io.SEEK_END)
+            return length, f.read(size)
+    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+        return None, None
+
+
 def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]:
     """Capture ``(source_byte_length, ISIZE_trailer)`` for the truncation backstop in one pass.
 
@@ -802,33 +858,10 @@ def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]
     file; callers needing a hard bound still prefer a container-declared size. Restores the
     source position for a caller-owned stream.
     """
-    try:
-        if isinstance(source, (str, os.PathLike)):
-            with open(os.fspath(source), "rb") as f:
-                length = f.seek(0, io.SEEK_END)
-                if length < 18:
-                    return length, None
-                f.seek(-4, io.SEEK_END)
-                return length, int.from_bytes(f.read(4), "little")
-        seek = getattr(source, "seek", None)
-        tell = getattr(source, "tell", None)
-        read = getattr(source, "read", None)
-        seekable = getattr(source, "seekable", None)
-        if seek is None or tell is None or read is None:
-            return None, None
-        if seekable is not None and not seekable():
-            return None, None
-        pos = tell()
-        try:
-            length = seek(0, io.SEEK_END)
-            if length < 18:
-                return length, None
-            seek(-4, io.SEEK_END)
-            return length, int.from_bytes(read(4), "little")
-        finally:
-            seek(pos)
-    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
-        return None, None
+    length, trailer = _source_tail(source, size=4, min_length=18)
+    if trailer is None:
+        return length, None
+    return length, int.from_bytes(trailer, "little")
 
 
 def _gzip_header_refused(source: CodecSource) -> bool:
@@ -854,15 +887,9 @@ def _gzip_header_refused(source: CodecSource) -> bool:
                 return True
         return False
 
-    if isinstance(source, (str, os.PathLike)):
-        with open(os.fspath(source), "rb") as f:
-            return refused(f)
-    start = source.tell()
-    try:
-        source.seek(0)
-        return refused(source)
-    finally:
-        source.seek(start)
+    with _peeking(source) as f:
+        f.seek(0)
+        return refused(f)
 
 
 def _gzip_isize_from_source(source: CodecSource) -> int | None:
@@ -1282,22 +1309,19 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     def read(self, size: int = -1, /) -> bytes:
         try:
-            data = self._inner.read(size)
-        except ResumeReachedStreamEnd:
-            self._restart_without_resume()
-            data = self._inner.read(size)
+            data = self._restarting(lambda: self._inner.read(size))
         except Exception as exc:
             if not self._takes_over(exc):
                 raise
             self._switch(resume=True)
-            data = self._read_switched(size)
+            data = self._restarting(lambda: self._inner.read(size))
         if (
             self._limit is not None
             and not self.switched
             and self._position + len(data) > self._limit
         ):
             self._switch()
-            data = self._read_switched(size)
+            data = self._restarting(lambda: self._inner.read(size))
         self._position += len(data)
         return data
 
@@ -1311,19 +1335,22 @@ class _StdlibOnAcceleratorError(DelegatingStream):
             crashed_on_data(exc) or _translate_rapidgzip(exc, self._label) is not None
         )
 
-    def _read_switched(self, size: int) -> bytes:
+    def _restarting(self, op: Callable[[], _T]) -> _T:
+        """Run ``op`` on the inner stream, and once more, on a decoder that starts from
+        the start, if a resumed standard-library decode reached the end of its
+        stream. Only a switched stream decodes with the standard library, so a failure
+        of the repeated call reaches ``read``/``seek`` with ``switched`` set, and they
+        pass it to the caller unchanged."""
         try:
-            return self._inner.read(size)
+            return op()
         except ResumeReachedStreamEnd:
             self._restart_without_resume()
-            return self._inner.read(size)
+            return op()
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        inner_seek = functools.partial(super().seek, offset, whence)
         try:
-            self._position = super().seek(offset, whence)
-        except ResumeReachedStreamEnd:
-            self._restart_without_resume()
-            self._position = super().seek(offset, whence)
+            self._position = self._restarting(inner_seek)
         except Exception as exc:
             # A seek runs rapidgzip's decode too; a crash there ends the child.
             if self._seek_takes_over:
@@ -1332,11 +1359,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
             elif self.switched or from_callers_source(exc) or not crashed_on_data(exc):
                 raise
             self._switch(resume=True)
-            try:
-                self._position = super().seek(offset, whence)
-            except ResumeReachedStreamEnd:
-                self._restart_without_resume()
-                self._position = super().seek(offset, whence)
+            self._position = self._restarting(inner_seek)
         return self._position
 
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -1396,6 +1419,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         For bzip2 this decode gives the verdict: the resumed decode cannot tell the
         end-of-stream marker's combined CRC from a damaged block, and raises on both.
         """
+        assert self.switched, "only a standard-library decoder resumes"
         old = self._inner
         self._replace_inner(self._open_stdlib_at())
         try:
@@ -1612,23 +1636,10 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
     the four-byte trailer) or cannot be read; :class:`_ZlibAdlerCheckStream` then goes
     straight to its standard-library confirmation. Restores a stream source's position.
     """
-    try:
-        if isinstance(source, (str, os.PathLike)):
-            with open(os.fspath(source), "rb") as f:
-                if f.seek(0, io.SEEK_END) < 6:
-                    return None
-                f.seek(-4, io.SEEK_END)
-                return int.from_bytes(f.read(4), "big")
-        pos = source.tell()
-        try:
-            if source.seek(0, io.SEEK_END) < 6:
-                return None
-            source.seek(-4, io.SEEK_END)
-            return int.from_bytes(source.read(4), "big")
-        finally:
-            source.seek(pos)
-    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+    trailer = _source_tail(source, size=4, min_length=6)[1]
+    if trailer is None:
         return None
+    return int.from_bytes(trailer, "big")
 
 
 class _ZlibStoppedShort(Exception):
@@ -2481,83 +2492,187 @@ class StoredCodec(StreamCodec):
         return None
 
 
-class GzipCodec(StreamCodec):
+class _DeflateFamilyCodec(StreamCodec):
+    """The rapidgzip accelerator plumbing that gzip, zlib and raw DEFLATE share.
+
+    rapidgzip decodes all three, in a child process (:func:`_open_rapidgzip`). This class
+    chooses the backend at open, builds the accelerated stream, and supplies the
+    translator and rewind wording that go with it. A subclass supplies its
+    standard-library decoder (:meth:`_open_stdlib`) and, where it has one, the check of
+    the end of the data that rapidgzip does not make (:meth:`_end_check`).
+    ``codec.value`` names the stream in messages.
+    """
+
+    # Whether rapidgzip reads the source clipped to the known compressed length
+    # (:func:`_bound_rapidgzip_source`). rapidgzip over-reads past the end of a raw
+    # DEFLATE or zlib stream looking for a concatenated member, and an AES pad after it
+    # would look like a second member.
+    _bounds_source: ClassVar[bool] = True
+
+    def open(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO:
+        if self._use_accelerator(source, config):
+            stream = self._open_accelerated(source, params, config)
+            if stream is not None:
+                return stream
+        return self._open_stdlib(source, config)
+
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
+        """The standard-library decoder, with the accelerator off and as its fallback."""
+        raise NotImplementedError
+
+    def _use_accelerator(self, source: CodecSource, config: StreamConfig) -> bool:
+        """Whether this open decodes through rapidgzip. Raises where ``ON`` asks for it
+        and cannot have it: rapidgzip is absent, or the source cannot seek."""
+        label = self.codec.value
+        _warn_if_auto_without_child(config)
+        if not _rapidgzip_enabled(config, available=_rapidgzip is not None):
+            return False
+        if _rapidgzip is None:
+            raise PackageNotInstalledError(
+                _RAPIDGZIP_REQUIREMENT.message(f"{label} random access")
+            )
+        _refuse_forward_only_accelerator(source, "use_rapidgzip", label)
+        return True
+
+    def _open_accelerated(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO | None:
+        """Open ``source`` through rapidgzip, or ``None`` where the standard library
+        decodes it instead: here, an ``AUTO`` open whose child could not start; a
+        subclass may add its own cases.
+
+        The layers, outermost first: :class:`_StdlibSeekContract`, the
+        ``VerifyingStream`` of a declared size (:func:`_wrap_accelerated_length`), the
+        codec's :meth:`_end_check`, and :class:`_StdlibOnAcceleratorError` over the
+        child.
+        """
+        label = self.codec.value
+        if self._bounds_source:
+            source_for_child = _bound_rapidgzip_source(source, params, config)
+        else:
+            source_for_child = source
+        accel_source, reopen = _accelerator_backstop_source(source_for_child)
+        # _refuse_forward_only_accelerator has refused a source that cannot seek.
+        assert reopen is not None
+        fallback_path = (
+            os.fspath(accel_source)
+            if isinstance(accel_source, (str, os.PathLike))
+            else None
+        )
+        end_check = self._end_check(source, config, accel_source, reopen, fallback_path)
+        child = _open_rapidgzip(accel_source, label, config)
+        if child is None:
+            return None
+        takeover = _StdlibOnAcceleratorError(
+            child,
+            reopen=reopen,
+            fallback_path=fallback_path,
+            open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
+            label=label,
+            limit=self._accelerated_limit(config),
+        )
+        stream: BinaryIO = takeover if end_check is None else end_check(takeover)
+        return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
+
+    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+        """The ``limit`` for :class:`_StdlibOnAcceleratorError`: ``None`` for a codec
+        whose stream ends where the standard library ends it. That class's docstring
+        says why only raw DEFLATE sets one."""
+        return None
+
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        reopen: Callable[[], BinaryIO],
+        fallback_path: str | None,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        """The wrapper that checks the end of the accelerated data, or ``None``.
+
+        Called before the child starts, so what it reads from the source it reads
+        while nothing else does. That is also why reading ``source`` here, outside the
+        lock that ``accel_source``'s views share, is sound: none of them has read yet.
+        ``source`` is the caller's; ``accel_source`` is what the child reads, ``reopen``
+        makes fresh views of it at offset 0, and ``fallback_path`` is its path when it
+        has one.
+        """
+        return None
+
+    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+        if _deflate_family_uses_accelerator(config):
+            return self._translate_accelerator
+        return self.translate
+
+    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
+        return _rapidgzip_rewind_warning(self.codec.value, config)
+
+    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
+        """Translate the rapidgzip accelerator's exceptions to the library's error types.
+
+        Falls through to :meth:`translate`: an ``AUTO`` open whose child could not start
+        decodes with the standard library.
+        """
+        return _translate_child_or_stdlib(exc, self.codec.value, self.translate)
+
+
+class GzipCodec(_DeflateFamilyCodec):
     codec = Codec.GZIP
     stream_format = StreamFormat.GZIP
     magic = (MagicSignature(0, b"\x1f\x8b", ArchiveFormat.GZ),)
+    # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
+    # declares a pack size to clip it to and no AES pad follows its data.
+    _bounds_source = False
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         # Prefer a container-declared size; otherwise note a readable ISIZE so AUTO can
         # still select rapidgzip with the dedicated ISIZE backstop (not VerifyingStream).
-        config = _config_with_gzip_isize(source, config)
-        _warn_if_auto_without_child(config)
-        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
-            if _rapidgzip is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("gzip random access")
-                )
-            _refuse_forward_only_accelerator(source, "use_rapidgzip", "gzip")
-            if _gzip_header_refused(source):
-                # The standard-library engine raises zlib's own error on the first
-                # read, as it does with the accelerator off.
-                return _stdlib_gzip(source, config)
-            if config.expected_decompressed_size is not None:
-                # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
-                accel_source, reopen = _accelerator_backstop_source(source)
-                stream = _open_rapidgzip(accel_source, "gzip", config)
-                if stream is None:
-                    return _stdlib_gzip(source, config)
-                # _refuse_forward_only_accelerator has refused a source that cannot seek.
-                assert reopen is not None
-                stream = _StdlibOnAcceleratorError(
-                    stream,
-                    reopen=reopen,
-                    fallback_path=(
-                        os.fspath(source)
-                        if isinstance(source, (str, os.PathLike))
-                        else None
-                    ),
-                    open_stdlib=lambda fallback: _stdlib_gzip(fallback, config),
-                    label="gzip",
-                )
-                return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
-            # Truncation backstop for **any** seekable source (path or caller-owned stream):
-            # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
-            # independent view (multi-member keeps the conservative further-magic bailout; the
-            # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
-            # per-read reopen is needed and `size < 18` truncation is preserved.
-            source_len, isize = _gzip_isize_and_length(source)
-            accel_source, reopen = _accelerator_backstop_source(source)
-            stream = _open_rapidgzip(accel_source, "gzip", config)
-            if stream is None:
-                return _stdlib_gzip(source, config)
-            # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert reopen is not None
-            fallback_path = (
-                os.fspath(source) if isinstance(source, (str, os.PathLike)) else None
-            )
-            return _StdlibSeekContract(
-                _GzipTruncationCheckStream(
-                    _StdlibOnAcceleratorError(
-                        stream,
-                        reopen=reopen,
-                        fallback_path=fallback_path,
-                        open_stdlib=lambda fallback: _stdlib_gzip(fallback, config),
-                        label="gzip",
-                    ),
-                    reopen=reopen,
-                    isize=isize,
-                    source_len=source_len,
-                    fallback_path=fallback_path,
-                    open_stdlib=lambda fallback: _stdlib_gzip(fallback, config),
-                )
-            )
+        return super().open(source, params, _config_with_gzip_isize(source, config))
+
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; multi-member chaining matches GzipFile
         # (NUL padding, a further member). O(n) rewind with a warning.
         return _stdlib_gzip(source, config)
+
+    def _open_accelerated(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO | None:
+        if _gzip_header_refused(source):
+            # The standard-library engine raises zlib's own error on the first
+            # read, as it does with the accelerator off.
+            return None
+        return super()._open_accelerated(source, params, config)
+
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        reopen: Callable[[], BinaryIO],
+        fallback_path: str | None,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        if config.expected_decompressed_size is not None:
+            # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
+            return None
+        # Truncation backstop for **any** seekable source (path or caller-owned stream):
+        # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
+        # independent view (multi-member keeps the conservative further-magic bailout; the
+        # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
+        # per-read reopen is needed and `size < 18` truncation is preserved.
+        source_len, isize = _gzip_isize_and_length(source)
+        return lambda stream: _GzipTruncationCheckStream(
+            stream,
+            reopen=reopen,
+            isize=isize,
+            source_len=source_len,
+            fallback_path=fallback_path,
+            open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
@@ -2572,19 +2687,6 @@ class GzipCodec(StreamCodec):
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")
         return None
-
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
-        if _deflate_family_uses_accelerator(config):
-            return self._translate_accelerator
-        return self.translate
-
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        # The accelerator gives indexed random access; only the stdlib fallback rewinds slowly.
-        return _rapidgzip_rewind_warning("gzip", config)
-
-    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        """Translate the rapidgzip accelerator's exceptions to the library's error types."""
-        return _translate_child_or_stdlib(exc, "gzip", self.translate)
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface gzip's stored filename (FNAME) and mtime.
@@ -3113,7 +3215,7 @@ class Lzma2Codec(_RawLzmaCodec):
     codec = Codec.LZMA2
 
 
-class _ZlibErrorCodec(StreamCodec):
+class _ZlibErrorCodec(_DeflateFamilyCodec):
     """Shared zlib/deflate error taxonomy for raw deflate and zlib-wrapped deflate."""
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
@@ -3131,58 +3233,15 @@ class _ZlibErrorCodec(StreamCodec):
 class DeflateCodec(_ZlibErrorCodec):
     codec = Codec.DEFLATE
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        _warn_if_auto_without_child(config)
-        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
-            if _rapidgzip is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("deflate random access")
-                )
-            _refuse_forward_only_accelerator(source, "use_rapidgzip", "deflate")
-            # rapidgzip auto-detects raw DEFLATE. Bound the input: it over-reads
-            # past EOS looking for a concatenated member (AES pad would look
-            # like a second member).
-            accel_source, reopen = _accelerator_backstop_source(
-                _bound_rapidgzip_source(source, params, config)
-            )
-            # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert reopen is not None
-            stream = _open_rapidgzip(accel_source, "deflate", config)
-            if stream is not None:
-                # zlib ends the member at the stream's final block; rapidgzip reads on
-                # into whatever follows. The standard library decides both a data
-                # error and output past the declared size (_StdlibOnAcceleratorError).
-                stream = _StdlibOnAcceleratorError(
-                    stream,
-                    reopen=reopen,
-                    fallback_path=(
-                        os.fspath(accel_source)
-                        if isinstance(accel_source, (str, os.PathLike))
-                        else None
-                    ),
-                    open_stdlib=lambda fallback: ZlibDecompressorStream(
-                        fallback, wbits=-15
-                    ),
-                    label="deflate",
-                    limit=config.expected_decompressed_size,
-                )
-                return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
 
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
-        if _deflate_family_uses_accelerator(config):
-            return self._translate_accelerator
-        return self.translate
-
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return _rapidgzip_rewind_warning("deflate", config)
-
-    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        # Falls through: an AUTO open whose child could not start decodes with the stdlib.
-        return _translate_child_or_stdlib(exc, "deflate", self.translate)
+    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+        # zlib ends the member at the stream's final block; rapidgzip reads on into
+        # whatever follows. The standard library decides both a data error and output
+        # past the declared size (_StdlibOnAcceleratorError).
+        return config.expected_decompressed_size
 
 
 def _zlib_header_plausible(prefix: bytes) -> bool:
@@ -3218,63 +3277,25 @@ class ZlibCodec(_ZlibErrorCodec):
     # No exact magic: zlib's 2-byte header is too unspecific, so it is recognized by a content
     # probe that gates on that header before decoding.
 
-    def open(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO:
-        _warn_if_auto_without_child(config)
-        if _rapidgzip_enabled(config, available=_rapidgzip is not None):
-            if _rapidgzip is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("zlib random access")
-                )
-            _refuse_forward_only_accelerator(source, "use_rapidgzip", "zlib")
-            # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
-            accel_source, reopen = _accelerator_backstop_source(
-                _bound_rapidgzip_source(source, params, config)
-            )
-            # _refuse_forward_only_accelerator has refused a source that cannot seek.
-            assert reopen is not None
-            # Read through the view, which can move the caller's stream under it; put
-            # that back, since an AUTO open whose child cannot start decodes from it.
-            if isinstance(source, (str, os.PathLike)):
-                trailer = _zlib_adler_trailer(accel_source)
-            else:
-                start = source.tell()
-                trailer = _zlib_adler_trailer(accel_source)
-                source.seek(start)
-            stream = _open_rapidgzip(accel_source, "zlib", config)
-            if stream is not None:
-                stream = _StdlibOnAcceleratorError(
-                    stream,
-                    reopen=reopen,
-                    fallback_path=(
-                        os.fspath(accel_source)
-                        if isinstance(accel_source, (str, os.PathLike))
-                        else None
-                    ),
-                    open_stdlib=lambda fallback: _stdlib_zlib(fallback, config),
-                    label="zlib",
-                )
-                return _StdlibSeekContract(
-                    _wrap_accelerated_length(
-                        _ZlibAdlerCheckStream(stream, reopen=reopen, trailer=trailer),
-                        config,
-                    )
-                )
+    def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return _stdlib_zlib(source, config)
 
-    def translator(self, config: StreamConfig) -> ExceptionTranslator:
-        if _deflate_family_uses_accelerator(config):
-            return self._translate_accelerator
-        return self.translate
-
-    def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        return _rapidgzip_rewind_warning("zlib", config)
-
-    def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        # Falls through: an AUTO open whose child could not start decodes with the stdlib.
-        return _translate_child_or_stdlib(exc, "zlib", self.translate)
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        reopen: Callable[[], BinaryIO],
+        fallback_path: str | None,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        # Read through the view, which can move the caller's stream under it; put
+        # that back, since an AUTO open whose child cannot start decodes from it.
+        with _restoring_position(source):
+            trailer = _zlib_adler_trailer(accel_source)
+        return lambda stream: _ZlibAdlerCheckStream(
+            stream, reopen=reopen, trailer=trailer
+        )
 
     def content_probe(
         self,
