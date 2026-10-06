@@ -12,8 +12,6 @@ The access-shape rule and the seeks it allows: ``dev-docs/topics/detection.md`` 
 
 from __future__ import annotations
 
-import os
-import stat
 from pathlib import Path
 from typing import BinaryIO, Callable
 
@@ -63,10 +61,13 @@ class PrefixWorkspace:
         )
         self._buf = bytearray()
         self._closed = False
+        # A random-access handle: a path's own (owned, closed on exit) or a seekable
+        # caller stream (borrowed, restored to ``_entry_pos`` on exit). Until close,
+        # ``_handle is not None`` exactly when ``_entry_pos is not None``; close drops
+        # the handle and keeps ``_entry_pos`` for ``remaining_known``.
+        self._handle: BinaryIO | None = None
+        self._owns_handle = False
         self._entry_pos: int | None = None
-        self._path_handle: BinaryIO | None = None
-        self._owned_path = False
-        self._seekable_stream: BinaryIO | None = None
         self._peekable: ArchiveSource | None = None
         self._raw_forward: BinaryIO | None = None
         self._source_exhausted = False
@@ -102,23 +103,14 @@ class PrefixWorkspace:
         )
 
         if isinstance(source, (str, Path)):
-            self._path_handle = open(source, "rb")
-            self._owned_path = True
+            self._handle = open(source, "rb")
+            self._owns_handle = True
             self._entry_pos = 0
-            if self._total_size is None:
-                try:
-                    st = os.fstat(self._path_handle.fileno())
-                except (OSError, AttributeError):
-                    pass
-                else:
-                    # A device's st_size is 0, not its length.
-                    if stat.S_ISREG(st.st_mode):
-                        self._total_size = st.st_size
         elif isinstance(source, ArchiveSource) and not source.seekable():
             self._peekable = source
             # The source's own replay prefix — the backend drains it, so never a copy.
         elif is_seekable(source):
-            self._seekable_stream = source
+            self._handle = source
             self._entry_pos = source.tell()
         else:
             self._raw_forward = source
@@ -283,19 +275,15 @@ class PrefixWorkspace:
     def _cheap_random_access_handle(self) -> BinaryIO | None:
         """Handle for O(1) probe seeks, or ``None`` to fall back to capped buffering.
 
-        Paths are always cheap. A bare seekable stream (``BytesIO``,
-        file object) is treated as cheap. :class:`~archivey.ArchiveStream` is not:
+        A path's own handle and a bare seekable stream (``BytesIO``, file object)
+        are treated as cheap. :class:`~archivey.ArchiveStream` is not:
         many codecs service a backward restore by re-decoding, so probes prefer the
         capped buffer path there. Richer "is this seek cheap?" pricing (round trips /
         ``nearest_resume_offset``) stays in ``dev-docs/IDEAS.md``.
         """
-        if self._path_handle is not None:
-            return self._path_handle
-        if self._seekable_stream is not None:
-            if self._seek_is_expensive(self._seekable_stream):
-                return None
-            return self._seekable_stream
-        return None
+        if self._handle is None or self._seek_is_expensive(self._handle):
+            return None
+        return self._handle
 
     @staticmethod
     def _seek_is_expensive(stream: BinaryIO) -> bool:
@@ -305,7 +293,8 @@ class PrefixWorkspace:
         return isinstance(stream, ArchiveStream)
 
     def _read_at_via_seek(self, handle: BinaryIO, offset: int, length: int) -> bytes:
-        entry = self._entry_pos or 0
+        assert self._entry_pos is not None
+        entry = self._entry_pos
         restore = entry + len(self._buf)
         handle.seek(entry + offset)
         try:
@@ -342,17 +331,19 @@ class PrefixWorkspace:
         self._receipt.record_skip(tier, reason)
 
     def close(self) -> None:
-        """Release the path handle and restore a seekable caller's entry position."""
+        """Release an owned handle, or restore a borrowed one to its entry position."""
         if self._closed:
             return
         self._closed = True
+        handle, self._handle = self._handle, None
         try:
-            if self._seekable_stream is not None and self._entry_pos is not None:
-                self._seekable_stream.seek(self._entry_pos)
+            if handle is not None:
+                assert self._entry_pos is not None
+                if self._owns_handle:
+                    handle.close()
+                else:
+                    handle.seek(self._entry_pos)
         finally:
-            if self._owned_path and self._path_handle is not None:
-                self._path_handle.close()
-                self._path_handle = None
             if self._owned_source is not None:
                 self._owned_source.close()
                 self._owned_source = None
@@ -371,20 +362,14 @@ class PrefixWorkspace:
             end = len(self._buf) + nbytes
             peeked = self._peekable.peek(end)
             return peeked[len(self._buf) : end]
-        if self._path_handle is not None:
-            # Path handle stays at the end of the buffer (forward-only growth).
-            expected = len(self._buf)
-            if self._path_handle.tell() != expected:
-                self._path_handle.seek(expected)
-            return read_exact(self._path_handle, nbytes)
-        if self._seekable_stream is not None:
+        if self._handle is not None:
             assert self._entry_pos is not None
-            # Sequential growth: seek only when the stream is not at the end of the
+            # Sequential growth: seek only when the handle is not at the end of the
             # buffer. Never rewind to re-fetch bytes already in the buffer.
             expected = self._entry_pos + len(self._buf)
-            if self._seekable_stream.tell() != expected:
-                self._seekable_stream.seek(expected)
-            return read_exact(self._seekable_stream, nbytes)
+            if self._handle.tell() != expected:
+                self._handle.seek(expected)
+            return read_exact(self._handle, nbytes)
         if self._raw_forward is not None:
             return read_exact(self._raw_forward, nbytes)
         return b""
