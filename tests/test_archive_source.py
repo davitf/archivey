@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -609,22 +610,46 @@ def test_a_real_fifo_keeps_its_name_and_fileno(tmp_path: Path) -> None:
         assert not raw.closed
 
 
-def _named_fifo_with_writer(path: Path, payload: bytes) -> None:
-    """Make a named FIFO at ``path`` whose writer delivers ``payload`` once opened."""
-    os.mkfifo(path)
+@pytest.fixture
+def named_fifo_with_writer() -> Iterator[Callable[[Path, bytes], None]]:
+    """Make named FIFOs whose writer delivers a payload once the read end opens.
 
-    def _fill() -> None:
-        try:
-            with open(path, "wb") as writer:
-                writer.write(payload)
-        except OSError:
-            pass
+    The writer thread blocks in ``open()`` until something opens the read end. A test
+    whose code under test raises before reading would leave it blocked for the rest
+    of the session, so teardown opens the read end itself and joins the writer.
+    """
+    writers: list[tuple[Path, threading.Thread]] = []
 
-    threading.Thread(target=_fill, daemon=True).start()
+    def make(path: Path, payload: bytes) -> None:
+        os.mkfifo(path)
+
+        def _fill() -> None:
+            try:
+                with open(path, "wb") as writer:
+                    writer.write(payload)
+            except OSError:
+                pass
+
+        thread = threading.Thread(target=_fill, daemon=True)
+        thread.start()
+        writers.append((path, thread))
+
+    yield make
+    for path, thread in writers:
+        if thread.is_alive():
+            # Non-blocking, so this returns at once even if the writer already left.
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            try:
+                thread.join(timeout=5)
+            finally:
+                os.close(fd)
+        assert not thread.is_alive(), f"FIFO writer for {path} is still blocked"
 
 
 @pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")
-def test_a_fifo_path_is_a_non_seekable_source_without_a_path(tmp_path: Path) -> None:
+def test_a_fifo_path_is_a_non_seekable_source_without_a_path(
+    tmp_path: Path, named_fifo_with_writer: Callable[[Path, bytes], None]
+) -> None:
     """``stat`` says a FIFO cannot reposition, so the path source must not claim it can.
 
     ``seekable()`` is settled at construction and ``is_seekable`` takes it at its word,
@@ -633,7 +658,7 @@ def test_a_fifo_path_is_a_non_seekable_source_without_a_path(tmp_path: Path) -> 
     """
     fifo = tmp_path / "pipe.tar"
     payload = b"bytes through a named pipe"
-    _named_fifo_with_writer(fifo, payload)
+    named_fifo_with_writer(fifo, payload)
     source = ArchiveSource.for_path(fifo)
     try:
         assert source.seekable() is False
@@ -649,7 +674,9 @@ def test_a_fifo_path_is_a_non_seekable_source_without_a_path(tmp_path: Path) -> 
 @pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")
 @pytest.mark.parametrize("streaming", [False, True])
 def test_open_archive_on_a_fifo_path_behaves_as_a_pipe(
-    tmp_path: Path, streaming: bool
+    tmp_path: Path,
+    streaming: bool,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
 ) -> None:
     """Random access over a FIFO path is refused as a pipe's is, not a bare ``OSError``.
 
@@ -667,7 +694,7 @@ def test_open_archive_on_a_fifo_path_behaves_as_a_pipe(
         info.size = 3
         tar.addfile(info, io.BytesIO(b"abc"))
     fifo = tmp_path / "archive.tar"
-    _named_fifo_with_writer(fifo, buf.getvalue())
+    named_fifo_with_writer(fifo, buf.getvalue())
 
     if not streaming:
         with pytest.raises(StreamNotSeekableError):
@@ -684,7 +711,9 @@ def test_open_archive_on_a_fifo_path_behaves_as_a_pipe(
 @pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")
 @pytest.mark.parametrize("seekable", [False, True])
 def test_open_stream_on_a_fifo_path_reads_it_forward_only(
-    tmp_path: Path, seekable: bool
+    tmp_path: Path,
+    seekable: bool,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
 ) -> None:
     """``open_stream`` reads a FIFO path as ``open_archive`` does, forward-only.
 
@@ -697,7 +726,7 @@ def test_open_stream_on_a_fifo_path_reads_it_forward_only(
     from archivey.exceptions import StreamNotSeekableError
 
     fifo = tmp_path / "payload.gz"
-    _named_fifo_with_writer(fifo, gzip.compress(b"hello" * 10))
+    named_fifo_with_writer(fifo, gzip.compress(b"hello" * 10))
 
     if seekable:
         with pytest.raises(StreamNotSeekableError):
