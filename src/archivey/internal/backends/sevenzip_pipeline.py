@@ -295,10 +295,12 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
                 f"7z coder {_method_hex(coder.method)} with "
                 f"{coder.num_in_streams} inputs is not supported"
             )
-    # With one output per coder, out-stream ``i`` is coder ``i``'s output.
+    # The two checks leave every in-stream either bound to a coder's output (so
+    # ``graph.producer`` names that coder) or packed: an in-stream with no producer
+    # is in ``packed_indices``, which the two ``.index`` calls below rely on.
     graph = FolderGraph.of(folder)
-    check_bind_pairs(folder.bind_pairs, len(graph.in_owner), len(coders))
-    check_packed_indices(folder.packed_indices, set(graph.bound), len(graph.in_owner))
+    check_bind_pairs(folder.bind_pairs, graph.total_in, graph.total_out)
+    check_packed_indices(folder.packed_indices, set(graph.bound), graph.total_in)
     roots = graph.roots()
     if not roots:
         raise CorruptionError("7z folder coder graph has a cycle and no output")
@@ -312,8 +314,9 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
     visited: set[int] = set()
 
     def input_chain(in_index: int) -> _Chain:
-        if in_index in graph.bound:
-            return chain_ending_at(graph.bound[in_index])
+        producer = graph.producer(in_index)
+        if producer is not None:
+            return chain_ending_at(producer)
         return _Chain(folder.packed_indices.index(in_index), [])
 
     def chain_ending_at(top: int) -> _Chain:
@@ -326,18 +329,18 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
             # Four inputs means BCJ2: the check at the top refused every other coder
             # with more than one input. Relaxing that check must change this test too.
             if coders[coder_index].num_in_streams == 4:
-                base = graph.in_base[coder_index]
                 source: int | _Bcj2Stage = _Bcj2Stage(
-                    [input_chain(base + k) for k in range(4)],
+                    [input_chain(in_index) for in_index in graph.inputs[coder_index]],
                     folder.unpack_sizes[coder_index],
                 )
                 break
             run.append(coder_index)
-            in_index = graph.in_base[coder_index]
-            if in_index not in graph.bound:
+            (in_index,) = graph.inputs[coder_index]
+            producer = graph.producer(in_index)
+            if producer is None:
                 source = folder.packed_indices.index(in_index)
                 break
-            coder_index = graph.bound[in_index]
+            coder_index = producer
         run.reverse()
         return _Chain(source, _plan_run(folder, run, source), folder.unpack_sizes[top])
 

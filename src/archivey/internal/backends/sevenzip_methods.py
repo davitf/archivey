@@ -52,7 +52,8 @@ class SevenZipMethod:
 
     @property
     def is_filter(self) -> bool:
-        """Delta or a branch filter: a coder that outputs as many bytes as it reads."""
+        """Delta or a branch filter (BCJ, ARM64). Like COPY, it outputs as many bytes
+        as it reads."""
         return self.algorithm is CompressionAlgorithm.DELTA or self.is_branch_filter
 
 

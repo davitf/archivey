@@ -151,25 +151,34 @@ class FolderGraph:
     In-streams and out-streams are numbered across the folder in coder order. Building
     one validates nothing, so listing can walk a folder that decoding would refuse;
     :func:`check_bind_pairs` and :func:`check_packed_indices` are the validators.
+    It indexes the folder as it was when built: build one per use.
     """
 
-    in_base: list[int]  # each coder's first in-stream
+    inputs: list[range]  # each coder's in-streams (empty for a coder with none)
     in_owner: dict[int, int]
     out_owner: dict[int, int]
     bound: dict[int, int]  # in-stream -> the out-stream it reads
 
     @classmethod
     def of(cls, folder: SevenZipFolder) -> FolderGraph:
-        in_base: list[int] = []
+        inputs: list[range] = []
         in_owner: dict[int, int] = {}
         out_owner: dict[int, int] = {}
         for index, coder in enumerate(folder.coders):
-            in_base.append(len(in_owner))
+            inputs.append(range(len(in_owner), len(in_owner) + coder.num_in_streams))
             for _ in range(coder.num_in_streams):
                 in_owner[len(in_owner)] = index
             for _ in range(coder.num_out_streams):
                 out_owner[len(out_owner)] = index
-        return cls(in_base, in_owner, out_owner, dict(folder.bind_pairs))
+        return cls(inputs, in_owner, out_owner, dict(folder.bind_pairs))
+
+    @property
+    def total_in(self) -> int:
+        return len(self.in_owner)
+
+    @property
+    def total_out(self) -> int:
+        return len(self.out_owner)
 
     def producer(self, in_stream: int) -> int | None:
         """The coder whose output ``in_stream`` reads, or None when it is not bound."""
@@ -189,13 +198,13 @@ class FolderGraph:
         consumed = {
             self.out_owner.get(out_stream) for out_stream in self.bound.values()
         }
-        return [coder for coder in range(len(self.in_base)) if coder not in consumed]
+        return [coder for coder in range(len(self.inputs)) if coder not in consumed]
 
 
 def check_bind_pairs(
     bind_pairs: list[tuple[int, int]], total_in: int, total_out: int
 ) -> None:
-    """Refuse bind pairs that reuse or leave the folder's in- or out-streams.
+    """Refuse bind pairs that reuse an in- or out-stream, or name one the folder lacks.
 
     With distinct, in-range out-streams and one fewer pair than out-streams, exactly
     one out-stream stays unbound: the folder output.

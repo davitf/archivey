@@ -203,9 +203,10 @@ def _compression_coders(folder: SevenZipFolder) -> list[SevenZipCoder]:
     """The folder's coders from its output down each coder's first input.
 
     Listing never validates the graph (only decoding does, in ``plan_folder``), so this
-    walk tolerates any wiring: it stops at a pack stream, an unbound input or a coder
-    it has already visited. A graph with no single output falls back to the coder
-    list reversed, which is the same order for a linear chain written in list order.
+    walk tolerates any wiring: it stops at a pack stream, an unbound input, a coder
+    with no input or a coder it has already visited. A graph with no single output
+    falls back to the coder list reversed, which is the same order for a linear chain
+    written in list order.
     """
     coders = folder.coders
     graph = FolderGraph.of(folder)
@@ -218,7 +219,8 @@ def _compression_coders(folder: SevenZipFolder) -> list[SevenZipCoder]:
     while index is not None and index not in seen:
         seen.add(index)
         walk.append(coders[index])
-        index = graph.producer(graph.in_base[index])
+        first_input = graph.inputs[index][:1]
+        index = graph.producer(first_input[0]) if first_input else None
     return walk
 
 
