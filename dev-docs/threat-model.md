@@ -222,9 +222,9 @@ bytes. The outcome is the same on every platform. ADR
   so the merge is visible. `ExtractionReport.results` is the only record.
   `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal;
   `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name.
-- A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS) is
-  translated to a typed `ExtractionError` naming the member (`internal/extraction.py`,
-  the `errno.EILSEQ` branch in `_run_pass`).
+- A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS,
+  `ENAMETOOLONG`, Windows `winerror` 123 and 206) is translated to a typed
+  `ExtractionError` naming the member (`_typed_os_error` in `internal/extraction.py`).
 - Bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069) in a name or link
   target are rejected under `STRICT` and `STANDARD` (`_reject_bidi_override`); directional
   marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,

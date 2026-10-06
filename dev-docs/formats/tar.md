@@ -296,7 +296,8 @@ a tar (a hardlink with no earlier source has no target, §2.3), so an unfiltered
 `extract_all()` links every hardlink in one pass with `os.link()`. A `members` selector or `filter` can select a link and exclude its source.
 Then a seekable reader makes one second pass for all such links together, and a
 forward-only one records each as a failure under `OnError`. A cross-device link falls
-back to copying from a path already written. The full matrix is in
+back to copying from a path already written, as does a link past the filesystem's
+link-count limit (1023 on NTFS). The full matrix is in
 [`format-tar`](../../openspec/specs/format-tar/spec.md).
 
 **Special files are blocked.** A device, FIFO or socket member is `OTHER`, and the

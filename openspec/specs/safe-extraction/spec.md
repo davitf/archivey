@@ -218,8 +218,15 @@ per-member failure result. On filesystems that accept arbitrary bytes (typical L
 the member extracts normally; the refusal is an environment outcome, not a property of
 the archive.
 
+Windows reports the same two refusals as `winerror` 123 (`ERROR_INVALID_NAME`) and 206
+(`ERROR_FILENAME_EXCED_RANGE`); extraction SHALL type those the same way. Windows also
+refuses to create a symlink with `winerror` 1314 (`ERROR_PRIVILEGE_NOT_HELD`) when the
+process lacks the privilege; that SHALL be a typed `ExtractionError` as well, with its own
+message naming the missing privilege.
+
 `EINVAL` is deliberately not auto-translated: it is a broad errno that can arise from
-unrelated syscalls during extraction.
+unrelated syscalls during extraction. The Windows codes are matched on `winerror`, not
+on the errno CPython maps them to (`EINVAL`, `ENOENT`).
 
 Renaming the member to a representable name instead of failing is deliberately not part
 of this requirement — it belongs to the future opt-in `SANITIZE` extraction policy
@@ -407,8 +414,9 @@ The system SHALL support TAR-style hardlinks through the extraction coordinator 
 a pull-based sink over reader streams. Ordinary FILE/DIR/SYMLINK members are
 written as reached; each written FILE path is recorded under its source. A
 HARDLINK whose source already has recorded paths tries `os.link()` against them
-in order; if all fail with cross-device `EXDEV`, the coordinator falls back to
-`shutil.copy2()` and records the copy for later links on that device.
+in order; if all fail with cross-device `EXDEV`, or with `EMLINK` at the filesystem's
+link-count limit, the coordinator falls back to a copy and records the copy for later
+links.
 
 When a selected HARDLINK's source was excluded by `members` or `filter`, the
 system MUST NOT materialize the excluded source at its own destination. It SHALL
@@ -430,7 +438,7 @@ source is written, with one read and one bomb-limit count for the source bytes.
 
 | Case | Expected |
 | --- | --- |
-| HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` |
+| HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` or all-`EMLINK` |
 | Selected hardlink source was excluded but recoverable | Source content appears at selected link path(s); excluded source path is never created |
 | First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `NOT_OVERWRITTEN`; content moves to the next allowed link; all skipped means no write |
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
@@ -1128,11 +1136,11 @@ not treated as a suffix); a multi-suffix name (`archive.tar.gz`) → `archive.ta
 first name free **both on disk and in the collision map**, in member-processing order.
 
 **Portable-name enforcement (O3/O4).** Windows-reserved device names (`CON`, `PRN`, `AUX`,
-`NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`; case-insensitive, with or without extension) and `:`
-within a segment are **unsafe** (device capture / NTFS alternate data stream) and SHALL be
-rejected under `STRICT` and `STANDARD` on **every** platform. A trailing dot or space is a
-legitimate macOS/Linux name that Win32 merely trims; rejecting it would halt a legitimate
-archive, so under `STRICT` each path segment's trailing dot/space SHALL be **stripped** to
+`NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, `COM¹`–`COM³`, `LPT¹`–`LPT³`, `CONIN$`, `CONOUT$`;
+case-insensitive, with or without extension) and `:` within a segment are **unsafe**
+(device capture / NTFS alternate data stream) and SHALL be rejected under `STRICT` and
+`STANDARD` on **every** platform. A trailing dot or space is a legitimate macOS/Linux
+name that Win32 merely trims; rejecting it would halt a legitimate archive, so under `STRICT` each path segment's trailing dot/space SHALL be **stripped** to
 its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on every platform,
 collision-tracked as above, and recorded as `ExtractionResult.presented_name`; a
 segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
@@ -1144,7 +1152,16 @@ literal character (TAR) SHALL be written as `/` on every platform, as Windows wr
 recorded as `ExtractionResult.presented_name`; a hard link's target gets the same rewrite.
 The path-safety checks SHALL run again on a name the policy rewrote, so a rewrite that
 changes the directories a path passes through cannot bypass them. `TRUSTED` writes the
-`\` as the local OS does.
+`\` as the local OS does. On Windows, under every policy, a symlink's target SHALL be
+created with each `/` written as `\`, so a relative target such as `sub/file` resolves
+there as it does on POSIX; errors still name the target as stored.
+
+**Read-only files.** A member whose stored mode has no write permission leaves a file
+Windows will not replace or delete. On Windows, when a later member of the run replaces or
+an anti-item removes a regular file this run wrote read-only, extraction SHALL clear the
+read-only attribute first, so `REPLACE` gives the result it gives on POSIX. The attribute
+is put back on the file's other hard links. A read-only file that was in the destination
+before the run is not changed.
 
 **Portable-name representability (O7).** Under `STRICT` and `STANDARD`, a name carrying
 bytes that cannot be represented portably on the destination filesystem SHALL be normalized
@@ -1176,13 +1193,15 @@ rewritten name then collides and is renamed).
 | --- | --- | --- |
 | `README` and `readme` in one archive | Second is a collision event on all platforms; `OverwritePolicy` applied; `requested_path` recorded | Local OS behavior (both extract on a case-sensitive FS) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
-| Member named `NUL` / `COM1` | Rejected on all platforms (typed error) | Written if the OS allows |
+| Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`; `STANDARD` keeps faithful | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
 | TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
 | Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
 | `what?.txt`, `a*b`, a name with a control byte | Written as `what%3F.txt`, `a%2Ab`, `%XX` per control; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
+| Symlink `l -> sub/file` (on Windows) | Created with target `sub\file`; resolves as on POSIX | Same |
+| A member stored `0o444`, then a later member of the same name under `REPLACE` | Replaced on every OS | Same |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |
 | Filter rename, then a portable rewrite | `member.name`, `presented_name`, and `path.name` are all three spellings | Faithful bytes attempted |

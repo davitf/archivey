@@ -419,11 +419,11 @@ POLICY_TRANSFORMS: dict[ExtractionPolicy, Callable[[ArchiveMember], ArchiveMembe
 
 # Windows reserved device names (case-insensitive, with or without an extension). Matched
 # against the first dot-separated component of each path segment — ``NUL`` and ``NUL.txt``
-# both mangle on Win32.
+# both mangle on Win32. Win32 also reads the superscript digits ¹²³ as ports
+# (``COM¹``), and ``CONIN$``/``CONOUT$`` open the console's input and output.
 _RESERVED_NAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{i}" for i in range(1, 10)}
-    | {f"LPT{i}" for i in range(1, 10)}
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{port}{n}" for port in ("COM", "LPT") for n in [*"123456789", *"¹²³"]}
 )
 
 
