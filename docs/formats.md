@@ -347,7 +347,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   flag, and a solid `stream_members()` pass reads everything, because it builds no mask
   at all. A glob in a *directory* component, or a backslash, is refused outright either
   way; the one exception is a backslash in a RAR5 name written on Windows, which
-  `unrar` on Linux and macOS reads as `_`.
+  `unrar` on Linux and macOS reads as `_`. Setting `ArchiveyConfig.rar_decompressor` to
+  `'unar'` reads those members by position instead.
 - **Member names.** RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16
   beside an 8-bit copy. A RAR 1.5-4 name that has only the 8-bit bytes does not say
   which code page they are in. Archivey decodes it with `encoding=` when you pass one.

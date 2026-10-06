@@ -117,6 +117,12 @@ _PROBE_TIMEOUT_SECONDS: float = 10
 # ``-idq`` (empty identification banner) or ``-x`` (empty ``p`` pipe).
 _RAR_DISABLE_CONFIG = "-cfg-"
 
+# Appended to every refusal of a member unrar cannot be pointed at. unar
+# addresses entries by index, so none of those reasons apply to it.
+UNAR_BY_POSITION_HINT = (
+    "Set ArchiveyConfig.rar_decompressor to 'unar' to read it by position instead."
+)
+
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar or rar is required to read RAR member data, but neither was found "
     "on PATH (or the unrar/rar on PATH is not a RARLAB binary). Install RARLAB unrar "
@@ -759,9 +765,8 @@ def plan_unrar_mask(
             "RAR member names that unrar reads with a backslash, or with a "
             "glob in a directory component, cannot be read through unrar: "
             "Windows unrar treats a backslash as a separator, and a "
-            "directory glob selects members archivey cannot size. Set "
-            "ArchiveyConfig.rar_decompressor to 'unar' to read it by position "
-            "instead.",
+            "directory glob selects members archivey cannot size. "
+            + UNAR_BY_POSITION_HINT,
         )
     return UnrarMask(argument=argument, mask_view=mask_view, is_glob=is_glob)
 

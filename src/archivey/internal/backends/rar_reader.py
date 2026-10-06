@@ -88,6 +88,7 @@ from archivey.internal.backends.rar_unar import (
     uses_no_dictionary,
 )
 from archivey.internal.backends.rar_unrar import (
+    UNAR_BY_POSITION_HINT,
     UnrarMask,
     UnrarMaskRefusal,
     UnrarNameRefusal,
@@ -3051,11 +3052,9 @@ class RarReader(BaseArchiveReader):
     def _unrar_name_refused(
         self, member: ArchiveMember, reason: str
     ) -> UnsupportedFeatureError:
-        # unar addresses entries by index, so none of these reasons apply to it.
         return UnsupportedFeatureError(
             f"RAR member {quoted(member.name)} cannot be read through unrar: "
-            f"{reason}. Set ArchiveyConfig.rar_decompressor to 'unar' to read "
-            "it by position instead.",
+            f"{reason}. {UNAR_BY_POSITION_HINT}",
             archive_name=self._archive_name,
             member_name=member.name,
             source_format=ArchiveFormat.RAR,
