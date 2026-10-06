@@ -385,7 +385,10 @@ def test_an_error_while_writing_names_the_member_as_listed(tmp_path: Path) -> No
     assert result.error.link_target == "missing.txt"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX disk spelling")
+# The taken destination is a non-UTF-8 name, which APFS refuses to create.
+@pytest.mark.skipif(
+    sys.platform in ("win32", "darwin"), reason="needs non-UTF-8 POSIX names"
+)
 @pytest.mark.parametrize("source_kept", [False, True], ids=["excluded", "later"])
 def test_a_deferred_hardlink_error_names_the_member_as_listed(
     tmp_path: Path, source_kept: bool
