@@ -1967,60 +1967,27 @@ class BaseArchiveReader(ArchiveReader):
     def _index_member_name(self, member: ArchiveMember) -> None:
         self._listed_by_name.setdefault(member.name, []).append(member)
 
-    def _latest_prior_named_member(
-        self, target_name: str, before_id: int
-    ) -> ArchiveMember | None:
-        """Latest member matching ``target_name`` with ``member_id`` strictly before ``before_id``."""
-        best: ArchiveMember | None = None
-        best_id = -1
-        for name in link_target_name_keys(target_name):
-            for prior in reversed(self._listed_by_name.get(name, [])):
-                prior_id = prior._member_id
-                if prior_id is None:
-                    continue
-                if prior_id < before_id:
-                    if prior_id > best_id:
-                        best = prior
-                        best_id = prior_id
-                    break
-        return best
-
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
         candidates = self._listed_by_name.get(name)
         if not candidates:
             return None
         return candidates[-1]
 
-    def _last_named_member(self, target_name: str) -> ArchiveMember | None:
-        """Last-wins lookup for a link target (tries bare and ``/``-suffixed names)."""
-        for name in link_target_name_keys(target_name):
-            candidates = self._listed_by_name.get(name)
-            if candidates:
-                return candidates[-1]
-        return None
-
-    def _lookup_link_target(self, member: ArchiveMember) -> ArchiveMember | None:
+    def _find_link_target(
+        self, member: ArchiveMember, *, before_id: int | None = None
+    ) -> ArchiveMember | None:
         """The member ``member``'s link target refers to, or ``None`` if not present.
 
         Resolves the stored target string to an archive-namespace name first (a symlink
         target is relative to the link's own directory — see
-        :func:`resolve_link_target_name`), then looks it up in ``_listed_by_name``
-        (last-wins for symlinks); directory members carry a trailing ``/`` in their names,
-        so both forms are tried.
-        """
-        if not member.link_target:
-            return None
-        target_name = resolve_link_target_name(
-            member.name, member.link_target, member.type
-        )
-        if target_name is None:
-            return None
-        return self._last_named_member(target_name)
+        :func:`resolve_link_target_name`), then looks it up in ``_listed_by_name``;
+        directory members carry a trailing ``/`` in their names, so both forms are
+        tried. With ``before_id``, only members listed before that id count.
 
-    def _lookup_hardlink_target(self, member: ArchiveMember) -> ArchiveMember | None:
-        """Positional hardlink resolution: latest same-named member strictly before ``member``.
+        A symlink takes the last entry of the bare name, then of the ``/`` spelling.
 
-        Never a member listed after it, in any format or mode: a hard link names a file
+        A hard link takes the latest entry listed before itself, across both spellings,
+        and never one listed after it, in any format or mode: a hard link names a file
         already archived. ``tar(1)`` and ``unrar`` extract one by linking to what they
         have already written, and ``unrar`` fails a link whose target comes later ("You
         need to unpack the link target first"). The other formats store no hard-link
@@ -2034,29 +2001,36 @@ class BaseArchiveReader(ArchiveReader):
         )
         if target_name is None:
             return None
-        before_id = member._member_id
-        if before_id is None:
-            return None
-        return self._latest_prior_named_member(target_name, before_id)
+        hardlink = member.type == MemberType.HARDLINK
+        if hardlink:
+            before_id = member._member_id
+            if before_id is None:
+                return None
+        best: ArchiveMember | None = None
+        best_id = -1
+        for name in link_target_name_keys(target_name):
+            for candidate in reversed(self._listed_by_name.get(name, [])):
+                if before_id is None:
+                    return candidate
+                candidate_id = candidate._member_id
+                if candidate_id is None or candidate_id >= before_id:
+                    continue
+                if not hardlink:
+                    return candidate
+                if candidate_id > best_id:
+                    best, best_id = candidate, candidate_id
+                break
+        return best
 
     def _hardlink_direct_target(self, member: ArchiveMember) -> ArchiveMember | None:
         """The member a HARDLINK names, before following any link.
 
-        The member is the latest one with that name listed before it
-        (``_lookup_hardlink_target``). Extraction uses it to tell a hard link to a
-        symlink from one to a file, which ``link_target_member`` (the end of the chain)
-        cannot.
+        Extraction uses it to tell a hard link to a symlink from one to a file, which
+        ``link_target_member`` (the end of the chain) cannot.
         """
         if member.type is not MemberType.HARDLINK:
             return None
-        return self._lookup_hardlink_target(member)
-
-    def _lookup_link_target_for_member(
-        self, member: ArchiveMember
-    ) -> ArchiveMember | None:
-        if member.type == MemberType.HARDLINK:
-            return self._lookup_hardlink_target(member)
-        return self._lookup_link_target(member)
+        return self._find_link_target(member)
 
     def _resolve_link(
         self,
@@ -2098,7 +2072,7 @@ class BaseArchiveReader(ArchiveReader):
                 break
             path.append(member_id)
             on_path.add(member_id)
-            target = self._lookup_link_target_for_member(current)
+            target = self._find_link_target(current)
             if target is None:
                 terminal = None
                 break
@@ -2121,17 +2095,6 @@ class BaseArchiveReader(ArchiveReader):
             child_scope=False,
         )
 
-    def _last_named_member_before(
-        self, target_name: str, before_id: int
-    ) -> ArchiveMember | None:
-        """``_last_named_member``, looking only at members listed before ``before_id``."""
-        for name in link_target_name_keys(target_name):
-            for candidate in reversed(self._listed_by_name.get(name, [])):
-                candidate_id = candidate._member_id
-                if candidate_id is not None and candidate_id < before_id:
-                    return candidate
-        return None
-
     def _link_progressive_member(self, member: ArchiveMember) -> None:
         """Point a link the pass is about to yield at a member the pass already passed.
 
@@ -2142,17 +2105,9 @@ class BaseArchiveReader(ArchiveReader):
         if not member.is_link or member.link_target_member is not None:
             return
         member_id = member._member_id
-        if member_id is None or not member.link_target:
+        if member_id is None:
             return
-        target_name = resolve_link_target_name(
-            member.name, member.link_target, member.type
-        )
-        if target_name is None:
-            return
-        if member.type == MemberType.HARDLINK:
-            target = self._latest_prior_named_member(target_name, member_id)
-        else:
-            target = self._last_named_member_before(target_name, member_id)
+        target = self._find_link_target(member, before_id=member_id)
         if target is not None and target is not member:
             if target.is_link:
                 target = target.link_target_member
@@ -2577,7 +2532,7 @@ class BaseArchiveReader(ArchiveReader):
                 )
             # open() materializes first: a half-walked index must never answer a lookup.
             assert self._materialized is not None
-            target = self._lookup_link_target_for_member(current)
+            target = self._find_link_target(current)
             if target is None:
                 raise LinkTargetNotFoundError(
                     "Link target not found in archive",
