@@ -731,14 +731,9 @@ def _is_directory_source(source: str | Path | BinaryIO) -> bool:
 
 
 def _first_volume_beside_stub(source: str | Path | BinaryIO) -> Path | None:
-    if isinstance(source, ArchiveSource):
-        if source.path is None:
-            return None
-        source = source.path
-    if isinstance(source, (str, Path)):
-        path = Path(source)
-        if path.is_file():
-            return first_volume_for_stub(path)
+    path = source.path if isinstance(source, ArchiveSource) else source
+    if isinstance(path, (str, Path)):
+        return first_volume_for_stub(Path(path))
     return None
 
 
