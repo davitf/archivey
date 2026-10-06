@@ -678,9 +678,9 @@ def test_cli_list_unencrypted_format_without_password(
 
 def test_c_is_not_integrity_alias(sample_zip: Path) -> None:
     # Integrity check is `test`/`t`; letter `c` is reserved for future `create`.
-    from archivey.cli.main import _VERBS
+    from archivey.cli.main import _grammar
 
-    assert "c" not in _VERBS
+    assert "c" not in _grammar().verbs
     assert main(["t", str(sample_zip)]) == EXIT_OK
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
 
@@ -2393,6 +2393,21 @@ def test_verb_option_before_verb_is_named_as_unrecognized(
     err = capsys.readouterr().err
     assert f"unrecognized arguments: {flag}" in err
     assert "invalid choice" not in err
+    # ...and says where it goes.
+    assert "put it after the verb: archivey " in err
+    assert f"ARCHIVE {flag} ...)" in err
+
+
+def test_verb_option_hint_names_every_verb_that_takes_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--policy=strict", "a.zip"]) == EXIT_USAGE
+    assert (
+        "(an option of 'extract'; put it after the verb: archivey extract ARCHIVE "
+        in (capsys.readouterr().err)
+    )
+    assert main(["--exclude", "p", "a.zip"]) == EXIT_USAGE
+    assert "an option of 'list', 'test', 'extract';" in capsys.readouterr().err
 
 
 def test_double_dash_lists_dash_named_archive(

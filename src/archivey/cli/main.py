@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import errno
+import functools
 import os
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import Any, NoReturn, TextIO, cast
+from typing import Any, NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 import archivey
 from archivey import (
@@ -66,6 +67,7 @@ _PATTERNS_METAVAR = "pattern"
 
 def _inject_default_list(argv: list[str]) -> list[str]:
     """If the first positional is not a known verb, insert ``list`` (known-verb-wins)."""
+    grammar = _grammar()
     i = 0
     skip_next = False
     while i < len(argv):
@@ -81,11 +83,11 @@ def _inject_default_list(argv: list[str]) -> list[str]:
         # Bare "-" is the reserved stdin positional, not an option (F6).
         if tok.startswith("-") and tok != "-":
             key = tok.split("=", 1)[0]
-            if key in _VALUE_OPTIONS and "=" not in tok:
+            if key in grammar.value_options and "=" not in tok:
                 skip_next = True
             i += 1
             continue
-        if tok not in _VERBS:
+        if tok not in grammar.verbs:
             return argv[:i] + ["list"] + argv[i:]
         return argv
     return argv
@@ -109,7 +111,27 @@ class _ArchiveyArgumentParser(argparse.ArgumentParser):
                     f"{message} (verbs are bare words — try 'archivey {verb} ARCHIVE')"
                 )
                 break
+        else:
+            message += _verb_option_hint(message)
         super().error(message)
+
+
+def _verb_option_hint(message: str) -> str:
+    """Say where an unrecognized option goes when it is a verb's (``--policy`` → x)."""
+    unrecognized = "unrecognized arguments: "
+    if not message.startswith(unrecognized):
+        return ""
+    verb_options = _grammar().verb_options
+    for tok in message[len(unrecognized) :].split():
+        opt = tok.split("=", 1)[0]
+        if opt in verb_options:
+            verbs = verb_options[opt]
+            owners = ", ".join(f"'{verb}'" for verb in verbs)
+            return (
+                f" (an option of {owners}; put it after the verb: "
+                f"archivey {verbs[0]} ARCHIVE {opt} ...)"
+            )
+    return ""
 
 
 def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
@@ -200,8 +222,19 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-# A verb's runner: the parsed args plus the kwargs every verb shares, to an exit code.
-_Runner = Callable[[argparse.Namespace, dict[str, Any]], int]
+class _Common(TypedDict):
+    """The keyword arguments every verb's ``run_*`` takes."""
+
+    archive: str
+    password: str | None
+    track_io: bool
+    verbose: bool
+    out: TextIO
+    err: TextIO
+
+
+# A verb's runner: the parsed args plus the shared kwargs, to an exit code.
+_Runner = Callable[[argparse.Namespace, _Common], int]
 
 
 def _selection(args: argparse.Namespace) -> dict[str, Any]:
@@ -211,6 +244,38 @@ def _selection(args: argparse.Namespace) -> dict[str, Any]:
         "exclude": list(args.exclude),
         "salvage": False,
     }
+
+
+# The runners look their run_* up by name when called, so tests can patch it.
+def _run_list(args: argparse.Namespace, common: _Common) -> int:
+    return run_list(**common, **_selection(args), digests=bool(args.digests))
+
+
+def _run_test(args: argparse.Namespace, common: _Common) -> int:
+    hide_progress = bool(args.hide_progress)
+    return run_test(**common, **_selection(args), hide_progress=hide_progress)
+
+
+def _run_extract(args: argparse.Namespace, common: _Common) -> int:
+    return run_extract(
+        **common,
+        **_selection(args),
+        dest=args.dest,
+        policy=args.policy,
+        overwrite=args.overwrite,
+        hide_progress=bool(args.hide_progress),
+        stop_on_error=bool(args.stop_on_error),
+        abort_on=list(args.abort_on or ()),
+        dry_run=bool(args.dry_run),
+    )
+
+
+def _run_info(args: argparse.Namespace, common: _Common) -> int:
+    return run_info(**common)
+
+
+def _refuse_reserved(args: argparse.Namespace, common: _Common) -> NoReturn:
+    raise CliError(args._reserved_message, code=EXIT_USAGE)
 
 
 def _add_verb(
@@ -226,7 +291,6 @@ def _add_verb(
         name,
         aliases=list(aliases),
         parents=[common_sub],
-        conflict_handler="resolve",
         allow_abbrev=False,
         **kwargs,
     )
@@ -264,13 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
         parser_class=_ArchiveyArgumentParser,
     )
 
-    # Each runner looks its run_* up by name when called, so tests can patch it.
     p_list = _add_verb(
         sub,
         "list",
         aliases=["l"],
         common_sub=common_sub,
-        run=lambda a, kw: run_list(**kw, **_selection(a), digests=bool(a.digests)),
+        run=_run_list,
         help="list archive members (default verb)",
     )
     p_list.add_argument("archive", help="archive path")
@@ -286,9 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
         "test",
         aliases=["t"],
         common_sub=common_sub,
-        run=lambda a, kw: run_test(
-            **kw, **_selection(a), hide_progress=bool(a.hide_progress)
-        ),
+        run=_run_test,
         help="full-read integrity check (verify stored digests)",
     )
     p_test.add_argument("archive", help="archive path")
@@ -299,17 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
         "extract",
         aliases=["x"],
         common_sub=common_sub,
-        run=lambda a, kw: run_extract(
-            **kw,
-            **_selection(a),
-            dest=a.dest,
-            policy=a.policy,
-            overwrite=a.overwrite,
-            hide_progress=bool(a.hide_progress),
-            stop_on_error=bool(a.stop_on_error),
-            abort_on=list(a.abort_on or ()),
-            dry_run=bool(a.dry_run),
-        ),
+        run=_run_extract,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EXTRACT_EPILOG,
         help="safely extract members",
@@ -375,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
         "info",
         aliases=["i", "detect"],
         common_sub=common_sub,
-        run=lambda a, kw: run_info(**kw),
+        run=_run_info,
         help="format detection + archive identity",
     )
     p_info.add_argument("archive", help="archive path")
@@ -399,29 +450,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _refuse_reserved(args: argparse.Namespace, _common: dict[str, Any]) -> NoReturn:
-    raise CliError(args._reserved_message, code=EXIT_USAGE)
+class _Grammar(NamedTuple):
+    """What the default-verb injection and the usage errors read from the parser."""
+
+    # Every verb word: aliases and reserved verbs too.
+    verbs: frozenset[str]
+    # The main parser's value-taking options. Not a verb's: before the verb argparse
+    # does not know those, so it does not consume their value either, and skipping it
+    # would blame the value as a bad verb.
+    value_options: frozenset[str]
+    # A verb-only option → the verbs that take it.
+    verb_options: dict[str, tuple[str, ...]]
 
 
-def _default_list_grammar() -> tuple[frozenset[str], frozenset[str]]:
-    """Every verb word (aliases and reserved verbs too) and the main parser's value options.
-
-    Only the main parser's own options: before the verb argparse does not know a verb's
-    options, so it does not consume their value either, and skipping it would blame the
-    value as a bad verb.
-    """
-    verbs: frozenset[str] = frozenset()
-    value_options: set[str] = set()
-    for action in build_parser()._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            verbs = frozenset(action.choices)
-        elif action.nargs != 0:
-            value_options.update(action.option_strings)
-    return verbs, frozenset(value_options)
-
-
-# What known-verb-wins default-list injection reads.
-_VERBS, _VALUE_OPTIONS = _default_list_grammar()
+@functools.cache
+def _grammar() -> _Grammar:
+    parser = build_parser()
+    main_actions = [a for a in parser._actions if a.option_strings]
+    shared = {opt for a in main_actions for opt in a.option_strings}
+    value_options = frozenset(
+        opt for a in main_actions if a.nargs != 0 for opt in a.option_strings
+    )
+    sub = cast(
+        "argparse._SubParsersAction[argparse.ArgumentParser]",
+        next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
+    )
+    owners: dict[str, list[str]] = {}
+    seen: set[int] = set()
+    for verb, verb_parser in sub.choices.items():
+        if id(verb_parser) in seen:  # an alias: the verb's name came first
+            continue
+        seen.add(id(verb_parser))
+        for action in verb_parser._actions:
+            for opt in set(action.option_strings) - shared:
+                owners.setdefault(opt, []).append(verb)
+    verb_options = {opt: tuple(verbs) for opt, verbs in owners.items()}
+    return _Grammar(frozenset(sub.choices), value_options, verb_options)
 
 
 def _print_version(*, verbose: bool, out: TextIO) -> None:
@@ -442,11 +506,11 @@ def _print_version(*, verbose: bool, out: TextIO) -> None:
 
 
 def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
-    if bool(getattr(args, "version", False)):
-        _print_version(verbose=bool(getattr(args, "verbose", False)), out=out)
+    if args.version:
+        _print_version(verbose=bool(args.verbose), out=out)
         return EXIT_OK
 
-    if bool(getattr(args, "salvage", False)):
+    if args.salvage:
         raise CliError("--salvage is not implemented yet", code=EXIT_USAGE)
 
     run = getattr(args, "_run", None)
@@ -454,14 +518,14 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
         build_parser().print_help(err)
         return EXIT_USAGE
 
-    common = {
-        "archive": args.archive,
-        "password": args.password,
-        "track_io": bool(args.track_io),
-        "verbose": bool(args.verbose),
-        "out": out,
-        "err": err,
-    }
+    common = _Common(
+        archive=args.archive,
+        password=args.password,
+        track_io=bool(args.track_io),
+        verbose=bool(args.verbose),
+        out=out,
+        err=err,
+    )
     return cast(_Runner, run)(args, common)
 
 
@@ -552,7 +616,7 @@ def main(
         return EXIT_USAGE
 
     try:
-        with cli_logging(verbose=bool(getattr(args, "verbose", False)), err=err_stream):
+        with cli_logging(verbose=bool(args.verbose), err=err_stream):
             return _dispatch(args, out=out_stream, err=err_stream)
     except CliError as exc:
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not

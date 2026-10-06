@@ -67,6 +67,8 @@ encrypted members fail as if no password had been given.
 ### Notes
 
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
+- Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`) go before or after the
+  verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...) go after it.
 - A pattern naming a directory selects the directory and everything under it, as `tar`
   does: `archivey extract a.zip docs` and `archivey extract a.zip docs/` both extract
   `docs/` and its contents, but not a file named `docs.txt`. On Windows, `docs\sub`
