@@ -22,6 +22,7 @@ def test_traced_peak_leaves_out_collections_over_a_large_live_heap() -> None:
 
     allocate()
     baseline = traced_peak(allocate)
+    # 150 000 dicts, each holding a one-item list: 300 000 tracked objects.
     heap = [{"k": [index]} for index in range(150_000)]
     threshold = gc.get_threshold()
     # A second threshold of 0 makes every first-generation trigger collect, however

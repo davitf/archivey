@@ -4,13 +4,14 @@ Use :func:`traced_peak` for any ``tracemalloc`` peak a test bounds. Starting and
 stopping ``tracemalloc`` by hand leaves the garbage collector free to run inside the
 window, and on free-threaded CPython 3.13 a collection allocates working memory in
 proportion to every live object in the process, which tracemalloc counts. With
-300 000 live objects, as a long serial test run can leave, one collection adds about
-800 KB. Whether the automatic collection fires inside a given window depends on what
-earlier tests allocated, so a peak test can fail in the full suite and never alone:
-``test_iso_shared_continuation_area_does_not_multiply_memory_at_open`` did, on the
-free-threaded CI job, peaking at 5.3x to 6.5x the image against a 4x bound. A
-collection on free-threaded 3.14 costs about 28 KB at that heap size, and almost
-nothing on a GIL build.
+300 000 live objects, as a long serial test run can leave, one collection added
+0.8 MB (an explicit ``gc.collect()``) to 1.2 MB (an automatic one, with more pending
+garbage) on CPython 3.13.16t. Whether the automatic collection fires inside a given
+window depends on what earlier tests allocated, so a peak test can fail in the full
+suite and never alone. The ISO shared-continuation-area test in
+``test_audit2_iso_dir_detect.py`` did, on the free-threaded CI job, peaking at 5.3x
+to 6.5x the image against a 4x bound (6.9x to 9.3x locally). The same collection adds 28 to 110 KB on free-threaded
+3.14.8 and almost nothing on a GIL build.
 """
 
 from __future__ import annotations
