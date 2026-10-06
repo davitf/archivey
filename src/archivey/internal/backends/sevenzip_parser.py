@@ -38,7 +38,7 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import BinaryIO, NamedTuple
+from typing import BinaryIO
 
 from archivey.config import ListingLimits
 from archivey.exceptions import (
@@ -192,7 +192,8 @@ class _StreamsInfo:
     digests: list[int | None] | None = None
 
 
-class SignatureHeaderFields(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SignatureHeaderFields:
     """The 32-byte 7z signature header, field by field."""
 
     magic_ok: bool
@@ -205,14 +206,25 @@ class SignatureHeaderFields(NamedTuple):
 
 
 def unpack_signature_header(signature: bytes) -> SignatureHeaderFields:
-    """Decode a full signature header; detection and the parser each judge the fields."""
+    """Split ``signature``, at least ``SIGNATURE_HEADER_SIZE`` bytes, into its fields.
+
+    Magic and the start-header CRC are checked here and come back as flags; the other
+    five fields pass through unjudged, so detection and the parser keep their verdicts.
+    """
+    assert len(signature) >= SIGNATURE_HEADER_SIZE
     start_header = signature[12:32]
+    next_header_offset, next_header_size, next_header_crc = struct.unpack(
+        "<QQI", start_header
+    )
     return SignatureHeaderFields(
-        signature[: len(MAGIC_7Z)] == MAGIC_7Z,
-        signature[6],
-        signature[7],
-        crc32(start_header) == int.from_bytes(signature[8:12], "little"),
-        *struct.unpack("<QQI", start_header),
+        magic_ok=signature[: len(MAGIC_7Z)] == MAGIC_7Z,
+        major_version=signature[6],
+        minor_version=signature[7],
+        start_header_crc_ok=crc32(start_header)
+        == int.from_bytes(signature[8:12], "little"),
+        next_header_offset=next_header_offset,
+        next_header_size=next_header_size,
+        next_header_crc=next_header_crc,
     )
 
 
@@ -469,7 +481,8 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
         if fp.read(len(MAGIC_7Z)) == MAGIC_7Z:
             return 0
         fp.seek(start)
-        # Imported here: sevenzip_detect imports this module for MAGIC_7Z / CRC.
+        # Imported here: sevenzip_detect imports this module for the signature-header
+        # constants and unpack_signature_header.
         from archivey.internal.backends.sevenzip_detect import (
             validate_sevenzip_signature_header,
         )
@@ -500,51 +513,43 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     """
     fp.seek(0)
     signature = _read_stream_exact(fp, SIGNATURE_HEADER_SIZE, "7z signature header")
-    (
-        magic_ok,
-        major_version,
-        minor_version,
-        start_header_crc_ok,
-        next_header_offset,
-        next_header_size,
-        next_header_crc,
-    ) = unpack_signature_header(signature)
-    if not magic_ok:
+    fields = unpack_signature_header(signature)
+    if not fields.magic_ok:
         raise CorruptionError("Not a 7z archive: bad magic bytes")
 
-    if major_version != SEVENZIP_MAJOR_VERSION:
+    if fields.major_version != SEVENZIP_MAJOR_VERSION:
         raise UnsupportedFeatureError(
-            f"7z format version {major_version}.{minor_version} is not supported"
+            f"7z format version {fields.major_version}.{fields.minor_version} is not supported"
         )
-    if not start_header_crc_ok:
+    if not fields.start_header_crc_ok:
         raise CorruptionError("7z signature header CRC mismatch")
 
-    if next_header_offset > _MAX_SEEK_OFFSET:
+    if fields.next_header_offset > _MAX_SEEK_OFFSET:
         raise CorruptionError(
-            f"7z next-header offset {next_header_offset} exceeds the seekable range"
+            f"7z next-header offset {fields.next_header_offset} exceeds the seekable range"
         )
-    if next_header_size > MAX_NEXT_HEADER_SIZE:
+    if fields.next_header_size > MAX_NEXT_HEADER_SIZE:
         raise CorruptionError(
-            f"7z next-header size {next_header_size} exceeds the "
+            f"7z next-header size {fields.next_header_size} exceeds the "
             f"{MAX_NEXT_HEADER_SIZE}-byte parser limit"
         )
 
-    if next_header_size == 0:
+    if fields.next_header_size == 0:
         # crc32(b"") is 0, so this is the only value an empty next header can carry.
-        if next_header_crc != crc32(b""):
+        if fields.next_header_crc != crc32(b""):
             raise CorruptionError("7z empty next-header CRC mismatch")
-        return SignatureInfo(major_version, minor_version, b"")
+        return SignatureInfo(fields.major_version, fields.minor_version, b"")
 
     try:
-        fp.seek(SIGNATURE_HEADER_SIZE + next_header_offset)
+        fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
     except (OSError, OverflowError) as exc:
         raise CorruptionError(
-            f"7z next-header seek failed at offset {next_header_offset}"
+            f"7z next-header seek failed at offset {fields.next_header_offset}"
         ) from exc
-    header_data = _read_stream_exact(fp, next_header_size, "7z next header")
-    if crc32(header_data) != next_header_crc:
+    header_data = _read_stream_exact(fp, fields.next_header_size, "7z next header")
+    if crc32(header_data) != fields.next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
-    return SignatureInfo(major_version, minor_version, header_data)
+    return SignatureInfo(fields.major_version, fields.minor_version, header_data)
 
 
 def parse_header_block(
@@ -708,6 +713,7 @@ __all__ = [
     "SevenZipCoder",
     "SevenZipFileRecord",
     "SevenZipFolder",
+    "SignatureHeaderFields",
     "SignatureInfo",
     "compression_method_for_coder",
     "crc32",
@@ -719,6 +725,7 @@ __all__ = [
     "materialize_archive",
     "parse_header_block",
     "read_signature_and_next_header",
+    "unpack_signature_header",
 ]
 
 

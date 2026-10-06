@@ -70,6 +70,7 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
+    HEADER_PASSWORD_REJECTED,
     decode_encoded_header,
     decode_folder_to_bytes,
     encoded_header_needs_password,
@@ -136,7 +137,6 @@ from archivey.types import (
     crc32_digest,
 )
 
-_HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _S_IFMT = 0o170000
 
@@ -276,21 +276,28 @@ def _member_stream_size(member: ArchiveMember) -> int:
 
 
 class _LazyFolder:
-    """A folder's ``SolidBlockReader``, opened on the first read into it."""
+    """A folder's ``SolidBlockReader``, opened on the first read into it.
+
+    It holds one folder at a time: a caller moving to another folder must ``close()``.
+    """
 
     def __init__(self, open_folder: Callable[[int, ArchiveMember], BinaryIO]) -> None:
         self._open_folder = open_folder
         self._solid: SolidBlockReader | None = None
+        self._index: int | None = None
 
     def get(self, folder_index: int, member: ArchiveMember) -> SolidBlockReader:
+        assert self._index is None or self._index == folder_index
         if self._solid is None:
             self._solid = SolidBlockReader(self._open_folder(folder_index, member))
+            self._index = folder_index
         return self._solid
 
     def close(self) -> None:
         if self._solid is not None:
             self._solid.close()
             self._solid = None
+            self._index = None
 
 
 class SevenZipReader(BaseArchiveReader):
@@ -434,20 +441,20 @@ class SevenZipReader(BaseArchiveReader):
             try:
                 decoded = decode(_password_to_kdf_bytes(password))
             except CorruptionError as exc:
-                raise EncryptionError(_HEADER_PASSWORD_REJECTED) from exc
+                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
             try:
                 plain = parse_decoded_header(decoded, max_members=max_members)
             except (
                 CorruptionError,
                 UnsupportedFeatureError,
             ) as exc:
-                raise EncryptionError(_HEADER_PASSWORD_REJECTED) from exc
+                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
             # O8: 7zAES has no password check value. Wrong-key garbage occasionally
             # LZMA-decodes into a header that parses with zero file records (py7zr
             # omits the encoded-header folder CRC). Legitimate writers never encrypt
             # an empty header — treat that as a rejected password.
             if not plain.files:
-                raise EncryptionError(_HEADER_PASSWORD_REJECTED)
+                raise EncryptionError(HEADER_PASSWORD_REJECTED)
             return plain
 
         try:
@@ -459,7 +466,7 @@ class SevenZipReader(BaseArchiveReader):
                 raise EncryptionError(
                     "Password required to decrypt the 7z header"
                 ) from exc
-            raise EncryptionError(_HEADER_PASSWORD_REJECTED) from exc
+            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
 
     def _init_folder_caches(self, archive: SevenZipArchive) -> None:
         """Derive per-folder indexes used by listing and open.
