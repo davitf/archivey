@@ -6,6 +6,8 @@ the *design* lives elsewhere and is authoritative:
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs.
 - `docs/` — the published end-user guide, and nothing else (see "Where does a new doc
   go?" at the end of this file).
+- `new_docs/` — an unpublished rewrite of the user guide, page by page. It replaces
+  `docs/` once it covers it; until then `docs/` is authoritative (`new_docs/README.md`).
 - `dev-docs/` — unpublished maintainer material: `decisions/` (the ADR log),
   threat model / codec analysis / known issues, `investigations/` (finished
   evidence), `history/` (superseded SPEC/ARCHITECTURE/COMPARISON/ASYNC prose,
@@ -501,10 +503,13 @@ On every PR that touches `openspec/specs/` or a change delta:
 Five questions, in order. The first `yes` wins.
 
 1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
-   `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
+   `mkdocs.yml`'s nav in the same commit**. If `new_docs/` already has a rewrite of that
+   page, change it there too. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision. Use `/technical-writing` for structure and craft. The standing
-   prose rules that apply to the result are [`AGENTS.md`](AGENTS.md) §Writing English.
+   page per decision. Use `/technical-writing` for structure and craft, and
+   [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) for the voice, which
+   outranks STE on user docs. The standing prose rules are [`AGENTS.md`](AGENTS.md)
+   §Writing English.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
    (rewrite in place; light decision bullets, not a new ADR). **Create the file in the
