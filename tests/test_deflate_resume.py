@@ -28,8 +28,8 @@ from archivey.internal.streams.deflate_resume import (
     WINDOW_SIZE,
     DeflateResume,
     DeflateResumeDecoder,
-    ResumeReachedStreamEnd,
 )
+from archivey.internal.streams.resume import ResumeReachedStreamEnd
 
 _WORDS = [
     bytes(random.Random(i).choices(b"abcdefghij ", k=2 + i % 8)) for i in range(400)

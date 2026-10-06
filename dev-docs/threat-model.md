@@ -76,9 +76,10 @@ no member replaces the destination itself.
   root to drop, or an absolute name a filter returned), NUL bytes, names
   `os.fsencode` cannot represent once a lone surrogate is spelled as its UTF-8 bytes
   (`filters.disk_spelling`, which the coordinator applies first), special files
-  (devices, FIFOs, sockets), and a non-directory member whose normalized name is `"."` or `""` (which would replace the
-  destination root with a file). It resolves the parent and checks containment, and
-  checks symlink and hardlink targets lexically.
+  (devices, FIFOs, sockets), and a non-directory member whose normalized name is
+  `"."` or `""` (which would replace the destination root with a file). It resolves
+  the parent and checks containment, and checks symlink and hardlink targets
+  lexically. A rejection names the member as listed, not its disk spelling.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical

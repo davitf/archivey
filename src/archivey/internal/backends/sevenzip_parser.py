@@ -1339,10 +1339,12 @@ def _read_comment(cur: _Cursor) -> str | None:
         data = data[:-2]
     if not data:
         return None
-    try:
-        return data.decode("utf-16le")
-    except UnicodeDecodeError as exc:
-        raise CorruptionError(f"Could not decode 7z comment: {exc!r}") from exc
+    if len(data) % 2:
+        raise CorruptionError("7z comment has an odd byte length")
+    # surrogatepass, as for the names: the comment is UTF-16 code units, and a lone
+    # surrogate in it must not refuse the archive. With an even length and this
+    # handler, the decode cannot fail.
+    return data.decode("utf-16le", errors="surrogatepass")
 
 
 def _read_digests(cur: _Cursor, count: int) -> tuple[list[bool], list[int | None]]:

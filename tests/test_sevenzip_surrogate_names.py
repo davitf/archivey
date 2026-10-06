@@ -28,7 +28,7 @@ import pytest
 import archivey
 from archivey.cli.exit_codes import EXIT_OK
 from archivey.cli.main import main
-from archivey.exceptions import ExtractionError
+from archivey.exceptions import ExtractionError, FilterRejectionError
 from archivey.internal.filters import disk_spelling
 from archivey.types import ExtractionPolicy, ExtractionStatus
 from tests.conftest import requires_binary
@@ -48,11 +48,14 @@ def _prop(prop: int, payload: bytes) -> bytes:
     return bytes([prop]) + _u(len(payload)) + payload
 
 
-def _surrogate_7z(files: list[tuple[str, bytes]]) -> bytes:
+def _surrogate_7z(
+    files: list[tuple[str, bytes]], *, comment: str | None = None
+) -> bytes:
     """A plain-header 7z with one COPY folder per file and the names as given.
 
-    The names are encoded with ``surrogatepass``, so a lone surrogate in a name is
-    stored as that code unit. Every member must have data.
+    The names, and the archive ``comment`` when one is given, are encoded with
+    ``surrogatepass``, so a lone surrogate is stored as that code unit. Every member
+    must have data.
     """
     packed = b"".join(data for _, data in files)
     count = len(files)
@@ -72,7 +75,11 @@ def _surrogate_7z(files: list[tuple[str, bytes]]) -> bytes:
     names = bytearray(b"\x00")
     for name, _ in files:
         names += name.encode("utf-16le", "surrogatepass") + b"\x00\x00"
-    files_info = b"\x05" + _u(count) + _prop(0x11, bytes(names)) + b"\x00"
+    props = _prop(0x11, bytes(names))
+    if comment is not None:
+        text = comment.encode("utf-16le", "surrogatepass") + b"\x00\x00"
+        props += _prop(0x16, b"\x00" + text)  # kComment, not external
+    files_info = b"\x05" + _u(count) + props + b"\x00"
     header = b"\x01" + streams_info + files_info + b"\x00"
     start_header = (
         len(packed).to_bytes(8, "little")
@@ -174,6 +181,38 @@ def test_posix_extraction_matches_the_7z_tool(archive: Path, tmp_path: Path) -> 
     assert _tree(ours) == _tree(theirs)
 
 
+@pytest.mark.skipif(not _BYTE_NAMES, reason="needs a filesystem that takes any bytes")
+@requires_binary("7z")
+def test_a_unit_in_the_escape_range_is_the_one_difference_from_the_7z_tool(
+    tmp_path: Path,
+) -> None:
+    """U+DC80-U+DCFF: 7-Zip writes its three UTF-8 bytes, archivey the one byte.
+
+    Measured with 7-Zip 23.01 on Linux. archivey writes the byte the unit stands for
+    in a ``str``, which the default policy escapes to ``%80``. Every other member is
+    written as 7-Zip writes it.
+    """
+    archive = tmp_path / "low.7z"
+    archive.write_bytes(_surrogate_7z([*_FILES, ("lo\udc80.txt", b"low")]))
+    seven_zip = shutil.which("7z")
+    assert seven_zip is not None
+    theirs = tmp_path / "theirs"
+    theirs.mkdir()
+    subprocess.run(
+        [seven_zip, "x", "-y", str(archive)],
+        cwd=theirs,
+        check=True,
+        capture_output=True,
+    )
+    ours = tmp_path / "ours"
+    archivey.extract(archive, ours)
+    ours_tree, theirs_tree = _tree(ours), _tree(theirs)
+    assert ours_tree.pop(b"lo%80.txt") == b"low"
+    assert theirs_tree.pop(b"lo\xed\xb2\x80.txt") == b"low"
+    assert ours_tree == theirs_tree
+    assert len(ours_tree) == len(_FILES)
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="APFS refuses the bytes")
 def test_a_utf8_only_filesystem_refusal_is_a_typed_failure(
     archive: Path, tmp_path: Path
@@ -220,6 +259,32 @@ def test_a_surrogate_name_and_its_utf8_bytes_collide(tmp_path: Path) -> None:
     assert results[0].status is ExtractionStatus.EXTRACTED
     assert results[1].status is ExtractionStatus.NOT_OVERWRITTEN
     assert _tree(dest) == {b"hi\xed\xa0\x80": b"first"}
+
+
+def test_a_lone_surrogate_in_the_comment_does_not_refuse_the_archive(
+    tmp_path: Path,
+) -> None:
+    """The comment is UTF-16 code units too, and decodes as the names do."""
+    archive = tmp_path / "comment.7z"
+    archive.write_bytes(_surrogate_7z([("ok.txt", b"ok")], comment="note\ud800"))
+    with archivey.open_archive(archive) as reader:
+        assert reader.info.comment == "note\ud800"
+        assert [m.name for m in reader.members()] == ["ok.txt"]
+        assert reader.read("ok.txt") == b"ok"
+
+
+def test_a_rejection_names_the_stored_member(tmp_path: Path) -> None:
+    """The checks see the name that reaches disk; the error reports ``member.name``."""
+    archive = tmp_path / "escape.7z"
+    archive.write_bytes(_surrogate_7z([("\ud800/../x", b"x"), ("ok.txt", b"ok")]))
+    dest = tmp_path / "out"
+    results = archivey.extract(archive, dest, on_error="continue")
+    blocked, ok = results
+    assert ok.status is ExtractionStatus.EXTRACTED
+    assert blocked.status is ExtractionStatus.BLOCKED
+    assert isinstance(blocked.error, FilterRejectionError)
+    assert blocked.error.member_name == blocked.member.name == "\ud800/../x"
+    assert "member='\\ud800/../x'" in str(blocked.error)
 
 
 def test_a_low_surrogate_in_the_escape_range_is_a_byte(tmp_path: Path) -> None:
