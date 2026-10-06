@@ -81,3 +81,11 @@ Going over a limit raises `ResourceLimitError`.
 
 For archives from strangers, extract into an empty folder that nothing else uses, and check what
 came out before moving it anywhere else.
+
+## Reporting a vulnerability
+
+Please report security problems privately through
+[GitHub's private vulnerability reporting](https://github.com/davitf/archivey/security/advisories/new),
+not in a public issue. [SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md) says
+what's in scope and what happens after you report. The limits on this page are known and accepted.
+If you find one that does more harm than this page describes, please report it.
