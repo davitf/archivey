@@ -65,7 +65,9 @@ If `TarInfo.mtime` cannot be represented as a Python `datetime`, `modified`
 SHALL be `None` and `MEMBER_TIMESTAMP_INVALID` SHALL be emitted with typed,
 JSON-safe member identity and source/value context. Under default policy it is
 collected/logged and may attach to the member; under `RAISE`, listing halts with
-`DiagnosticRaisedError`.
+`DiagnosticRaisedError`. The same SHALL hold for a PAX `mtime`, `atime`, `ctime` or
+`LIBARCHIVE.creationtime` record that is not a number or is out of range: the field it
+fills SHALL be `None` and `MEMBER_TIMESTAMP_INVALID` SHALL name the record in `field`.
 
 #### Scenario: TAR metadata matrix
 
@@ -80,6 +82,8 @@ collected/logged and may attach to the member; under `RAISE`, listing halts with
 | PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
+| PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the record name |
+| PAX `mtime` not a number (tarfile reads it as `0`) | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 
 ### Requirement: Extract TAR hardlinks with a pull-based coordinator

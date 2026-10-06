@@ -1937,6 +1937,48 @@ def test_pre_1970_pax_atime_lists_its_date(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("key", "attr"),
+    [
+        ("atime", "accessed"),
+        ("ctime", "ctime"),
+        ("LIBARCHIVE.creationtime", "created"),
+        ("mtime", "modified"),
+    ],
+)
+@pytest.mark.parametrize("raw", ["not-a-time", "1e30", "nan"])
+def test_bad_pax_time_is_reported(
+    tmp_path: Path, key: str, attr: str, raw: str
+) -> None:
+    # Every PAX time record that does not decode is reported the same way: the field
+    # is None and MEMBER_TIMESTAMP_INVALID names it. tarfile itself turns a PAX mtime
+    # that is not a number into 0, which must not list as the Unix epoch.
+    path = tmp_path / "bad_time.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("t.txt")
+        info.mtime = 1_600_000_000
+        info.pax_headers = {key: raw}
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert getattr(member, attr) is None
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 1
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        assert diagnostic.context.field == key
+
+
+def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
+    path = tmp_path / "epoch.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("t.txt")
+        info.pax_headers = {"mtime": "0"}
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        assert ar.get("t.txt").modified == datetime(1970, 1, 1, tzinfo=timezone.utc)
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+
+
 def _tar_hardlink_then_target() -> bytes:
     """``h`` is a hardlink to ``t``; the only ``t`` comes after it, and an earlier
     ``u`` that a later ``u`` replaces is linked from ``hu`` between the two."""
