@@ -1151,8 +1151,11 @@ bytes that cannot be represented portably on the destination filesystem SHALL be
 to a deterministic, reversible portable spelling — each non-UTF-8 byte (a surrogateescape
 char U+DC80–U+DCFF mapping to raw byte 0x80–0xFF) percent-escaped as `%XX` (uppercase hex),
 and a literal `%` escaped as `%25` — applied on **every** platform, collision-tracked as
-above, and recorded as `ExtractionResult.presented_name`. The scheme SHALL touch only
-non-decodable bytes; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
+above, and recorded as `ExtractionResult.presented_name`. The characters Win32 refuses in a
+name, `<`, `>`, `"`, `|`, `?`, `*` and the controls 0x01–0x1F, SHALL be escaped the same
+way, as `%XX` of their code point (`a?b` → `a%3Fb`), so a name POSIX could store gives the
+tree Windows gives. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
+touch nothing else; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a
 public un-escape API is out of scope. Either way the outcome SHALL be deterministic and
@@ -1179,6 +1182,7 @@ rewritten name then collides and is renamed).
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
 | TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
 | Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
+| `what?.txt`, `a*b`, a name with a control byte | Written as `what%3F.txt`, `a%2Ab`, `%XX` per control; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |
 | Filter rename, then a portable rewrite | `member.name`, `presented_name`, and `path.name` are all three spellings | Faithful bytes attempted |

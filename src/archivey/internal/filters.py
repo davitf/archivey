@@ -433,15 +433,33 @@ def _is_reserved_segment(segment: str) -> bool:
     return segment.partition(".")[0].strip().upper() in _RESERVED_NAMES
 
 
-def _sanitize_portable_name(name: str) -> str:
-    """O7: rewrite a name carrying non-UTF-8 (surrogateescape) bytes to a deterministic
-    portable spelling. Each surrogateescape char ``U+DC80``–``U+DCFF`` (a raw byte
-    0x80–0xFF that did not decode as UTF-8) becomes ``%XX`` (uppercase hex of the byte);
-    a literal ``%`` becomes ``%25``, so a *rewritten* name unescapes back to its bytes.
+# Characters Win32 refuses in a file name (WinError 123), besides ``:``, which is
+# rejected as an NTFS stream separator, ``\\`` and ``/``, which are separators, and
+# NUL, which no OS writes. The O7 escape writes each one as ``%XX`` on every OS.
+_WINDOWS_INVALID_CHARS = frozenset('<>"|?*') | frozenset(map(chr, range(0x01, 0x20)))
 
-    Only names that actually carry such bytes are rewritten — valid Unicode (including
-    NFC/NFD forms) is representable on every filesystem and is returned unchanged; its
-    cross-platform folding is the collision-tracking concern, not a representability one.
+
+def _needs_escape(c: str) -> bool:
+    return "\udc80" <= c <= "\udcff" or c in _WINDOWS_INVALID_CHARS
+
+
+def _sanitize_portable_name(name: str) -> str:
+    """O7: rewrite a name that a filesystem cannot store to a deterministic portable
+    spelling. Two kinds of character are escaped as ``%XX`` (uppercase hex):
+
+    - each surrogateescape char ``U+DC80``–``U+DCFF`` (a raw byte 0x80–0xFF that did
+      not decode as UTF-8), as the byte;
+    - each character Windows refuses in a name, ``<>"|?*`` and the controls
+      0x01–0x1F, as its code point (``a?b`` → ``a%3Fb``). POSIX could write them, but
+      then the same archive gives a different tree on Windows.
+
+    In a name that has either, a literal ``%`` becomes ``%25``, so a *rewritten* name
+    unescapes back to its bytes.
+
+    Only names that actually carry such characters are rewritten — valid Unicode
+    (including NFC/NFD forms) is representable on every filesystem and is returned
+    unchanged; its cross-platform folding is the collision-tracking concern, not a
+    representability one.
 
     A lone surrogate outside U+DC80-U+DCFF (a 7z name can keep one) is not a byte,
     and this function leaves it alone. ``apply_name_policy`` first spells it as its
@@ -458,12 +476,14 @@ def _sanitize_portable_name(name: str) -> str:
     map sees both spellings as one key, so the second is resolved by the
     ``OverwritePolicy`` rather than silently overwriting the first.
     """
-    if not any("\udc80" <= c <= "\udcff" for c in name):
+    if not any(_needs_escape(c) for c in name):
         return name
     out: list[str] = []
     for c in name:
         if "\udc80" <= c <= "\udcff":
             out.append("%%%02X" % (ord(c) - 0xDC00))
+        elif c in _WINDOWS_INVALID_CHARS:
+            out.append("%%%02X" % ord(c))
         elif c == "%":
             out.append("%25")
         else:
@@ -507,11 +527,12 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides — and **rewrite** the
     merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3), and both levels
-    write a ``\\`` as ``/`` (in a hard link's target too) and normalize
-    non-representable bytes (O7). A lone surrogate outside U+DC80-U+DCFF is
-    escaped too, as its UTF-8 bytes (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is
-    the same on every OS; ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not
-    rejecting) a legitimate-but-awkward name keeps extraction working; refusal is reserved for
+    write a ``\\`` as ``/`` (in a hard link's target too) and escape bytes that are not
+    UTF-8 and the characters Windows refuses, ``<>"|?*`` and 0x01-0x1F (O7). A lone
+    surrogate outside U+DC80-U+DCFF is escaped too, as its UTF-8 bytes
+    (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is the same on every OS;
+    ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not rejecting) a
+    legitimate-but-awkward name keeps extraction working; refusal is reserved for
     structures that cannot be safely written. Raises :class:`FilterRejectionError` (so the
     coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a
     rewritten ``.replace()`` copy.

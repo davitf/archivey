@@ -1663,9 +1663,11 @@ def _report_lines(err: str, marker: str) -> list[str]:
 
 
 # A member name carrying an ANSI erase-line plus a CR: printed raw, everything before
-# the CR is wiped and the archive gets to author the whole terminal line. Windows cannot
-# hold such a name at all (control bytes are illegal in NTFS names, WinError 123), so
-# tests using it are Unix-only — the write fails there before any report line is reached.
+# the CR is wiped and the archive gets to author the whole terminal line. STRICT and
+# STANDARD write the control bytes as %XX (O7), so a report line built from the path on
+# disk never carries them; tests that need the raw name in such a line use
+# ``--policy trusted``. Windows cannot hold the raw name at all (control bytes are
+# illegal in NTFS names, WinError 123), so those tests are Unix-only.
 _SPOOF_ANSI = "ev\x1b[2Kil\rSUCCESS.txt"
 _ANSI_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
@@ -1686,7 +1688,7 @@ def test_extract_escapes_member_paths_in_overwrite_reports(
 ) -> None:
     """These lines print ``requested_path``, which is built from the member's own name.
 
-    The portable rewrite does not strip non-printable characters under any policy, so an
+    The portable rewrite escapes only the controls 0x01-0x1F, not U+2028, so an
     unescaped path here is the display-spoofing vector ``escape_member_name`` closes.
     """
     archive = _zip(
@@ -1727,10 +1729,26 @@ def test_extract_escapes_member_paths_in_rename_reports(
 def test_extract_escapes_ansi_spoof_in_overwrite_reports(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], overwrite: str, marker: str
 ) -> None:
-    """The real spoof: ESC[2K + CR would erase the line and rewrite it."""
-    archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
+    """The real spoof: ESC[2K + CR would erase the line and rewrite it.
+
+    TRUSTED writes the name as stored, so the raw bytes reach ``requested_path``. It has
+    no collision event for a case-only pair, so the clash here is a directory member
+    and then a file member of the same name, which meet as an existing entry.
+    """
+    archive = _zip(tmp_path / "c.zip", {f"{_SPOOF_ANSI}/": b"", _SPOOF_ANSI: b"B"})
     dest = tmp_path / "out"
-    main(["x", str(archive), "-d", str(dest), "--overwrite", overwrite])
+    main(
+        [
+            "x",
+            str(archive),
+            "-d",
+            str(dest),
+            "--overwrite",
+            overwrite,
+            "--policy",
+            "trusted",
+        ]
+    )
     err = capsys.readouterr().err
     lines = _report_lines(err, marker)
     assert lines
@@ -1817,7 +1835,9 @@ def test_extract_summary_escapes_the_single_root(
     """
     monkeypatch.chdir(tmp_path)
     archive = _zip(tmp_path / "one.zip", {f"{root}/a.txt": b"a", f"{root}/b.txt": b"b"})
-    assert main(["x", str(archive)]) == EXIT_OK
+    # TRUSTED: STRICT would write the control bytes as %XX, and the root as printed
+    # would no longer carry them.
+    assert main(["x", str(archive), "--policy", "trusted"]) == EXIT_OK
     lines = _summary_lines(capsys.readouterr().err)
     assert len(lines) == 1
     assert raw not in lines[0]
@@ -1854,7 +1874,8 @@ def test_extract_hoist_report_escapes_the_single_root(
     archive = _tar(
         tmp_path / "bundle.tar", {f"{root}/a.txt": b"a", f"{root}/b.txt": b"b"}
     )
-    assert main(["x", str(archive)]) == EXIT_OK
+    # TRUSTED, as in the summary test above: the root keeps its raw bytes on disk.
+    assert main(["x", str(archive), "--policy", "trusted"]) == EXIT_OK
     err = capsys.readouterr().err
     moved = _report_lines(err, "moved to ")
     assert moved == [f"moved to {escaped}/"]
@@ -2307,16 +2328,15 @@ def test_abort_notice_escapes_the_error_message(
     assert "\\u2028" in err
 
 
-@_ANSI_ONLY
 def test_abort_notice_escapes_an_ansi_spoof(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The real spoof through the abort print site.
 
-    Unix-only: on Windows the member cannot be written at all (WinError 123), so the
-    run fails before two names ever collide. The name still reaches stderr there, in
-    the WARNING reporting that it could not be written — escaped by ``%r``, which
-    ``test_log_records_escape_archive_derived_text`` covers.
+    The default policy writes the control bytes as %XX, so the path in the notice is
+    already safe; the member name it also carries is the stored one, raw bytes and
+    all. With the bytes escaped on disk the member is written on Windows too, so this
+    runs on every platform.
     """
     archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
     dest = tmp_path / "out"
@@ -2325,6 +2345,7 @@ def test_abort_notice_escapes_an_ansi_spoof(
     assert "Name collision" in err
     assert "\x1b" not in err
     assert "\r" not in err
+    assert "EV\\x1b[2KIL\\rSUCCESS.TXT" in err
 
 
 def test_test_verb_escapes_failure_detail(

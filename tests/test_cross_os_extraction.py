@@ -161,3 +161,74 @@ def test_rewritten_name_is_checked_where_it_is_written(
     assert isinstance(result.error, FilterRejectionError)
     assert result.error.member_name == name
     assert list(outside.iterdir()) == []
+
+
+# --- Characters Windows refuses are escaped ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name,written",
+    [
+        ("a?b", "a%3Fb"),
+        ('q"u<o>t|e*', "q%22u%3Co%3Et%7Ce%2A"),
+        ("tab\there", "tab%09here"),
+        ("line\nbreak\x1f", "line%0Abreak%1F"),
+        ("bell\x01", "bell%01"),
+        # A '%' in a name the escape rewrites is escaped too, so it reads back.
+        ("50%?", "50%25%3F"),
+        # Each segment, directories included.
+        ("d?r/f*le", "d%3Fr/f%2Ale"),
+    ],
+)
+@_PORTABLE
+def test_windows_invalid_characters_are_escaped(
+    name: str, written: str, policy: ExtractionPolicy
+) -> None:
+    out = apply_name_policy(_member(name), policy)
+    assert out.name == written
+
+
+@_PORTABLE
+def test_windows_invalid_characters_are_escaped_on_disk(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", "what?.txt", b"x"), ("file", "a|b", b"y")])),
+        dest,
+        policy=policy,
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert _tree(dest) == ["a%7Cb", "what%3F.txt"]
+    assert [r.presented_name for r in report.results] == ["what?.txt", "a|b"]
+
+
+def test_plain_names_and_percent_are_not_escaped() -> None:
+    for name in ["50%.txt", "café", "a b", "x\x7fy", "#&;'"]:
+        member = _member(name)
+        assert apply_name_policy(member, ExtractionPolicy.STRICT) is member
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows refuses these names")
+def test_windows_invalid_characters_are_written_under_trusted(tmp_path: Path) -> None:
+    open_and_extract(
+        io.BytesIO(_tar([("file", "what?.txt", b"x")])),
+        tmp_path / "out",
+        policy=ExtractionPolicy.TRUSTED,
+    )
+    assert _tree(tmp_path / "out") == ["what?.txt"]
+
+
+@_PORTABLE
+def test_hardlink_to_an_escaped_name_links_to_what_was_written(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", "a?b", b"x"), ("hard", "l", "a?b")])),
+        dest,
+        policy=policy,
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert _tree(dest) == ["a%3Fb", "l"]
+    assert (dest / "l").read_bytes() == b"x"
