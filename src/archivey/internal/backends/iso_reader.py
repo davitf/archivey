@@ -683,18 +683,20 @@ def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
 
 _install_pycdlib_path_table_bound()
 
-# Exceptions that mean "this ISO structure is bad", translated to CorruptionError. A
-# genuine OSError from the underlying handle (file not found, permission, physical media
-# error) is unrelated to ISO decoding and MUST propagate unchanged (see error-handling:
-# "Genuine runtime and I/O errors are not reclassified"). pycdlib raises its own
+# Exceptions that mean "this ISO structure is bad", translated to CorruptionError.
 # pycdlib wraps *most* format errors in PyCdlibException, but it is not hardened against
 # crafted/truncated input: fuzzing surfaces bare IndexError, struct.error, UnicodeDecodeError,
 # AttributeError ("'NoneType' object has no attribute …"), KeyError, and ValueError raised deep
-# in its header/path-table/directory-record parsing. At the pycdlib call boundary (this backend
-# never does its own attribute access or indexing on pycdlib internals) every one of these means
-# "this ISO structure is corrupt", so all are translated to CorruptionError — never a raw
-# exception. A genuine OSError from the underlying handle (file not found, permission, media
-# error) is deliberately NOT in this set: it is real I/O and MUST propagate unchanged (see
+# in its header/path-table/directory-record parsing, so all are translated to CorruptionError
+# rather than leaking as raw exceptions. The cost of so broad a set: this backend also reads
+# pycdlib internals itself (`_nm_name`, `_rr_entry_groups`, `_times`, `_px`,
+# `_check_path_table`), inside the same window, so a bug in that code (an attribute pycdlib
+# no longer sets, say) is reported as a corrupt image rather than crashing. That is how an
+# unguarded `ce_entries is None` on pycdlib 1.20+ showed up. We keep the broad set because
+# telling a pycdlib frame from ours would need traceback inspection on every error; the
+# guard is to run the ISO suites against newer pycdlib releases (`uv run --with pycdlib==X`).
+# A genuine OSError from the underlying handle (file not found, permission, media error) is
+# deliberately NOT in this set: it is real I/O and MUST propagate unchanged (see
 # error-handling: "Genuine runtime and I/O errors are not reclassified"). Built defensively so
 # the module imports without pycdlib.
 _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
