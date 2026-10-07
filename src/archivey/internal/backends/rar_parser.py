@@ -338,7 +338,11 @@ class RarMemberInfo:
     # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
     # concatenated volume space, for a member merged across volumes; empty for a
     # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
-    # offset and the total.
+    # offset and the total. With ``split_after`` clear the list is the whole member:
+    # each part continues the one before it (:func:`_merge_split_member`), and a
+    # continuation with no predecessor is a member of its own, which
+    # :func:`_parse_rar_volume` refuses on volume 1. ``split_after`` still set means
+    # the last part was not found (an end block that claimed no next volume).
     data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from
@@ -1271,6 +1275,17 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
         raise CorruptionError(
             "Mismatched RAR split continuation: "
             f"{quoted(new.filename)} does not continue {quoted(old.filename)}"
+        )
+    # A volume holds at most one part of a member: a continuation is the first file
+    # header of the next volume. A walk merges within one volume only when the volume
+    # repeats a continuation, and every repeat would add a retained part (and later a
+    # view) that ``max_members`` does not count: 200 000 one-byte parts in a 6.8 MB
+    # archive held 26 MB after open and peaked at 153 MB on the read. Refused, so
+    # the parts of a member stay bounded by the volumes the caller passed.
+    if new.volume_index == old.volume_index:
+        raise CorruptionError(
+            f"RAR split continuation of {quoted(new.filename)} is in the same "
+            "volume as the part it continues"
         )
     if not old.data_parts:
         old.data_parts.append((old.data_offset, old.compress_size))

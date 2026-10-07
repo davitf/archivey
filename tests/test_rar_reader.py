@@ -49,6 +49,7 @@ from archivey.internal.backends.rar_parser import (
     _decode_rar3_unicode_name,
     load_vint,
     parse_rar_archive,
+    parse_rar_volumes,
 )
 from archivey.internal.external.cli import terminate_process
 from archivey.terminal import display_path
@@ -1152,7 +1153,6 @@ def test_blake2sp_unrar_oracle_crosscheck() -> None:
     assert proc.stdout == native == b"stored payload"
 
 
-@requires_binary("unrar")
 def test_multi_volume_roundtrip() -> None:
     part1 = _fixture("tinyvol.part1.rar")
     assert (_FIXTURES / "tinyvol.part2.rar").is_file()
@@ -1164,7 +1164,6 @@ def test_multi_volume_roundtrip() -> None:
         assert archive.cost.notes == ()
 
 
-@requires_binary("unrar")
 def test_multi_volume_rnn_roundtrip() -> None:
     """Classic RAR4 volumes: ``name.rar`` + ``name.r00`` (``-vn`` naming)."""
     first = _fixture("tinyvol_rnn.rar")
@@ -1173,6 +1172,28 @@ def test_multi_volume_rnn_roundtrip() -> None:
         assert archive.info.is_multivolume is True
         assert archive.info.extra.get("rar.volume_count") == 2
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("name", "member_name"),
+    [
+        ("tinyvol.part1.rar", "payload.bin"),
+        ("tinyvol_rnn.rar", "payload.bin"),
+        ("stored_solid_member__.rar", "second.bin"),
+    ],
+)
+def test_stored_slice_matches_unrar(name: str, member_name: str) -> None:
+    """Joined parts and a solid-flagged stored member read what ``unrar p`` prints."""
+    fixture = _fixture(name)
+    with open_archive(fixture) as archive:
+        native = archive.read(member_name)
+    proc = subprocess.run(
+        ["unrar", "p", "-inul", str(fixture), member_name],
+        check=True,
+        capture_output=True,
+    )
+    assert proc.stdout == native
 
 
 # ``tinyvol_m3``: the same split, compressed, so unrar still reads it across volumes
@@ -2002,12 +2023,22 @@ def test_rar3_matching_split_continuation_merges() -> None:
     cont = _rar3_file_block(
         b"a.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=5, unp_lo=5
     )
-    # Each FILE header's claimed pack size must be skipped before the next header.
-    blob = RAR_ID + main_hdr + first + b"AAA" + cont + b"BBBBB" + end_hdr
-    archive = parse_rar_archive(io.BytesIO(blob))
+    # The continuation opens the next volume; a volume holds one part of a member.
+    from archivey.internal.backends.rar_parser import _crc32
+
+    next_without_crc = struct.pack("<BHH", 0x7B, 0x0001, 7)  # ENDARC: next volume
+    next_hdr = struct.pack("<H", _crc32(next_without_crc) & 0xFFFF) + next_without_crc
+    volume1 = RAR_ID + main_hdr + first + b"AAA" + next_hdr
+    volume2 = RAR_ID + main_hdr + cont + b"BBBBB" + end_hdr
+    archive = parse_rar_volumes([io.BytesIO(volume1), io.BytesIO(volume2)])
     assert [m.filename for m in archive.members] == ["a.txt"]
     assert archive.members[0].compress_size == 8
     assert archive.members[0].spanned_volumes is True
+    second_data = len(volume1) + len(volume2) - len(end_hdr) - 5
+    assert archive.members[0].data_parts == [
+        (len(volume1) - len(next_hdr) - 3, 3),
+        (second_data, 5),
+    ]
 
 
 def test_rar5_hostile_packed_size_is_corruption() -> None:
@@ -3248,6 +3279,21 @@ def test_rar_split_continuation_does_not_consume_member_slot() -> None:
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
     with open_archive(_fixture("tinyvol.part1.rar"), config=cfg) as reader:
         assert len(reader.members()) == 1
+
+
+def test_rar_split_continuation_in_the_same_volume_is_refused() -> None:
+    """A volume holds at most one part of a member, so parts stay bounded by volumes.
+
+    Each repeated continuation would be one more retained part that ``max_members``
+    does not count; a crafted volume of 200 000 one-byte parts held 26 MB after open.
+    """
+    main_hdr, end_hdr = _rar3_main_and_end()
+    parts = [_rar3_file_block(b"a", flags=0x02, pack_lo=1, unp_lo=3) + b"x"]
+    parts.append(_rar3_file_block(b"a", flags=0x03, pack_lo=1, unp_lo=3) + b"y")
+    parts.append(_rar3_file_block(b"a", flags=0x01, pack_lo=1, unp_lo=3) + b"z")
+    blob = RAR_ID + main_hdr + b"".join(parts) + end_hdr
+    with pytest.raises(CorruptionError, match="same volume"):
+        parse_rar_archive(io.BytesIO(blob))
 
 
 def test_rar_unlimited_lifts_member_cap() -> None:

@@ -247,8 +247,8 @@ copies the `UNP_VER` byte as stored, unvalidated. RAR5 members report `50`
 
 The system SHALL read stored, uncompressed, unencrypted members directly as raw
 bytes through the shared pass-through backend, whatever the member's own solid flag
-says, and a member split across volumes by joining its parts in order. All other member data SHALL be
-read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
+says. A member split across volumes SHALL be read by joining its parts in order.
+All other member data SHALL be read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
 `PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
 (`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that
 does not match inside `UNRAR`) whose parsed major.minor is 6.0 or later.
@@ -1211,10 +1211,10 @@ When `ArchiveyConfig.rar_decompressor` is `none`, the system MUST NOT start `unr
 comment, and not to read member data. Opening and listing SHALL work as with any
 other setting, including header-encrypted archives given the right password. A
 stored member that is not encrypted SHALL be read directly, as it is under every
-setting. Every other member read
-SHALL raise `UnsupportedFeatureError` before any process starts or any source is
-copied, naming why the member needs a program (compressed or encrypted)
-and the `unrar` setting that reads it. A compressed RAR 1.5/2.x old-style comment
+setting, when all of its parts were found. Every other member read SHALL raise
+`UnsupportedFeatureError` before any process starts or any source is copied,
+naming why the member cannot be read (compressed, encrypted, or split across volumes
+with a part missing) and the `unrar` setting that reads it. A compressed RAR 1.5/2.x old-style comment
 SHALL be `None`. When the archive has a file member that this setting refuses,
 `ar.cost.notes` SHALL say so at open.
 
@@ -1226,6 +1226,7 @@ SHALL be `None`. When the archive has a file member that this setting refuses,
 | Compressed member | `UnsupportedFeatureError` naming "compressed"; no process starts |
 | Encrypted member, stored or compressed | `UnsupportedFeatureError` naming "encrypted" |
 | Stored member split across volumes | Its parts are joined and read; no process starts |
+| Stored member split across volumes, a later part missing | `UnsupportedFeatureError` naming "not every part was found" |
 | Stored member with its own solid flag | Read directly; no process starts |
 | Solid archive, `stream_members()` | Each member's read is refused on its own; no solid pass starts |
 | Header-encrypted archive, right password | Lists; no process starts |

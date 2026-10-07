@@ -214,7 +214,8 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
 
 _NO_DECOMPRESSOR_NOTE = (
     "ArchiveyConfig.rar_decompressor is 'none', so no external program reads RAR "
-    "member data. Reading a compressed or encrypted member will be refused."
+    "member data. Reading a compressed or encrypted member, or a member split across "
+    "volumes with a part missing, will be refused."
 )
 
 
@@ -284,6 +285,17 @@ def _data_is_in_one_place(info: RarMemberInfo) -> bool:
     volume's part into the next header.
     """
     return not (info.split_before or info.split_after or info.spanned_volumes)
+
+
+def _data_is_reachable(info: RarMemberInfo) -> bool:
+    """Whether every packed byte of the member can be sliced out of the sources.
+
+    Either one run (:func:`_data_is_in_one_place`) or every part of a member merged
+    across volumes (``data_parts``, with no part still expected after the last).
+    """
+    return _data_is_in_one_place(info) or (
+        bool(info.data_parts) and not info.split_after
+    )
 
 
 class _JoinedParts(ConcatenatedFile):
@@ -497,7 +509,9 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
     clear, the read still took 314 MiB; with it clear and the member's flag set,
     ``unrar`` decoded nothing ahead (47 MiB, the parent's own). ``rar -s`` writes
     both flags on every member after the first. The reader slices a stored member
-    itself whatever its flags, so a stored member reaches ``unrar`` only in a pass.
+    itself whatever its solid flag, unless it is encrypted or its encryption is
+    unsettled: such a member reaches ``unrar`` by name and is charged its entry
+    here. Any other stored member reaches ``unrar`` only inside a solid pass.
     A RAR3 symlink does count: its target is compressed data. That is why this walk
     does not use ``is_payload_file()`` as :meth:`RarReader._solid_prefix` does.
     """
@@ -2804,9 +2818,7 @@ class RarReader(BaseArchiveReader):
         # The member's own solid flag does not matter here: a stored member's bytes
         # are plaintext where they sit, even inside a solid stream (``rar -s -ms``),
         # and its parts, when split across volumes, are joined in order.
-        return info.compress_type == _RAR_METHOD_STORED and (
-            _data_is_in_one_place(info) or bool(info.data_parts)
-        )
+        return info.compress_type == _RAR_METHOD_STORED and _data_is_reachable(info)
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
         # ``encryption_unknown`` is excluded here rather than refused: slicing the
@@ -2952,10 +2964,11 @@ class RarReader(BaseArchiveReader):
             # Either size: a header where only one is zero is damage, refused below,
             # not an archive that recorded no target.
             and (raw.file_size > 0 or raw.compress_size > 0)
-            and _data_is_in_one_place(raw)
+            and _data_is_reachable(raw)
         ):
-            # Unlike the member read, a solid flag does not hold the target back: a
-            # stored target needs no decoder. ``encryption_unknown`` needs no arm in
+            # As for the member read, neither a solid flag nor a split holds the
+            # target back: a stored target needs no decoder, and split parts are
+            # joined in order. ``encryption_unknown`` needs no arm in
             # the reason chain below: only the RAR5 extra-area walk sets it, and a
             # RAR5 symlink has ``file_redir`` and returned above.
             #
@@ -2980,7 +2993,7 @@ class RarReader(BaseArchiveReader):
             if raw.file_size > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member)
                 return
-            view = self._shared.view(raw.data_offset, raw.file_size)
+            view = self._direct_view(raw, raw.file_size)
             try:
                 data = view.read()
             finally:
@@ -3019,9 +3032,9 @@ class RarReader(BaseArchiveReader):
                 "its data is encrypted and this reader does not decrypt it in place"
             )
             in_archive = True
-        elif not _data_is_in_one_place(raw):
+        elif not _data_is_reachable(raw):
             reason = "target_data_split_across_volumes"
-            detail = "its data is split across volumes"
+            detail = "its data is split across volumes and not every part was found"
             in_archive = True
         elif raw.compress_type != _RAR_METHOD_STORED:
             reason = "target_data_compressed"

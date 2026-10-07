@@ -340,7 +340,7 @@ it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than lea
 | `reason` | When | Archive records a target |
 | --- | --- | --- |
 | `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
-| `target_data_split_across_volumes` | the target's bytes straddle a volume boundary | yes |
+| `target_data_split_across_volumes` | the target is split across volumes and a later part was not found (a complete split target is joined and read) | yes |
 | `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
 | `no_target_data` | the member's declared and packed sizes are both zero | no |
 

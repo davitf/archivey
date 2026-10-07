@@ -262,12 +262,9 @@ def test_every_rar5_member_reads_its_own_bytes_or_is_refused(
     """
     monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
     blocks = _rar5_parse(_build_rar5(tmp_path, _RAR5_NAMES).read_bytes())
-    main = next(block for block in blocks if block["type"] == 1)
-    main["body"] = bytes([main["body"][0] | 0x04]) + main["body"][1:]
     for block in blocks:
         if block["type"] == 2:
             block["crc"] = None
-            block["cinfo"] |= 0x40
     path = tmp_path / "nocrc.rar"
     path.write_bytes(_rar5_build(blocks))
     outcomes: dict[int, str] = {}

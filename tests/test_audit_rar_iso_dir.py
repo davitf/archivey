@@ -723,6 +723,36 @@ def test_a_stored_solid_member_is_sliced_without_paying_the_window_ahead(
 
 
 @requires_binary("unrar")
+def test_unrar_counts_the_window_ahead_of_an_encrypted_stored_solid_member(
+    tmp_path: Path, no_spawn: None
+) -> None:
+    """An encrypted stored member is not sliced, so unrar reads it and pays the window.
+
+    unrar decodes the solid prefix to reach it. The archive is the one above with
+    ``tail.txt`` also carrying an encryption record; the read is refused on the
+    dictionary before unrar starts, with or without a password.
+    """
+    blocks = _rar5_parse(_fixture("seek_respawn_solid__.rar").read_bytes())
+    prefix, tail = _rar5_file_blocks(blocks)
+    _declare_dictionary(prefix, _RAR5_DICT_4GIB, unpacked=_3_GIB)
+    tail["cinfo"] &= ~(7 << 7)  # method 0, stored; the solid flag stays
+    # FHEXTRA_CRYPT: version 0, no password check, KDF count 15, salt, IV.
+    record = _vint(1) + _vint(0) + _vint(0) + bytes([15]) + bytes(16) + bytes(16)
+    tail["extra"] += _vint(len(record)) + record
+    path = tmp_path / "encrypted_stored_tail.rar"
+    path.write_bytes(_rar5_build(blocks))
+    with open_archive(path, config=_UNRAR_ONLY, password="password") as archive:
+        member = archive.get("tail.txt")
+        assert member is not None
+        assert member.is_encrypted
+        with pytest.raises(
+            ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
+        ) as excinfo:
+            archive.read("tail.txt")
+    assert "the header of member 'prefix.bin' declares" in str(excinfo.value)
+
+
+@requires_binary("unrar")
 def test_unrar_counts_an_earlier_member_its_shared_mask_decodes(
     tmp_path: Path, no_spawn: None
 ) -> None:

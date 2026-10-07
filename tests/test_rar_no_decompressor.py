@@ -6,6 +6,7 @@ Every test here makes starting a process fail, so a read that would have run
 
 from __future__ import annotations
 
+import hashlib
 import io
 import subprocess
 from pathlib import Path
@@ -15,10 +16,16 @@ import pytest
 from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
 from archivey.exceptions import UnsupportedFeatureError
 from tests.conftest import requires
+from tests.test_rar_reader import RAR_ID, _rar3_file_block, _rar3_main_and_end
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
 _NONE = ArchiveyConfig(rar_decompressor=RarDecompressor.NONE)
+# As ``scripts/gen_rar_fixtures.py`` writes them.
+_PAYLOADS = {
+    "payload.bin": b"ABCDEFGH" * 200,
+    "second.bin": hashlib.sha256(b"stored_solid_member").digest() * 64,
+}
 
 
 @pytest.fixture(autouse=True)
@@ -82,8 +89,19 @@ def test_stored_split_and_solid_flagged_members_read(
     with open_archive(_RAR / name, config=_NONE) as ar:
         member = ar.get(member_name)
         assert member is not None
-        # The read is checked against the member's stored checksum.
-        assert len(ar.read(member)) == member.size
+        assert ar.read(member) == _PAYLOADS[member_name]
+
+
+def test_split_member_with_a_part_missing_is_named_at_open_and_refused() -> None:
+    # A stored member marked as continuing in a next volume, in an archive whose end
+    # block claims no next volume: the part after it is nowhere.
+    main_hdr, end_hdr = _rar3_main_and_end()
+    member = _rar3_file_block(b"a", flags=0x02, pack_lo=4, unp_lo=8) + b"abcd"
+    blob = RAR_ID + main_hdr + member + end_hdr
+    with open_archive(io.BytesIO(blob), config=_NONE) as ar:
+        assert any("a part missing" in note for note in ar.cost.notes)
+        with pytest.raises(UnsupportedFeatureError, match="not every part was found"):
+            ar.read("a")
 
 
 def test_refusal_comes_before_a_stream_source_is_copied() -> None:

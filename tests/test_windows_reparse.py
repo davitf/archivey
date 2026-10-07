@@ -990,8 +990,9 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
         ),
         # The parts of a target split across volumes are merged into one member
         # before this branch sees it, so once the final part is in, neither split
-        # flag is left set: only ``spanned_volumes`` says its data is not in one
-        # place. This case only checks the reason; the next test does the read.
+        # flag is left set. Merged, it records its parts and they are joined (the
+        # next test); ``spanned_volumes`` with no recorded parts is a target this
+        # read cannot reach.
         pytest.param(
             ("spanned_volumes",),
             True,
@@ -1088,17 +1089,17 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
                 opened.extract_all(dest / "stop", members=only_links)
 
 
-def test_a_rar_symlink_target_split_across_real_volumes_is_not_read_in_place(
+def test_a_rar_symlink_target_split_across_real_volumes_is_joined(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A merged split target is not read from its first volume past that volume's part.
+    """A merged split target is read part by part, not from its first volume onward.
 
     ``tinyvol_rnn.rar`` + ``.r00`` is a RAR 2.0 set whose one stored, non-solid member
     is split: 1600 bytes starting at byte 68 of a 1000-byte first volume. Merged, it
-    has neither split flag, so only ``spanned_volumes`` stops the in-place read, which
-    would return the rest of volume 1 and the start of volume 2 as the target. The
-    member is made a symlink through the same constructor hook as above: no RAR writer
-    this repo installs makes a RAR4 set.
+    has neither split flag. Read in place from its first volume, the target would be
+    the rest of volume 1 and the start of volume 2; its recorded parts give the
+    member's own bytes. The member is made a symlink through the same constructor hook
+    as above: no RAR writer this repo installs makes a RAR4 set.
     """
     original_init = RarMemberInfo.__init__
 
@@ -1120,9 +1121,10 @@ def test_a_rar_symlink_target_split_across_real_volumes_is_not_read_in_place(
         raw = link._raw
         assert isinstance(raw, RarMemberInfo)
         assert raw.spanned_volumes
+        assert len(raw.data_parts) == 2
         assert not (raw.split_before or raw.split_after)
-        assert link.link_target is None
-        assert _unavailable_reasons(opened) == ["target_data_split_across_volumes"]
+        assert link.link_target == "ABCDEFGH" * 200
+        assert _unavailable_reasons(opened) == []
 
 
 def test_a_streaming_symlink_is_written(tmp_path: Path) -> None:
