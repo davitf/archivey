@@ -719,9 +719,9 @@ class _DecodedPastSizeCheck(DelegatingStream):
     Bounding it would need a counter on the codec's input, outside this wrapper.
 
     AES padding in the codec's input is not output, so it is never surplus: LZMA2
-    reads only its ``pack_size`` span, which excludes the pad, the other decoders end
-    the stream at it (or, for the rapidgzip accelerators, never see it: their input
-    is cut to ``pack_size``). So a decoder error on the probe read is not surplus
+    reads only its ``pack_size`` span, which excludes the pad. The other decoders end
+    the stream before the pad (or, for the rapidgzip accelerators, never see it: their
+    input is cut to ``pack_size``). So a decoder error on the probe read is not surplus
     output either, with one exception: input left in an LZMA2 coder's span after its
     end marker (:class:`LzmaDataAfterEndError`), which 7-Zip reports as a data error.
     For the other codecs 7-Zip only warns about input after the end of the stream.
@@ -818,9 +818,11 @@ def _execute_stage(
                 properties=stage.properties,
                 unpack_size=stage.unpack_size,
                 pack_size=stage.pack_size,
-                # A coder's data is one stream, as 7-Zip reads it: a bzip2 coder
-                # ends at its first end-of-stream marker (raw LZMA always does).
-                single_stream=True,
+                # A bzip2 coder's data is one stream, as 7-Zip reads it: it ends at
+                # its first end-of-stream marker. No other codec stage reads the
+                # flag, and Zstd and LZ4 keep counting concatenated frames together
+                # (format-7z), so it is set for BZip2 only.
+                single_stream=stage.codec is Codec.BZIP2,
             ),
             collector=collector,
             seekable=seekable,

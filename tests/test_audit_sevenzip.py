@@ -805,6 +805,8 @@ def test_lzma_coder_behind_aes_reads_with_the_aes_padding(codec: str) -> None:
         coder, packed = _one_stream_coder(codec, payload)
         if len(packed) % 16:
             break
+    else:
+        pytest.fail("no payload size gave a packed length that AES has to pad")
     aes = _coder(_AES, props=b"\x00")
     ciphertext = _aes_encrypt(packed, "pw")
     exact = _codec_archive(

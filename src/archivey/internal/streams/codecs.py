@@ -1265,13 +1265,17 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     size: their streams end where the standard library ends them, so the
     ``VerifyingStream`` alone checks the size there.
 
-    The stream that sets ``limit`` is wrapped by ``_wrap_accelerated_length``, whose
-    ``VerifyingStream`` has the same size as its ``expected_size`` and bounds each of
-    its reads to what remains of it. So the only read that reaches past ``limit`` is
-    that verifier's one-byte over-run probe at the declared size
-    (``_probe_past_declared``): this branch is what decides an over-run on the
-    accelerated path. A switch there decodes the member again with the standard
-    library from its start, up to the position already delivered.
+    A ZIP member sets ``limit`` from its ``expected_decompressed_size``, so its stream
+    is wrapped by ``_wrap_accelerated_length``, whose ``VerifyingStream`` has the same
+    size as its ``expected_size`` and bounds each of its reads to what remains of it.
+    There the only read that reaches past ``limit`` is that verifier's one-byte
+    over-run probe at the declared size (``_probe_past_declared``): this branch is
+    what decides an over-run on the accelerated path. A 7z coder is the other case.
+    It declares an unpack size but no ``expected_decompressed_size``, so
+    ``_wrap_accelerated_length`` adds no verifier: ``limit`` is the coder's unpack
+    size alone, and any read can cross it. A valid coder's last read ends exactly at
+    that size, so it does not switch. In both cases a switch decodes the stream again
+    with the standard library from its start, up to the position already delivered.
 
     A truncated stream is the case where the second decode matters most, and where
     starting it over is most wasteful. rapidgzip 0.16 aborts the child on one, and its
@@ -3143,7 +3147,6 @@ class _RawLzmaCodec(_LzmaErrorCodec):
             magic=_refuse_data_after_lzma_end,
             zero_padding=False,
             collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
         )
         if params.unpack_size is None:
             return decoded
