@@ -36,3 +36,13 @@ member and counting the attempts. Return a password to try, or `None` to give up
 A password given for a format with no encryption, such as TAR, is ignored and noted in the
 [diagnostics](errors-and-diagnostics.md). One list of passwords can then serve a whole batch of
 archives.
+
+## Names in other encodings
+
+Most archives record which encoding their names use, and archivey decodes them with it. When an
+archive doesn't say, which is mostly older ones, archivey uses UTF-8 if the bytes are valid UTF-8.
+Otherwise it uses the format's traditional encoding, such as cp437 for ZIP, or, where there isn't
+one, keeps the bytes it can't decode as escapes. If you know the encoding, pass it as `encoding=`
+to use it instead: a Latin-1 `café.txt` in a TAR lists as `'caf\udce9.txt'` without it and
+`'café.txt'` with `encoding="latin-1"`. `member.name` is the decoded name, and `member.raw_name`
+is the bytes as stored.
