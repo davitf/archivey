@@ -1018,9 +1018,14 @@ Anything that would decompress or scan payload to answer (for example foreign
 decompressor streams) yields `None`. For compressed containers this is compressed
 size; for uncompressed containers the resulting ratio is about 1:1 and harmless.
 
-The ratio SHALL be `cumulative_bytes_written / compressed_source_size`, checked
-in `BombTracker.count()` using the same `max_ratio` and cumulative
-`ratio_activation_threshold` as other ratio guards. If `compressed_source_size`
+The ratio SHALL be `archive_output / compressed_source_size`, where
+`archive_output` is the decoded output plus the bytes a hard link writes as a
+copy past the filesystem's link-count limit ("Enforce Cumulative
+Max-Extracted-Bytes Limit"); a cross-device copy is not part of it. It is
+checked in `BombTracker.count()` and, for those copies, in
+`BombTracker.count_copy()`, using the same `max_ratio` and cumulative
+`ratio_activation_threshold` as other ratio guards. When copies are part of it,
+the error message gives the decoded and copied bytes separately. If `compressed_source_size`
 is absent, the static archive-wide check is skipped. Per-member and archive-wide
 ratios are independent; either may trip first. A tripped archive-wide ratio
 SHALL raise `ResourceLimitError`.
@@ -1031,7 +1036,7 @@ SHALL raise `ResourceLimitError`.
 | --- | --- |
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
 | Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
-| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip |
+| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator |
 
@@ -1088,9 +1093,10 @@ This covers compressed archives from non-seekable pipes and seekable opaque
 streams whose size is not cheaply knowable. Backends wrap the stream source in
 the counting reader exactly when the static denominator is absent.
 
-The ratio SHALL be `cumulative_bytes_written / compressed_bytes_consumed`, checked
-after cumulative output crosses `ratio_activation_threshold` using the same
-`max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
+The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
+`archive_output` as in the static archive-wide requirement (decoded output plus
+link-count-limit copies), checked after it crosses `ratio_activation_threshold`
+using the same `max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
 under `OnError.CONTINUE` with `ResourceLimitError`. The live path complements
 static checks and is not used when member compressed sizes or a cheap outer
 source size provide a denominator; whichever available guard trips first wins.

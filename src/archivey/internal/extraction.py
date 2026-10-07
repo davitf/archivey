@@ -450,13 +450,22 @@ class BombTracker:
         css = self._compressed_source_size
         # Decoded output plus the copies made at the link-count limit (``count_copy``).
         output = self._total_bytes + self._link_limit_copied_bytes
+        # Says which part was not decoded, so a trip on a store-only archive with many
+        # hard links is not read as a decompression bomb.
+        copies = self._link_limit_copied_bytes
+        detail = (
+            f" ({self._total_bytes} bytes decoded, plus {copies} bytes copied for hard "
+            f"links past the filesystem's link-count limit)"
+            if copies
+            else ""
+        )
         if self._max_ratio is not None and output > self._ratio_floor:
             if css and css > 0:
                 if output / css > self._max_ratio:
                     raise _AlwaysStopResourceLimitError(
                         f"Archive-wide decompression ratio "
                         f"{output / css:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1"
+                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
                     )
             elif self._source is not None:
                 consumed = self._source.compressed_bytes_consumed
@@ -464,7 +473,7 @@ class BombTracker:
                     raise _AlwaysStopResourceLimitError(
                         f"Live decompression ratio "
                         f"{output / consumed:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1"
+                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
                     )
 
 

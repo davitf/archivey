@@ -833,7 +833,11 @@ def test_link_limit_copies_trip_the_archive_wide_ratio(
         max_ratio=len(payload) * 20 / len(data), ratio_activation_threshold=0
     )
     monkeypatch.setattr(os, "link", link)
-    with pytest.raises(ResourceLimitError, match="Archive-wide decompression ratio"):
+    with pytest.raises(
+        ResourceLimitError,
+        match=r"Archive-wide decompression ratio .* bytes copied for hard links past "
+        "the filesystem's link-count limit",
+    ):
         open_and_extract(io.BytesIO(data), tmp_path / "out", limits=limits)
 
     def cross_device(src: str | Path, dst: str | Path) -> None:

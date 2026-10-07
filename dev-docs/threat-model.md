@@ -545,7 +545,9 @@ many links to one member trips the ratio. A cross-device copy counts toward
 **Tests.** `tests/test_extraction.py::test_per_member_ratio`,
 `::test_archive_wide_ratio`, `::test_archive_wide_ratio_live_denominator`,
 `::test_zip_bomb_per_member_ratio`, `::test_streaming_targz_bomb_caught_by_live_ratio`,
-`::test_streaming_live_ratio_halts_under_continue`.
+`::test_streaming_live_ratio_halts_under_continue`,
+`::test_link_limit_copies_count_toward_the_archive_wide_ratio`;
+`tests/test_cross_os_extraction.py::test_link_limit_copies_trip_the_archive_wide_ratio`.
 
 #### RAR reads by glob-named member
 

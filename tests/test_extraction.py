@@ -1605,7 +1605,8 @@ def test_link_limit_copies_count_toward_the_archive_wide_ratio() -> None:
     t.start_member(_member("link").replace(compressed_size=1))
     t.count_copy(15, at_link_limit=True)  # ratio 1.5 archive-wide; 15:1 per member
     with pytest.raises(
-        _AlwaysStopResourceLimitError, match="Archive-wide decompression ratio"
+        _AlwaysStopResourceLimitError,
+        match=r"\(0 bytes decoded, plus 25 bytes copied for hard links",
     ):
         t.count_copy(10, at_link_limit=True)
 
