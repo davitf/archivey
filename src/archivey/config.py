@@ -100,6 +100,11 @@ class RarDecompressor(Enum):
       neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
       This is the default. On a machine with ``unar`` and no RARLAB program, it means
       a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
+    - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
+      run on its archives. Opening and listing work as with the others, and so does
+      reading a stored member that is not encrypted, not split across volumes and not
+      in a solid archive. Every other read raises ``UnsupportedFeatureError`` before
+      anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
@@ -109,6 +114,7 @@ class RarDecompressor(Enum):
     UNRAR = "unrar"
     UNAR = "unar"
     AUTO = "auto"
+    NONE = "none"
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
@@ -666,9 +672,9 @@ class ArchiveyConfig:
     rar_decompressor: RarDecompressor = RarDecompressor.AUTO
     """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
 
-    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``). The listing does not
-    depend on it, except that the selected program decodes compressed RAR 1.5/2.x
-    comments.
+    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
+    listing does not depend on it, except that the selected program decodes compressed
+    RAR 1.5/2.x comments.
     """
 
     read_link_targets: bool = True
