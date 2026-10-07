@@ -74,7 +74,7 @@ if TYPE_CHECKING:
     from pycdlib.path_table_record import PathTableRecord
     from pycdlib.pycdlib import PyCdlib
     from pycdlib.pycdlibio import PyCdlibIO
-    from pycdlib.rockridge import RockRidge, RRCERecord
+    from pycdlib.rockridge import RockRidge, RockRidgeEntries, RRCERecord
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import (
@@ -271,11 +271,11 @@ class _SystemUseNotes:
 
     Keyed by ``id`` of the ``RockRidge`` the entries belong to; the object itself is
     kept alongside, so the id cannot be reused while the reader holds the notes.
-    ``RockRidge`` has ``__slots__``, so nothing can be stored on it. ``iso`` is the
-    ``PyCdlib`` doing the parse, for the logical block size a ``CE`` area must fit in.
+    ``RockRidge`` has ``__slots__``, so nothing can be stored on it. ``iso`` gives the
+    logical block size a ``CE`` area must fit in.
     """
 
-    def __init__(self, iso: object) -> None:
+    def __init__(self, iso: PyCdlib) -> None:
         self.zisofs: dict[int, tuple[object, _ZisofsEntry]] = {}
         self.dropped: dict[int, tuple[object, str]] = {}
         self._iso = iso
@@ -413,12 +413,16 @@ _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED = False
 
 
 def _install_pycdlib_system_use_filter() -> None:
-    """Route ``RockRidge.parse`` through :meth:`_SystemUseNotes.filter` during our opens.
+    """Filter ``RockRidge.parse``'s input and refuse an out-of-block ``CE``, in our opens.
 
     pycdlib parses every Rock Ridge area inside ``open_fp`` and fails the whole image on
-    the first entry it cannot parse, so one odd record costs every member. The patch is
-    installed once, on pycdlib's class, and does nothing unless ``_SYSTEM_USE_NOTES`` is
-    set, which only ``IsoReader`` does, around its own ``open_fp`` call.
+    the first entry it cannot parse, so one odd record costs every member: the area goes
+    through :meth:`_SystemUseNotes.filter` first. After each parse, the ``CE`` entry it
+    found, in the record's own area or in a continuation area, goes through
+    :meth:`_SystemUseNotes.check_continuation_entry`, which refuses an area that does
+    not fit in its logical block before pycdlib reads it. The patch is installed once,
+    on pycdlib's class, and does nothing unless ``_SYSTEM_USE_NOTES`` is set, which only
+    ``IsoReader`` does, around its own ``open_fp`` call.
     """
     global _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED
     if pycdlib is None or _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED:
@@ -716,9 +720,20 @@ def _nm_name(record: DirectoryRecord) -> bytes | None:
     9660 identifier, version suffix and all.
     """
     rr = record.rock_ridge
-    if rr is None or not (rr.dr_entries.nm_records or rr.ce_entries.nm_records):
+    if rr is None or not any(e.nm_records for e in _rr_entry_groups(rr)):
         return None
     return bytes(rr.name())
+
+
+def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
+    """The entry groups of a Rock Ridge record: its own area's, then its continuation's.
+
+    From pycdlib 1.20, ``ce_entries`` stays ``None`` until an entry spills into a
+    continuation area, so a record without one has only ``dr_entries``. On older
+    pycdlib both groups always exist.
+    """
+    ce: RockRidgeEntries | None = rr.ce_entries
+    return (rr.dr_entries,) if ce is None else (rr.dr_entries, ce)
 
 
 def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
@@ -1850,7 +1865,7 @@ class IsoReader(BaseArchiveReader):
             # Rock Ridge TF entries carry the POSIX times (in dr_entries, or the CE
             # overflow area). A TF modification time wins over the directory-record
             # date, which cannot hold hundredths or the long form's four-digit year.
-            for entries in (rr.dr_entries, rr.ce_entries):
+            for entries in _rr_entry_groups(rr):
                 tf = getattr(entries, "tf_record", None)
                 if tf is None:
                     continue
@@ -1878,7 +1893,7 @@ class IsoReader(BaseArchiveReader):
         """
         if rr is None:
             return None, None, None
-        for entries in (rr.dr_entries, rr.ce_entries):
+        for entries in _rr_entry_groups(rr):
             px = getattr(entries, "px_record", None)
             if px is not None:
                 mode = getattr(px, "posix_file_mode", None)

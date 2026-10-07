@@ -1554,6 +1554,31 @@ def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
         ]
 
 
+def test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib() -> None:
+    """From pycdlib 1.20, ``ce_entries`` stays ``None`` until a continuation area is
+    parsed; a record with neither an ``NM`` nor such an area has no ``NM`` name.
+
+    The locked pycdlib always allocates ``ce_entries``, so the 1.20 shape is set by
+    hand here; the end-to-end case is the cut-area test above, on pycdlib 1.20+.
+    """
+    import pycdlib
+
+    from archivey.internal.backends.iso_reader import _nm_name, _rr_entry_groups
+
+    iso = pycdlib.PyCdlib()
+    iso.open_fp(io.BytesIO(_build_rr_iso(_two_rr_files)))
+    try:
+        record = iso.get_record(rr_path="/aaa")
+        rr = record.rock_ridge
+        assert rr is not None
+        rr.ce_entries = None
+        assert _rr_entry_groups(rr) == (rr.dr_entries,)
+        rr.dr_entries.nm_records = []
+        assert _nm_name(record) is None
+    finally:
+        iso.close()
+
+
 def test_a_symlink_whose_entries_are_cut_withholds_its_target() -> None:
     """The target may have run on past the malformed entry (genisoimage's long
     targets do), so it is not reported cut short."""

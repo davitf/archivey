@@ -223,7 +223,13 @@ def _with_chained_ce(length: int) -> bytearray:
 
 
 def _pycdlib_follows_ce_chains() -> bool:
-    """pycdlib follows a ``CE`` chain from 1.21; before, a second ``CE`` is invalid."""
+    """pycdlib follows a ``CE`` chain from 1.21; before, a second ``CE`` is invalid.
+
+    ``uv.lock`` pins an older pycdlib, so CI takes the ``False`` branch: there the
+    chained tests pin pycdlib's own refusal of the second ``CE``, raised while it parses
+    the first area, and pass with archivey's check on continuation areas removed. The
+    check itself is exercised only on 1.21+ (``uv run --with pycdlib==1.21.0``).
+    """
     version = importlib.metadata.version("pycdlib")
     return tuple(int(part) for part in version.split(".")[:2]) >= (1, 21)
 
