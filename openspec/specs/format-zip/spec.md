@@ -364,11 +364,12 @@ cuts short stays `TruncatedError`. `UnsupportedFeatureError`,
 `PackageNotInstalledError`, `ResourceLimitError` and `OSError` values SHALL propagate
 unchanged, with two exceptions. The LZMA `lc + lp` and PPMd restore-method settings a
 ZipCrypto key decrypted raise `CorruptionError`, not `UnsupportedFeatureError` (see the
-codec-layer requirement), so a wrong key's garbage there is a candidate failure. On a ZipCrypto `LZMA` or `PPMd` member the codec
-settings (the LZMA properties, the PPMd order and memory size) are part of the encrypted
-data, so a wrong password that passes the one-byte check decrypts them to an arbitrary
-size. A `ResourceLimitError` those settings raise SHALL count as that candidate's
-failure, and the next candidate SHALL be tried. When no candidate succeeds and at least
+codec-layer requirement), so a wrong key's garbage there is a candidate failure. On a
+ZipCrypto `LZMA` or `PPMd` member the codec settings (the LZMA properties, the PPMd
+order and memory size) are part of the encrypted data, so a wrong password that passes
+the one-byte check decrypts them to an arbitrary size. A `ResourceLimitError` those
+settings raise SHALL count as that candidate's failure, and the next candidate SHALL be
+tried. When no candidate succeeds and at least
 one failed that way, the reader SHALL raise the first such `ResourceLimitError`, its
 message noting that under ZipCrypto the password may be wrong. It stays a
 `ResourceLimitError` so that a caller who raises `DecoderLimits.max_decoder_memory`
