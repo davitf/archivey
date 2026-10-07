@@ -1438,11 +1438,33 @@ def test_concurrent_stream_materialize_writes_once_and_cleans_up(
                 path.unlink(missing_ok=True)
 
 
-def test_incomplete_multi_volume_raises() -> None:
-    # Lone volume-1 sibling with volume/next flags and no part2.
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_incomplete_multi_volume_lists_then_raises(streaming: bool) -> None:
+    """A lone volume 1 whose end block says another volume follows.
+
+    Ruled 2026-10-06 (this used to refuse at open): list the members the volumes
+    present hold, then raise ``TruncatedError``, as for a cut single file and as
+    ``unrar`` does. The one member here runs into the missing volume, so its read
+    is a truncation too.
+    """
     part1 = _fixture("tinyvol.part1.rar").read_bytes()
-    with pytest.raises(TruncatedError, match="multi-volume"):
-        open_archive(io.BytesIO(part1))
+    with open_archive(io.BytesIO(part1), streaming=streaming) as archive:
+        report = archive.members_report()
+        assert [m.name for m in report.members] == ["payload.bin"]
+        assert isinstance(report.error, TruncatedError)
+        assert "expects another volume (volume 2 is missing)" in str(report.error)
+    with open_archive(io.BytesIO(part1), streaming=streaming) as archive:
+        if not streaming:
+            with pytest.raises(TruncatedError, match="multi-volume"):
+                archive.members()
+        seen: list[str] = []
+        with pytest.raises(TruncatedError, match="multi-volume"):
+            for member, stream in archive.stream_members():
+                assert stream is not None
+                with pytest.raises(TruncatedError, match="continues into a volume"):
+                    stream.read()
+                seen.append(member.name)
+        assert seen == ["payload.bin"]
 
 
 @requires_binary("unrar")

@@ -54,7 +54,7 @@ Several properties generate most of this page.
 | **FILE** | 2 | One per member, followed immediately by that member's packed bytes. Name, sizes, mtime, attributes, host OS, CRC32, compression info, and in RAR5 an *extra area* of typed records: the redirect (symlink/hardlink/copy), the hash, the file times, the per-file encryption record, the version number |
 | **SERVICE** | 3 | Same layout as FILE, but the payload is archive metadata rather than a member — comments (`CMT`), recovery records, NTFS streams, and the **quick-open record** (`QO`): copies of FILE headers stored after the members (§1.1) |
 | **ENCRYPTION** | 4 | Present only in a header-encrypted RAR5, and *first* if so: the KDF count, salt and optional password-check value needed to decrypt every block after it. RAR3 has no equivalent block — it encrypts the header stream directly, which is why it has no check value and why a wrong password there is only visible as a structural failure |
-| **ENDARC** | 5 | Terminates the walk. Its flags say whether another volume follows, which is what a lone volume 1 is refused on (§2.2) |
+| **ENDARC** | 5 | Terminates the walk. Its flags say whether another volume follows, which is what marks a set as missing its last volume (§2.2) |
 
 RAR3's blocks carry the same *ideas* under a fixed 7-byte header — CRC16, type, flags,
 header size — where RAR5 frames everything with variable-length integers and a CRC32.
@@ -126,8 +126,10 @@ an identity check or a crafted flag folds an unrelated member into the previous 
 fixed); and a volume set is *discovered* by naming convention rather than by a recorded
 disk number, unlike a spanned ZIP — though discovery is where the resemblance ends. RAR5
 records a volume number in MAIN and the parser checks the set against it, refusing a
-headless set (`Need first volume`) or an out-of-order one; RAR3 records only a flag, so
-there the name really is the whole chain.
+headless set (`Need first volume`) or an out-of-order one. RAR 1.5-4 MAIN records only
+flags; RAR 3.0 and later also write the volume's number into its end block, which the
+parser reads only to refuse a lone later volume. For ordering, there the name really is
+the whole chain.
 
 **Listing is a walk unless RAR5 `QO` is present.** With no `QO`
 (all RAR3/4; small RAR5; `-qo-`; header-encrypted RAR5) the parser starts at MAIN and
@@ -431,16 +433,49 @@ first volume `name.part1.sfx` / `name.part1.exe` beside later `.partN.rar` parts
 `name.rar` (or an old-scheme SFX `name.exe` / `name.sfx`) + `name.r00`, `name.r01`, …
 (older RAR4) are all discovered from any member of the set — the old scheme by walking
 names from volume 1 under unrar's rule (one added to the letter's character code, so
-`.r99` → `.s00` and `.z99` → `.{00`) until a name is missing, so a later volume past a
-gap is a lone file. Every old-scheme name, volume 1's included, is matched
+`.r99` → `.s00` and `.z99` → `.{00`) until a name is missing, then the rest of the
+listing's old-scheme names by number (`rar_volume_number`), taken only when the file starts
+with a RAR signature, since the shape also matches Info-ZIP's `backup.z01`. Every old-scheme name, volume 1's included, is matched
 case-insensitively from one directory listing, except that an SFX stub is an entry
 point only when `<stem>.r00` or `<stem>.R00` exists with the stub's own base spelling
 (a fast reject that avoids a listing on every `.exe` open). Headers are then read across the volumes
 in order with split members stitched into one logical member.
 `ArchiveInfo.is_multivolume` is `True` and `ArchiveInfo.extra["rar.volume_count"]`
-carries the count. A lone volume 1 is
-`TruncatedError` ("expects another volume"); a lone later volume is
-`UnsupportedFeatureError` ("Need first volume") rather than a partial listing. An
+carries the count. A set whose last volume present says another follows — a lone
+volume 1 among them — lists the members whose headers are in the volumes present and then
+raises `TruncatedError` ("expects another volume (volume N is missing)"), the channel a cut
+file uses (`RarArchive.truncated`, set by `mark_missing_next_volume`). Members wholly
+inside the present volumes read normally; the one that runs into the missing volume is
+still `split_after` after the merge and raises `TruncatedError` on read, before any
+decompressor runs; `extract_all` writes the members before it and then raises. That is
+`unrar t`: every complete member OK, then "Cannot find volume" for the last one (ruled by
+davitf, 2026-10-06; this used to refuse at open).
+
+**A gap is a missing volume too** (ruled by davitf, 2026-10-06: "list everything in all
+available parts, then raise at the end"; and for a missing volume 1, "we should support
+it"). Discovery returns every volume present, and when their names number them with a
+gap the reader passes those numbers to `parse_rar_volumes`, which checks each RAR5
+volume against its own number, merges nothing across a gap, and records the missing
+numbers in `truncated`. The member that ran into the gap keeps `split_after`; the
+continuation that opens the volume after it is listed on its own with `split_before`,
+as `lsar` lists it, and `unrar` warns "You need to start extraction from a previous
+volume" for it. Either flag left on after the merge refuses the read with
+`TruncatedError` (`_missing_data_error`), and in a solid archive so does every member
+past the gap: `unrar` gives checksum errors for them. A member past a gap is read by
+pointing `unrar` at the first volume after the gap (`_unrar_path_for`), the way `unrar`
+reads such a set opened there; for that a gapped set is always staged, under names that
+keep each volume's number, and so is `unar`'s private directory. Opened from any volume,
+the listing is the same. Archive data only volume 1 carries — the comment, an SFX stub —
+is absent with it. A lone later volume opened by path is a set missing the rest,
+numbered by its name; opened as a stream it has no name, and stays
+`UnsupportedFeatureError` ("Need first volume"). A later volume is recognised by RAR5
+MAIN's volume number, by the RAR 3.0+ end block's volume number (`EARC_VOLNUMBER`, flag
+`0x0008`), or by a first member that continues an earlier volume; the path case catches
+that refusal and parses the volume again under its name's number. A RAR 1.5 / 2.x later
+volume whose first member starts on its boundary records none of these, so as a stream it
+lists as volume 1, as `unrar` lists it. (RAR 3.0+ also sets MAIN flag `0x0100` on volume
+1, measured on the RAR 6.24 `tinyvol_rnn` fixtures; its absence does not mark a later
+volume, since RAR 1.5 / 2.x predate it.) Explicit sequences are still read as `1..N`. An
 explicit sequence of volume *paths* is used as given, with no discovery: headers are read
 from those files in that order. For a discovered set and an explicit one alike, `unrar` is
 pointed at the first file in place only when its own next-volume rule, run from it, finds
@@ -616,7 +651,7 @@ between to blame or to defer to.
 | `hashes` | `crc32` and/or `blake2sp` as bytes | A RAR5 **redirect** (see below), or an encrypted member whose digests are tweaked |
 | `is_encrypted` | Per-member encryption flag | — |
 | `is_current` | `False` for a file-version history row, `True` for the live revision | — |
-| `extra` | `is_file_copy` on a file copy; `is_junction` on a Windows junction, `is_reparse_point` on a Windows symlink or junction (redirect types 2 and 3) — RAR is the one format that names the kind in a header field, so both are set while listing with nothing read; `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.extract_version` when the FILE header recorded one (stored and compressed) — RAR3 `UNP_VER` as stored (unvalidated), RAR5 reports 50 | — |
+| `extra` | `is_file_copy` on a file copy; `is_junction` on a Windows junction, `is_reparse_point` on a Windows symlink or junction (redirect types 2 and 3) — RAR is the one format that names the kind in a header field, so both are set while listing with nothing read; `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.extract_version` when the FILE header recorded one (stored and compressed) — RAR3 `UNP_VER` as stored (unvalidated), RAR5 reports 50. The RAR5 compression-info version (0 for RAR 5.0 data, 1 for RAR 7.0) is read only to refuse one `unrar` cannot decode, and is deliberately kept internal: `rar.extract_version` stays 50 for both because the `rarfile` parity oracle compares it, and a second key waits for a caller who needs it | — |
 | `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored old-style comments decode natively; compressed old-style comments decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), a compressed old-style comment without `unrar` / with an invalid CRC16, or an encrypted old-style comment (known limitation, §5) |
 
 **Archive comments are `ArchiveInfo.comment`.** RAR5 `CMT` is archive-only — it never
@@ -1166,6 +1201,8 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Surface a link member's digest where the format stores one, and say what it covers | It is a real digest of the bytes the format stores for that member — which for a link is the target *string*, not the content it resolves to. ZIP and 7z store and surface exactly the same thing, so dropping RAR3/4's alone would buy consistency inside RAR at the cost of a worse one across formats. The fix for the misreading is documenting the field, not emptying it (§2.2) | Dropping link digests everywhere, which loses information ZIP and 7z genuinely store; keeping them and saying nothing, which leaves `hashes` implying content |
 | Commit the RAR corpus archives, pinned by a manifest | Otherwise the corpus's RAR column is a licensing decision and runs on Linux only, while the release headlines a native RAR reader | Installing the trialware writer on CI; reworking digest expectations for a platform dependence that measurement showed does not exist (ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)) |
 | Read QO, seek back, skip matching FILE headers on the walk | Same table extract uses. Consecutive cached spans chain in memory (one seek per run). AUTO omits small files from QO; those still list from their local headers. `CMT` after MAIN is a normal SERVICE on that walk. Packed QO / `-hp` fall back to a full FILE walk. Wrapping QO for `unrar` at list time would violate listing-without-unrar | Validating QO against a full FILE walk *at list time* (pays the seeks QO exists to avoid). Build-time `use_qo=False` comparison is the standing pin |
+| An unknown compression version is `UnsupportedFeatureError` on read, decided from the header | `unrar` 7.00 decodes RAR5 compression-info versions 0 and 1 and RAR 1.5-4 `UNP_VER` 13-29; outside them it prints "Unknown method … You may need a newer version of RAR" and writes nothing, which archivey reported as `TruncatedError` "ended after 0 of N". The data is not short, so this is the lzip-version-0 ruling (#567). Measured on 7.00 with every `UNP_VER` from 0 to 99 on a compressed RAR4 member: below 13 and above 29 is "Unknown method", **36 included**. A value in 13-28 selects an older algorithm, and data written for another one fails its checksum; that stays a checksum error here. A stored member is copied whatever it declares, in `unrar` and here. The check runs in `_open_member` and in both solid-pass plans, so no process is spawned; the `unrar` pass gives the member no room in the pipe, because `unrar p` writes nothing for it. In a solid archive the members after it in the same stream cannot be decoded either (`unrar` stops there), and they keep whatever the pass reports for them | Leaving it to the decompressor's exit; refusing at open, which loses every member that does decode; the set 15/20/26/29/36, which `unrar` does not use |
+| The RAR5 extra area is the header's last `extra_size` bytes | `unrar`'s `ProcessExtra50` places it there, and the MAIN locator walk already did. Walking on from the end of the name instead read any bytes between the two as records: measured, a fixture `unrar` lists as a plain file listed here as a symlink. Bytes between the fixed fields and the declared area are skipped, as `unrar` skips them without a word, but they carry `MEMBER_HEADER_RECORD_SKIPPED` here: a conforming writer leaves no room there, so they mean the header is damaged or crafted, and a strict policy refuses it. If a later RAR adds a fixed field this parser does not read, that diagnostic fires on every such header, and the parser is the place to teach it the field. An extra size not smaller than the whole header, its CRC and size vint included, is `CorruptionError`, as `unrar` reports "Corrupt header" for it (it checks `ExtraSize >= HeadSize` when it reads the size; measured on 7.00 at the whole header and one byte under it, which is the band where the body length and the whole header disagree). An area that reaches back over the fixed fields is ignored by `unrar`, which then lists the member from those fields; here it is left unread through the stop reason, so the member carries `MEMBER_HEADER_RECORD_SKIPPED` and is `encryption_unknown` rather than plaintext on the strength of a header that did not say | Walking from the end of the name; refusing the overlap, which `unrar` reads; skipping the gap silently, as `unrar` does, which hides a damaged header from a strict policy |
 | `CompressionAlgorithm.RAR` for M1–M5 (`level` 1–5); extract version in `extra["rar.extract_version"]` | The header identifies the algorithm, so `UNKNOWN` claimed we could not tell. `ContainerFormat.RAR` and `CompressionAlgorithm.RAR` are homonyms (container vs codec), not a reason to invent `RAR_COMPRESSION` / `RARLAB` | Putting 15/20/29/50 in `level`; dropping M1–M5 from `level` |
 | No `unrar x` tempdir cache for solid random `open()` | `AccessCost.SOLID` and per-open decode are the honest signals; a tempdir extraction amortizes work the caller cannot see or bound, which `VISION.md` rules out | `unrar x` into a managed temp directory to serve later random reads from disk |
 | Encrypted-header `tell()` is the ciphertext cursor; leftover `_buf` is AES padding | `data_offset` must skip the padded ciphertext so the next salt/IV is aligned. Subtracting leftover plaintext lands in padding — measured on both `encrypted_header__*.rar` fixtures, where every FILE `header_size % 16 != 0` | Reporting a logical plaintext offset from `tell()` |
@@ -1544,7 +1581,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Extraction copies a file copy from its written source and keeps nothing for it (random access and streaming, both programs); a replaced source file falls back to decoding; a dry run keeps sources; `stream_members(file_copy_streams=False)` yields `None` for copies, solid or not, and keeps nothing | `tests/test_rar_file_copy_solid_pass.py::test_extract_copies_each_copy_from_the_written_source`, `::test_extract_falls_back_when_the_written_source_was_replaced`, `::test_dry_run_still_serves_copies_from_one_decode`, `::test_stream_members_without_copy_streams_yields_none_for_copies`, `::test_stream_members_without_copy_streams_on_a_nonsolid_archive` |
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` | `tests/test_rar_reader.py::test_member_reports_exact_compression_and_extract_version`, `::test_rar3_unp_ver_byte_is_reported_unvalidated`, `::test_unknown_method_byte_omits_level`, `::test_stored_m0_direct_read`, `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes` |
-| Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |
+| Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and a set with a volume missing at its start, middle or end | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_lists_then_raises`, `tests/test_rar_missing_last_volume.py`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub`, `tests/test_rar_volume_gaps.py` |
 | Stub-only `vol.exe` follows `vol.exe.001` / `vol.7z.001` / `vol.zip.001`; a real SFX is not redirected | `tests/test_volumes.py::test_stub_only_exe_opens_zip_split_first_volume`, `::test_stub_only_exe_opens_windows_7z_first_volume`, `::test_sevenzip_sfx_numbered_parts_open_from_any_part`, `::test_embedded_sfx_zip_is_not_redirected_to_sibling_volume` |
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
 | RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |
@@ -1556,7 +1593,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
 | QO payload of non-FILE records parses in linear time; overlapping QO spans are refused | `::test_rar5_qo_non_file_records_parse_in_linear_time`, `::test_qo_overlapping_spans_are_rejected` |
 | AUTO still lists small files QO omitted; `rar a` rewrites QO; FILE after QO is still listed | `::test_auto_qo_lists_small_files_omitted_from_cache`, `::test_rar_a_rewrites_qo_and_lists_the_new_member`, `::test_file_header_after_qo_is_still_listed` |
-| A malformed optional RAR5 extra record drops the record, not the archive; encryption stays fatal; a zeroed extra area does not retain one skip per byte | `tests/test_rar_header_record_leniency.py` |
+| A malformed optional RAR5 extra record drops the record, not the archive; encryption stays fatal; a zeroed extra area does not retain one skip per byte; the extra area is placed by its declared size | `tests/test_rar_header_record_leniency.py` |
+| An unknown compression version is `UnsupportedFeatureError` on read, for both decompressors and the solid pass; a stored member reads | `tests/test_rar_unknown_compression.py` |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
 | RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent | `::test_rar5_xtime_fixture_surfaces_accessed_and_ctime`, `::test_rar4_xtime_fixture_surfaces_accessed_and_ctime`, `::test_xtime_absent_accessed_created_are_none`, `::test_created_or_ctime_follows_host_os`, `::test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns`, `::test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime` |
 | RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |

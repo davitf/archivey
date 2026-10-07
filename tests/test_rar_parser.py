@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import struct
+import zlib
 from pathlib import Path
 
 import pytest
@@ -494,19 +496,88 @@ def test_set_not_starting_at_volume_one_needs_first_volume(
         )
 
 
+def _rar4_volume_renumbered(data: bytes, number: int) -> bytes:
+    """A RAR 1.5-4 volume with its MAIN first-volume flag cleared and its end
+    block's 0-based volume number set to ``number``, CRC16s fixed.
+
+    ``tinyvol_rnn.rar`` renumbered 1 is what a middle volume 2 looks like when
+    volume 1 ended on a member boundary: its first member does not continue an
+    earlier one, and it says another volume follows. ``unrar l`` reports it as
+    "volume 2" (measured, 7.00).
+    """
+    out = bytearray(data)
+    pos = 7
+    while pos + 7 <= len(out):
+        block_type, flags, size = struct.unpack_from("<BHH", out, pos + 2)
+        add = 0
+        if flags & 0x8000 or block_type == 0x74:
+            (add,) = struct.unpack_from("<I", out, pos + 7)
+        if block_type == 0x73:
+            struct.pack_into("<H", out, pos + 3, flags & ~0x0100)
+        if block_type == 0x7B:
+            assert flags & 0x000A == 0x000A  # data CRC, then the volume number
+            struct.pack_into("<H", out, pos + 11, number)
+        if block_type in (0x73, 0x7B):
+            crc = zlib.crc32(bytes(out[pos + 2 : pos + size])) & 0xFFFF
+            struct.pack_into("<H", out, pos, crc)
+        pos += size + add
+    return bytes(out)
+
+
+def test_rar4_later_volume_starting_on_a_member_boundary_needs_first_volume() -> None:
+    """No member continues from an earlier volume, so only the end block's volume
+    number tells it from volume 1. It is refused like any later volume, rather than
+    listed as volume 1 of a set "missing volume 2"."""
+    data = _fixture("tinyvol_rnn.rar").read_bytes()
+    later = _rar4_volume_renumbered(data, 1)
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        parse_rar_archive(io.BytesIO(later), password=None)
+    with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
+        open_archive(io.BytesIO(later))
+    # Volume number 0 is volume 1: the renumbering alone changes nothing.
+    first = parse_rar_archive(
+        io.BytesIO(_rar4_volume_renumbered(data, 0)), password=None
+    )
+    assert first.is_volume and first.needs_next_volume
+
+
 def test_set_whose_last_volume_expects_another_is_truncated() -> None:
-    """The set ends but its last volume says another follows."""
-    with pytest.raises(TruncatedError, match="end of archive expects another volume"):
-        parse_rar_volumes(
-            [io.BytesIO(_fixture("tinyvol_rnn.rar").read_bytes())], password=None
-        )
+    """The set ends but its last volume says another follows. The members are kept
+    and the truncation is recorded for the reader to raise after them; the member
+    running into the missing volume stays ``split_after``."""
+    archive = parse_rar_volumes(
+        [io.BytesIO(_fixture("tinyvol_rnn.rar").read_bytes())], password=None
+    )
+    assert archive.truncated is not None
+    assert "end of archive expects another volume (volume 2 is missing)" in (
+        archive.truncated
+    )
+    (member,) = archive.members
+    assert member.split_after
 
 
-def test_lone_later_volume_path_needs_first_volume(tmp_path: Path) -> None:
+def test_lone_later_volume_path_lists_as_a_set_missing_volume_1(
+    tmp_path: Path,
+) -> None:
+    """Ruled 2026-10-06 (this used to refuse with "Need first volume"): a later
+    volume alone is a set missing the others. Its one member continues from volume 1,
+    so it lists and its read is a truncation."""
     lone = tmp_path / "lone.part2.rar"
     lone.write_bytes(_fixture("tinyvol.part2.rar").read_bytes())
+    with open_archive(lone) as archive:
+        report = archive.members_report()
+        assert [m.name for m in report.members] == ["payload.bin"]
+        assert isinstance(report.error, TruncatedError)
+        assert "volume 1 is missing" in str(report.error)
+        with pytest.raises(TruncatedError, match="starts in a volume that is missing"):
+            archive.read(report.members[0])
+
+
+def test_a_lone_later_volume_stream_still_needs_its_first_volume() -> None:
+    """A stream has no name to number it, so it stays refused."""
+    lone = _fixture("tinyvol.part2.rar").read_bytes()
     with pytest.raises(UnsupportedFeatureError, match="Need first volume"):
-        open_archive(lone)
+        open_archive(io.BytesIO(lone))
 
 
 def test_rar5_cut_inside_a_multibyte_header_size_is_truncated() -> None:

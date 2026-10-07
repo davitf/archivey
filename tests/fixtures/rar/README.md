@@ -21,6 +21,8 @@ Multi-volume fixtures:
 | `tinyvol_m3.part1.rar` / `tinyvol_m3.part2.rar` | RAR5 `-m3 -v900b`; a compressed member split across volumes, which still needs unrar (a stored one is joined natively) |
 | `tinyvol_hp.part1.rar` … `tinyvol_hp.part4.rar` | RAR5 `-m0 -v900b -hpheader_password`; every part repeats one encryption record, so the header key is derived once per set |
 | `tinyvol_rnn.rar` / `tinyvol_rnn.r00` | RAR4 `-ma4 -vn` classic `.rar` + `.r00` naming |
+| `tinyvol_cut.part1.rar` … `tinyvol_cut.part3.rar` | RAR5 `-m0 -v1500b`, members `a.txt` … `d.txt`; the fourth volume was deleted, so `d.txt` runs into a missing volume |
+| `tinyvol_cut_solid.part01.rar` … `tinyvol_cut_solid.part04.rar` | RAR5 `-s -m3 -v900b`, same members; the last volume was deleted |
 
 File-version (`-ver`) fixtures:
 

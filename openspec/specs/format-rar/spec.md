@@ -550,20 +550,32 @@ SHALL set `ArchiveInfo.is_encrypted` to `True`.
 ### Requirement: Reject unsupported RAR variants clearly
 
 Multi-volume RAR sets SHALL be supported by the volume contract, not rejected as
-an unsupported variant. Opening a later volume before the first volume of a set
-SHALL raise `UnsupportedFeatureError` (or a truncated/out-of-order error) rather
-than silently mis-joining members. Legacy RAR 1.5 / 2.x archives MUST NOT be
+an unsupported variant. A later volume opened as a stream, with nothing to number
+it, SHALL raise `UnsupportedFeatureError` (or a truncated/out-of-order error) rather
+than silently mis-joining members; one opened by path is numbered by its name and
+read as a set with volumes missing (below). Legacy RAR 1.5 / 2.x archives MUST NOT be
 rejected solely for extract version ≤ 20. Truly unreadable layouts (corrupt
 headers, unknown required crypto without the extra) continue to raise typed
 errors from their existing requirements.
+
+A member compressed with a version `unrar` 7.00 does not decode SHALL list normally and
+SHALL raise `UnsupportedFeatureError` when its data is read, before any decompressor
+runs, with either decompressor and in a solid pass. The versions it decodes are RAR5
+compression-info versions 0 and 1 and RAR 1.5-4 `UNP_VER` 13 to 29; outside them
+`unrar` reports "Unknown method" and writes nothing, which is not a truncation. A stored
+member reads whatever version it declares, as in `unrar`.
 
 #### Scenario: unsupported variant matrix
 
 | Case | Expected |
 | --- | --- |
 | Multi-volume RAR4/RAR5 set is opened from volume 1 | Handled by the multi-volume requirement |
-| Multi-volume set opened from a later volume first | `UnsupportedFeatureError` or truncated/out-of-order error |
+| Multi-volume set opened from a later volume, by path | Same listing as from volume 1 |
+| Lone later volume opened as a stream | `UnsupportedFeatureError` or truncated/out-of-order error |
 | RAR 1.5 / 2.x archive is opened | Listing succeeds; not rejected for extract version |
+| Compressed RAR5 member with compression-info version 2 or more | Listing succeeds; read raises `UnsupportedFeatureError` |
+| Compressed RAR 1.5-4 member with `UNP_VER` below 13 or above 29 | Listing succeeds; read raises `UnsupportedFeatureError` |
+| Stored member declaring an unknown version | Reads normally |
 
 ### Requirement: Support multi-volume RAR sets
 
@@ -583,8 +595,13 @@ would not find by name beside the first SHALL be linked into a temporary directo
 under the set's own names (copied within `SpoolLimits` only where the filesystem
 refuses a link) on the first data read that needs it. For
 stream sources, data reads SHALL materialize ordered volumes for `unrar` when
-needed. Missing or out-of-order volumes SHALL raise `UnsupportedFeatureError` or
-a truncated error instead of a partial result.
+needed. Out-of-order volumes SHALL raise `UnsupportedFeatureError` or a truncated
+error instead of a partial result. A set with volumes missing, at its start, in the
+middle or at its end, SHALL list the members of the volumes present and then raise
+`TruncatedError` (the requirement below). A later volume is one whose RAR5 MAIN or RAR
+3.0+ end block records a volume number above 0, or whose first member continues an
+earlier volume; a RAR 1.5 / 2.x volume records neither, so one whose first member starts
+on its boundary reads as volume 1, as in `unrar`.
 
 #### Scenario: volume matrix
 
@@ -596,11 +613,60 @@ a truncated error instead of a partial result.
 | Open `name.exe` (or `name.sfx`) with `name.r00` siblings | Same as `.rar` + `.r00`: the SFX file is volume 1 |
 | Read a member spanning volumes | Returned stream reassembles the member across boundaries |
 | Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
-| Missing or out-of-order volume | Error instead of partial or garbled output |
+| Out-of-order volume | Error instead of partial or garbled output |
+| Missing volume (first, middle or last) | Members of the volumes present listed, then `TruncatedError` |
+
+### Requirement: A set with volumes missing SHALL list what it has, then raise
+
+A volume is missing when the last volume read says another follows (a member continues
+into it, or the end block's next-volume flag) and none is supplied or discovered, or
+when discovery numbers the volumes present by name and a number is absent: volume 1, or
+one in the middle. The reader SHALL list every member whose header is in the volumes
+present, opened from any of them, and then raise `TruncatedError` naming the missing
+volumes, the same "list, then raise" channel as a file cut inside a header. Members
+wholly inside the present volumes SHALL read normally, with either decompressor. A
+member whose data runs into or out of a missing volume SHALL raise `TruncatedError` when
+read, before any decompressor runs; nothing SHALL be joined across a gap. In a solid
+archive every member past a missing volume SHALL raise `TruncatedError` too, since its
+data depends on the solid stream through it. `extract_all` SHALL write the members it
+can and raise at the first that cannot. This matches `unrar` 7.00: from before a gap,
+`t` passes every complete member and stops at the gap with "Cannot find volume"; from
+after it, it skips the member continued from the gap ("You need to start extraction
+from a previous volume") and tests the rest. A lone volume 1, as a stream or a path, is
+such a set, and so is a lone later volume opened by path. Archive-level data only
+volume 1 carries (the archive comment, an SFX stub) is absent when volume 1 is.
+
+#### Scenario: Missing middle or first volume
+
+- **GIVEN** a five-volume RAR5 set of stored members with volume 3, or volume 1, deleted
+- **WHEN** it is opened from any volume present
+- **THEN** the listing SHALL be the same from each, every member with a header in a
+  present volume, and SHALL end with `TruncatedError` naming the missing volume
+- **AND** every member wholly inside present volumes SHALL read back its original
+  bytes, and each member with data in the missing volume SHALL raise `TruncatedError`
+
+#### Scenario: Missing last volume
+
+- **GIVEN** a four-volume RAR5 set, stored or solid-compressed, with its fourth volume
+  deleted
+- **WHEN** it is opened from its first volume
+- **THEN** `members_report()` SHALL list the members whose headers are in volumes 1-3,
+  with `error` a `TruncatedError` naming volume 4 as missing, and `members()` SHALL
+  raise it
+- **AND** every member but the last listed SHALL read back its original bytes, and the
+  last listed SHALL raise `TruncatedError` when read
 
 ### Requirement: A malformed optional RAR5 extra record SHALL NOT refuse the archive
 
-The RAR5 extra area of a FILE header is a list of optional records. The reader already
+The RAR5 extra area of a FILE header is a list of optional records, placed by its
+declared size: it is the header's last `extra_size` bytes, as `unrar` reads it, whatever
+lies between the end of the name and that point. Bytes in between SHALL be skipped, as
+`unrar` skips them, and SHALL be reported as `MEMBER_HEADER_RECORD_SKIPPED`: no writer
+leaves them, so they mean a damaged or crafted header. An extra size not smaller than the
+whole header, its CRC and size field included, SHALL raise `CorruptionError` (`unrar`:
+"Corrupt header"). An area that would
+overlap the fields already read SHALL be left unread, as `unrar` ignores it, and the
+member SHALL be reported as having had its header cut short (below). The reader already
 ignores a record whose type it does not recognise. A record whose type it *does*
 recognise but whose body it cannot parse SHALL be treated the same way: the record is
 dropped, the member is listed, and the walk continues with the next record.
@@ -641,6 +707,16 @@ made one attacker byte cost one retained record.
 front of an encrypted member's records makes `unrar l` lose both the encryption record and
 the timestamp and list the member as plaintext. The oracle that justifies the leniency
 above SHALL NOT be read as justifying this.
+
+#### Scenario: The extra area is placed by its declared size
+
+- **GIVEN** a RAR5 FILE header with a redirect record between its name and its declared
+  extra area
+- **WHEN** the archive is listed
+- **THEN** the member SHALL list as a plain file, not as a link, as in `unrar`
+- **AND** the member SHALL carry `MEMBER_HEADER_RECORD_SKIPPED` for the skipped bytes
+- **AND** a header whose declared extra size is at least the whole header's size SHALL
+  raise `CorruptionError`, and one byte less SHALL list the member
 
 #### Scenario: A record whose size cannot be used stops the walk
 
@@ -1123,7 +1199,7 @@ that volume only when a member header in it, whose CRC matched, marks its data a
 continuing in the next volume, which is the rule for a volume with no end block. When no
 member does, the set SHALL end at that volume: any later volumes the caller supplied are
 not read, and the diagnostic names the damaged volume. When a member does continue and
-no next volume is supplied, the open SHALL raise `TruncatedError`, as for any
+no next volume is supplied, the listing SHALL end with `TruncatedError`, as for any
 incomplete set.
 
 With encrypted headers, the damage is reported this way only once the header password
@@ -1211,10 +1287,12 @@ When `ArchiveyConfig.rar_decompressor` is `none`, the system MUST NOT start `unr
 and not to read member data. Opening and listing SHALL work as with any other setting,
 including header-encrypted archives given the right password. A stored member that is
 not encrypted SHALL be read directly, as it is under every setting, when all of its
-parts were found. Every other member read SHALL raise `UnsupportedFeatureError` before
-any process starts or any source is copied, naming why the member cannot be read
-(compressed, encrypted, or split across volumes with a part missing) and the `unrar`
-setting that reads it. A compressed RAR 1.5/2.x old-style comment SHALL be `None`. When
+parts were found. A member with a part in a missing volume SHALL raise `TruncatedError`,
+as under every setting ("A set with volumes missing SHALL list what it has, then
+raise"): no program can read data that is not there. Every other member read SHALL raise
+`UnsupportedFeatureError` before any process starts or any source is copied, naming why
+the member cannot be read (compressed or encrypted) and the `unrar` setting that reads
+it. A compressed RAR 1.5/2.x old-style comment SHALL be `None`. When
 the archive has a file member that this setting refuses, `ar.cost.notes` SHALL say so at
 open.
 
@@ -1226,7 +1304,7 @@ open.
 | Compressed member | `UnsupportedFeatureError` naming "compressed"; no process starts |
 | Encrypted member, stored or compressed | `UnsupportedFeatureError` naming "encrypted" |
 | Stored member split across volumes | Its parts are joined and read; no process starts |
-| Stored member split across volumes, a later part missing | `UnsupportedFeatureError` naming "not every part was found" |
+| Stored member split across volumes, its first or a later part missing | `TruncatedError`, as under every setting; no process starts |
 | Stored member with its own solid flag | Read directly; no process starts |
 | Solid archive, `stream_members()` | Each member's read is refused on its own; no solid pass starts |
 | Header-encrypted archive, right password | Lists; no process starts |

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
-from archivey.exceptions import UnsupportedFeatureError
+from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from tests.conftest import requires
 from tests.test_rar_reader import (
     RAR_ID,
@@ -106,7 +106,9 @@ def test_split_member_with_a_part_missing_is_named_at_open_and_refused() -> None
     blob = RAR_ID + main_hdr + member + end_hdr
     with open_archive(io.BytesIO(blob), config=_NONE) as ar:
         assert any("a part missing" in note for note in ar.cost.notes)
-        with pytest.raises(UnsupportedFeatureError, match="not every part was found"):
+        with pytest.raises(
+            TruncatedError, match="continues into a volume that is missing"
+        ):
             ar.read("a")
 
 
@@ -131,7 +133,7 @@ def test_split_member_missing_its_first_part_is_refused() -> None:
     ]
     with open_archive([io.BytesIO(v) for v in volumes], config=_NONE) as ar:
         assert any("a part missing" in note for note in ar.cost.notes)
-        with pytest.raises(UnsupportedFeatureError, match="not every part was found"):
+        with pytest.raises(TruncatedError, match="starts in a volume that is missing"):
             ar.read("a")
 
 
