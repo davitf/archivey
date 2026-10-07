@@ -2,10 +2,10 @@
 
 ## What you can open
 
-`open_archive` takes a path, a binary file object or a folder. A folder opens like an archive of
-the files inside it. For a 7z or RAR archive split into several volumes, pass the path of any one
-of them and archivey finds the others. Pass a list of volumes, in order, only when it can't find
-them by name, such as volumes you hold as open file objects.
+`open_archive` takes a path, a binary file object or a folder. A folder opens like an archive of the
+files inside it. For a 7z or RAR archive split into several volumes, the path of any one of them is
+enough, and archivey finds the others. If it can't find them by name, such as volumes you hold as
+open file objects, you can pass a list of them, in order.
 
 A file object is read from its current position to its end, so an archive that starts partway
 through a larger file opens as is, as long as nothing follows it. If something does, pass a file
@@ -30,9 +30,9 @@ archivey.open_archive("secret.7z", password="hunter2")
 archivey.open_archive("secret.zip", password=["likely", "fallback"])
 ```
 
-Archivey tries a list in order, so put the most likely password first: each wrong one costs some
-hashing work before it's rejected. An archive can use different passwords for different members,
-and archivey finds the right one from your list for each.
+Archivey tries a list in order, and each wrong password costs some hashing work before it's
+rejected, so the most likely one is best placed first. An archive can use different passwords for
+different members, and archivey finds the right one from your list for each.
 
 You can also pass a function, such as one that asks the user. Archivey calls it only when a
 password is needed and none tried so far works. It passes a `PasswordRequest` with the member being
@@ -66,5 +66,6 @@ safe to show.
 
 Settings you'd keep the same across many archives live in `archivey.ArchiveyConfig`, passed as
 `config=`. These include the [limits](security.md#hardening), which RAR program to use, the
-accelerators, and how [diagnostics](errors-and-diagnostics.md) are reported. Without it, the
-defaults apply. The [reference](api.md#archivey.ArchiveyConfig) lists every setting.
+[accelerators](reading.md#seeking-inside-a-member), and how [diagnostics](errors-and-diagnostics.md)
+are reported. Without it, the defaults apply. The [reference](api.md#archivey.ArchiveyConfig) lists
+every setting.
