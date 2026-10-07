@@ -1,10 +1,10 @@
 # Security
 
 Archivey treats everything in an archive as untrusted: names, link targets, sizes and the
-compressed data itself. Whatever an archive contains, extraction writes only inside the destination
-folder, the limits cap how much an extraction writes and how much memory a decoder may ask for, and
-damaged data raises an `ArchiveyError`. This page covers what archivey assumes about everything else, and where those
-guarantees stop.
+compressed data itself. Whatever an archive contains, extraction writes only inside the
+destination folder, the limits cap how much an extraction writes and how much memory a decoder
+may ask for, and damaged data raises an `ArchiveyError`. This page covers what archivey assumes
+about everything else, and where those guarantees stop.
 
 ## What archivey relies on
 
@@ -84,14 +84,14 @@ in the repository measures what each limit costs in time and memory on your mach
 
 | Setting | Default | What it caps | Rough cost |
 |---|---|---|---|
-| `extraction_limits.max_extracted_bytes` | 2 GiB | Bytes one extraction writes | Disk space, plus 5-10 ms per MiB written |
-| `extraction_limits.max_entries` | 1,048,576 | Members one extraction writes | About 0.6 ms per file written |
+| `extraction_limits.max_extracted_bytes` | 2 GiB | Bytes one extraction writes | Disk space, plus 5-10 ms per MiB written, 10-20 s at the default |
+| `extraction_limits.max_entries` | 1,048,576 | Members one extraction writes | About 0.6 ms per file written, 10 minutes at the default |
 | `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands, checked once it has written 5 MiB | None of its own |
-| `listing_limits.max_members` | 1,048,576 | Members an archive can list | About 50 µs and 1.5 KiB of memory per member |
-| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets | About 1.7 MiB of memory per MiB counted |
+| `listing_limits.max_members` | 1,048,576 | Members an archive can list | About 25-50 µs and 1.5 KiB of memory per member, under a minute and 1.5 GiB at the default |
+| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets | About 1.7 MiB of memory per MiB counted, 110 MiB at the default |
 | `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for | The memory itself |
 | `decoder_limits.max_key_derivation_rounds` | 2^27 | Password-hashing work per open archive | 0.2-0.7 µs per round, 30-100 s at the default |
-| `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process | None of its own |
+| `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process | Up to twice the limit in memory while a PPMd member decodes, 32 MiB at the default |
 | `spool_limits.max_bytes` | 1 GiB | Temporary disk space, used when archivey needs a copy of the source, such as a pipe | The disk space itself |
 
 The costs were measured on one 2.8 GHz core.

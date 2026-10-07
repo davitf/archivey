@@ -25,8 +25,9 @@ What it measures:
 Not measured: ``decoder_limits.max_decoder_memory`` and ``spool_limits.max_bytes`` already
 count memory and disk bytes directly; ``extraction_limits.max_ratio`` (and its
 ``ratio_activation_threshold``) is a proportion with no cost of its own; and
-``decoder_limits.max_ppmd_in_process_input`` decides where a PPMd member is decoded, not
-how much work it is.
+``decoder_limits.max_ppmd_in_process_input`` is a memory bound too: archivey holds up to
+that many compressed bytes of a PPMd member, and about as much again while the decoder
+copies them.
 """
 
 from __future__ import annotations
@@ -55,25 +56,18 @@ def _member_name(i: int, name_len: int) -> str:
     return base + "x" * max(0, name_len - len(base) - 4) + ".txt"
 
 
-def build_zip(path: Path, n: int, name_len: int) -> int:
-    """A stored ZIP of ``n`` empty members. Returns the total name bytes."""
-    total = 0
+def build_zip(path: Path, n: int, name_len: int) -> None:
+    """A stored ZIP of ``n`` empty members."""
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
         for i in range(n):
-            name = _member_name(i, name_len)
-            total += len(name)
-            z.writestr(name, b"")
-    return total
+            z.writestr(_member_name(i, name_len), b"")
 
 
-def build_tar(path: Path, n: int, name_len: int) -> int:
-    total = 0
+def build_tar(path: Path, n: int, name_len: int) -> None:
+    """A TAR of ``n`` empty members."""
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as t:
         for i in range(n):
-            info = tarfile.TarInfo(_member_name(i, name_len))
-            total += len(info.name)
-            t.addfile(info, io.BytesIO(b""))
-    return total
+            t.addfile(tarfile.TarInfo(_member_name(i, name_len)), io.BytesIO(b""))
 
 
 def list_time(path: Path) -> tuple[float, int]:
