@@ -36,8 +36,8 @@ and archivey finds the right one from your list for each.
 
 You can also pass a function, such as one that asks the user. Archivey calls it only when a
 password is needed and none tried so far works. It passes a `PasswordRequest` with the member being
-opened and a count of the attempts. The member is `None` when the archive encrypts its list of
-members, as 7z and RAR can, because no member is known yet. Return a password to try, or `None` to
+opened and a count of the attempts. When the password is needed to read an encrypted members list,
+which 7z and RAR support, `PasswordRequest.member` is `None`. Return a password to try, or `None` to
 give up, which raises `EncryptionError`.
 
 A password or list of passwords given for a format with no encryption, such as TAR, is ignored and
@@ -50,14 +50,15 @@ quiet the warning.
 Most archives record which encoding their names use, and archivey decodes them with it. When an
 archive doesn't say, which is mostly older ones, archivey uses UTF-8 if the bytes are valid UTF-8.
 Otherwise it uses the format's traditional encoding, such as cp437 for ZIP, or, where there isn't
-one, keeps the bytes it can't decode as escapes. If you know the encoding, pass it as `encoding=`,
+one, keeps each byte it can't decode as an escape: a placeholder character between U+DC80 and
+U+DCFF, as Python's `surrogateescape` does. If you know the encoding, pass it as `encoding=`,
 and archivey uses it in place of that default for names that aren't valid UTF-8: a Latin-1
 `café.txt` in a TAR lists as `'caf\udce9.txt'` without it and `'café.txt'` with
 `encoding="latin-1"`. Only ZIP, TAR, ISO and RAR read `encoding=`. The other formats decode names
 their own way, and a value passed to them is ignored and noted in the diagnostics.
 
-`member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name with escapes
-can't be encoded as UTF-8, so printing or logging it can raise `UnicodeEncodeError`.
+`member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name holding such
+an escape can't be encoded as UTF-8, so printing or logging it can raise `UnicodeEncodeError`.
 `archivey.terminal.escape_control_chars(member.name)` gives a version that's safe to show.
 
 ## Configuration
