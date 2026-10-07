@@ -30,7 +30,8 @@ with archivey.open_archive("photos.zip") as archive:
 `open_archive` identifies the format from the file's contents, so the same code opens a `.7z`
 or a `.tar.gz`. Each entry in the archive, whether a file, a directory or a link, is a
 *member*, as in `zipfile` and `tarfile`. [`ArchiveMember`](api.md#archivey.ArchiveMember)
-lists everything a member carries.
+lists everything a member carries. [Opening an archive](opening.md) covers passwords, formats
+and name encodings.
 
 ## Read a member
 
