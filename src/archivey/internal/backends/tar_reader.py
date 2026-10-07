@@ -250,9 +250,9 @@ class _HeaderBudget:
 
 # What :meth:`TarReader._verify_tar_eof` found where the end-of-archive marker belongs:
 # no block, a partial one, a non-null block after a zero block that ended at least one
-# member (the marker is damaged, the listing whole), a non-null block after a header
-# tarfile rejected (the listing is shortened), or a non-null block after a zero block
-# with no member before it.
+# member (the marker is damaged, the listing whole), a non-null block at or after a
+# header tarfile rejected (the listing is shortened), or a non-null block after a zero
+# block with no member before it.
 _TarEnd = Literal[
     "absent", "short", "damaged_second_block", "rejected_header", "no_member"
 ]

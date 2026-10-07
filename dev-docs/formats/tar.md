@@ -163,11 +163,11 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
      (maintainer ruling, 2026-10-06), and step 3 runs from the block after it. After a
      rejected header, or with no member before the zero block, it is
      `CorruptionError`, with `expected_marker="two_zero_blocks"`.
-  3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero byte and emit
-     `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar` pads to 10 KiB
-     records. On a compressed tar the tail is decompressed to look at it, and a tail
-     that does not decode (a truncated footer, junk after the compressed stream) ends
-     the scan with no diagnostic. A whole-stream checksum that fails there (gzip CRC-32
+  3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero
+     byte and emit `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar`
+     pads to 10 KiB records. On a compressed tar the tail is decompressed to look at
+     it, and a tail that does not decode (a truncated footer, junk after the compressed
+     stream) ends the scan with no diagnostic. A whole-stream checksum that fails there (gzip CRC-32
      or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) raises
      `CorruptionError`: it covers the members already read, and with `tar -b128`
      padding (64 KiB) the scan is where it is reached. When the scan stops at 1 MiB

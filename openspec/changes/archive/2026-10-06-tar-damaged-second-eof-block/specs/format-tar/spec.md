@@ -118,13 +118,13 @@ the gap for streaming too. The system SHALL NOT claim otherwise.
 ### Requirement: Report non-zero bytes past the trailer
 
 After a complete two-block null end-of-archive trailer, or after a damaged second
-trailer block (a zero block, then a non-null one, after at least one member), the backend
-SHALL scan the bytes that follow, up to 1 MiB past the trailer, whatever the
-configuration. The first
-non-zero byte in that window SHALL emit `ARCHIVE_TRAILING_DATA` under ordinary
-diagnostic disposition, with no escalation of its own: a warning by default,
-`DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-`DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
+trailer block (a zero block, then a non-null one, after at least one member), the
+backend SHALL scan the bytes that follow, up to 1 MiB past the trailer, whatever the
+configuration. The first non-zero byte in that window SHALL emit
+`ARCHIVE_TRAILING_DATA` under ordinary diagnostic disposition, with no escalation of
+its own: a warning by default, `DiagnosticRaisedError` after delivery when the code
+resolves to `RAISE` (as under `DiagnosticPolicy.strict()`), a count alone under
+`IGNORE`.
 
 The check SHALL run only after a complete two-block null trailer has been confirmed, or
 after the damaged-second-block diagnostic has been emitted. It SHALL NOT run after an

@@ -167,7 +167,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       `context.expected_marker="second_zero_block"`. The zero block ends the members,
       so every member is listed and reads normally, as GNU tar ("A lone zero block")
       and 7-Zip list them; `strict()` raises it. The trailing-data check below then
-      runs from the block after the damaged one.
+      runs from the block after the damaged one. This needs at least one member before
+      the zero block: a file that is only a zero block and then other bytes is not shown
+      to be a TAR archive, and it raises `CorruptionError`.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes

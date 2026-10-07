@@ -56,10 +56,10 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 
 (`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
 exactly this union — no backend-defined variants. `observed_kind` ∈
-`{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"` for the trailer check;
-`"second_zero_block"` for a TAR trailer whose first block is zero and ends the members
-and whose second block is full and non-null, with `observed_kind="nonzero"` and both
-byte counts 512, where every member is listed;
+`{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"`
+for the trailer check; `"second_zero_block"` for a TAR trailer whose first block is
+zero and ends the members and whose second block is full and non-null, with
+`observed_kind="nonzero"` and both byte counts 512, where every member is listed;
 `"end_of_archive_block"` for a RAR5 archive or volume that ends without its end-of-archive
 block, with `format="rar"`, `observed_kind="absent"` and both byte counts 0, or whose
 end-of-archive block fails its header CRC, with `observed_kind="nonzero"` (a block is
