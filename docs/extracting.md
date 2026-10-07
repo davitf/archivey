@@ -493,9 +493,10 @@ program is installed. Each is found on the process `PATH`. `unar` receives a pas
 its command line, where other local users can see it while it runs; select
 `RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
 `RarDecompressor.NONE`: archivey then runs neither, and refuses every RAR member it
-cannot read without them (anything compressed, encrypted or solid). Keep these tools
-updated; treat their availability and behaviour as part of your deployment’s trust
-boundary.
+cannot read without them (anything compressed, encrypted or solid);
+`extract_all(..., on_error="continue")` then writes the members it can read and records
+the rest. Keep these tools updated; treat their availability and behaviour as part of
+your deployment’s trust boundary.
 
 Prefer extracting untrusted archives into a dedicated directory with limited
 permissions, then validating results before promoting them elsewhere.

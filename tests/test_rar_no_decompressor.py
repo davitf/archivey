@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, open_archive
+from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
 from archivey.exceptions import UnsupportedFeatureError
 from tests.conftest import requires
 
@@ -50,21 +50,39 @@ def test_stored_nonsolid_members_read(as_stream: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "why"),
+    ("name", "member_name", "why"),
     [
-        ("basic_solid__.rar", "it is compressed"),
-        ("encryption__.rar", "it is encrypted"),
-        ("encryption_stored__.rar", "it is encrypted"),
-        ("tinyvol.part1.rar", "it is split across volumes"),
+        ("basic_solid__.rar", None, "it is compressed"),
+        ("encryption__.rar", None, "it is encrypted"),
+        ("encryption_stored__.rar", None, "it is encrypted"),
+        ("tinyvol.part1.rar", None, "it is split across volumes"),
+        # Stored, but rar set the member's own solid flag (``-s -msbin``).
+        ("stored_solid_member__.rar", "second.bin", "it is part of a solid stream"),
     ],
 )
-def test_other_members_refused_before_any_process(name: str, why: str) -> None:
+def test_other_members_refused_before_any_process(
+    name: str, member_name: str | None, why: str
+) -> None:
     with open_archive(_RAR / name, config=_NONE, password="password") as ar:
         assert any("rar_decompressor is 'none'" in note for note in ar.cost.notes)
-        member = next(m for m in ar.members() if m.is_file)
+        member = next(
+            m for m in ar.members() if m.is_file and member_name in (None, m.name)
+        )
         with pytest.raises(UnsupportedFeatureError, match=why) as info:
             ar.read(member)
         assert "Set it to 'unrar'" in str(info.value)
+
+
+def test_refusal_comes_before_a_stream_source_is_copied() -> None:
+    # With no spool allowance, a copy would raise ResourceLimitError instead.
+    config = ArchiveyConfig(
+        rar_decompressor=RarDecompressor.NONE, spool_limits=SpoolLimits(max_bytes=0)
+    )
+    source = io.BytesIO((_RAR / "basic_solid__.rar").read_bytes())
+    with open_archive(source, config=config) as ar:
+        member = next(m for m in ar.members() if m.is_file)
+        with pytest.raises(UnsupportedFeatureError, match="it is compressed"):
+            ar.read(member)
 
 
 def test_mixed_archive_reads_plain_stored_and_refuses_encrypted() -> None:

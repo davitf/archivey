@@ -1200,6 +1200,9 @@ class RarReader(BaseArchiveReader):
             for index, info in enumerate(self._archive.members)
         ]
         self._resolve_file_copies()
+        # Not ``not _can_direct_read``: a member whose header stopped before its
+        # encryption record can still be served by ``_confirm_unsettled_plaintext``,
+        # and a file copy's refusal comes from its source, which is in this walk too.
         if self._decompressor is RarDecompressor.NONE and any(
             member.is_file
             and not info.is_file_copy()
@@ -1210,7 +1213,8 @@ class RarReader(BaseArchiveReader):
         # The dictionary memory each member's read costs under the program that will
         # run it, keyed by ``id(member)``, checked against
         # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
-        # programs allocate differently, so each has a rule.
+        # programs allocate differently, so each has a rule. Under ``NONE`` nothing runs
+        # and nothing consults this.
         costs = (
             [
                 _DictionaryCost(count, count, declarer)
@@ -3486,6 +3490,10 @@ class RarReader(BaseArchiveReader):
         elif raw.compress_type != _RAR_METHOD_STORED:
             why = "it is compressed"
         elif raw.file_solid:
+            # Stored bytes with the member's own solid flag (``rar -s -ms``) are
+            # plaintext in place, and ``_ensure_link_target`` reads a RAR4 symlink
+            # target from such bytes. Member reads keep the stricter rule every
+            # setting shares; widening it is a separate change (dev-docs/IDEAS.md).
             why = "it is part of a solid stream"
         else:
             why = "it is split across volumes"

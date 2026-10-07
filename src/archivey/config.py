@@ -103,7 +103,7 @@ class RarDecompressor(Enum):
     - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
       run on its archives. Opening and listing work as with the others, and so does
       reading a stored member that is not encrypted, not split across volumes and not
-      in a solid archive. Every other read raises ``UnsupportedFeatureError`` before
+      part of a solid stream (the first member of a solid archive is not). Every other read raises ``UnsupportedFeatureError`` before
       anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
