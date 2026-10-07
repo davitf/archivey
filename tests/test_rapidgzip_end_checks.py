@@ -311,6 +311,34 @@ def test_gzip_member_scan_has_a_budget(fakes: int, expected: bool) -> None:
     assert gzip_has_additional_member(io.BytesIO(blob)) is expected
 
 
+def test_gzip_member_probe_output_stays_within_its_bound(monkeypatch) -> None:
+    """One candidate decodes at most ``_MEMBER_PROBE_OUTPUT`` of output in total, also
+    when no single probe read reaches the bound and the last one would pass it."""
+    rng = random.Random(3)
+    # About 72:1, so each 4 KiB probe read expands by about 0.3 MiB.
+    raw = b"".join(bytes([rng.randrange(256)]) + b"\0" * 200 for _ in range(10_000))
+    member = gzip.compress(raw, mtime=0)
+    produced = 0
+    real = zlib.decompressobj
+
+    class _Counting:
+        def __init__(self, wbits: int) -> None:
+            self._decoder = real(wbits)
+
+        def decompress(self, data: bytes, max_length: int = 0) -> bytes:
+            nonlocal produced
+            out = self._decoder.decompress(data, max_length)
+            produced += len(out)
+            return out
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._decoder, name)
+
+    monkeypatch.setattr(codecs.zlib, "decompressobj", _Counting)
+    assert codecs._gzip_member_at(io.BytesIO(member), 0, 1 << 20)[0] is True
+    assert produced == codecs._MEMBER_PROBE_OUTPUT
+
+
 # --- a seek that meets a data error is handed over -------------------------------------
 
 

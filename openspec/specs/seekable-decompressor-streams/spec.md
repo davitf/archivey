@@ -213,8 +213,9 @@ zlib stream before the bytes rapidgzip delivered (rapidgzip decodes on into a se
 and the caller has no byte past that end yet, the read or seek SHALL be handed to the
 standard library at that end, so a completing read returns the first stream and the rest is
 reported as trailing data, as with `use_rapidgzip=OFF`. A caller that already has bytes past
-that end MAY keep the rapidgzip reading, which the decode of the following streams confirms.
-One stated exception: with a container-declared
+that end MAY keep the rapidgzip reading, which the decode of the following streams confirms;
+that caller then gets the following streams as content, and no `ARCHIVE_TRAILING_DATA` is
+reported. One stated exception: with a container-declared
 size, the read that reaches it is the verifying stage's verifying event, and when the probe past
 the size meets a cut trailer that read's chunk is withheld; the error is still `TruncatedError`.
 Raw DEFLATE carries no checksum, so there is no backstop for the deflate accelerator path. A

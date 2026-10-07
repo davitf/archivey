@@ -1285,8 +1285,11 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     (``_restart_without_resume``). The two other switches (``limit`` and
     ``switch_to_stdlib``) start from the start, because neither has a resume point to
     use: ``limit`` takes the over-run verdict from the position before the read, and
-    the callers of ``switch_to_stdlib`` (the gzip ISIZE check, and the zlib Adler-32
-    check on a cut stream) know only the position delivered, not a block before it.
+    the callers of ``switch_to_stdlib`` know no DEFLATE block boundary. The gzip ISIZE
+    check and the zlib Adler-32 check on a cut stream know only the position delivered;
+    the zlib check at the end of the first of two zlib streams knows a position behind
+    it (the end of that stream, passed as ``position``), which is not a block boundary
+    of the decode either.
 
     For bzip2, ``takes_over`` names the bzip2 decoder's data errors (it raises an opaque
     ``RuntimeError('std::exception')`` on a cut stream, where the standard library
@@ -1487,7 +1490,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
         self._source_len = source_len
         self._open_stdlib = open_stdlib
         # The position in the output: where the read that meets the end of rapidgzip's
-        # output is, that output's length.
+        # output is, that output's length. It equals ``self._inner.tell()`` (read adds
+        # what the inner returned, seek stores what the inner's seek returned) and is
+        # kept here because that tell() can be a round trip to the rapidgzip child
+        # (``_StdlibSeekContract``). The ISIZE comparison depends on the two agreeing.
         self._pos = 0
         self._checked = False
         self._verify = True
@@ -1715,10 +1721,12 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     self._count(more)
                     data += more
                 tail = self._at_end(size, start)
-                # Past the end of the first zlib stream, the bytes of this read are
-                # dropped when the standard library took over there: _pos is then
-                # where it took over, plus its own read.
-                data = data[: self._pos - len(tail) - start] + tail
+                # Where the standard library took over: _at_end put _pos there, then
+                # moved it on by the tail it read. With no handover the tail is empty
+                # and this is the end of data. Bytes of this read past that point (a
+                # second zlib stream) are dropped.
+                handover = self._pos - len(tail)
+                data = data[: handover - start] + tail
         else:
             data = self._at_end(size, start)
         self._returned = max(self._returned, start + len(data))
@@ -2144,14 +2152,22 @@ def _starts_empty_bzip2_stream(data: bytes) -> bool:
     return _EMPTY_BZIP2_STREAM.fullmatch(completed) is not None
 
 
-# How much of a candidate member ``gzip_has_additional_member`` decodes before it takes
-# the candidate for a real member: compressed bytes read, and output produced. Random
-# bytes after a chance ``1f 8b 08`` fail long before either (see that function).
+# The bounds of ``gzip_has_additional_member``'s probe. They are not ``ArchiveyConfig``
+# limits because they are structural, not policy: running out of any of them only hands
+# the read to the standard library, which gives the verdict at the cost of a second
+# decode. It never turns a valid file into an error the caller would have to accept.
+#
+# How much of a candidate member the probe decodes before it takes the candidate for a
+# real member: compressed bytes read, and output produced. Random bytes after a chance
+# ``1f 8b 08`` fail long before either (see that function).
 _MEMBER_PROBE_INPUT = 1 << 16
 _MEMBER_PROBE_OUTPUT = 1 << 20
 # The compressed bytes all candidates together may decode: this much, plus one byte per
 # sixteen scanned. A file that spends it is not taken for multi-member.
 _MEMBER_PROBE_BUDGET = 1 << 20
+# The compressed bytes one probe read takes. The budget is tested between reads, so this
+# is what every candidate that passes the header check costs at least (about 256
+# candidates per MiB of budget) and how far one probe can overspend the budget.
 _MEMBER_PROBE_PIECE = 1 << 12
 
 
@@ -2231,7 +2247,11 @@ def _gzip_member_at(
                 return None, fed
             fed += len(pending)
             while pending:
-                produced += len(decoder.decompress(pending, _MEMBER_PROBE_OUTPUT))
+                # Ask for no more than the output bound leaves, so the probe never
+                # produces more than _MEMBER_PROBE_OUTPUT in total.
+                produced += len(
+                    decoder.decompress(pending, _MEMBER_PROBE_OUTPUT - produced)
+                )
                 if decoder.eof or produced >= _MEMBER_PROBE_OUTPUT:
                     return True, fed
                 pending = decoder.unconsumed_tail
@@ -2713,9 +2733,11 @@ class GzipCodec(_DeflateFamilyCodec):
             return None
         # Truncation backstop for **any** seekable source (path or caller-owned stream):
         # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
-        # independent view (multi-member keeps the conservative further-magic bailout; the
-        # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
-        # per-read reopen is needed and `size < 18` truncation is preserved.
+        # independent view: the check stands down only for a further member zlib's gzip
+        # decoder confirms, and a scan that spends its budget hands the read to the
+        # standard library (the per-member ISIZE sum is deferred). Capture the ISIZE
+        # tri-state up front so no per-read reopen is needed and `size < 18` truncation
+        # is preserved.
         source_len, isize = _gzip_isize_and_length(source)
         return lambda stream: _GzipTruncationCheckStream(
             stream,
