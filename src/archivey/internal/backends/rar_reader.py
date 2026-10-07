@@ -601,6 +601,26 @@ def _compression_for(info: RarMemberInfo) -> tuple[CompressionMethod, ...]:
     return (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
 
 
+_UNDECODABLE_WITH_CANDIDATE = (
+    "This RAR member did not decode with the password: it may be wrong, or the "
+    "member may be damaged"
+)
+_UNDECODABLE_WITH_ANY_CANDIDATE = (
+    "This RAR member did not decode with any of the passwords: they may all be "
+    "wrong, or the member may be damaged"
+)
+
+
+def _undecodable_with_candidate() -> EncryptionError:
+    """The failure of a RAR3/4 candidate judged by decoding, which cannot tell why.
+
+    RAR3/4 has no password check, so a wrong key and damage the right key decodes
+    into look the same: garbage the decoder refuses, output that ends early, or a CRC
+    mismatch. Not marked as a wrong password, so exhaustion does not claim one.
+    """
+    return EncryptionError(_UNDECODABLE_WITH_CANDIDATE)
+
+
 def _crc_is_tweaked(info: RarMemberInfo) -> bool:
     enc = info.file_encryption
     if enc is None:
@@ -1127,6 +1147,8 @@ class RarReader(BaseArchiveReader):
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
+        # Likewise :meth:`_unchecked_reference_member`, with the same sentinel.
+        self._unchecked_reference: ArchiveMember | None | Literal[False] = False
         # The password a RAR3/4 candidate list resolved to, by ``id`` of the member it
         # was judged on (:meth:`_unchecked_data_password`), and the members it was
         # confirmed against, whose read then needs no unverified-read report.
@@ -1797,6 +1819,11 @@ class RarReader(BaseArchiveReader):
 
     def _unchecked_reference_member(self) -> ArchiveMember | None:
         """The encrypted member a RAR3/4 candidate list is judged on for the archive."""
+        if self._unchecked_reference is False:
+            self._unchecked_reference = self._find_unchecked_reference_member()
+        return self._unchecked_reference
+
+    def _find_unchecked_reference_member(self) -> ArchiveMember | None:
         encrypted = [
             member
             for member in self._members
@@ -1853,8 +1880,14 @@ class RarReader(BaseArchiveReader):
                     self._passwords, reference, probe, full_check
                 )
             except _PasswordCandidatesExhausted as exc:
+                message = raw_message_of(exc)
+                if (
+                    exc.last_error is not None
+                    and raw_message_of(exc.last_error) == _UNDECODABLE_WITH_CANDIDATE
+                ):
+                    message = _UNDECODABLE_WITH_ANY_CANDIDATE
                 raise EncryptionError(
-                    raw_message_of(exc),
+                    message,
                     archive_name=self._archive_name,
                     member_name=reference.name,
                     source_format=ArchiveFormat.RAR,
@@ -1878,6 +1911,9 @@ class RarReader(BaseArchiveReader):
 
         size = _member_stream_size(member)
         crc = raw.crc32 if not _crc_is_tweaked(raw) else None
+        # Unlike the read path, a tweaked digest does not count here: it can only be
+        # verified once a password is chosen, so for such a member unrar's exit code is
+        # the only CRC signal the probe gets, and suppressing it would leave none.
         has_hash = bool(member.hashes)
         if self._unar_policy is not None:
             unar_spawn = self._unar_spawner(member, raw, self._unar_policy)
@@ -1903,18 +1939,23 @@ class RarReader(BaseArchiveReader):
                 ResourceLimitError,
             ):
                 raise
-            except ArchiveyError as exc:
-                # The decoder objected, or the program reported a wrong password or
-                # a CRC error: the candidate did not decode this member.
+            except EncryptionError as exc:
+                # The program itself said the password is wrong.
                 raise wrong_password_error(
                     "Wrong password for this RAR member"
                 ) from exc
+            except ArchiveyError as exc:
+                # The decoder objected, the output ended early, or a CRC mismatched.
+                # A wrong key does that, and so does damage the right key decodes
+                # into; the attempt still moves on, but its message must not claim
+                # which one it was.
+                raise _undecodable_with_candidate() from exc
             finally:
                 # Stops the program when the plan ended before its output did; only
                 # what was read above is judged.
                 stream.close()
             if verdict is PasswordConfirmVerdict.REJECTED:
-                raise wrong_password_error("Wrong password for this RAR member")
+                raise _undecodable_with_candidate()
             return password, verdict
 
         bounded = plan_password_confirm(
@@ -1996,7 +2037,7 @@ class RarReader(BaseArchiveReader):
         finally:
             view.close()
         if crc != raw.crc32 & 0xFFFFFFFF:
-            raise wrong_password_error("Wrong password for this RAR member")
+            raise _undecodable_with_candidate()
         verdict = (
             PasswordConfirmVerdict.CONFIRMED
             if raw.file_size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES

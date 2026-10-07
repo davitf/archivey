@@ -475,16 +475,27 @@ for most folders, decodes a bounded prefix per candidate.
 checking a CRC. `internal/password_confirm.py` plans the confirmation as a ladder: it
 stops at the earliest CRC covering at least 4 bytes, so a solid folder's first member
 decides. A chain holding a codec in `REJECTING_CODECS` (LZMA, LZMA2, BZip2, Deflate,
-Deflate64, Zstandard, LZ4) never walks past `PASSWORD_CONFIRM_PREFIX_BYTES` (64 KiB of
-output), because that decoder settles a wrong key inside the prefix, and its compressed
-input is capped at `PASSWORD_CONFIRM_MAX_INPUT_BYTES` (1 MiB). The decode streams in
-64 KiB chunks with a running CRC; holding the decoded folder instead cost about three
-times the folder size (630 MB peak for a 200 MiB folder).
+Deflate64, Zstandard, LZ4) stops its bounded probe at `PASSWORD_CONFIRM_PREFIX_BYTES`
+(64 KiB of output), because that decoder settles most wrong keys inside the prefix, and
+its compressed input is capped at `PASSWORD_CONFIRM_MAX_INPUT_BYTES` (1 MiB). A candidate
+that survives the probe is not accepted outright: every remaining static candidate is
+probed too (one key derivation each, bounded in total by
+`DecoderLimits.max_key_derivation_rounds`, see [Key derivation](#key-derivation)), and
+when more than one survives, each survivor in turn walks to the folder's end CRC
+whatever the codec, with no input cap, until one matches. The decode streams in 64 KiB
+chunks with a running CRC; holding the decoded folder instead cost about three times the
+folder size (630 MB peak for a 200 MiB folder). ZIP and RAR3/4 run the same rule
+(`password_confirm.attempt_with_confirm`): a ZIP member's probe walks to its CRC or
+WinZip AES HMAC for survivors; a RAR3/4 member's probe is up to 64 KiB of `unrar p`
+output, its full check the whole member through `unrar p` against the CRC, and a stored
+RAR 2.9+ member's only check is a native AES decrypt of the whole member with a running
+CRC.
 
-**Residual.** A Copy, PPMd, Brotli or filter-only chain whose only CRC is at the folder
-end, with several candidates, still walks the folder once per candidate: nothing short
-of that CRC tells a wrong key. That is time, not memory, and is an
-[open gap](#7z-password-confirmation-on-a-late-crc).
+**Residual.** Two shapes still walk a whole unit per candidate: a 7z Copy, PPMd, Brotli
+or filter-only chain whose only CRC is at the folder end, and any ZIP, 7z or RAR3/4 unit
+where several candidates survive the bounded probe (for RAR3/4 about one wrong password
+in three does; a stored RAR4 member is walked for every candidate). That is time, not
+memory, and is an [open gap](#7z-password-confirmation-on-a-late-crc).
 
 **Tests.** `tests/test_password_confirm.py`, `tests/test_sevenzip_password_confirm.py`.
 
@@ -910,11 +921,15 @@ Public: [hardening notes](../docs/extracting.md#hardening-notes-for-callers).
 
 ### 7z password confirmation on a late CRC
 
-The one shape [confirmation](#7z-password-confirmation) cannot settle early: a Copy,
-PPMd, Brotli or filter-only chain whose only CRC is at the folder end, with several
-candidates. The OpenSpec change `sevenzip-aes-tail-key-check` adds an O(1) check on the
-AES padding at the end of the packed stream, which settles it for the archives with at
-least 4 padding bytes. Not implemented (its tasks are open).
+The shapes [confirmation](#7z-password-confirmation) cannot settle early, all with
+several candidates: a 7z Copy, PPMd, Brotli or filter-only chain whose only CRC is at the
+folder end; any ZIP, 7z or RAR3/4 unit where more than one candidate survives the bounded
+probe, which then walks to the end anchor once per survivor; and a stored RAR3/4 member,
+decrypted in full once per candidate. Each costs time proportional to the unit, once per
+candidate, and only when the caller passes a list. For 7z, the OpenSpec change
+`sevenzip-aes-tail-key-check` adds an O(1) check on the AES padding at the end of the
+packed stream, which settles it for the archives with at least 4 padding bytes. Not
+implemented (its tasks are open).
 
 ### Detection decoding scan candidates
 

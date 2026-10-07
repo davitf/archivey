@@ -45,7 +45,7 @@ OUT_DIR = REPO_ROOT / "tests" / "fixtures" / "rar"
 # than rarlab.com, because some build environments (Claude Code sessions among them)
 # can reach the first and not the second.
 _RAR623_DEB_URL = (
-    "http://archive.ubuntu.com/ubuntu/pool/multiverse/r/rar/"
+    "https://archive.ubuntu.com/ubuntu/pool/multiverse/r/rar/"
     "rar_6.23-1~22.04.1_amd64.deb"
 )
 _RAR623_DEB_SHA256 = "6f83c3b3880f0f44ce8f682b3a02fae027e9c6e61c006ef65a48bf0d9257efed"

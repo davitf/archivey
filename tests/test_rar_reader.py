@@ -5064,6 +5064,28 @@ def test_rar4_lone_wrong_survivor_fails_on_its_crc(name: str) -> None:
 
 
 @requires_binary("unrar")
+@pytest.mark.parametrize("passwords", [["wrong3", "password"], ["password", "wrong3"]])
+def test_rar4_damaged_member_is_not_reported_as_a_wrong_password(
+    tmp_path: Path, passwords: list[str]
+) -> None:
+    """Decoding cannot tell a wrong key from damage, so the error claims neither.
+
+    A byte flipped inside the first member's compressed data makes the right
+    password fail its decode too; the list then has no survivor, and the message
+    must leave open that the member, not the password, is at fault.
+    """
+    data = bytearray(_fixture("encryption_large__rar4.rar").read_bytes())
+    data[20000] ^= 0xFF
+    path = tmp_path / "damaged.rar"
+    path.write_bytes(data)
+    with open_archive(path, password=passwords) as archive:
+        with pytest.raises(EncryptionError) as info:
+            archive.read("large1.txt")
+    assert "Wrong password" not in str(info.value)
+    assert "may be damaged" in str(info.value)
+
+
+@requires_binary("unrar")
 @requires("cryptography")
 def test_rar4_stored_password_list_is_judged_without_unrar(
     monkeypatch: pytest.MonkeyPatch,
