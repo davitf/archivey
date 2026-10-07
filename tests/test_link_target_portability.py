@@ -29,6 +29,7 @@ from typing import Callable
 import pytest
 
 from archivey import (
+    ArchiveyConfig,
     ExtractionPolicy,
     ExtractionStatus,
     OnError,
@@ -42,7 +43,7 @@ from archivey.internal.windows_reparse import (
     IO_REPARSE_TAG_SYMLINK,
     normalize_windows_link_target,
 )
-from archivey.types import MemberType
+from archivey.types import ArchiveMember, MemberType
 from tests.test_audit_rar_iso_dir import (
     _fixture,
     _rar5_build,
@@ -381,6 +382,34 @@ def test_a_backslash_rooted_symlink_target_extracts_on_posix(
     assert os.readlink(dest / "bs") == "\\foo"
 
 
+@pytest.mark.parametrize("policy", list(ExtractionPolicy), ids=lambda p: p.name)
+def test_a_backslash_rooted_hardlink_target_gets_what_its_member_gets(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The ``\\foo`` exception is for symlinks only. A hardlink target names a member,
+    so ``STRICT`` refuses ``\\x`` as it refuses the member ``\\x``, on every OS (Windows
+    would resolve it off the drive root), and the other policies re-root both."""
+    path = _tar(
+        tmp_path / "a.tar",
+        [("\\x", tarfile.REGTYPE, None), ("hl", tarfile.LNKTYPE, "\\x")],
+    )
+    dest = tmp_path / "out"
+    with open_archive(path) as archive:
+        report = archive.extract_all(dest, policy=policy, on_error=OnError.CONTINUE)
+    member, link = report.results
+    if policy is ExtractionPolicy.STRICT:
+        assert member.status is ExtractionStatus.BLOCKED
+        assert link.status is ExtractionStatus.BLOCKED
+        assert isinstance(link.error, FilterRejectionError)
+        assert link.error.message == "Hardlink target is an absolute path"
+        assert not os.path.lexists(dest / "hl")
+    else:
+        assert member.status is ExtractionStatus.EXTRACTED, member.error
+        assert link.status is ExtractionStatus.EXTRACTED, link.error
+        assert (dest / "x").read_bytes() == b"data"
+        assert (dest / "hl").read_bytes() == b"data"
+
+
 def test_sanitize_names_rewrites_a_symlink_target_s_segments(tmp_path: Path) -> None:
     """The link points at the name the filter gave the member it links to; a drive
     target is not rewritten into a different link and stays refused."""
@@ -419,3 +448,68 @@ def test_sanitize_names_rewrites_a_symlink_target_s_segments(tmp_path: Path) -> 
     ]:
         assert results[name].status is ExtractionStatus.EXTRACTED, results[name].error
         assert os.readlink(dest / name) == written
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+@pytest.mark.parametrize(
+    "read_link_targets", [True, False], ids=["read-targets", "late-targets"]
+)
+def test_sanitize_names_rewrites_a_symlink_target_read_after_the_filter(
+    tmp_path: Path, read_link_targets: bool, streaming: bool
+) -> None:
+    """A ZIP keeps a symlink's target in member data. Under ``read_link_targets=False``,
+    or in a streaming pass, extraction reads it only after the filter accepted the
+    link, so the filter is called again with the target, and the outcome is the one
+    random access with the default config gives."""
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("file:stream", b"data")
+        info = zipfile.ZipInfo("link")
+        info.create_system = 3  # Unix
+        info.external_attr = 0o120777 << 16
+        zf.writestr(info, b"file:stream")
+    dest = tmp_path / "out"
+    seen: list[str | None] = []
+
+    def recording(member: ArchiveMember) -> ArchiveMember:
+        if member.name == "link":
+            seen.append(member.link_target)
+        return sanitize_names(member)
+
+    config = ArchiveyConfig(read_link_targets=read_link_targets)
+    with open_archive(path, streaming=streaming, config=config) as archive:
+        report = archive.extract_all(
+            dest,
+            policy=ExtractionPolicy.STANDARD,
+            filter=recording,
+            on_error=OnError.CONTINUE,
+        )
+    assert seen[-1] == "file:stream"
+    results = {r.member.name: r for r in report.results}
+    assert (dest / "file_stream").read_bytes() == b"data"
+    link = results["link"]
+    if os.name == "nt":
+        return  # creating a symlink needs a privilege CI may not hold
+    assert link.status is ExtractionStatus.EXTRACTED, link.error
+    assert os.readlink(dest / "link") == "file_stream"
+
+
+@pytest.mark.parametrize("policy", list(ExtractionPolicy), ids=lambda p: p.name)
+def test_sanitize_names_removes_a_bidi_override_before_a_drive_target(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The drive target keeps its root and stays refused, but not its bidi override:
+    the link is refused for the drive at every policy, ``TRUSTED`` included."""
+    path = _tar(tmp_path / "a.tar", [("drv", tarfile.SYMTYPE, "\u202eC:/x")])
+    with open_archive(path) as archive:
+        (listed,) = archive.members()
+        assert sanitize_names(listed).link_target == "C:/x"
+        (result,) = archive.extract_all(
+            tmp_path / "out",
+            policy=policy,
+            filter=sanitize_names,
+            on_error=OnError.CONTINUE,
+        ).results
+    assert result.status is ExtractionStatus.BLOCKED
+    assert isinstance(result.error, FilterRejectionError)
+    assert result.error.message == _DRIVE_OR_UNC

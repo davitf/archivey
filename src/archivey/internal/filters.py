@@ -366,15 +366,27 @@ def check_universal(
         # as well. STANDARD and TRUSTED have already re-rooted a rooted one, so this
         # catches STRICT's `C:/x` and `//host/x`, a drive-relative `C:x` at any
         # policy, and whatever a caller filter returns.
-        #
+        if _has_windows_root(target):
+            raise FilterRejectionError(
+                f"{kind} target is a Windows drive or UNC path",
+                member_name=name,
+                link_target=member.link_target,
+            )
         # Named exception: a symlink target rooted by a single `\` (`\foo`) is left
         # alone. Windows resolves it to the drive root and refuses it as an escape,
         # but on POSIX a backslash is an ordinary filename character, so `\foo` is
         # a legitimate relative link there. Refusing it would block an archive that
         # is valid on POSIX, and ADR 0013 rules that extracting beats refusing.
-        if _has_windows_root(target):
+        #
+        # A hardlink target gets no such exception. It names a member of the same
+        # archive, and a member named `\x` is refused as absolute under STRICT and
+        # re-rooted under STANDARD and TRUSTED, as is the target. So a `\`-rooted
+        # hardlink target reaches here only under STRICT (or from a caller filter),
+        # where it cannot name a member that was written; it is refused like the
+        # member, on every OS.
+        if not is_symlink and target.startswith("\\"):
             raise FilterRejectionError(
-                f"{kind} target is a Windows drive or UNC path",
+                "Hardlink target is an absolute path",
                 member_name=name,
                 link_target=member.link_target,
             )
@@ -691,13 +703,15 @@ def _sanitize_symlink_target(target: str) -> str:
 
     The root and every ``..`` are kept, because a symlink target is a filesystem path
     relative to the link, and ``../sibling`` or ``/etc/x`` mean what they say; one that
-    escapes is refused by extraction. A target with a Windows drive or UNC root is
-    returned as is, so extraction still refuses it: rewriting ``C:/x`` to ``C_/x``
-    would make a different link rather than a safe spelling of the same one.
+    escapes is refused by extraction. A target that has a Windows drive or UNC root
+    once its characters are cleaned gets no segment rewrite, so extraction still
+    refuses it: rewriting ``C:/x`` to ``C_/x`` would make a different link rather than
+    a safe spelling of the same one. Its characters are still cleaned, so a bidi
+    override hidden before the drive letter does not survive the filter.
     """
     cleaned = _sanitize_characters(target)
     if _has_windows_root(cleaned):
-        return target
+        return cleaned
     return _map_segments(cleaned, _sanitize_segment)
 
 
@@ -729,7 +743,12 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
     at the name that was written. Its root and its ``..`` components are kept: it is a
     path on the filesystem, and one that points outside the destination is still
     refused. A symlink target with a Windows drive or UNC root (``C:/x``,
-    ``//host/share``) is left as stored and still refused.
+    ``//host/share``) gets the character rewrites only, and is still refused.
+
+    A symlink target the archive stores as member data and that is read only after
+    this filter has run (``ArchiveyConfig.read_link_targets=False``, or a streaming
+    pass) gets the same rewrite: ``extract_all`` calls the filter again once the
+    target is read.
 
     Two members can end up with the same name (``a/../x`` and ``x``). The second is then
     handled by the ``overwrite`` option like any other clash. The result's
