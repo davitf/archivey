@@ -682,6 +682,18 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     )
     _build_wildcard_ver(rar5_bin, out_dir / "wildcard_ver__.rar")
     _build_xtime(rar5_bin, out_dir / "xtime__.rar")
+    # Solid, with the second member stored (``-msbin``): rar sets that member's own
+    # solid flag although its bytes sit in the file as plaintext. The first member is
+    # compressed, so the archive is solid in more than name.
+    build(
+        rar5_bin,
+        "stored_solid_member__.rar",
+        (
+            _File("first.txt", b"compressible line\n" * 128),
+            _File("second.bin", hashlib.sha256(b"stored_solid_member").digest() * 64),
+        ),
+        extra=("-s", "-m3", "-msbin"),
+    )
     build(
         rar5_bin,
         "stored_m0.rar",

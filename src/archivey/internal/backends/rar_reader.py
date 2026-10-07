@@ -14,6 +14,7 @@ Data-open shapes:
 
 - Solid archive → one ``unrar p`` ALL-pipe + :class:`SolidBlockReader` demux
 - Non-solid stored (no encrypt / split) → direct sliced view (no ``unrar``)
+- ``RarDecompressor.NONE`` → only that direct view; every other read is refused
 - Other non-solid → per-member named ``unrar p -n./…`` opens
 - Stream / non-path sources may be materialized to a temp ``.rar`` so ``unrar``
   can open a real path (and resolve sibling volumes)
@@ -209,6 +210,13 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
     except PackageNotInstalledError:
         return RarDecompressor.UNRAR
     return RarDecompressor.UNAR
+
+
+_NO_DECOMPRESSOR_NOTE = (
+    "ArchiveyConfig.rar_decompressor is 'none', so no external program reads RAR "
+    "member data. Reading a compressed, encrypted or solid member, or a stored one "
+    "split across volumes, will be refused."
+)
 
 
 AUTO_CHOSE_UNAR_NOTE = (
@@ -1120,12 +1128,17 @@ class RarReader(BaseArchiveReader):
             self._volume0_parse_origin = self._origin
             self._origin = 0
         # Open-time caveat from source shape, not from later materialization
-        # (CostReceipt is a static snapshot; see access-mode-and-cost).
-        self._cost_notes = _rar_stream_copy_cost_notes(
-            source,
-            self._config.spool_limits,
-            self._spool_copy_size(),
-            self._decompressor_name(),
+        # (CostReceipt is a static snapshot; see access-mode-and-cost). With no
+        # program nothing is ever copied, so there is no copy to warn about.
+        self._cost_notes = (
+            ()
+            if self._decompressor is RarDecompressor.NONE
+            else _rar_stream_copy_cost_notes(
+                source,
+                self._config.spool_limits,
+                self._spool_copy_size(),
+                self._decompressor_name(),
+            )
         )
         if (
             self._config.rar_decompressor is RarDecompressor.AUTO
@@ -1187,10 +1200,21 @@ class RarReader(BaseArchiveReader):
             for index, info in enumerate(self._archive.members)
         ]
         self._resolve_file_copies()
+        # Not ``not _can_direct_read``: a member whose header stopped before its
+        # encryption record can still be served by ``_confirm_unsettled_plaintext``,
+        # and a file copy's refusal comes from its source, which is in this walk too.
+        if self._decompressor is RarDecompressor.NONE and any(
+            member.is_file
+            and not info.is_file_copy()
+            and (info.is_encrypted or not self._is_directly_sliceable(info))
+            for member, info in zip(self._members, self._archive.members, strict=True)
+        ):
+            self._cost_notes = (*self._cost_notes, _NO_DECOMPRESSOR_NOTE)
         # The dictionary memory each member's read costs under the program that will
         # run it, keyed by ``id(member)``, checked against
         # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
-        # programs allocate differently, so each has a rule.
+        # programs allocate differently, so each has a rule. Under ``NONE`` nothing runs
+        # and nothing consults this.
         costs = (
             [
                 _DictionaryCost(count, count, declarer)
@@ -2044,6 +2068,9 @@ class RarReader(BaseArchiveReader):
         """Return a parsed old-style comment, dropping unavailable/invalid payloads."""
         if not isinstance(comment, _Rar3Comment):
             return comment
+        if self._decompressor is RarDecompressor.NONE:
+            # Decoding it would run a program, which the caller ruled out.
+            return None
         # The selected program decodes the comment, ``unar`` included, without the
         # member refusals of ``UnarRarPolicy``: the CRC16 check below catches any wrong
         # or missing output, and a comment that fails it is dropped either way.
@@ -2349,8 +2376,9 @@ class RarReader(BaseArchiveReader):
     def _iter_with_data(
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
-        if not self._archive.is_solid:
+        if not self._archive.is_solid or self._decompressor is RarDecompressor.NONE:
             # Nonsolid: default lazy per-member named opens (never ALL-pipe demux).
+            # With no program, each member is read directly or refused on its own.
             yield from super()._iter_with_data(copies)
             return
         if self._unar_policy is not None:
@@ -3228,6 +3256,9 @@ class RarReader(BaseArchiveReader):
             self._confirm_unsettled_plaintext(raw, member)
             return self._wrap_payload_stream(self._direct_view(raw), member)
 
+        if self._decompressor is RarDecompressor.NONE:
+            raise self._no_decompressor_refused(member, raw)
+
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
@@ -3449,6 +3480,31 @@ class RarReader(BaseArchiveReader):
         if password is not None and not unar_password_supported(password):
             raise self._unar_refused(member, REFUSE_NON_ASCII_PASSWORD)
         return password
+
+    def _no_decompressor_refused(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> UnsupportedFeatureError:
+        """The refusal for a member only an external program can read, under ``NONE``."""
+        if raw.is_encrypted:
+            why = "it is encrypted"
+        elif raw.compress_type != _RAR_METHOD_STORED:
+            why = "it is compressed"
+        elif raw.file_solid:
+            # Stored bytes with the member's own solid flag (``rar -s -ms``) are
+            # plaintext in place, and ``_ensure_link_target`` reads a RAR4 symlink
+            # target from such bytes. Member reads keep the stricter rule every
+            # setting shares; widening it is a separate change (dev-docs/IDEAS.md).
+            why = "it is part of a solid stream"
+        else:
+            why = "it is split across volumes"
+        return UnsupportedFeatureError(
+            f"Cannot read RAR member {quoted(member.name)}: {why}, and only an external "
+            "program (unrar or unar) can read it. ArchiveyConfig.rar_decompressor is "
+            "'none', which rules them out. Set it to 'unrar' to read the member.",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
 
     def _unar_refused(
         self, member: ArchiveMember | None, reason: str
