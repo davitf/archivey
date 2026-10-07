@@ -13,3 +13,26 @@ Archivey identifies the format from the file's first bytes, so a ZIP named `back
 opens as a ZIP. It falls back to the file name only when the contents don't settle it. To skip
 detection, pass `format=`, such as `format="zip"` or `format=archivey.ArchiveFormat.TAR_GZ`. If
 the file isn't in the specified format, it fails like a damaged one.
+
+## Passwords
+
+Pass the password as `password=`: one string, a list of candidates when you're not sure which one
+the archive uses, or a function that supplies passwords as they're needed.
+
+```python
+archivey.open_archive("secret.7z", password="hunter2")
+archivey.open_archive("secret.zip", password=["likely", "fallback"])
+```
+
+Archivey tries a list in order, so put the most likely password first: each wrong one costs some
+hashing work before it's rejected. An archive can use different passwords for different members,
+and archivey finds the right one from your list for each.
+
+You can also pass a function, such as one that asks the user. Archivey calls it only when a member
+needs a password that none tried so far has opened, and passes a `PasswordRequest` naming the
+member and counting the attempts. Return a password to try, or `None` to give up, which raises
+`EncryptionError`.
+
+A password given for a format with no encryption, such as TAR, is ignored and noted in the
+[diagnostics](errors-and-diagnostics.md). One list of passwords can then serve a whole batch of
+archives.
