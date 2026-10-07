@@ -330,14 +330,19 @@ no digest at all rather than the constant `crc32(b"")` —
 directory entries until it has consumed the size the end record gives and ignores the
 rest of the record. After the members, the reader emits `ARCHIVE_EOF_MARKER_MISSING`
 for an entry count that differs from the entries read (the ZIP64 record's count when
-stdlib used it; a classic count modulo 65536, which writers without ZIP64 wrap), an
-archive comment length past the end of the file, and an entry whose name, extra field
-or comment runs past the directory, which stdlib cuts at the directory's end. Info-ZIP
+stdlib used it; a classic count modulo 65536, because old 7-Zip versions stored a
+larger count's low 16 bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that
+with a "16-bit overflow" note), an archive comment length past the end of the file, and
+an entry whose name, extra field or comment runs past the directory, which stdlib cuts
+at the directory's end. Info-ZIP
 unzip warns or errors on each and 7-Zip says "Headers Error", after testing every
 member, so the default policy lists and reads; `strict()` refuses.
-`_end_record_findings` takes the counts from stdlib's own `_EndRecData`, the comment
-length from `_find_classic_eocd`, and reads the directory once more to find the entry
-that overruns it.
+`_end_record_findings` takes the counts and the declared and present comment lengths
+from stdlib's own `_EndRecData` result (indices bound through `zipfile._ECD_*`), and
+reads the directory once more to find the entry that overruns it. Because the checks use
+the record stdlib chose, a decoy end-record signature inside the archive comment passes
+them: the archive lists as empty (`EMPTY_ARCHIVE`), as with Info-ZIP unzip, where 7-Zip
+searches further back and lists the real members.
 
 ### 2.3 Member data
 

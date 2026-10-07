@@ -275,7 +275,9 @@ listing's last member so the listing completes, each of:
 - the entry count the end record declares (the ZIP64 record's when stdlib used it)
   differs from the number of entries the central directory holds
   (`expected_marker="end_of_central_directory"`, `observed_kind="nonzero"`). A classic
-  record counts in 16 bits, so its count is compared modulo 65536;
+  record counts in 16 bits and old 7-Zip versions stored a larger count's low 16 bits
+  there without ZIP64, which current 7-Zip accepts, so its count is compared modulo
+  65536;
 - the archive comment length runs past the end of the file
   (`expected_marker="end_of_central_directory"`, `observed_kind="short"`);
 - a central-directory entry's name, extra field or comment length runs past the
@@ -286,6 +288,12 @@ None of them SHALL raise under the default policy; `strict()` refuses the archiv
 Info-ZIP unzip warns or errors on each and 7-Zip reports "Headers Error", after testing
 every member.
 
+The checks compare the end record stdlib selected, the last end-record signature in
+the file's tail. An end-record signature inside the archive comment is therefore
+compared with the empty directory it describes and agrees with it: the archive lists as
+empty (`EMPTY_ARCHIVE`) with no end-record diagnostic, as Info-ZIP unzip also lists it,
+while 7-Zip searches further back and lists the real members.
+
 #### Scenario: end record mismatches
 
 | Archive | Expected |
@@ -293,8 +301,10 @@ every member.
 | Classic end record declares 2 or 4 entries, directory holds 3 | All 3 members listed and readable; one `ARCHIVE_EOF_MARKER_MISSING`, `expected_marker="end_of_central_directory"`, `observed_kind="nonzero"`, `observed_bytes` the record's offset |
 | ZIP64 end record declares 5 entries, directory holds 3 | Same, the message naming the ZIP64 record |
 | Comment length 5000, 8 comment bytes in the file | `observed_kind="short"`, `expected_bytes` 5022, `observed_bytes` 30 |
-| Last directory entry's extra or comment length runs past the directory | `expected_marker="central_directory"`; the message names the member and the field |
+| Last directory entry's name, extra or comment length runs past the directory | `expected_marker="central_directory"`; the message names the member and the field |
 | Consistent classic or ZIP64 end record | No diagnostic |
+| 65537 entries, classic record only, count 1 (65537 modulo 65536) | All 65537 members listed; no diagnostic |
+| Archive comment holding an end-record signature followed by 30 zero bytes | No members listed; one `EMPTY_ARCHIVE` and no `ARCHIVE_EOF_MARKER_MISSING` |
 | Any of the above under `strict()` | `DiagnosticRaisedError` from the listing |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords

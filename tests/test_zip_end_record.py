@@ -112,6 +112,59 @@ def test_entry_count_mismatch_is_reported(declared: int) -> None:
     assert "holds 3" in diagnostic.message
 
 
+def _classic_only_zip(entries: int, declared: int) -> bytes:
+    """``entries`` empty stored members behind a classic end record alone (no ZIP64
+    record), its entry count fields set to ``declared``."""
+    local = bytearray()
+    central = bytearray()
+    for i in range(entries):
+        name = b"%05d" % i
+        central += struct.pack(
+            "<4sHHHHHHIIIHHHHHII",
+            b"PK\x01\x02",
+            20,
+            10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            len(local),
+        )
+        central += name
+        local += struct.pack(
+            "<4sHHHHHIIIHH", b"PK\x03\x04", 10, 0, 0, 0, 0, 0, 0, 0, len(name), 0
+        )
+        local += name
+    eocd = struct.pack(
+        "<4sHHHHIIH", _EOCD, 0, 0, declared, declared, len(central), len(local), 0
+    )
+    return bytes(local + central + eocd)
+
+
+@pytest.mark.parametrize(
+    ("declared", "reported"),
+    [(65537 & 0xFFFF, False), (5, True)],
+    ids=["wrapped", "wrong"],
+)
+def test_classic_count_compared_modulo_65536(declared: int, reported: bool) -> None:
+    """Old 7-Zip wrote a count above 65535 as its low 16 bits without ZIP64; current
+    7-Zip lists such an archive with an overflow note, not a Headers Error."""
+    data = _classic_only_zip(65537, declared)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert len(reader.members()) == 65537
+        contexts = _end_record_contexts(reader.diagnostics)
+    assert len(contexts) == (1 if reported else 0)
+
+
 def test_zip64_entry_count_mismatch_is_reported() -> None:
     names, summary = _list(_with_zip64_count(5))
     assert names == ["a.txt", "b.txt", "c.txt"]
@@ -141,8 +194,8 @@ def test_archive_comment_past_end_of_file_is_reported() -> None:
 
 @pytest.mark.parametrize(
     ("offset", "field"),
-    [(30, "extra field"), (32, "comment")],
-    ids=["extra", "comment"],
+    [(28, "name"), (30, "extra field"), (32, "comment")],
+    ids=["name", "extra", "comment"],
 )
 def test_central_directory_field_past_the_directory_is_reported(
     offset: int, field: str
@@ -156,6 +209,17 @@ def test_central_directory_field_past_the_directory_is_reported(
     message = summary.retained[0].message
     assert "'c.txt'" in message
     assert f"its {field} is cut short" in message
+
+
+def test_decoy_end_record_in_comment_lists_empty() -> None:
+    """The checks use the record stdlib chose; a decoy signature in the comment is
+    a self-consistent empty record, so the archive lists as empty with no end-record
+    finding (Info-ZIP unzip likewise; 7-Zip searches further back)."""
+    data = _zip(comment=b"junk" + _EOCD + b"\x00" * 30)
+    names, summary = _list(bytes(data))
+    assert names == []
+    assert _end_record_contexts(summary) == []
+    assert [d.code for d in summary.retained] == [DiagnosticCode.EMPTY_ARCHIVE]
 
 
 def test_clean_archive_with_comment_reports_nothing() -> None:

@@ -315,7 +315,7 @@ def test_zip_ppmd_restore_method_2_is_unsupported() -> None:
 
 @pytest.mark.parametrize("restore", [3, 15])
 def test_zip_ppmd_restore_method_above_2_is_corrupt(restore: int) -> None:
-    """7-Zip: "Data Error" for a restore method above 2; it was read as 0 before."""
+    """7-Zip: "Data Error" for a restore method above 2."""
     body = _zip_ppmd_header(restore) + b"\x00" * 16
     data = _build_minimal_zip(b"p.txt", body, _PAYLOAD, method=98)
     with open_archive(io.BytesIO(data)) as ar:

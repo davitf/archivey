@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import (
     IO,
     TYPE_CHECKING,
+    Any,
     BinaryIO,
     Iterator,
     Literal,
@@ -239,21 +240,30 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
 # the native parsers.
 _MAX_DATA_OFFSET = 1 << 40
 
+
 # The end-of-central-directory record as stdlib parsed it: the classic record, or the
-# ZIP64 one when stdlib found and used it. Private, as above; the end-record checks
-# compare against the counts and sizes zipfile actually read with.
-_raw_end_rec_data = getattr(zipfile, "_EndRecData", None)
-if _raw_end_rec_data is None:  # pragma: no cover
-    raise ImportError(
-        "This Python's `zipfile` module no longer exposes `_EndRecData`, which archivey "
-        "needs to check the ZIP end record. Please report this to archivey (with your "
-        "Python version)."
-    )
-_end_rec_data: Callable[[IO[bytes]], list | None] = _raw_end_rec_data
-_ECD_SIGNATURE = 0
-_ECD_ENTRIES_TOTAL = 4
-_ECD_SIZE = 5
-_ECD_LOCATION = 9
+# ZIP64 one when stdlib found and used it. `_EndRecData` and the `_ECD_*` indices into
+# its result are private stdlib API, bound once here so a Python that drops or renames
+# them fails at import rather than silently skipping (or misreading) the end-record
+# checks, which compare against the counts and sizes zipfile actually read with.
+def _zipfile_private(name: str) -> Any:
+    value = getattr(zipfile, name, None)
+    if value is None:  # pragma: no cover
+        raise ImportError(
+            f"This Python's `zipfile` module no longer exposes `{name}`, which archivey "
+            "needs to check the ZIP end record. Please report this to archivey (with "
+            "your Python version)."
+        )
+    return value
+
+
+_end_rec_data: Callable[[IO[bytes]], list | None] = _zipfile_private("_EndRecData")
+_ECD_SIGNATURE: int = _zipfile_private("_ECD_SIGNATURE")
+_ECD_ENTRIES_TOTAL: int = _zipfile_private("_ECD_ENTRIES_TOTAL")
+_ECD_SIZE: int = _zipfile_private("_ECD_SIZE")
+_ECD_COMMENT_SIZE: int = _zipfile_private("_ECD_COMMENT_SIZE")
+_ECD_COMMENT: int = _zipfile_private("_ECD_COMMENT")
+_ECD_LOCATION: int = _zipfile_private("_ECD_LOCATION")
 _EOCD_SIZE = 22
 _CD_HEADER_SIZE = 46
 
@@ -832,6 +842,9 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
         # Reported after the members (``_iter_members``), so the listing completes.
+        # Computed here rather than there because the handle is still private to
+        # ``__init__``: these seeks need no ``_handle_guard()``, while the same reads
+        # at the end of the walk would race member reads under ``CONCURRENT``.
         self._end_record_findings: list[tuple[str, ArchiveEofContext]] = (
             _end_record_findings(
                 fp,
@@ -1322,7 +1335,10 @@ class ZipReader(BaseArchiveReader):
             )
         except UnsupportedFeatureError as exc:
             # 7-Zip writes and reads lc + lp over 4 (``-mm=LZMA:lc=8``); liblzma
-            # cannot decode it, so the archive is valid and unreadable here.
+            # cannot decode it, so the archive is valid and unreadable here. When
+            # keyed, every ZipCrypto open path re-raises this CorruptionError as the
+            # password-or-damage EncryptionError, so its "not supported" wording is
+            # only ever read as that error's ``__cause__``.
             error_type = CorruptionError if keyed else UnsupportedFeatureError
             raise error_type(
                 raw_message_of(exc),
@@ -1356,7 +1372,10 @@ class ZipReader(BaseArchiveReader):
             )
         # PPMd8 restore methods: 0 restart, 1 cut off, 2 freeze. 7-Zip builds without
         # freeze and reports it as an unsupported method; anything above 2 is its
-        # data error.
+        # data error. pyppmd must not be handed these either: it is built without
+        # PPMD8_FREEZE_SUPPORT yet accepts any value silently, so a 2 (or a 3 to 15)
+        # passed on decodes to wrong bytes once a large member fills the model,
+        # rather than failing.
         if restore > _ZIP_PPMD_RESTORE_UNSUPPORTED or (
             restore == _ZIP_PPMD_RESTORE_UNSUPPORTED and keyed
         ):
@@ -2250,12 +2269,16 @@ def _end_record_findings(
     comment runs past the directory (it cuts the field at the directory's end). Info-ZIP
     unzip warns or errors on each, and 7-Zip reports "Headers Error". ``fp``'s position
     is restored.
+
+    The record checked is the one stdlib chose, the last end-record signature in the
+    file's tail. A decoy signature inside the archive comment is therefore compared
+    with the (empty) directory it describes and agrees with it: such an archive lists
+    as empty, with no finding here.
     """
     pos = fp.tell()
     try:
         endrec = _end_rec_data(fp)
-        found = _find_classic_eocd(fp)
-        if endrec is None or found is None:
+        if endrec is None:
             return []
         findings: list[tuple[str, ArchiveEofContext]] = []
         eocd_offset = endrec[_ECD_LOCATION]
@@ -2263,7 +2286,10 @@ def _end_record_findings(
 
         declared = endrec[_ECD_ENTRIES_TOTAL]
         read = len(infos)
-        # A classic record counts in 16 bits; writers without ZIP64 wrap it.
+        # A classic record counts in 16 bits. Old 7-Zip versions stored the low 16 bits
+        # of a larger count there without writing ZIP64; current 7-Zip (ZipIn.cpp)
+        # accepts that with a "16-bit overflow for number of files in headers" note
+        # rather than a Headers Error, so the comparison here is modulo 65536 too.
         if declared != (read if is_zip64 else read & 0xFFFF):
             record = "ZIP64 end of central directory" if is_zip64 else "end record"
             findings.append(
@@ -2281,27 +2307,28 @@ def _end_record_findings(
                 )
             )
 
-        tail, idx, size = found
-        if idx + _EOCD_SIZE <= len(tail):
-            (comment_length,) = struct.unpack_from("<H", tail, idx + 20)
-            classic_offset = size - len(tail) + idx
-            available = size - classic_offset - _EOCD_SIZE
-            if comment_length > available:
-                findings.append(
-                    (
-                        f"ZIP archive comment is declared as {comment_length} bytes, "
-                        f"but the file ends {available} bytes after the end record; "
-                        f"the comment is cut short.",
-                        ArchiveEofContext(
-                            archive_name=archive_name,
-                            format="zip",
-                            expected_marker="end_of_central_directory",
-                            expected_bytes=_EOCD_SIZE + comment_length,
-                            observed_bytes=_EOCD_SIZE + available,
-                            observed_kind="short",
-                        ),
-                    )
+        # The comment length is the classic record's own (ZIP64 has none), and stdlib
+        # slices the comment out of a buffer that ends at the end of the file, so the
+        # bytes it holds fall short of the declared length exactly when the comment
+        # runs past the end of the file.
+        comment_length = endrec[_ECD_COMMENT_SIZE]
+        available = len(endrec[_ECD_COMMENT])
+        if comment_length > available:
+            findings.append(
+                (
+                    f"ZIP archive comment is declared as {comment_length} bytes, "
+                    f"but the file ends {available} bytes after the end record; "
+                    f"the comment is cut short.",
+                    ArchiveEofContext(
+                        archive_name=archive_name,
+                        format="zip",
+                        expected_marker="end_of_central_directory",
+                        expected_bytes=_EOCD_SIZE + comment_length,
+                        observed_bytes=_EOCD_SIZE + available,
+                        observed_kind="short",
+                    ),
                 )
+            )
 
         overrun = _central_directory_overrun(
             fp, start_dir=start_dir, size_cd=endrec[_ECD_SIZE]
