@@ -1140,8 +1140,9 @@ first name free **both on disk and in the collision map**, in member-processing 
 case-insensitive, with or without extension) and `:` within a segment are **unsafe**
 (device capture / NTFS alternate data stream) and SHALL be rejected under `STRICT` and
 `STANDARD` on **every** platform. A trailing dot or space is a legitimate macOS/Linux
-name that Win32 merely trims; rejecting it would halt a legitimate archive, so under `STRICT` each path segment's trailing dot/space SHALL be **stripped** to
-its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on every platform,
+name that Win32 merely trims; rejecting it would halt a legitimate archive, so under
+`STRICT` each path segment's trailing dot/space SHALL be **stripped** to its portable
+spelling (`stuff_etc.` → `stuff_etc`) deterministically on every platform,
 collision-tracked as above, and recorded as `ExtractionResult.presented_name`; a
 segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
 rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
