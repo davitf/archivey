@@ -128,10 +128,10 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   that data is seen in time. The omission is the archive's, and it is reported as
   `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an archive-integrity code,
   so `DiagnosticPolicy.strict()` still refuses such an archive outright. A link whose
-  target the archive *does* carry but this read could not reach — encrypted, compressed,
-  split across volumes with a part missing, or damaged — is a per-member failure instead, because recording
-  it as an outcome would drop a member the archive describes in full while reporting
-  success. In ZIP, 7z and RAR3/4, a damaged target (its data fails the CRC or HMAC, or
+  target the archive *does* carry but this read could not reach — encrypted,
+  compressed, split across volumes with a part missing, or damaged — is a per-member
+  failure instead, because recording it as an outcome would drop a member the archive
+  describes in full while reporting success. In ZIP, 7z and RAR3/4, a damaged target (its data fails the CRC or HMAC, or
   the decompressor) does not fail the listing: the link is listed without a target,
   reported with `reason="target_data_damaged"`, and opening or extracting it raises the
   damage.

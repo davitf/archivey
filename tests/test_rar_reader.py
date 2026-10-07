@@ -1815,6 +1815,14 @@ def _rar3_main_and_end() -> tuple[bytes, bytes]:
     return main_hdr, end_hdr
 
 
+def _rar3_next_volume_end() -> bytes:
+    """An ENDARC block whose flags say another volume follows."""
+    from archivey.internal.backends.rar_parser import _crc32
+
+    end_without_crc = struct.pack("<BHH", 0x7B, 0x0001, 7)
+    return struct.pack("<H", _crc32(end_without_crc) & 0xFFFF) + end_without_crc
+
+
 def _rar3_compressed_comment_subblock(unpacked_size: int) -> bytes:
     """An old-style COMMENT subblock declaring a *compressed* (non-M0) payload.
 
@@ -2010,35 +2018,50 @@ def test_rar3_split_after_then_different_name_is_corruption() -> None:
 
 
 def test_rar3_matching_split_continuation_merges() -> None:
-    """F6 positive path: same name + previous SPLIT_AFTER collapses into one member."""
+    """F6 positive path: same name + previous SPLIT_AFTER collapses into one member.
+
+    Three volumes, so every continuation after the second compares against the
+    volume the member started in, not the one before it.
+    """
     from archivey.internal.backends.rar_parser import (
         _RAR3_FILE_SPLIT_AFTER,
         _RAR3_FILE_SPLIT_BEFORE,
     )
 
     main_hdr, end_hdr = _rar3_main_and_end()
+    next_hdr = _rar3_next_volume_end()
     first = _rar3_file_block(
         b"a.txt", flags=_RAR3_FILE_SPLIT_AFTER, pack_lo=3, unp_lo=3
     )
-    cont = _rar3_file_block(
+    middle = _rar3_file_block(
+        b"a.txt",
+        flags=_RAR3_FILE_SPLIT_BEFORE | _RAR3_FILE_SPLIT_AFTER,
+        pack_lo=4,
+        unp_lo=4,
+    )
+    last = _rar3_file_block(
         b"a.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=5, unp_lo=5
     )
-    # The continuation opens the next volume; a volume holds one part of a member.
-    from archivey.internal.backends.rar_parser import _crc32
-
-    next_without_crc = struct.pack("<BHH", 0x7B, 0x0001, 7)  # ENDARC: next volume
-    next_hdr = struct.pack("<H", _crc32(next_without_crc) & 0xFFFF) + next_without_crc
-    volume1 = RAR_ID + main_hdr + first + b"AAA" + next_hdr
-    volume2 = RAR_ID + main_hdr + cont + b"BBBBB" + end_hdr
-    archive = parse_rar_volumes([io.BytesIO(volume1), io.BytesIO(volume2)])
-    assert [m.filename for m in archive.members] == ["a.txt"]
-    assert archive.members[0].compress_size == 8
-    assert archive.members[0].spanned_volumes is True
-    second_data = len(volume1) + len(volume2) - len(end_hdr) - 5
-    assert archive.members[0].data_parts == [
-        (len(volume1) - len(next_hdr) - 3, 3),
-        (second_data, 5),
+    # Each continuation opens the next volume; a volume holds one part of a member.
+    volumes = [
+        RAR_ID + main_hdr + first + b"AAA" + next_hdr,
+        RAR_ID + main_hdr + middle + b"BBBB" + next_hdr,
+        RAR_ID + main_hdr + last + b"CCCCC" + end_hdr,
     ]
+    archive = parse_rar_volumes([io.BytesIO(volume) for volume in volumes])
+    assert [m.filename for m in archive.members] == ["a.txt"]
+    member = archive.members[0]
+    assert member.compress_size == 12
+    assert member.spanned_volumes is True
+    assert not (member.split_before or member.split_after)
+    base = 0
+    expected = []
+    for volume, tail, size in zip(
+        volumes, (next_hdr, next_hdr, end_hdr), (3, 4, 5), strict=True
+    ):
+        expected.append((base + len(volume) - len(tail) - size, size))
+        base += len(volume)
+    assert member.data_parts == expected
 
 
 def test_rar5_hostile_packed_size_is_corruption() -> None:

@@ -245,19 +245,19 @@ copies the `UNP_VER` byte as stored, unvalidated. RAR5 members report `50`
 
 ### Requirement: Use RARLAB unrar only for member data that needs it
 
-The system SHALL read stored, uncompressed, unencrypted members directly as raw
-bytes through the shared pass-through backend, whatever the member's own solid flag
-says. A member split across volumes SHALL be read by joining its parts in order.
-All other member data SHALL be read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
-`PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
-(`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that
-does not match inside `UNRAR`) whose parsed major.minor is 6.0 or later.
-If a decompressor is required and missing or incompatible, the system SHALL raise
-`PackageNotInstalledError` naming RARLAB `unrar` or `rar`. Archivey MUST NOT
-use `unrar-free`, `bsdtar`, `7z`, or a degraded backend. The
-spawn SHALL be the `p` (print to stdout) command only. This requirement applies
-when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto` (the default) with a
-usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member data with unar`.
+The system SHALL read stored, uncompressed, unencrypted members directly as raw bytes
+through the shared pass-through backend, whatever the member's own solid flag says. A
+member split across volumes SHALL be read by joining its parts in order. All other
+member data SHALL be read by invoking a system RARLAB decompressor: `unrar` if a usable
+binary is on `PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
+(`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that does not
+match inside `UNRAR`) whose parsed major.minor is 6.0 or later. If a decompressor is
+required and missing or incompatible, the system SHALL raise `PackageNotInstalledError`
+naming RARLAB `unrar` or `rar`. Archivey MUST NOT use `unrar-free`, `bsdtar`, `7z`, or a
+degraded backend. The spawn SHALL be the `p` (print to stdout) command only. This
+requirement applies when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto` (the
+default) with a usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member
+data with unar`.
 
 #### Scenario: unrar dependency matrix
 
@@ -400,7 +400,7 @@ desynchronize sizes).
 | Stream source over `SpoolLimits.max_bytes` | `ResourceLimitError` naming the field; no temp file or directory; no `unrar` spawn |
 | Volume set, each volume within the limit, total over it | `ResourceLimitError`; the limit weighs the total |
 | Stream source of unknown size refused mid-copy, then another compressed read | The same refusal, with no second temp file |
-| Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
+| Stream source, `max_bytes=0` | Stored, unencrypted members read; a member needing `unrar` is refused |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`); the spool limit never refuses it |
 | Prefixed path source under `unar`, copy over `SpoolLimits.max_bytes` | `ar.cost.notes` says a compressed read will be refused; the read raises `ResourceLimitError` naming `rar_decompressor='unrar'`; no temp file |
@@ -937,23 +937,23 @@ refused.
 ### Requirement: Read RAR member data with unar
 
 When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
-`unrar` or `rar` on `PATH`, the system SHALL read compressed
-member data by invoking `unar` 1.10 or later, identified on `PATH` by its `unar -h`
-banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. An
-identified `unar` SHALL also decode a small embedded RAR5 archive once, under the same
-timeout and cache, and SHALL NOT be used unless it writes that archive's one member
-exactly and exits 0: Debian and Ubuntu `unar` packages before 1.10.8+ds1-10 write
-nothing for such members, and their version string does not tell them apart. A
-refused `unar` SHALL count as absent under `auto`, and the refusal SHALL say what the
-check saw; it names the Debian patch only for exit 0 with a short member. Stored,
-unencrypted, unsplit members SHALL still be read directly. The system MUST NOT use
-`unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing,
-unidentified or refused `unar` SHALL raise `PackageNotInstalledError` naming `unar`.
-`auto` SHALL choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
-retried with `unrar`, and with neither program present `auto` SHALL raise the
-`PackageNotInstalledError` that names RARLAB `unrar` or `rar`. When `auto` chooses
-`unar`, `ar.cost.notes` SHALL say so at open, naming the password exposure and the
-`unrar` setting that avoids it.
+`unrar` or `rar` on `PATH`, the system SHALL read compressed member data by invoking
+`unar` 1.10 or later, identified on `PATH` by its `unar -h` banner with the same probe
+timeout and stat-keyed cache as RARLAB `unrar`. An identified `unar` SHALL also decode a
+small embedded RAR5 archive once, under the same timeout and cache, and SHALL NOT be
+used unless it writes that archive's one member exactly and exits 0: Debian and Ubuntu
+`unar` packages before 1.10.8+ds1-10 write nothing for such members, and their version
+string does not tell them apart. A refused `unar` SHALL count as absent under `auto`,
+and the refusal SHALL say what the check saw; it names the Debian patch only for exit 0
+with a short member. Stored, unencrypted members SHALL still be read directly, whatever
+their own solid flag, including a member split across volumes whose parts were all
+found. The system MUST NOT use `unrar` in that mode, and MUST NOT use `unar` in any
+other mode; a missing, unidentified or refused `unar` SHALL raise
+`PackageNotInstalledError` naming `unar`. `auto` SHALL choose once per reader, when the
+archive opens; a read `unar` refuses MUST NOT be retried with `unrar`, and with neither
+program present `auto` SHALL raise the `PackageNotInstalledError` that names RARLAB
+`unrar` or `rar`. When `auto` chooses `unar`, `ar.cost.notes` SHALL say so at open,
+naming the password exposure and the `unrar` setting that avoids it.
 
 The argv SHALL be
 `unar -o - -q -nr -k skip [-p <password>] [-i] -- <absolute path> [index …]`:
@@ -1207,16 +1207,16 @@ stream, solid or not, and a solid pass SHALL then keep no source.
 ### Requirement: Read RAR without any external program
 
 When `ArchiveyConfig.rar_decompressor` is `none`, the system MUST NOT start `unrar`,
-`rar` or `unar` for that reader: not to identify them at open, not to decode a
-comment, and not to read member data. Opening and listing SHALL work as with any
-other setting, including header-encrypted archives given the right password. A
-stored member that is not encrypted SHALL be read directly, as it is under every
-setting, when all of its parts were found. Every other member read SHALL raise
-`UnsupportedFeatureError` before any process starts or any source is copied,
-naming why the member cannot be read (compressed, encrypted, or split across volumes
-with a part missing) and the `unrar` setting that reads it. A compressed RAR 1.5/2.x old-style comment
-SHALL be `None`. When the archive has a file member that this setting refuses,
-`ar.cost.notes` SHALL say so at open.
+`rar` or `unar` for that reader: not to identify them at open, not to decode a comment,
+and not to read member data. Opening and listing SHALL work as with any other setting,
+including header-encrypted archives given the right password. A stored member that is
+not encrypted SHALL be read directly, as it is under every setting, when all of its
+parts were found. Every other member read SHALL raise `UnsupportedFeatureError` before
+any process starts or any source is copied, naming why the member cannot be read
+(compressed, encrypted, or split across volumes with a part missing) and the `unrar`
+setting that reads it. A compressed RAR 1.5/2.x old-style comment SHALL be `None`. When
+the archive has a file member that this setting refuses, `ar.cost.notes` SHALL say so at
+open.
 
 #### Scenario: no external program matrix
 

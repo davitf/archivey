@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import subprocess
+import zlib
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,12 @@ import pytest
 from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
 from archivey.exceptions import UnsupportedFeatureError
 from tests.conftest import requires
-from tests.test_rar_reader import RAR_ID, _rar3_file_block, _rar3_main_and_end
+from tests.test_rar_reader import (
+    RAR_ID,
+    _rar3_file_block,
+    _rar3_main_and_end,
+    _rar3_next_volume_end,
+)
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
@@ -99,6 +105,31 @@ def test_split_member_with_a_part_missing_is_named_at_open_and_refused() -> None
     member = _rar3_file_block(b"a", flags=0x02, pack_lo=4, unp_lo=8) + b"abcd"
     blob = RAR_ID + main_hdr + member + end_hdr
     with open_archive(io.BytesIO(blob), config=_NONE) as ar:
+        assert any("a part missing" in note for note in ar.cost.notes)
+        with pytest.raises(UnsupportedFeatureError, match="not every part was found"):
+            ar.read("a")
+
+
+def test_split_member_missing_its_first_part_is_refused() -> None:
+    # Volume 1 has no file and asks for a next volume; the member starts as a
+    # continuation in volume 2, so its first part is in no volume of the set.
+    main_hdr, end_hdr = _rar3_main_and_end()
+    next_hdr = _rar3_next_volume_end()
+    whole_crc = zlib.crc32(b"BBBCCCCC")
+    volumes = [
+        RAR_ID + main_hdr + next_hdr,
+        RAR_ID
+        + main_hdr
+        + _rar3_file_block(b"a", flags=0x03, pack_lo=3, unp_lo=8)
+        + b"BBB"
+        + next_hdr,
+        RAR_ID
+        + main_hdr
+        + _rar3_file_block(b"a", flags=0x01, pack_lo=5, unp_lo=8, crc32=whole_crc)
+        + b"CCCCC"
+        + end_hdr,
+    ]
+    with open_archive([io.BytesIO(v) for v in volumes], config=_NONE) as ar:
         assert any("a part missing" in note for note in ar.cost.notes)
         with pytest.raises(UnsupportedFeatureError, match="not every part was found"):
             ar.read("a")

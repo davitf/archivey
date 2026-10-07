@@ -291,10 +291,11 @@ def _data_is_reachable(info: RarMemberInfo) -> bool:
     """Whether every packed byte of the member can be sliced out of the sources.
 
     Either one run (:func:`_data_is_in_one_place`) or every part of a member merged
-    across volumes (``data_parts``, with no part still expected after the last).
+    across volumes: ``data_parts``, with no part expected before the first or after
+    the last.
     """
     return _data_is_in_one_place(info) or (
-        bool(info.data_parts) and not info.split_after
+        bool(info.data_parts) and not info.split_before and not info.split_after
     )
 
 

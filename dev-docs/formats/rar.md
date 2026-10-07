@@ -70,9 +70,9 @@ Everything about that boundary is a consequence:
 - **Listing completes without `unrar`** — names, sizes, timestamps, modes, flags, hashes,
   link targets and header decryption come out of the parser (§2.2). Stored old-style
   comments do too; compressed RAR 1.5 / 2.x comments are filled when the binary is
-  available and otherwise stay `None`. A stored, unencrypted, non-solid, unsplit member
-  is read by slicing the source, so an archive of those reads end to end with no
-  subprocess (§2.3).
+  available and otherwise stay `None`. A stored, unencrypted member is read by slicing
+  the source, whatever its solid flag, and a split one by joining its parts, so an
+  archive of those reads end to end with no subprocess (§2.3).
 - **`unrar` seeks the archive, so it cannot be piped one** — which is why a stream source
   is copied to a temp file the first time a member cannot be read directly, the whole
   archive. `CostReceipt.notes` states that caveat at open. There is no

@@ -338,11 +338,13 @@ class RarMemberInfo:
     # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
     # concatenated volume space, for a member merged across volumes; empty for a
     # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
-    # offset and the total. With ``split_after`` clear the list is the whole member:
-    # each part continues the one before it (:func:`_merge_split_member`), and a
-    # continuation with no predecessor is a member of its own, which
-    # :func:`_parse_rar_volume` refuses on volume 1. ``split_after`` still set means
-    # the last part was not found (an end block that claimed no next volume).
+    # offset and the total. Each part continues the one before it
+    # (:func:`_merge_split_member`), and the merged member keeps the first part's
+    # ``split_before`` and the last part's ``split_after``: with both clear the list
+    # is the whole member. ``split_before`` set means the first part is in a volume
+    # that is not in the set (refused only when that is volume 1);
+    # ``split_after`` set means the last part was not found (an end block that
+    # claimed no next volume).
     data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from
@@ -1282,6 +1284,9 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     # view) that ``max_members`` does not count: 200 000 one-byte parts in a 6.8 MB
     # archive held 26 MB after open and peaked at 153 MB on the read. Refused, so
     # the parts of a member stay bounded by the volumes the caller passed.
+    # ``old.volume_index`` stays the volume the member started in: a merge inside
+    # one volume's walk compares two members of that volume, and every merge across
+    # volumes compares against an earlier one, so ``==`` is the whole test.
     if new.volume_index == old.volume_index:
         raise CorruptionError(
             f"RAR split continuation of {quoted(new.filename)} is in the same "
