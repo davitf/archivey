@@ -573,17 +573,28 @@ decoder.
 A 7z symlink's target is stored as the member's data, often in the middle of a solid
 folder. This refines the folder-decode budget of "Stream solid folders with bounded
 memory" for link targets. For its link targets, a 7z folder SHALL be decoded at most once
-per reader, and not past the end of its last link member. The consumer's own reads are
-covered by the bullets below.
+per reader, and not past the end of its last link member. The one exception is each pass
+the caller abandons before the folder's last link, as the abandoned-pass bullet says. The
+consumer's own reads are covered by the bullets below.
 
 - Random-access listing (`members()`, `scan_members()`) SHALL decode no more of the
   folder for link targets than the end of its last link member.
-- A streaming pass SHALL read link targets through its own folder decode. Per folder,
+- A `stream_members()` pass, in either access mode, SHALL read link targets through its
+  own folder decode, and a pass that reaches its end SHALL leave every link target it
+  read set on the members it yielded. Per folder,
   the pass SHALL decode from the start to the later of the end of the consumer's reads and
   the end of the last link member it reads, and SHALL decode nothing more at EOF. This
   holds when the consumer reads no data, when a link is the last member with data in its
   folder, and when a link is alone in its folder.
-- Which links a streaming pass reads when the caller's selector excludes them is set by
+- A pass the caller abandons SHALL keep the link bytes it has read and SHALL NOT set
+  their targets. A later listing or pass SHALL resolve those links from the kept bytes
+  and SHALL decode the folder only for the links the abandoned pass did not reach. A solid
+  decode cannot resume, so when such a link exists the folder is decoded again from its
+  start to the last of those links. The cost is per pass, not per reader: each abandoned
+  pass that reaches a link no earlier pass reached pays that folder's prefix again, so
+  the folder can be decoded once per such pass. A pass abandoned after the folder's last
+  link costs nothing more.
+- Which links a pass reads when the caller's selector excludes them is set by
   `archive-reading`, "Bounded-memory sequential streaming via stream_members".
 - With `read_link_targets=False`, listing and a pass advancing SHALL decode nothing for
   link targets. `extract_all` still reads the targets of the links it accepts. It always
@@ -599,6 +610,9 @@ covered by the bullets below.
 | `members()` on a solid 7z with links before, between and after its file members | Decoded bytes equal each folder's last-link end offset, not the sum of every link's end offset |
 | Streaming pass over the same 7z, reading every stream | Every link target resolved; decoded bytes equal the folder sizes, each folder decoded once |
 | Streaming pass over the same 7z, reading no stream | Every link target resolved; decoded bytes equal each folder's last-link end offset |
+| Random-access pass over the same 7z, no `members()` call, reading every stream or none | As the two streaming rows: every link target resolved on the yielded members, same decoded bytes |
+| Random-access pass over the same 7z reading no stream, abandoned after the last link, then `members()` | Every link target resolved; decoded bytes equal the folder's last-link end offset, nothing decoded by `members()` |
+| Random-access pass over the same 7z, abandoned after the second of three links, then `members()` | Every link target resolved; decoded bytes equal the second link's end offset plus the last link's end offset |
 | Non-solid 7z (`-ms=off`) with links | Each link's own folder decoded once, in both modes |
 | `read_link_targets=False`, `members()` then a pass reading no stream | No bytes decoded for link targets |
 | `read_link_targets=False`, `extract_all()` accepting every member, either mode | Each folder decoded once; accepted links resolved; no second decode for their targets |
