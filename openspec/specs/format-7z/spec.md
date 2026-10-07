@@ -495,6 +495,7 @@ order: pre-filters first, packing codec last. If a POSIX attribute block is abse
 | No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
 | "Created" stored, attribute high word holds a Unix mode with a file type (`S_IFMT` bits) | `created is None`; `ctime` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
 | "Created" stored, no Unix file type in the high word (`0x8000` alone or Windows attributes above `0xFFFF` included) | `created` holds it; `ctime is None` |
+| "Created" out of range | Both `None`; `MEMBER_TIMESTAMP_INVALID` with `field` `ctime` when the high word holds a Unix file type, else `created` |
 
 ### Requirement: Infer presented names for nameless 7z members
 

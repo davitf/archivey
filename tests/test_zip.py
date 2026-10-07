@@ -1343,6 +1343,26 @@ def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None
         assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
 
 
+@pytest.mark.parametrize(
+    ("create_system", "creation_field"), [(10, "created"), (3, "ctime")]
+)
+def test_bad_ntfs_times_name_the_member_field(
+    tmp_path: Path, create_system: int, creation_field: str
+) -> None:
+    # MEMBER_TIMESTAMP_INVALID names the ArchiveMember field in every format. The
+    # creation FILETIME is `created` or `ctime` by host, as _zip_created splits it.
+    path = tmp_path / "bad_ntfs.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.create_system = create_system
+    info.extra = _ntfs_extra(2**64 - 1, 2**64 - 1, 2**64 - 1)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        fields = sorted(d.context.field for d in member.diagnostics)
+    assert fields == sorted(["modified", "accessed", creation_field])
+
+
 def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
     # Precedence: 0x5455 (Unix) > 0x000A (NTFS) > DOS date_time — regardless of the
     # fields' order in the extra blob. Here NTFS carries all three times but the UT

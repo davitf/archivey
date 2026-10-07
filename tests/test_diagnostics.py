@@ -683,7 +683,7 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
     context = diagnostic.context
     assert isinstance(context, MemberTimestampContext)
     assert (context.field, context.source, context.value_repr) == (
-        "mtime",
+        "modified",
         "tar",
         "-1099511627776.0",
     )

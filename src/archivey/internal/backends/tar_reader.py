@@ -426,22 +426,60 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
 )
 
 
-def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
+def _pax_time(
+    info: tarfile.TarInfo, key: str
+) -> tuple[datetime | None, TimestampIssue | None]:
     """Parse a PAX time record (float Unix seconds) into a tz-aware UTC datetime.
 
     ``tarfile`` folds the PAX ``mtime`` into ``TarInfo.mtime`` itself, but leaves the
     access and inode-change times, and libarchive's ``LIBARCHIVE.creationtime``
     extension keyword (not a standard PAX record), only in ``pax_headers``; surface
-    them here.
+    them here. The ``mtime`` record is read back here too, for the one case the fold
+    hides: a record that is not a number, which ``tarfile`` turns into ``0``.
+
+    Returns ``(None, None)`` when the record is absent, and ``(None, TimestampIssue)``
+    when it is present but not a number or outside ``datetime``'s range, so a bad
+    record is reported the same way as a bad ``mtime``.
     """
     raw = info.pax_headers.get(key)
     if raw is None:
-        return None
+        return None, None
     try:
         seconds = float(raw)
     except ValueError:
-        return None
-    return unix_to_datetime(seconds)
+        value = None
+    else:
+        value = unix_to_datetime(seconds)
+    if value is not None:
+        return value, None
+    return None, _tar_time_issue(info, key, repr(raw), pax_record=True)
+
+
+# The ArchiveMember field each TAR time fills, which is what a timestamp diagnostic
+# names in every format.
+_TAR_TIME_FIELDS = {
+    "mtime": "modified",
+    "atime": "accessed",
+    "ctime": "ctime",
+    "LIBARCHIVE.creationtime": "created",
+}
+
+
+def _tar_time_issue(
+    info: tarfile.TarInfo, key: str, value_repr: str, *, pax_record: bool
+) -> TimestampIssue:
+    """The ``MEMBER_TIMESTAMP_INVALID`` finding for one TAR time field.
+
+    ``value_repr`` is the raw PAX record for a record, and ``TarInfo.mtime`` for the
+    folded ``mtime`` that ``datetime`` cannot hold.
+    """
+    label = f"PAX {key}" if pax_record else key
+    return TimestampIssue(
+        field=_TAR_TIME_FIELDS[key],
+        source="tar",
+        value_repr=value_repr,
+        message=f"Invalid TAR {label} for {quoted(info.name)}: {value_repr}",
+    )
 
 
 class _EofProbeStream(ReadOnlyIOStream):
@@ -1364,9 +1402,20 @@ class TarReader(BaseArchiveReader):
         # tarfile folds a PAX mtime (sub-second/timezone) into TarInfo.mtime already, so this
         # one field honors both the standard ustar mtime and the PAX override. A hostile
         # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
-        # sink the whole listing, so it degrades to None like _pax_time does.
+        # sink the whole listing, so it degrades to None and is reported, as _pax_time does.
         modified = unix_to_datetime(info.mtime)
-        mtime_invalid = modified is None
+        timestamp_issues: list[TimestampIssue] = []
+        if modified is None:
+            timestamp_issues.append(
+                _tar_time_issue(info, "mtime", repr(info.mtime), pax_record=False)
+            )
+        elif info.mtime == 0 and "mtime" in info.pax_headers:
+            # tarfile turns a PAX mtime that is not a number into 0 with no error, so
+            # the Unix epoch here can stand for a value that was never readable.
+            _, issue = _pax_time(info, "mtime")
+            if issue is not None:
+                modified = None
+                timestamp_issues.append(issue)
 
         compression = (
             _STORED_COMPRESSION
@@ -1398,19 +1447,26 @@ class TarReader(BaseArchiveReader):
             _raw=info,  # carry the TarInfo so _open_member needs no name/id lookup table
         )
         # Skip defaulted None/False fields on the listing hot path (perf review L2).
-        accessed = _pax_time(info, "atime")
-        if accessed is not None:
-            member.accessed = accessed
-        # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
-        # ``ctime``, never ``created``.
-        ctime = _pax_time(info, "ctime")
-        if ctime is not None:
-            member.ctime = ctime
-        # libarchive writes the source's birth time, where the OS has one, as a PAX
-        # extension keyword. It is the only TAR writer known to store a birth time.
-        birth = _pax_time(info, "LIBARCHIVE.creationtime")
-        if birth is not None:
-            member.created = birth
+        if info.pax_headers:
+            accessed, issue = _pax_time(info, "atime")
+            if accessed is not None:
+                member.accessed = accessed
+            elif issue is not None:
+                timestamp_issues.append(issue)
+            # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
+            # ``ctime``, never ``created``.
+            ctime, issue = _pax_time(info, "ctime")
+            if ctime is not None:
+                member.ctime = ctime
+            elif issue is not None:
+                timestamp_issues.append(issue)
+            # libarchive writes the source's birth time, where the OS has one, as a PAX
+            # extension keyword. It is the only TAR writer known to store a birth time.
+            birth, issue = _pax_time(info, "LIBARCHIVE.creationtime")
+            if birth is not None:
+                member.created = birth
+            elif issue is not None:
+                timestamp_issues.append(issue)
         if info.uname:
             member.uname = info.uname
         if info.gname:
@@ -1429,12 +1485,7 @@ class TarReader(BaseArchiveReader):
             archive_name=self._archive_name,
             member_id=index,
         )
-        if mtime_invalid:
-            value_repr = repr(info.mtime)
-            message = f"Invalid TAR mtime for {quoted(info.name)}: {value_repr}"
-            issue = TimestampIssue(
-                field="mtime", source="tar", value_repr=value_repr, message=message
-            )
+        for issue in timestamp_issues:
             self._emit_timestamp_invalid(member, index, issue)
         return member
 
