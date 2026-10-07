@@ -259,11 +259,11 @@ class MemberTimestampContext(_JsonSafeContext):
     """A stored timestamp field was present but unusable / out of range.
 
     ``source`` names the representation the value came from, such as ``"dos"``,
-    ``"ntfs"``, ``"tar"`` or ISO's ``"directory_record"``. ``field`` names the timestamp,
-    and its vocabulary differs by backend: RAR, 7z and ISO give the member attribute
-    (``"modified"``, ``"accessed"``, ``"created"``, ``"ctime"``), while ZIP and TAR give
-    the stored field's own name (ZIP ``"date_time"``, ``"mtime"``, ``"atime"``,
-    ``"ctime"``; TAR ``"mtime"``). ``value_repr`` is the stored value as text.
+    ``"ntfs"``, ``"tar"`` or ISO's ``"directory_record"``. ``field`` names the
+    ``ArchiveMember`` attribute the value would have filled (``"modified"``,
+    ``"accessed"``, ``"created"`` or ``"ctime"``) in every format; the stored field's
+    own name, such as ZIP's ``date_time`` or a PAX ``atime`` record, is in the message.
+    ``value_repr`` is the stored value as text.
     """
 
     kind: Literal["member_timestamp"] = "member_timestamp"

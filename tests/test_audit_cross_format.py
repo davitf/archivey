@@ -240,16 +240,14 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
     return out
 
 
-# ``field`` is per case because backends name it differently: RAR, 7z and ISO give the
-# member attribute ("modified"), ZIP and TAR the stored field ("date_time", "mtime").
-# See MemberTimestampContext.
+# ``field`` is the member attribute in every format; the stored record's own name is
+# only in the message. See MemberTimestampContext.
 @pytest.mark.parametrize(
-    ("build", "label", "field", "source", "value_re"),
+    ("build", "label", "source", "value_re"),
     [
         pytest.param(
             _rar4_month_13,
             "RAR DOS timestamp",
-            "modified",
             "dos",
             "0x5daca824",
             id="rar4-dos-month-13",
@@ -257,7 +255,6 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
         pytest.param(
             _rar5_filetime_overflow,
             "NTFS timestamp",
-            "modified",
             "ntfs",
             str(2**64 - 1),
             id="rar5-filetime-overflow",
@@ -266,7 +263,6 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
         pytest.param(
             _iso_month_13,
             "ISO 9660 date",
-            "modified",
             "directory_record",
             r"\(\d+, 13, \d+, \d+, \d+, \d+\)",
             id="iso-month-13",
@@ -275,7 +271,6 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
         pytest.param(
             _zip_month_13,
             "ZIP date_time",
-            "date_time",
             "dos",
             re.escape("(2001, 13, 1, 0, 0, 0)"),
             id="zip-month-13",
@@ -285,7 +280,6 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
         pytest.param(
             _tar_mtime_overflow,
             "TAR mtime",
-            "mtime",
             "tar",
             r"4\.6116\d*e\+18",
             id="tar-mtime-overflow",
@@ -295,7 +289,6 @@ def _tar_mtime_overflow(tmp_path: Path) -> Path:
 def test_invalid_timestamp_is_none_and_reported(
     build: Callable[[Path], Path],
     label: str,
-    field: str,
     source: str,
     value_re: str,
     tmp_path: Path,
@@ -313,7 +306,7 @@ def test_invalid_timestamp_is_none_and_reported(
     assert counts.get(DiagnosticCode.MEMBER_TIMESTAMP_INVALID, 0) == 1
     context = diagnostic.context
     assert isinstance(context, MemberTimestampContext)
-    assert (context.field, context.source) == (field, source)
+    assert (context.field, context.source) == ("modified", source)
     assert re.fullmatch(value_re, context.value_repr)
     assert diagnostic.message == (
         f"Invalid {label} for {quoted(member.name)}: {context.value_repr}"

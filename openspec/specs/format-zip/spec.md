@@ -184,7 +184,10 @@ rules:
 | `is_encrypted` | `flag_bits & 0x1 != 0` |
 
 Invalid DOS or NTFS timestamp values SHALL fall through to the next valid
-precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`. With
+precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`, whose `field`
+SHALL name the member attribute: `modified` for the DOS stamp and the NTFS
+modification time, `accessed` for the NTFS access time, and `created` or `ctime`
+for the NTFS creation time, by the same host rule that fills those fields. With
 `read_link_targets=True` (the default), if listing cannot read an encrypted
 symlink target because no correct password is available, `link_target` SHALL
 remain unset and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with reason

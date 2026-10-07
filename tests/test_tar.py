@@ -1951,7 +1951,8 @@ def test_bad_pax_time_is_reported(
     tmp_path: Path, key: str, attr: str, raw: str
 ) -> None:
     # Every PAX time record that does not decode is reported the same way: the field
-    # is None and MEMBER_TIMESTAMP_INVALID names it. tarfile itself turns a PAX mtime
+    # is None and MEMBER_TIMESTAMP_INVALID names the member field it would have
+    # filled, as every format does. tarfile itself turns a PAX mtime
     # that is not a number into 0, which must not list as the Unix epoch.
     path = tmp_path / "bad_time.tar"
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
@@ -1965,7 +1966,8 @@ def test_bad_pax_time_is_reported(
         assert ar.diagnostics.counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 1
         (diagnostic,) = member.diagnostics
         assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
-        assert diagnostic.context.field == key
+        assert diagnostic.context.field == attr
+        assert key in diagnostic.message
 
 
 def test_several_bad_pax_times_on_one_member_are_each_reported(
@@ -1981,7 +1983,8 @@ def test_several_bad_pax_times_on_one_member_are_each_reported(
         member = ar.get("t.txt")
         assert (member.accessed, member.ctime, member.created) == (None, None, None)
         assert ar.diagnostics.counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 3
-        assert sorted(d.context.field for d in member.diagnostics) == sorted(keys)
+        fields = sorted(d.context.field for d in member.diagnostics)
+        assert fields == ["accessed", "created", "ctime"]
 
 
 def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:

@@ -455,6 +455,16 @@ def _pax_time(
     return None, _tar_time_issue(info, key, repr(raw), pax_record=True)
 
 
+# The ArchiveMember field each TAR time fills, which is what a timestamp diagnostic
+# names in every format.
+_TAR_TIME_FIELDS = {
+    "mtime": "modified",
+    "atime": "accessed",
+    "ctime": "ctime",
+    "LIBARCHIVE.creationtime": "created",
+}
+
+
 def _tar_time_issue(
     info: tarfile.TarInfo, key: str, value_repr: str, *, pax_record: bool
 ) -> TimestampIssue:
@@ -465,7 +475,7 @@ def _tar_time_issue(
     """
     label = f"PAX {key}" if pax_record else key
     return TimestampIssue(
-        field=key,
+        field=_TAR_TIME_FIELDS[key],
         source="tar",
         value_repr=value_repr,
         message=f"Invalid TAR {label} for {quoted(info.name)}: {value_repr}",

@@ -520,7 +520,7 @@ def _zip_timestamps(
         except ValueError:
             issues.append(
                 TimestampIssue(
-                    field="date_time",
+                    field="modified",
                     source="dos",
                     value_repr=repr(info.date_time),
                     message=(
@@ -632,6 +632,17 @@ def _zip_created(
     if create_system in _ZIP_BIRTH_TIME_HOSTS:
         return stored, None
     return None, stored
+
+
+def _zip_timestamp_field(create_system: CreateSystem, slot: str) -> str:
+    """The ``ArchiveMember`` field a stored time slot would have filled.
+
+    The creation slot is ``created`` or ``ctime`` by host, as in :func:`_zip_created`,
+    so the report names the field the caller sees as ``None``.
+    """
+    if slot == "ctime":
+        return "created" if create_system in _ZIP_BIRTH_TIME_HOSTS else "ctime"
+    return {"mtime": "modified", "atime": "accessed"}.get(slot, slot)
 
 
 def _reparse_fallback_type(
@@ -1126,7 +1137,8 @@ class ZipReader(BaseArchiveReader):
             member, reparse_fallback=reparse_fallback, member_id=index
         )
         for issue in ts_issues:
-            self._emit_timestamp_invalid(member, index, issue)
+            field = _zip_timestamp_field(create_system, issue.field)
+            self._emit_timestamp_invalid(member, index, replace(issue, field=field))
         return member
 
     def _zipcrypto_check_byte(self, info: zipfile.ZipInfo) -> int:
