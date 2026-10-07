@@ -340,7 +340,7 @@ it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than lea
 | `reason` | When | Archive records a target |
 | --- | --- | --- |
 | `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
-| `target_data_split_across_volumes` | the target is split across volumes and a later part was not found (a complete split target is joined and read) | yes |
+| `target_data_split_across_volumes` | the target is split across volumes and a part was not found (a complete split target is joined and read) | yes |
 | `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
 | `no_target_data` | the member's declared and packed sizes are both zero | no |
 
@@ -698,6 +698,17 @@ its header:
 The pipe is spawned on the **first read into the pass**, not at pass start, so listing a
 solid archive through `stream_members()` — or an extraction whose selector matches nothing —
 never starts `unrar` and is never asked for a password.
+
+**A solid archive can mix stored and compressed members.** RAR picks the method per
+file: `rar -s -m3 -msbin` compresses most files and stores the `.bin` ones as they are.
+A stored member still gets its own solid flag (`file_solid`), which on a compressed
+member means "continue from the previous member's decoder state". Its bytes are
+plaintext in the archive all the same, so the direct slice reads them and ignores the
+flag. `unrar` decodes every compressed member ahead of it to reach those bytes, which is
+why a stored member read through `unrar` is charged the window ahead of it (§7,
+"A stored member of a solid archive"). `stored_solid_member__.rar` is that shape: a
+compressed `first.txt`, then a stored `second.bin` with the flag set.
+`test_stored_slice_matches_unrar` checks the slice against `unrar p`.
 
 **The argv is constructed defensively, because the member name is attacker-controlled.**
 `unrar p -inul -cfg- [-ver] (-p | -p-) [-n./<member>] -- <archive>`:
