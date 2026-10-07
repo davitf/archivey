@@ -604,16 +604,22 @@ class CodecParams:
       parameters (mutually exclusive with 7z ``properties`` for :class:`PpmdCodec`).
     - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
       to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark. Raw
-      LZMA1/LZMA2 stop reading at it; pass it only for a stream with no end marker
-      (ZIP LZMA with bit 1 clear), since it also hides output past that size.
+      LZMA1/LZMA2 stop reading at it; pass it only for a stream that may have no end
+      marker (ZIP LZMA with bit 1 clear, a 7z LZMA1 chain), since it also hides output
+      past that size. An end marker found right at it is still checked. Raw
+      DEFLATE under rapidgzip hands over to zlib at it, when the container sets no
+      ``StreamConfig.expected_decompressed_size`` (a 7z coder).
     - ``pack_size`` — known compressed length for the PPMd coder input (7z pack stream /
-      ZIP compressed size / sized view). Must match the bytes passed to
+      ZIP compressed size / sized view). Raw LZMA reads no input past it, so a 7z AES
+      pad after it is not input after the end marker. Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
-    - ``single_stream`` — the coder's data is one bzip2 stream (a ZIP member), so the
-      standard-library decoder ends at its end-of-stream marker rather than reading a
-      further stream as a concatenated file. The accelerator does not honour it; the
-      container's size and CRC check gives the verdict on what it reads.
+    - ``single_stream`` — the coder's data is one bzip2 stream (a ZIP member or a 7z
+      coder), so the standard-library decoder ends at its end-of-stream marker rather
+      than reading a further stream as a concatenated file. The accelerator does not
+      honour it; the container's size and CRC check gives the verdict on what it reads.
+      Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
+      end marker, refusing any input after it.
     """
 
     filters: list[dict] | None = None
@@ -1260,13 +1266,17 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     size: their streams end where the standard library ends them, so the
     ``VerifyingStream`` alone checks the size there.
 
-    The stream that sets ``limit`` is wrapped by ``_wrap_accelerated_length``, whose
-    ``VerifyingStream`` has the same size as its ``expected_size`` and bounds each of
-    its reads to what remains of it. So the only read that reaches past ``limit`` is
-    that verifier's one-byte over-run probe at the declared size
-    (``_probe_past_declared``): this branch is what decides an over-run on the
-    accelerated path. A switch there decodes the member again with the standard
-    library from its start, up to the position already delivered.
+    A ZIP member sets ``limit`` from its ``expected_decompressed_size``, so its stream
+    is wrapped by ``_wrap_accelerated_length``, whose ``VerifyingStream`` has the same
+    size as its ``expected_size`` and bounds each of its reads to what remains of it.
+    There the only read that reaches past ``limit`` is that verifier's one-byte
+    over-run probe at the declared size (``_probe_past_declared``): this branch is
+    what decides an over-run on the accelerated path. A 7z coder is the other case.
+    It declares an unpack size but no ``expected_decompressed_size``, so
+    ``_wrap_accelerated_length`` adds no verifier: ``limit`` is the coder's unpack
+    size alone, and any read can cross it. A valid coder's last read ends exactly at
+    that size, so it does not switch. In both cases a switch decodes the stream again
+    with the standard library from its start, up to the position already delivered.
 
     A truncated stream is the case where the second decode matters most, and where
     starting it over is most wasteful. rapidgzip 0.16 aborts the child on one, and its
@@ -2646,12 +2656,14 @@ class _DeflateFamilyCodec(StreamCodec):
             views=views,
             open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
             label=label,
-            limit=self._accelerated_limit(config),
+            limit=self._accelerated_limit(params, config),
         )
         stream: BinaryIO = takeover if end_check is None else end_check(takeover)
         return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
 
-    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+    def _accelerated_limit(
+        self, params: CodecParams, config: StreamConfig
+    ) -> int | None:
         """The ``limit`` for :class:`_StdlibOnAcceleratorError`: ``None`` for a codec
         whose stream ends where the standard library ends it. That class's docstring
         says why only raw DEFLATE sets one."""
@@ -3253,19 +3265,95 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                     limits=config.decoder_limits,
                     what=f"{LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
                 )
-        decoded = ensure_binaryio(
-            lzma.LZMAFile(
-                source, mode="rb", format=lzma.FORMAT_RAW, filters=params.filters
+        filters = params.filters
+        # The coder's input span. A 7z AES stage decrypts whole blocks, so its output
+        # runs up to 15 pad bytes past the next coder's input; ``pack_size`` (the AES
+        # coder's unpack size) is the span 7-Zip reads, and the pad is not in it.
+        # The slice does not clamp to its source's own size: reading on lets a
+        # truncated source raise its own error (the AES stage's mid-block one).
+        if params.pack_size is not None and not isinstance(source, (str, os.PathLike)):
+            source = SlicingStream(
+                source,
+                length=params.pack_size,
+                owns_inner=False,
+                probe_source_size=False,
             )
+        # One stream, as 7-Zip reads it: the data ends at the end marker, and any
+        # byte of the span after it (a zero too) is "Data Error" there and
+        # CorruptionError here. ``LZMAFile`` would instead have started a second raw
+        # stream on those bytes and delivered it as content.
+        decoded: BinaryIO = FramedDecompressorStream(
+            source,
+            lambda: lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters),
+            codec_name="lzma",
+            magic=_refuse_data_after_lzma_end,
+            zero_padding=False,
+            collector=config.collector,
         )
         if params.unpack_size is None:
             return decoded
-        # A raw LZMA1 stream written without an end-of-stream marker (ZIP method 14
-        # with general-purpose bit 1 clear) ends where its known output size says.
-        # liblzma cannot tell that from the input, so reading on would ask for input
-        # past the end and fail as truncated; stop at the size instead. The 7z
-        # pipeline bounds its LZMA chains the same way, outside this codec.
-        return SlicingStream(decoded, length=params.unpack_size, owns_inner=True)
+        # A raw LZMA1 stream written without an end-of-stream marker (7-Zip's
+        # default in 7z, ZIP method 14 with general-purpose bit 1 clear) ends where
+        # its known output size says. liblzma cannot tell that from the input, so
+        # reading on would ask for input past the end and fail as truncated; stop at
+        # the size instead, and look for an end marker there (_LzmaEndAtSize).
+        capped = SlicingStream(decoded, length=params.unpack_size, owns_inner=True)
+        return _LzmaEndAtSize(capped, decoded=decoded, size=params.unpack_size)
+
+
+class LzmaDataAfterEndError(CorruptionError):
+    """Input in a raw LZMA coder's span after its end marker (7-Zip: "Data Error").
+
+    A class of its own so a probe past a coder's declared size, which discards a
+    decoder error there as not being surplus output, can still let this one through.
+    """
+
+
+def _refuse_data_after_lzma_end(data: bytes) -> bool:
+    raise LzmaDataAfterEndError(
+        f"LZMA stream has {len(data)}+ bytes of input after its end marker"
+    )
+
+
+class _LzmaEndAtSize(DelegatingStream):
+    """A raw LZMA stream capped at its declared size, checked for an end marker there.
+
+    Output stops at ``size``. When it gets there, one more byte of output is asked
+    of the decoder, once. A stream with an end marker right after its data then
+    reaches it without output, and input in the span after the marker raises
+    :class:`LzmaDataAfterEndError`, as with no size. Anything else is a stream
+    without an end marker, which this cannot tell from data past the size: a
+    decoder error, a truncation (the usual case: the input ends with the data) or a
+    decoded byte are all dropped, as before the check. That keeps 7-Zip's
+    marker-less LZMA1 reading clean; probing it as surplus would fail valid
+    archives.
+    """
+
+    readinto_passthrough = False
+
+    def __init__(self, capped: BinaryIO, *, decoded: BinaryIO, size: int) -> None:
+        # ``capped`` is ``decoded`` sliced at ``size``; this owns it (the default),
+        # and it owns ``decoded``.
+        super().__init__(capped)
+        self._decoded = decoded
+        self._size = size
+        self._checked = False
+
+    def read(self, n: int = -1, /) -> bytes:
+        data = self._inner.read(n)
+        if not self._checked and self._inner.tell() >= self._size:
+            self._checked = True
+            try:
+                self._decoded.read(1)
+            except LzmaDataAfterEndError:
+                raise
+            except (ArchiveyError, lzma.LZMAError, EOFError):
+                pass
+        return data
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # The slice starts at the decoder's 0, so the offsets are the codec's.
+        return ask_resume_offset(self._inner, target)
 
 
 class LzmaCodec(_RawLzmaCodec):
@@ -3298,11 +3386,16 @@ class DeflateCodec(_ZlibErrorCodec):
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
 
-    def _accelerated_limit(self, config: StreamConfig) -> int | None:
+    def _accelerated_limit(
+        self, params: CodecParams, config: StreamConfig
+    ) -> int | None:
         # zlib ends the member at the stream's final block; rapidgzip reads on into
         # whatever follows. The standard library decides both a data error and output
-        # past the declared size (_StdlibOnAcceleratorError).
-        return config.expected_decompressed_size
+        # past the declared size (_StdlibOnAcceleratorError). ZIP declares the size
+        # as the member's; a 7z coder declares it as its unpack size.
+        if config.expected_decompressed_size is not None:
+            return config.expected_decompressed_size
+        return params.unpack_size
 
 
 def _zlib_header_plausible(prefix: bytes) -> bool:
