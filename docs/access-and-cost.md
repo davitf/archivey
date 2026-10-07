@@ -122,7 +122,12 @@ seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` 
 or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
 relative seek before its start reaches the OS and raises `OSError`. A seek past the end
 of a TAR member returns the member size rather than the position you asked for, where
-other formats return the target; reads from there return `b""` either way.
+other formats return the target; reads from there return `b""` either way. An offset or
+`whence` that is not an integer (`seek(1.5)`, `seek(None)`) raises `TypeError`, as on
+`io.BytesIO`, and leaves the position where it was. A `read` size that is neither an
+integer nor `None` (`read(1.5)`) raises `TypeError` the same way, and an integer
+outside the platform's index range (`read(2**70)`, `read(-2**70)`) raises
+`OverflowError`, both before anything is read.
 
 Whether a seek that moves the position gets a diagnostic is decided by **what the seek
 actually costs**, not by the codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the
