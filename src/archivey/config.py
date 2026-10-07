@@ -259,8 +259,9 @@ class ExtractionLimits:
     """Most bytes one extraction may write in total, across every member. 2 GiB.
 
     Bytes copied rather than decoded count too: a hard link written as a copy because
-    it crosses a device boundary or goes past the filesystem's link-count limit. The
-    ratio guards do not count those copies, so this is the guard that bounds them.
+    it crosses a device boundary or goes past the filesystem's link-count limit. Only
+    the link-count copies also count toward the archive-wide ``max_ratio``, so this is
+    the one guard that bounds a cross-device copy.
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 
@@ -271,7 +272,9 @@ class ExtractionLimits:
     moves on) and across the archive (which stops the extraction). The per-member check
     needs the member's compressed size; where the format or access mode does not give
     one, only the archive-wide check applies. Neither check starts before
-    :attr:`ratio_activation_threshold` bytes of output.
+    :attr:`ratio_activation_threshold` bytes of output. The archive-wide check also
+    counts the copies written when a file runs out of hard-link slots (1024 names on
+    NTFS), since the archive's declared link count drives them.
     """
 
     ratio_activation_threshold: int = 5 * 2**20

@@ -18,11 +18,18 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionPolicy, ExtractionStatus, OnError, OverwritePolicy
+from archivey import (
+    ExtractionLimits,
+    ExtractionPolicy,
+    ExtractionStatus,
+    OnError,
+    OverwritePolicy,
+)
 from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
     LinkTargetNotFoundError,
+    ResourceLimitError,
 )
 from archivey.internal import extraction
 from archivey.internal.filters import apply_name_policy
@@ -802,6 +809,39 @@ def test_links_past_the_limit_cost_one_attempt_each(
     )
     assert calls == links
     assert len({os.stat(p).st_ino for p in (tmp_path / "out").iterdir()}) == 11
+
+
+def test_link_limit_copies_trip_the_archive_wide_ratio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Copies made because a file ran out of link slots count toward ``max_ratio``: a
+    small archive declaring many links to one member must not write far more than its
+    size just because the byte cap is high. A cross-device copy is not counted, since
+    it depends on the destination, not the archive."""
+    real_link = os.link
+
+    def link(src: str | Path, dst: str | Path) -> None:
+        if os.stat(src).st_nlink >= 2:
+            raise OSError(errno.EMLINK, "Too many links")
+        real_link(src, dst)
+
+    payload = bytes(64 * 1024)
+    specs: list[tuple[str, str, bytes | str | None]] = [("file", "f", payload)]
+    specs += [("hard", f"h{i}", "f") for i in range(40)]
+    data = _tar(specs)
+    limits = ExtractionLimits(
+        max_ratio=len(payload) * 20 / len(data), ratio_activation_threshold=0
+    )
+    monkeypatch.setattr(os, "link", link)
+    with pytest.raises(ResourceLimitError, match="Archive-wide decompression ratio"):
+        open_and_extract(io.BytesIO(data), tmp_path / "out", limits=limits)
+
+    def cross_device(src: str | Path, dst: str | Path) -> None:
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "link", cross_device)
+    report = open_and_extract(io.BytesIO(data), tmp_path / "out2", limits=limits)
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 41
 
 
 def test_other_link_errors_still_fail(

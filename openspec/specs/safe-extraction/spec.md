@@ -623,10 +623,12 @@ global resource guard: when it trips, extraction halts and no later members are
 processed regardless of `OnError`.
 
 Bytes a hard link writes as a copy (across a device boundary, or past the filesystem's
-link-count limit) SHALL count toward the limit. The ratio guards do not count them, since
-the source's bytes were already counted once when decoded. A declared link count can
-therefore drive real writes, one copy per limit's worth of links, and this limit is the
-guard that bounds them.
+link-count limit) SHALL count toward the limit. A declared link count can drive real
+writes, one copy per limit's worth of links, so the bytes copied past the link-count
+limit SHALL also count toward the archive-wide `max_ratio` guard: a small archive must
+not write far more than its size by declaring many links to one member. A cross-device
+copy SHALL NOT count toward either ratio, because it depends on where the caller extracts
+to, not on the archive, and neither copy counts toward the per-member ratio.
 
 A copy that a streaming pass takes back as superseded SHALL stop counting toward the
 limit once no entry on disk holds its bytes ("Skip non-current members by default"). The

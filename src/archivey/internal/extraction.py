@@ -326,9 +326,11 @@ class BombTracker:
         self._max_entries = max_entries
         self._entry_count = 0
         self._total_bytes = 0  # decoded output, cumulative across all members
-        # Bytes copied from a file this run already wrote (the cross-device hardlink
-        # fallback). They count toward the byte cap, not the ratios.
+        # Bytes copied from a file this run already wrote (the hardlink copy fallback).
+        # They count toward the byte cap. The part copied at the filesystem's link-count
+        # limit also counts toward the archive-wide ratio (``count_copy``).
         self._copied_bytes = 0
+        self._link_limit_copied_bytes = 0
         self._member_bytes = 0  # output bytes for the current member
         self._member: ArchiveMember | None = None
         # Output of members a streaming pass wrote and then took back as superseded (see
@@ -399,20 +401,28 @@ class BombTracker:
                 )
         self._check_archive_ratio()
 
-    def count_copy(self, chunk_bytes: int) -> None:
+    def count_copy(self, chunk_bytes: int, *, at_link_limit: bool) -> None:
         """Count bytes copied from a file this run already wrote, not decoded.
 
         A hard link that cannot be made writes a second full copy of content already
         on disk: across a device boundary, or past the filesystem's link-count limit.
         Those bytes land on the filesystem, so they count toward ``max_extracted_bytes``
-        like any other write. Neither ratio sees them: these bytes were already counted
-        once as output, when the source was decoded, and the ratios measure decoding.
-        The link-count case is archive-driven (an archive that declares enough links to
-        one member makes a copy per limit's worth of links), so ``max_extracted_bytes``
-        is the guard that bounds it, not a ratio.
+        like any other write.
+
+        A copy made at the link-count limit (``at_link_limit``) also counts toward the
+        archive-wide ratio. The archive drives it: one that declares enough links to
+        one member makes a copy per limit's worth of links, so a small archive could
+        otherwise write far more than its size while staying under the byte cap, which
+        is the case the ratio exists for (maintainer ruling, 2026-10-07). A
+        cross-device copy does not: whether it happens depends on where the caller
+        extracts to, not on the archive. Neither counts toward the per-member ratio,
+        since a link member's compressed size says nothing about the copy's size.
         """
         self._check_cumulative_bytes(chunk_bytes)
         self._copied_bytes += chunk_bytes
+        if at_link_limit:
+            self._link_limit_copied_bytes += chunk_bytes
+            self._check_archive_ratio()
 
     def _check_cumulative_bytes(self, chunk_bytes: int) -> None:
         """Cumulative byte guard (always-stop), checked before ``chunk_bytes`` is written.
@@ -438,24 +448,22 @@ class BombTracker:
         # are mutually exclusive (static when known, live otherwise), so the ratio is never
         # counted twice.
         css = self._compressed_source_size
-        if self._max_ratio is not None and self._total_bytes > self._ratio_floor:
+        # Decoded output plus the copies made at the link-count limit (``count_copy``).
+        output = self._total_bytes + self._link_limit_copied_bytes
+        if self._max_ratio is not None and output > self._ratio_floor:
             if css and css > 0:
-                if self._total_bytes / css > self._max_ratio:
+                if output / css > self._max_ratio:
                     raise _AlwaysStopResourceLimitError(
                         f"Archive-wide decompression ratio "
-                        f"{self._total_bytes / css:.0f}:1 exceeds limit "
+                        f"{output / css:.0f}:1 exceeds limit "
                         f"max_ratio={self._max_ratio:.0f}:1"
                     )
             elif self._source is not None:
                 consumed = self._source.compressed_bytes_consumed
-                if (
-                    consumed
-                    and consumed > 0
-                    and self._total_bytes / consumed > self._max_ratio
-                ):
+                if consumed and consumed > 0 and output / consumed > self._max_ratio:
                     raise _AlwaysStopResourceLimitError(
                         f"Live decompression ratio "
-                        f"{self._total_bytes / consumed:.0f}:1 exceeds limit "
+                        f"{output / consumed:.0f}:1 exceeds limit "
                         f"max_ratio={self._max_ratio:.0f}:1"
                     )
 
@@ -3086,6 +3094,7 @@ class ExtractionCoordinator:
         try:
             copied = False
             linked = False
+            at_link_limit = False
             copy_from: Path | None = None
             for candidate in reversed(existing):
                 if not _is_regular_file(candidate):
@@ -3098,6 +3107,7 @@ class ExtractionCoordinator:
                     if not _link_refused_here(exc):
                         raise
                     if _at_link_limit(exc):
+                        at_link_limit = True
                         break
                     continue
                 linked = True
@@ -3119,7 +3129,9 @@ class ExtractionCoordinator:
                     os.fdopen(_open_new_file(tmp, create_mode), "wb") as dst,
                 ):
                     while chunk := src.read(_CHUNK):
-                        self._state.tracker.count_copy(len(chunk))
+                        self._state.tracker.count_copy(
+                            len(chunk), at_link_limit=at_link_limit
+                        )
                         dst.write(chunk)
                 copied = True
             if copied:

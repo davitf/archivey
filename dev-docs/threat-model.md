@@ -242,7 +242,8 @@ bytes. The outcome is the same on every platform. ADR
   member replaces it or an anti-item removes it (`_readonly_cleared`), and leaves a
   read-only entry the caller already had alone. A hard link past the filesystem's
   link-count limit is written as a copy (`_link_refused_here`), counted toward
-  `max_extracted_bytes` (see [Extraction bombs](#extraction-bombs)).
+  `max_extracted_bytes` and the archive-wide `max_ratio` (see
+  [Extraction bombs](#extraction-bombs)).
 - Bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069) in a name or link
   target are rejected under `STRICT` and `STANDARD` (`_reject_bidi_override`); directional
   marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,
@@ -536,10 +537,10 @@ raise `_AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE
 ([accepted](#reads-have-no-output-bound)). A hard link the filesystem refuses at its
 link-count limit is written as a copy, so a declared link count drives real writes: one
 copy of the source per limit's worth of links (1024 names on NTFS, 65000 on ext4).
-`BombTracker.count_copy` counts the copies toward `max_extracted_bytes` and keeps them out
-of both ratios, because those bytes were already counted once as output when the source
-was decoded. `max_extracted_bytes` is therefore the guard that bounds this case, and a
-caller who disables it keeps no bound on it from `max_ratio`.
+`BombTracker.count_copy` counts those copies toward `max_extracted_bytes` and the
+archive-wide `max_ratio` (maintainer ruling, 2026-10-07), so a small archive declaring
+many links to one member trips the ratio. A cross-device copy counts toward
+`max_extracted_bytes` only: it depends on the destination, not the archive.
 
 **Tests.** `tests/test_extraction.py::test_per_member_ratio`,
 `::test_archive_wide_ratio`, `::test_archive_wide_ratio_live_denominator`,
