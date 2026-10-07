@@ -53,6 +53,7 @@ from tests.sample_archives import (
 from tests.streams_util import (
     assert_non_integer_read_is_type_error,
     assert_non_integer_seek_is_type_error,
+    assert_oversized_read_is_overflow_error,
     assert_seek_underflow_matches_bytesio,
     assert_unknown_whence_is_value_error,
 )
@@ -652,12 +653,27 @@ def test_corpus_non_integer_read_is_type_error(
             assert_non_integer_read_is_type_error(f, content)
 
 
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_oversized_read_is_overflow_error(
+    spec: _SeekSpec, member_name: str, tmp_path: Path
+) -> None:
+    """``read(2**70)`` is the caller's ``OverflowError`` on every enrolled backend and
+    codec, raised before anything is read, and the stream reads correctly afterwards."""
+    with _open_enrolled(spec, tmp_path, seekable_members=True) as ar:
+        member = _resolve_file_member(ar, member_name)
+        with ar.open(member) as f:
+            content = f.read()
+        with ar.open(member) as f:
+            assert_oversized_read_is_overflow_error(f, content)
+
+
 @pytest.mark.parametrize("kind", ["gz", "zip-deflate"])
 def test_stream_members_non_integer_read_is_type_error(
     kind: str, tmp_path: Path
 ) -> None:
-    """A forward-only ``stream_members()`` handle refuses ``read(1.5)`` the same way,
-    and the next read still returns the member: no seek can recover it there."""
+    """A forward-only ``stream_members()`` handle refuses ``read(1.5)`` and
+    ``read(2**70)`` the same way, and the next read still returns the member: no seek
+    can recover it there."""
     content = os.urandom(60) + b"text " * 40
     if kind == "gz":
         path = tmp_path / "data.bin.gz"
@@ -673,6 +689,8 @@ def test_stream_members_non_integer_read_is_type_error(
             read: Callable[..., bytes] = f.read
             with pytest.raises(TypeError):
                 read(1.5)
+            with pytest.raises(OverflowError):
+                f.read(2**70)
             assert f.read() == content
 
 

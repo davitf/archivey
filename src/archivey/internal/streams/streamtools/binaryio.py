@@ -18,6 +18,7 @@ import mmap
 import operator
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -73,21 +74,25 @@ def ask_resume_offset(inner: object | None, target: int) -> int | None:
 
 
 def check_read_size(n: int | None) -> int:
-    """Return ``read``'s size argument as an ``int``, refusing a non-integer as ``io`` does.
+    """Return ``read``'s size argument as an ``int``, refusing what ``io`` refuses.
 
     ``None`` means read to EOF, so it becomes ``-1``; a float or str raises
-    ``TypeError`` with the message ``io.BytesIO`` and ``io.BufferedReader`` give. A
-    stream calls this before it reads anything, because passed inward a float can
-    fail inside a decoder after a chunk has left the source.
+    ``TypeError`` with the message ``io.BytesIO`` and ``io.BufferedReader`` give, and
+    an integer outside the ``Py_ssize_t`` range (``2**70``) raises their
+    ``OverflowError``. A stream calls this before it reads anything, because passed
+    inward either can fail inside a decoder after a chunk has left the source.
     """
     if n is None:
         return -1
     try:
-        return operator.index(n)
+        size = operator.index(n)
     except TypeError:
         raise TypeError(
             f"argument should be integer or None, not {type(n).__name__!r}"
         ) from None
+    if not -sys.maxsize - 1 <= size <= sys.maxsize:
+        raise OverflowError("cannot fit 'int' into an index-sized integer")
+    return size
 
 
 def check_seek_args(offset: int, whence: int) -> tuple[int, int]:

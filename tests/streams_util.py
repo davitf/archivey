@@ -9,6 +9,7 @@ import random
 import shutil
 import struct
 import subprocess
+import sys
 import zlib
 from typing import BinaryIO, Callable
 
@@ -467,6 +468,43 @@ def assert_non_integer_read_is_type_error(stream: BinaryIO, content: bytes) -> N
     assert stream.seek(0) == 0
     assert read(True) == content[:1]
     assert read(None) == content[1:]
+
+
+# Integer read sizes outside ``Py_ssize_t``, each refused by ``io.BytesIO`` with an
+# OverflowError before anything is read.
+OVERSIZED_READS: tuple[int, ...] = (sys.maxsize + 1, 2**70, -sys.maxsize - 2, -(2**70))
+
+
+def assert_oversized_read_is_overflow_error(stream: BinaryIO, content: bytes) -> None:
+    """An integer ``read`` size too wide for ``Py_ssize_t`` raises ``OverflowError`` as
+    ``io.BytesIO`` does, with its message, and leaves the stream where it was and correct.
+
+    The read after the refusal is the half that matters. Passed inward, ``read(2**70)``
+    failed inside the gzip, bzip2 or xz decoder after the compressed chunk had left the
+    source, so the undamaged member then raised ``TruncatedError`` or
+    ``CorruptionError`` on every read, even after ``seek(0)``.
+    """
+
+    reference_read = io.BytesIO(content).read
+
+    def refuse(at: int) -> None:
+        for size in OVERSIZED_READS:
+            with pytest.raises(OverflowError) as expected:
+                reference_read(size)
+            with pytest.raises(OverflowError) as excinfo:
+                stream.read(size)
+            assert type(excinfo.value) is OverflowError, size
+            assert str(excinfo.value) == str(expected.value), size
+            assert stream.tell() == at, size
+
+    # First on a fresh stream, then after a partial read.
+    refuse(0)
+    head = min(3, len(content))
+    assert stream.read(head) == content[:head]
+    refuse(head)
+    assert stream.read() == content[head:]
+    assert stream.seek(0) == 0
+    assert stream.read() == content
 
 
 def assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:

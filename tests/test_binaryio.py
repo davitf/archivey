@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import sys
 import tempfile
 from typing import Callable
 
@@ -1140,6 +1141,20 @@ class TestCheckReadSize:
     def test_bool_is_its_int_value(self) -> None:
         size = check_read_size(True)
         assert size == 1 and type(size) is int
+
+    @pytest.mark.parametrize("bad", [sys.maxsize + 1, 2**70, -sys.maxsize - 2])
+    def test_int_outside_ssize_t_raises_overflow_error_as_bytesio(
+        self, bad: int
+    ) -> None:
+        with pytest.raises(OverflowError) as expected:
+            io.BytesIO(b"abc").read(bad)
+        with pytest.raises(OverflowError) as excinfo:
+            check_read_size(bad)
+        assert str(excinfo.value) == str(expected.value)
+
+    @pytest.mark.parametrize("edge", [sys.maxsize, -sys.maxsize - 1])
+    def test_ssize_t_bounds_pass(self, edge: int) -> None:
+        assert check_read_size(edge) == edge
 
     @pytest.mark.parametrize("bad", [1.5, "3", b"3", 2.0])
     def test_non_integer_raises_type_error_as_bytesio(self, bad: object) -> None:

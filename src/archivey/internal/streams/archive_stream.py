@@ -460,10 +460,19 @@ class ArchiveStream(ReadOnlyIOStream):
         raise e
 
     def read(self, n: int | None = -1, /) -> bytes:
+        """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
+
+        A fused verifier with a declared size caps each read at the bytes left. Without
+        one, ``n`` goes to the backend as given, so what a very large ``n`` costs is the
+        backend's: a TAR member's reader allocates a buffer of ``n`` bytes, and
+        ``read(2**62)`` raises ``MemoryError`` there, as ``open(path, "rb").read(2**62)``
+        does on a plain file. The stream is still usable afterwards.
+        """
         # ``None`` reads to EOF, as on any ``io`` stream; a float or str is the caller's
-        # TypeError, raised before anything is read. Passed inward, ``read(1.5)`` fails
-        # inside a decoder after its compressed chunk has left the source, and the member
-        # would then report truncation on every later read, even after ``seek(0)``.
+        # TypeError, and an int too wide for ``Py_ssize_t`` their OverflowError, both
+        # raised before anything is read. Passed inward, ``read(1.5)`` or ``read(2**70)``
+        # fails inside a decoder after its compressed chunk has left the source, and the
+        # member would then report damage on every later read, even after ``seek(0)``.
         n = check_read_size(n)
         # _ensure_open is outside the try: its read-after-close ValueError is the
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
