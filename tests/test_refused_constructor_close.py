@@ -256,6 +256,10 @@ _CLOSE_STATE_FIRST = {
         "ensure_binaryio() runs before DelegatingStream.__init__ but raises only on a "
         "text stream, and the inner is always a rapidgzip reader"
     ),
+    "archivey.internal.backends.rar_reader._JoinedParts": (
+        "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
+        "first; its views come from SharedSource.view, which has already checked them"
+    ),
     "archivey.internal.backends.iso_reader._PyCdlibStream": (
         "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
     ),
@@ -275,6 +279,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.rar_copy_sources._TeeBlock": "plain assignments only",
     "archivey.internal.backends.sevenzip_pipeline._DecodedPastSizeCheck": (
         "plain assignments only"
+    ),
+    "archivey.internal.streams.codecs._LzmaEndAtSize": (
+        "DelegatingStream.__init__ first, then plain assignments"
     ),
     "archivey.internal.external.unar.UnarOutputStream": (
         "assigns every field close() reads before DelegatingStream.__init__"

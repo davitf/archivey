@@ -270,8 +270,8 @@ check can decode the folder before the caller's read does; when it meets the sur
 there, the raised error SHALL be `EncryptionError` ("wrong password or corrupt"), with
 the surplus `CorruptionError` in its cause chain, as for any damage the check decodes.
 The check SHALL count the coder's decoded output, so AES padding in the coder's input
-is not surplus, and the output of concatenated streams in one coder (BZip2 streams,
-Zstd or LZ4 frames) counts together. The check SHALL ask the decoder for at most one
+is not surplus, and the output of concatenated Zstd or LZ4 frames in one coder counts
+together. The check SHALL ask the decoder for at most one
 byte of output past the declared size, and SHALL NOT decode the folder a second time.
 The decoder MAY read the rest of the coder's packed input to produce that byte (a tail
 of streams that decode to nothing), so the check's input cost is bounded by the coder's
@@ -279,6 +279,18 @@ packed size, the same bound as decoding the folder. A decoder error on that one 
 (input after the end of the stream, such as AES padding after an LZMA2 end marker) is
 not surplus output. LZMA1 and PPMd coders, which 7-Zip writes without an end marker,
 SHALL stop at their declared size, so their surplus output is not detected.
+
+A BZip2, LZMA (with an end marker), LZMA2 or Deflate coder's data SHALL be one stream,
+as 7-Zip reads it: the decoder SHALL end at the first stream's end and SHALL NOT decode
+a further stream after it as output. For BZip2 and Deflate the bytes after that end
+SHALL end the coder without a diagnostic, as AES padding does. For LZMA and LZMA2 any
+byte of the coder's input after the end marker, a zero byte included, SHALL raise
+`CorruptionError`, as 7-Zip reports a data error; the coder's input is its declared
+input size, so AES padding past it is not such a byte. An LZMA1 coder capped at its
+declared size SHALL apply this check when an end marker follows right at that size,
+and SHALL read clean when none does. Under the rapidgzip accelerator, a Deflate
+coder SHALL hand over to the standard-library decoder at its declared unpack size, so
+it reads what the standard library reads when that size stops after the first stream.
 
 #### Scenario: coder-chain matrix
 
@@ -307,7 +319,16 @@ SHALL stop at their declared size, so their surplus output is not detected.
 | Same, behind AES, in a folder the password check does not decode whole | `CorruptionError` |
 | LZMA1 coder whose data decodes past its declared unpack size | Reads clean, cut at the declared size |
 | AES then Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli, decrypted input ending in AES padding | Original bytes return; the padding is not surplus |
-| Two BZip2 streams, Zstd frames or LZ4 frames in one coder | Original bytes when the unpack size counts both; `CorruptionError` when it stops after the first |
+| Two Zstd frames or LZ4 frames in one coder | Original bytes when the unpack size counts both; `CorruptionError` when it stops after the first |
+| Two BZip2 or Deflate streams in one coder; unpack size and CRC count both | `TruncatedError` (the coder ends after the first; `7z t`: Data Error) |
+| Same; unpack size and CRC count the first | The first stream's bytes (`7z t` warns of data after the payload) |
+| Two LZMA (end-marked) or LZMA2 streams in one coder, whatever the unpack size counts | `CorruptionError` (`7z t`: Data Error) |
+| LZMA (end-marked) or LZMA2 coder whose input has one more byte after the end marker, a zero too | `CorruptionError` (`7z t`: Data Error) |
+| AES then LZMA or LZMA2, decrypted input ending in AES padding | Original bytes; the pad is past the coder's input size |
+| LZMA1 coder without an end marker, with input after its data | Reads clean, cut at the declared size (`7z t`: Data Error; not detectable through liblzma) |
+| 7-Zip's own LZMA, LZMA:eos, LZMA2, `-mhe=on`, solid, `-ms=off` and BCJ2 archives | Read clean |
+| Two BZip2 or Deflate streams under rapidgzip (`use_rapidgzip` or `use_indexed_bzip2` `ON`), size and CRC counting the first | Deflate: the first stream's bytes; BZip2: `CorruptionError` (surplus) |
+| Same under rapidgzip, size and CRC counting both | Both streams' bytes (the accelerator divergence `compressed-streams` allows) |
 
 ### Requirement: Reject unsupported codecs without fallback
 

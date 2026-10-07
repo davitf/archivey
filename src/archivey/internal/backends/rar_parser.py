@@ -348,6 +348,17 @@ class RarMemberInfo:
     split_after: bool
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
+    # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
+    # concatenated volume space, for a member merged across volumes; empty for a
+    # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
+    # offset and the total. Each part continues the one before it
+    # (:func:`_merge_split_member`), and the merged member keeps the first part's
+    # ``split_before`` and the last part's ``split_after``: with both clear the list
+    # is the whole member. ``split_before`` set means the first part is in a volume
+    # outside the set; the parser refuses that only when the continuation is the
+    # first volume's first member. ``split_after`` set means the last part was not
+    # found (an end block that claimed no next volume).
+    data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from
     # the dictionary bits). A stored member declares one too, and no decoder uses
@@ -358,6 +369,10 @@ class RarMemberInfo:
     # RAR5 only: the compression-info version field (bits 0-5). ``None`` for RAR
     # 1.5-4, whose version is ``extract_version``.
     rar5_algorithm_version: int | None = None
+    # A RAR3/4 encrypted member's own 8-byte salt (``FILE_SALT``); its data key and IV
+    # are derived from the password and this salt. ``None`` for RAR5, whose salt is in
+    # ``file_encryption``, and for a RAR3 member that stores none.
+    rar3_salt: bytes | None = None
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
@@ -660,6 +675,9 @@ def parse_rar_volumes(
         for member in part.members:
             member.header_offset += base_offset
             member.data_offset += base_offset
+            member.data_parts = [
+                (offset + base_offset, size) for offset, size in member.data_parts
+            ]
         if part.truncated is not None and len(volumes) > 1:
             # The walk's byte offsets are within this volume, not the concatenated
             # space the member offsets above use, so the message names the volume.
@@ -1383,6 +1401,23 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
             "Mismatched RAR split continuation: "
             f"{quoted(new.filename)} does not continue {quoted(old.filename)}"
         )
+    # A volume holds at most one part of a member: a continuation is the first file
+    # header of the next volume. A walk merges within one volume only when the volume
+    # repeats a continuation, and every repeat would add a retained part (and later a
+    # view) that ``max_members`` does not count: 200 000 one-byte parts in a 6.8 MB
+    # archive held 26 MB after open and peaked at 153 MB on the read. Refused, so
+    # the parts of a member stay bounded by the volumes the caller passed.
+    # ``old.volume_index`` stays the volume the member started in: a merge inside
+    # one volume's walk compares two members of that volume, and every merge across
+    # volumes compares against an earlier one, so ``==`` is the whole test.
+    if new.volume_index == old.volume_index:
+        raise CorruptionError(
+            f"RAR split continuation of {quoted(new.filename)} is in the same "
+            "volume as the part it continues"
+        )
+    if not old.data_parts:
+        old.data_parts.append((old.data_offset, old.compress_size))
+    old.data_parts.append((new.data_offset, new.compress_size))
     old.compress_size += new.compress_size
     if new.crc32 is not None:
         old.crc32 = new.crc32
@@ -2198,8 +2233,9 @@ def _parse_rar3_file_header(
     if is_directory:
         filename = filename + "/"
 
+    rar3_salt: bytes | None = None
     if flags & _RAR3_FILE_SALT:
-        _salt, pos = _load_bytes(hdata, 8, pos)
+        rar3_salt, pos = _load_bytes(hdata, 8, pos)
 
     timestamp_issues: list[TimestampIssue] = []
     if mtime is None and dos_stamp != 0:
@@ -2255,6 +2291,7 @@ def _parse_rar3_file_header(
         dictionary_size=0
         if is_directory
         else _RAR3_DICT_BASE << ((flags & _RAR3_DICT_MASK) >> _RAR3_DICT_SHIFT),
+        rar3_salt=rar3_salt,
     )
     return member, crc_pos
 

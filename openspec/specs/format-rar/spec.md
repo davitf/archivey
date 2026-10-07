@@ -245,24 +245,27 @@ copies the `UNP_VER` byte as stored, unvalidated. RAR5 members report `50`
 
 ### Requirement: Use RARLAB unrar only for member data that needs it
 
-The system SHALL read stored, uncompressed, unencrypted members directly as raw
-bytes through the shared pass-through backend. All other member data SHALL be
-read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
-`PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
-(`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that
-does not match inside `UNRAR`) whose parsed major.minor is 6.0 or later.
-If a decompressor is required and missing or incompatible, the system SHALL raise
-`PackageNotInstalledError` naming RARLAB `unrar` or `rar`. Archivey MUST NOT
-use `unrar-free`, `bsdtar`, `7z`, or a degraded backend. The
-spawn SHALL be the `p` (print to stdout) command only. This requirement applies
-when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto` (the default) with a
-usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member data with unar`.
+The system SHALL read stored, uncompressed, unencrypted members directly as raw bytes
+through the shared pass-through backend, whatever the member's own solid flag says. A
+member split across volumes SHALL be read by joining its parts in order. All other
+member data SHALL be read by invoking a system RARLAB decompressor: `unrar` if a usable
+binary is on `PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
+(`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that does not
+match inside `UNRAR`) whose parsed major.minor is 6.0 or later. If a decompressor is
+required and missing or incompatible, the system SHALL raise `PackageNotInstalledError`
+naming RARLAB `unrar` or `rar`. Archivey MUST NOT use `unrar-free`, `bsdtar`, `7z`, or a
+degraded backend. The spawn SHALL be the `p` (print to stdout) command only. This
+requirement applies when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto` (the
+default) with a usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member
+data with unar`.
 
 #### Scenario: unrar dependency matrix
 
 | Case | Expected |
 | --- | --- |
 | Stored member, `unrar`/`rar` missing | Raw bytes are returned without invoking either |
+| Stored member split across volumes, `unrar`/`rar` missing | Its parts are joined and returned, checked against the member's checksum |
+| Stored member carrying its own solid flag (`rar -s -ms<ext>`), `unrar`/`rar` missing | Raw bytes are returned without invoking either |
 | Compressed member, both missing, and no `unar` (or `rar_decompressor="unrar"`) | `PackageNotInstalledError` names `unrar` or `rar` |
 | PATH `unrar` is not RARLAB `unrar`, and no usable `rar` | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
@@ -397,7 +400,7 @@ desynchronize sizes).
 | Stream source over `SpoolLimits.max_bytes` | `ResourceLimitError` naming the field; no temp file or directory; no `unrar` spawn |
 | Volume set, each volume within the limit, total over it | `ResourceLimitError`; the limit weighs the total |
 | Stream source of unknown size refused mid-copy, then another compressed read | The same refusal, with no second temp file |
-| Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
+| Stream source, `max_bytes=0` | Stored, unencrypted members read; a member needing `unrar` is refused |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`); the spool limit never refuses it |
 | Prefixed path source under `unar`, copy over `SpoolLimits.max_bytes` | `ar.cost.notes` says a compressed read will be refused; the read raises `ResourceLimitError` naming `rar_decompressor='unrar'`; no temp file |
@@ -813,7 +816,8 @@ end-of-stream verdict. Its cost is one extra pass over an already-damaged member
 at all on an undamaged one.
 
 **Both paragraphs above are scoped to the member archivey reads by slicing the source** —
-stored, not solid, not split across volumes. Every other cut-short member is decoded by
+stored, including one split across volumes or carrying its own solid flag. Every
+other cut-short member is decoded by
 `unrar`, which is handed the whole member and cannot be asked to check a digest first;
 there any surviving digest is verified as it is for an undamaged member, at end of stream,
 and a member with none is read with nothing checking it. That is unchanged behaviour and
@@ -1009,23 +1013,23 @@ refused.
 ### Requirement: Read RAR member data with unar
 
 When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
-`unrar` or `rar` on `PATH`, the system SHALL read compressed
-member data by invoking `unar` 1.10 or later, identified on `PATH` by its `unar -h`
-banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. An
-identified `unar` SHALL also decode a small embedded RAR5 archive once, under the same
-timeout and cache, and SHALL NOT be used unless it writes that archive's one member
-exactly and exits 0: Debian and Ubuntu `unar` packages before 1.10.8+ds1-10 write
-nothing for such members, and their version string does not tell them apart. A
-refused `unar` SHALL count as absent under `auto`, and the refusal SHALL say what the
-check saw; it names the Debian patch only for exit 0 with a short member. Stored,
-unencrypted, unsplit members SHALL still be read directly. The system MUST NOT use
-`unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing,
-unidentified or refused `unar` SHALL raise `PackageNotInstalledError` naming `unar`.
-`auto` SHALL choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
-retried with `unrar`, and with neither program present `auto` SHALL raise the
-`PackageNotInstalledError` that names RARLAB `unrar` or `rar`. When `auto` chooses
-`unar`, `ar.cost.notes` SHALL say so at open, naming the password exposure and the
-`unrar` setting that avoids it.
+`unrar` or `rar` on `PATH`, the system SHALL read compressed member data by invoking
+`unar` 1.10 or later, identified on `PATH` by its `unar -h` banner with the same probe
+timeout and stat-keyed cache as RARLAB `unrar`. An identified `unar` SHALL also decode a
+small embedded RAR5 archive once, under the same timeout and cache, and SHALL NOT be
+used unless it writes that archive's one member exactly and exits 0: Debian and Ubuntu
+`unar` packages before 1.10.8+ds1-10 write nothing for such members, and their version
+string does not tell them apart. A refused `unar` SHALL count as absent under `auto`,
+and the refusal SHALL say what the check saw; it names the Debian patch only for exit 0
+with a short member. Stored, unencrypted members SHALL still be read directly, whatever
+their own solid flag, including a member split across volumes whose parts were all
+found. The system MUST NOT use `unrar` in that mode, and MUST NOT use `unar` in any
+other mode; a missing, unidentified or refused `unar` SHALL raise
+`PackageNotInstalledError` naming `unar`. `auto` SHALL choose once per reader, when the
+archive opens; a read `unar` refuses MUST NOT be retried with `unrar`, and with neither
+program present `auto` SHALL raise the `PackageNotInstalledError` that names RARLAB
+`unrar` or `rar`. When `auto` chooses `unar`, `ar.cost.notes` SHALL say so at open,
+naming the password exposure and the `unrar` setting that avoids it.
 
 The argv SHALL be
 `unar -o - -q -nr -k skip [-p <password>] [-i] -- <absolute path> [index …]`:
@@ -1275,3 +1279,68 @@ stream, solid or not, and a solid pass SHALL then keep no source.
 | `extract_all(dry_run=True)` | Sources kept; one decompressor run |
 | `stream_members(file_copy_streams=False)`, solid, under `unrar` and `unar` | Copies yielded with `None`; nothing kept; one decompressor run |
 | `stream_members(file_copy_streams=False)`, nonsolid | Copies yielded with `None` |
+
+### Requirement: Read RAR without any external program
+
+When `ArchiveyConfig.rar_decompressor` is `none`, the system MUST NOT start `unrar`,
+`rar` or `unar` for that reader: not to identify them at open, not to decode a comment,
+and not to read member data. Opening and listing SHALL work as with any other setting,
+including header-encrypted archives given the right password. A stored member that is
+not encrypted SHALL be read directly, as it is under every setting, when all of its
+parts were found. Every other member read SHALL raise `UnsupportedFeatureError` before
+any process starts or any source is copied, naming why the member cannot be read
+(compressed, encrypted, or split across volumes with a part missing) and the `unrar`
+setting that reads it. A compressed RAR 1.5/2.x old-style comment SHALL be `None`. When
+the archive has a file member that this setting refuses, `ar.cost.notes` SHALL say so at
+open.
+
+#### Scenario: no external program matrix
+
+| Case | Expected |
+| --- | --- |
+| Non-solid archive, stored plaintext members, path or stream source | Every member reads; no process starts; `ar.cost.notes` is empty |
+| Compressed member | `UnsupportedFeatureError` naming "compressed"; no process starts |
+| Encrypted member, stored or compressed | `UnsupportedFeatureError` naming "encrypted" |
+| Stored member split across volumes | Its parts are joined and read; no process starts |
+| Stored member split across volumes, a later part missing | `UnsupportedFeatureError` naming "not every part was found" |
+| Stored member with its own solid flag | Read directly; no process starts |
+| Solid archive, `stream_members()` | Each member's read is refused on its own; no solid pass starts |
+| Header-encrypted archive, right password | Lists; no process starts |
+| Compressed RAR 1.5 archive comment | `None` |
+
+### Requirement: Password lists for data with no password check
+
+RAR3/4 file data records no password check value, and neither does a RAR5 encryption
+record without a usable PswCheck. When the caller gives more than one distinct password
+(or a provider) for an archive whose headers are not encrypted, the reader SHALL judge
+the candidates for such a member by decoding it, under the shared confirmation rule
+(`archive-reading`, "Confirm candidates when a weak check permits retries"), before the
+member's own read starts:
+
+- the **bounded probe** reads at most `PASSWORD_CONFIRM_PREFIX_BYTES` of the member's
+  output from the decompressor; a program error, a wrong-password exit or output that
+  ends short SHALL reject the candidate. A member that fits the prefix is checked against
+  its CRC, which confirms;
+- the **full check** reads the whole member and compares its CRC;
+- a **stored** RAR 2.9+ member in one part SHALL be judged by decrypting it natively
+  (AES-128-CBC under the key the password and the member's salt give) and comparing its
+  CRC, with no external program: every wrong key decrypts a stored member to bytes of
+  the right length, so only the CRC can tell.
+
+In a non-solid archive each such member is judged on its own data. In a solid archive,
+and for the pass over a whole archive, the candidates are judged once, on the first
+encrypted member (solid) or the smallest one (non-solid). One distinct password, and the
+header password of a header-encrypted archive, SHALL go to the decompressor unjudged, as
+before. A member whose password was confirmed against its own CRC SHALL NOT emit
+`ENCRYPTED_MEMBER_UNVERIFIED` when its read is abandoned.
+
+#### Scenario: RAR3/4 password list matrix
+
+| Case | Expected |
+| --- | --- |
+| Non-solid, compressed, `password=[wrong, right]`, member larger than the prefix | Every member reads correctly |
+| Same, `wrong` survives the 64 KiB prefix | The full check rejects it; every member reads correctly |
+| Solid, compressed, `password=[wrong, right]` | One resolution on the first encrypted member; every member reads, by `open()` and `stream_members()` |
+| Stored encrypted member, `password=[wrong, right]` | Judged natively by CRC; no process started for the check |
+| `password=[wrong1, wrong2]` | `EncryptionError` |
+| One password | Handed to the decompressor unjudged, as before |

@@ -541,7 +541,8 @@ def _scan_for_sfx_payload(
 
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
-    This is the one place that records the ``sfx_scan`` tier as cut short.
+    This is the one place that records the ``sfx_scan`` tier as cut short, or as not
+    enabled when the window is zero.
 
     ``restrict_to_validated`` is the shebang cue: a script is text, so magics appear
     as literals. Search only formats that have a hit validator — derived from
@@ -549,8 +550,8 @@ def _scan_for_sfx_payload(
     key this off :attr:`ExecutableCue.WEAK` alone: an unconfirmed ``MZ`` / ELF stub
     is the live 7z/RAR SFX path and keeps the full needle set.
     """
-    if scan_limit <= 0:
-        workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+    # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
+    if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
         return None
     if restrict_to_validated:
         entries = [entry for entry in entries if entry.format in validators]
@@ -769,11 +770,18 @@ def _detect_format_body(
         near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
         far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
         near_span = max((e.offset + len(e.magic) for e in near), default=0)
-        if near and budget.max_prefix_bytes < near_span:
+        if near:
             # A "near" magic past the budgeted prefix is unsearchable — record it rather
             # than silently incomplete-searching (DETECTION_LIMIT and max_prefix_bytes
-            # are independent constants that happen both to be 4 096 today).
-            workspace.record_skip("near_magic", TierSkipReason.BUDGET_EXHAUSTED)
+            # are independent constants that happen both to be 4 096 today). A zero
+            # ``max_prefix_bytes`` turns the tier off. The record only: the match still
+            # runs on whatever the prefix holds.
+            _record_tier_limit(
+                workspace,
+                "near_magic",
+                enabled=budget.max_prefix_bytes > 0,
+                covered=budget.max_prefix_bytes >= near_span,
+            )
         near_needed = min(
             budget.max_prefix_bytes,
             max(DETECTION_LIMIT, near_span),

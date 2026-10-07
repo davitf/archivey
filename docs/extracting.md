@@ -128,13 +128,13 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   that data is seen in time. The omission is the archive's, and it is reported as
   `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an archive-integrity code,
   so `DiagnosticPolicy.strict()` still refuses such an archive outright. A link whose
-  target the archive *does* carry but this read could not reach — encrypted, compressed,
-  split across volumes, or damaged — is a per-member failure instead, because recording
-  it as an outcome would drop a member the archive describes in full while reporting
-  success. In ZIP, 7z and RAR3/4, a damaged target (its data fails the CRC or HMAC, or
-  the decompressor) does not fail the listing: the link is listed without a target,
-  reported with `reason="target_data_damaged"`, and opening or extracting it raises the
-  damage.
+  target the archive *does* carry but this read could not reach — encrypted,
+  compressed, split across volumes with a part missing, or damaged — is a per-member
+  failure instead, because recording it as an outcome would drop a member the archive
+  describes in full while reporting success. In ZIP, 7z and RAR3/4, a damaged target
+  (its data fails the CRC or HMAC, or the decompressor) does not fail the listing: the
+  link is listed without a target, reported with `reason="target_data_damaged"`, and
+  opening or extracting it raises the damage.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small
@@ -491,8 +491,12 @@ Atheris harnesses run with accelerators off for this reason.
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB
 program is installed. Each is found on the process `PATH`. `unar` receives a password on
 its command line, where other local users can see it while it runs; select
-`RarDecompressor.UNRAR` to rule that out. Keep these tools updated; treat their
-availability and behaviour as part of your deployment’s trust boundary.
+`RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
+`RarDecompressor.NONE`: archivey then runs neither, and refuses every RAR member it
+cannot read without them (anything compressed, encrypted or solid);
+`extract_all(..., on_error="continue")` then writes the members it can read and records
+the rest. Keep these tools updated; treat their availability and behaviour as part of
+your deployment’s trust boundary.
 
 Prefer extracting untrusted archives into a dedicated directory with limited
 permissions, then validating results before promoting them elsewhere.

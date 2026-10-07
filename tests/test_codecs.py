@@ -2088,8 +2088,7 @@ def test_gzip_truncation_check_hands_a_too_short_file_to_the_stdlib(tmp_path) ->
 
 
 def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
-    # A seek that does not leave the sequential frontier (tell()-style seek(0, SEEK_CUR),
-    # or a seek to the current offset) keeps the ISIZE check armed, so a short
+    # A tell()-style seek(0, SEEK_CUR) keeps the ISIZE check armed, so a short
     # accelerator output is still caught on the completing read.
     payload, path = _cut_gzip_file(tmp_path)
 
@@ -2100,16 +2099,26 @@ def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
         stream.read(-1)
 
 
-def test_gzip_truncation_check_real_seek_disables_verification(tmp_path) -> None:
+def test_gzip_truncation_check_real_seek_keeps_verification(tmp_path) -> None:
+    # A seek back to the start keeps the ISIZE check armed too: the check compares the
+    # output position, not a count of bytes read, so it still holds after random access.
+    payload, path = _cut_gzip_file(tmp_path)
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
+    stream.read(16)
+    stream.seek(0)
+    with pytest.raises(TruncatedError):
+        stream.read(-1)
+
+    # On an intact file the short output after the seek hands over to the standard
+    # library, which delivers the rest of the member rather than a short read.
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
-
     stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     stream.read(16)
-    stream.seek(0)  # genuine random access: the sequential total is meaningless now
-    stream.read(-1)
-    assert stream.read() == b""  # no spurious TruncatedError after a real seek
+    stream.seek(0)
+    assert stream.read(-1) == payload
+    assert stream.read() == b""
 
 
 def test_codec_stream_size_via_cheap_index(tmp_path) -> None:

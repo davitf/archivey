@@ -70,9 +70,9 @@ Everything about that boundary is a consequence:
 - **Listing completes without `unrar`** — names, sizes, timestamps, modes, flags, hashes,
   link targets and header decryption come out of the parser (§2.2). Stored old-style
   comments do too; compressed RAR 1.5 / 2.x comments are filled when the binary is
-  available and otherwise stay `None`. A stored, unencrypted, non-solid, unsplit member
-  is read by slicing the source, so an archive of those reads end to end with no
-  subprocess (§2.3).
+  available and otherwise stay `None`. A stored, unencrypted member is read by slicing
+  the source, whatever its solid flag, and a split one by joining its parts, so an
+  archive of those reads end to end with no subprocess (§2.3).
 - **`unrar` seeks the archive, so it cannot be piped one** — which is why a stream source
   is copied to a temp file the first time a member cannot be read directly, the whole
   archive. `CostReceipt.notes` states that caveat at open. There is no
@@ -342,9 +342,9 @@ it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than lea
 | `reason` | When | Archive records a target |
 | --- | --- | --- |
 | `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
-| `target_data_split_across_volumes` | the target's bytes straddle a volume boundary | yes |
+| `target_data_split_across_volumes` | the target is split across volumes and a part was not found (a complete split target is joined and read) | yes |
 | `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
-| `no_target_data` | the member declares no data at all | no |
+| `no_target_data` | the member's declared and packed sizes are both zero | no |
 
 The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
 an archive; a lenient one lists the member as a link with no target. The last column is
@@ -356,10 +356,12 @@ per-member failures governed by `OnError`. That is why the encrypted row is not 
 member and catch the failure, so a password really is what is missing, whereas this
 path never decrypts and a correct password does not change its answer.
 
-A target the direct read does reach is held to the member's data CRC32 before it is
-used: the header CRC does not cover the data, so that is the only check a damaged target
-meets. On a mismatch the read raises `CorruptionError`, and link finalization treats it
-as ZIP and 7z treat a damaged target (`_report_damaged_link_target`): the link stays
+A target the direct read does reach is checked twice before it is used. Its declared
+size must equal its packed size, since a stored target is its packed bytes; a header
+that declares more would have the read run into the next header. Then the bytes are held
+to the member's data CRC32, since the header CRC does not cover the data. On either
+mismatch the read raises `CorruptionError`, and link finalization treats it as ZIP and
+7z treat a damaged target (`_report_damaged_link_target`): the link stays
 listed with `link_target` unset, `SYMLINK_TARGET_UNAVAILABLE` carries
 `reason="target_data_damaged"` (so a strict policy refuses the archive), and opening or
 extracting the link raises the fault. A RAR5 redirect needs no such check, since its
@@ -512,13 +514,20 @@ cost of each derivation is the archive's `kdf_count`, and an archive that salts 
 member defeats the cache; `DecoderLimits.max_key_derivation_rounds` bounds the total
 (threat-model O18). The tweaked-digest HashKey comes from the
 same winner. A pass (`stream_members`, one `unrar p` for the whole archive) and a plain
-member of a solid archive use the first RAR5 member's winner. **RAR3/4 data has no check value**, so there is nothing to test a
-candidate against short of decoding: `unrar` gets the first candidate, and a list whose
-right password is not first still fails there. A RAR5 member whose record has no check
-value, or whose check fails its own SHA-256 checksum, is handled the same way in a
-non-solid archive. In a solid one it takes the solid rule above: the winner of the first
-member whose check can judge a candidate, and the first candidate only when no member
-has one.
+member of a solid archive use the first RAR5 member's winner. **RAR3/4 data has no check value**, so a candidate list is judged by
+decoding, under the shared rule in `password_confirm.attempt_with_confirm`: each candidate
+runs a bounded probe (`unrar p` of the member, read to at most 64 KiB, then stopped), a
+candidate the probe confirms (a member that fits the prefix, CRC matched) wins at once,
+and when several survive, each in order is decoded to the member's CRC. A stored member's
+probe is native instead: AES-128-CBC with the RAR3 key, CRC over the plaintext, no
+`unrar` (`_rar3_stored_check`). In a non-solid archive each encrypted member is judged on
+its own data; a solid archive, and the pass over a whole archive, judge once on the first
+encrypted member (solid) or the smallest (non-solid). One distinct password still goes to
+`unrar` unjudged, and so does an `-hp` archive's header password. A RAR5 member whose
+record has no check value, or whose check fails its own SHA-256 checksum, is handled the
+same way in a non-solid archive. In a solid one it takes the solid rule above: the winner
+of the first member whose check can judge a candidate, and the decode rule only when no
+member has one.
 
 **A partial read of a member no check vouched for emits `ENCRYPTED_MEMBER_UNVERIFIED`**
 (`check="no_password_check"`). RAR3/4 data has no check to accept a password on at all:
@@ -724,13 +733,24 @@ its header:
 
 | Route | When | Cost |
 | --- | --- | --- |
-| **Direct slice** — no subprocess | Stored (`-m0`), unencrypted, non-solid, not split, not spanning volumes | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
-| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since the direct-slice test includes the member's own solid flag rather than the archive's | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5). With `seekable_members=True`, a backward `seek()` closes that process; the next `read()` respawns it and skips to the offset. The rewind diagnostic's cost includes the solid prefix, not just the bytes already read from this member |
+| **Direct slice** — no subprocess | Stored (`-m0`, or `-ms<ext>` inside a solid archive), unencrypted; a member split across volumes has its parts joined | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
+| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since `rar -s` compresses them | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5). With `seekable_members=True`, a backward `seek()` closes that process; the next `read()` respawns it and skips to the offset. The rewind diagnostic's cost includes the solid prefix, not just the bytes already read from this member |
 | **One unnamed `unrar p` pipe** | A streaming pass over a solid archive | One process for the whole pass. Measured on `basic_solid__.rar`: one streaming pass = 1 spawn; opening each of its 4 members = 4 |
 
 The pipe is spawned on the **first read into the pass**, not at pass start, so listing a
 solid archive through `stream_members()` — or an extraction whose selector matches nothing —
 never starts `unrar` and is never asked for a password.
+
+**A solid archive can mix stored and compressed members.** RAR picks the method per
+file: `rar -s -m3 -msbin` compresses most files and stores the `.bin` ones as they are.
+A stored member still gets its own solid flag (`file_solid`), which on a compressed
+member means "continue from the previous member's decoder state". Its bytes are
+plaintext in the archive all the same, so the direct slice reads them and ignores the
+flag. `unrar` decodes every compressed member ahead of it to reach those bytes, which is
+why a stored member read through `unrar` is charged the window ahead of it (§7,
+"A stored member of a solid archive"). `stored_solid_member__.rar` is that shape: a
+compressed `first.txt`, then a stored `second.bin` with the flag set.
+`test_stored_slice_matches_unrar` checks the slice against `unrar p`.
 
 **The argv is constructed defensively, because the member name is attacker-controlled.**
 `unrar p -inul -cfg- [-ver] (-p | -p-) [-n./<member>] -- <archive>`:
@@ -1001,7 +1021,11 @@ be under-inclusive. What is not on the table under any of that is a silent fallb
 second engine would be an explicit opt-in, never a probe of `PATH` (threat-model C1).
 
 **Writing RAR4 needs an old binary.** RAR 7 dropped `-ma4`, so `scripts/gen_rar_fixtures.py`
-downloads a checksum-pinned RAR 6.24 into the user cache purely to build the RAR4 fixtures.
+downloads Ubuntu's rar 6.23 package from archive.ubuntu.com (SHA-256 pinned from Ubuntu's
+signed package index; rarlab.com is not reachable from every build environment), unpacks
+only the binary into the user cache and uses it purely to build the RAR4 fixtures.
+`--only GLOB` writes just the matching fixtures, so new ones can be added without
+rewriting the rest.
 Any RAR4 archive in the wild today was written by something older than a current WinRAR.
 
 **RAR3 header/file encryption KDF is not stock SHA-1.** WinRAR mutates its SHA-1 block
@@ -1358,8 +1382,9 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     dictionaries top out at 4 MiB (the 3-bit field over a 64 KiB base), and `rar -ma4`
     is gone from rar 7.00.
   - **A stored member of a solid archive.** `rar -s` sets the member's own solid flag
-    on it (`file_solid`), and the reader slices a stored member directly only when that
-    flag is clear, so the member goes to the program. Measured 2026-09-30 with a
+    on it (`file_solid`). The reader slices a stored member itself whatever that flag
+    says (since 2026-10-07), so such a member goes to the program only inside a solid
+    pass, where the count below applies. Measured 2026-09-30 with a
     300 MB member declaring 1 GiB (patched) ahead of a stored 64 KiB member: `unrar p`
     of the stored member peaked at 314 MiB, the same as reading the 300 MB member
     (309 MiB), so `unrar` decodes the prefix and the stored member counts the window

@@ -293,6 +293,8 @@ class _PasswordCandidates:
         *,
         on_failure: Callable[[bytes, Exception], EncryptionError | None] | None = None,
         promote: Callable[[_T], bool] | None = None,
+        settled: Callable[[_T], bool] | None = None,
+        settle: Callable[[bytes, _T], _T] | None = None,
     ) -> _T:
         """Try passwords in order; consult the provider after static candidates fail.
 
@@ -306,35 +308,76 @@ class _PasswordCandidates:
         otherwise for its result. A confirmation probe uses this to accept a candidate
         that survived without a deciding signal while keeping it out of known-good,
         where it would be tried first for every later unit.
+
+        Without ``settled``, the first candidate ``decrypt`` accepts wins. With it, a
+        result ``settled`` approves (a confirmed password) wins at once, and one it
+        does not (a candidate that only survived a bounded probe) is set aside while
+        the rest of the static candidates are probed:
+
+        - **No survivor:** the provider is consulted, as without ``settled``.
+        - **One survivor:** it wins. Every other candidate was rejected.
+        - **Several:** ``settle(password, result)`` runs the full check on each in
+          order. The first settled result wins; one that raises ``EncryptionError``
+          is rejected. When none settles, the first that was not rejected wins, and
+          when all were rejected the provider is consulted.
+
+        The provider's answers are not gathered this way: it is asked one password at
+        a time and may stop at any answer, so its first accepted answer wins.
         """
         last_error: EncryptionError | None = None
         tried: set[bytes] = set()
 
-        def try_password(password: bytes) -> _T | None:
+        def note_failure(password: bytes, exc: EncryptionError) -> None:
             nonlocal last_error
-            tried.add(password)
-            try:
-                result = decrypt(password)
-            except EncryptionError as exc:
-                last_error = exc
-                if on_failure is not None:
-                    mapped = on_failure(password, exc)
-                    if mapped is not None:
-                        last_error = mapped
-                return None
+            last_error = exc
+            if on_failure is not None:
+                mapped = on_failure(password, exc)
+                if mapped is not None:
+                    last_error = mapped
+
+        def accept(password: bytes, result: _T) -> _T:
             if promote is None or promote(result):
                 self.record_success(password)
             return result
 
+        def try_password(password: bytes) -> _T | None:
+            tried.add(password)
+            try:
+                return decrypt(password)
+            except EncryptionError as exc:
+                note_failure(password, exc)
+                return None
+
+        survivors: list[tuple[bytes, _T]] = []
         for password in self.iter_candidates():
             result = try_password(password)
-            if result is not None:
-                return result
+            if result is None:
+                continue
+            if settled is None or settled(result):
+                return accept(password, result)
+            survivors.append((password, result))
+
+        if len(survivors) == 1 or (survivors and settle is None):
+            return accept(*survivors[0])
+        fallback: tuple[bytes, _T] | None = None
+        for password, result in survivors:
+            assert settle is not None
+            try:
+                full = settle(password, result)
+            except EncryptionError as exc:
+                note_failure(password, exc)
+                continue
+            if settled is not None and settled(full):
+                return accept(password, full)
+            if fallback is None:
+                fallback = (password, full)
+        if fallback is not None:
+            return accept(*fallback)
 
         for password in self.iter_provider_answers(member, tried):
             result = try_password(password)
             if result is not None:
-                return result
+                return accept(password, result)
 
         message = (
             (

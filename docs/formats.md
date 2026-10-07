@@ -35,8 +35,8 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 No pip extra can supply either — listing and metadata work without them, reading bytes
 does not. When no usable RARLAB program is found, archivey uses `unar` 1.10 or later,
 with the limits listed under [RAR](#rar), including a password passed on its command
-line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it. `7z` is never
-used. How to get the binary:
+line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it, or
+`rar_decompressor="none"` to run neither program. `7z` is never used. How to get the binary:
 [Install and extras](install.md#getting-rarlab-unrar-or-rar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
@@ -92,6 +92,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - Unsupported compression methods: listing succeeds; reading raises
   ``UnsupportedFeatureError``.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
+  extraction skips it. The mode is read only when "version made by" says Unix.
 - **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise falls back
@@ -194,6 +196,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   runs about 15 times slower than on real code.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
+- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix lists as
+  `MemberType.OTHER`, so extraction skips it. The mode is trusted for this only when the
+  attribute's `0x8000` Unix-extension bit is set.
 - **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
   hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
   in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. The CLI shows
@@ -235,6 +240,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   exception is a compressed RAR 1.5 / 2.x comment, which the selected program
   (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
   `comment` is `None`.
+- An entry from a Unix host whose mode is a device, FIFO or socket lists as
+  `MemberType.OTHER`, so extraction skips it. `rar` itself skips such files when
+  archiving.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
   archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
@@ -244,7 +252,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   The default, `"auto"`, uses `unrar` when a usable one is on `PATH` and `unar`
   otherwise; the choice is made once, when the archive is opened, and a read `unar`
   refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
-  so at open. `"unrar"` and `"unar"` use only that program.
+  so at open. `"unrar"` and `"unar"` use only that program. `"none"` runs no program
+  at all, for when you don't want `unrar` or `unar` run on your archives: listing still
+  works, and so does reading a stored (uncompressed) member that is not encrypted,
+  also when it is split across volumes or sits in a solid archive. A compressed or
+  encrypted member, or a split one with a volume missing, raises
+  `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so at open.
   `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
   easy to install on macOS, but it reads less than `unrar`. Archivey runs each `unar`
   once on a small RAR5 archive and does not use one that decodes it wrong, as the
@@ -324,8 +337,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   version is outside 13-29, lists normally and raises `UnsupportedFeatureError` when
   read, where `unrar` says "Unknown method". A stored member reads whatever it declares.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
-  list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
-  is given the first candidate, so put the right password first for those.
+  list is tried in order and the matching password is used. RAR3/4 records none, so with
+  more than one password archivey judges each by decoding the member: up to 64 KiB of
+  `unrar` output, which a wrong password usually fails, and, when several passwords get
+  that far, the whole member against its CRC. A stored member is checked by decrypting it
+  in archivey and comparing its CRC. The order of the list does not matter, but every
+  wrong password before the right one costs a decode, so put the likely one first.
 - **Partial reads of RAR3/4 encrypted data** emit `ENCRYPTED_MEMBER_UNVERIFIED`. With no
   password check, only the member's CRC at EOF catches a wrong password, and `unrar`
   can return the wrong key's bytes before that: a stored member always, a compressed
@@ -406,7 +423,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR
   opened from a `BytesIO` or a file object is copied whole to a temp file (a volume set,
   to a temp directory) on the first member read that needs `unrar`, and removed on close.
-  Stored members of a non-solid archive are read in place and need no copy. The copy is
+  Stored, unencrypted members are read in place and need no copy. The copy is
   bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
   over it, the read raises `ResourceLimitError` before anything is written. Open from a
   path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).

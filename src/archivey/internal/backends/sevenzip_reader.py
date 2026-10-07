@@ -101,6 +101,7 @@ from archivey.internal.password_confirm import (
     REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
+    attempt_with_confirm,
     plan_password_confirm,
     run_password_confirm_plan,
 )
@@ -117,6 +118,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
@@ -134,7 +136,7 @@ from archivey.types import (
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-_S_IFMT = 0o170000
+_FILE_ATTRIBUTE_UNIX_EXTENSION = 0x8000
 
 
 def _written_on_unix(attrs: int | None) -> bool:
@@ -148,7 +150,7 @@ def _written_on_unix(attrs: int | None) -> bool:
     high word non-zero. A Windows word never has ``S_IFMT`` bits there, while every
     Unix ``st_mode`` does, so the file type is the test.
     """
-    return attrs is not None and bool((attrs >> 16) & _S_IFMT)
+    return attrs is not None and bool((attrs >> 16) & UNIX_FILE_TYPE_MASK)
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -839,6 +841,18 @@ class SevenZipReader(BaseArchiveReader):
                     return MemberType.SYMLINK
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
+                if attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION and is_special_file_mode(
+                    unix_mode
+                ):
+                    # A device, FIFO or socket (7-Zip and p7zip store them with no
+                    # data). Unlike the symlink and directory tests above, this one
+                    # also needs 0x8000. A Windows attribute above 0xFFFF can land on
+                    # a low file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as
+                    # S_IFCHR, while no defined attribute reaches S_IFDIR (0x4000) or
+                    # S_IFLNK (0xA000). Misreading a Windows file as a device would
+                    # make it unextractable, so a high word without the flag stays
+                    # FILE here.
+                    return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
                 # filesystem, not that the tag named a link — the tag is in the member's
@@ -919,36 +933,32 @@ class SevenZipReader(BaseArchiveReader):
             return self._folder_passwords[folder_index]
 
         plan = self._folder_password_confirm_plan(folder_index)
+        # The plan that walks to the folder's end anchor whatever the codec: it settles
+        # a candidate the bounded plan could only call inconclusive, when several
+        # candidates survive the bounded one.
+        full_plan = self._folder_password_confirm_plan(folder_index, full=True)
 
-        # The two callbacks below run once per candidate password, inside
-        # ``_PasswordCandidates.attempt``: the first judges the candidate against the
-        # folder (raising the wrong-password error to move on), the second decides
-        # whether the accepted candidate joins the known-good passwords that later
-        # folders try first.
-        def confirm_candidate_password(
-            candidate: bytes,
-        ) -> tuple[bytes, PasswordConfirmVerdict]:
+        # The callbacks below run once per candidate password, inside
+        # ``attempt_with_confirm``: each judges the candidate against the folder,
+        # raising the wrong-password error to move on.
+        def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
             return kdf_password, self._confirm_folder_password(
                 folder_index, kdf_password, plan
             )
 
-        def promote_candidate_password(
-            accepted: tuple[bytes, PasswordConfirmVerdict],
-        ) -> bool:
-            # A candidate password that survived without a checksum match is accepted
-            # for this folder but kept out of known-good when another candidate could
-            # still be the right one (archive-reading, "Confirm candidates when a weak
-            # check permits retries").
-            _, verdict = accepted
-            return (
-                verdict is PasswordConfirmVerdict.CONFIRMED
-                or not self._passwords.is_ambiguous()
+        def full_check(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+            kdf_password = _password_to_kdf_bytes(candidate)
+            return kdf_password, self._confirm_folder_password(
+                folder_index, kdf_password, full_plan
             )
 
         try:
-            password, verdict = self._passwords.attempt(
-                member, confirm_candidate_password, promote=promote_candidate_password
+            password, verdict = attempt_with_confirm(
+                self._passwords,
+                member,
+                probe,
+                None if full_plan == plan else full_check,
             )
         except _PasswordCandidatesExhausted as exc:
             raise EncryptionError(raw_message_of(exc)) from exc
@@ -957,14 +967,17 @@ class SevenZipReader(BaseArchiveReader):
         self._folder_passwords[folder_index] = password
         return password
 
-    def _folder_password_confirm_plan(self, folder_index: int) -> PasswordConfirmPlan:
+    def _folder_password_confirm_plan(
+        self, folder_index: int, *, full: bool = False
+    ) -> PasswordConfirmPlan:
         """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
 
         7z AES has no password check value, so rung 1 is empty here and the ladder
         starts at the integrity anchor: member CRCs in substream order, then the folder
         digest. The earliest anchor covering at least 4 bytes wins; one past
         ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
-        random input.
+        random input, or when ``full`` asks for the walk (several candidates survived
+        the bounded plan, and only the anchor can tell them apart).
         """
         folder = self._archive.folders[folder_index]
         substreams: list[tuple[int, int | None]] = []
@@ -997,7 +1010,7 @@ class SevenZipReader(BaseArchiveReader):
             substreams,
             tail_crc,
             budget=PASSWORD_CONFIRM_PREFIX_BYTES,
-            codec_rejects=_folder_codec_rejects(folder),
+            codec_rejects=not full and _folder_codec_rejects(folder),
         )
 
     def _confirm_folder_password(
