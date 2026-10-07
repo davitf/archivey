@@ -82,17 +82,19 @@ what your archives look like, lower the limits to fit them. They're set in `Arch
 [`scripts/measure_limit_costs.py`](https://github.com/davitf/archivey/blob/main/scripts/measure_limit_costs.py)
 in the repository measures what each limit costs in time and memory on your machine.
 
-| Setting | Default | What it caps |
-|---|---|---|
-| `extraction_limits.max_extracted_bytes` | 2 GiB | Bytes one extraction writes |
-| `extraction_limits.max_entries` | 1,048,576 | Members one extraction writes |
-| `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands, checked once it has written 5 MiB |
-| `listing_limits.max_members` | 1,048,576 | Members an archive can list |
-| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets |
-| `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for |
-| `decoder_limits.max_key_derivation_rounds` | 2^27 | Password-hashing work per open archive |
-| `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process |
-| `spool_limits.max_bytes` | 1 GiB | Temporary disk space, used when archivey needs a copy of the source, such as a pipe |
+| Setting | Default | What it caps | Rough cost |
+|---|---|---|---|
+| `extraction_limits.max_extracted_bytes` | 2 GiB | Bytes one extraction writes | Disk space, plus 5-10 ms per MiB written |
+| `extraction_limits.max_entries` | 1,048,576 | Members one extraction writes | About 0.6 ms per file written |
+| `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands, checked once it has written 5 MiB | None of its own |
+| `listing_limits.max_members` | 1,048,576 | Members an archive can list | About 50 µs and 1.5 KiB of memory per member |
+| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets | About 1.7 MiB of memory per MiB counted |
+| `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for | The memory itself |
+| `decoder_limits.max_key_derivation_rounds` | 2^27 | Password-hashing work per open archive | 0.2-0.7 µs per round, 30-100 s at the default |
+| `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process | None of its own |
+| `spool_limits.max_bytes` | 1 GiB | Temporary disk space, used when archivey needs a copy of the source, such as a pipe | The disk space itself |
+
+The costs were measured on one 2.8 GHz core.
 
 Going over a limit raises `ResourceLimitError`.
 
