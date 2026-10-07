@@ -29,3 +29,9 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 
 The [reference](api.md#archivey.ArchiveyError) lists the rest, such as `ReadError`, the parent of
 the first two.
+
+If reading fails and the format was only a guess, the exception has `format_unconfirmed=True`. That
+happens when nothing in the file confirmed its format, so archivey went by the file name, or when
+the format has no reliable signature and only a check of the contents suggested it, as for zlib or
+Brotli data. The file may not be in that format at all, such as a file of zeros named `backup.gz`,
+rather than a damaged one.
