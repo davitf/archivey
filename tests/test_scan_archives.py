@@ -12,8 +12,11 @@ import csv
 import importlib.util
 import json
 import logging
+import lzma
 import os
+import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -114,6 +117,33 @@ def test_detection_diagnostics_survive_a_failed_open(tmp_path: Path) -> None:
     assert out["open"] == "CorruptionError"
     assert out["detected"] == "magic/certain"
     assert "diag:format_extension_conflict" in str(out["flags"]).split()
+
+
+def test_detection_probes_do_not_count_as_decoder_memory(tmp_path: Path) -> None:
+    # Detection opens the LZMA Alone codec on every file it cannot place by magic, and
+    # the codec checks bytes 1-4 as a dictionary size. A git loose object (bare zlib)
+    # read that way declared 3.4 GB, and a scan of a home directory flagged every
+    # git object ``over:max_decoder_memory``. The probes patch library internals for
+    # the life of the process, so the script runs in its own interpreter.
+    tree = tmp_path / "in"
+    tree.mkdir()
+    (tree / "object").write_bytes(zlib.compress(b"blob 12\x00hello world\n" * 50))
+    (tree / "real.lzma").write_bytes(
+        lzma.compress(b"a" * 100_000, format=lzma.FORMAT_ALONE)
+    )
+    out = tmp_path / "scan.csv"
+    subprocess.run(
+        [sys.executable, str(SCRIPT), str(tree), "-o", str(out)],
+        check=True,
+        capture_output=True,
+    )
+    with out.open(encoding="utf-8", newline="") as fh:
+        rows = {Path(row["path"]).name: row for row in csv.DictReader(fh)}
+    assert rows["object"]["format"] == "raw_stream.zz"
+    assert rows["object"]["decoder_memory"] == ""
+    assert "max_decoder_memory" not in rows["object"]["flags"]
+    # A real Alone stream's dictionary is still measured: the default preset's 8 MiB.
+    assert rows["real.lzma"]["decoder_memory"] == str(8 * 1024 * 1024)
 
 
 def _quiet_main(monkeypatch: pytest.MonkeyPatch) -> None:
