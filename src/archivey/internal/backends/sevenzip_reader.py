@@ -564,9 +564,9 @@ class SevenZipReader(BaseArchiveReader):
 
         def _cleanup() -> None:
             self._pass_link = None
-            # A finished pass has applied what it captured; an abandoned one never will,
-            # and a later read of those links opens them directly.
-            self._link_data.clear()
+            # Captured link bytes are kept even when the pass is abandoned: the archive's
+            # bytes are fixed, each entry is bounded by the target cap, and a later
+            # listing or pass resolves from them instead of decoding the folder again.
             folder.close()
 
         yield from self._drive_pass_streams(

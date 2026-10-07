@@ -1503,7 +1503,10 @@ class BaseArchiveReader(ArchiveReader):
         walk first; a pass that reaches the end then finalizes its links and publishes
         the listing as the streaming pass does, so a 7z or RAR4 symlink whose target is
         its data has that target after the pass in both modes. A pass abandoned early
-        never gets here and resolves nothing.
+        never gets here and resolves nothing. Publishing here, outside the
+        materialization election that ``_ensure_walked`` handed back, is safe because
+        the pass holds the root token: no ``members()`` call can overlap it, under
+        ``CONCURRENT`` as well.
         """
         if self._streaming:
             yield from self._begin_forward_pass()
