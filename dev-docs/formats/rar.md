@@ -479,13 +479,20 @@ cost of each derivation is the archive's `kdf_count`, and an archive that salts 
 member defeats the cache; `DecoderLimits.max_key_derivation_rounds` bounds the total
 (threat-model O18). The tweaked-digest HashKey comes from the
 same winner. A pass (`stream_members`, one `unrar p` for the whole archive) and a plain
-member of a solid archive use the first RAR5 member's winner. **RAR3/4 data has no check value**, so there is nothing to test a
-candidate against short of decoding: `unrar` gets the first candidate, and a list whose
-right password is not first still fails there. A RAR5 member whose record has no check
-value, or whose check fails its own SHA-256 checksum, is handled the same way in a
-non-solid archive. In a solid one it takes the solid rule above: the winner of the first
-member whose check can judge a candidate, and the first candidate only when no member
-has one.
+member of a solid archive use the first RAR5 member's winner. **RAR3/4 data has no check value**, so a candidate list is judged by
+decoding, under the shared rule in `password_confirm.attempt_with_confirm`: each candidate
+runs a bounded probe (`unrar p` of the member, read to at most 64 KiB, then stopped), a
+candidate the probe confirms (a member that fits the prefix, CRC matched) wins at once,
+and when several survive, each in order is decoded to the member's CRC. A stored member's
+probe is native instead: AES-128-CBC with the RAR3 key, CRC over the plaintext, no
+`unrar` (`_rar3_stored_check`). In a non-solid archive each encrypted member is judged on
+its own data; a solid archive, and the pass over a whole archive, judge once on the first
+encrypted member (solid) or the smallest (non-solid). One distinct password still goes to
+`unrar` unjudged, and so does an `-hp` archive's header password. A RAR5 member whose
+record has no check value, or whose check fails its own SHA-256 checksum, is handled the
+same way in a non-solid archive. In a solid one it takes the solid rule above: the winner
+of the first member whose check can judge a candidate, and the decode rule only when no
+member has one.
 
 **A partial read of a member no check vouched for emits `ENCRYPTED_MEMBER_UNVERIFIED`**
 (`check="no_password_check"`). RAR3/4 data has no check to accept a password on at all:
@@ -979,7 +986,11 @@ be under-inclusive. What is not on the table under any of that is a silent fallb
 second engine would be an explicit opt-in, never a probe of `PATH` (threat-model C1).
 
 **Writing RAR4 needs an old binary.** RAR 7 dropped `-ma4`, so `scripts/gen_rar_fixtures.py`
-downloads a checksum-pinned RAR 6.24 into the user cache purely to build the RAR4 fixtures.
+downloads Ubuntu's rar 6.23 package from archive.ubuntu.com (SHA-256 pinned from Ubuntu's
+signed package index; rarlab.com is not reachable from every build environment), unpacks
+only the binary into the user cache and uses it purely to build the RAR4 fixtures.
+`--only GLOB` writes just the matching fixtures, so new ones can be added without
+rewriting the rest.
 Any RAR4 archive in the wild today was written by something older than a current WinRAR.
 
 **RAR3 header/file encryption KDF is not stock SHA-1.** WinRAR mutates its SHA-1 block

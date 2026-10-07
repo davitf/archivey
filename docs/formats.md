@@ -324,8 +324,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   only when a member's own header says its data continues there. With encrypted headers
   this needs the password proven, as above; before that it is `EncryptionError`.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
-  list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
-  is given the first candidate, so put the right password first for those.
+  list is tried in order and the matching password is used. RAR3/4 records none, so with
+  more than one password archivey judges each by decoding the member: up to 64 KiB of
+  `unrar` output, which a wrong password usually fails, and, when several passwords get
+  that far, the whole member against its CRC. A stored member is checked by decrypting it
+  in archivey and comparing its CRC. The order of the list does not matter, but every
+  wrong password before the right one costs a decode, so put the likely one first.
 - **Partial reads of RAR3/4 encrypted data** emit `ENCRYPTED_MEMBER_UNVERIFIED`. With no
   password check, only the member's CRC at EOF catches a wrong password, and `unrar`
   can return the wrong key's bytes before that: a stored member always, a compressed
