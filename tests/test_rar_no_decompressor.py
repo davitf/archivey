@@ -14,6 +14,7 @@ import pytest
 
 from archivey import ArchiveyConfig, RarDecompressor, open_archive
 from archivey.exceptions import UnsupportedFeatureError
+from tests.conftest import requires
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
@@ -91,6 +92,7 @@ def test_solid_stream_members_refuses_each_member() -> None:
                     stream.read()
 
 
+@requires("cryptography")
 def test_header_encrypted_archive_lists() -> None:
     with open_archive(
         _RAR / "encrypted_header__.rar", config=_NONE, password="header_password"
