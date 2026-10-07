@@ -19,6 +19,7 @@ import pytest
 
 import archivey
 from archivey import FormatDetectionError
+from tests.conftest import requires
 
 # --- LZMA Alone: zero runs decode as an endless stream of zero literals. -------------
 #
@@ -91,6 +92,7 @@ def test_zero_run_after_an_alone_header_decodes_without_error() -> None:
 # --- Brotli: the residual false positive (open-issues P12), on OLE files. ----------
 
 
+@requires("brotli")
 @pytest.mark.xfail(
     strict=True,
     reason=(
