@@ -550,10 +550,11 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides, in the name and in a
     symlink's target — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
-    trailing dots/spaces (O3) and both levels normalize non-representable bytes (O7). A lone surrogate outside U+DC80-U+DCFF is
-    escaped too, as its UTF-8 bytes (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is
-    the same on every OS; ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not
-    rejecting) a legitimate-but-awkward name keeps extraction working; refusal is reserved for
+    trailing dots/spaces (O3) and both levels normalize non-representable bytes (O7). A
+    lone surrogate outside U+DC80-U+DCFF is escaped too, as its UTF-8 bytes
+    (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is the same on every OS;
+    ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not rejecting) a
+    legitimate-but-awkward name keeps extraction working; refusal is reserved for
     structures that cannot be safely written. Raises :class:`FilterRejectionError` (so the
     coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a
     rewritten ``.replace()`` copy.

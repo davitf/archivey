@@ -84,25 +84,26 @@ walk.
 A RAR5 name, and a RAR 1.5-4 name whose UTF-16 field decodes, SHALL be listed as that
 text. A RAR5 name or redirect target that is not valid UTF-8 SHALL decode with
 `surrogateescape`, so two names that differ only in such bytes stay two members and
-extraction escapes the bytes by the portable-name rule, as for a TAR name. A RAR 1.5-4 name stored only as 8-bit bytes records no code page. The system
-SHALL decode it with the caller's `encoding=` when one was passed. Without one it SHALL
-try strict UTF-8 first, then cp437 (the OEM code page WinRAR writes) for a member whose
-host is MS-DOS, OS/2 or Win32, and windows-1252 for any other host, with
-`surrogateescape` for the bytes windows-1252 leaves undefined. A RAR 1.5-4 name
-with the Unicode flag and no UTF-16 field declares UTF-8, so `encoding=` SHALL apply to
-it only when its bytes are not valid UTF-8. The system MUST NOT decode an 8-bit name as
-UTF-16LE. `raw_name` SHALL be the stored bytes in every case, and RAR SHALL NOT emit
-`ENCODING_ARGUMENT_UNUSED`. How a name with no UTF-16 field is decoded SHALL NOT change
-which member a read returns: its `unrar` mask is built from the stored name, not from the
-decoded text. A RAR 1.5-4 UTF-16 field SHALL decode with `surrogatepass`: a surrogate
-without its partner stays in `name` as that code unit, and a valid pair decodes as one
-character. Extraction writes such a name by `safe-extraction` "Lone surrogates in a
-member name". `unrar` matches the field unit by unit (a valid pair is two units). On
-POSIX, where the mask goes out as UTF-8 bytes that cannot carry a surrogate unit, a read
-through `unrar` SHALL send each unit as `?` in the mask, and SHALL refuse with
-`UnsupportedFeatureError` naming `unar` when a unit is in a directory component. On
-Windows the mask SHALL carry a valid pair's units as they are, and a lone unit SHALL be
-refused naming `unar`, as it is in a RAR5 name.
+extraction escapes the bytes by the portable-name rule, as for a TAR name. A RAR 1.5-4
+name stored only as 8-bit bytes records no code page. The system SHALL decode it with
+the caller's `encoding=` when one was passed. Without one it SHALL try strict UTF-8
+first, then cp437 (the OEM code page WinRAR writes) for a member whose host is MS-DOS,
+OS/2 or Win32, and windows-1252 for any other host, with `surrogateescape` for the bytes
+windows-1252 leaves undefined. A RAR 1.5-4 name with the Unicode flag and no UTF-16
+field declares UTF-8, so `encoding=` SHALL apply to it only when its bytes are not valid
+UTF-8. The system MUST NOT decode an 8-bit name as UTF-16LE. `raw_name` SHALL be the
+stored bytes in every case, and RAR SHALL NOT emit `ENCODING_ARGUMENT_UNUSED`. How a
+name with no UTF-16 field is decoded SHALL NOT change which member a read returns: its
+`unrar` mask is built from the stored name, not from the decoded text. A RAR 1.5-4
+UTF-16 field SHALL decode with `surrogatepass`: a surrogate without its partner stays in
+`name` as that code unit, and a valid pair decodes as one character. Extraction writes
+such a name by `safe-extraction` "Lone surrogates in a member name". `unrar` matches the
+field unit by unit (a valid pair is two units). On POSIX, where the mask goes out as
+UTF-8 bytes that cannot carry a surrogate unit, a read through `unrar` SHALL send each
+unit as `?` in the mask, and SHALL refuse with `UnsupportedFeatureError` naming `unar`
+when a unit is in a directory component. On Windows the mask SHALL carry a valid pair's
+units as they are, and a lone unit SHALL be refused naming `unar`, as it is in a RAR5
+name.
 
 #### Scenario: RAR name decoding matrix
 
