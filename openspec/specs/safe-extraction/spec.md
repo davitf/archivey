@@ -153,7 +153,8 @@ prefix dropped, `UNC\` to `//`), so `\??\C:\Windows` is checked as `C:/Windows`.
 constraint in this requirement meets one of two criteria: the **write itself** is
 dangerous or impossible — it escapes the destination, carries a NUL the OS truncates on,
 or names a device — or the **outcome would differ by OS**, as for a link target with a
-Windows root. A bidi override meets neither: the member lands inside `dest` under exactly its stored bytes, and
+Windows root. A bidi override meets neither:
+the member lands inside `dest` under exactly its stored bytes, and
 what is compromised is the name a person **reads back afterwards**. That is a
 presentation property, and presentation is the axis `ExtractionPolicy` owns.
 

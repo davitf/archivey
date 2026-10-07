@@ -110,7 +110,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   everywhere means an archive extracts the same way wherever you extract it. (Under
   `STANDARD` and `TRUSTED` a hardlink's rooted target is re-rooted first.) One
   exception: a symlink target that starts with a single `\` (`\foo`) extracts on POSIX,
-  where a backslash is an ordinary filename character; Windows refuses it. A Windows symlink or junction from a
+  where a backslash is an ordinary filename character;
+  Windows refuses it. A Windows symlink or junction from a
   ZIP, 7z or RAR archive lists with `/` separators and without the `\??\` prefix
   (`\??\C:\Windows` lists as `C:/Windows`, `..\up\x` as `../up/x`). Under `STRICT`
   and `STANDARD`, a `:` or a Windows-reserved device name in a target segment
