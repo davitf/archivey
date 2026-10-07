@@ -102,9 +102,10 @@ class RarDecompressor(Enum):
       a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
     - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
       run on its archives. Opening and listing work as with the others, and so does
-      reading a stored member that is not encrypted, not split across volumes and not
-      part of a solid stream (the first member of a solid archive is not). Every other read raises ``UnsupportedFeatureError`` before
-      anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
+      reading a stored (uncompressed) member that is not encrypted, also when it is
+      split across volumes or sits in a solid archive. Every other read raises
+      ``UnsupportedFeatureError`` before anything runs, and a compressed RAR 1.5/2.x
+      comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises

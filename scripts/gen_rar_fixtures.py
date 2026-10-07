@@ -771,6 +771,36 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         print(f"wrote {part1.relative_to(REPO_ROOT)}")
         print(f"wrote {part2.relative_to(REPO_ROOT)}")
 
+    # Compressed multi-volume: the reader joins a stored member's parts itself, so
+    # tests that need unrar to read across volumes (and the volumes to be copied for
+    # it) use this one. SHA-256 blocks keep the 1600 bytes from compressing below
+    # one volume.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "payload.bin").write_bytes(
+            b"".join(hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(50))
+        )
+        out = out_dir / "tinyvol_m3.rar"
+        _rar_a(
+            rar5_bin,
+            out,
+            ["payload.bin"],
+            cwd=root,
+            extra=("-m3", "-v900b"),
+        )
+        part1 = out_dir / "tinyvol_m3.part1.rar"
+        part2 = out_dir / "tinyvol_m3.part2.rar"
+        if (
+            not part1.is_file()
+            or not part2.is_file()
+            or (out_dir / "tinyvol_m3.part3.rar").exists()
+        ):
+            raise RuntimeError("expected tinyvol_m3 to span exactly two volumes")
+        if out.is_file():
+            out.unlink()
+        print(f"wrote {part1.relative_to(REPO_ROOT)}")
+        print(f"wrote {part2.relative_to(REPO_ROOT)}")
+
     # Header-encrypted volumes: every part carries its own encryption record with
     # the same salt, so a listing must derive the header key once, not per part.
     with tempfile.TemporaryDirectory() as td:

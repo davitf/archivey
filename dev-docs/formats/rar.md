@@ -691,8 +691,8 @@ its header:
 
 | Route | When | Cost |
 | --- | --- | --- |
-| **Direct slice** — no subprocess | Stored (`-m0`), unencrypted, non-solid, not split, not spanning volumes | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
-| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since the direct-slice test includes the member's own solid flag rather than the archive's | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5). With `seekable_members=True`, a backward `seek()` closes that process; the next `read()` respawns it and skips to the offset. The rewind diagnostic's cost includes the solid prefix, not just the bytes already read from this member |
+| **Direct slice** — no subprocess | Stored (`-m0`, or `-ms<ext>` inside a solid archive), unencrypted; a member split across volumes has its parts joined | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
+| **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since `rar -s` compresses them | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5). With `seekable_members=True`, a backward `seek()` closes that process; the next `read()` respawns it and skips to the offset. The rewind diagnostic's cost includes the solid prefix, not just the bytes already read from this member |
 | **One unnamed `unrar p` pipe** | A streaming pass over a solid archive | One process for the whole pass. Measured on `basic_solid__.rar`: one streaming pass = 1 spawn; opening each of its 4 members = 4 |
 
 The pipe is spawned on the **first read into the pass**, not at pass start, so listing a
@@ -1323,8 +1323,9 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     dictionaries top out at 4 MiB (the 3-bit field over a 64 KiB base), and `rar -ma4`
     is gone from rar 7.00.
   - **A stored member of a solid archive.** `rar -s` sets the member's own solid flag
-    on it (`file_solid`), and the reader slices a stored member directly only when that
-    flag is clear, so the member goes to the program. Measured 2026-09-30 with a
+    on it (`file_solid`). The reader slices a stored member itself whatever that flag
+    says (since 2026-10-07), so such a member goes to the program only inside a solid
+    pass, where the count below applies. Measured 2026-09-30 with a
     300 MB member declaring 1 GiB (patched) ahead of a stored 64 KiB member: `unrar p`
     of the stored member peaked at 314 MiB, the same as reading the 300 MB member
     (309 MiB), so `unrar` decodes the prefix and the stored member counts the window

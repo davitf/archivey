@@ -335,6 +335,11 @@ class RarMemberInfo:
     split_after: bool
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
+    # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
+    # concatenated volume space, for a member merged across volumes; empty for a
+    # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
+    # offset and the total.
+    data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from
     # the dictionary bits). A stored member declares one too, and no decoder uses
@@ -593,6 +598,9 @@ def parse_rar_volumes(
         for member in part.members:
             member.header_offset += base_offset
             member.data_offset += base_offset
+            member.data_parts = [
+                (offset + base_offset, size) for offset, size in member.data_parts
+            ]
         if part.truncated is not None and len(volumes) > 1:
             # The walk's byte offsets are within this volume, not the concatenated
             # space the member offsets above use, so the message names the volume.
@@ -1264,6 +1272,9 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
             "Mismatched RAR split continuation: "
             f"{quoted(new.filename)} does not continue {quoted(old.filename)}"
         )
+    if not old.data_parts:
+        old.data_parts.append((old.data_offset, old.compress_size))
+    old.data_parts.append((new.data_offset, new.compress_size))
     old.compress_size += new.compress_size
     if new.crc32 is not None:
         old.crc32 = new.crc32

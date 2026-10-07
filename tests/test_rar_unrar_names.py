@@ -26,6 +26,7 @@ import pytest
 from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import ArchiveyError, UnsupportedFeatureError
 from archivey.internal.backends import rar_unrar
+from archivey.internal.backends.rar_reader import RarReader
 from archivey.internal.backends.rar_unrar import (
     _member_include_switch,
     _unrar_env,
@@ -250,13 +251,16 @@ def test_rar3_8bit_mask_selection_is_the_one_unrar_makes(tmp_path: Path) -> None
 
 
 @requires_binary("unrar")
-def test_every_rar5_member_reads_its_own_bytes_or_is_refused(tmp_path: Path) -> None:
+def test_every_rar5_member_reads_its_own_bytes_or_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Whatever unrar selects alongside a member, the bytes returned are its own.
 
     No member has a CRC, so no digest check can catch a wrong member. The members
-    are stored, and marking them solid is what sends each read through a named
-    ``unrar p`` rather than a slice of the archive.
+    are stored, which the reader would slice itself, so slicing is turned off to send
+    each read through a named ``unrar p``.
     """
+    monkeypatch.setattr(RarReader, "_is_directly_sliceable", lambda self, info: False)
     blocks = _rar5_parse(_build_rar5(tmp_path, _RAR5_NAMES).read_bytes())
     main = next(block for block in blocks if block["type"] == 1)
     main["body"] = bytes([main["body"][0] | 0x04]) + main["body"][1:]

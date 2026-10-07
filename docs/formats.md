@@ -254,10 +254,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
   so at open. `"unrar"` and `"unar"` use only that program. `"none"` runs no program
   at all, for when you don't want `unrar` or `unar` run on your archives: listing still
-  works, and so does reading a stored member that is not encrypted, not split across
-  volumes and not part of a solid stream (the first member of a solid archive is
-  not). Every other read raises `UnsupportedFeatureError`
-  before anything runs, and `ar.cost.notes` says so at open.
+  works, and so does reading a stored (uncompressed) member that is not encrypted,
+  also when it is split across volumes or sits in a solid archive. Every other read
+  raises `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so
+  at open.
   `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
   easy to install on macOS, but it reads less than `unrar`. Archivey runs each `unar`
   once on a small RAR5 archive and does not use one that decodes it wrong, as the

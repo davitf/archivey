@@ -50,27 +50,40 @@ def test_stored_nonsolid_members_read(as_stream: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "member_name", "why"),
+    ("name", "why"),
     [
-        ("basic_solid__.rar", None, "it is compressed"),
-        ("encryption__.rar", None, "it is encrypted"),
-        ("encryption_stored__.rar", None, "it is encrypted"),
-        ("tinyvol.part1.rar", None, "it is split across volumes"),
-        # Stored, but rar set the member's own solid flag (``-s -msbin``).
-        ("stored_solid_member__.rar", "second.bin", "it is part of a solid stream"),
+        ("basic_solid__.rar", "it is compressed"),
+        ("encryption__.rar", "it is encrypted"),
+        ("encryption_stored__.rar", "it is encrypted"),
     ],
 )
-def test_other_members_refused_before_any_process(
-    name: str, member_name: str | None, why: str
-) -> None:
+def test_other_members_refused_before_any_process(name: str, why: str) -> None:
     with open_archive(_RAR / name, config=_NONE, password="password") as ar:
         assert any("rar_decompressor is 'none'" in note for note in ar.cost.notes)
-        member = next(
-            m for m in ar.members() if m.is_file and member_name in (None, m.name)
-        )
+        member = next(m for m in ar.members() if m.is_file)
         with pytest.raises(UnsupportedFeatureError, match=why) as info:
             ar.read(member)
         assert "Set it to 'unrar'" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "member_name"),
+    [
+        # Stored and split across volumes: the parts are joined.
+        ("tinyvol.part1.rar", "payload.bin"),
+        ("tinyvol_rnn.rar", "payload.bin"),
+        # Stored, but rar set the member's own solid flag (``-s -msbin``).
+        ("stored_solid_member__.rar", "second.bin"),
+    ],
+)
+def test_stored_split_and_solid_flagged_members_read(
+    name: str, member_name: str
+) -> None:
+    with open_archive(_RAR / name, config=_NONE) as ar:
+        member = ar.get(member_name)
+        assert member is not None
+        # The read is checked against the member's stored checksum.
+        assert len(ar.read(member)) == member.size
 
 
 def test_refusal_comes_before_a_stream_source_is_copied() -> None:

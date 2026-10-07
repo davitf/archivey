@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import errno
+import hashlib
 import io
 import os
 import shutil
@@ -1174,6 +1175,18 @@ def test_multi_volume_rnn_roundtrip() -> None:
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
+# ``tinyvol_m3``: the same split, compressed, so unrar still reads it across volumes
+# (a stored member's parts are joined natively).
+_M3_PAYLOAD = b"".join(hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(50))
+
+
+@requires_binary("unrar")
+def test_multi_volume_compressed_roundtrip() -> None:
+    with open_archive(_fixture("tinyvol_m3.part1.rar")) as archive:
+        assert archive.info.extra.get("rar.volume_count") == 2
+        assert archive.read("payload.bin") == _M3_PAYLOAD
+
+
 def _single_stream_copy_note_present(notes: tuple[str, ...]) -> bool:
     return any("will copy the whole archive to disk" in note for note in notes)
 
@@ -1218,14 +1231,14 @@ def test_stream_compressed_read_keeps_open_time_cost_note() -> None:
 
 @requires_binary("unrar")
 def test_multi_volume_stream_materialization() -> None:
-    paths = [_fixture("tinyvol.part1.rar"), _FIXTURES / "tinyvol.part2.rar"]
+    paths = [_fixture("tinyvol_m3.part1.rar"), _FIXTURES / "tinyvol_m3.part2.rar"]
     streams = [p.open("rb") for p in paths]
     try:
         with open_archive(streams) as archive:
             assert archive.info.is_multivolume is True
             held = archive.cost
             assert _stream_volumes_copy_note_present(held.notes)
-            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.read("payload.bin") == _M3_PAYLOAD
             assert archive.cost == held
     finally:
         for stream in streams:
@@ -1310,19 +1323,19 @@ def test_stream_volume_read_materializes_once(
     """The copy happens on the first read unrar serves, and only once."""
     created = _rar_volume_temp_dirs(monkeypatch)
     streams = [
-        io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
-        io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+        io.BytesIO(_fixture("tinyvol_m3.part1.rar").read_bytes()),
+        io.BytesIO((_FIXTURES / "tinyvol_m3.part2.rar").read_bytes()),
     ]
     with open_archive(streams) as archive:
         assert created == []
-        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert archive.read("payload.bin") == _M3_PAYLOAD
         assert len(created) == 1
         # unrar resolves siblings by name, so the whole set is written, not one volume.
         assert sorted(p.name for p in created[0].iterdir()) == [
             "archive.part1.rar",
             "archive.part2.rar",
         ]
-        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert archive.read("payload.bin") == _M3_PAYLOAD
         assert len(created) == 1
         temp_dir = created[0]
     assert not temp_dir.exists()
@@ -1338,8 +1351,8 @@ def test_stream_volume_read_materializes_once(
         ),
         pytest.param(
             lambda: [
-                io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
-                io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+                io.BytesIO(_fixture("tinyvol_m3.part1.rar").read_bytes()),
+                io.BytesIO((_FIXTURES / "tinyvol_m3.part2.rar").read_bytes()),
             ],
             id="stream-volumes",
         ),

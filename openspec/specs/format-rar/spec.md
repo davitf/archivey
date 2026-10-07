@@ -246,7 +246,8 @@ copies the `UNP_VER` byte as stored, unvalidated. RAR5 members report `50`
 ### Requirement: Use RARLAB unrar only for member data that needs it
 
 The system SHALL read stored, uncompressed, unencrypted members directly as raw
-bytes through the shared pass-through backend. All other member data SHALL be
+bytes through the shared pass-through backend, whatever the member's own solid flag
+says, and a member split across volumes by joining its parts in order. All other member data SHALL be
 read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
 `PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
 (`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that
@@ -263,6 +264,8 @@ usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member data with 
 | Case | Expected |
 | --- | --- |
 | Stored member, `unrar`/`rar` missing | Raw bytes are returned without invoking either |
+| Stored member split across volumes, `unrar`/`rar` missing | Its parts are joined and returned, checked against the member's checksum |
+| Stored member carrying its own solid flag (`rar -s -ms<ext>`), `unrar`/`rar` missing | Raw bytes are returned without invoking either |
 | Compressed member, both missing, and no `unar` (or `rar_decompressor="unrar"`) | `PackageNotInstalledError` names `unrar` or `rar` |
 | PATH `unrar` is not RARLAB `unrar`, and no usable `rar` | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
@@ -737,7 +740,8 @@ end-of-stream verdict. Its cost is one extra pass over an already-damaged member
 at all on an undamaged one.
 
 **Both paragraphs above are scoped to the member archivey reads by slicing the source** —
-stored, not solid, not split across volumes. Every other cut-short member is decoded by
+stored, including one split across volumes or carrying its own solid flag. Every
+other cut-short member is decoded by
 `unrar`, which is handed the whole member and cannot be asked to check a digest first;
 there any surviving digest is verified as it is for an undamaged member, at end of stream,
 and a member with none is read with nothing checking it. That is unchanged behaviour and
@@ -1206,10 +1210,10 @@ When `ArchiveyConfig.rar_decompressor` is `none`, the system MUST NOT start `unr
 `rar` or `unar` for that reader: not to identify them at open, not to decode a
 comment, and not to read member data. Opening and listing SHALL work as with any
 other setting, including header-encrypted archives given the right password. A
-stored member that is not encrypted, not part of a solid stream and not split across
-volumes SHALL be read directly, as it is under every setting. Every other member read
+stored member that is not encrypted SHALL be read directly, as it is under every
+setting. Every other member read
 SHALL raise `UnsupportedFeatureError` before any process starts or any source is
-copied, naming why the member needs a program (compressed, encrypted, solid or split)
+copied, naming why the member needs a program (compressed or encrypted)
 and the `unrar` setting that reads it. A compressed RAR 1.5/2.x old-style comment
 SHALL be `None`. When the archive has a file member that this setting refuses,
 `ar.cost.notes` SHALL say so at open.
@@ -1221,7 +1225,8 @@ SHALL be `None`. When the archive has a file member that this setting refuses,
 | Non-solid archive, stored plaintext members, path or stream source | Every member reads; no process starts; `ar.cost.notes` is empty |
 | Compressed member | `UnsupportedFeatureError` naming "compressed"; no process starts |
 | Encrypted member, stored or compressed | `UnsupportedFeatureError` naming "encrypted" |
-| Stored member split across volumes | `UnsupportedFeatureError` naming "split across volumes" |
+| Stored member split across volumes | Its parts are joined and read; no process starts |
+| Stored member with its own solid flag | Read directly; no process starts |
 | Solid archive, `stream_members()` | Each member's read is refused on its own; no solid pass starts |
 | Header-encrypted archive, right password | Lists; no process starts |
 | Compressed RAR 1.5 archive comment | `None` |

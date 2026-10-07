@@ -214,8 +214,7 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
 
 _NO_DECOMPRESSOR_NOTE = (
     "ArchiveyConfig.rar_decompressor is 'none', so no external program reads RAR "
-    "member data. Reading a compressed, encrypted or solid member, or a stored one "
-    "split across volumes, will be refused."
+    "member data. Reading a compressed or encrypted member will be refused."
 )
 
 
@@ -285,6 +284,23 @@ def _data_is_in_one_place(info: RarMemberInfo) -> bool:
     volume's part into the next header.
     """
     return not (info.split_before or info.split_after or info.spanned_volumes)
+
+
+class _JoinedParts(ConcatenatedFile):
+    """The parts of a split stored member read as one stream; closes its views."""
+
+    def __init__(self, views: list[BinaryIO]) -> None:
+        self._views = views
+        super().__init__(views)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            super().close()
+        finally:
+            for view in self._views:
+                view.close()
 
 
 def _link_file(src: Path, dest: Path) -> None:
@@ -480,8 +496,8 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
     solid flag, as ``unrar`` does: with it set and the member's own solid flag
     clear, the read still took 314 MiB; with it clear and the member's flag set,
     ``unrar`` decoded nothing ahead (47 MiB, the parent's own). ``rar -s`` writes
-    both flags on every member after the first, and the reader slices a stored
-    member only when its own flag is clear, so such a member does reach ``unrar``.
+    both flags on every member after the first. The reader slices a stored member
+    itself whatever its flags, so a stored member reaches ``unrar`` only in a pass.
     A RAR3 symlink does count: its target is compressed data. That is why this walk
     does not use ``is_payload_file()`` as :meth:`RarReader._solid_prefix` does.
     """
@@ -2785,10 +2801,11 @@ class RarReader(BaseArchiveReader):
         ``unrar`` from one whose bytes are sitting right there and are held back
         only because the header never settled whether they are ciphertext.
         """
-        return (
-            info.compress_type == _RAR_METHOD_STORED
-            and not info.file_solid
-            and _data_is_in_one_place(info)
+        # The member's own solid flag does not matter here: a stored member's bytes
+        # are plaintext where they sit, even inside a solid stream (``rar -s -ms``),
+        # and its parts, when split across volumes, are joined in order.
+        return info.compress_type == _RAR_METHOD_STORED and (
+            _data_is_in_one_place(info) or bool(info.data_parts)
         )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
@@ -2904,7 +2921,20 @@ class RarReader(BaseArchiveReader):
         # after it): there a member declaring more than it packs ends short, and the
         # size check reports it as truncated.
         size = min(info.file_size, info.compress_size) if length is None else length
-        return self._shared.view(info.data_offset, size)
+        if not info.data_parts:
+            return self._shared.view(info.data_offset, size)
+        # A member split across volumes: its parts, in order, then cut to ``size``.
+        views: list[BinaryIO] = []
+        remaining = size
+        for offset, part_size in info.data_parts:
+            if remaining <= 0:
+                break
+            take = min(part_size, remaining)
+            views.append(self._shared.view(offset, take))
+            remaining -= take
+        if not views:
+            return self._shared.view(info.data_offset, 0)
+        return _JoinedParts(views)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
@@ -3489,14 +3519,10 @@ class RarReader(BaseArchiveReader):
             why = "it is encrypted"
         elif raw.compress_type != _RAR_METHOD_STORED:
             why = "it is compressed"
-        elif raw.file_solid:
-            # Stored bytes with the member's own solid flag (``rar -s -ms``) are
-            # plaintext in place, and ``_ensure_link_target`` reads a RAR4 symlink
-            # target from such bytes. Member reads keep the stricter rule every
-            # setting shares; widening it is a separate change (dev-docs/IDEAS.md).
-            why = "it is part of a solid stream"
         else:
-            why = "it is split across volumes"
+            # A stored member whose parts were not all found: a split member missing
+            # its other volumes. Its parts are joined natively when they are present.
+            why = "it is split across volumes and not every part was found"
         return UnsupportedFeatureError(
             f"Cannot read RAR member {quoted(member.name)}: {why}, and only an external "
             "program (unrar or unar) can read it. ArchiveyConfig.rar_decompressor is "
