@@ -520,7 +520,7 @@ def _zip_timestamps(
         except ValueError:
             issues.append(
                 TimestampIssue(
-                    field="modified",
+                    field="mtime",
                     source="dos",
                     value_repr=repr(info.date_time),
                     message=(
@@ -637,12 +637,13 @@ def _zip_created(
 def _zip_timestamp_field(create_system: CreateSystem, slot: str) -> str:
     """The ``ArchiveMember`` field a stored time slot would have filled.
 
-    The creation slot is ``created`` or ``ctime`` by host, as in :func:`_zip_created`,
-    so the report names the field the caller sees as ``None``.
+    The creation slot is ``created`` or ``ctime`` by host, as in :func:`_zip_created`.
+    That field may still hold a value from a lower-precedence layer, such as the DOS
+    stamp under a bad NTFS modification time.
     """
     if slot == "ctime":
         return "created" if create_system in _ZIP_BIRTH_TIME_HOSTS else "ctime"
-    return {"mtime": "modified", "atime": "accessed"}.get(slot, slot)
+    return {"mtime": "modified", "atime": "accessed"}[slot]
 
 
 def _reparse_fallback_type(
