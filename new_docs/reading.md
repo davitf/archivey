@@ -21,6 +21,8 @@ decompresses it once.
 ## Reading once
 
 ```python
+import sys
+
 with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
     for member, stream in archive.stream_members():
         ...

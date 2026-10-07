@@ -6,16 +6,16 @@ error-prone ways of reading, and archivey's defaults steer around them whenever 
 
 ## Install
 
-Install the `archivey` package from PyPI with your usual tool (e.g.
-`uv add "archivey[recommended]"` or `pip install "archivey[recommended]"`). Without
-`recommended`, archivey has no dependencies and reads ZIP, TAR, 7z with its common compression
-methods, and the single compressed files the standard library handles, such as gzip, bzip2 and
-xz. The extra adds ISO, lz4, Brotli, zstd on Python 3.13 and older, the rarer compression methods in 7z and ZIP, and
-AES decryption, which most encrypted 7z and ZIP archives need.
+Install the `archivey` package from PyPI with your usual tool (e.g. `uv add "archivey[recommended]"`
+or `pip install "archivey[recommended]"`). Without `recommended`, archivey has no dependencies and
+reads ZIP, TAR, 7z with its common compression methods, and the single compressed files the standard
+library handles, such as gzip, bzip2 and xz. The extra adds ISO, lz4, Brotli, zstd on Python 3.13
+and older, the rarer compression methods in 7z and ZIP, and AES decryption, which most encrypted 7z
+and ZIP archives need.
 
-RAR archives can be listed with nothing else installed. To read the files inside, you also
-need RARLAB's `unrar` 6.0 or later, or `unar` 1.10 or later, which handles fewer RAR archives.
-[Install](install.md) has the details.
+RAR archives can be listed with nothing else installed. To read the files inside, you also need
+RARLAB's `unrar` 6.0 or later (or RARLAB's `rar`), or `unar` 1.10 or later, which handles fewer RAR
+archives. [Install](install.md) has the details.
 
 ## Open and list
 
@@ -51,8 +51,8 @@ with archive.open("holiday/video.mp4") as stream, open("video.mp4", "wb") as out
 ```
 
 On some archives, reading a member means first decompressing the members stored before it, so
-reading them out of order gets slow. [Solid archives](reading.md#solid-archives) explains when this happens. The
-next section shows how to avoid it by reading them all in one pass.
+reading them out of order gets slow. [Solid archives](reading.md#solid-archives) explains when this
+happens. The next section shows how to avoid it by reading them all in one pass.
 
 ## Read everything in one pass
 

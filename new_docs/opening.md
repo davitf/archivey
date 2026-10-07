@@ -15,7 +15,7 @@ response, needs `streaming=True` and works only for some formats, which
 
 ## Format
 
-Archivey identifies the format from the file's first bytes, so a ZIP named `backup.bin` still
+Archivey identifies the format from the file's contents, so a ZIP named `backup.bin` still
 opens as a ZIP. It falls back to the file name only when the contents don't settle it. To skip
 detection, pass `format=`, such as `format="zip"` or `format=archivey.ArchiveFormat.TAR_GZ`. If
 the file isn't in the specified format, it fails like a damaged one.
@@ -36,7 +36,7 @@ and archivey finds the right one from your list for each.
 
 You can also pass a function, such as one that asks the user. Archivey calls it only when a
 password is needed and none tried so far works. It passes a `PasswordRequest` with the member being
-opened and a count of the attempts. When the password is needed to read an encrypted members list,
+opened and the attempt number. When the password is needed to read an encrypted members list,
 which 7z and RAR support, `PasswordRequest.member` is `None`. Return a password to try, or `None` to
 give up, which raises `EncryptionError`.
 
