@@ -234,62 +234,96 @@ def _rar_part_number(name: str) -> int:
     return int(match.group("part")) if match is not None else 0
 
 
-def _part_width(pattern: re.Pattern[str], name: str) -> int:
-    """How many digits, leading zeros included, carry the part number in ``name``."""
+def _part_digits(pattern: re.Pattern[str], name: str) -> tuple[int, int] | None:
+    """Where the digits of the part number in ``name`` start and end, zeros included."""
     match = pattern.match(name)
     if match is None:
-        return 0
+        return None
     marker = name[match.end("base") : match.end("part")]
-    return len(marker) - len(marker.rstrip("0123456789"))
+    width = len(marker) - len(marker.rstrip("0123456789"))
+    return match.end("part") - width, match.end("part")
+
+
+def _part_width(pattern: re.Pattern[str], name: str) -> int:
+    """How many digits, leading zeros included, carry the part number in ``name``."""
+    digits = _part_digits(pattern, name)
+    return 0 if digits is None else digits[1] - digits[0]
+
+
+def _predicted_volume_name(scheme: int, named: str, part: int) -> str:
+    """The name unrar or 7-Zip looks for as ``part``, starting from ``named``.
+
+    Both tools keep the spelling and zero padding of the name they were given and
+    replace only the number, which widens once it outgrows the padding (from
+    ``q.part1.rar``, part 10 is ``q.part10.rar``). unrar also reads an ``.exe`` /
+    ``.sfx`` first volume as ``.rar`` (:func:`next_rar_volume_name`).
+    """
+    digits = _part_digits(_VOLUME_SCHEMES[scheme], named)
+    if digits is None:
+        return named
+    start, end = digits
+    tail = named[end:]
+    if scheme == _RAR_PART_SCHEME and tail.lower() != ".rar":
+        tail = ".rar"
+    return f"{named[:start]}{str(part).zfill(end - start)}{tail}"
 
 
 def _pick_volume(
-    candidates: list[Path],
-    part: int,
-    pattern: re.Pattern[str],
-    named_lower: str,
-    width: int,
+    candidates: list[Path], part: int, scheme: int, named: str, base: str
 ) -> Path:
     """One file for a part number that several names in the directory carry.
 
     ``q.part2.rar`` and ``q.part02.rar`` are both part 2, as are ``x.7z.002`` and
-    ``x.7z.0002``. unrar and 7-Zip do not choose between them: each predicts the next
-    name from the current one by adding one to the number and keeping its zero padding,
-    starting from the name opened (unrar first goes back to volume 1, keeping the
-    padding too). So the order of preference is: the name the caller opened, then a
-    name padded to ``width`` (the opened name's), then a ``.rar`` over an SFX
-    ``.exe`` / ``.sfx`` (the RAR scheme's later volumes are always ``.rar``), then the
-    lowest name. The last step makes the pick deterministic, where taking the first
-    match in ``iterdir`` order read a stray of another width into the set.
-    """
-    predicted = len(str(part).zfill(width))
+    ``x.7z.0002``, and on a case-sensitive filesystem so is ``Q.PART2.RAR``. unrar and
+    7-Zip do not choose between them: each predicts the next name from the current one
+    by adding one to the number and keeping the spelling and zero padding, starting
+    from the name opened (unrar first goes back to volume 1 the same way). The padding
+    widens when the number outgrows it, so from ``q.part1.rar`` part 10 is
+    ``q.part10.rar``, not a stray ``q.part010.rar``. So the order of preference is:
 
-    def rank(candidate: Path) -> tuple[bool, bool, bool, str]:
+    1. the name the caller opened, as spelled, then in another case;
+    2. a name padded like the predicted one (:func:`_predicted_volume_name`);
+    3. the predicted name as spelled;
+    4. a name spelling ``base`` as the opened name does, the rule old-scheme
+       discovery applies to case variants (:func:`_old_rar_listed_file`);
+    5. (RAR) a ``.rar`` over an SFX ``.exe`` / ``.sfx``, because unrar's predicted
+       names carry ``.rar`` whichever way it walks, part 1 included;
+    6. the lowest name.
+
+    The last step makes the pick deterministic, where taking the first match in
+    ``iterdir`` order read a stray of another width into the set.
+    """
+    pattern = _VOLUME_SCHEMES[scheme]
+    predicted = _predicted_volume_name(scheme, named, part)
+    predicted_width = _part_width(pattern, predicted)
+    named_lower = named.lower()
+
+    def rank(candidate: Path) -> tuple[bool, bool, bool, bool, bool, bool, str]:
         name = candidate.name
         return (
+            name != named,
             name.lower() != named_lower,
-            _part_width(pattern, name) != predicted,
-            pattern is _RAR_PART_RE and not name.lower().endswith(".rar"),
+            _part_width(pattern, name) != predicted_width,
+            name != predicted,
+            not name.startswith(base),
+            scheme == _RAR_PART_SCHEME and not name.lower().endswith(".rar"),
             name,
         )
 
     return min(candidates, key=rank)
 
 
-def _pick_volumes(
-    parent: Path, pattern: re.Pattern[str], base: str, name: str
-) -> list[Path] | None:
+def _pick_volumes(parent: Path, scheme: int, base: str, name: str) -> list[Path] | None:
     """The sibling volumes of ``name``, one per part number, ordered by part."""
-    part_of = _rar_part_number if pattern is _RAR_PART_RE else _numbered_part_number
+    pattern = _VOLUME_SCHEMES[scheme]
+    part_of = _rar_part_number if scheme == _RAR_PART_SCHEME else _numbered_part_number
     grouped: dict[int, list[Path]] = {}
     for candidate in _siblings_with_base(parent, pattern, base):
         grouped.setdefault(part_of(candidate.name), []).append(candidate)
     if len(grouped) <= 1:
         return None
-    width = _part_width(pattern, name)
-    lower = name.lower()
     return [
-        _pick_volume(grouped[part], part, pattern, lower, width)
+        _pick_volume(grouped[part], part, scheme, name, base)
         for part in sorted(grouped)
     ]
 
@@ -475,7 +509,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     parent = path.parent
 
     if scheme in (_NUMBERED_SCHEME, _RAR_PART_SCHEME):
-        return _pick_volumes(parent, _VOLUME_SCHEMES[scheme], base, name)
+        return _pick_volumes(parent, scheme, base, name)
 
     # A continuation belongs to the set when the walk from volume 1 reaches it, or
     # when it is a RAR volume past a gap or with volume 1 missing; ``siblings[0]`` is

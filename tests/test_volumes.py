@@ -259,6 +259,9 @@ def _force_listing_order(monkeypatch: pytest.MonkeyPatch, *, reverse: bool) -> N
     )
 
 
+_RAR_PARTS_1_TO_10 = [f"q.part{part}.rar" for part in range(1, 11)]
+
+
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize(
     ("names", "opened", "expected"),
@@ -308,6 +311,20 @@ def _force_listing_order(monkeypatch: pytest.MonkeyPatch, *, reverse: bool) -> N
             "x.7z.001",
             ["x.7z.001", "x.7z.0002", "x.7z.0003"],
         ),
+        # The padding widens once the number outgrows it: from q.part1.rar, unrar's
+        # tenth name is q.part10.rar, so a stray q.part010.rar is not read.
+        (
+            [*_RAR_PARTS_1_TO_10, "q.part010.rar"],
+            "q.part1.rar",
+            _RAR_PARTS_1_TO_10,
+        ),
+        # From q.part10.rar the padding is two digits, so going back to volume 1
+        # unrar predicts q.part01.rar, and that is the pick for part 1.
+        (
+            [*_RAR_PARTS_1_TO_10, "q.part01.rar"],
+            "q.part10.rar",
+            ["q.part01.rar", *_RAR_PARTS_1_TO_10[1:]],
+        ),
     ],
 )
 def test_discover_prefers_the_opened_names_padding_over_a_stray(
@@ -324,6 +341,95 @@ def test_discover_prefers_the_opened_names_padding_over_a_stray(
     siblings = discover_volume_siblings(tmp_path / opened)
     assert siblings is not None
     assert [p.name for p in siblings] == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    ("names", "opened", "expected"),
+    [
+        (
+            ["q.part1.rar", "q.part2.rar", "Q.PART2.RAR"],
+            "q.part2.rar",
+            ["q.part1.rar", "q.part2.rar"],
+        ),
+        (
+            ["q.part1.rar", "q.part2.rar", "Q.PART2.RAR"],
+            "Q.PART2.RAR",
+            ["q.part1.rar", "Q.PART2.RAR"],
+        ),
+        # Not opened: the name unrar predicts from q.part1.rar, as spelled.
+        (
+            ["q.part1.rar", "q.part2.rar", "q.PART2.RAR"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part2.rar"],
+        ),
+        (
+            ["x.7z.001", "x.7z.002", "X.7Z.002"],
+            "x.7z.002",
+            ["x.7z.001", "x.7z.002"],
+        ),
+        (
+            ["x.7z.001", "X.7Z.001", "x.7z.002"],
+            "x.7z.002",
+            ["x.7z.001", "x.7z.002"],
+        ),
+    ],
+)
+def test_discover_prefers_the_opened_names_spelling_over_a_case_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    names: list[str],
+    opened: str,
+    expected: list[str],
+    reverse: bool,
+) -> None:
+    """A sibling that differs only in case is never picked over the name opened.
+
+    Upper case sorts first, so a plain lowest-name tiebreak used to pick it, and the
+    opened file dropped out of its own set.
+    """
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    if len(list(tmp_path.iterdir())) < len(names):
+        pytest.skip("case-insensitive filesystem: the case variants are one file")
+    _force_listing_order(monkeypatch, reverse=reverse)
+    siblings = discover_volume_siblings(tmp_path / opened)
+    assert siblings is not None
+    assert [p.name for p in siblings] == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rar_mixed_width_set_opens_and_reads_from_either_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+) -> None:
+    """A set renamed to ``m.part1.rar`` + ``m.part02.rar`` is still one set.
+
+    unrar alone stops at "Cannot find volume m.part2.rar"; the native path joins it,
+    and the unrar path gets the volumes staged under names it walks.
+    """
+    shutil.copy(_RAR_FIXTURES / "tinyvol.part1.rar", tmp_path / "m.part1.rar")
+    shutil.copy(_RAR_FIXTURES / "tinyvol.part2.rar", tmp_path / "m.part02.rar")
+    _force_listing_order(monkeypatch, reverse=reverse)
+    for anchor in ("m.part1.rar", "m.part02.rar"):
+        with open_archive(tmp_path / anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+def test_join_volumes_refuses_one_part_named_in_two_paddings(tmp_path: Path) -> None:
+    """Discovery picks one of ``x.zip.002`` / ``x.zip.0002``; an explicit list may not."""
+    paths = []
+    for name in ("x.zip.001", "x.zip.002", "x.zip.0002", "x.zip.003"):
+        path = tmp_path / name
+        path.write_bytes(b"")
+        paths.append(path)
+    with pytest.raises(
+        TruncatedError,
+        match=r"Repeated volume in multi-volume set for x\.zip: "
+        r"part 2 given more than once",
+    ):
+        join_volumes(paths)
 
 
 @pytest.mark.parametrize("reverse", [False, True])

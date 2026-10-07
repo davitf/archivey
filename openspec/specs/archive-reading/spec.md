@@ -197,9 +197,12 @@ logical `ArchiveReader`:
   SFX first volume `name.exe` / `name.sfx` + `name.r00`): discover
   siblings in natural order. When two files carry the same part number in different
   zero padding (`q.part2.rar` and `q.part02.rar`, `x.7z.002` and `x.7z.0002`),
-  discovery SHALL take one of them, as unrar and 7-Zip do by keeping the padding
-  of the name opened: the name opened, then the one padded like it, then (RAR) a
-  `.rar` over an `.exe` / `.sfx`, then the lowest name — never directory listing order
+  or in different case on a case-sensitive filesystem (`Q.PART2.RAR`),
+  discovery SHALL take one of them, as unrar and 7-Zip do by keeping the spelling
+  and padding of the name opened (widened once the number outgrows the padding):
+  the name opened, then the one padded like that predicted name, then the predicted
+  name as spelled, then one spelling the base as opened, then (RAR) a `.rar` over an
+  `.exe` / `.sfx`, then the lowest name — never directory listing order
 - **Stub-only SFX** (`name.exe` / `name.sfx` with no archive magic) beside
   exactly one of `name.exe.001`, `name.7z.001`, `name.zip.001`: open that
   first volume's set, including when `format=` is set. Two of those names
