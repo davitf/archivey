@@ -96,13 +96,16 @@ def check_read_size(n: int | None) -> int:
 
 
 def check_seek_args(offset: int, whence: int) -> tuple[int, int]:
-    """Validate seek arguments as ``io.BytesIO`` does, without resolving a target.
+    """Validate seek arguments with ``io.BytesIO``'s type and value rules, without
+    resolving a target.
 
     A non-integer ``offset`` or ``whence`` raises ``TypeError`` (via
     ``operator.index``, the message ``io.BytesIO`` gives); an unknown ``whence`` or a
-    negative ``SEEK_SET`` offset raises ``ValueError``. Returns both as exact ``int``.
-    For a layer that passes the caller's ``whence`` on rather than computing the
-    target itself; :func:`resolve_seek` runs the same check first.
+    negative ``SEEK_SET`` offset raises ``ValueError``. Unlike ``io.BytesIO``, an offset
+    outside ``Py_ssize_t`` is not refused: a past-the-end target is already this
+    layer's documented answer, so ``seek(2**70)`` returns it. Returns both as exact
+    ``int``. For a layer that passes the caller's ``whence`` on rather than computing
+    the target itself; :func:`resolve_seek` runs the same check first.
     """
     offset = operator.index(offset)
     whence = operator.index(whence)
