@@ -431,8 +431,9 @@ first volume `name.part1.sfx` / `name.part1.exe` beside later `.partN.rar` parts
 `name.rar` (or an old-scheme SFX `name.exe` / `name.sfx`) + `name.r00`, `name.r01`, …
 (older RAR4) are all discovered from any member of the set — the old scheme by walking
 names from volume 1 under unrar's rule (one added to the letter's character code, so
-`.r99` → `.s00` and `.z99` → `.{00`) until a name is missing, so a later volume past a
-gap is a lone file. Every old-scheme name, volume 1's included, is matched
+`.r99` → `.s00` and `.z99` → `.{00`) until a name is missing, then the rest of the
+listing's old-scheme names by number (`rar_volume_number`), taken only when the file starts
+with a RAR signature, since the shape also matches Info-ZIP's `backup.z01`. Every old-scheme name, volume 1's included, is matched
 case-insensitively from one directory listing, except that an SFX stub is an entry
 point only when `<stem>.r00` or `<stem>.R00` exists with the stub's own base spelling
 (a fast reject that avoids a listing on every `.exe` open). Headers are then read across the volumes
@@ -446,14 +447,33 @@ inside the present volumes read normally; the one that runs into the missing vol
 still `split_after` after the merge and raises `TruncatedError` on read, before any
 decompressor runs; `extract_all` writes the members before it and then raises. That is
 `unrar t`: every complete member OK, then "Cannot find volume" for the last one (ruled by
-davitf, 2026-10-06; this used to refuse at open). A lone later volume is still
-`UnsupportedFeatureError` ("Need first volume") rather than a partial listing. It is
-recognised by RAR5 MAIN's volume number, by the RAR 3.0+ end block's volume number
-(`EARC_VOLNUMBER`, flag `0x0008`), or by a first member that continues an earlier volume.
-A RAR 1.5 / 2.x later volume whose first member starts on its boundary records none of
-these and lists as volume 1, as `unrar` lists it. (RAR 3.0+ also sets MAIN flag `0x0100`
-on volume 1, measured on the RAR 6.24 `tinyvol_rnn` fixtures; its absence does not mark
-a later volume, since RAR 1.5 / 2.x predate it.) An
+davitf, 2026-10-06; this used to refuse at open).
+
+**A gap is a missing volume too** (ruled by davitf, 2026-10-06: "list everything in all
+available parts, then raise at the end"; and for a missing volume 1, "we should support
+it"). Discovery returns every volume present, and when their names number them with a
+gap the reader passes those numbers to `parse_rar_volumes`, which checks each RAR5
+volume against its own number, merges nothing across a gap, and records the missing
+numbers in `truncated`. The member that ran into the gap keeps `split_after`; the
+continuation that opens the volume after it is listed on its own with `split_before`,
+as `lsar` lists it, and `unrar` warns "You need to start extraction from a previous
+volume" for it. Either flag left on after the merge refuses the read with
+`TruncatedError` (`_missing_data_error`), and in a solid archive so does every member
+past the gap: `unrar` gives checksum errors for them. A member past a gap is read by
+pointing `unrar` at the first volume after the gap (`_unrar_path_for`), the way `unrar`
+reads such a set opened there; for that a gapped set is always staged, under names that
+keep each volume's number, and so is `unar`'s private directory. Opened from any volume,
+the listing is the same. Archive data only volume 1 carries — the comment, an SFX stub —
+is absent with it. A lone later volume opened by path is a set missing the rest,
+numbered by its name; opened as a stream it has no name, and stays
+`UnsupportedFeatureError` ("Need first volume"). A later volume is recognised by RAR5
+MAIN's volume number, by the RAR 3.0+ end block's volume number (`EARC_VOLNUMBER`, flag
+`0x0008`), or by a first member that continues an earlier volume; the path case catches
+that refusal and parses the volume again under its name's number. A RAR 1.5 / 2.x later
+volume whose first member starts on its boundary records none of these, so as a stream it
+lists as volume 1, as `unrar` lists it. (RAR 3.0+ also sets MAIN flag `0x0100` on volume
+1, measured on the RAR 6.24 `tinyvol_rnn` fixtures; its absence does not mark a later
+volume, since RAR 1.5 / 2.x predate it.) Explicit sequences are still read as `1..N`. An
 explicit sequence of volume *paths* is used as given, with no discovery: headers are read
 from those files in that order. For a discovered set and an explicit one alike, `unrar` is
 pointed at the first file in place only when its own next-volume rule, run from it, finds
@@ -1536,7 +1556,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Extraction copies a file copy from its written source and keeps nothing for it (random access and streaming, both programs); a replaced source file falls back to decoding; a dry run keeps sources; `stream_members(file_copy_streams=False)` yields `None` for copies, solid or not, and keeps nothing | `tests/test_rar_file_copy_solid_pass.py::test_extract_copies_each_copy_from_the_written_source`, `::test_extract_falls_back_when_the_written_source_was_replaced`, `::test_dry_run_still_serves_copies_from_one_decode`, `::test_stream_members_without_copy_streams_yields_none_for_copies`, `::test_stream_members_without_copy_streams_on_a_nonsolid_archive` |
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` | `tests/test_rar_reader.py::test_member_reports_exact_compression_and_extract_version`, `::test_rar3_unp_ver_byte_is_reported_unvalidated`, `::test_unknown_method_byte_omits_level`, `::test_stored_m0_direct_read`, `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes` |
-| Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_lists_then_raises`, `tests/test_rar_missing_last_volume.py`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |
+| Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and a set with a volume missing at its start, middle or end | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_lists_then_raises`, `tests/test_rar_missing_last_volume.py`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub`, `tests/test_rar_volume_gaps.py` |
 | Stub-only `vol.exe` follows `vol.exe.001` / `vol.7z.001` / `vol.zip.001`; a real SFX is not redirected | `tests/test_volumes.py::test_stub_only_exe_opens_zip_split_first_volume`, `::test_stub_only_exe_opens_windows_7z_first_volume`, `::test_sevenzip_sfx_numbered_parts_open_from_any_part`, `::test_embedded_sfx_zip_is_not_redirected_to_sibling_volume` |
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
 | RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |

@@ -429,17 +429,36 @@ def test_discover_old_scheme_first_volume_prefers_the_opened_case(
     assert [p.name for p in lower] == ["archive.RAR", "archive.r00"]
 
 
-def test_discover_old_scheme_stops_at_the_first_missing_name(tmp_path: Path) -> None:
-    """Volumes are walked from volume 1 by name, as unrar does: a file past a gap is
-    not in the set, and opening it on its own is a lone later volume. Neither is an
-    unrelated ``archive.a01`` that merely has the shape of a continuation."""
-    for name in ("archive.rar", "archive.r00", "archive.r02", "archive.a01"):
+def test_discover_old_scheme_reaches_past_a_gap_only_for_rar_files(
+    tmp_path: Path,
+) -> None:
+    """Volumes are walked from volume 1 by name, as unrar does. Past the first missing
+    name, a file is in the set only when it starts with a RAR signature (ruled
+    2026-10-06: a set with a gap lists every volume present), because the shape alone
+    also matches files that are not volumes. An unrelated ``archive.a01`` is never one:
+    unrar's walk from ``.rar`` cannot reach the letter ``a``."""
+    for name in ("archive.rar", "archive.r00", "archive.r03", "archive.a01"):
         (tmp_path / name).write_bytes(b"")
+    (tmp_path / "archive.r02").write_bytes(_RAR_MAGIC)
     siblings = discover_volume_siblings(tmp_path / "archive.rar")
     assert siblings is not None
-    assert [p.name for p in siblings] == ["archive.rar", "archive.r00"]
-    assert discover_volume_siblings(tmp_path / "archive.r02") is None
+    expected = ["archive.rar", "archive.r00", "archive.r02"]
+    assert [p.name for p in siblings] == expected
+    from_gap = discover_volume_siblings(tmp_path / "archive.r02")
+    assert from_gap is not None and [p.name for p in from_gap] == expected
+    assert discover_volume_siblings(tmp_path / "archive.r03") is None
     assert discover_volume_siblings(tmp_path / "archive.a01") is None
+
+
+def test_discover_old_scheme_without_volume_1(tmp_path: Path) -> None:
+    """Volume 1 missing: the RAR continuations present are still one set."""
+    for name in ("archive.r00", "archive.r01"):
+        (tmp_path / name).write_bytes(_RAR_MAGIC)
+    (tmp_path / "archive.z01").write_bytes(b"PK\x07\x08")
+    siblings = discover_volume_siblings(tmp_path / "archive.r01")
+    assert siblings is not None
+    assert [p.name for p in siblings] == ["archive.r00", "archive.r01"]
+    assert discover_volume_siblings(tmp_path / "archive.z01") is None
 
 
 def _rar4_block(block_type: int, flags: int, body: bytes) -> bytes:
@@ -525,12 +544,12 @@ def test_old_scheme_set_past_r99_opens_from_any_volume(
 
 
 def test_old_scheme_set_with_a_gap_is_a_truncated_set(tmp_path: Path) -> None:
-    """Discovery stops at the first missing name, and the open then reports the set
-    as truncated: the volume before the gap says another one follows. A gapped set
-    is not joined across the gap."""
+    """A gapped set is one set with a volume missing (ruled 2026-10-06; it used to end
+    at the gap): the listing ends with ``TruncatedError`` naming the missing volume.
+    Nothing is joined across the gap. ``tests/test_rar_volume_gaps.py`` has the rest."""
     paths = _write_old_scheme_rar4_set(tmp_path, "big", _OLD_SCHEME_PAYLOAD, 4)
     paths[2].unlink()
-    with pytest.raises(TruncatedError, match="expects another volume"):
+    with pytest.raises(TruncatedError, match="volume 3 is missing"):
         with open_archive(paths[0]) as archive:
             list(archive.members())
 

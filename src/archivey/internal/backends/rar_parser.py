@@ -592,6 +592,7 @@ def parse_rar_volumes(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     kdf_cache: RarKdfCache | None = None,
     name_encoding: str | None = None,
+    volume_numbers: Sequence[int] | None = None,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 
@@ -607,21 +608,48 @@ def parse_rar_volumes(
     Every volume shares one ``kdf_cache`` (the caller's, or a fresh one): each
     volume of a header-encrypted set carries its own encryption record, normally
     with the same salt, and would otherwise derive the same keys again.
+
+    ``volume_numbers`` gives each volume's 1-based position in its set, when the
+    set has gaps (volume 1 missing, or one in the middle); omitted, the volumes are
+    ``1..N``. Ruled 2026-10-06: everything in the volumes present is listed, and
+    the listing then ends with ``TruncatedError`` naming the missing volumes
+    (``RarArchive.truncated``). Across a gap nothing is merged: the member that ran
+    into it keeps ``split_after``, and a continuation that opens the volume after
+    it is listed on its own with ``split_before`` (unrar warns "You need to start
+    extraction from a previous volume" for it). Either flag left on a merged member
+    means part of its data is missing, which is what the reader refuses on.
     """
     if not volumes:
         raise ValueError("at least one RAR volume is required")
+    if volume_numbers is None:
+        volume_numbers = range(1, len(volumes) + 1)
+    if (
+        len(volume_numbers) != len(volumes)
+        or any(
+            later <= earlier
+            for earlier, later in zip(volume_numbers, volume_numbers[1:])
+        )
+        or volume_numbers[0] < 1
+    ):
+        raise ValueError("volume numbers must be increasing, from 1 up")
     if kdf_cache is None:
         kdf_cache = RarKdfCache()
 
     merged: RarArchive | None = None
     base_offset = 0
     password_proven = False
-    for index, volume in enumerate(volumes):
+    missing: list[int] = list(range(1, volume_numbers[0]))
+    previous = volume_numbers[0] - 1
+    for volume, number in zip(volumes, volume_numbers):
+        gap = number != previous + 1
+        if gap and previous:
+            missing.extend(range(previous + 1, number))
+        previous = number
         part = _parse_rar_volume(
             volume,
             password=password,
             kdf_cache=kdf_cache,
-            volume_index=index,
+            volume_index=number - 1,
             use_qo=use_qo,
             max_members=max_members,
             name_encoding=name_encoding,
@@ -636,7 +664,7 @@ def parse_rar_volumes(
             # The walk's byte offsets are within this volume, not the concatenated
             # space the member offsets above use, so the message names the volume.
             part.truncated += (
-                f" (volume {index + 1} of the set; the offset is within that volume)"
+                f" (volume {number} of the set; the offset is within that volume)"
             )
 
         if merged is None:
@@ -670,8 +698,13 @@ def parse_rar_volumes(
             merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
-            for member in part.members:
-                _emit_file_member(merged.members, member, max_members=max_members)
+            for position, member in enumerate(part.members):
+                if gap and position == 0:
+                    # Its earlier parts are in the missing volume: listed on its
+                    # own, never folded into the member before the gap.
+                    _append_member(merged.members, member, max_members=max_members)
+                else:
+                    _emit_file_member(merged.members, member, max_members=max_members)
 
         # Size of this volume for absolute offset adjustment.
         pos = volume.tell()
@@ -685,26 +718,41 @@ def parse_rar_volumes(
             break
 
     assert merged is not None
-    mark_missing_next_volume(merged, volumes_read=len(volumes))
+    mark_missing_next_volume(merged, volumes_read=previous, missing=missing)
     return merged
 
 
-def mark_missing_next_volume(archive: RarArchive, *, volumes_read: int) -> None:
-    """Record a set whose last volume read says another follows, as a truncation.
+def mark_missing_next_volume(
+    archive: RarArchive, *, volumes_read: int, missing: Sequence[int] = ()
+) -> None:
+    """Record the volumes a set is missing as a truncation.
 
-    The members of the volumes present are kept and the listing ends with
-    ``TruncatedError``, the same channel as a cut single file: ``unrar`` lists
-    and tests the members it has and fails only on the one that runs into the
-    missing volume. That member keeps ``split_after`` set, which is what the
-    reader refuses its data on. A cut the walk already recorded is the earlier
-    fault and keeps its own message.
+    ``volumes_read`` is the number of the last volume read, and ``missing`` the
+    numbers before it that were not there (volume 1, or a gap). The last volume
+    read saying another follows adds the one after it. The members of the volumes
+    present are kept and the listing ends with ``TruncatedError``, the same
+    channel as a cut single file: ``unrar`` lists and tests the members it has and
+    fails only on the ones that run into a missing volume. Those keep
+    ``split_after`` or ``split_before``, which is what the reader refuses their
+    data on. A cut the walk already recorded is the earlier fault and keeps its
+    own message.
     """
-    if not archive.needs_next_volume or archive.truncated is not None:
+    if archive.truncated is not None:
         return
-    archive.truncated = (
-        "Incomplete RAR multi-volume set: end of archive expects another volume "
-        f"(volume {volumes_read + 1} is missing)"
-    )
+    reasons: list[str] = []
+    if missing:
+        listed = ", ".join(str(number) for number in missing[:10])
+        if len(missing) > 10:
+            listed += f" and {len(missing) - 10} more"
+        noun, verb = ("volume", "is") if len(missing) == 1 else ("volumes", "are")
+        reasons.append(f"{noun} {listed} {verb} missing")
+    if archive.needs_next_volume:
+        reasons.append(
+            "end of archive expects another volume "
+            f"(volume {volumes_read + 1} is missing)"
+        )
+    if reasons:
+        archive.truncated = "Incomplete RAR multi-volume set: " + "; ".join(reasons)
 
 
 def _append_damaged_service_header(
