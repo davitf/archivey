@@ -46,3 +46,10 @@ one, keeps the bytes it can't decode as escapes. If you know the encoding, pass 
 to use it instead: a Latin-1 `café.txt` in a TAR lists as `'caf\udce9.txt'` without it and
 `'café.txt'` with `encoding="latin-1"`. `member.name` is the decoded name, and `member.raw_name`
 is the bytes as stored.
+
+## Configuration
+
+Settings you'd keep the same across many archives live in `archivey.ArchiveyConfig`, passed as
+`config=`. These include the [limits](security.md#hardening), which RAR program to use, the
+accelerators, and how [diagnostics](errors-and-diagnostics.md) are reported. Without it, the
+defaults apply. The [reference](api.md#archivey.ArchiveyConfig) lists every setting.
