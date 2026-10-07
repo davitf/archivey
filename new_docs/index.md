@@ -79,7 +79,8 @@ with archivey.open_archive("download.zip") as archive:
 outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
 stops archives that expand to far more data than they hold. [Extracting](extracting.md)
 lists every protection and how to relax them for archives you trust, and also shows how to
-extract only some files.
+extract only some files. [Security](security.md) covers what archivey relies on and where its
+guarantees stop.
 
 ## When something goes wrong
 

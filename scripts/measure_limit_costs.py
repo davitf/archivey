@@ -14,14 +14,19 @@ What it measures:
   slows the code down, so its time is not used). Memory is what the open reader still
   holds once the listing is done.
 - ``listing_limits.max_metadata_bytes``: the same, with long member names, reported per
-  byte of name text.
+  byte the limit charges (a ZIP member's name counts twice, as ``name`` and ``raw_name``).
 - ``decoder_limits.max_key_derivation_rounds``: RAR5's PBKDF2-HMAC-SHA256 and 7z's
   SHA-256 cycles, through archivey's own derivation functions.
-- ``extraction_limits.max_extracted_bytes``: extracting one deflated member to disk.
+- ``extraction_limits.max_extracted_bytes``: extracting one deflated member, a run of
+  zeros, to disk. Incompressible data decodes faster per output byte, so this is the
+  slow end.
 - ``extraction_limits.max_entries``: extracting many empty members to disk.
 
-``decoder_limits.max_decoder_memory`` and ``spool_limits.max_bytes`` are not measured:
-they already count memory and disk bytes directly.
+Not measured: ``decoder_limits.max_decoder_memory`` and ``spool_limits.max_bytes`` already
+count memory and disk bytes directly; ``extraction_limits.max_ratio`` (and its
+``ratio_activation_threshold``) is a proportion with no cost of its own; and
+``decoder_limits.max_ppmd_in_process_input`` decides where a PPMd member is decoded, not
+how much work it is.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from pathlib import Path
 import archivey
 from archivey.internal.backends.rar_parser import _rar5_pbkdf2
 from archivey.internal.backends.sevenzip_aes import derive_sevenzip_aes_key
+from archivey.internal.listing_limits import member_metadata_bytes
 
 MiB = 2**20
 
@@ -76,6 +82,12 @@ def list_time(path: Path) -> tuple[float, int]:
     with archivey.open_archive(path) as archive:
         n = len(archive.members())
     return time.perf_counter() - start, n
+
+
+def charged_metadata_bytes(path: Path) -> int:
+    """What ``listing_limits.max_metadata_bytes`` charges for the archive's members."""
+    with archivey.open_archive(path) as archive:
+        return sum(member_metadata_bytes(m) for m in archive.members())
 
 
 def list_memory(path: Path) -> int:
@@ -154,14 +166,15 @@ def main() -> None:
 
         long_n = max(1, n // 10)
         path = tmp / "long_names.zip"
-        name_bytes = build_zip(path, long_n, 1000)
+        build_zip(path, long_n, 1000)
+        charged = charged_metadata_bytes(path)
         seconds, _ = list_time(path)
         held = list_memory(path)
-        per_s, per_b = seconds / name_bytes, held / name_bytes
+        per_s, per_b = seconds / charged, held / charged
         rows.append(
             (
                 "`max_metadata_bytes` (ZIP, 1000-byte names)",
-                f"{fmt_time(per_s * MiB)}, {fmt_bytes(per_b * MiB)} per MiB of names",
+                f"{fmt_time(per_s * MiB)}, {fmt_bytes(per_b * MiB)} per MiB charged",
                 f"{fmt_time(per_s * listing.max_metadata_bytes)}, "
                 f"{fmt_bytes(per_b * listing.max_metadata_bytes)}",
             )
@@ -200,7 +213,7 @@ def main() -> None:
         per = seconds / size
         rows.append(
             (
-                "`max_extracted_bytes` (deflate, to disk)",
+                "`max_extracted_bytes` (deflated zeros, to disk)",
                 f"{fmt_time(per * MiB)} per MiB",
                 fmt_time(per * extraction.max_extracted_bytes),
             )

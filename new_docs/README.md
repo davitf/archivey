@@ -5,3 +5,7 @@ A rewrite of the user docs, grown one agreed paragraph at a time. Not published 
 
 Pages linked from these but not written yet: `install.md`, `api.md` and
 `errors-and-diagnostics.md`. No check looks at links in this tree, so a broken one goes unnoticed.
+
+When this tree replaces `docs/`, two pointers outside it move too: `SECURITY.md` links the known
+limits at `docs/extracting.md`, and `dev-docs/threat-model.md` names `docs/extracting.md` as its
+public half. Both now live in `security.md` and `extracting.md` here.
