@@ -4982,3 +4982,157 @@ def test_wrong_password_after_a_line_break_does_not_decrypt() -> None:
     with open_archive(path, password="password\nIGNORED") as archive:
         with pytest.raises((UnsupportedFeatureError, EncryptionError)):
             archive.read("secret.txt")
+
+
+# ``wrong3`` survives the 64 KiB prefix of ``large1.txt`` in both compressed fixtures:
+# ``unrar p`` emits all 100 000 bytes for it, so only the CRC tells it from the right
+# password (checked with unrar 7.00 when the fixtures were made).
+_RAR4_PREFIX_SURVIVOR = "wrong3"
+_RAR4_LARGE = {
+    "encryption_large__rar4.rar": ("large1.txt", "large2.txt"),
+    "encryption_large_solid__rar4.rar": ("large1.txt", "large2.txt"),
+    "encryption_large_stored__rar4.rar": ("large_stored.txt",),
+}
+
+
+def _unrar_payload(path: Path, member: str) -> bytes:
+    return subprocess.run(
+        ["unrar", "p", "-inul", "-ppassword", str(path), member],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", sorted(_RAR4_LARGE))
+@pytest.mark.parametrize(
+    "passwords",
+    [
+        ["wrong", "password"],
+        [_RAR4_PREFIX_SURVIVOR, "password"],
+        ["wrong", _RAR4_PREFIX_SURVIVOR, "password"],
+        ["password", _RAR4_PREFIX_SURVIVOR],
+    ],
+)
+def test_rar4_password_list_order_does_not_matter(
+    name: str, passwords: list[str]
+) -> None:
+    """RAR3/4 data has no password check; a list is judged by decoding the member.
+
+    ``unrar`` used to get the first candidate. A wrong password that survives the
+    bounded probe is now settled by the member's CRC.
+    """
+    path = _fixture(name)
+    expected = {member: _unrar_payload(path, member) for member in _RAR4_LARGE[name]}
+    with open_archive(path, password=passwords) as archive:
+        assert {m: archive.read(m) for m in expected} == expected
+    with open_archive(path, password=passwords) as archive:
+        read = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if stream is not None
+        }
+    assert read == expected
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("name", sorted(_RAR4_LARGE))
+def test_rar4_password_list_with_no_right_password_is_an_encryption_error(
+    name: str,
+) -> None:
+    path = _fixture(name)
+    member = _RAR4_LARGE[name][0]
+    with open_archive(path, password=["wrong", "wrong1"]) as archive:
+        with pytest.raises(EncryptionError):
+            archive.read(member)
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    "name", ["encryption_large__rar4.rar", "encryption_large_solid__rar4.rar"]
+)
+def test_rar4_lone_wrong_survivor_fails_on_its_crc(name: str) -> None:
+    """A lone survivor of the probe is accepted, as one password is; the CRC catches it.
+
+    No full check runs for a single survivor, so the read is what a single wrong
+    password gives: the member's CRC mismatches at its end.
+    """
+    path = _fixture(name)
+    with open_archive(path, password=[_RAR4_PREFIX_SURVIVOR, "wrong"]) as archive:
+        with pytest.raises(CorruptionError, match="Digest mismatch"):
+            archive.read("large1.txt")
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("passwords", [["wrong3", "password"], ["password", "wrong3"]])
+def test_rar4_damaged_member_is_not_reported_as_a_wrong_password(
+    tmp_path: Path, passwords: list[str]
+) -> None:
+    """Decoding cannot tell a wrong key from damage, so the error claims neither.
+
+    A byte flipped inside the first member's compressed data makes the right
+    password fail its decode too; the list then has no survivor, and the message
+    must leave open that the member, not the password, is at fault.
+    """
+    data = bytearray(_fixture("encryption_large__rar4.rar").read_bytes())
+    data[20000] ^= 0xFF
+    path = tmp_path / "damaged.rar"
+    path.write_bytes(data)
+    with open_archive(path, password=passwords) as archive:
+        with pytest.raises(EncryptionError) as info:
+            archive.read("large1.txt")
+    assert "Wrong password" not in str(info.value)
+    assert "may be damaged" in str(info.value)
+
+
+@requires_binary("unrar")
+@requires("cryptography")
+def test_rar4_stored_password_list_is_judged_without_unrar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every wrong key decrypts a stored member to full length; the CRC check is native."""
+    path = _fixture("encryption_large_stored__rar4.rar")
+    spawns: list[object] = []
+    original = rar_reader.open_unrar_p
+
+    def spy(path: Path, **kwargs: object):
+        spawns.append(kwargs.get("password"))
+        return original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
+    with open_archive(path, password=["wrong", "other", "password"]) as archive:
+        assert archive.read("large_stored.txt") == _unrar_payload(
+            path, "large_stored.txt"
+        )
+    # One spawn: the read itself, with the password the native check picked.
+    assert spawns == ["password"]
+
+
+@requires_binary("unrar")
+def test_rar4_stored_password_list_without_cryptography_goes_through_unrar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no AES backend the stored member is judged by ``unrar`` instead."""
+    monkeypatch.setattr(rar_reader, "_crypto_available", lambda: False)
+    path = _fixture("encryption_large_stored__rar4.rar")
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        assert archive.read("large_stored.txt") == _unrar_payload(
+            path, "large_stored.txt"
+        )
+
+
+@requires_binary("unrar")
+def test_rar4_member_confirmed_by_its_crc_is_not_reported_unverified() -> None:
+    """The full check vouched for this member, so an abandoned read is not reported."""
+    path = _fixture("encryption_large__rar4.rar")
+    with open_archive(path, password=[_RAR4_PREFIX_SURVIVOR, "password"]) as archive:
+        with archive.open("large1.txt") as stream:
+            stream.read(10)
+        assert (
+            DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED not in archive.diagnostics.counts
+        )
+        # large2.txt: the prefix rejects wrong3 there, so the right password is
+        # accepted on a probe alone and an abandoned read is still reported.
+        with archive.open("large2.txt") as stream:
+            stream.read(10)
+        assert DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED in archive.diagnostics.counts

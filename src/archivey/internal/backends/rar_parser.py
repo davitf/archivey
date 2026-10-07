@@ -353,6 +353,10 @@ class RarMemberInfo:
     # and the reader checks it against ``DecoderLimits.max_decoder_memory`` before
     # a decompressor runs.
     dictionary_size: int = 0
+    # A RAR3/4 encrypted member's own 8-byte salt (``FILE_SALT``); its data key and IV
+    # are derived from the password and this salt. ``None`` for RAR5, whose salt is in
+    # ``file_encryption``, and for a RAR3 member that stores none.
+    rar3_salt: bytes | None = None
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
@@ -2102,8 +2106,9 @@ def _parse_rar3_file_header(
     if is_directory:
         filename = filename + "/"
 
+    rar3_salt: bytes | None = None
     if flags & _RAR3_FILE_SALT:
-        _salt, pos = _load_bytes(hdata, 8, pos)
+        rar3_salt, pos = _load_bytes(hdata, 8, pos)
 
     timestamp_issues: list[TimestampIssue] = []
     if mtime is None and dos_stamp != 0:
@@ -2159,6 +2164,7 @@ def _parse_rar3_file_header(
         dictionary_size=0
         if is_directory
         else _RAR3_DICT_BASE << ((flags & _RAR3_DICT_MASK) >> _RAR3_DICT_SHIFT),
+        rar3_salt=rar3_salt,
     )
     return member, crc_pos
 

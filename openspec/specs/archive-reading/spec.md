@@ -908,10 +908,28 @@ exists to find whose output matches a stored checksum, and there is none to matc
 **When a digest exists but sits past the budget**, rung 2 governs, and the unbounded pass a
 non-rejecting chain runs there is per candidate when the set is ambiguous.
 
+**Resolving several candidates.** A `CONFIRMED` candidate SHALL be accepted at once,
+and no later candidate SHALL be probed for that unit. A `REJECTED` candidate SHALL be
+skipped. An `INCONCLUSIVE` candidate SHALL NOT be accepted while static candidates remain
+to probe: every remaining static candidate SHALL be probed with the same bounded plan.
+Then:
+
+- one survivor SHALL be accepted, `INCONCLUSIVE`;
+- several survivors SHALL each, in candidate order, run the **full check**: the plan that
+  walks to the unit's end anchor whatever the codec. The first survivor it confirms SHALL
+  be accepted. When the unit has no anchor to walk to, the first survivor SHALL be
+  accepted, `INCONCLUSIVE`. When the full check rejects every survivor, the provider, if
+  any, SHALL be consulted as if no static candidate had survived;
+- provider answers SHALL NOT be gathered this way: the provider stays lazy, and its first
+  answer that is not `REJECTED` SHALL be accepted.
+
+The full check is proportional to the unit's size, and it SHALL run only for candidates
+that survived the bounded plan when more than one did.
+
 A `CONFIRMED` candidate SHALL be added to known-good. An `INCONCLUSIVE` candidate
 SHALL be added to known-good only when the candidate set is unambiguous. The
 candidate loop remains `_PasswordCandidates.attempt`; confirmation supplies the
-probe. A second driver SHALL NOT be introduced.
+bounded probe and the full check. A second driver SHALL NOT be introduced.
 
 Accepting an `INCONCLUSIVE` candidate SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED` if the
 caller then abandons the member's stream before its declared digest is reached.
@@ -934,7 +952,10 @@ the format's normal lazy streaming path.
 | Case | Expected |
 | --- | --- |
 | Wrong candidate passes weak check first of two | Reject via confirmation; stream from correct candidate |
-| Large member, many candidates | Confirmation bounded — not proportional to member size |
+| Large member, many candidates, at most one survives the bounded plan | Confirmation bounded — not proportional to member size |
+| Rejecting codec, CRC past budget, two candidates survive the prefix | Each survivor in order walks to the CRC; the one it matches wins and joins known-good |
+| Rejecting codec, CRC past budget, the right candidate after a wrong one | Wrong one `REJECTED` or settled by the full check; the right one is served |
+| First candidate `CONFIRMED` | Later candidates are not probed |
 | Provider answer fails confirmation | Request next answer without pre-enumerating; accept only after confirm |
 | Anchor reachable within budget | Decode to the anchor only, never past it |
 | Unit carries both an early per-item checksum and a whole-unit checksum | The earlier one decides |

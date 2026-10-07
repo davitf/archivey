@@ -254,6 +254,12 @@ one expensive case left is **store/copy+AES** (or PPMd) with its only CRC at the
 a large folder: nothing rejects a wrong key before that CRC, so each candidate reads to
 it. Prefer a single known password there.
 
+When more than one candidate survives the 64 KiB check, each survivor in turn is decoded
+to the member's CRC until one matches. That walk is proportional to the member's size,
+and it happens only for a list with several passwords a decoder could not tell apart
+early (RAR3/4 data, which has no password check, needs it for about one wrong password
+in three).
+
 A password that only a weak check accepted, or that no check tested at all (RAR3/4
 encrypted data has none), leaves the member's own checksum as the real test, and that
 runs at EOF. Closing such a stream part way through emits

@@ -58,6 +58,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     PackageNotInstalledError,
     ReadError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -132,10 +133,25 @@ from archivey.internal.password import (
     _PasswordCandidatesExhausted,
     wrong_password_error,
 )
+from archivey.internal.password_confirm import (
+    PASSWORD_CONFIRM_CHUNK_BYTES,
+    PASSWORD_CONFIRM_MIN_VERIFIED_BYTES,
+    PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmPlan,
+    PasswordConfirmVerdict,
+    attempt_with_confirm,
+    plan_password_confirm,
+    run_password_confirm_plan,
+)
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.crypto import (
+    AesParams,
+    _crypto_available,
+    open_aes_decrypt_stage,
+)
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     SharedSource,
@@ -421,6 +437,9 @@ _RAR_HOST_OS_UNIX = 3
 _RAR_BIRTH_TIME_HOSTS = frozenset({0, 1, _RAR_HOST_OS_WIN32, 4, 5})
 
 _RAR_METHOD_STORED = 0x30
+# The extract version of a RAR3/4 member whose data is AES-128 encrypted (RAR 2.9 and
+# later). Earlier versions used RAR 2.0's own cipher, which archivey does not decrypt.
+_RAR3_AES_EXTRACT_VERSION = 29
 _RAR_METHOD_MAX = 0x35  # RAR M5
 _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
 _RAR5_XREDIR_WINDOWS_SYMLINK = 2
@@ -580,6 +599,26 @@ def _compression_for(info: RarMemberInfo) -> tuple[CompressionMethod, ...]:
     # Outside M0–M5: UNKNOWN with no level. ``level`` is the M1–M5 method-byte
     # offset (1–5), not ``method - 0x30`` for an arbitrary byte.
     return (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)
+
+
+_UNDECODABLE_WITH_CANDIDATE = (
+    "This RAR member did not decode with the password: it may be wrong, or the "
+    "member may be damaged"
+)
+_UNDECODABLE_WITH_ANY_CANDIDATE = (
+    "This RAR member did not decode with any of the passwords: they may all be "
+    "wrong, or the member may be damaged"
+)
+
+
+def _undecodable_with_candidate() -> EncryptionError:
+    """The failure of a RAR3/4 candidate judged by decoding, which cannot tell why.
+
+    RAR3/4 has no password check, so a wrong key and damage the right key decodes
+    into look the same: garbage the decoder refuses, output that ends early, or a CRC
+    mismatch. Not marked as a wrong password, so exhaustion does not claim one.
+    """
+    return EncryptionError(_UNDECODABLE_WITH_CANDIDATE)
 
 
 def _crc_is_tweaked(info: RarMemberInfo) -> bool:
@@ -1108,6 +1147,13 @@ class RarReader(BaseArchiveReader):
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
+        # Likewise :meth:`_unchecked_reference_member`, with the same sentinel.
+        self._unchecked_reference: ArchiveMember | None | Literal[False] = False
+        # The password a RAR3/4 candidate list resolved to, by ``id`` of the member it
+        # was judged on (:meth:`_unchecked_data_password`), and the members it was
+        # confirmed against, whose read then needs no unverified-read report.
+        self._unchecked_passwords: dict[int, bytes] = {}
+        self._unchecked_confirmed: set[int] = set()
         self._unrar_names_cache: _UnrarNames | None = None
         self._volume_count = max(source.volume_count, volume_count)
         self._temp_path: Path | None = None
@@ -1724,8 +1770,8 @@ class RarReader(BaseArchiveReader):
         resolved here. A RAR5 member carries a PswCheck, so its password is picked
         per member, before ``unrar`` runs. A plain member of a solid archive may sit
         behind encrypted ones and needs their password; a plain member of a non-solid
-        one needs none worth resolving. Without a usable check (RAR4) nothing can
-        judge a candidate before ``unrar`` runs, so ``unrar`` gets the first one.
+        one needs none worth resolving. An encrypted member without a usable check
+        (RAR3/4) is judged by decoding it (:meth:`_unchecked_data_password`).
         """
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
@@ -1734,13 +1780,18 @@ class RarReader(BaseArchiveReader):
             return self._checked_data_password(enc, member)
         if self._archive.is_solid:
             return self._archive_data_password()
+        if raw.is_encrypted:
+            return self._unchecked_data_password(member)
         return self._unrar_data_password()
 
     def _archive_data_password(self) -> str | None:
         """The password for an ``unrar`` spawn that decodes the whole archive.
 
         Taken from the first member whose PswCheck can judge a candidate; the pass
-        spawn and a solid archive's plain members read through it.
+        spawn and a solid archive's plain members read through it. With no such
+        member (RAR3/4), a candidate list is judged on one encrypted member: in a
+        solid archive the first, which the solid stream decodes first anyway; in a
+        non-solid one the smallest, the cheapest to decode.
         """
         if self._passwords.has_passwords():
             member = self._archive_check_member
@@ -1761,7 +1812,238 @@ class RarReader(BaseArchiveReader):
                 assert isinstance(raw, RarMemberInfo)
                 assert raw.file_encryption is not None
                 return self._checked_data_password(raw.file_encryption, member)
+            reference = self._unchecked_reference_member()
+            if reference is not None:
+                return self._unchecked_data_password(reference, for_archive=True)
         return self._unrar_data_password()
+
+    def _unchecked_reference_member(self) -> ArchiveMember | None:
+        """The encrypted member a RAR3/4 candidate list is judged on for the archive."""
+        if self._unchecked_reference is False:
+            self._unchecked_reference = self._find_unchecked_reference_member()
+        return self._unchecked_reference
+
+    def _find_unchecked_reference_member(self) -> ArchiveMember | None:
+        encrypted = [
+            member
+            for member in self._members
+            if isinstance(member._raw, RarMemberInfo)
+            and member._raw.is_encrypted
+            and member._raw.is_payload_file()
+            and member.is_file
+            and _member_stream_size(member) > 0
+        ]
+        if not encrypted:
+            return None
+        if self._archive.is_solid:
+            return encrypted[0]
+        return min(encrypted, key=_member_stream_size)
+
+    def _unchecked_data_password(
+        self, reference: ArchiveMember, *, for_archive: bool = False
+    ) -> str | None:
+        """The candidate that decodes ``reference``, an encrypted member with no check.
+
+        RAR3/4 records no password check value, so a candidate is judged by decoding
+        (:func:`~archivey.internal.password_confirm.attempt_with_confirm`): a bounded
+        probe of the first :data:`PASSWORD_CONFIRM_PREFIX_BYTES` of output, which the
+        decoder fails for about two wrong keys in three (one in two when solid), and
+        when several candidates survive it, a full decode checked against the
+        member's CRC. A stored member has no decoder to object, so its check is the
+        CRC over a native decryption (:meth:`_rar3_stored_check`).
+
+        Only a list is judged this way. One password goes to ``unrar`` unjudged, as
+        before: the CRC at the member's end is its check. So does the header
+        password of an ``-hp`` archive, which decrypting the headers already proved.
+
+        ``for_archive`` says ``reference`` only stands in for the archive (the solid
+        pass reads every member through one spawn). If ``reference`` itself cannot be
+        decoded on its own (``unrar`` cannot be handed its name), the list is then not
+        judged, as before, rather than refusing a read that does not need it.
+        """
+        if (
+            not self._passwords.has_passwords()
+            or not self._passwords.is_ambiguous()
+            or self._archive.has_header_encryption
+        ):
+            return self._unrar_data_password()
+        found = self._unchecked_passwords.get(id(reference))
+        if found is None:
+            try:
+                probe, full_check = self._unchecked_password_checks(reference)
+            except UnsupportedFeatureError:
+                if not for_archive:
+                    raise
+                return self._unrar_data_password()
+            try:
+                found, verdict = attempt_with_confirm(
+                    self._passwords, reference, probe, full_check
+                )
+            except _PasswordCandidatesExhausted as exc:
+                message = raw_message_of(exc)
+                if (
+                    exc.last_error is not None
+                    and raw_message_of(exc.last_error) == _UNDECODABLE_WITH_CANDIDATE
+                ):
+                    message = _UNDECODABLE_WITH_ANY_CANDIDATE
+                raise EncryptionError(
+                    message,
+                    archive_name=self._archive_name,
+                    member_name=reference.name,
+                    source_format=ArchiveFormat.RAR,
+                ) from exc
+            self._unchecked_passwords[id(reference)] = found
+            if verdict is PasswordConfirmVerdict.CONFIRMED:
+                self._unchecked_confirmed.add(id(reference))
+        return _password_as_str(found)
+
+    def _unchecked_password_checks(
+        self, member: ArchiveMember
+    ) -> tuple[
+        Callable[[bytes], tuple[bytes, PasswordConfirmVerdict]],
+        Callable[[bytes], tuple[bytes, PasswordConfirmVerdict]] | None,
+    ]:
+        """The bounded probe and the full check for one encrypted RAR3/4 member."""
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        if self._rar3_stored_natively_checkable(raw):
+            return (lambda password: self._rar3_stored_check(raw, password)), None
+
+        size = _member_stream_size(member)
+        crc = raw.crc32 if not _crc_is_tweaked(raw) else None
+        # Unlike the read path, a tweaked digest does not count here: it can only be
+        # verified once a password is chosen, so for such a member unrar's exit code is
+        # the only CRC signal the probe gets, and suppressing it would leave none.
+        has_hash = bool(member.hashes)
+        if self._unar_policy is not None:
+            unar_spawn = self._unar_spawner(member, raw, self._unar_policy)
+
+            def spawn(password: str | None) -> BinaryIO:
+                return unar_spawn(password)
+
+        else:
+            unrar_spawn = self._unrar_spawner(member, raw)
+
+            def spawn(password: str | None) -> BinaryIO:
+                return unrar_spawn(password, has_hash)
+
+        def decode_check(
+            password: bytes, plan: PasswordConfirmPlan
+        ) -> tuple[bytes, PasswordConfirmVerdict]:
+            stream = spawn(_password_as_str(password))
+            try:
+                verdict = run_password_confirm_plan(stream, plan)
+            except (
+                UnsupportedFeatureError,
+                PackageNotInstalledError,
+                ResourceLimitError,
+            ):
+                raise
+            except EncryptionError as exc:
+                # The program itself said the password is wrong.
+                raise wrong_password_error(
+                    "Wrong password for this RAR member"
+                ) from exc
+            except ArchiveyError as exc:
+                # The decoder objected, the output ended early, or a CRC mismatched.
+                # A wrong key does that, and so does damage the right key decodes
+                # into; the attempt still moves on, but its message must not claim
+                # which one it was.
+                raise _undecodable_with_candidate() from exc
+            finally:
+                # Stops the program when the plan ended before its output did; only
+                # what was read above is judged.
+                stream.close()
+            if verdict is PasswordConfirmVerdict.REJECTED:
+                raise _undecodable_with_candidate()
+            return password, verdict
+
+        bounded = plan_password_confirm(
+            [(size, crc)],
+            None,
+            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
+            # A wrong RAR3/4 key fails the decoder within the prefix for only about
+            # two in three candidates (dev-docs/formats/rar.md §2.2), so surviving it
+            # is evidence, never proof; the stored case is handled natively above.
+            codec_rejects=raw.compress_type != _RAR_METHOD_STORED,
+        )
+        full: PasswordConfirmPlan | None = None
+        if not bounded.confirms and crc is not None:
+            full = plan_password_confirm(
+                [(size, crc)],
+                None,
+                budget=PASSWORD_CONFIRM_PREFIX_BYTES,
+                codec_rejects=False,
+            )
+            if full == bounded or not full.confirms:
+                full = None
+        full_plan = full
+        return (
+            lambda password: decode_check(password, bounded),
+            None
+            if full_plan is None
+            else (lambda password: decode_check(password, full_plan)),
+        )
+
+    def _rar3_stored_natively_checkable(self, raw: RarMemberInfo) -> bool:
+        """Whether a stored RAR3/4 member's CRC can be checked by decrypting it here.
+
+        RAR 2.9 and later encrypt file data with AES-128-CBC under a key and IV the
+        password and the member's salt give. A member in one part, with the sizes that
+        cipher implies, is decrypted here; anything else goes to the decoder probe,
+        as does every member when ``cryptography`` is not installed.
+        """
+        return (
+            self._archive.version == 4
+            and _crypto_available()
+            and raw.compress_type == _RAR_METHOD_STORED
+            and raw.rar3_salt is not None
+            and raw.extract_version is not None
+            and raw.extract_version >= _RAR3_AES_EXTRACT_VERSION
+            and raw.crc32 is not None
+            and not raw.data_parts
+            and not raw.split_before
+            and not raw.split_after
+            and raw.compress_size % 16 == 0
+            and raw.file_size <= raw.compress_size < raw.file_size + 16
+            and _data_is_reachable(raw)
+        )
+
+    def _rar3_stored_check(
+        self, raw: RarMemberInfo, password: bytes
+    ) -> tuple[bytes, PasswordConfirmVerdict]:
+        """Judge ``password`` by the CRC of a stored RAR3/4 member it decrypts.
+
+        Every wrong key decrypts a stored member to bytes of the right length, so only
+        the CRC can tell them apart; this pass is the full check, with no ``unrar``.
+        Memory is one chunk.
+        """
+        assert raw.rar3_salt is not None and raw.crc32 is not None
+        key, iv = self._kdf_cache.rar3(password, raw.rar3_salt)
+        stage = open_aes_decrypt_stage(AesParams(key=key, iv=iv))
+        view = self._direct_view(raw, raw.compress_size)
+        crc = 0
+        remaining = raw.file_size
+        try:
+            while remaining > 0:
+                chunk = view.read(PASSWORD_CONFIRM_CHUNK_BYTES)
+                if not chunk:
+                    raise TruncatedError(
+                        "The stored RAR member's data ended before its declared size"
+                    )
+                plain = stage.update(chunk)[:remaining]
+                crc = zlib.crc32(plain, crc)
+                remaining -= len(plain)
+        finally:
+            view.close()
+        if crc != raw.crc32 & 0xFFFFFFFF:
+            raise _undecodable_with_candidate()
+        verdict = (
+            PasswordConfirmVerdict.CONFIRMED
+            if raw.file_size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
+            else PasswordConfirmVerdict.INCONCLUSIVE
+        )
+        return password, verdict
 
     def _checked_data_password(
         self, enc: RarEncryptionInfo, member: ArchiveMember
@@ -3307,6 +3589,28 @@ class RarReader(BaseArchiveReader):
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
+        spawner = self._unrar_spawner(member, raw)
+        # Picked before anything is copied for ``unrar``: a RAR5 PswCheck rejects a
+        # wrong candidate without spooling a stream source to disk. A RAR3/4 candidate
+        # list is judged by running ``unrar``, so that one does copy.
+        data_password = self._member_data_password(member)
+        # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
+        # unrar's exit code for corruption; wrong-password (11) still maps. After the
+        # password: the tweaked check needs the one the member's PswCheck accepted.
+        has_hash = bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
+        return self._open_spawned_member(
+            member, lambda: spawner(data_password, has_hash)
+        )
+
+    def _unrar_spawner(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> Callable[[str | None, bool], BinaryIO]:
+        """Check what ``unrar p`` needs to read ``member``; return its spawner.
+
+        Every refusal is decided here from the parsed member table and spawns nothing.
+        The spawner takes the password and whether the member has a digest archivey
+        checks itself, and copies a stream source to disk on its first call.
+        """
         # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
         # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
         # built from the name as unrar reads it, which is not always the presented
@@ -3407,19 +3711,9 @@ class RarReader(BaseArchiveReader):
         # Counts the other members the mask selects too (a duplicate name is enough),
         # because unrar decodes each of them before the target.
         self._check_dictionary_memory(member, dictionary_cost)
-        # Picked before the copy below: a password no candidate satisfies fails here
-        # without spooling a stream source to disk.
-        data_password = self._member_data_password(member)
-        # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
-        # unrar's exit code for corruption; wrong-password (11) still maps. After the
-        # password: the tweaked check needs the one the member's PswCheck accepted.
-        has_hash = bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
 
-        # Only now: every refusal above is decided from the parsed member table and
-        # spawns nothing, so a stream source must not be spooled to disk to reach one.
-        path = self._ensure_archive_path()
-
-        def _spawn() -> BinaryIO:
+        def _spawn(data_password: str | None, has_hash: bool) -> BinaryIO:
+            path = self._ensure_archive_path()
             proc, stdout = open_unrar_p(
                 path,
                 password=data_password,
@@ -3446,7 +3740,7 @@ class RarReader(BaseArchiveReader):
                     )
                 return tracked
 
-        return self._open_spawned_member(member, _spawn)
+        return _spawn
 
     def _open_spawned_member(
         self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
@@ -3507,6 +3801,9 @@ class RarReader(BaseArchiveReader):
             return stream
         enc = raw.file_encryption
         if enc is not None and _psw_check_usable(enc):
+            return stream
+        if id(member) in self._unchecked_confirmed:
+            # The candidate list was settled by this member's own CRC.
             return stream
         return self._watch_unverified_read(
             stream,
@@ -3582,24 +3879,34 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
     ) -> Callable[[], BinaryIO]:
         """Check what ``unar -i <index>`` needs for this member; return its spawner."""
+        spawn = self._unar_spawner(member, raw, policy)
+        # Picked the way the ``unrar`` path picks it, before anything is copied: a
+        # RAR5 PswCheck rejects a wrong candidate here, without spawning ``unar``.
+        data_password = self._unar_password(member, self._member_data_password(member))
+        return lambda: spawn(data_password)
+
+    def _unar_spawner(
+        self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
+    ) -> Callable[[str | None], BinaryIO]:
+        """The refusals and dictionary check for ``unar -i <index>``; a spawner by password."""
         refusal = policy.member_refusal(raw)
         if refusal is not None:
             raise self._unar_refused(member, refusal)
         self._check_dictionary_memory(member, self._dictionary_costs[id(member)])
-        # Picked the way the ``unrar`` path picks it, before anything is copied: a
-        # RAR5 PswCheck rejects a wrong candidate here, without spawning ``unar``.
-        data_password = self._unar_password(member, self._member_data_password(member))
-        # The stored CRC32 or BLAKE2sp, when present, is checked; an encrypted RAR5
-        # member's tweaked digest needs the password picked above.
-        has_digest = bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
         # ``unar`` answers a wrong password with no output and exit 0.
         empty_means_wrong_password = (
             raw.is_encrypted and _member_stream_size(member) > 0
         )
         index = policy.entry_index(raw)
-        path = self._unar_archive_path(member)
 
-        def _spawn() -> BinaryIO:
+        def _spawn(data_password: str | None) -> BinaryIO:
+            data_password = self._unar_password(member, data_password)
+            # The stored CRC32 or BLAKE2sp, when present, is checked; an encrypted
+            # RAR5 member's tweaked digest needs the password picked by the caller.
+            has_digest = (
+                bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
+            )
+            path = self._unar_archive_path(member)
             proc, stdout = open_unar_stdout(
                 path, [index], purpose=UNAR_PURPOSE, password=data_password
             )

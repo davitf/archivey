@@ -96,6 +96,9 @@ _DROP_ERRORS = ("TruncatedError", "CorruptionError")
 _PASSWORDS = {
     "encryption__.rar": "password",
     "encryption__rar4.rar": "password",
+    "encryption_large__rar4.rar": "password",
+    "encryption_large_solid__rar4.rar": "password",
+    "encryption_large_stored__rar4.rar": "password",
     "encryption_blake2sp.rar": "password",
     "encryption_solid__.rar": "password",
     "encryption_stored__.rar": "password",
@@ -106,7 +109,13 @@ _PASSWORDS = {
     "tinyvol_hp.part1.rar": "header_password",
 }
 # RAR 2.x-4.x encryption: unar 1.10.1 returns nothing even with the right password.
-_RAR4_ENCRYPTED = {"encryption__rar4.rar", "encrypted_header__rar4.rar"}
+_RAR4_ENCRYPTED = {
+    "encryption__rar4.rar",
+    "encrypted_header__rar4.rar",
+    "encryption_large__rar4.rar",
+    "encryption_large_solid__rar4.rar",
+    "encryption_large_stored__rar4.rar",
+}
 # A RAR5 volume set with encrypted headers: XADMaster 1.10.8 returns nothing.
 _HEADER_ENCRYPTED_VOLUMES = {"tinyvol_hp.part1.rar"}
 
