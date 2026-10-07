@@ -1044,7 +1044,11 @@ def test_damaged_second_eof_block_lists_every_member(
     assert read == _THREE
     assert len(contexts) == 1
     assert contexts[0].format == "tar"
-    assert contexts[0].expected_marker == "two_zero_blocks"
+    # Its own marker, so the context says the listing is whole: a rejected header
+    # reports "two_zero_blocks" with the same observed_kind and raises.
+    assert contexts[0].expected_marker == "second_zero_block"
+    assert contexts[0].expected_bytes == 512
+    assert contexts[0].observed_bytes == 512
     assert contexts[0].observed_kind == "nonzero"
 
 
@@ -1060,6 +1064,56 @@ def test_damaged_second_eof_block_gzip_lists_every_member(tmp_path: Path) -> Non
     with open_archive(path) as ar:
         assert [m.name for m in ar.members()] == list(_THREE)
         assert len(_eof_marker_contexts(ar)) == 1
+
+
+def _gzip_with_bad_crc(data: bytes) -> bytes:
+    import gzip
+
+    out = bytearray(gzip.compress(data))
+    out[-8] ^= 0xFF  # the footer's CRC-32 over the whole decoded stream
+    return bytes(out)
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    "tail",
+    ["healthy_trailer", "damaged_second_block"],
+)
+def test_bad_gzip_crc_is_reported_after_a_damaged_second_eof_block(
+    tmp_path: Path, streaming: bool, tail: str
+) -> None:
+    # The gzip footer sits past the trailer, in the record padding, so the trailing
+    # scan is where its CRC-32 over the members is checked. A damaged second block
+    # must not skip that scan and hand the members back as whole. The 64 KiB of
+    # padding is a ``tar -b128`` record; with less, the streaming codec can reach the
+    # footer while the last header is still being read.
+    if tail == "healthy_trailer":
+        plain = _tar_three()
+    else:
+        plain = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+    path = tmp_path / "bad-crc.tar.gz"
+    path.write_bytes(_gzip_with_bad_crc(plain + b"\x00" * (64 * 1024)))
+    with raises_corruption_not_truncation():
+        with open_archive(path, streaming=streaming) as ar:
+            list(ar.stream_members())
+
+
+def test_damaged_second_eof_block_then_junk_reports_trailing_data() -> None:
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+    end = _tar_content_end(data)  # the end of the damaged block
+    data = data[:end] + b"\x00" * 100 + b"junk" + data[end + 104 :]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert [m.name for m in ar.members()] == list(_THREE)
+        trailing = [
+            d.context
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+        assert len(_eof_marker_contexts(ar)) == 1
+    assert len(trailing) == 1
+    assert isinstance(trailing[0], ArchiveEofContext)
+    assert trailing[0].expected_marker == "zeros_to_eof"
+    assert trailing[0].observed_bytes == 100
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
@@ -1095,9 +1149,13 @@ def test_zero_block_then_junk_with_no_member_stays_corruption(
     # that is a zero block and then junk is not shown to be a tar at all.
     data = b"\x00" * 512 + b"A" * 100 + b"\x00" * (512 * 9 - 100)
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-    with raises_corruption_not_truncation():
+    with raises_corruption_not_truncation() as excinfo:
         with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
             list(ar.stream_members())
+    # There is no member header and no listing to shorten, so the message says what
+    # is actually wrong.
+    assert "has no member" in str(excinfo.value)
+    assert "shortened listing" not in str(excinfo.value)
 
 
 def test_padded_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:

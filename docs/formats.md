@@ -163,9 +163,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       that code to `RAISE` in the diagnostic policy (`DiagnosticPolicy.strict()` does) to
       turn the warning into `DiagnosticRaisedError`.
     - A trailer whose **first block is zero and whose second is not** is reported the
-      same way, `ARCHIVE_EOF_MARKER_MISSING` with `context.observed_kind="nonzero"`.
-      The zero block ends the members, so every member is listed and reads normally,
-      as GNU tar ("A lone zero block") and 7-Zip list them; `strict()` raises it.
+      same way, `ARCHIVE_EOF_MARKER_MISSING` with
+      `context.expected_marker="second_zero_block"`. The zero block ends the members,
+      so every member is listed and reads normally, as GNU tar ("A lone zero block")
+      and 7-Zip list them; `strict()` raises it. The trailing-data check below then
+      runs from the block after the damaged one.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes

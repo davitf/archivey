@@ -158,11 +158,12 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
      records on the `_TarFile` because `TarFile.next()` swallows the error: after a zero
      block, with at least one member listed, the listing is whole and only the
      end-of-archive marker is damaged, so it is `ARCHIVE_EOF_MARKER_MISSING`
-     (`observed_kind="nonzero"`) under the ordinary policy, as GNU tar ("A lone zero
-     block") and 7-Zip list it with a warning (maintainer ruling, 2026-10-06). After a
+     (`expected_marker="second_zero_block"`, `observed_kind="nonzero"`) under the
+     ordinary policy, as GNU tar ("A lone zero block") and 7-Zip list it with a warning
+     (maintainer ruling, 2026-10-06), and step 3 runs from the block after it. After a
      rejected header, or with no member before the zero block, it is
-     `CorruptionError`.
-  3. After a good trailer, scan up to 1 MiB for a non-zero byte and emit
+     `CorruptionError`, with `expected_marker="two_zero_blocks"`.
+  3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero byte and emit
      `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar` pads to 10 KiB
      records. On a compressed tar the tail is decompressed to look at it, and a tail
      that does not decode (a truncated footer, junk after the compressed stream) ends
@@ -466,6 +467,7 @@ extraction checks (§2.4).
 | Missing trailer warns, and raises under `RAISE` | `::test_missing_eof_blocks_warns_by_default`, `::test_missing_eof_blocks_raise_disposition_raises`, and the `_streaming_` pair |
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
 | A zero block then a damaged block lists and reads every member, warns, extracts everything, and raises under `strict()`, in both modes | `::test_damaged_second_eof_block_lists_every_member`, `::test_damaged_second_eof_block_gzip_lists_every_member`, `::test_damaged_second_eof_block_extracts_every_member`, `::test_damaged_second_eof_block_refused_under_strict`, `::test_zero_block_then_junk_with_no_member_stays_corruption` |
+| After a damaged second block the trailing scan still runs: a bad gzip CRC raises and junk is trailing data | `::test_bad_gzip_crc_is_reported_after_a_damaged_second_eof_block`, `::test_damaged_second_eof_block_then_junk_reports_trailing_data` |
 | The streaming last-block gap | `::test_corrupt_final_header_streaming_warns_not_corruption` |
 | Rejected header wins over `IGNORE` and `RAISE` | `::test_corrupt_final_header_ignore_disposition_still_raises`, `::test_corrupt_mid_header_raise_disposition_still_corruption` |
 | `extract_all` writes the salvageable members, then raises, in both modes | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |

@@ -17,10 +17,13 @@ via ``_iter_with_data()`` / ``stream_members()``.
 After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 
 - A rejected (non-null) header where ``tarfile`` stopped → ``CorruptionError``.
-- A missing two-block null trailer, or one whose first block is zero and whose
-  second is not → ``ARCHIVE_EOF_MARKER_MISSING``.
-- A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a *complete* trailer →
-  ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
+- A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING``.
+- A trailer whose first block is zero and whose second is not, after at least one
+  member → ``ARCHIVE_EOF_MARKER_MISSING`` (``expected_marker="second_zero_block"``).
+  With no member before the zero block it is ``CorruptionError``, so a file that is
+  not a tar does not open as an empty one.
+- A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a complete trailer, or of a
+  damaged second trailer block → ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
 fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
@@ -243,6 +246,16 @@ class _HeaderBudget:
         # Back to the value before the block, whatever ``set`` changed it to since.
         assert self._token is not None
         _HEADER_BUDGET.reset(self._token)
+
+
+# What :meth:`TarReader._verify_tar_eof` found where the end-of-archive marker belongs:
+# no block, a partial one, a non-null block after a zero block that ended at least one
+# member (the marker is damaged, the listing whole), a non-null block after a header
+# tarfile rejected (the listing is shortened), or a non-null block after a zero block
+# with no member before it.
+_TarEnd = Literal[
+    "absent", "short", "damaged_second_block", "rejected_header", "no_member"
+]
 
 
 # typeshed does not declare tarfile's header errors; this one is raised for a zero block.
@@ -1165,8 +1178,10 @@ class TarReader(BaseArchiveReader):
         (:class:`_TarFile`). After a zero block, with members listed, the end-of-archive
         marker itself is damaged: every member before it is listed and whole, as GNU tar
         and 7-Zip list them with a warning, so it is ``ARCHIVE_EOF_MARKER_MISSING`` under
-        the ordinary policy (``DiagnosticPolicy.strict()`` refuses it). After a
-        rejected header, the listing was cut short and it is ``CorruptionError``.
+        the ordinary policy (``DiagnosticPolicy.strict()`` refuses it), and the scan
+        past the trailer runs from the block after it. After a rejected header, the
+        listing was cut short and it is ``CorruptionError``; so is a zero block and
+        then a non-null one with no member before them.
 
         Streaming cannot see a rejected *final* header (tarfile's ``_Stream`` hides the
         block and it cannot be recovered without re-reading), so that one case surfaces as
@@ -1174,7 +1189,7 @@ class TarReader(BaseArchiveReader):
         ``dev-docs/known-issues.md``.
         """
         if self._eof_header_rejected:
-            self._emit_eof_marker(observed_bytes=512, observed_kind="nonzero")
+            self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
         fileobj = self._tar.fileobj
         if fileobj is None:
@@ -1185,25 +1200,24 @@ class TarReader(BaseArchiveReader):
             self._verify_nothing_but_zeros_to_eof()
             return
         if len(chunk) == 512:
-            if (
-                any_members
-                and isinstance(self._tar, _TarFile)
-                and self._tar.stopped_on_zero_block
-            ):
+            if not any_members:
+                self._emit_eof_marker("no_member", observed_bytes=512)
+                return
+            if isinstance(self._tar, _TarFile) and self._tar.stopped_on_zero_block:
                 # One zero block, then a damaged one: the marker is damaged, not the
-                # listing.
-                self._emit_eof_marker(
-                    observed_bytes=512, observed_kind="nonzero", damaged_trailer=True
-                )
+                # listing. The scan past it still runs, because on a compressed tar it
+                # is where the codec's whole-stream checksum over the members just
+                # listed is usually reached.
+                self._emit_eof_marker("damaged_second_block", observed_bytes=512)
+                self._verify_nothing_but_zeros_to_eof()
                 return
             # A non-null block where the second trailer block belongs after a rejected
             # header: tarfile treated a bad block as a clean end.
-            self._emit_eof_marker(observed_bytes=512, observed_kind="nonzero")
+            self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
-        observed_kind: Literal["absent", "short"] = (
-            "absent" if len(chunk) == 0 else "short"
+        self._emit_eof_marker(
+            "absent" if len(chunk) == 0 else "short", observed_bytes=len(chunk)
         )
-        self._emit_eof_marker(observed_bytes=len(chunk), observed_kind=observed_kind)
 
     def _verify_nothing_but_zeros_to_eof(self) -> None:
         """Report a non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of the trailer.
@@ -1336,28 +1350,31 @@ class TarReader(BaseArchiveReader):
             logger=backends_logger,
         )
 
-    def _emit_eof_marker(
-        self,
-        *,
-        observed_bytes: int,
-        observed_kind: Literal["absent", "short", "nonzero"],
-        damaged_trailer: bool = False,
-    ) -> None:
+    def _emit_eof_marker(self, end: _TarEnd, *, observed_bytes: int) -> None:
         """Report a missing or damaged two-zero-block end-of-archive marker.
 
-        A non-null block where tarfile stopped is corruption: it read a rejected header
-        as a clean end and shortened the listing. ``damaged_trailer`` is the other
-        non-null case: the first marker block is zero and the second is not, so the
-        listing is whole and only the marker is damaged. That one follows the policy.
+        ``end`` says what was found where the marker belongs (see :data:`_TarEnd`).
+        ``"rejected_header"`` and ``"no_member"`` are corruption whatever the policy:
+        the first means tarfile read a rejected header as a clean end and shortened the
+        listing, the second that a file with no member is a zero block and then junk,
+        which must not open as an empty tar. The other three follow the policy.
+        ``"damaged_second_block"`` gets its own ``expected_marker``,
+        ``"second_zero_block"``, so a caller can tell a whole listing from a
+        shortened one by the context, not the message.
         """
-        if damaged_trailer:
+        expected_marker = "two_zero_blocks"
+        expected_bytes = 1024
+        observed_kind: Literal["absent", "short", "nonzero"] = "nonzero"
+        escalate_as: type[BaseException] | None = None
+        if end == "damaged_second_block":
             message = (
                 "TAR archive's end-of-archive marker is damaged: a zero block ends the "
                 "members, but the block after it is not zero. Every member before it is "
-                "listed; anything after it is not read."
+                "listed."
             )
-            escalate_as: type[BaseException] | None = None
-        elif observed_kind == "nonzero":
+            expected_marker = "second_zero_block"
+            expected_bytes = 512
+        elif end == "rejected_header":
             message = (
                 "TAR archive is corrupt: a non-null block appears where the "
                 "end-of-archive marker was expected. Stdlib tarfile treats a corrupt "
@@ -1365,12 +1382,20 @@ class TarReader(BaseArchiveReader):
                 "shortened listing surfaces here."
             )
             escalate_as = CorruptionError
+        elif end == "no_member":
+            message = (
+                "TAR archive is corrupt: it has no member, and the block after its "
+                "first zero block is not zero. A file that is only a zero block and "
+                "then other bytes is not shown to be a TAR archive, so it does not "
+                "open as an empty one."
+            )
+            escalate_as = CorruptionError
         else:
             message = (
                 "TAR archive may be truncated: missing or short end-of-archive marker "
                 "block(s)."
             )
-            escalate_as = None
+            observed_kind = end
         escalate_kwargs: dict[str, object] | None = None
         if escalate_as is not None:
             escalate_kwargs = {
@@ -1383,8 +1408,8 @@ class TarReader(BaseArchiveReader):
             context=ArchiveEofContext(
                 archive_name=self._archive_name,
                 format="tar",
-                expected_marker="two_zero_blocks",
-                expected_bytes=1024,
+                expected_marker=expected_marker,
+                expected_bytes=expected_bytes,
                 observed_bytes=observed_bytes,
                 observed_kind=observed_kind,
             ),
