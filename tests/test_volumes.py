@@ -24,7 +24,6 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
     OpenError,
-    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -51,21 +50,6 @@ _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
 _RAR5_ID = b"Rar!\x1a\x07\x01\x00"
 _RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
-
-
-def _have_rarlab_unrar() -> bool:
-    """Whether split-RAR ``archive.read()`` can call RARLAB unrar.
-
-    Listing is native and must stay green on core-only / free-threaded CI, which
-    do not install ``unrar``. ``read()`` of a split set still shells out.
-    """
-    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
-
-    try:
-        find_rarlab_unrar()
-    except PackageNotInstalledError:
-        return False
-    return True
 
 
 def test_discover_skips_stat_for_non_volume_names(tmp_path: Path) -> None:
@@ -243,8 +227,7 @@ def test_rar_sfx_duplicate_part1_opens_the_named_set(tmp_path: Path) -> None:
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if _have_rarlab_unrar():
-                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
 def _force_listing_order(monkeypatch: pytest.MonkeyPatch, *, reverse: bool) -> None:
@@ -325,6 +308,13 @@ _RAR_PARTS_1_TO_10 = [f"q.part{part}.rar" for part in range(1, 11)]
             "q.part10.rar",
             ["q.part01.rar", *_RAR_PARTS_1_TO_10[1:]],
         ),
+        # Neither part-2 name is the predicted q.part2.rar and both are padded and
+        # spelled alike; unrar's names carry .rar, so the .exe is not the pick.
+        (
+            ["q.part1.rar", "q.part02.rar", "q.part02.exe"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part02.rar"],
+        ),
     ],
 )
 def test_discover_prefers_the_opened_names_padding_over_a_stray(
@@ -372,6 +362,25 @@ def test_discover_prefers_the_opened_names_padding_over_a_stray(
             ["x.7z.001", "X.7Z.001", "x.7z.002"],
             "x.7z.002",
             ["x.7z.001", "x.7z.002"],
+        ),
+        # An SFX first volume opened beside its case variant: only the opened name
+        # tells them apart (the predicted part-1 name is q.part1.rar).
+        (
+            ["q.part1.sfx", "q.PART1.SFX", "q.part2.rar"],
+            "q.part1.sfx",
+            ["q.part1.sfx", "q.part2.rar"],
+        ),
+        # The predicted q.part2.rar is absent: its padding outranks the base spelling.
+        (
+            ["q.part1.rar", "q.part02.rar", "Q.PART2.RAR"],
+            "q.part1.rar",
+            ["q.part1.rar", "Q.PART2.RAR"],
+        ),
+        # Same padding, neither predicted: the base spelled as opened wins.
+        (
+            ["q.part1.rar", "q.part02.rar", "Q.PART02.RAR"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part02.rar"],
         ),
     ],
 )
@@ -445,8 +454,7 @@ def test_rar_part_set_with_a_stray_of_another_width_opens(
         with open_archive(tmp_path / anchor) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if _have_rarlab_unrar():
-                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -513,8 +521,7 @@ def test_old_scheme_sfx_exe_opens_rnn_set(tmp_path: Path) -> None:
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if _have_rarlab_unrar():
-                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
 def _old_scheme_names(first: str, count: int) -> list[str]:
@@ -939,20 +946,17 @@ def _tinyvol_sfx_pair(tmp_path: Path, *, decoy: bool) -> tuple[Path, Path]:
 def test_rar_sfx_split_opens_from_stubbed_tinyvol_fixtures(tmp_path: Path) -> None:
     part1, part2 = _tinyvol_sfx_pair(tmp_path, decoy=False)
     expected = b"ABCDEFGH" * 200
-    can_read = _have_rarlab_unrar()
     for anchor in (part1, part2):
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if can_read:
-                assert archive.read("payload.bin") == expected
+            assert archive.read("payload.bin") == expected
         # Explicit format= skips detection, so volume 1 is parsed from offset 0.
         # A stub with no decoy magic still works; the decoy case is the next test.
         with open_archive(anchor, format=ArchiveFormat.RAR) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if can_read:
-                assert archive.read("payload.bin") == expected
+            assert archive.read("payload.bin") == expected
 
 
 def test_rar_sfx_split_ignores_decoy_magic_in_stub(tmp_path: Path) -> None:

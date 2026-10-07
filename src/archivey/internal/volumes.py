@@ -281,7 +281,7 @@ def _pick_volume(
     widens when the number outgrows it, so from ``q.part1.rar`` part 10 is
     ``q.part10.rar``, not a stray ``q.part010.rar``. So the order of preference is:
 
-    1. the name the caller opened, as spelled, then in another case;
+    1. the name the caller opened, as spelled;
     2. a name padded like the predicted one (:func:`_predicted_volume_name`);
     3. the predicted name as spelled;
     4. a name spelling ``base`` as the opened name does, the rule old-scheme
@@ -296,13 +296,11 @@ def _pick_volume(
     pattern = _VOLUME_SCHEMES[scheme]
     predicted = _predicted_volume_name(scheme, named, part)
     predicted_width = _part_width(pattern, predicted)
-    named_lower = named.lower()
 
-    def rank(candidate: Path) -> tuple[bool, bool, bool, bool, bool, bool, str]:
+    def rank(candidate: Path) -> tuple[bool, bool, bool, bool, bool, str]:
         name = candidate.name
         return (
             name != named,
-            name.lower() != named_lower,
             _part_width(pattern, name) != predicted_width,
             name != predicted,
             not name.startswith(base),

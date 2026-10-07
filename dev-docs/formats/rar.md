@@ -441,7 +441,7 @@ point only when `<stem>.r00` or `<stem>.R00` exists with the stub's own base spe
 (a fast reject that avoids a listing on every `.exe` open). Of two `.partN` files with one
 number in different padding (`q.part2.rar` and a stray `q.part02.rar`) or, on a
 case-sensitive filesystem, in different case (`Q.PART2.RAR`), discovery takes the name
-opened (as spelled, then in another case), then the one padded like the name unrar
+opened as spelled, then the one padded like the name unrar
 predicts, then that name as spelled, then one spelling the base as the opened name does,
 then a `.rar` over an `.exe` / `.sfx`, then the lowest name. That is unrar's rule: it goes
 back to volume 1 keeping the opened name's spelling and padding and adds one to the number
