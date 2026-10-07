@@ -342,9 +342,9 @@ class RarMemberInfo:
     # (:func:`_merge_split_member`), and the merged member keeps the first part's
     # ``split_before`` and the last part's ``split_after``: with both clear the list
     # is the whole member. ``split_before`` set means the first part is in a volume
-    # that is not in the set (refused only when that is volume 1);
-    # ``split_after`` set means the last part was not found (an end block that
-    # claimed no next volume).
+    # outside the set; the parser refuses that only when the continuation is the
+    # first volume's first member. ``split_after`` set means the last part was not
+    # found (an end block that claimed no next volume).
     data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from

@@ -219,7 +219,7 @@ the reader closes. Listing never needs it. `ArchiveyConfig.spool_limits` bounds 
 the limit raises `ResourceLimitError` before anything is written, and later reads on that
 reader are refused the same way. `None` (`SpoolLimits.UNLIMITED`) removes the limit, and
 `0` refuses every copy, which leaves only the members archivey reads without `unrar`
-(stored members of a non-solid archive). The copy goes to the platform temporary
+(stored, unencrypted members). The copy goes to the platform temporary
 directory; where that is memory-backed (`tmpfs`), the limit bounds memory rather than
 disk. The same limit holds what a solid pass keeps for RAR5 file copies (`rar -oi`):
 the pass keeps each copy's source as it decodes it, so the copy does not decode the

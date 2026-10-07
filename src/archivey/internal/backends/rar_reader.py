@@ -13,7 +13,8 @@ Module split:
 Data-open shapes:
 
 - Solid archive → one ``unrar p`` ALL-pipe + :class:`SolidBlockReader` demux
-- Non-solid stored (no encrypt / split) → direct sliced view (no ``unrar``)
+- Stored, unencrypted, every part found → direct sliced view (no ``unrar``),
+  whatever the solid flag; a split member's part views are joined
 - ``RarDecompressor.NONE`` → only that direct view; every other read is refused
 - Other non-solid → per-member named ``unrar p -n./…`` opens
 - Stream / non-path sources may be materialized to a temp ``.rar`` so ``unrar``
@@ -328,8 +329,8 @@ def _link_file(src: Path, dest: Path) -> None:
 def _stream_copy_refused_note(program: str, reason: str) -> str:
     return (
         f"Reading a compressed member will be refused: {program} reads only files, "
-        f"and {reason}. Members archivey reads without {program}, such as stored "
-        "members of a non-solid archive, can still be read."
+        f"and {reason}. Members archivey reads without {program}, such as stored, "
+        "unencrypted members, can still be read."
     )
 
 

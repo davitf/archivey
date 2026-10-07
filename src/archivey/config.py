@@ -595,7 +595,7 @@ class SpoolLimits:
     need it are refused without copying again.
 
     ``0`` refuses every copy: a stream source then reads only the members archivey can
-    read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
+    read without ``unrar``, such as stored, unencrypted RAR members. The copy goes
     to the platform temporary directory (``tempfile.gettempdir()``); where that is
     memory-backed, such as ``tmpfs``, this limit is a memory limit.
 

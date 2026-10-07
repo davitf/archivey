@@ -406,7 +406,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR
   opened from a `BytesIO` or a file object is copied whole to a temp file (a volume set,
   to a temp directory) on the first member read that needs `unrar`, and removed on close.
-  Stored members of a non-solid archive are read in place and need no copy. The copy is
+  Stored, unencrypted members are read in place and need no copy. The copy is
   bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
   over it, the read raises `ResourceLimitError` before anything is written. Open from a
   path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).
