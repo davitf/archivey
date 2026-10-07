@@ -147,7 +147,11 @@ from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
-from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
+from archivey.internal.streams.crypto import (
+    AesParams,
+    _crypto_available,
+    open_aes_decrypt_stage,
+)
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     SharedSource,
@@ -1945,10 +1949,12 @@ class RarReader(BaseArchiveReader):
 
         RAR 2.9 and later encrypt file data with AES-128-CBC under a key and IV the
         password and the member's salt give. A member in one part, with the sizes that
-        cipher implies, is decrypted here; anything else goes to the decoder probe.
+        cipher implies, is decrypted here; anything else goes to the decoder probe,
+        as does every member when ``cryptography`` is not installed.
         """
         return (
             self._archive.version == 4
+            and _crypto_available()
             and raw.compress_type == _RAR_METHOD_STORED
             and raw.rar3_salt is not None
             and raw.extract_version is not None

@@ -5064,6 +5064,7 @@ def test_rar4_lone_wrong_survivor_fails_on_its_crc(name: str) -> None:
 
 
 @requires_binary("unrar")
+@requires("cryptography")
 def test_rar4_stored_password_list_is_judged_without_unrar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5083,6 +5084,19 @@ def test_rar4_stored_password_list_is_judged_without_unrar(
         )
     # One spawn: the read itself, with the password the native check picked.
     assert spawns == ["password"]
+
+
+@requires_binary("unrar")
+def test_rar4_stored_password_list_without_cryptography_goes_through_unrar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no AES backend the stored member is judged by ``unrar`` instead."""
+    monkeypatch.setattr(rar_reader, "_crypto_available", lambda: False)
+    path = _fixture("encryption_large_stored__rar4.rar")
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        assert archive.read("large_stored.txt") == _unrar_payload(
+            path, "large_stored.txt"
+        )
 
 
 @requires_binary("unrar")
