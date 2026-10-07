@@ -719,11 +719,12 @@ def _timestamp_field_name(info: RarMemberInfo, slot: str) -> str:
     """The ``ArchiveMember`` field a parser time slot would have filled.
 
     The creation slot is ``created`` or ``ctime`` by ``host_os``, as in
-    :func:`_rar_created`, so the report names the field the caller sees as ``None``.
+    :func:`_rar_created`. That field may still hold a value from another record, such
+    as a later valid RAR5 time record.
     """
     if slot == "ctime":
         return "created" if info.host_os in _RAR_BIRTH_TIME_HOSTS else "ctime"
-    return {"mtime": "modified", "atime": "accessed"}.get(slot, slot)
+    return {"mtime": "modified", "atime": "accessed"}[slot]
 
 
 def _tweaked_hash_key(
