@@ -72,6 +72,42 @@ def ask_resume_offset(inner: object | None, target: int) -> int | None:
     return offset if isinstance(offset, int) else None
 
 
+def check_read_size(n: int | None) -> int:
+    """Return ``read``'s size argument as an ``int``, refusing a non-integer as ``io`` does.
+
+    ``None`` means read to EOF, so it becomes ``-1``; a float or str raises
+    ``TypeError`` with the message ``io.BytesIO`` and ``io.BufferedReader`` give. A
+    stream calls this before it reads anything, because passed inward a float can
+    fail inside a decoder after a chunk has left the source.
+    """
+    if n is None:
+        return -1
+    try:
+        return operator.index(n)
+    except TypeError:
+        raise TypeError(
+            f"argument should be integer or None, not {type(n).__name__!r}"
+        ) from None
+
+
+def check_seek_args(offset: int, whence: int) -> tuple[int, int]:
+    """Validate seek arguments as ``io.BytesIO`` does, without resolving a target.
+
+    A non-integer ``offset`` or ``whence`` raises ``TypeError`` (via
+    ``operator.index``, the message ``io.BytesIO`` gives); an unknown ``whence`` or a
+    negative ``SEEK_SET`` offset raises ``ValueError``. Returns both as exact ``int``.
+    For a layer that passes the caller's ``whence`` on rather than computing the
+    target itself; :func:`resolve_seek` runs the same check first.
+    """
+    offset = operator.index(offset)
+    whence = operator.index(whence)
+    if whence not in (io.SEEK_SET, io.SEEK_CUR, io.SEEK_END):
+        raise ValueError(f"Invalid whence: {whence}")
+    if whence == io.SEEK_SET and offset < 0:
+        raise ValueError(f"Negative seek position {offset}")
+    return offset, whence
+
+
 def resolve_seek(offset: int, whence: int, *, pos: int, end: Callable[[], int]) -> int:
     """Resolve a seek target as ``io.BytesIO`` does.
 
@@ -81,21 +117,16 @@ def resolve_seek(offset: int, whence: int, *, pos: int, end: Callable[[], int]) 
     raises. Callers probing backwards from the end (``ZipFile``'s
     ``seek(-22, SEEK_END)`` EOCD probe on a short source) rely on the clamp.
 
-    A non-integer ``offset`` or ``whence`` raises ``TypeError`` (via
-    ``operator.index``, the message ``io.BytesIO`` gives) before anything else, so a
-    caller that resolves first and moves second never acts on a float.
+    The arguments go through :func:`check_seek_args` before anything else, so a
+    non-integer raises ``TypeError`` and ``end`` is never called for a refused seek;
+    a caller that resolves first and moves second never acts on a float.
     """
-    offset = operator.index(offset)
-    whence = operator.index(whence)
+    offset, whence = check_seek_args(offset, whence)
     if whence == io.SEEK_SET:
-        if offset < 0:
-            raise ValueError(f"Negative seek position {offset}")
         return offset
     if whence == io.SEEK_CUR:
         return max(0, pos + offset)
-    if whence == io.SEEK_END:
-        return max(0, end() + offset)
-    raise ValueError(f"Invalid whence: {whence}")
+    return max(0, end() + offset)
 
 
 def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:

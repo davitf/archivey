@@ -18,6 +18,8 @@ import pytest
 from archivey.internal.streams.streamtools import (
     BinaryIOWrapper,
     ReadableStream,
+    check_read_size,
+    check_seek_args,
     ensure_binaryio,
     ensure_bufferedio,
     is_filename,
@@ -1109,3 +1111,42 @@ class TestResolveSeek:
         resolved = resolve_seek(True, io.SEEK_SET, pos=4, end=self._end)
         assert resolved == 1
         assert type(resolved) is int
+
+
+class TestCheckSeekArgs:
+    def test_returns_exact_ints(self) -> None:
+        assert check_seek_args(True, io.SEEK_CUR) == (1, io.SEEK_CUR)
+        offset, whence = check_seek_args(-5, True)
+        assert (offset, whence) == (-5, io.SEEK_CUR)
+        assert type(offset) is int and type(whence) is int
+
+    def test_negative_seek_set_raises(self) -> None:
+        with pytest.raises(ValueError, match="Negative seek position -1"):
+            check_seek_args(-1, io.SEEK_SET)
+
+    def test_negative_relative_offset_is_left_to_the_resolver(self) -> None:
+        assert check_seek_args(-1, io.SEEK_END) == (-1, io.SEEK_END)
+
+    def test_invalid_whence_raises(self) -> None:
+        with pytest.raises(ValueError, match="Invalid whence: 3"):
+            check_seek_args(0, 3)
+
+
+class TestCheckReadSize:
+    @pytest.mark.parametrize(("n", "expected"), [(None, -1), (-5, -5), (0, 0), (7, 7)])
+    def test_integers_and_none(self, n: int | None, expected: int) -> None:
+        assert check_read_size(n) == expected
+
+    def test_bool_is_its_int_value(self) -> None:
+        size = check_read_size(True)
+        assert size == 1 and type(size) is int
+
+    @pytest.mark.parametrize("bad", [1.5, "3", b"3", 2.0])
+    def test_non_integer_raises_type_error_as_bytesio(self, bad: object) -> None:
+        # Untyped handles: the argument is wrong on purpose.
+        check: Callable[..., int] = check_read_size
+        with pytest.raises(TypeError) as expected:
+            io.BytesIO(b"abc").read(bad)  # type: ignore[arg-type]
+        with pytest.raises(TypeError) as excinfo:
+            check(bad)
+        assert str(excinfo.value) == str(expected.value)

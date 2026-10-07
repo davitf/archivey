@@ -426,6 +426,49 @@ def assert_non_integer_seek_is_type_error(stream: BinaryIO, content: bytes) -> N
         assert stream.read() == content[1:]
 
 
+# Non-integer read sizes, each refused by ``io.BytesIO`` with a TypeError. ``None``
+# is not here: it means read to EOF.
+NON_INTEGER_READS: tuple[object, ...] = (1.5, 2.0, "3", b"3")
+
+
+def assert_non_integer_read_is_type_error(stream: BinaryIO, content: bytes) -> None:
+    """A float or str ``read`` size raises ``TypeError`` as ``io.BytesIO`` does, with
+    its message, and leaves the stream where it was and correct.
+
+    The read after the refusal is the half that matters. Passed inward, ``read(1.5)``
+    failed inside zlib after the compressed chunk had left the source, so an undamaged
+    gzip or deflate member then raised ``TruncatedError`` on every read, even after
+    ``seek(0)``; a stored member raised a ``TypeError`` and survived.
+    """
+
+    # Untyped handles: the arguments are wrong on purpose.
+    read: Callable[..., bytes] = stream.read
+    reference_read: Callable[..., bytes] = io.BytesIO(content).read
+
+    def refuse(at: int) -> None:
+        for size in NON_INTEGER_READS:
+            with pytest.raises(TypeError) as expected:
+                reference_read(size)
+            with pytest.raises(TypeError) as excinfo:
+                read(size)
+            assert type(excinfo.value) is TypeError, size
+            assert str(excinfo.value) == str(expected.value), size
+            assert stream.tell() == at, size
+
+    # First on a fresh stream, then after a partial read.
+    refuse(0)
+    head = min(3, len(content))
+    assert stream.read(head) == content[:head]
+    refuse(head)
+    assert stream.read() == content[head:]
+    assert stream.seek(0) == 0
+    assert stream.read() == content
+    # A bool is an int to io.BytesIO too, and None reads to EOF.
+    assert stream.seek(0) == 0
+    assert read(True) == content[:1]
+    assert read(None) == content[1:]
+
+
 def assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:
     """An unknown ``whence`` is the caller's ``ValueError`` on every format.
 
@@ -435,3 +478,6 @@ def assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:
     with pytest.raises(ValueError) as excinfo:
         stream.seek(0, 7)
     assert type(excinfo.value) is ValueError
+    # The message the shared rule in ``check_seek_args`` gives, so the public layer
+    # and the backends behind it cannot drift apart.
+    assert str(excinfo.value) == "Invalid whence: 7"

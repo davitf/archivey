@@ -185,6 +185,7 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 | `extract_all()` with nothing declared | Completes; internal opens ungated |
 | `open_archive(p, member_streams=...)` | `TypeError` — the parameter no longer exists |
 | Seek before the start of a random `open()` stream with `seekable_members=True` | Relative (`SEEK_CUR` / `SEEK_END`) underflow clamps to 0, as `io.BytesIO`; negative `SEEK_SET` or unknown `whence` → `ValueError`, never a translated archive error; a non-integer offset or `whence` (`seek(1.5)`) → `TypeError` with `io.BytesIO`'s message, before the stream moves. Directory member: relative underflow is the OS file's `OSError` |
+| `read(n)` on any member stream with a size that is neither an integer nor `None` (`read(1.5)`, `read("3")`) | `TypeError` with `io.BytesIO`'s message, before anything is read; later reads return the member's bytes, never a translated archive error. `read(None)` reads to EOF |
 
 ### Requirement: Multi-volume and multi-source input
 
