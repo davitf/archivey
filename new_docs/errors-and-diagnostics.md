@@ -35,3 +35,10 @@ happens when nothing in the file confirmed its format, so archivey went by the f
 the format has no reliable signature and only a check of the contents suggested it, as for zlib or
 Brotli data. The file may not be in that format at all, such as a file of zeros named `backup.gz`,
 rather than a damaged one.
+
+Mistakes in the calling code raise `ArchiveyUsageError` instead, which isn't an `ArchiveyError`, so
+a catch-all for archive problems never hides a bug. The ones you're most likely to meet are calling
+`members()`, `open()` or `read()` on a reader opened with `streaming=True`, and opening a second
+member stream while another is still open, without `concurrent_members=True`. [Choosing how to
+read](reading.md) explains both. A source that isn't a path or a file object raises `TypeError`, and
+asking for a member name the archive doesn't have raises `KeyError`, as a dictionary would.
