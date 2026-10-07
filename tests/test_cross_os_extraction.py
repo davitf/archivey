@@ -618,6 +618,42 @@ def test_replace_over_a_read_only_directory_this_run_wrote(
     assert (dest / "d").read_bytes() == b"x"
 
 
+@_POSIX_SYMLINKS
+def test_replace_over_a_read_only_directory_first_created_as_a_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``d`` is created as the parent of ``d/x``, emptied when the streaming pass
+    removes the parked ``d/x`` for a blocked duplicate, then given ``0o555`` by a
+    ``d`` directory member. It is in ``created_dirs``, never ``written_paths``, and
+    the later file ``d`` still replaces it."""
+    _refuse_read_only(monkeypatch)
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(
+            _tar(
+                [
+                    ("file", "d/x", b"x"),
+                    ("sym", "d/x", "../../outside"),
+                    ("rodir", "d", None),
+                    ("file", "d", b"y"),
+                ]
+            )
+        ),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        streaming=True,
+        on_error=OnError.CONTINUE,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "d").read_bytes() == b"y"
+
+
 def test_anti_item_removes_a_read_only_directory_this_run_wrote(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

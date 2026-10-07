@@ -2596,15 +2596,19 @@ class ExtractionCoordinator:
         permission (``0o444``, ``0o555``) sets; POSIX checks only the parent directory.
         So a later member of the same name replaced the entry on POSIX and failed on
         Windows. The attribute is cleared only on a regular file or a directory this run
-        wrote (or parked): a read-only entry the caller already had stays protected, as
-        on Windows before. The attribute belongs to the file, not the name, so it is
+        wrote (or parked), or a directory it created as a parent that a later member made
+        read-only: a read-only entry the caller already had stays protected, as on
+        Windows before. The attribute belongs to the file, not the name, so it is
         put back on the other names of a file (hard links this run made) once the block
         is done, and on ``path`` itself if the block fails.
         """
         state = self._state
         st: os.stat_result | None = None
         if _WINDOWS and (
-            ours or path in state.written_paths or path in self._current.parked
+            ours
+            or path in state.written_paths
+            or path in state.created_dirs
+            or path in self._current.parked
         ):
             with contextlib.suppress(OSError):
                 st = os.lstat(path)
@@ -3053,11 +3057,13 @@ class ExtractionCoordinator:
         fan-out past the link-count limit to one copy per full file.
 
         The first path at the link-count limit ends the search with a copy. The paths
-        recorded before it are older names of the same file, or of a file that filled
-        up before it, so trying each would fail too, and would cost a failed call per
-        recorded path for every later link: quadratic in the number of links an archive
-        declares. A file that dropped below the limit since (a later member replaced
-        one of its names) is not tried again, which costs at most an extra copy.
+        recorded before it are older names of the same file, of a file that filled up
+        before it, or of a copy on another device, which could not take this link
+        either (``EMLINK`` means the destination is on the full file's device). So
+        trying each would fail too, and would cost a failed call per recorded path for
+        every later link: quadratic in the number of links an archive declares. A file
+        that dropped below the limit since (a later member replaced one of its names) is
+        not tried again, which costs at most an extra copy.
 
         The copy is a real write of the source's full size, so it goes through
         ``tracker`` and counts toward ``max_extracted_bytes``; a link adds no bytes.

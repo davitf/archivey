@@ -135,7 +135,7 @@ copy. Device bookkeeping MAY skip doomed attempts but is not required for correc
 | Orphaned link on forward-only source | Per-member failure follows `OnError` |
 | `B -> A` copied cross-device, then `C -> A` on B's device | `C` is created with `os.link(B, C)` rather than copying A again |
 | Every recorded path fails with `EXDEV` | Copy source content to link destination and record that path |
-| The newest recorded path fails with `EMLINK` (the 1025th name for one file on NTFS) | Same copy, with no older path tried; later links link to the copy |
+| A recorded path fails with `EMLINK` (the 1025th name for one file on NTFS) | Same copy, with no path older than that one tried; later links link to the copy |
 | Hardlink before the only member it names, random access or streaming | That link fails with `LinkTargetNotFoundError`; the later member extracts normally |
 
 ### Requirement: Detect truncated TAR archives

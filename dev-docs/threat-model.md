@@ -207,8 +207,8 @@ bytes. The outcome is the same on every platform. ADR
 
 **Mechanism.** `internal/filters.py` `apply_name_policy`:
 - Reserved device names (`_RESERVED_NAMES`: `CON`, `NUL`, `COM1`, ..., the ports
-  spelled with a superscript digit such as `COM¹`, `CONIN$`, `CONOUT$`) and `:` are rejected on every platform.
-  Both are unsafe, not merely non-portable.
+  spelled with a superscript digit such as `COM¹`, `CONIN$`, `CONOUT$`) and `:` are
+  rejected on every platform. Both are unsafe, not merely non-portable.
 - `STRICT` strips a trailing dot or space (`_strip_trailing_dot_space`), because Win32
   trims it silently and the reported path would differ from the real one. The rewrite is
   recorded as `ExtractionResult.presented_name`, the only record that survives a caller
