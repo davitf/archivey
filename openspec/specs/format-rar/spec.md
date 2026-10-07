@@ -1287,10 +1287,12 @@ When `ArchiveyConfig.rar_decompressor` is `none`, the system MUST NOT start `unr
 and not to read member data. Opening and listing SHALL work as with any other setting,
 including header-encrypted archives given the right password. A stored member that is
 not encrypted SHALL be read directly, as it is under every setting, when all of its
-parts were found. Every other member read SHALL raise `UnsupportedFeatureError` before
-any process starts or any source is copied, naming why the member cannot be read
-(compressed, encrypted, or split across volumes with a part missing) and the `unrar`
-setting that reads it. A compressed RAR 1.5/2.x old-style comment SHALL be `None`. When
+parts were found. A member with a part in a missing volume SHALL raise `TruncatedError`,
+as under every setting ("A set with volumes missing SHALL list what it has, then
+raise"): no program can read data that is not there. Every other member read SHALL raise
+`UnsupportedFeatureError` before any process starts or any source is copied, naming why
+the member cannot be read (compressed or encrypted) and the `unrar` setting that reads
+it. A compressed RAR 1.5/2.x old-style comment SHALL be `None`. When
 the archive has a file member that this setting refuses, `ar.cost.notes` SHALL say so at
 open.
 
@@ -1302,7 +1304,7 @@ open.
 | Compressed member | `UnsupportedFeatureError` naming "compressed"; no process starts |
 | Encrypted member, stored or compressed | `UnsupportedFeatureError` naming "encrypted" |
 | Stored member split across volumes | Its parts are joined and read; no process starts |
-| Stored member split across volumes, a later part missing | `UnsupportedFeatureError` naming "not every part was found" |
+| Stored member split across volumes, its first or a later part missing | `TruncatedError`, as under every setting; no process starts |
 | Stored member with its own solid flag | Read directly; no process starts |
 | Solid archive, `stream_members()` | Each member's read is refused on its own; no solid pass starts |
 | Header-encrypted archive, right password | Lists; no process starts |
