@@ -908,10 +908,28 @@ exists to find whose output matches a stored checksum, and there is none to matc
 **When a digest exists but sits past the budget**, rung 2 governs, and the unbounded pass a
 non-rejecting chain runs there is per candidate when the set is ambiguous.
 
+**Resolving several candidates.** A `CONFIRMED` candidate SHALL be accepted at once,
+and no later candidate SHALL be probed for that unit. A `REJECTED` candidate SHALL be
+skipped. An `INCONCLUSIVE` candidate SHALL NOT be accepted while static candidates remain
+to probe: every remaining static candidate SHALL be probed with the same bounded plan.
+Then:
+
+- one survivor SHALL be accepted, `INCONCLUSIVE`;
+- several survivors SHALL each, in candidate order, run the **full check**: the plan that
+  walks to the unit's end anchor whatever the codec. The first survivor it confirms SHALL
+  be accepted. When the unit has no anchor to walk to, the first survivor SHALL be
+  accepted, `INCONCLUSIVE`. When the full check rejects every survivor, the provider, if
+  any, SHALL be consulted as if no static candidate had survived;
+- provider answers SHALL NOT be gathered this way: the provider stays lazy, and its first
+  answer that is not `REJECTED` SHALL be accepted.
+
+The full check is proportional to the unit's size, and it SHALL run only for candidates
+that survived the bounded plan when more than one did.
+
 A `CONFIRMED` candidate SHALL be added to known-good. An `INCONCLUSIVE` candidate
 SHALL be added to known-good only when the candidate set is unambiguous. The
 candidate loop remains `_PasswordCandidates.attempt`; confirmation supplies the
-probe. A second driver SHALL NOT be introduced.
+bounded probe and the full check. A second driver SHALL NOT be introduced.
 
 Accepting an `INCONCLUSIVE` candidate SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED` if the
 caller then abandons the member's stream before its declared digest is reached.
@@ -934,7 +952,10 @@ the format's normal lazy streaming path.
 | Case | Expected |
 | --- | --- |
 | Wrong candidate passes weak check first of two | Reject via confirmation; stream from correct candidate |
-| Large member, many candidates | Confirmation bounded — not proportional to member size |
+| Large member, many candidates, at most one survives the bounded plan | Confirmation bounded — not proportional to member size |
+| Rejecting codec, CRC past budget, two candidates survive the prefix | Each survivor in order walks to the CRC; the one it matches wins and joins known-good |
+| Rejecting codec, CRC past budget, the right candidate after a wrong one | Wrong one `REJECTED` or settled by the full check; the right one is served |
+| First candidate `CONFIRMED` | Later candidates are not probed |
 | Provider answer fails confirmation | Request next answer without pre-enumerating; accept only after confirm |
 | Anchor reachable within budget | Decode to the anchor only, never past it |
 | Unit carries both an early per-item checksum and a whole-unit checksum | The earlier one decides |
@@ -1216,6 +1237,11 @@ member (`LinkTargetNotFoundError`) rather than report `LINK_TARGET_UNAVAILABLE`.
 `SYMLINK_TARGET_UNAVAILABLE` is in `ARCHIVE_INTEGRITY_CODES`, so
 `DiagnosticPolicy.strict()` refuses the archive.
 
+For a RAR3/4 stored target, a declared size that differs from the packed size is damage
+rather than an oversized target: it SHALL be refused before the cap is consulted, and is
+reported as the damaged-target requirement says (`reason="target_data_damaged"`), not as
+`target_too_long`.
+
 A Windows reparse buffer stored as member data SHALL be read as far as its own header
 declares: the 8-byte header, then the payload length its 16-bit `ReparseDataLength`
 states (plus one byte, so a member that is exactly one buffer reaches end of stream and
@@ -1382,10 +1408,10 @@ When a backend reads a symlink's target from the member's data and that read rai
 `CorruptionError` or `TruncatedError` (a CRC or HMAC mismatch, a decompressor failure,
 data past the declared size, data the file cuts short), link finalization SHALL NOT
 raise it. ZIP and 7z verify that read like any member read. RAR3/4 reads the target
-bytes straight out of the archive with no check, so it has nothing to fail: a damaged
-RAR3/4 target is returned as it is stored. The link SHALL stay listed with its type and
-`link_target` unset, the other links SHALL still be resolved, and
-`SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with `reason="target_data_damaged"` and a
+bytes straight out of the archive, after refusing a header whose declared size differs
+from its packed size, and holds them to the member's data CRC32. The link SHALL stay
+listed with its type and `link_target` unset, the other links SHALL still be resolved,
+and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with `reason="target_data_damaged"` and a
 message naming the fault. The member SHALL NOT be memoized as resolved: opening the link,
 following it, or extracting it SHALL read the target again and raise the fault itself,
 and extraction SHALL record that link as a per-member failure. `SYMLINK_TARGET_UNAVAILABLE`
@@ -1403,3 +1429,5 @@ This holds in random access and at the end of a streaming pass alike.
 | WinZip AES symlink with a failing HMAC, one password or several | Listed targetless with `reason="target_data_damaged"` |
 | 7z symlink whose data fails its CRC | Listed targetless with `reason="target_data_damaged"` |
 | ZIP symlink whose data outruns its declared size | Listed targetless; the message names the declared size |
+| RAR3/4 stored symlink whose data fails its CRC32 | Listed targetless with `reason="target_data_damaged"` |
+| RAR3/4 stored symlink whose declared size differs from its packed size, either way | Listed targetless with `reason="target_data_damaged"`; nothing is read past the packed data |

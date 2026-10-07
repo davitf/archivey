@@ -17,8 +17,17 @@ The ladder has three rungs, strongest first:
 
 Confirmation is a *rejection filter*, not a proof. The caller's own stream still runs
 the authoritative digest at EOF. The candidate loop stays
-:meth:`~archivey.internal.password._PasswordCandidates.attempt`; this module only
-supplies the probe.
+:meth:`~archivey.internal.password._PasswordCandidates.attempt`;
+:func:`attempt_with_confirm` gives it the rule for several candidates:
+
+- A ``CONFIRMED`` candidate wins at once, so an expensive key derivation runs for no
+  candidate after it.
+- A ``REJECTED`` one is skipped.
+- An ``INCONCLUSIVE`` one does not win outright. Every remaining candidate is probed
+  as well. A lone survivor wins; when several survive, each in order runs a full check
+  that walks to the unit's end anchor, until one is ``CONFIRMED``.
+
+Each format supplies the two checks: a bounded probe and the full check.
 """
 
 from __future__ import annotations
@@ -30,8 +39,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import BinaryIO, TypeVar
 
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.streamtools.base import DelegatingStream
+from archivey.types import ArchiveMember
 
 # Codecs measured to fail on random input, which is what a wrong key decrypts to
 # (``tests/test_password_confirm.py`` re-measures every one). A unit where one of them
@@ -258,6 +269,41 @@ def run_password_confirm_plan(
         PasswordConfirmVerdict.CONFIRMED
         if plan.confirms
         else PasswordConfirmVerdict.INCONCLUSIVE
+    )
+
+
+def attempt_with_confirm(
+    passwords: _PasswordCandidates,
+    member: ArchiveMember | None,
+    probe: Callable[[bytes], tuple[_T, PasswordConfirmVerdict]],
+    full_check: Callable[[bytes], tuple[_T, PasswordConfirmVerdict]] | None,
+) -> tuple[_T, PasswordConfirmVerdict]:
+    """Pick a password for one unit from ``passwords`` by confirmation.
+
+    ``probe`` judges one candidate with a bounded check and ``full_check`` with one
+    that walks to the unit's end anchor. Both return their result with a verdict that
+    is never ``REJECTED``: a rejected candidate raises the wrong-password
+    ``EncryptionError`` instead, so the loop moves on. ``full_check`` is ``None`` when
+    the probe is already the full check.
+
+    A ``CONFIRMED`` candidate wins at once. ``INCONCLUSIVE`` candidates are gathered
+    and settled as :meth:`~archivey.internal.password._PasswordCandidates.attempt`
+    describes. The winner joins the known-good passwords when it was confirmed, or
+    when it was the only password there was; a candidate that only survived a probe
+    while another could still be right stays out, so later units do not try it first.
+    """
+
+    def is_confirmed(result: tuple[_T, PasswordConfirmVerdict]) -> bool:
+        return result[1] is PasswordConfirmVerdict.CONFIRMED
+
+    def promote(result: tuple[_T, PasswordConfirmVerdict]) -> bool:
+        return is_confirmed(result) or not passwords.is_ambiguous()
+
+    settle = (
+        None if full_check is None else lambda password, _result: full_check(password)
+    )
+    return passwords.attempt(
+        member, probe, promote=promote, settled=is_confirmed, settle=settle
     )
 
 

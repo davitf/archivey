@@ -1,9 +1,8 @@
 """Cross-format audit: a protection one backend applies and another skips.
 
-Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` with the
-gap it pins, so a fix turns it into an XPASS failure and the marker has to go. The
-per-backend audits cover each format in depth; these are the cells of the protection
-matrix where formats disagree with each other or with the published docs.
+The per-backend audits cover each format in depth; these tests pin the cells of the
+protection matrix where formats disagreed with each other or with the published docs,
+so each format keeps the promised behaviour.
 """
 
 from __future__ import annotations
@@ -223,12 +222,34 @@ def _iso_month_13(tmp_path: Path) -> Path:
     return out
 
 
+def _zip_month_13(tmp_path: Path) -> Path:
+    out = tmp_path / "month13.zip"
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("f.txt", date_time=(2001, 13, 1, 0, 0, 0)), b"x")
+    return out
+
+
+def _tar_mtime_overflow(tmp_path: Path) -> Path:
+    out = tmp_path / "mtime.tar"
+    # PAX on purpose: GNU stores the value as base-256 and USTAR refuses it.
+    with tarfile.open(out, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("f.txt")
+        info.size = 1
+        info.mtime = 2**62  # past datetime's range
+        tf.addfile(info, io.BytesIO(b"x"))
+    return out
+
+
+# ``field`` is per case because backends name it differently: RAR, 7z and ISO give the
+# member attribute ("modified"), ZIP and TAR the stored field ("date_time", "mtime").
+# See MemberTimestampContext.
 @pytest.mark.parametrize(
-    ("build", "label", "source", "value_re"),
+    ("build", "label", "field", "source", "value_re"),
     [
         pytest.param(
             _rar4_month_13,
             "RAR DOS timestamp",
+            "modified",
             "dos",
             "0x5daca824",
             id="rar4-dos-month-13",
@@ -236,6 +257,7 @@ def _iso_month_13(tmp_path: Path) -> Path:
         pytest.param(
             _rar5_filetime_overflow,
             "NTFS timestamp",
+            "modified",
             "ntfs",
             str(2**64 - 1),
             id="rar5-filetime-overflow",
@@ -244,16 +266,36 @@ def _iso_month_13(tmp_path: Path) -> Path:
         pytest.param(
             _iso_month_13,
             "ISO 9660 date",
+            "modified",
             "directory_record",
             r"\(\d+, 13, \d+, \d+, \d+, \d+\)",
             id="iso-month-13",
             marks=requires("pycdlib"),
+        ),
+        pytest.param(
+            _zip_month_13,
+            "ZIP date_time",
+            "date_time",
+            "dos",
+            re.escape("(2001, 13, 1, 0, 0, 0)"),
+            id="zip-month-13",
+        ),
+        # The pax record carries the time as a decimal string; tarfile reads it back
+        # as a float.
+        pytest.param(
+            _tar_mtime_overflow,
+            "TAR mtime",
+            "mtime",
+            "tar",
+            r"4\.6116\d*e\+18",
+            id="tar-mtime-overflow",
         ),
     ],
 )
 def test_invalid_timestamp_is_none_and_reported(
     build: Callable[[Path], Path],
     label: str,
+    field: str,
     source: str,
     value_re: str,
     tmp_path: Path,
@@ -271,7 +313,7 @@ def test_invalid_timestamp_is_none_and_reported(
     assert counts.get(DiagnosticCode.MEMBER_TIMESTAMP_INVALID, 0) == 1
     context = diagnostic.context
     assert isinstance(context, MemberTimestampContext)
-    assert (context.field, context.source) == ("modified", source)
+    assert (context.field, context.source) == (field, source)
     assert re.fullmatch(value_re, context.value_repr)
     assert diagnostic.message == (
         f"Invalid {label} for {quoted(member.name)}: {context.value_repr}"

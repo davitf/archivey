@@ -221,14 +221,16 @@ def test_a_rar4_stored_target_over_the_cap_is_refused(
     same cap holds, so the three formats agree on what a too-long target is.
 
     The header is patched rather than written, as in `test_windows_reparse`: RAR 7
-    cannot write RAR4 at all, and the size is the only field the branch consults.
+    cannot write RAR4 at all, and the sizes are the only fields the branch consults.
+    Both are patched: a stored target whose two sizes disagree is damage, which is
+    reported before the cap (`test_damaged_link_target.py`).
     """
     original_init = RarMemberInfo.__init__
 
     def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)  # type: ignore[arg-type]
         if self.is_symlink:
-            self.file_size = MAX_LINK_TARGET_BYTES + 1
+            self.file_size = self.compress_size = MAX_LINK_TARGET_BYTES + 1
 
     monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
 

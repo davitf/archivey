@@ -219,7 +219,7 @@ the reader closes. Listing never needs it. `ArchiveyConfig.spool_limits` bounds 
 the limit raises `ResourceLimitError` before anything is written, and later reads on that
 reader are refused the same way. `None` (`SpoolLimits.UNLIMITED`) removes the limit, and
 `0` refuses every copy, which leaves only the members archivey reads without `unrar`
-(stored members of a non-solid archive). The copy goes to the platform temporary
+(stored, unencrypted members). The copy goes to the platform temporary
 directory; where that is memory-backed (`tmpfs`), the limit bounds memory rather than
 disk. The same limit holds what a solid pass keeps for RAR5 file copies (`rar -oi`):
 the pass keeps each copy's source as it decodes it, so the copy does not decode the
@@ -253,6 +253,12 @@ within a few bytes, so a wrong candidate costs the key derivation and little els
 one expensive case left is **store/copy+AES** (or PPMd) with its only CRC at the end of
 a large folder: nothing rejects a wrong key before that CRC, so each candidate reads to
 it. Prefer a single known password there.
+
+When more than one candidate survives the 64 KiB check, each survivor in turn is decoded
+to the member's CRC until one matches. That walk is proportional to the member's size,
+and it happens only for a list with several passwords a decoder could not tell apart
+early (RAR3/4 data, which has no password check, needs it for about one wrong password
+in three).
 
 A password that only a weak check accepted, or that no check tested at all (RAR3/4
 encrypted data has none), leaves the member's own checksum as the real test, and that
