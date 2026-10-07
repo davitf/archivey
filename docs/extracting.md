@@ -88,7 +88,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   `filter` runs before these checks, so it sees every member and can rename an unsafe
   one; the name it returns is the one checked. `archivey.sanitize_names` is a ready-made
   filter that renames instead of refusing: it drops roots, resolves or drops `..`,
-  removes bidi overrides, and adds `_` to Windows-reserved names and `:`.
+  removes bidi overrides, and adds `_` to Windows-reserved names and `:`. It rewrites a
+  symlink target's segments the same way (`file:stream` → `file_stream`), but keeps its
+  root and its `..`, and leaves a drive or UNC target to be refused.
 - **Extraction-root overwrite:** a *file* member whose normalized name is `"."` or `""`
   is rejected (`FilterRejectionError`); only a directory member may name the extraction
   root. Prevents a corrupt archive from replacing the destination directory with a
@@ -102,10 +104,13 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   extracted. A link that now escapes is removed, and its result, which a progress
   callback may already have seen as `EXTRACTED`, becomes `BLOCKED`. A `..` in a target
   that stays inside the destination is not refused.
-- **Windows link targets:** a symlink target with a drive letter (`C:/Windows`, `C:x`)
-  or a UNC root (`//server/share`) is refused at every policy and on every OS. Windows
-  would follow it out of the destination, and refusing it everywhere means an archive
-  extracts the same way wherever you extract it. A Windows symlink or junction from a
+- **Windows link targets:** a symlink or hardlink target with a drive letter
+  (`C:/Windows`, `C:x`) or a UNC root (`//server/share`) is refused at every policy and
+  on every OS. Windows would follow it out of the destination, and refusing it
+  everywhere means an archive extracts the same way wherever you extract it. (Under
+  `STANDARD` and `TRUSTED` a hardlink's rooted target is re-rooted first.) One
+  exception: a symlink target that starts with a single `\` (`\foo`) extracts on POSIX,
+  where a backslash is an ordinary filename character; Windows refuses it. A Windows symlink or junction from a
   ZIP, 7z or RAR archive lists with `/` separators and without the `\??\` prefix
   (`\??\C:\Windows` lists as `C:/Windows`, `..\up\x` as `../up/x`). Under `STRICT`
   and `STANDARD`, a `:` or a Windows-reserved device name in a target segment

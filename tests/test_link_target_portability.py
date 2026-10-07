@@ -8,13 +8,16 @@ lists as ``C:/Windows`` and ``..\\up\\x`` as ``../up/x`` in every format, as unr
 
 Extraction then applies the maintainer's ruling of 2026-10-06 (portability: one archive
 gives one outcome on every OS, and Windows already refuses drive paths): a symlink
-target with a drive letter or a UNC root is refused at every policy on every OS. A
-``:`` or a Windows-reserved device name in a target segment is refused under ``STRICT``
-and ``STANDARD``, as it is in a member name; ``TRUSTED`` keeps deferring to the OS.
+or hardlink target with a drive letter or a UNC root is refused at every policy on
+every OS, except a symlink target rooted by a single ``\\``, which POSIX reads as a
+filename. A ``:`` or a Windows-reserved device name in a target segment is refused
+under ``STRICT`` and ``STANDARD``, as it is in a member name; ``TRUSTED`` keeps
+deferring to the OS.
 """
 
 from __future__ import annotations
 
+import io
 import os
 import struct
 import tarfile
@@ -25,7 +28,13 @@ from typing import Callable
 
 import pytest
 
-from archivey import ExtractionPolicy, ExtractionStatus, OnError, open_archive
+from archivey import (
+    ExtractionPolicy,
+    ExtractionStatus,
+    OnError,
+    open_archive,
+    sanitize_names,
+)
 from archivey.exceptions import FilterRejectionError
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
@@ -307,3 +316,106 @@ def test_a_tar_symlink_with_a_windows_root_is_refused(
     assert result.status is ExtractionStatus.BLOCKED
     assert isinstance(result.error, FilterRejectionError)
     assert result.error.message == _DRIVE_OR_UNC
+
+
+def _tar(path: Path, entries: list[tuple[str, bytes, str | None]]) -> Path:
+    """A tar of ``(name, type, linkname)`` entries; a regular file holds ``b"data"``."""
+    with tarfile.open(path, "w") as tf:
+        for name, kind, linkname in entries:
+            info = tarfile.TarInfo(name)
+            info.type = kind
+            if linkname is not None:
+                info.linkname = linkname
+            if kind == tarfile.REGTYPE:
+                info.size = 4
+                tf.addfile(info, io.BytesIO(b"data"))
+            else:
+                tf.addfile(info)
+    return path
+
+
+@pytest.mark.parametrize(
+    ("policy", "target"),
+    [
+        # STANDARD and TRUSTED re-root a rooted hardlink target, so only STRICT
+        # keeps one; a drive-relative target has no root to drop at any policy.
+        (ExtractionPolicy.STRICT, "C:/x"),
+        (ExtractionPolicy.STRICT, "//host/share/x"),
+        (ExtractionPolicy.STRICT, "c:x"),
+        (ExtractionPolicy.STANDARD, "c:x"),
+        (ExtractionPolicy.TRUSTED, "c:x"),
+    ],
+    ids=lambda v: v.name if isinstance(v, ExtractionPolicy) else v,
+)
+def test_a_hardlink_with_a_windows_root_is_refused(
+    tmp_path: Path, policy: ExtractionPolicy, target: str
+) -> None:
+    """Windows resolves ``dest / "C:/x"`` off the drive, so POSIX refuses it too."""
+    path = _tar(
+        tmp_path / "a.tar",
+        [(target, tarfile.REGTYPE, None), ("hl", tarfile.LNKTYPE, target)],
+    )
+    dest = tmp_path / "out"
+    with open_archive(path) as archive:
+        report = archive.extract_all(dest, policy=policy, on_error=OnError.CONTINUE)
+    link = next(r for r in report.results if r.member.name == "hl")
+    assert link.status is ExtractionStatus.BLOCKED
+    assert isinstance(link.error, FilterRejectionError)
+    assert link.error.message == "Hardlink target is a Windows drive or UNC path"
+    assert not os.path.lexists(dest / "hl")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a separator on Windows")
+@pytest.mark.parametrize("policy", list(ExtractionPolicy), ids=lambda p: p.name)
+def test_a_backslash_rooted_symlink_target_extracts_on_posix(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The rule's named exception: on POSIX ``\\foo`` is a relative name."""
+    path = _tar(tmp_path / "a.tar", [("bs", tarfile.SYMTYPE, "\\foo")])
+    dest = tmp_path / "out"
+    with open_archive(path) as archive:
+        (result,) = archive.extract_all(
+            dest, policy=policy, on_error=OnError.CONTINUE
+        ).results
+    assert result.status is ExtractionStatus.EXTRACTED, result.error
+    assert os.readlink(dest / "bs") == "\\foo"
+
+
+def test_sanitize_names_rewrites_a_symlink_target_s_segments(tmp_path: Path) -> None:
+    """The link points at the name the filter gave the member it links to; a drive
+    target is not rewritten into a different link and stays refused."""
+    path = _tar(
+        tmp_path / "a.tar",
+        [
+            ("file:stream", tarfile.REGTYPE, None),
+            ("link", tarfile.SYMTYPE, "file:stream"),
+            ("dev", tarfile.SYMTYPE, "sub/NUL"),
+            ("up", tarfile.SYMTYPE, "../out/file:stream"),
+            ("drv", tarfile.SYMTYPE, "C:/x"),
+        ],
+    )
+    dest = tmp_path / "out"
+    with open_archive(path) as archive:
+        report = archive.extract_all(
+            dest,
+            policy=ExtractionPolicy.STANDARD,
+            filter=sanitize_names,
+            on_error=OnError.CONTINUE,
+        )
+    results = {r.member.name: r for r in report.results}
+    assert results["file:stream"].status is ExtractionStatus.EXTRACTED
+    assert (dest / "file_stream").read_bytes() == b"data"
+    drv = results["drv"]
+    assert drv.status is ExtractionStatus.BLOCKED
+    assert isinstance(drv.error, FilterRejectionError)
+    assert drv.error.message == _DRIVE_OR_UNC
+    if os.name == "nt":
+        return  # creating a symlink needs a privilege CI may not hold
+    for name, written in [
+        ("link", "file_stream"),
+        ("dev", "sub/NUL_"),
+        # ``..`` is kept: a symlink target is relative to the link, not re-rooted.
+        ("up", "../out/file_stream"),
+    ]:
+        assert results[name].status is ExtractionStatus.EXTRACTED, results[name].error
+        assert os.readlink(dest / name) == written

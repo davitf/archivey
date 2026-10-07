@@ -128,23 +128,32 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
 | Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK/HARDLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
 | Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
-| Symlink Windows root | `FilterRejectionError` | SYMLINK whose `link_target` starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS |
+| Link-target Windows root | `FilterRejectionError` | SYMLINK or HARDLINK whose `link_target` (after any re-root) starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a SYMLINK target rooted by a single `\` (`\foo`) |
 | Hardlink escape | `FilterRejectionError` | HARDLINK whose target path resolves outside `dest` |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
 
-**A symlink target with a Windows root is refused on every OS.** Windows resolves a
+**A link target with a Windows root is refused on every OS.** Windows resolves a
 drive or UNC target outside `dest` and refuses it as an escape; POSIX would create it as
 a relative link into a directory named `C:`. The maintainer ruled on 2026-10-06 to
 refuse it on POSIX too, for the portability rule: the same archive SHALL give the same
 outcome on any OS, and Windows already refuses drive paths. The rule applies to every
-format, because it reads the target string. A Windows symlink or junction's target is
+format, because it reads the target string. It covers a HARDLINK target as well:
+`STANDARD` and `TRUSTED` re-root a rooted one first, so it refuses `STRICT`'s `C:/x`
+and a drive-relative `C:x`, which is also what a member of that name gets.
+
+The rule has one named exception. A SYMLINK target rooted by a single `\` (`\foo`)
+SHALL extract on POSIX, where it is a relative link to a file named `\foo`, although
+Windows resolves it to the drive root and refuses it as an escape. On POSIX a backslash
+is an ordinary filename character, so refusing the target would block an archive that is
+valid there, and ADR 0013 rules that extracting beats refusing. A Windows symlink or junction's target is
 normalized before this check in ZIP, 7z and RAR5 alike (`\` to `/`, the `\??\`
 prefix dropped, `UNC\` to `//`), so `\??\C:\Windows` is checked as `C:/Windows`.
 
 **Bidi overrides are rejected by the *policy*, not universally.** Every other
-constraint in this requirement makes the **write itself** dangerous or impossible — it
-escapes the destination, carries a NUL the OS truncates on, or names a device. A bidi
-override does neither: the member lands inside `dest` under exactly its stored bytes, and
+constraint in this requirement meets one of two criteria: the **write itself** is
+dangerous or impossible — it escapes the destination, carries a NUL the OS truncates on,
+or names a device — or the **outcome would differ by OS**, as for a link target with a
+Windows root. A bidi override meets neither: the member lands inside `dest` under exactly its stored bytes, and
 what is compromised is the name a person **reads back afterwards**. That is a
 presentation property, and presentation is the axis `ExtractionPolicy` owns.
 
@@ -198,6 +207,9 @@ read back.
 | Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
 | SYMLINK/HARDLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
 | SYMLINK `link_target` `C:/Windows`, `C:/abs/y`, `t:stream` or `//srv/share`, any policy, any OS | `FilterRejectionError` ("Symlink target is a Windows drive or UNC path"); no link written |
+| HARDLINK `link_target` `C:/x` under `STRICT`, or `C:x` at any policy, any OS | `FilterRejectionError` ("Hardlink target is a Windows drive or UNC path"); no link written |
+| SYMLINK `link_target` `\foo`, any policy, POSIX | Extracted: a link to the file `\foo` beside it |
+| SYMLINK `link_target` `file:stream` or `sub/NUL` with `filter=sanitize_names`, `STANDARD` | Extracted, pointing at `file_stream` or `sub/NUL_`; `C:/x` is still refused |
 | Windows symlink or junction stored as `\??\C:\Windows`, `\??\UNC\srv\share` or `..\up\x` (ZIP, 7z, RAR5) | Lists as `C:/Windows`, `//srv/share`, `../up/x`; the first two refused as above, the third as an escape |
 | Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
 | `MemberType.OTHER` | `FilterRejectionError`; all policies |

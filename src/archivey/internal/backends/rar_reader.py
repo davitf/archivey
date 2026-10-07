@@ -390,8 +390,12 @@ def _rar5_redirect_target(file_redir: tuple[int, int, str]) -> str:
 
     A Windows symlink or junction stores a Windows path, so it is normalized the way a
     ZIP or 7z reparse buffer is (``\\??\\C:\\x`` gives ``C:/x``, ``..\\up`` gives
-    ``../up``), as unrar does on POSIX. A Unix symlink, a hard link and a file copy
-    keep the stored string: in those a backslash can be part of a name.
+    ``../up``). Every ``\\`` becomes ``/``, as unrar's ``DosSlashToUnix`` does on
+    POSIX. Dropping the ``\\??\\`` prefix is archivey's own step, and extraction then
+    refuses a drive or UNC result. unrar 7.00 on POSIX refuses the prefixed spellings
+    too, by a different route, but creates an unprefixed ``C:\\abs\\y`` as a relative
+    link (``dev-docs/formats/rar.md``). A Unix symlink, a hard link and a
+    file copy keep the stored string: in those a backslash can be part of a name.
     """
     redir_type, _flags, target = file_redir
     if redir_type in _RAR5_XREDIR_REPARSE_POINTS:

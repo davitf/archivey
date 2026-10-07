@@ -944,8 +944,11 @@ class ExtractionPolicy(Enum):
     and extract inside the destination (``/etc/x`` → ``etc/x``), as tar and unzip do.
 
     What ``TRUSTED`` does **not** relax: anything where the write itself is unsafe — a
-    name that escapes the destination, carries a NUL, or names a device node. Those are
-    universal. It *does* extract a name built to display as something else
+    name that escapes the destination, carries a NUL, or names a device node — and
+    anything whose outcome would differ by OS: a symlink or hardlink target with a
+    Windows drive letter or UNC root (``C:/Windows``, ``//server/share``) is refused on
+    every OS, because Windows refuses it. So a Windows symlink to a drive path does not
+    round-trip at any policy. Those are universal. It *does* extract a name built to display as something else
     (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD`` refuse with
     ``FilterRejectionError``: such a member lands inside the destination under exactly its
     stored bytes, so the risk is to a human reading the directory afterwards, not to the
