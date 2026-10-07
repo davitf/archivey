@@ -297,7 +297,7 @@ a tar (a hardlink with no earlier source has no target, §2.3), so an unfiltered
 Then a seekable reader makes one second pass for all such links together, and a
 forward-only one records each as a failure under `OnError`. A cross-device link falls
 back to copying from a path already written, as does a link past the filesystem's
-link-count limit (1023 on NTFS). The full matrix is in
+link-count limit (1024 names for one file on NTFS). The full matrix is in
 [`format-tar`](../../openspec/specs/format-tar/spec.md).
 
 **Special files are blocked.** A device, FIFO or socket member is `OTHER`, and the
@@ -420,7 +420,7 @@ extraction checks (§2.4).
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
 | Count a sparse member's holes as output (maintainer ruling, 2026-09-25) | Extraction writes them as zeros, so they cost the disk what any decompressed byte costs, and the ratio guard is what protects the disk. Revisit if extraction ever preserves holes, as `tar -x` does, since the disk would then hold only the data | Counting only the data blocks, which would let a few hundred bytes of sparse map fill the disk |
 | Keep `extractfile()`, under one lock | It is the only sparse expansion in the tree, and it is stdlib's | Reading member bytes directly, which would need a sparse implementation |
-| A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there. Extraction under `STRICT` and `STANDARD` still writes it as `a/b`, the tree Windows would create, so the result is the same on every OS | Treating it as a separator in `name` the way the ZIP and 7z backends do |
+| A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there. Extraction under `STRICT` and `STANDARD` still writes it as `a/b`, the tree Windows would create, and rewrites a link target the same way so a link to that member follows it; the result is the same on every OS | Treating it as a separator in `name` the way the ZIP and 7z backends do |
 | Walk headers in batches sized by what the caps have left | The cap then bounds what tarfile parses, not only what archivey keeps, at the speed of one dense pass | `getmembers()`, which parsed the whole file before the first member was counted; one header per lock hold, which alternated parsing with member construction and was slower |
 
 ## 7. Open questions
@@ -467,7 +467,8 @@ extraction checks (§2.4).
 | A PAX header's size does not drive an allocation (O15) | `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation` |
 | The listing stops reading headers at `max_members` and `max_metadata_bytes`, returns to full batches past the cap, and keeps its prefix when it fails mid-batch | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_listing_stops_reading_headers_at_max_metadata_bytes`, `::test_tar_header_batch_returns_to_full_size_past_max_members`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch` |
 | Links: relative, `..`, absolute, archive-relative hardlinks, duplicate names, cycles | `tests/test_tar.py::test_relative_symlink_resolves_against_link_directory` through `::test_chain_through_same_named_members_not_false_cycle` |
-| Hardlink extraction: one pass, orphans, cross-device | `tests/test_extraction.py::test_tar_hardlink_shares_inode`, `::test_tar_hardlink_orphan_recovered_seekable`, `::test_tar_hardlink_orphan_forward_only_onerror`, `::test_cross_device_hardlink_reuses_sibling` |
+| Hardlink extraction: one pass, orphans, cross-device, past the link-count limit | `tests/test_extraction.py::test_tar_hardlink_shares_inode`, `::test_tar_hardlink_orphan_recovered_seekable`, `::test_tar_hardlink_orphan_forward_only_onerror`, `::test_cross_device_hardlink_reuses_sibling`; `tests/test_cross_os_extraction.py::test_hard_link_past_the_link_limit_is_copied` |
+| `\` in a name or link target under `STRICT`/`STANDARD` | `tests/test_cross_os_extraction.py::test_tar_backslash_is_written_as_a_separator`, `::test_hardlink_target_backslash_becomes_a_separator`, `::test_hardlink_resolves_by_its_stored_target`, `::test_symlink_to_a_member_named_with_a_backslash_resolves`, `::test_symlink_target_backslash_cannot_climb_out` |
 | A hardlink resolves backward only, in both modes | `tests/test_tar.py::test_hardlink_resolves_to_an_earlier_member_only`, `tests/test_extraction.py::test_hardlink_before_source_is_not_linked_forward` |
 | `stream_members()` on a random-access compressed tar decodes once | `tests/test_audit_cross_format.py::test_compressed_tar_stream_members_decodes_once` |
 | Ratio guard: static for a path, live for a piped `.tar.gz`, no live check on a plain tar | `::test_seekable_targz_uses_static_not_live`, `::test_streaming_targz_bomb_caught_by_live_ratio`, `::test_streaming_plain_tar_no_live_ratio_trip` |

@@ -19,7 +19,11 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionPolicy, ExtractionStatus, OnError, OverwritePolicy
-from archivey.exceptions import ExtractionError, FilterRejectionError
+from archivey.exceptions import (
+    ExtractionError,
+    FilterRejectionError,
+    LinkTargetNotFoundError,
+)
 from archivey.internal import extraction
 from archivey.internal.filters import apply_name_policy
 from archivey.types import ArchiveMember, MemberType
@@ -33,7 +37,8 @@ _POSIX_SYMLINKS = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlin
 
 def _tar(specs: list[tuple[str, str, bytes | str | None]]) -> bytes:
     """A tar from ``(kind, name, payload)``: kind ``file`` or ``ro`` (a read-only file;
-    bytes), ``dir``, ``sym`` or ``hard`` (link target)."""
+    bytes), ``dir`` or ``rodir`` (a read-only directory), ``sym`` or ``hard`` (link
+    target)."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
         for kind, name, payload in specs:
@@ -44,9 +49,9 @@ def _tar(specs: list[tuple[str, str, bytes | str | None]]) -> bytes:
                 info.mode = 0o644 if kind == "file" else 0o444
                 tf.addfile(info, io.BytesIO(payload))
                 continue
-            if kind == "dir":
+            if kind in ("dir", "rodir"):
                 info.type = tarfile.DIRTYPE
-                info.mode = 0o755
+                info.mode = 0o755 if kind == "dir" else 0o555
             else:
                 assert isinstance(payload, str)
                 info.type = tarfile.SYMTYPE if kind == "sym" else tarfile.LNKTYPE
@@ -125,16 +130,72 @@ def test_tar_backslash_meets_a_file_of_the_same_name_as_a_slash_does(
 def test_hardlink_target_backslash_becomes_a_separator(
     tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
-    member = _member("h", type=MemberType.HARDLINK, link_target="d\\f")
-    assert apply_name_policy(member, policy).link_target == "d/f"
-    # A symlink target is a filesystem path and is not rewritten here.
-    link = _member("s", type=MemberType.SYMLINK, link_target="d\\f")
-    assert apply_name_policy(link, policy).link_target == "d\\f"
+    for type in (MemberType.HARDLINK, MemberType.SYMLINK):
+        member = _member("h", type=type, link_target="d\\f")
+        assert apply_name_policy(member, policy).link_target == "d/f"
 
     archive = _tar([("file", "d\\f", b"data"), ("hard", "h\\g", "d\\f")])
     report = open_and_extract(io.BytesIO(archive), tmp_path / "out", policy=policy)
     assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
     assert (tmp_path / "out" / "h" / "g").read_bytes() == b"data"
+
+
+@_PORTABLE
+def test_hardlink_resolves_by_its_stored_target(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The target rewrite does not change which member a hard link names.
+
+    The reader matches a hard link to a member by the stored spelling, before any
+    policy runs, so ``d\\f`` does not name the member stored ``d/f`` on any OS. The
+    rewrite only puts the target on the path the universal check sees.
+    """
+    archive = _tar([("file", "d/f", b"data"), ("hard", "h", "d\\f")])
+    report = open_and_extract(
+        io.BytesIO(archive), tmp_path / "out", policy=policy, on_error=OnError.CONTINUE
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.FAILED,
+    ]
+    assert isinstance(report.results[1].error, LinkTargetNotFoundError)
+
+
+@_POSIX_SYMLINKS
+@_PORTABLE
+def test_symlink_to_a_member_named_with_a_backslash_resolves(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """The file ``a\\b`` is written at ``a/b``, so the link to it must follow."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(_tar([("file", "a\\b", b"x"), ("sym", "l", "a\\b")])),
+        dest,
+        policy=policy,
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert (dest / "l").read_bytes() == b"x"
+    # The member still records the target as stored.
+    assert report.results[1].member.link_target == "a\\b"
+
+
+@_PORTABLE
+def test_symlink_target_backslash_cannot_climb_out(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """``..\\x`` is ``../x`` once rewritten, which leaves the destination."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(_tar([("sym", "l", "..\\x")])),
+        dest,
+        policy=policy,
+        on_error=OnError.CONTINUE,
+    )
+    result = report.results[0]
+    assert result.status is ExtractionStatus.BLOCKED
+    assert isinstance(result.error, FilterRejectionError)
+    assert result.error.link_target == "..\\x"
+    assert not (dest / "l").is_symlink()
 
 
 @_POSIX_SYMLINKS
@@ -397,15 +458,17 @@ def test_symlink_with_slash_target_resolves_on_windows(tmp_path: Path) -> None:
 
 
 def _refuse_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make POSIX refuse to replace or unlink a read-only file, as Windows does."""
-    real_replace, real_unlink = os.replace, os.unlink
+    """Make POSIX refuse to replace or unlink a read-only file, or remove a read-only
+    directory, as Windows does."""
+    real_replace, real_unlink, real_rmdir = os.replace, os.unlink, os.rmdir
 
     def check(path: str | Path) -> None:
         try:
             st = os.lstat(path)
         except FileNotFoundError:
             return
-        if stat.S_ISREG(st.st_mode) and not st.st_mode & stat.S_IWRITE:
+        kept = stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)
+        if kept and not st.st_mode & stat.S_IWRITE:
             raise PermissionError(errno.EACCES, "Access is denied", str(path))
 
     def replace(src: str | Path, dst: str | Path) -> None:
@@ -418,7 +481,13 @@ def _refuse_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(extraction, "_WINDOWS", True)
     monkeypatch.setattr(os, "replace", replace)
+
+    def rmdir(path: str | Path) -> None:
+        check(path)
+        real_rmdir(path)
+
     monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr(os, "rmdir", rmdir)
 
 
 def _mode(path: Path) -> int:
@@ -527,6 +596,56 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
     assert not written.exists()
 
 
+def test_replace_over_a_read_only_directory_this_run_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory stored ``0o555`` (kept under ``STANDARD``), then a file of the same
+    name. Simulated: POSIX removes such a directory, so the refusal is patched in.
+    What this shows is that the coordinator clears the mode before ``os.rmdir``, not
+    that Windows refuses the call."""
+    _refuse_read_only(monkeypatch)
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(_tar([("rodir", "d", None), ("file", "d", b"x")])),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "d").read_bytes() == b"x"
+
+
+def test_anti_item_removes_a_read_only_directory_this_run_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Driven on the coordinator, as the file case above is."""
+    from archivey.internal.extraction import (
+        BombTracker,
+        ExtractionCoordinator,
+        _RunState,
+    )
+
+    _refuse_read_only(monkeypatch)
+    dest = tmp_path / "out"
+    written = dest / "d"
+    written.mkdir(parents=True)
+    os.chmod(written, 0o555)
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STANDARD)
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
+        written_paths={written},
+    )
+    anti = ArchiveMember(type=MemberType.ANTI, name="d")
+    result = coordinator._apply_anti_item(anti, written)
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert not written.exists()
+
+
 def test_read_only_flag_stays_on_other_hard_links(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -596,7 +715,7 @@ def test_replace_over_a_read_only_file_on_windows(tmp_path: Path) -> None:
 def test_hard_link_past_the_link_limit_is_copied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str
 ) -> None:
-    """NTFS stops at 1023 links to one file; simulated here with a limit of 2 names.
+    """NTFS allows 1024 names for one file; simulated here with a limit of 2 names.
 
     The next link is a copy, and the links after it link to the copy.
     """
@@ -620,6 +739,33 @@ def test_hard_link_past_the_link_limit_is_copied(
     assert os.stat(dest / "h0").st_ino == same
     assert os.stat(dest / "h1").st_ino != same
     assert os.stat(dest / "h2").st_ino == os.stat(dest / "h1").st_ino
+
+
+def test_links_past_the_limit_cost_one_attempt_each(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every older name of a full file is full too, so none is tried again. Trying
+    them made the number of ``os.link`` calls quadratic in the archive's link count."""
+    real_link = os.link
+    calls = 0
+
+    def link(src: str | Path, dst: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if os.stat(src).st_nlink >= 4:
+            raise OSError(errno.EMLINK, "Too many links")
+        real_link(src, dst)
+
+    monkeypatch.setattr(os, "link", link)
+    links = 40
+    specs: list[tuple[str, str, bytes | str | None]] = [("file", "f", b"data")]
+    specs += [("hard", f"h{i}", "f") for i in range(links)]
+    report = open_and_extract(io.BytesIO(_tar(specs)), tmp_path / "out")
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * (
+        links + 1
+    )
+    assert calls == links
+    assert len({os.stat(p).st_ino for p in (tmp_path / "out").iterdir()}) == 11
 
 
 def test_other_link_errors_still_fail(

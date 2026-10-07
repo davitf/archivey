@@ -258,7 +258,9 @@ class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
     """Most bytes one extraction may write in total, across every member. 2 GiB.
 
-    Bytes copied rather than decoded (the cross-device hardlink fallback) count too.
+    Bytes copied rather than decoded count too: a hard link written as a copy because
+    it crosses a device boundary or goes past the filesystem's link-count limit. The
+    ratio guards do not count those copies, so this is the guard that bounds them.
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 

@@ -113,12 +113,22 @@ _ERROR_PRIVILEGE_NOT_HELD = 1314
 def _link_refused_here(exc: OSError) -> bool:
     """Whether ``os.link`` failed for a reason another path, or a copy, avoids.
 
-    ``EXDEV``: the path is on another device. ``EMLINK`` (Windows: ``winerror`` 1142,
-    ``ERROR_TOO_MANY_LINKS``): the file already has as many links as the filesystem
-    allows, 1023 on NTFS against 65000 on ext4, so an archive POSIX extracts in full
-    would otherwise fail on Windows past the 1023rd link. A copy holds the same bytes.
+    ``EXDEV``: the path is on another device. Or the file is at its link-count limit
+    (``_at_link_limit``).
     """
-    return exc.errno in (errno.EXDEV, errno.EMLINK) or (
+    return exc.errno == errno.EXDEV or _at_link_limit(exc)
+
+
+def _at_link_limit(exc: OSError) -> bool:
+    """Whether ``os.link`` failed because the file already has as many names as the
+    filesystem allows.
+
+    ``EMLINK`` (Windows: ``winerror`` 1142, ``ERROR_TOO_MANY_LINKS``). NTFS allows 1024
+    names for one file, the first name included, against 65000 on ext4. Without a copy,
+    an archive POSIX extracts in full would fail on Windows at the 1025th name. A copy
+    holds the same bytes.
+    """
+    return exc.errno == errno.EMLINK or (
         getattr(exc, "winerror", None) == _ERROR_TOO_MANY_LINKS
     )
 
@@ -148,10 +158,13 @@ def _typed_os_error(
     filesystem allows; the portable rewrite's ``%XX`` escapes can push a name over).
     Windows reports the same two as ``winerror`` 123 (``ERROR_INVALID_NAME``) and 206
     (``ERROR_FILENAME_EXCED_RANGE``), with errnos (``EINVAL``, ``ENOENT``) too broad to
-    match on, so the Windows code is checked instead. Windows also refuses a symlink
-    with 1314 (``ERROR_PRIVILEGE_NOT_HELD``) when the process may not create one, which
-    every symlink member hits the same way; it is typed too, with a message that says
-    what to change. They become a typed per-member failure. Every other ``OSError``
+    match on, so the Windows code is checked instead. Either can come from a link
+    target as well as the name, so the messages name both. Windows also raises 1314
+    (``ERROR_PRIVILEGE_NOT_HELD``) for a symlink when the process may not create one,
+    which every symlink member hits the same way. The code is matched for any member,
+    and today a symlink is the only write archivey makes on Windows that needs a
+    privilege, so the message names symlinks as the likely cause rather than as the
+    call that failed. They become a typed per-member failure. Every other ``OSError``
     stays as it is.
     """
     if not isinstance(exc, OSError):
@@ -159,15 +172,18 @@ def _typed_os_error(
     # ``winerror`` exists only on Windows; elsewhere it is None.
     winerror = getattr(exc, "winerror", None)
     if exc.errno == errno.EILSEQ or winerror == _ERROR_INVALID_NAME:
-        message = "Member name cannot be represented on the destination filesystem"
+        message = (
+            "Member name or link target cannot be represented on the destination "
+            "filesystem"
+        )
     elif exc.errno == errno.ENAMETOOLONG or winerror == _ERROR_FILENAME_EXCED_RANGE:
         message = (
             "Member name or link target is too long for the destination filesystem"
         )
     elif winerror == _ERROR_PRIVILEGE_NOT_HELD:
         message = (
-            "Creating a symlink needs a privilege this process does not hold; "
-            "on Windows, enable Developer Mode or run elevated"
+            "This process does not hold a privilege the write needs; on Windows, "
+            "creating a symlink needs Developer Mode or an elevated process"
         )
     else:
         return exc
@@ -386,12 +402,14 @@ class BombTracker:
     def count_copy(self, chunk_bytes: int) -> None:
         """Count bytes copied from a file this run already wrote, not decoded.
 
-        The cross-device hardlink fallback writes a second full copy of content already
-        on disk. Those bytes land on the filesystem, so they count toward
-        ``max_extracted_bytes`` like any other write. Nothing decompressed them, so
-        neither ratio sees them: whether a copy happens depends on where the
-        destination's mount points fall, not on the archive, and a ratio abort would
-        blame the archive for it.
+        A hard link that cannot be made writes a second full copy of content already
+        on disk: across a device boundary, or past the filesystem's link-count limit.
+        Those bytes land on the filesystem, so they count toward ``max_extracted_bytes``
+        like any other write. Neither ratio sees them: these bytes were already counted
+        once as output, when the source was decoded, and the ratios measure decoding.
+        The link-count case is archive-driven (an archive that declares enough links to
+        one member makes a copy per limit's worth of links), so ``max_extracted_bytes``
+        is the guard that bounds it, not a ratio.
         """
         self._check_cumulative_bytes(chunk_bytes)
         self._copied_bytes += chunk_bytes
@@ -445,12 +463,15 @@ class BombTracker:
 def _report_stored_spelling(
     exc: ArchiveyError, on_disk: ArchiveMember, member: ArchiveMember
 ) -> None:
-    """Rename ``exc`` from the disk spelling ``on_disk`` back to ``member``'s names.
+    """Rename ``exc`` from the spelling ``on_disk`` back to ``member``'s names.
 
-    A lone surrogate is checked and written as its UTF-8 bytes (``disk_spelled``), but
-    an error names the name and link target from before that step, so one skip does
-    not print two names for one member. Under ``STRICT`` and ``STANDARD`` the name
-    policy has already escaped the name, so only the link target changes back.
+    A check runs on the spelling that reaches disk, but an error names the member as
+    it was before that spelling, so one skip does not print two names for one member.
+    Each of the name and the link target moves back when the two members spell it
+    differently. Two callers: after ``disk_spelled``, which writes a lone surrogate as
+    its UTF-8 bytes (under ``STRICT`` and ``STANDARD`` the name policy has already
+    escaped the name, so there only the link target changes back); and after the name
+    policy's rewrite, where the name, the target or both can change back.
     """
     if exc.member_name == on_disk.name:
         exc.member_name = member.name
@@ -2020,10 +2041,10 @@ class ExtractionCoordinator:
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
-        if stat.S_ISDIR(st.st_mode):
-            os.rmdir(dest_path)
-        else:
-            with self._readonly_cleared(dest_path):
+        with self._readonly_cleared(dest_path):
+            if stat.S_ISDIR(st.st_mode):
+                os.rmdir(dest_path)
+            else:
                 os.unlink(dest_path)
             if stat.S_ISLNK(st.st_mode):
                 self._note_link_change(dest_path)
@@ -2570,14 +2591,15 @@ class ExtractionCoordinator:
         read-only. ``ours`` says the caller knows this run wrote it (a parked copy
         already taken out of ``parked``).
 
-        Windows refuses to replace or unlink a file with the read-only attribute
-        (``WinError 5``), which a stored mode without write permission (``0o444``) sets;
-        POSIX checks only the directory. So a later member of the same name replaced
-        the file on POSIX and failed on Windows. The attribute is cleared only on a
-        regular file this run wrote (or parked): a read-only file the caller already
-        had stays protected, as on Windows before. The attribute belongs to the file,
-        not the name, so it is put back on the other names of the file (hard links this
-        run made) once the block is done, and on ``path`` itself if the block fails.
+        Windows refuses to replace or unlink a file, or remove a directory, with the
+        read-only attribute (``WinError 5``), which a stored mode without write
+        permission (``0o444``, ``0o555``) sets; POSIX checks only the parent directory.
+        So a later member of the same name replaced the entry on POSIX and failed on
+        Windows. The attribute is cleared only on a regular file or a directory this run
+        wrote (or parked): a read-only entry the caller already had stays protected, as
+        on Windows before. The attribute belongs to the file, not the name, so it is
+        put back on the other names of a file (hard links this run made) once the block
+        is done, and on ``path`` itself if the block fails.
         """
         state = self._state
         st: os.stat_result | None = None
@@ -2586,11 +2608,15 @@ class ExtractionCoordinator:
         ):
             with contextlib.suppress(OSError):
                 st = os.lstat(path)
-        if st is None or not stat.S_ISREG(st.st_mode) or st.st_mode & stat.S_IWRITE:
+        if (
+            st is None
+            or not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode))
+            or st.st_mode & stat.S_IWRITE
+        ):
             yield
             return
         others: list[Path] = []
-        if st.st_nlink > 1:
+        if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
             identity = (st.st_dev, st.st_ino)
             for paths in state.source_paths.values():
                 for other in paths:
@@ -2910,7 +2936,8 @@ class ExtractionCoordinator:
                             member_name=member.name,
                         )
                 self._note_link_change(dest_path)
-                os.rmdir(dest_path)
+                with self._readonly_cleared(dest_path):
+                    os.rmdir(dest_path)
                 self._current.removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
@@ -3018,12 +3045,19 @@ class ExtractionCoordinator:
     def _place_link(
         self, source_id: int, new_path: Path, member: ArchiveMember
     ) -> None:
-        """Create ``new_path`` as a hardlink to the source's content, trying each recorded
-        on-disk path in turn; when every one refuses the link for a reason of its own
+        """Create ``new_path`` as a hardlink to the source's content, trying the recorded
+        on-disk paths newest first; when none takes the link for a reason of its own
         (see ``_link_refused_here``), copy from an existing path. Appends ``new_path``
         so a later same-device link can reuse it — which is what keeps a fan-out across
         one device boundary to a single copy per device rather than one per link, and a
         fan-out past the link-count limit to one copy per full file.
+
+        The first path at the link-count limit ends the search with a copy. The paths
+        recorded before it are older names of the same file, or of a file that filled
+        up before it, so trying each would fail too, and would cost a failed call per
+        recorded path for every later link: quadratic in the number of links an archive
+        declares. A file that dropped below the limit since (a later member replaced
+        one of its names) is not tried again, which costs at most an extra copy.
 
         The copy is a real write of the source's full size, so it goes through
         ``tracker`` and counts toward ``max_extracted_bytes``; a link adds no bytes.
@@ -3041,30 +3075,34 @@ class ExtractionCoordinator:
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,
-        # where the first path links, checks one path however many links name it.
+        # where the newest path links, checks one path however many links name it.
         tmp = self._temp_sibling(new_path.parent)
         try:
             copied = False
+            linked = False
             copy_from: Path | None = None
-            for candidate in existing:
+            for candidate in reversed(existing):
                 if not _is_regular_file(candidate):
                     continue
                 if copy_from is None:
                     copy_from = candidate
                 try:
                     os.link(candidate, tmp)
-                    break
                 except OSError as exc:
-                    if _link_refused_here(exc):
-                        continue
-                    raise
-            else:
+                    if not _link_refused_here(exc):
+                        raise
+                    if _at_link_limit(exc):
+                        break
+                    continue
+                linked = True
+                break
+            if not linked:
                 if copy_from is None:
                     raise ExtractionError(
                         "Hardlink source is no longer on disk as a regular file",
                         member_name=member.name,
                     )
-                # No usable path took a link: fall back to a copy from the first.
+                # No usable path took a link: fall back to a copy.
                 # Created private when a mode follows (as mkstemp would), at the ordinary
                 # creation mode when none does, the same as a FILE write.
                 create_mode = (

@@ -413,10 +413,11 @@ waiting are removed unresolved and the run stops with `ResourceLimitError`. Test
 The system SHALL support TAR-style hardlinks through the extraction coordinator as
 a pull-based sink over reader streams. Ordinary FILE/DIR/SYMLINK members are
 written as reached; each written FILE path is recorded under its source. A
-HARDLINK whose source already has recorded paths tries `os.link()` against them
-in order; if all fail with cross-device `EXDEV`, or with `EMLINK` at the filesystem's
-link-count limit, the coordinator falls back to a copy and records the copy for later
-links.
+HARDLINK whose source already has recorded paths tries `os.link()` against them,
+newest first. If all fail with cross-device `EXDEV`, or one fails with `EMLINK` at the
+filesystem's link-count limit, the coordinator falls back to a copy and records the copy
+for later links. The search stops at the first path at the limit, so the cost of a link
+does not grow with the number of links before it.
 
 When a selected HARDLINK's source was excluded by `members` or `filter`, the
 system MUST NOT materialize the excluded source at its own destination. It SHALL
@@ -620,6 +621,12 @@ the total exceeds `max_extracted_bytes`. The default is 2 GiB
 The limit SHALL be tracked by one `BombTracker` per extraction call. It is a
 global resource guard: when it trips, extraction halts and no later members are
 processed regardless of `OnError`.
+
+Bytes a hard link writes as a copy (across a device boundary, or past the filesystem's
+link-count limit) SHALL count toward the limit. The ratio guards do not count them, since
+the source's bytes were already counted once when decoded. A declared link count can
+therefore drive real writes, one copy per limit's worth of links, and this limit is the
+guard that bounds them.
 
 A copy that a streaming pass takes back as superseded SHALL stop counting toward the
 limit once no entry on disk holds its bytes ("Skip non-current members by default"). The
@@ -1150,19 +1157,22 @@ the OS allows).
 
 **Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
 literal character (TAR) SHALL be written as `/` on every platform, as Windows writes it, and
-recorded as `ExtractionResult.presented_name`; a hard link's target gets the same rewrite.
-The path-safety checks SHALL run again on a name the policy rewrote, so a rewrite that
-changes the directories a path passes through cannot bypass them. `TRUSTED` writes the
-`\` as the local OS does. On Windows, under every policy, a symlink's target SHALL be
-created with each `/` written as `\`, so a relative target such as `sub/file` resolves
-there as it does on POSIX; errors still name the target as stored.
+recorded as `ExtractionResult.presented_name`. A link target gets the same rewrite, so a
+symlink to another member names the path that member was written at, and a target such as
+`..\x` is checked as the `../x` it becomes. A hard link still resolves to the member the
+reader matched to its stored target; the rewrite does not change which member that is. The
+path-safety checks SHALL run again on a member the policy rewrote, so a rewrite that changes
+the directories a path passes through cannot bypass them. `TRUSTED` writes the `\` as the
+local OS does. On Windows, under every policy, a symlink's target SHALL be created with
+each `/` written as `\`, so a relative target such as `sub/file` resolves there as it does
+on POSIX; errors still name the target as stored.
 
 **Read-only files.** A member whose stored mode has no write permission leaves a file
-Windows will not replace or delete. On Windows, when a later member of the run replaces or
-an anti-item removes a regular file this run wrote read-only, extraction SHALL clear the
-read-only attribute first, so `REPLACE` gives the result it gives on POSIX. The attribute
-is put back on the file's other hard links. A read-only file that was in the destination
-before the run is not changed.
+Windows will not replace or delete, or a directory it will not remove. On Windows, when a
+later member of the run replaces or an anti-item removes a regular file or an empty
+directory this run wrote read-only, extraction SHALL clear the read-only attribute first,
+so `REPLACE` gives the result it gives on POSIX. The attribute is put back on a file's other
+hard links. A read-only entry that was in the destination before the run is not changed.
 
 **Portable-name representability (O7).** Under `STRICT` and `STANDARD`, a name carrying
 bytes that cannot be represented portably on the destination filesystem SHALL be normalized

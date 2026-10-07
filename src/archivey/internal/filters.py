@@ -527,7 +527,7 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides — and **rewrite** the
     merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3), and both levels
-    write a ``\\`` as ``/`` (in a hard link's target too) and escape bytes that are not
+    write a ``\\`` as ``/`` (in a link target too) and escape bytes that are not
     UTF-8 and the characters Windows refuses, ``<>"|?*`` and 0x01-0x1F (O7). A lone
     surrogate outside U+DC80-U+DCFF is escaped too, as its UTF-8 bytes
     (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is the same on every OS;
@@ -587,10 +587,18 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     if name != member.name:
         changes["name"] = name
     target = member.link_target
-    if member.type is MemberType.HARDLINK and target is not None and "\\" in target:
-        # A hard link names an archive member, so its target is a member name and
-        # gets the same separator rewrite. A symlink target is a filesystem path and
-        # is left alone.
+    if (
+        member.type in (MemberType.SYMLINK, MemberType.HARDLINK)
+        and target is not None
+        and "\\" in target
+    ):
+        # Every name is written with "/" for "\", so a target spelled with "\" names
+        # a path that has "/" on disk (no member can be written with a "\" under this
+        # policy). Rewriting it keeps a symlink to another member live on POSIX, as it
+        # is on Windows, where the coordinator writes each "/" as "\" again. The
+        # rewritten target is also what the universal check sees. A hard link still
+        # resolves by the member the reader matched to its stored target, not by this
+        # string.
         changes["link_target"] = target.replace("\\", "/")
     return member.replace(**changes) if changes else member
 

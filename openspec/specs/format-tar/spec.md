@@ -116,13 +116,13 @@ source's bytes to the first selected link path while they stream past, and
 not create the excluded source at its own name and SHALL not replace the core
 correctness path.
 
-For cross-device links, the coordinator SHALL try `os.link()` against every
-recorded on-disk path for the source. If all fail with `EXDEV`, or with `EMLINK`
-(Windows `winerror` 1142) because the file already has as many links as the filesystem
-allows (1023 on NTFS), it SHALL copy from an existing copy and append the new path for
-reuse, so an archive with more links than NTFS allows extracts on every OS. Chained
-links on that device can then link to the sibling copy. Device bookkeeping MAY
-skip doomed attempts but is not required for correctness.
+For cross-device links, the coordinator SHALL try `os.link()` against the recorded
+on-disk paths for the source, newest first. If all fail with `EXDEV`, or one fails with
+`EMLINK` (Windows `winerror` 1142) because the file already has as many links as the
+filesystem allows (1024 names on NTFS, the first included), it SHALL copy from an
+existing copy and append the new path for reuse, so an archive with more links than NTFS
+allows extracts on every OS. Chained links on that device can then link to the sibling
+copy. Device bookkeeping MAY skip doomed attempts but is not required for correctness.
 
 #### Scenario: TAR hardlink extraction matrix
 
@@ -135,7 +135,7 @@ skip doomed attempts but is not required for correctness.
 | Orphaned link on forward-only source | Per-member failure follows `OnError` |
 | `B -> A` copied cross-device, then `C -> A` on B's device | `C` is created with `os.link(B, C)` rather than copying A again |
 | Every recorded path fails with `EXDEV` | Copy source content to link destination and record that path |
-| Every recorded path fails with `EMLINK` (the 1024th link to one file on NTFS) | Same copy; later links link to the copy |
+| The newest recorded path fails with `EMLINK` (the 1025th name for one file on NTFS) | Same copy, with no older path tried; later links link to the copy |
 | Hardlink before the only member it names, random access or streaming | That link fails with `LinkTargetNotFoundError`; the later member extracts normally |
 
 ### Requirement: Detect truncated TAR archives

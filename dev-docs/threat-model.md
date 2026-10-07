@@ -206,15 +206,25 @@ bytes. The outcome is the same on every platform. ADR
 [0013](decisions/0013-cross-platform-name-safety-policies.md) is the design.
 
 **Mechanism.** `internal/filters.py` `apply_name_policy`:
-- Reserved device names (`_RESERVED_NAMES`: `CON`, `NUL`, `COM1`, ...) and `:` are
-  rejected on every platform. Both are unsafe, not merely non-portable.
+- Reserved device names (`_RESERVED_NAMES`: `CON`, `NUL`, `COM1`, ..., the ports
+  spelled with a superscript digit such as `COM¹`, `CONIN$`, `CONOUT$`) and `:` are rejected on every platform.
+  Both are unsafe, not merely non-portable.
 - `STRICT` strips a trailing dot or space (`_strip_trailing_dot_space`), because Win32
   trims it silently and the reported path would differ from the real one. The rewrite is
   recorded as `ExtractionResult.presented_name`, the only record that survives a caller
   filter rename. An all-dots segment has no portable spelling and is rejected.
   `STANDARD` and `TRUSTED` keep the name.
-- Non-UTF-8 bytes are percent-escaped (`_sanitize_portable_name`: `%XX`, literal `%` as
-  `%25`), a deterministic and reversible spelling.
+- Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
+  literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
+  the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.
+- A `\` in a name, which TAR keeps as a literal character, is written as `/`, as
+  Windows writes it, and a symlink or hard link target gets the same rewrite. A hard
+  link still resolves to the member the reader matched to its stored target.
+- The coordinator (`ExtractionCoordinator._transform`) runs `check_universal` again on
+  a member `apply_name_policy` rewrote. A rewrite can change which directories a path
+  passes through (`foo\x` and `foo. /x` both become `foo/x`), and the first check saw
+  only the stored spelling, so a `foo` symlink in the destination that leaves it was
+  not checked on the path actually written.
 - `collision_key` casefolds and NFC-normalizes. The coordinator
   (`_register_collision_key`, `_resolve_collision`, `_derive_free_name`) treats a
   collision as an event: `OverwritePolicy` applies, `RENAME` writes `photo (1).jpg`, and
@@ -225,6 +235,14 @@ bytes. The outcome is the same on every platform. ADR
 - A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS,
   `ENAMETOOLONG`, Windows `winerror` 123 and 206) is translated to a typed
   `ExtractionError` naming the member (`_typed_os_error` in `internal/extraction.py`).
+  So is Windows `winerror` 1314, a symlink the process lacks the privilege to create.
+- On Windows the coordinator creates a symlink's target with `\` for `/`
+  (`_link_target_on_disk`), so a relative target resolves as on POSIX. It clears the
+  read-only attribute on a regular file or empty directory this run wrote before a later
+  member replaces it or an anti-item removes it (`_readonly_cleared`), and leaves a
+  read-only entry the caller already had alone. A hard link past the filesystem's
+  link-count limit is written as a copy (`_link_refused_here`), counted toward
+  `max_extracted_bytes` (see [Extraction bombs](#extraction-bombs)).
 - Bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069) in a name or link
   target are rejected under `STRICT` and `STANDARD` (`_reject_bidi_override`); directional
   marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,
@@ -247,6 +265,10 @@ percent spelling; it can be added without breaking anything.
 `test_o7_percent_escaped_when_sanitizing`,
 `test_o7_sanitized_name_collides_with_literal_percent_name`,
 `test_unrepresentable_name_oserror_is_translated`, and the `test_bidi_*` tests.
+`tests/test_cross_os_extraction.py` covers the separator rewrite, the Win32 character
+escapes, the further device names, the typed Windows errors, symlink targets on Windows,
+read-only entries and the link-count copy; the re-check after a rewrite is
+`::test_rewritten_name_is_checked_where_it_is_written`.
 
 ### Resource use is bounded
 
@@ -511,7 +533,13 @@ raise `_AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE
 
 **Residual.** The tracker is per archive and not nesting-aware
 ([accepted](#nested-archive-amplification)). `read()` and `open()` have no output bound
-([accepted](#reads-have-no-output-bound)).
+([accepted](#reads-have-no-output-bound)). A hard link the filesystem refuses at its
+link-count limit is written as a copy, so a declared link count drives real writes: one
+copy of the source per limit's worth of links (1024 names on NTFS, 65000 on ext4).
+`BombTracker.count_copy` counts the copies toward `max_extracted_bytes` and keeps them out
+of both ratios, because those bytes were already counted once as output when the source
+was decoded. `max_extracted_bytes` is therefore the guard that bounds this case, and a
+caller who disables it keeps no bound on it from `max_ratio`.
 
 **Tests.** `tests/test_extraction.py::test_per_member_ratio`,
 `::test_archive_wide_ratio`, `::test_archive_wide_ratio_live_denominator`,
