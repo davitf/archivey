@@ -16,7 +16,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Release checklist](release-checklist.md) | Every-release loop: CHANGELOG, perf vs prior tag, docs, tag/publish |
 | [Release-repo cutover](release-repo-cutover.md) | One-time rename / PyPI / Pages before the first public tag |
 | [Decision log](decisions/index.md) | Rare repo-wide ADRs; prefer light notes on format/topic handbook pages for new decisions |
-| [Investigations](investigations/) | Finished evidence: PPMd, pyppmd/rapidgzip/pybcj/py7zr upstream reports, parallel-reader, [`alternative RAR decompressors`](investigations/alternative-rar-decompressors.md), [`capability declaration vs behaviour`](investigations/capability-declaration-vs-behaviour.md), [`writer timestamp slots`](investigations/writer-timestamp-slots.md) |
+| [Investigations](investigations/) | Finished evidence: PPMd, pyppmd/rapidgzip/pybcj/py7zr upstream reports, parallel-reader, [`alternative RAR decompressors`](investigations/alternative-rar-decompressors.md), [`capability declaration vs behaviour`](investigations/capability-declaration-vs-behaviour.md), [`writer timestamp slots`](investigations/writer-timestamp-slots.md), [`backup-drive scan`](investigations/2026-10-backup-scan.md) |
 | [Discussions](discussions/) | Design questions written for circulation. Includes [pair-workflow adoption](discussions/2026-09-pair-workflow-adoption.md) and [specs → handbook + tests](discussions/2026-09-specs-to-handbook-and-tests.md) (thin-as-you-go) |
 | [History](history/index.md) | Superseded prose (SPEC / ARCHITECTURE / COMPARISON / ASYNC / the pre-0.2.0 PLAN) |
 | [IDEAS.md](IDEAS.md) | Speculative backlog. Committed work is the open OpenSpec changes under `openspec/changes/` |

@@ -300,6 +300,10 @@ already happens. The original write-up follows; the `notes=()` measurement in it
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`.
 - **Still three clauses, not one:** the listing can be wrong; a full read raises; **and**
   a prefix of fabricated bytes may already have been produced. Not a silent success.
+- **Real-world measure (2026-10):** a scan of a backup drive found 437 Brotli hits in
+  57 390 archive rows, mostly OLE compound files (`.doc`, `Thumbs.db`, `.msi`); 2
+  decoded. Reproducer: `test_ole_header_then_zeros_is_not_brotli`
+  ([`investigations/2026-10-backup-scan.md`](investigations/2026-10-backup-scan.md) §3.2).
 - **Refs:** `openspec/changes/archive/2026-08-25-probe-completeness-gate/`; investigation
   [`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md);
   threat-model O10.
