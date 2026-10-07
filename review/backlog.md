@@ -37,6 +37,15 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#607 K6 — nothing in the suite notices a leaked thread.** `tests/leak_oracle.py`
+  fails a test that leaves a child process running or an owning stream unclosed, but does
+  not look at threads, so a FIFO writer thread stayed blocked in `open()` from a test's
+  creation until someone read a thread dump (fixed per site in #607). A thread check in
+  the oracle is the general form. It is not free: the rapidgzip worker starts a daemon pump
+  thread, and the tests that deliberately run threads (`test_concurrent_multithread.py`,
+  `test_shared_source.py`, `test_slice.py`, …) would have to come out clean before the
+  check could fail anything.
+
 - **#493 K8 — a truncation abort in the rapidgzip child loses the readable prefix.**
   rapidgzip decodes ahead in parallel, so the child often aborts before the parent has read
   anything: a cut gzip or zlib of 2 or 8 MB delivers no data through `use_rapidgzip=ON`,

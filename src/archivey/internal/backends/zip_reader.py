@@ -141,6 +141,7 @@ from archivey.internal.timestamps import (
     filetime_to_datetime,
     unix32_to_datetime,
 )
+from archivey.internal.unix_mode import is_special_file_mode
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
@@ -955,6 +956,10 @@ class ZipReader(BaseArchiveReader):
             member_type = MemberType.DIRECTORY
         elif is_unix and stat.S_ISLNK(full_mode):
             member_type = MemberType.SYMLINK
+        elif is_unix and is_special_file_mode(full_mode):
+            # A device, FIFO or socket. unzip writes these as empty regular files, but
+            # every format types them OTHER, so extraction refuses them everywhere.
+            member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
         # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);

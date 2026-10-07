@@ -117,6 +117,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
@@ -134,7 +135,7 @@ from archivey.types import (
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-_S_IFMT = 0o170000
+_FILE_ATTRIBUTE_UNIX_EXTENSION = 0x8000
 
 
 def _written_on_unix(attrs: int | None) -> bool:
@@ -148,7 +149,7 @@ def _written_on_unix(attrs: int | None) -> bool:
     high word non-zero. A Windows word never has ``S_IFMT`` bits there, while every
     Unix ``st_mode`` does, so the file type is the test.
     """
-    return attrs is not None and bool((attrs >> 16) & _S_IFMT)
+    return attrs is not None and bool((attrs >> 16) & UNIX_FILE_TYPE_MASK)
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -839,6 +840,18 @@ class SevenZipReader(BaseArchiveReader):
                     return MemberType.SYMLINK
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
+                if attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION and is_special_file_mode(
+                    unix_mode
+                ):
+                    # A device, FIFO or socket (7-Zip and p7zip store them with no
+                    # data). Unlike the symlink and directory tests above, this one
+                    # also needs 0x8000. A Windows attribute above 0xFFFF can land on
+                    # a low file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as
+                    # S_IFCHR, while no defined attribute reaches S_IFDIR (0x4000) or
+                    # S_IFLNK (0xA000). Misreading a Windows file as a device would
+                    # make it unextractable, so a high word without the flag stays
+                    # FILE here.
+                    return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
                 # filesystem, not that the tag named a link — the tag is in the member's
