@@ -57,8 +57,8 @@ and archivey uses it in place of that default for names that aren't valid UTF-8:
 `encoding="latin-1"`. Only ZIP, TAR, ISO and RAR read `encoding=`. The other formats decode names
 their own way, and a value passed to them is ignored and noted in the diagnostics.
 
-`member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name holding such
-an escape can't be encoded as UTF-8, so printing or logging it can raise `UnicodeEncodeError`.
+`member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name with an escaped
+byte, like `'caf\udce9.txt'`, can't be encoded as UTF-8, so printing or logging it can raise `UnicodeEncodeError`.
 `archivey.terminal.escape_control_chars(member.name)` gives a version that's safe to show.
 
 ## Configuration
