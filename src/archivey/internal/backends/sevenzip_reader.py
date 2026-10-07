@@ -749,9 +749,14 @@ class SevenZipReader(BaseArchiveReader):
             )
             if issue is not None:
                 ts_issues.append(issue)
+        # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
+        # "Created" from st_ctime, which ``created`` never holds.
+        written_on_unix = _written_on_unix(attrs)
         if record.creation_time:
             created, issue = filetime_to_datetime(
-                record.creation_time, presented_name, field="created"
+                record.creation_time,
+                presented_name,
+                field="ctime" if written_on_unix else "created",
             )
             if issue is not None:
                 ts_issues.append(issue)
@@ -761,9 +766,7 @@ class SevenZipReader(BaseArchiveReader):
             else MemberExtra()
         )
         ctime = None
-        if created is not None and _written_on_unix(attrs):
-            # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
-            # "Created" from st_ctime, which ``created`` never holds.
+        if created is not None and written_on_unix:
             created, ctime = None, created
         member = ArchiveMember(
             type=member_type,
