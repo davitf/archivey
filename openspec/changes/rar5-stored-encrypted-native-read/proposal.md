@@ -2,7 +2,7 @@
 
 ## Why
 
-`_can_direct_read` already serves stored, non-solid, unsplit RAR members from a direct
+`_can_direct_read` already serves stored RAR members, solid or split, from a direct
 `SharedView` slice, with no subprocess. `not info.is_encrypted` is the only clause
 excluding the encrypted ones — and for RAR5 every piece needed to decrypt them is already
 parsed and already implemented for the header path:
@@ -25,8 +25,8 @@ non-path source, and O(1) seek from the CBC restart instead of a respawn-and-rep
 ## What Changes
 
 - `_can_direct_read` SHALL admit **RAR5** stored members whose only disqualifier was
-  encryption, decrypting the direct slice natively. The other guards (solid, split,
-  volume-spanning) stay.
+  encryption, decrypting the direct slice natively. The remaining guard, that every part
+  of a split member was found, stays.
 - **RAR5 only.** `rar_parser.py` sets `file_encryption=None` on the RAR3 path, so RAR4's
   8-byte `LHD` salt is not parsed; RAR4 stored encrypted members keep going through
   `unrar`. Parsing that salt is out of scope here.

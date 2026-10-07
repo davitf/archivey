@@ -30,6 +30,7 @@ from archivey import ArchiveyConfig, MemberType, open_archive
 from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     PackageNotInstalledError,
     ResourceLimitError,
 )
@@ -696,15 +697,16 @@ def test_unrar_refuses_a_solid_member_behind_a_big_declared_prefix_by_default(
     ) in str(excinfo.value)
 
 
-@requires_binary("unrar")
-def test_unrar_counts_the_window_ahead_of_a_stored_solid_member(
+def test_a_stored_solid_member_is_sliced_without_paying_the_window_ahead(
     tmp_path: Path, no_spawn: None
 ) -> None:
-    """unrar decodes the solid prefix to reach a stored member, so it pays the window.
+    """A stored member is sliced out of the archive, solid flag or not.
 
-    ``rar -s`` writes this shape for any file it stores, and a solid member is never
-    sliced out of the archive directly. Here ``tail.txt`` is marked stored, and
-    ``prefix.bin`` ahead of it declares 4 GiB and 3 GiB unpacked.
+    ``rar -s`` writes this shape for any file it stores. Here ``tail.txt`` is marked
+    stored, and ``prefix.bin`` ahead of it declares 4 GiB and 3 GiB unpacked. unrar
+    would decode that prefix to reach the tail; the reader starts no program, so the
+    window is not charged. The tail's bytes are still the compressed ones, which its
+    CRC rejects.
     """
     blocks = _rar5_parse(_fixture("seek_respawn_solid__.rar").read_bytes())
     prefix, tail = _rar5_file_blocks(blocks)
@@ -713,14 +715,41 @@ def test_unrar_counts_the_window_ahead_of_a_stored_solid_member(
     path = tmp_path / "stored_tail.rar"
     path.write_bytes(_rar5_build(blocks))
     with open_archive(path, config=_UNRAR_ONLY) as archive:
+        with pytest.raises(CorruptionError, match="crc32"):
+            archive.read("tail.txt")
+    # unar does not decode the stream ahead of a stored member (measured, rar.md 7).
+    with path.open("rb") as f:
+        assert unar_dictionary_costs(parse_rar_archive(f))[1] == (0, -1)
+
+
+@requires_binary("unrar")
+def test_unrar_counts_the_window_ahead_of_an_encrypted_stored_solid_member(
+    tmp_path: Path, no_spawn: None
+) -> None:
+    """An encrypted stored member is not sliced, so unrar reads it and pays the window.
+
+    unrar decodes the solid prefix to reach it. The archive is the one above with
+    ``tail.txt`` also carrying an encryption record; the read is refused on the
+    dictionary before unrar starts, with or without a password.
+    """
+    blocks = _rar5_parse(_fixture("seek_respawn_solid__.rar").read_bytes())
+    prefix, tail = _rar5_file_blocks(blocks)
+    _declare_dictionary(prefix, _RAR5_DICT_4GIB, unpacked=_3_GIB)
+    tail["cinfo"] &= ~(7 << 7)  # method 0, stored; the solid flag stays
+    # FHEXTRA_CRYPT: version 0, no password check, KDF count 15, salt, IV.
+    record = _vint(1) + _vint(0) + _vint(0) + bytes([15]) + bytes(16) + bytes(16)
+    tail["extra"] += _vint(len(record)) + record
+    path = tmp_path / "encrypted_stored_tail.rar"
+    path.write_bytes(_rar5_build(blocks))
+    with open_archive(path, config=_UNRAR_ONLY, password="password") as archive:
+        member = archive.get("tail.txt")
+        assert member is not None
+        assert member.is_encrypted
         with pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
         ) as excinfo:
             archive.read("tail.txt")
     assert "the header of member 'prefix.bin' declares" in str(excinfo.value)
-    # unar does not decode the stream ahead of a stored member (measured, rar.md 7).
-    with path.open("rb") as f:
-        assert unar_dictionary_costs(parse_rar_archive(f))[1] == (0, -1)
 
 
 @requires_binary("unrar")

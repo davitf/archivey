@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import errno
+import hashlib
 import io
 import os
 import shutil
@@ -48,6 +49,7 @@ from archivey.internal.backends.rar_parser import (
     _decode_rar3_unicode_name,
     load_vint,
     parse_rar_archive,
+    parse_rar_volumes,
 )
 from archivey.internal.external.cli import terminate_process
 from archivey.terminal import display_path
@@ -1151,7 +1153,6 @@ def test_blake2sp_unrar_oracle_crosscheck() -> None:
     assert proc.stdout == native == b"stored payload"
 
 
-@requires_binary("unrar")
 def test_multi_volume_roundtrip() -> None:
     part1 = _fixture("tinyvol.part1.rar")
     assert (_FIXTURES / "tinyvol.part2.rar").is_file()
@@ -1163,7 +1164,6 @@ def test_multi_volume_roundtrip() -> None:
         assert archive.cost.notes == ()
 
 
-@requires_binary("unrar")
 def test_multi_volume_rnn_roundtrip() -> None:
     """Classic RAR4 volumes: ``name.rar`` + ``name.r00`` (``-vn`` naming)."""
     first = _fixture("tinyvol_rnn.rar")
@@ -1172,6 +1172,40 @@ def test_multi_volume_rnn_roundtrip() -> None:
         assert archive.info.is_multivolume is True
         assert archive.info.extra.get("rar.volume_count") == 2
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("name", "member_name"),
+    [
+        ("tinyvol.part1.rar", "payload.bin"),
+        ("tinyvol_rnn.rar", "payload.bin"),
+        ("stored_solid_member__.rar", "second.bin"),
+    ],
+)
+def test_stored_slice_matches_unrar(name: str, member_name: str) -> None:
+    """Joined parts and a solid-flagged stored member read what ``unrar p`` prints."""
+    fixture = _fixture(name)
+    with open_archive(fixture) as archive:
+        native = archive.read(member_name)
+    proc = subprocess.run(
+        ["unrar", "p", "-inul", str(fixture), member_name],
+        check=True,
+        capture_output=True,
+    )
+    assert proc.stdout == native
+
+
+# ``tinyvol_m3``: the same split, compressed, so unrar still reads it across volumes
+# (a stored member's parts are joined natively).
+_M3_PAYLOAD = b"".join(hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(50))
+
+
+@requires_binary("unrar")
+def test_multi_volume_compressed_roundtrip() -> None:
+    with open_archive(_fixture("tinyvol_m3.part1.rar")) as archive:
+        assert archive.info.extra.get("rar.volume_count") == 2
+        assert archive.read("payload.bin") == _M3_PAYLOAD
 
 
 def _single_stream_copy_note_present(notes: tuple[str, ...]) -> bool:
@@ -1218,14 +1252,14 @@ def test_stream_compressed_read_keeps_open_time_cost_note() -> None:
 
 @requires_binary("unrar")
 def test_multi_volume_stream_materialization() -> None:
-    paths = [_fixture("tinyvol.part1.rar"), _FIXTURES / "tinyvol.part2.rar"]
+    paths = [_fixture("tinyvol_m3.part1.rar"), _FIXTURES / "tinyvol_m3.part2.rar"]
     streams = [p.open("rb") for p in paths]
     try:
         with open_archive(streams) as archive:
             assert archive.info.is_multivolume is True
             held = archive.cost
             assert _stream_volumes_copy_note_present(held.notes)
-            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.read("payload.bin") == _M3_PAYLOAD
             assert archive.cost == held
     finally:
         for stream in streams:
@@ -1310,19 +1344,19 @@ def test_stream_volume_read_materializes_once(
     """The copy happens on the first read unrar serves, and only once."""
     created = _rar_volume_temp_dirs(monkeypatch)
     streams = [
-        io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
-        io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+        io.BytesIO(_fixture("tinyvol_m3.part1.rar").read_bytes()),
+        io.BytesIO((_FIXTURES / "tinyvol_m3.part2.rar").read_bytes()),
     ]
     with open_archive(streams) as archive:
         assert created == []
-        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert archive.read("payload.bin") == _M3_PAYLOAD
         assert len(created) == 1
         # unrar resolves siblings by name, so the whole set is written, not one volume.
         assert sorted(p.name for p in created[0].iterdir()) == [
             "archive.part1.rar",
             "archive.part2.rar",
         ]
-        assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+        assert archive.read("payload.bin") == _M3_PAYLOAD
         assert len(created) == 1
         temp_dir = created[0]
     assert not temp_dir.exists()
@@ -1338,8 +1372,8 @@ def test_stream_volume_read_materializes_once(
         ),
         pytest.param(
             lambda: [
-                io.BytesIO(_fixture("tinyvol.part1.rar").read_bytes()),
-                io.BytesIO((_FIXTURES / "tinyvol.part2.rar").read_bytes()),
+                io.BytesIO(_fixture("tinyvol_m3.part1.rar").read_bytes()),
+                io.BytesIO((_FIXTURES / "tinyvol_m3.part2.rar").read_bytes()),
             ],
             id="stream-volumes",
         ),
@@ -1781,6 +1815,14 @@ def _rar3_main_and_end() -> tuple[bytes, bytes]:
     return main_hdr, end_hdr
 
 
+def _rar3_next_volume_end() -> bytes:
+    """An ENDARC block whose flags say another volume follows."""
+    from archivey.internal.backends.rar_parser import _crc32
+
+    end_without_crc = struct.pack("<BHH", 0x7B, 0x0001, 7)
+    return struct.pack("<H", _crc32(end_without_crc) & 0xFFFF) + end_without_crc
+
+
 def _rar3_compressed_comment_subblock(unpacked_size: int) -> bytes:
     """An old-style COMMENT subblock declaring a *compressed* (non-M0) payload.
 
@@ -1976,25 +2018,50 @@ def test_rar3_split_after_then_different_name_is_corruption() -> None:
 
 
 def test_rar3_matching_split_continuation_merges() -> None:
-    """F6 positive path: same name + previous SPLIT_AFTER collapses into one member."""
+    """F6 positive path: same name + previous SPLIT_AFTER collapses into one member.
+
+    Three volumes, so every continuation after the second compares against the
+    volume the member started in, not the one before it.
+    """
     from archivey.internal.backends.rar_parser import (
         _RAR3_FILE_SPLIT_AFTER,
         _RAR3_FILE_SPLIT_BEFORE,
     )
 
     main_hdr, end_hdr = _rar3_main_and_end()
+    next_hdr = _rar3_next_volume_end()
     first = _rar3_file_block(
         b"a.txt", flags=_RAR3_FILE_SPLIT_AFTER, pack_lo=3, unp_lo=3
     )
-    cont = _rar3_file_block(
+    middle = _rar3_file_block(
+        b"a.txt",
+        flags=_RAR3_FILE_SPLIT_BEFORE | _RAR3_FILE_SPLIT_AFTER,
+        pack_lo=4,
+        unp_lo=4,
+    )
+    last = _rar3_file_block(
         b"a.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=5, unp_lo=5
     )
-    # Each FILE header's claimed pack size must be skipped before the next header.
-    blob = RAR_ID + main_hdr + first + b"AAA" + cont + b"BBBBB" + end_hdr
-    archive = parse_rar_archive(io.BytesIO(blob))
+    # Each continuation opens the next volume; a volume holds one part of a member.
+    volumes = [
+        RAR_ID + main_hdr + first + b"AAA" + next_hdr,
+        RAR_ID + main_hdr + middle + b"BBBB" + next_hdr,
+        RAR_ID + main_hdr + last + b"CCCCC" + end_hdr,
+    ]
+    archive = parse_rar_volumes([io.BytesIO(volume) for volume in volumes])
     assert [m.filename for m in archive.members] == ["a.txt"]
-    assert archive.members[0].compress_size == 8
-    assert archive.members[0].spanned_volumes is True
+    member = archive.members[0]
+    assert member.compress_size == 12
+    assert member.spanned_volumes is True
+    assert not (member.split_before or member.split_after)
+    base = 0
+    expected = []
+    for volume, tail, size in zip(
+        volumes, (next_hdr, next_hdr, end_hdr), (3, 4, 5), strict=True
+    ):
+        expected.append((base + len(volume) - len(tail) - size, size))
+        base += len(volume)
+    assert member.data_parts == expected
 
 
 def test_rar5_hostile_packed_size_is_corruption() -> None:
@@ -3235,6 +3302,21 @@ def test_rar_split_continuation_does_not_consume_member_slot() -> None:
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
     with open_archive(_fixture("tinyvol.part1.rar"), config=cfg) as reader:
         assert len(reader.members()) == 1
+
+
+def test_rar_split_continuation_in_the_same_volume_is_refused() -> None:
+    """A volume holds at most one part of a member, so parts stay bounded by volumes.
+
+    Each repeated continuation would be one more retained part that ``max_members``
+    does not count; a crafted volume of 200 000 one-byte parts held 26 MB after open.
+    """
+    main_hdr, end_hdr = _rar3_main_and_end()
+    parts = [_rar3_file_block(b"a", flags=0x02, pack_lo=1, unp_lo=3) + b"x"]
+    parts.append(_rar3_file_block(b"a", flags=0x03, pack_lo=1, unp_lo=3) + b"y")
+    parts.append(_rar3_file_block(b"a", flags=0x01, pack_lo=1, unp_lo=3) + b"z")
+    blob = RAR_ID + main_hdr + b"".join(parts) + end_hdr
+    with pytest.raises(CorruptionError, match="same volume"):
+        parse_rar_archive(io.BytesIO(blob))
 
 
 def test_rar_unlimited_lifts_member_cap() -> None:

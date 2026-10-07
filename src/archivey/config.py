@@ -102,9 +102,10 @@ class RarDecompressor(Enum):
       a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
     - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
       run on its archives. Opening and listing work as with the others, and so does
-      reading a stored member that is not encrypted, not split across volumes and not
-      part of a solid stream (the first member of a solid archive is not). Every other read raises ``UnsupportedFeatureError`` before
-      anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
+      reading a stored (uncompressed) member that is not encrypted, also when it is
+      split across volumes or sits in a solid archive. A compressed or encrypted
+      member, or a split one with a volume missing, raises ``UnsupportedFeatureError``
+      before anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
@@ -594,7 +595,7 @@ class SpoolLimits:
     need it are refused without copying again.
 
     ``0`` refuses every copy: a stream source then reads only the members archivey can
-    read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
+    read without ``unrar``, such as stored, unencrypted RAR members. The copy goes
     to the platform temporary directory (``tempfile.gettempdir()``); where that is
     memory-backed, such as ``tmpfs``, this limit is a memory limit.
 

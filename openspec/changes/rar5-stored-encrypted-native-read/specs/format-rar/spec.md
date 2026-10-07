@@ -190,7 +190,7 @@ too.
 | Stream source over `SpoolLimits.max_bytes` | `ResourceLimitError` naming the field; no temp file or directory; no `unrar` spawn |
 | Volume set, each volume within the limit, total over it | `ResourceLimitError`; the limit weighs the total |
 | Stream source of unknown size refused mid-copy, then another spawned read | The same refusal, with no second temp file |
-| Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
+| Stream source, `max_bytes=0` | Stored, unencrypted members read; a member needing `unrar` is refused |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat; the spool limit never refuses it |
 | Non-path stream, RAR5 stored encrypted member read natively | No archive copy; the open-time caveat is still present (static, not an occurrence log) |
