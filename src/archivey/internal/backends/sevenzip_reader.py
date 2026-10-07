@@ -322,8 +322,9 @@ class SevenZipReader(BaseArchiveReader):
         # A symlink's target is its member data, usually mid-way through a solid
         # folder, so link bytes are read ahead of resolution, a folder at a time
         # (``format-7z``, "A 7z folder is decoded at most once for its link targets"):
-        # by listing's folder sweep, or by a streaming pass as its cursor reaches the
-        # link. Keyed by member id. A value that is an exception is the failed read,
+        # by listing's folder sweep, or by a pass in either mode as its cursor reaches
+        # the link; an abandoned pass leaves its entries for a later listing or pass.
+        # Keyed by member id. A value that is an exception is the failed read,
         # raised again when the link resolves, so it gets the handling a direct read
         # would have got.
         self._link_data: dict[int, bytes | ArchiveyError] = {}
@@ -565,8 +566,10 @@ class SevenZipReader(BaseArchiveReader):
         def _cleanup() -> None:
             self._pass_link = None
             # Captured link bytes are kept even when the pass is abandoned: the archive's
-            # bytes are fixed, each entry is bounded by the target cap, and a later
-            # listing or pass resolves from them instead of decoding the folder again.
+            # bytes are fixed, and a later listing or pass resolves from them instead of
+            # decoding the folder again. What stays is one entry per link the pass
+            # walked, each bounded by the target cap, released as each link resolves
+            # (or when the reader closes).
             folder.close()
 
         yield from self._drive_pass_streams(
@@ -688,7 +691,7 @@ class SevenZipReader(BaseArchiveReader):
     ) -> ContextManager[ReadableStream]:
         """Where ``_ensure_link_target`` reads ``member``'s bytes from.
 
-        Bytes read ahead (a listing sweep, a streaming pass) come first; then the data
+        Bytes read ahead (a listing sweep, a pass in either mode) come first; then the data
         pass sitting on this member, through its own decoder; then a direct open, which
         decodes the folder from its start (``open()`` following a link, a listing of
         one link).

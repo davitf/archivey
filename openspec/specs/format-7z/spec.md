@@ -551,7 +551,7 @@ decoder.
 A 7z symlink's target is stored as the member's data, often in the middle of a solid
 folder. This refines the folder-decode budget of "Stream solid folders with bounded
 memory" for link targets. For its link targets, a 7z folder SHALL be decoded at most once
-per reader, and not past the end of its last link member. The one exception is a pass
+per reader, and not past the end of its last link member. The one exception is each pass
 the caller abandons before the folder's last link, as the abandoned-pass bullet says. The
 consumer's own reads are covered by the bullets below.
 
@@ -568,8 +568,10 @@ consumer's own reads are covered by the bullets below.
   their targets. A later listing or pass SHALL resolve those links from the kept bytes
   and SHALL decode the folder only for the links the abandoned pass did not reach. A solid
   decode cannot resume, so when such a link exists the folder is decoded again from its
-  start to the last of those links: the abandoned pass's prefix is paid twice. A pass
-  abandoned after the folder's last link costs nothing more.
+  start to the last of those links. The cost is per pass, not per reader: each abandoned
+  pass that reaches a link no earlier pass reached pays that folder's prefix again, so
+  the folder can be decoded once per such pass. A pass abandoned after the folder's last
+  link costs nothing more.
 - Which links a pass reads when the caller's selector excludes them is set by
   `archive-reading`, "Bounded-memory sequential streaming via stream_members".
 - With `read_link_targets=False`, listing and a pass advancing SHALL decode nothing for

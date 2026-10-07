@@ -774,6 +774,7 @@ def test_7z_abandoned_pass_keeps_link_bytes_and_resolves_nothing(
         assert set(kept) == {m.member_id for m in links}
 
 
+@pytest.mark.parametrize("streaming", _MODES)
 @pytest.mark.parametrize(
     ("abandon_after", "expected"),
     [
@@ -784,17 +785,24 @@ def test_7z_abandoned_pass_keeps_link_bytes_and_resolves_nothing(
     ],
 )
 def test_7z_listing_after_an_abandoned_pass_reuses_its_link_bytes(
-    abandon_after: int, expected: int
+    abandon_after: int, expected: int, streaming: bool
 ) -> None:
-    """Listing used to drop what the abandoned pass read and decode the folder again."""
-    with enable_measurement(), open_archive(_LINKS_SOLID) as reader:
+    """Listing used to drop what the abandoned pass read and decode the folder again.
+
+    A streaming reader refuses ``members()``, so it lists with ``scan_members()``.
+    """
+    with (
+        enable_measurement(),
+        open_archive(_LINKS_SOLID, streaming=streaming) as reader,
+    ):
         seen = 0
         for member, _stream in reader.stream_members():
             seen += member.type is MemberType.SYMLINK
             if seen == abandon_after:
                 break
         assert _decoded(reader) == _LINK_ENDS[abandon_after - 1]
-        assert _link_targets(reader.members()) == _EXPECTED_TARGETS
+        members = reader.scan_members() if streaming else reader.members()
+        assert _link_targets(members) == _EXPECTED_TARGETS
         assert _decoded(reader) == expected
 
 
