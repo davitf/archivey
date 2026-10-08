@@ -41,7 +41,7 @@ from archivey.internal.sfx import (
 )
 from archivey.internal.source import ArchiveSource
 from archivey.types import ArchiveFormat
-from tests.detection_cost_util import within_budget
+from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -347,7 +347,11 @@ def test_fast_sfx_scan_respects_max_scan_bytes(tmp_path: Path) -> None:
     )
     fast = detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))
     assert balanced.cost_receipt is not None and fast.cost_receipt is not None
-    assert fast.cost_receipt.unique_bytes_read <= FAST_BUDGET.max_scan_bytes
+    # The scan window is ``max_scan_bytes``. The trailer block is a separate
+    # read at the end of the file, so it is allowed on top of that window.
+    assert fast.cost_receipt.unique_bytes_read <= (
+        FAST_BUDGET.max_scan_bytes + trailer_allowance()
+    )
     assert fast.cost_receipt.unique_bytes_read < balanced.cost_receipt.unique_bytes_read
     assert fast.cost_receipt.scanned_bytes <= FAST_BUDGET.max_scan_bytes
 
@@ -380,7 +384,7 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
 
 def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
-    # is CHAIN_MAX_LINKS * CHAIN_HEADER_READ.
+    # is the Brotli walk plus one trailer block.
     from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.brotli_framing import (
         CHAIN_HEADER_READ,
@@ -388,7 +392,7 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     )
 
     scan = BALANCED_BUDGET.max_scan_bytes
-    allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ
+    allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance()
     at_cap = DetectionCostReceipt(
         unique_bytes_read=scan + allowance,
         scanned_bytes=scan,

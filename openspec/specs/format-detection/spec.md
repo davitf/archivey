@@ -92,9 +92,18 @@ The system SHALL execute format detection with this algorithm:
    are the weakest signal available. It SHALL be skipped when the source size is known to
    be smaller than the extended window, and a source too short for it SHALL fall through
    rather than be rejected.
-5. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
-6. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
-7. `FormatDetectionError` when nothing matched.
+5. **Trailer magic** — exact magic at the start of a fixed-length block at the end of the
+   source, today UDIF's `koly` block (512 bytes). Match → `CERTAIN` /
+   `detected_by="magic"`. This SHALL run after far magic and before the content probes.
+   It SHALL also outrank a near-magic hit whose format the trailer lists in `preempts`
+   (today bzip2 and xz): that hit is one block of the image, and the replacement SHALL
+   happen before an inner-TAR upgrade. The read SHALL be a cheap seek that restores the
+   handle. A source that cannot seek cheaply SHALL skip it, except that a tail already
+   held in the detection prefix still matches. A source shorter than the block SHALL NOT
+   be read for it.
+6. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
+7. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
+8. `FormatDetectionError` when nothing matched.
 
 Steps are ordered attempts, not alternatives: a step that produces no match falls through,
 and attempting one never prevents a later one from running.
@@ -121,7 +130,7 @@ to read, not that nothing matched.
 | ISO with a zeroed system area | `ISO` / `CERTAIN` / `magic`; unchanged |
 | Source smaller than the extended window, size known | Step 4 skipped without an extended peek; falls through |
 | Source too short for the window, size unknown | Short peek, no match, falls through — never an error for being short |
-| Real Brotli stream larger than the window, no extension | One bounded peek misses at step 4, then step 5 detects it |
+| Real Brotli stream larger than the window, no extension | One bounded peek misses at step 4, then step 6 detects it |
 
 ### Requirement: Conflict resolution — magic wins and warning is emitted
 
@@ -176,6 +185,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
 | ISO 9660 | `CD001` at 32769 |
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
+| UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
 | TAR | `ustar` at 257 |
 | LZ4 | `04 22 4D 18` (frame); `02 21 4C 18` (legacy stream, `lz4 -l`) |
 | lzip | `LZIP` |
@@ -199,6 +209,7 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | Magic table consulted for zlib | No zlib entry; CMF/FLG → zlib probe |
 | `ustar` at 257, ≥512 bytes | TAR, `CERTAIN`, `magic` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `koly` block at offset 0, or at the start of the last 512 bytes | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | Starts `02 21 4C 18` (legacy LZ4) | LZ4, `CERTAIN`, `magic` |
 
 #### Scenario: zstd frame prefix
@@ -838,3 +849,25 @@ evidence strength only, with no error-reporting consequence attached.
 | Probe-only hit at `GUESS`, read fails | Stamped — same reason |
 | Corroborated hit at `PROBABLE`, read fails | Not stamped |
 | A future retune of Brotli's confidence split | Changes reported confidence only; no error behaviour moves |
+
+### Requirement: Refuse a UDIF disk image by name
+
+The system SHALL report a UDIF image (`koly` block at offset 0 or at the start of the
+last 512 bytes) as `ArchiveFormat.DMG` / `CERTAIN` / `magic`, and `open_archive` SHALL
+raise `UnsupportedFeatureError` naming UDIF. `format_availability(DMG)` SHALL be `NONE`
+with an empty `missing`: known, not supported, nothing to install. The `.dmg` suffix
+SHALL NOT select the format.
+
+#### Scenario: UDIF matrix
+
+| Case | Expected |
+| --- | --- |
+| Seekable image, zlib, bzip2 or xz first block, `koly` trailer | `DMG` / `CERTAIN` / `magic`; `open_archive` raises `UnsupportedFeatureError` naming UDIF |
+| `koly` block at offset 0 | `DMG` / `CERTAIN` / `magic`; the same refusal |
+| Real zlib, bzip2 or xz stream, no `koly` block | Unchanged |
+| Version other than 4 | Not `DMG` |
+| ZIP whose name ends in `.dmg` | `ZIP` |
+| `format=ZLIB` on a zlib-first image | The first block is read; detection does not run |
+| `format=DMG` or `format="dmg"` | `UnsupportedFeatureError` naming UDIF |
+| Non-seekable source longer than the far-magic window, zlib first block, `koly` at the end | `ZLIB`; the trailer is not seeked to |
+| `format_availability(DMG)` | `NONE`, `missing` empty; in `list_known_formats()`, absent from `list_supported_formats()` |

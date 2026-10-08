@@ -307,6 +307,30 @@ class PrefixWorkspace:
         self._receipt.unique_bytes_read += len(data)
         return data
 
+    def read_tail(self, length: int) -> bytes | None:
+        """The last ``length`` bytes, or ``None`` when that read is not cheap.
+
+        A path or a plain seekable stream seeks to the end and restores the
+        handle, the same way :meth:`read_at` does, and does not grow the prefix
+        through the middle of the file. A non-seekable source, and an
+        ``ArchiveStream`` whose backward seek may re-decode, returns ``None``
+        rather than buffering the whole source to reach the end.
+        """
+        if length < 0:
+            return None
+        if length == 0:
+            return b""
+        total = self.remaining_known()
+        if total is None or total < length:
+            return None
+        origin = total - length
+        if origin + length <= len(self._buf):
+            return bytes(self._buf[origin : origin + length])
+        handle = self._cheap_random_access_handle()
+        if handle is None:
+            return None
+        return self._read_at_via_seek(handle, origin, length)
+
     def charge_far(self, nbytes: int) -> None:
         self._receipt.far_bytes += nbytes
 

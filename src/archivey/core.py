@@ -40,6 +40,7 @@ from archivey.internal.arg_checks import (
     check_encoding,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
+from archivey.internal.backends.udif import UDIF_UNSUPPORTED_MESSAGE
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -526,6 +527,15 @@ def _open_resolved(
     # non-seekable source is left to the seekability refusal below.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
+
+    # Claimed by detection so the refusal can name the image. Ahead of the
+    # registry, which would otherwise report the format as unavailable.
+    if resolved_format == ArchiveFormat.DMG:
+        raise UnsupportedFeatureError(
+            UDIF_UNSUPPORTED_MESSAGE,
+            source_format=resolved_format,
+            archive_name=archive_name,
+        )
 
     registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)

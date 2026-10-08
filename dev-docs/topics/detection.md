@@ -16,13 +16,14 @@ Three other pages own parts of this, and this page links them rather than repeat
 
 ## At a glance
 
-- **Five steps, strongest evidence first, and the first match wins.** Near magic → SFX scan
-  → far magic → content probes → extension. The whole order is one function,
-  `_detect_format_body` in `internal/detection.py`.
-- **Detection reads only the front of the source.** Nothing reads the tail today: no ZIP
-  tail probe is shipped, and the budget has no field for one. An archive that is found
-  only from its end, such as a ZIP appended to a JPEG, is not detected. `format=ZIP`
-  still opens it.
+- **Six steps, strongest evidence first, and the first match wins.** Near magic → SFX scan
+  → far magic → trailer magic → content probes → extension. The whole order is one
+  function, `_detect_format_body` in `internal/detection.py`.
+- **Detection reads the front of the source, and one fixed block at the end.** The block
+  is the last 512 bytes, and only to look for a UDIF `koly` signature on a cheap seek
+  (§2.4). No ZIP tail probe is shipped, and the budget has no field for one. An archive
+  that is found only from its end, such as a ZIP appended to a JPEG, is not detected.
+  `format=ZIP` still opens it.
 - **Detection never consumes bytes the backend needs.** A path gets its own handle. A
   seekable stream is put back where the caller left it. A non-seekable stream is peeked
   through the replay prefix that the backend then reads first. A raw pipe handed straight
@@ -39,9 +40,9 @@ Three other pages own parts of this, and this page links them rather than repeat
   - A graded evidence record: `FormatInfo` has one confidence and one `detected_by`, not a
     list of candidates.
   - An error on a polyglot: a file that is two formats gets one deterministic answer (§3.1).
-  - More formats found under `THOROUGH`. It reads the same window as `BALANCED` and no
-    tail. What changes in behaviour is only how large a source a probe hit is re-checked
-    against (§4.1).
+  - More formats found under `THOROUGH`. It reads the same window as `BALANCED`, and the
+    same 512-byte `koly` block. What changes in behaviour is only how large a source a
+    probe hit is re-checked against (§4.1).
   - Any check that a magic hit is more than its bytes: two bytes `1f 8b` are `GZ` /
     `CERTAIN`, and the open fails.
 
@@ -61,13 +62,14 @@ read. The tie rule (§3.1) falls out of it, and it answers every source in at mo
 **Some formats have no magic worth trusting.** Brotli has none. zlib has a two-byte header
 that matches too much text, and LZMA Alone has a properties byte and a dictionary size.
 These three are found only by probes, so the probe step exists and gets the most guards
-(§2.4). They are also why the far-magic step runs before the probes and not after (§2.3).
+(§2.5). They are also why the far-magic step runs before the probes and not after (§2.3).
 
 **Detection runs before a reader exists, on any source.** The source can be a path, a
 seekable stream in the middle of a file, or a pipe that can be read once. So detection must
-not consume what the backend needs, must work forward-only, and must bound its own work,
-because no reader limit applies yet. That gives the prefix workspace (§4.2), the budget
-(§4.1), and the rule of one forward pass with no backward seek.
+not consume what the backend needs, must work forward-only on a pipe, and must bound its
+own work, because no reader limit applies yet. That gives the prefix workspace (§4.2),
+the budget (§4.1), and one forward pass over the prefix. The seek toward the end is the
+512-byte UDIF block, and only on a cheap seek (§2.4).
 
 **Filenames are wrong often enough to matter.** A `.tar.gz` that is really a ZIP, a `.cbr`
 that is a ZIP, and a `.tlz` that holds LZMA Alone instead of lzip are all common. So the
@@ -80,20 +82,21 @@ extension is the last step, and it is used only when every content signal declin
 | 1. Near magic | Exact magic inside the first 4 KiB (`DETECTION_LIMIT`) | `CERTAIN` | `magic` | 4 KiB read |
 | 2. SFX scan | Leading bytes look like a prefix; a validated archive needle behind it | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
 | 3. Far magic | Exact magic past 4 KiB (ISO `CD001` at 32 769) | `CERTAIN` | `magic` | 32 774 bytes, once |
-| 4. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
-| 5. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
+| 4. Trailer magic | Exact magic at the start of a fixed block at EOF (UDIF `koly`, 512 bytes) | `CERTAIN` | `magic` | 512 bytes, on a cheap seek |
+| 5. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
+| 6. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
 
-Any step 1 or step 4 match on a single-file compressor is then offered to the **inner-TAR
-probe**, which decodes up to 512 bytes and looks for `ustar` at offset 257. A hit reports the
-TAR combination (`TAR_GZ`, and so on) as `PROBABLE` / `content_probe`. It reads at most 1
-MiB of compressed input and draws on the same decode allowance as the content probes
-(§4.1).
+A near-magic or content-probe match on a single-file compressor is then offered to the
+**inner-TAR probe**, which decodes up to 512 bytes and looks for `ustar` at offset 257. A
+hit reports the TAR combination (`TAR_GZ`, and so on) as `PROBABLE` / `content_probe`. It
+reads at most 1 MiB of compressed input and draws on the same decode allowance as the
+content probes (§4.1). A trailer hit is not a compressor, so it is not offered.
 
-The tables that drive steps 1, 2 and 4 come from the backends and the codec descriptors as
-data: `MAGIC`, `EXTENSIONS`, `SFX_MAGIC`, `SFX_HIT_VALIDATOR` and `CONTENT_PROBES`,
-aggregated by `internal/registry.py`. The detector has no per-format code. A new format
-becomes detectable when its backend registers, and the detector cannot disagree with the
-backend about what the format's magic is.
+The tables that drive steps 1, 2, 4 and 5 come from the backends and the codec descriptors
+as data: `MAGIC`, `TRAILER`, `EXTENSIONS`, `SFX_MAGIC`, `SFX_HIT_VALIDATOR` and
+`CONTENT_PROBES`, aggregated by `internal/registry.py`. The detector has no per-format
+code. A new format becomes detectable when its backend registers, and the detector cannot
+disagree with the backend about what the format's magic is.
 
 ### 2.1 Near magic
 
@@ -103,8 +106,9 @@ over skippable frames by their declared sizes, but only inside the bytes already
 matches the regular frame behind them. A walk never triggers a larger read, so a skippable
 frame bigger than the window is a decline, not a new read.
 
-A near match is final. The later steps never overrule it, because anything they could offer
-is weaker evidence than an exact magic at its specified offset.
+A near match is final, with one exception. A bzip2 or xz header can be the first block of
+a UDIF image, and the trailer step outranks those two hits (§2.4). Everything else the
+later steps could offer is weaker evidence than an exact magic at its specified offset.
 
 The weak point is length: some magics are two bytes (gzip `1f 8b`, unix-compress `1f 9d`).
 Two bytes at offset 0 are reported `CERTAIN`, and a file that is only those two bytes fails
@@ -116,7 +120,7 @@ This step runs only when the first bytes carry a cue (`MZ`, ELF, a Mach-O header
 parses, or `#!`). It searches up to 2 MiB for a ZIP, 7z or RAR needle, and every hit must
 pass that format's validator before it counts. The cue decides only whether to spend the
 window. The validator decides whether a hit is real. A structurally confirmed executable (a
-`STRONG` cue) with no hit also turns off step 4. Without that, a probe could claim the stub
+`STRONG` cue) with no hit also turns off the content probes. Without that, a probe could claim the stub
 as a compressed stream and `open_archive` would return a fabricated `installer.uncompressed`
 member. All of this is on [`prefixed-archives.md`](prefixed-archives.md) §2 to §5.
 
@@ -144,7 +148,30 @@ A consequence worth knowing: a source that matches nothing in the first 4 KiB an
 least 32 774 bytes long pays the far peek, whatever it turns out to be. A 40 000-byte file of
 zeros named `backup.gz` reads 32 774 bytes before the extension guess.
 
-### 2.4 Content probes
+### 2.4 Trailer magic
+
+UDIF (a `.dmg`) keeps a 512-byte `koly` block at the end of the file, or at offset 0 on
+an old image. The block starts with `koly`, version 4, and a header size of 512, all
+big-endian: the same 12 bytes 7-Zip checks. Offset 0 is ordinary near magic. The block
+at the end is this step.
+
+It runs after far magic, so an ISO that already matched is not asked for a tail read,
+and before the content probes, so a zlib-first image is named as the image. The read is
+one seek to the last 512 bytes on a path or a plain seekable stream, then a seek back to
+the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end. When
+the length is unknown the far-magic step has already read its window, so an image
+that fits in that window is refused: the block is in the prefix. A longer zlib-first
+image still opens as zlib. A source shorter than 512 bytes skips the read too.
+
+A hit is `DMG` / `CERTAIN` / `magic`. Nothing reads the image. `open_archive` raises
+`UnsupportedFeatureError` naming UDIF. `format_availability` reports `NONE` with an
+empty `missing`: there is nothing to install. The `.dmg` suffix is not registered, so a
+zip with that name stays a zip.
+
+The step is not a ZIP tail probe. It looks at one fixed block for one signature, and a
+ZIP appended to a JPEG is still not found (§5).
+
+### 2.5 Content probes
 
 The probes run in registry order (LZMA Alone, zlib, Brotli), and the first to accept wins.
 Four guards keep a probe from claiming bytes that are not its format. The codec side of each
@@ -173,7 +200,7 @@ still be readable. Status is in threat-model O10 and `open-issues.md` P12.
 counts because reaching it took two independent things: the decode produced output, and
 the output had `ustar` where TAR puts it.
 
-### 2.5 Extension
+### 2.6 Extension
 
 When every content step declined, the longest matching suffix decides (`.tar.gz` beats
 `.gz`), as `GUESS` / `extension`. That is the same situation in which content detection
@@ -192,7 +219,7 @@ When no step matches, `FormatDetectionError` says so. A source with no bytes lef
 current position gets a different message, saying it is empty or already at its end. The
 general message would tell the caller that some magic byte was wrong.
 
-### 2.6 Special sources
+### 2.7 Special sources
 
 - **A directory** is `DIRECTORY` / `CERTAIN` / `directory`, decided without reading
   anything, with the zero receipt. `detect_format` and `open_archive` give the same answer
@@ -329,13 +356,16 @@ not derived from a cost model, because `StreamCapability` cannot tell a cheap se
 expensive one. A network range reader or a member stream inside a solid 7z block would pay
 heavily for a rewind.
 
-Two backward seeks are allowed, because neither re-reads anything:
+A backward seek is allowed only to put the handle back, because none of them re-reads
+the prefix:
 
 - On exit, a seekable stream is seeked back to the caller's entry position. That is the
   non-consumption contract, and it happens once.
 - `read_at` on a cheap-seek source seeks back to the end of the prefix after its probe
   read (§4.1), so the next forward fetch continues where the prefix ends. `read_at` never
   takes that path on an `ArchiveStream`, where a rewind would re-decode.
+- The UDIF trailer read does the same restore after its 512-byte read (§2.4). A pipe and
+  an `ArchiveStream` are not asked.
 
 ### 4.3 Source kinds
 
@@ -343,7 +373,7 @@ Two backward seeks are allowed, because neither re-reads anything:
 | --- | --- | --- |
 | Path | Opens its own handle for detection | Nothing missing |
 | Seekable stream | Reads forward from the caller's position, restores it; the archive is taken to start where the caller positioned it | Nothing missing |
-| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail. Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
+| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block. Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
 | Non-seekable, raw, to `detect_format` | Reads what it peeks | The caller loses those bytes unless it buffers the stream itself |
 | Directory | Nothing | Nothing to do |
 
@@ -357,9 +387,9 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | What you see | Where | More |
 | --- | --- | --- |
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
-| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | No tail step is shipped; `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
-| Some binary files (OLE/CFB, COFF) detect as LZMA Alone and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.4). O10, P12 |
-| A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.5) |
+| A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | The one tail read is the 512-byte `koly` block (§2.4), not a ZIP trailer. `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
+| Some binary files (OLE/CFB, COFF) detect as LZMA Alone and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). O10, P12 |
+| A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.6) |
 | A v7 tar inside gzip, named `.tar.gz`, opens as bare `GZ` | **format** | No `ustar`, so no inner-TAR upgrade. [`formats/tar.md`](../formats/tar.md) §2.1 |
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
@@ -370,9 +400,9 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
-| A fixed sequence of five steps, first match wins | Every defect that motivated a scheduler had a fix of a few lines in the existing order. What a scheduler adds beyond that (graded evidence classes, a stopping proof, a per-candidate evidence record) had no measured demand, and it would regrade confidence and add a new failure on files that open today | An evidence ledger: graded evidence classes per candidate, a branch-and-bound scheduler, and `AmbiguousFormatError` on ties. The OpenSpec change is archived as decided against |
+| A fixed sequence of six steps, first match wins | Every defect that motivated a scheduler had a fix of a few lines in the existing order. What a scheduler adds beyond that (graded evidence classes, a stopping proof, a per-candidate evidence record) had no measured demand, and it would regrade confidence and add a new failure on files that open today | An evidence ledger: graded evidence classes per candidate, a branch-and-bound scheduler, and `AmbiguousFormatError` on ties. The OpenSpec change is archived as decided against |
 | Ties go to the earlier step, then registry order | A deterministic answer, and `format=` for the other reading. An ambiguity error would fail files that open today, for a case not seen in a 33 947-file sweep | `AmbiguousFormatError` |
-| Exact magic, then SFX scan, then far magic, then probes | Strongest evidence first. Far magic goes ahead of the probes because a bootable ISO's system area is the kind of data a probe accepts | Probes before far magic |
+| Exact magic, then SFX scan, then far magic, then the `koly` trailer, then probes | Strongest evidence first. Far magic goes ahead of the probes because a bootable ISO's system area is the kind of data a probe accepts. The trailer goes ahead of the probes for the same reason a zlib-first disk image must not open as its first block | Probes before far magic; a general ZIP tail scan |
 | Probes decode the full 4 KiB window | A shorter sample lets text through (7 of 800 Perl modules with 256 bytes) | A 256-byte sample |
 | A probe hit on a source up to 64 KiB is re-checked whole | The window cannot tell a stream that goes on from one that turns invalid after it | Accepting every hit on the window; an evidence class system for "stored-only" decodes |
 | One decode-input allowance per call | A per-candidate cap cannot bound the total (O11) | Per-candidate caps |
@@ -403,26 +433,27 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 ./scripts/test.sh tests/test_detection.py tests/test_detection_workspace.py \
     tests/test_probe_completeness_gate.py tests/test_probe_provenance_unconfirmed.py \
     tests/test_sfx.py tests/test_sfx_scan.py tests/test_brotli_framing_gate.py \
-    tests/test_cli.py::test_info_detects_once
+    tests/test_udif.py tests/test_cli.py::test_info_detects_once
 ```
 
 | Claim | Pinned by |
 | --- | --- |
 | The bytes win over the extension, with a conflict that names the winning evidence (§3.3) | `tests/test_detection.py::test_magic_wins_over_conflicting_extension`, `::test_no_warning_when_extension_agrees`, `::test_content_probe_conflict_names_the_probe_not_magic`, `::test_sfx_conflict_names_the_stub_scan` |
-| Extension-only detection is `GUESS` (§2.5) | `::test_extension_only_is_guess`, `::test_unrecognized_extension_and_bytes_raises` |
-| An empty source says it is empty (§2.5) | `::test_empty_source_says_it_is_empty` |
+| Extension-only detection is `GUESS` (§2.6) | `::test_extension_only_is_guess`, `::test_unrecognized_extension_and_bytes_raises` |
+| An empty source says it is empty (§2.6) | `::test_empty_source_says_it_is_empty` |
 | zstd skippable frames are walked inside the peek only (§2.1) | `::test_zstd_behind_one_skippable_frame`, `::test_zstd_skippable_frame_larger_than_the_prefix_is_not_claimed`, `::test_zstd_skippable_frames_alone_are_not_a_zstd_claim` |
 | Far magic runs before the probes, and a short source never pays for it (§2.3) | `::test_bootable_iso_is_not_claimed_by_the_content_probe`, `::test_iso_detected_via_extended_window`, `::test_stream_too_short_for_iso_falls_through` |
-| The probe sample is the whole window, and small hits are re-checked whole (§2.4) | `tests/test_probe_completeness_gate.py::test_text_that_decodes_for_256_bytes_is_not_brotli`, `::test_probe_hit_under_the_completion_window_is_checked_whole`, `::test_probe_hit_above_the_completion_window_is_accepted_on_the_window` |
-| Probe-only and extension-only failures are stamped; corroborated ones are not (§2.4, §2.5) | `tests/test_probe_provenance_unconfirmed.py::test_lzma_alone_probable_failure_sets_format_unconfirmed`, `::test_inner_tar_upgrade_is_corroborated_and_probable`, `::test_br_extension_failure_does_not_stamp`, `::test_extension_only_failure_sets_format_unconfirmed`, `::test_confidence_matrix_unchanged_by_provenance` |
+| The probe sample is the whole window, and small hits are re-checked whole (§2.5) | `tests/test_probe_completeness_gate.py::test_text_that_decodes_for_256_bytes_is_not_brotli`, `::test_probe_hit_under_the_completion_window_is_checked_whole`, `::test_probe_hit_above_the_completion_window_is_accepted_on_the_window` |
+| Probe-only and extension-only failures are stamped; corroborated ones are not (§2.5, §2.6) | `tests/test_probe_provenance_unconfirmed.py::test_lzma_alone_probable_failure_sets_format_unconfirmed`, `::test_inner_tar_upgrade_is_corroborated_and_probable`, `::test_br_extension_failure_does_not_stamp`, `::test_extension_only_failure_sets_format_unconfirmed`, `::test_confidence_matrix_unchanged_by_provenance` |
 | One decode allowance, shared by every decoding step (§4.1) | `tests/test_detection.py::test_content_probes_share_one_decode_allowance`, `::test_inner_tar_probe_stays_inside_the_decode_budget`, `tests/test_probe_completeness_gate.py::test_completion_the_decode_allowance_cannot_cover_is_recorded` |
 | The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) | `tests/test_detection.py::test_open_archive_detects_under_the_config_budget`, `::test_format_argument_stub_checks_detect_under_the_config_budget`, `::test_empty_listing_rescan_detects_under_the_config_budget`, `::test_empty_listing_rescan_stays_internal_under_strict` |
 | A receipt over budget always names a step cut short, for one pass and two (§4.1) | `tests/test_detection_workspace.py::test_over_budget_receipt_always_names_a_cut_short_tier`, `::test_two_pass_receipt_over_budget_also_names_a_cut_short_tier` |
-| A stub-volume detection's receipt keeps the stub pass (§2.6, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
+| A stub-volume detection's receipt keeps the stub pass (§2.7, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
 | The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
-| One forward pass, each byte fetched once, at most the exit restore as a backward seek (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path` |
+| One forward pass over the prefix, each prefix byte fetched once. A backward seek only restores the handle, including after the `koly` read (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
+| A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) | `tests/test_udif.py` |
 | Detection leaves a non-seekable stream readable by the backend (§4.3) | `tests/test_detection.py::test_peekable_stream_not_consumed` |
-| A directory is decided without reading, with the zero receipt (§2.6) | `::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
+| A directory is decided without reading, with the zero receipt (§2.7) | `::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
 | A short 7z hit costs up to the scan window (§2.2) | `tests/test_sfx.py::test_short_7z_hit_scan_cost_is_bounded_by_the_window` |
 | `archivey info` reads the open's detection instead of detecting again (§6) | `tests/test_cli.py::test_info_detects_once` |
 

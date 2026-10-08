@@ -866,6 +866,7 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("multi-volume", "no corpus builder for split/multi-volume archives"),
     ("tar-lzma-alone", "no corpus builder for tar + LZMA Alone"),
     ("tar-unix-compress", "no corpus builder for tar + unix compress (.tar.Z)"),
+    ("udif", "UDIF is recognised and refused; there is no reader"),
 )
 
 _UNTESTED_FORMATS = {
@@ -873,6 +874,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.LZMA_ALONE: "lzma-alone",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE): "tar-lzma-alone",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS): "tar-unix-compress",
+    ArchiveFormat.DMG: "udif",
 }
 
 

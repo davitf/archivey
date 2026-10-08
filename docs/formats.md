@@ -492,6 +492,16 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
 
+## Disk images
+
+- A UDIF image (`.dmg`) is recognised by its `koly` block — the last 512 bytes, or
+  the first 12 when an old image puts the block at the start — and refused with
+  `UnsupportedFeatureError`. A compressed image stores its blocks as zlib, bzip2 or
+  xz, so opening one used to extract the first block and treat the rest as trailing
+  data. Reading the image is not supported. A pipe is not rewound. A short image is
+  still refused, because detection has already read through to its end. A longer
+  zlib-first image on a pipe still opens as that stream.
+
 ## Directory
 
 - A filesystem tree as a pseudo-archive (uniform API for tests and dir↔archive flows).
@@ -637,9 +647,12 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 - **Strongest signal first**, and the filename is the last of them; wrong extensions are
   expected. In order: exact magic in the first 4 KiB → an SFX scan behind an executable
   stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
-  a source too small for it never pays) → content probes for the formats with no magic →
-  the extension. A step that matches nothing falls through to the next; nothing is ever
-  rejected for failing an earlier one.
+  a source too small for it never pays) → the 512-byte `koly` block at the end of a
+  seekable source (a UDIF disk image; see Disk images) → content probes for the formats
+  with no magic → the extension. A bzip2 or xz header that is the first block of such
+  an image loses to that block. A step that matches nothing falls through to the next;
+  nothing is ever rejected for failing an earlier one. A pipe is not rewound to read
+  the block at the end.
 - **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
   size — may precede the first real frame, so detection walks past them by their declared
   sizes within the peeked bytes and matches the regular frame behind. Skippable frames
