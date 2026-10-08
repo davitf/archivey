@@ -109,12 +109,35 @@ def test_ole_header_then_zeros_is_not_brotli() -> None:
         archivey.detect_format(io.BytesIO(data))
 
 
-# --- ZIP: a local-header name that disagrees with the central directory. -----------
+# --- ZIP: the central directory and the local header disagree. ---------------------
 
 
-def _zip_with_local_name(central: bytes, local: bytes, data: bytes) -> bytes:
-    """One stored member whose local header spells its name differently."""
+def _one_member_zip(
+    data: bytes,
+    *,
+    central_name: bytes = b"member.bin",
+    local_name: bytes | None = None,
+    central_crc: int | None = None,
+    declared_size: int | None = None,
+    deflate: bool = False,
+) -> bytes:
+    """One member whose local header differs from its central entry as asked.
+
+    ``local_name`` defaults to ``central_name``. ``central_crc`` replaces the CRC in the
+    central directory only; the local header keeps the true one. ``declared_size``
+    replaces the uncompressed size in both headers; the CRC stays that of all of
+    ``data``.
+    """
+    if local_name is None:
+        local_name = central_name
     crc = zlib.crc32(data)
+    if deflate:
+        packer = zlib.compressobj(9, zlib.DEFLATED, -15)
+        body = packer.compress(data) + packer.flush()
+    else:
+        body = data
+    method = 8 if deflate else 0
+    size = len(data) if declared_size is None else declared_size
     dos_date = 0x21  # 1980-01-01
     lfh = (
         struct.pack(
@@ -122,17 +145,17 @@ def _zip_with_local_name(central: bytes, local: bytes, data: bytes) -> bytes:
             b"PK\x03\x04",
             20,
             0,
-            0,
+            method,
             0,
             dos_date,
             crc,
-            len(data),
-            len(data),
-            len(local),
+            len(body),
+            size,
+            len(local_name),
             0,
         )
-        + local
-        + data
+        + local_name
+        + body
     )
     cdh = (
         struct.pack(
@@ -141,13 +164,13 @@ def _zip_with_local_name(central: bytes, local: bytes, data: bytes) -> bytes:
             20,
             20,
             0,
-            0,
+            method,
             0,
             dos_date,
-            crc,
-            len(data),
-            len(data),
-            len(central),
+            crc if central_crc is None else central_crc,
+            len(body),
+            size,
+            len(central_name),
             0,
             0,
             0,
@@ -155,10 +178,17 @@ def _zip_with_local_name(central: bytes, local: bytes, data: bytes) -> bytes:
             0,
             0,
         )
-        + central
+        + central_name
     )
     eocd = struct.pack("<4sHHHHIIH", b"PK\x05\x06", 0, 0, 1, 1, len(cdh), len(lfh), 0)
     return lfh + cdh + eocd
+
+
+def _read_only_member(blob: bytes) -> bytes:
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        with ar.open(member) as stream:
+            return stream.read()
 
 
 @pytest.mark.xfail(
@@ -173,8 +203,39 @@ def test_local_name_in_another_codepage_still_reads() -> None:
     # Seen in the scan: the central directory holds 0xF4 (ô in Latin-1/cp1252) and the
     # local header 0x93 (ô in cp437/cp850), both without the UTF-8 flag. Archivey takes
     # every name from the central directory, so the local copy decides nothing else.
-    blob = _zip_with_local_name(b"Patag\xf4nia.mp3", b"Patag\x93nia.mp3", b"payload")
-    with archivey.open_archive(io.BytesIO(blob)) as ar:
-        (member,) = ar.members()
-        with ar.open(member) as stream:
-            assert stream.read() == b"payload"
+    blob = _one_member_zip(
+        b"payload", central_name=b"Patag\xf4nia.mp3", local_name=b"Patag\x93nia.mp3"
+    )
+    assert _read_only_member(blob) == b"payload"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "ZIP member refused when the central directory's CRC is 0 and the local "
+        "header's is right (Adobe AIR's META-INF/AIR/hash); unzip checks the local "
+        "CRC and passes, 7-Zip reports a headers error. Needs a maintainer decision"
+    ),
+)
+def test_zero_central_crc_with_a_right_local_crc_reads() -> None:
+    # Every .air package in the scan (6) stores ``META-INF/AIR/hash`` this way: the
+    # packager writes the 32-byte hash after the central entry was made.
+    blob = _one_member_zip(b"h" * 32, central_name=b"META-INF/AIR/hash", central_crc=0)
+    assert _read_only_member(blob) == b"h" * 32
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "ZIP member refused when both headers understate its size and the CRC "
+        "matches the whole decoded stream; unzip ignores the size and passes, 7-Zip "
+        "fails. Needs a maintainer decision: the declared size is a bound archivey "
+        "relies on"
+    ),
+)
+def test_understated_size_with_a_matching_crc_reads() -> None:
+    # Seen in the scan: 12 deflated MP3s in one archive (two copies), each declaring
+    # about 3.5% less than it decodes to; the CRC covers the full output.
+    data = bytes(range(256)) * 400
+    blob = _one_member_zip(data, declared_size=len(data) * 965 // 1000, deflate=True)
+    assert _read_only_member(blob) == data
