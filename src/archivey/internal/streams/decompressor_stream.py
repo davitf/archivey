@@ -783,13 +783,22 @@ class DecompressorStream(ReadOnlyIOStream):
     def _decoding(self, call: Callable[[], DecodeOut]) -> DecodeOut:
         """Make one decoder call, keeping an error it raises as this stream's verdict.
 
-        A decoder that raised is spent: the standard library's ``bz2``, ``lzma`` and
-        ``zlib`` objects answer every later call with ``ValueError("... unusable after a
-        previous error")``, which no translator reads as a data error. So the error goes
-        into ``_spent``, as a deferred one does (:meth:`_raise_deferred`): later reads
-        raise it again, and a seek restarts the decoder from a seek point, also a seek
-        to the position the stream is already at. ``ResumeReachedStreamEnd`` is not a
-        verdict, and its caller replaces this stream.
+        A decoder that raised is left in a state nothing defines, and restarting it from
+        a seek point is the only defined way back. What the standard library does when
+        fed again differs: ``bz2`` raises ``ValueError("Decompressor is unusable after a
+        previous error")`` on CPython 3.11.17 and 3.12.15 (3.12.13 repeats its
+        ``OSError``), which ``BzipCodec.translate`` would report as a truncation;
+        ``lzma`` raises ``LZMAError("Internal error")``; ``zlib`` repeats its first
+        error. So the error goes into ``_spent``, as a deferred one does
+        (:meth:`_raise_deferred`): reads hand back what is already buffered, then raise
+        it again, and a seek restarts the decoder from a seek point, also a seek to the
+        position the stream is already at.
+
+        Every exception counts, not only a verdict on the data: an ``OSError`` from the
+        caller's source raised inside a decode (xz's resume hand-off seeks the source)
+        or a bug in the decoder leaves its state just as undefined, so it sticks until a
+        seek too. ``ResumeReachedStreamEnd`` is not an error, and its caller replaces
+        this stream.
         """
         try:
             return call()
@@ -911,7 +920,9 @@ class DecompressorStream(ReadOnlyIOStream):
                 # ``_buffer`` holds it now. A raise below keeps this frame alive on
                 # its traceback, which must not pin a second copy of the bytes.
                 chunk = b""
-            while len(self._buffer) < n and not self._eof:
+            # A decoder that raised mid-read is not fed again (see _decoding): what it
+            # produced before the error is handed back, and the read after that raises.
+            while len(self._buffer) < n and not self._eof and self._spent is None:
                 need = n - len(self._buffer)
                 self._buffer.extend(self._read_decompressed_chunk(need))
             held = pending()
@@ -940,7 +951,7 @@ class DecompressorStream(ReadOnlyIOStream):
         raise err
 
     def _raise_spent(self) -> NoReturn:
-        """Raise the recorded deferred error again, with this raise's traceback only.
+        """Raise the recorded error again, with this raise's traceback only.
 
         Re-raising the stored instance as is would append each raise's frames to one
         traceback, which grows with every retry and keeps every frame on it alive.
@@ -1013,8 +1024,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._ensure_index_built()
         if self._size is None:
             if self._spent is not None:
-                # This stream already raised its truncation: report the same error,
-                # not the generic unknown-size one below.
+                # This stream already raised an error (a truncation, or the decoder's
+                # own): report the same error, not the generic unknown-size one below.
                 self._raise_spent()
             # Building the index didn't reveal the size; scan to EOF to find it
             # without buffering all remaining data in RAM.
@@ -1049,13 +1060,13 @@ class DecompressorStream(ReadOnlyIOStream):
             self._ensure_index_built()
 
         if self._spent is not None:
-            # The decoder is at the end of a truncated input, so no position is
-            # reachable from here: restart from the nearest seek point, and let the
-            # decode below reach new_pos, or the truncation again. The size
-            # short-circuit below cannot turn this back into a clean end: a decode
-            # that raised a truncation never publishes a size (readall and SEEK_END
-            # raise first), so a size here came from an index scan, and a seek at or
-            # past the size the index claims is at the end.
+            # The decoder raised, at the end of a truncated input or mid-stream, so no
+            # position is reachable from where it stands: restart from the nearest seek
+            # point, and let the decode below reach new_pos, or the error again. The
+            # size short-circuit below cannot turn this back into a clean end: a decode
+            # that raised never publishes a size (readall and SEEK_END raise first), so
+            # a size here came from an index scan, and a seek at or past the size the
+            # index claims is at the end.
             self._reset_to_seek_point(self._prepare_seek_point(new_pos))
 
         if self._size is not None and new_pos >= self._size:

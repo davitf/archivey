@@ -11,7 +11,6 @@ from __future__ import annotations
 import gzip
 import io
 import os
-from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
@@ -24,7 +23,6 @@ from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs import _stdlib_bzip2
-from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -189,26 +187,73 @@ def test_a_raise_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
         assert _largest_library_local(caught.value) < 4096
 
 
-@pytest.mark.parametrize(
-    ("make", "data"),
-    [
-        (lambda src: _stdlib_bzip2(src, StreamConfig(seekable=True)), b"not bzip2"),
-        (lambda src: ZlibDecompressorStream(src, wbits=-15), b"\xff" * 64),
-    ],
-    ids=["bzip2", "deflate"],
-)
-def test_a_decoder_error_is_raised_again_after_a_seek_to_the_same_place(
-    make: Callable[[BinaryIO], BinaryIO], data: bytes
-) -> None:
+def test_a_decoder_error_is_raised_again_after_a_seek_to_the_same_place() -> None:
     # The decoder raised at offset 0, so seek(0) moves nothing; it must still restart
-    # the decoder rather than feed the spent one, which raises ValueError.
-    stream = make(io.BytesIO(data))
-    with pytest.raises(Exception) as first:
+    # the decoder rather than feed the spent one. bz2 then raises ValueError on
+    # CPython 3.11.17 and 3.12.15, which the bzip2 translator reads as a truncation.
+    stream = _stdlib_bzip2(io.BytesIO(b"not bzip2"), StreamConfig(seekable=True))
+    with pytest.raises(OSError, match="Invalid data stream"):
         stream.read(10)
-    assert not isinstance(first.value, ValueError)
     for _ in range(2):
         assert stream.seek(0) == 0
-        with pytest.raises(type(first.value)):
+        with pytest.raises(OSError, match="Invalid data stream"):
             stream.read(10)
-    with pytest.raises(type(first.value)):
+    with pytest.raises(OSError, match="Invalid data stream"):
         stream.read(10)  # and without a seek, the verdict stays
+
+
+class _FailsOnSecondFeed(BaseDecoder):
+    """Emits the first 100 bytes of its first chunk, raises on the second, then is spent.
+
+    Once it has raised it answers every call with ``ValueError``, as ``bz2`` does on
+    CPython 3.11.17 and 3.12.15.
+    """
+
+    def __init__(self) -> None:
+        self._feeds = 0
+        self._raised = False
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _FailsOnSecondFeed:
+        del point, inner
+        return _FailsOnSecondFeed()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if self._raised:
+            raise ValueError("Decompressor is unusable after a previous error")
+        self._feeds += 1
+        if self._feeds == 2:
+            self._raised = True
+            raise OSError("Invalid data stream")
+        return DecodeOut(chunk[:100])
+
+    def flush(self) -> DecodeOut:
+        return self.feed(b"")
+
+    @property
+    def finished(self) -> bool:
+        return False
+
+    @property
+    def needs_input(self) -> bool:
+        return True
+
+
+def test_a_decoder_error_after_output_hands_back_the_buffer_then_raises() -> None:
+    # The read that reaches the error raises with the first chunk's output buffered.
+    # Later reads hand that output back, then raise the same error; none of them
+    # feeds the spent decoder, whose ValueError would replace the verdict.
+    stream = DecompressorStream(
+        io.BytesIO(_DATA), make_decoder=lambda point, inner: _FailsOnSecondFeed()
+    )
+    with pytest.raises(OSError, match="Invalid data stream") as first:
+        stream.read(len(_DATA))
+    got = stream.read(len(_DATA))
+    assert got
+    assert got == _DATA[: len(got)]
+    for _ in range(2):
+        with pytest.raises(OSError) as again:
+            stream.read(len(_DATA))
+        assert again.value is first.value
+    # A seek restarts the decoder, which hands back its first chunk again.
+    assert stream.seek(0) == 0
+    assert stream.read(len(got)) == got
