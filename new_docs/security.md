@@ -50,10 +50,12 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 - **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
-  of the member. `DecoderLimits` is the only limit that applies to a read. It caps the decoder's own
-  memory, so the data you read takes additional memory on top. `ExtractionLimits` don't apply,
-  because they cover only what `extract_all` writes to disk. When the archive records a member's
-  size in `member.size`, archivey never decodes more than that, and a member holding more raises
+  of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
+  memory, so the data you read takes additional memory on top. `ExtractionLimits` doesn't apply,
+  because it covers only what `extract_all` writes to disk. A RAR archive opened from a file object
+  rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`,
+  and `spool_limits.max_bytes` caps that copy. When the archive records a member's size in
+  `member.size`, archivey never decodes more than that, and a member holding more raises
   `CorruptionError`.
 - **A streaming pass doesn't enforce the listing limits.** With `streaming=True` or
   `stream_members()`, `max_members` and `max_metadata_bytes` aren't checked, except that 7z, RAR and
