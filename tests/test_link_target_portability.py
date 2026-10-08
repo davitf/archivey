@@ -371,15 +371,23 @@ def test_a_hardlink_with_a_windows_root_is_refused(
 def test_a_backslash_rooted_symlink_target_extracts_on_posix(
     tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
-    """The rule's named exception: on POSIX ``\\foo`` is a relative name."""
+    """The rule's named exception: on POSIX ``\\foo`` is a relative name. It holds only
+    under ``TRUSTED``; the portable policies write a TAR ``\\`` as ``/``, so the
+    target is the rooted ``/foo`` and leaves the destination."""
     path = _tar(tmp_path / "a.tar", [("bs", tarfile.SYMTYPE, "\\foo")])
     dest = tmp_path / "out"
     with open_archive(path) as archive:
         (result,) = archive.extract_all(
             dest, policy=policy, on_error=OnError.CONTINUE
         ).results
-    assert result.status is ExtractionStatus.EXTRACTED, result.error
-    assert os.readlink(dest / "bs") == "\\foo"
+    if policy is ExtractionPolicy.TRUSTED:
+        assert result.status is ExtractionStatus.EXTRACTED, result.error
+        assert os.readlink(dest / "bs") == "\\foo"
+    else:
+        assert result.status is ExtractionStatus.BLOCKED
+        assert isinstance(result.error, FilterRejectionError)
+        assert result.error.message == "Symlink target escapes destination"
+        assert not os.path.lexists(dest / "bs")
 
 
 @pytest.mark.parametrize("policy", list(ExtractionPolicy), ids=lambda p: p.name)

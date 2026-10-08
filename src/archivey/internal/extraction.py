@@ -99,6 +99,40 @@ DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
 DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
 
 
+# A module attribute, not ``os.name`` at each use, so a test can take the Windows path
+# on POSIX.
+_WINDOWS = os.name == "nt"
+
+# Win32 error codes matched on ``OSError.winerror``, which exists only on Windows.
+_ERROR_INVALID_NAME = 123
+_ERROR_FILENAME_EXCED_RANGE = 206
+_ERROR_TOO_MANY_LINKS = 1142
+_ERROR_PRIVILEGE_NOT_HELD = 1314
+
+
+def _link_refused_here(exc: OSError) -> bool:
+    """Whether ``os.link`` failed for a reason another path, or a copy, avoids.
+
+    ``EXDEV``: the path is on another device. Or the file is at its link-count limit
+    (``_at_link_limit``).
+    """
+    return exc.errno == errno.EXDEV or _at_link_limit(exc)
+
+
+def _at_link_limit(exc: OSError) -> bool:
+    """Whether ``os.link`` failed because the file already has as many names as the
+    filesystem allows.
+
+    ``EMLINK`` (Windows: ``winerror`` 1142, ``ERROR_TOO_MANY_LINKS``). NTFS allows 1024
+    names for one file, the first name included, against 65000 on ext4. Without a copy,
+    an archive POSIX extracts in full would fail on Windows at the 1025th name. A copy
+    holds the same bytes.
+    """
+    return exc.errno == errno.EMLINK or (
+        getattr(exc, "winerror", None) == _ERROR_TOO_MANY_LINKS
+    )
+
+
 def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
     """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
 
@@ -122,15 +156,34 @@ def _typed_os_error(
     state: ``EILSEQ`` (bytes a UTF-8-only filesystem such as APFS refuses) and
     ``ENAMETOOLONG`` (a component, whole path or symlink target longer than the
     filesystem allows; the portable rewrite's ``%XX`` escapes can push a name over).
-    They become a typed per-member failure. Every other ``OSError`` stays as it is.
+    Windows reports the same two as ``winerror`` 123 (``ERROR_INVALID_NAME``) and 206
+    (``ERROR_FILENAME_EXCED_RANGE``), with errnos (``EINVAL``, ``ENOENT``) too broad to
+    match on, so the Windows code is checked instead. Either can come from a link
+    target as well as the name, so the messages name both. Windows also raises 1314
+    (``ERROR_PRIVILEGE_NOT_HELD``) for a symlink when the process may not create one,
+    which every symlink member hits the same way. The code is matched for any member,
+    and today a symlink is the only write archivey makes on Windows that needs a
+    privilege, so the message names symlinks as the likely cause rather than as the
+    call that failed. They become a typed per-member failure. Every other ``OSError``
+    stays as it is.
     """
     if not isinstance(exc, OSError):
         return exc
-    if exc.errno == errno.EILSEQ:
-        message = "Member name cannot be represented on the destination filesystem"
-    elif exc.errno == errno.ENAMETOOLONG:
+    # ``winerror`` exists only on Windows; elsewhere it is None.
+    winerror = getattr(exc, "winerror", None)
+    if exc.errno == errno.EILSEQ or winerror == _ERROR_INVALID_NAME:
+        message = (
+            "Member name or link target cannot be represented on the destination "
+            "filesystem"
+        )
+    elif exc.errno == errno.ENAMETOOLONG or winerror == _ERROR_FILENAME_EXCED_RANGE:
         message = (
             "Member name or link target is too long for the destination filesystem"
+        )
+    elif winerror == _ERROR_PRIVILEGE_NOT_HELD:
+        message = (
+            "This process does not hold a privilege the write needs; on Windows, "
+            "creating a symlink needs Developer Mode or an elevated process"
         )
     else:
         return exc
@@ -273,9 +326,11 @@ class BombTracker:
         self._max_entries = max_entries
         self._entry_count = 0
         self._total_bytes = 0  # decoded output, cumulative across all members
-        # Bytes copied from a file this run already wrote (the cross-device hardlink
-        # fallback). They count toward the byte cap, not the ratios.
+        # Bytes copied from a file this run already wrote (the hardlink copy fallback).
+        # They count toward the byte cap. The part copied at the filesystem's link-count
+        # limit also counts toward the archive-wide ratio (``count_copy``).
         self._copied_bytes = 0
+        self._link_limit_copied_bytes = 0
         self._member_bytes = 0  # output bytes for the current member
         self._member: ArchiveMember | None = None
         # Output of members a streaming pass wrote and then took back as superseded (see
@@ -346,18 +401,28 @@ class BombTracker:
                 )
         self._check_archive_ratio()
 
-    def count_copy(self, chunk_bytes: int) -> None:
+    def count_copy(self, chunk_bytes: int, *, at_link_limit: bool) -> None:
         """Count bytes copied from a file this run already wrote, not decoded.
 
-        The cross-device hardlink fallback writes a second full copy of content already
-        on disk. Those bytes land on the filesystem, so they count toward
-        ``max_extracted_bytes`` like any other write. Nothing decompressed them, so
-        neither ratio sees them: whether a copy happens depends on where the
-        destination's mount points fall, not on the archive, and a ratio abort would
-        blame the archive for it.
+        A hard link that cannot be made writes a second full copy of content already
+        on disk: across a device boundary, or past the filesystem's link-count limit.
+        Those bytes land on the filesystem, so they count toward ``max_extracted_bytes``
+        like any other write.
+
+        A copy made at the link-count limit (``at_link_limit``) also counts toward the
+        archive-wide ratio. The archive drives it: one that declares enough links to
+        one member makes a copy per limit's worth of links, so a small archive could
+        otherwise write far more than its size while staying under the byte cap, which
+        is the case the ratio exists for (maintainer ruling, 2026-10-07). A
+        cross-device copy does not: whether it happens depends on where the caller
+        extracts to, not on the archive. Neither counts toward the per-member ratio,
+        since a link member's compressed size says nothing about the copy's size.
         """
         self._check_cumulative_bytes(chunk_bytes)
         self._copied_bytes += chunk_bytes
+        if at_link_limit:
+            self._link_limit_copied_bytes += chunk_bytes
+            self._check_archive_ratio()
 
     def _check_cumulative_bytes(self, chunk_bytes: int) -> None:
         """Cumulative byte guard (always-stop), checked before ``chunk_bytes`` is written.
@@ -383,37 +448,47 @@ class BombTracker:
         # are mutually exclusive (static when known, live otherwise), so the ratio is never
         # counted twice.
         css = self._compressed_source_size
-        if self._max_ratio is not None and self._total_bytes > self._ratio_floor:
+        # Decoded output plus the copies made at the link-count limit (``count_copy``).
+        output = self._total_bytes + self._link_limit_copied_bytes
+        # Says which part was not decoded, so a trip on a store-only archive with many
+        # hard links is not read as a decompression bomb.
+        copies = self._link_limit_copied_bytes
+        detail = (
+            f" ({self._total_bytes} bytes decoded, plus {copies} bytes copied for hard "
+            f"links past the filesystem's link-count limit)"
+            if copies
+            else ""
+        )
+        if self._max_ratio is not None and output > self._ratio_floor:
             if css and css > 0:
-                if self._total_bytes / css > self._max_ratio:
+                if output / css > self._max_ratio:
                     raise _AlwaysStopResourceLimitError(
                         f"Archive-wide decompression ratio "
-                        f"{self._total_bytes / css:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1"
+                        f"{output / css:.0f}:1 exceeds limit "
+                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
                     )
             elif self._source is not None:
                 consumed = self._source.compressed_bytes_consumed
-                if (
-                    consumed
-                    and consumed > 0
-                    and self._total_bytes / consumed > self._max_ratio
-                ):
+                if consumed and consumed > 0 and output / consumed > self._max_ratio:
                     raise _AlwaysStopResourceLimitError(
                         f"Live decompression ratio "
-                        f"{self._total_bytes / consumed:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1"
+                        f"{output / consumed:.0f}:1 exceeds limit "
+                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
                     )
 
 
 def _report_stored_spelling(
     exc: ArchiveyError, on_disk: ArchiveMember, member: ArchiveMember
 ) -> None:
-    """Rename ``exc`` from the disk spelling ``on_disk`` back to ``member``'s names.
+    """Rename ``exc`` from the spelling ``on_disk`` back to ``member``'s names.
 
-    A lone surrogate is checked and written as its UTF-8 bytes (``disk_spelled``), but
-    an error names the name and link target from before that step, so one skip does
-    not print two names for one member. Under ``STRICT`` and ``STANDARD`` the name
-    policy has already escaped the name, so only the link target changes back.
+    A check runs on the spelling that reaches disk, but an error names the member as
+    it was before that spelling, so one skip does not print two names for one member.
+    Each of the name and the link target moves back when the two members spell it
+    differently. Two callers: after ``disk_spelled``, which writes a lone surrogate as
+    its UTF-8 bytes (under ``STRICT`` and ``STANDARD`` the name policy has already
+    escaped the name, so there only the link target changes back); and after the name
+    policy's rewrite, where the name, the target or both can change back.
     """
     if exc.member_name == on_disk.name:
         exc.member_name = member.name
@@ -558,8 +633,9 @@ class _RunState:
     # The symlinks this run created and the paths each one's resolution depends on,
     # so a later member that changes such a path gets them rechecked.
     links: LinkWatch | None = None
-    # The stored target of each tracked symlink whose target was disk-spelled, by
-    # result index, so a recheck error names it as listed.
+    # The stored target of each tracked symlink whose target was written differently
+    # (a disk spelling, Windows separators, a dry run's scratch path), by result
+    # index, so a recheck error names it as listed.
     stored_targets: dict[int, str] = field(default_factory=dict)
     # RAR file copies (``_open_written_source``). ``streaming_now`` is ``id()`` of
     # the member whose stream is being written; a file-copy source arriving then is
@@ -638,8 +714,6 @@ class _DryRun:
     dest_spellings: tuple[PurePath, PurePath]
     # Where FILE bodies go instead of the file (``os.devnull``).
     sink: BinaryIO
-    # Each rewritten link target's original, for errors.
-    shown_targets: dict[str, str] = field(default_factory=dict)
 
     def target_on_disk(self, target: str) -> str:
         """The target a link is created with: an absolute target that names a path
@@ -658,9 +732,7 @@ class _DryRun:
             pure = PurePath(self.dest_spellings[0].drive + target)
         for spelling in self.dest_spellings:
             if pure.is_relative_to(spelling):
-                on_disk = str(self.scratch / pure.relative_to(spelling))
-                self.shown_targets[on_disk] = target
-                return on_disk
+                return str(self.scratch / pure.relative_to(spelling))
         return target
 
     def shown(self, path: Path) -> Path:
@@ -871,7 +943,16 @@ class ExtractionCoordinator:
         return self._dry.target_on_disk if self._dry is not None else None
 
     def _link_target_on_disk(self, target: str) -> str:
-        """The target a link is created with (see ``_DryRun.target_on_disk``)."""
+        """The target a link is created with (see ``_DryRun.target_on_disk``).
+
+        On Windows each ``/`` is written as ``\\`` first. A symlink's target is stored
+        as given, and Windows resolves it with ``\\`` as the only separator, so
+        ``sub/file`` would dangle there while it resolves on POSIX. Windows cannot hold
+        ``/`` in a name, so the character can only mean a separator. Git for Windows
+        and Node write link targets the same way.
+        """
+        if _WINDOWS:
+            target = target.replace("/", "\\")
         return target if self._dry is None else self._dry.target_on_disk(target)
 
     def _shown(self, path: Path) -> Path:
@@ -1257,7 +1338,8 @@ class ExtractionCoordinator:
             if path.is_symlink():
                 self._note_link_change(path)
             try:
-                os.unlink(path)
+                with self._readonly_cleared(path, ours=True):
+                    os.unlink(path)
             except FileNotFoundError:
                 state.written_paths.discard(path)
             except OSError as exc:
@@ -1433,6 +1515,16 @@ class ExtractionCoordinator:
                 )
             )
         portable = apply_name_policy(transformed, self._policy)
+        if portable is not transformed:
+            # The rewrite can change which directories the path passes through: a
+            # "\\" becomes a separator, and "foo. /x" becomes "foo/x". The parent
+            # checked above is then not the parent written to, so check again. A
+            # symlink "foo" that leaves the destination is refused here.
+            try:
+                self._check_universal(portable, dest_root)
+            except ExtractionError as exc:
+                _report_stored_spelling(exc, portable, transformed)
+                raise
         on_disk = disk_spelled(portable)
         if on_disk is not portable:
             self._current.spelled_from = portable
@@ -1638,11 +1730,12 @@ class ExtractionCoordinator:
                 and links is not None
                 and transformed.link_target is not None
             ):
-                links.track(
-                    result.path,
-                    self._link_target_on_disk(transformed.link_target),
-                    result_index,
-                )
+                on_disk = self._link_target_on_disk(transformed.link_target)
+                links.track(result.path, on_disk, result_index)
+                if on_disk != transformed.link_target:
+                    # An error names the target as stored, not with the separators
+                    # or dry-run path written to disk.
+                    self._state.stored_targets[result_index] = transformed.link_target
                 spelled_from = self._current.spelled_from
                 if spelled_from is not None and spelled_from.link_target is not None:
                     self._state.stored_targets[result_index] = spelled_from.link_target
@@ -1771,8 +1864,9 @@ class ExtractionCoordinator:
     ) -> tuple[ArchiveyError | OSError, ExtractionStatus]:
         """The error to record for a member's failed work, and its status.
 
-        EILSEQ and ENAMETOOLONG come from the archive's name, not the filesystem's
-        state, so they become typed failures: see ``_typed_os_error``.
+        EILSEQ and ENAMETOOLONG (and their Windows codes) come from the archive's name,
+        not the filesystem's state, so they become typed failures, as does Windows
+        refusing a symlink for want of privilege: see ``_typed_os_error``.
         """
         if isinstance(exc, OSError):
             # Before it is recorded or logged: a dry run's error names dest.
@@ -1966,10 +2060,11 @@ class ExtractionCoordinator:
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
-        if stat.S_ISDIR(st.st_mode):
-            os.rmdir(dest_path)
-        else:
-            os.unlink(dest_path)
+        with self._readonly_cleared(dest_path):
+            if stat.S_ISDIR(st.st_mode):
+                os.rmdir(dest_path)
+            else:
+                os.unlink(dest_path)
             if stat.S_ISLNK(st.st_mode):
                 self._note_link_change(dest_path)
         written_paths.discard(dest_path)
@@ -2509,6 +2604,60 @@ class ExtractionCoordinator:
         )
         self._revise_result(orphan.result_index, result)
 
+    @contextlib.contextmanager
+    def _readonly_cleared(self, path: Path, *, ours: bool = False) -> Iterator[None]:
+        """Let the block replace or remove ``path`` on Windows when this run wrote it
+        read-only. ``ours`` says the caller knows this run wrote it (a parked copy
+        already taken out of ``parked``).
+
+        Windows refuses to replace or unlink a file, or remove a directory, with the
+        read-only attribute (``WinError 5``), which a stored mode without write
+        permission (``0o444``, ``0o555``) sets; POSIX checks only the parent directory.
+        So a later member of the same name replaced the entry on POSIX and failed on
+        Windows. The attribute is cleared only on a regular file or a directory this run
+        wrote (or parked), or a directory it created as a parent that a later member made
+        read-only: a read-only entry the caller already had stays protected, as on
+        Windows before. The attribute belongs to the file, not the name, so it is
+        put back on the other names of a file (hard links this run made) once the block
+        is done, and on ``path`` itself if the block fails.
+        """
+        state = self._state
+        st: os.stat_result | None = None
+        if _WINDOWS and (
+            ours
+            or path in state.written_paths
+            or path in state.created_dirs
+            or path in self._current.parked
+        ):
+            with contextlib.suppress(OSError):
+                st = os.lstat(path)
+        if (
+            st is None
+            or not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode))
+            or st.st_mode & stat.S_IWRITE
+        ):
+            yield
+            return
+        others: list[Path] = []
+        if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+            identity = (st.st_dev, st.st_ino)
+            for paths in state.source_paths.values():
+                for other in paths:
+                    with contextlib.suppress(OSError):
+                        ost = os.lstat(other)
+                        if other != path and (ost.st_dev, ost.st_ino) == identity:
+                            others.append(other)
+        os.chmod(path, st.st_mode | stat.S_IWRITE)
+        try:
+            yield
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.chmod(path, st.st_mode)  # still the same file: the block failed
+            raise
+        for other in others:
+            with contextlib.suppress(OSError):
+                os.chmod(other, st.st_mode)
+
     def _forget_source_path(self, path: Path) -> bool:
         """Stop offering ``path`` as a hardlink source: something else is going there.
         Returns whether another path still holds the content it held.
@@ -2574,15 +2723,12 @@ class ExtractionCoordinator:
         if removed:
             self._resolutions_changed()
         first: FilterRejectionError | None = None
-        shown_targets = self._dry.shown_targets if self._dry is not None else {}
         for link, message in removed:
             prior = state.results[link.result_index]
             error = FilterRejectionError(
                 message,
                 member_name=prior.member.name,
-                link_target=state.stored_targets.get(
-                    link.result_index, shown_targets.get(link.target, link.target)
-                ),
+                link_target=state.stored_targets.get(link.result_index, link.target),
             )
             first = first or error
             state.written_paths.discard(link.dest_path)
@@ -2813,7 +2959,8 @@ class ExtractionCoordinator:
                             member_name=member.name,
                         )
                 self._note_link_change(dest_path)
-                os.rmdir(dest_path)
+                with self._readonly_cleared(dest_path):
+                    os.rmdir(dest_path)
                 self._current.removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
@@ -2829,7 +2976,8 @@ class ExtractionCoordinator:
         if moves_links:
             self._note_link_change(dest_path)
         if not atomic:
-            dest_path.unlink()
+            with self._readonly_cleared(dest_path):
+                dest_path.unlink()
             # A parked copy's result is already SUPERSEDED: nothing to revise.
             if not parked:
                 self._current.removed_existing = True
@@ -2871,7 +3019,8 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            os.replace(tmp, dest_path)
+            with self._readonly_cleared(dest_path):
+                os.replace(tmp, dest_path)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -2919,11 +3068,21 @@ class ExtractionCoordinator:
     def _place_link(
         self, source_id: int, new_path: Path, member: ArchiveMember
     ) -> None:
-        """Create ``new_path`` as a hardlink to the source's content, trying each recorded
-        on-disk path in turn; on all-cross-device (EXDEV), copy from an existing path.
-        Appends ``new_path`` so a later same-device link can reuse it — which is what
-        keeps a fan-out across one device boundary to a single copy per device rather
-        than one per link.
+        """Create ``new_path`` as a hardlink to the source's content, trying the recorded
+        on-disk paths newest first; when none takes the link for a reason of its own
+        (see ``_link_refused_here``), copy from an existing path. Appends ``new_path``
+        so a later same-device link can reuse it — which is what keeps a fan-out across
+        one device boundary to a single copy per device rather than one per link, and a
+        fan-out past the link-count limit to one copy per full file.
+
+        The first path at the link-count limit ends the search with a copy. The paths
+        recorded before it are older names of the same file, of a file that filled up
+        before it, or of a copy on another device, which could not take this link
+        either (``EMLINK`` means the destination is on the full file's device). So
+        trying each would fail too, and would cost a failed call per recorded path for
+        every later link: quadratic in the number of links an archive declares. A file
+        that dropped below the limit since (a later member replaced one of its names) is
+        not tried again, which costs at most an extra copy.
 
         The copy is a real write of the source's full size, so it goes through
         ``tracker`` and counts toward ``max_extracted_bytes``; a link adds no bytes.
@@ -2941,30 +3100,36 @@ class ExtractionCoordinator:
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,
-        # where the first path links, checks one path however many links name it.
+        # where the newest path links, checks one path however many links name it.
         tmp = self._temp_sibling(new_path.parent)
         try:
             copied = False
+            linked = False
+            at_link_limit = False
             copy_from: Path | None = None
-            for candidate in existing:
+            for candidate in reversed(existing):
                 if not _is_regular_file(candidate):
                     continue
                 if copy_from is None:
                     copy_from = candidate
                 try:
                     os.link(candidate, tmp)
-                    break
                 except OSError as exc:
-                    if exc.errno == errno.EXDEV:
-                        continue
-                    raise
-            else:
+                    if not _link_refused_here(exc):
+                        raise
+                    if _at_link_limit(exc):
+                        at_link_limit = True
+                        break
+                    continue
+                linked = True
+                break
+            if not linked:
                 if copy_from is None:
                     raise ExtractionError(
                         "Hardlink source is no longer on disk as a regular file",
                         member_name=member.name,
                     )
-                # Every usable path is cross-device: fall back to a copy from the first.
+                # No usable path took a link: fall back to a copy.
                 # Created private when a mode follows (as mkstemp would), at the ordinary
                 # creation mode when none does, the same as a FILE write.
                 create_mode = (
@@ -2975,14 +3140,17 @@ class ExtractionCoordinator:
                     os.fdopen(_open_new_file(tmp, create_mode), "wb") as dst,
                 ):
                     while chunk := src.read(_CHUNK):
-                        self._state.tracker.count_copy(len(chunk))
+                        self._state.tracker.count_copy(
+                            len(chunk), at_link_limit=at_link_limit
+                        )
                         dst.write(chunk)
                 copied = True
             if copied:
                 # Applied before the swap, so the final name never appears with the
                 # source's metadata instead of this member's.
                 self._apply_metadata(tmp, member)
-            os.replace(tmp, new_path)
+            with self._readonly_cleared(new_path):
+                os.replace(tmp, new_path)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)

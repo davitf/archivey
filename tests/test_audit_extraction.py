@@ -314,6 +314,6 @@ def test_byte_cap_message_counts_only_what_was_written() -> None:
     assert "written 60 bytes; the next 60-byte chunk would make 120" in str(info.value)
     assert tracker.total_bytes == 60
     with pytest.raises(archivey.ResourceLimitError, match="written 60 bytes"):
-        tracker.count_copy(41)
-    tracker.count_copy(40)
+        tracker.count_copy(41, at_link_limit=False)
+    tracker.count_copy(40, at_link_limit=False)
     assert tracker.total_bytes == 100
