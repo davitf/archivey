@@ -544,3 +544,80 @@ def test_bounded_deflate_with_trailing_bytes_decodes() -> None:
         # Mid-stream seek still works on the bounded accelerator path.
         assert stream.seek(len(payload) // 2) == len(payload) // 2
         assert stream.read() == payload[len(payload) // 2 :]
+
+
+# --- Parity with the accelerator off (found by the accelerator fuzz targets) -----------
+
+
+def _read_in_both_modes(
+    codec: Codec, data: bytes, size: int | None
+) -> list[tuple[bytes, type[Exception] | None]]:
+    """``(bytes read, error type or None)`` with rapidgzip ``ON``, then ``OFF``."""
+    results = []
+    for mode in (AcceleratorMode.ON, AcceleratorMode.OFF):
+        config = StreamConfig(
+            use_rapidgzip=mode, seekable=True, expected_decompressed_size=size
+        )
+        got = bytearray()
+        error: type[Exception] | None = None
+        try:
+            with open_codec_stream(codec, io.BytesIO(data), config=config) as stream:
+                while chunk := stream.read(1 << 16):
+                    got += chunk
+        except ReadError as exc:
+            error = type(exc)
+        results.append((bytes(got), error))
+    return results
+
+
+_PAYLOAD = os.urandom(64) * 100
+_OTHER_FORMATS = {
+    "deflate-given-gzip": (Codec.DEFLATE, gzip.compress(_PAYLOAD)),
+    "deflate-given-zlib": (Codec.DEFLATE, zlib.compress(_PAYLOAD)),
+    "zlib-given-gzip": (Codec.ZLIB, gzip.compress(_PAYLOAD)),
+    "zlib-given-raw-deflate": (Codec.ZLIB, _raw_deflate(_PAYLOAD)),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_OTHER_FORMATS))
+def test_a_stream_of_another_format_raises_as_with_the_accelerator_off(
+    case: str,
+) -> None:
+    """rapidgzip is told no format and decodes whichever one the first bytes look like;
+    the standard library reads the codec's own format and raises at the header."""
+    pytest.importorskip("rapidgzip")
+    codec, data = _OTHER_FORMATS[case]
+    on, off = _read_in_both_modes(codec, data, None)
+    assert off == (b"", CorruptionError)
+    assert on == off
+
+
+@pytest.mark.parametrize("size", [None, 0])
+@pytest.mark.parametrize("data", [b"\x03", b"\x02\x00", b"\x03\x3b"])
+def test_raw_deflate_cut_before_any_output_raises_truncated(
+    data: bytes, size: int | None
+) -> None:
+    """rapidgzip ends these softly with no output; the standard library raises."""
+    pytest.importorskip("rapidgzip")
+    on, off = _read_in_both_modes(Codec.DEFLATE, data, size)
+    assert off == (b"", TruncatedError)
+    assert on == off
+
+
+def test_valid_empty_raw_deflate_reads_empty() -> None:
+    pytest.importorskip("rapidgzip")
+    on, off = _read_in_both_modes(Codec.DEFLATE, _raw_deflate(b""), 0)
+    assert on == off == (b"", None)
+
+
+@pytest.mark.parametrize("codec", [Codec.DEFLATE, Codec.ZLIB])
+@pytest.mark.parametrize("data", [b"\x03\x02", b"garbage garbage"])
+def test_a_declared_empty_stream_that_does_not_decode_raises(
+    codec: Codec, data: bytes
+) -> None:
+    """The over-run probe at a declared size of 0 used to take the standard library's
+    raw ``zlib.error`` for the accelerator's end of input, and read as empty."""
+    pytest.importorskip("rapidgzip")
+    on, off = _read_in_both_modes(codec, data, 0)
+    assert off == (b"", CorruptionError)
+    assert on == off

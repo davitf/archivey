@@ -894,6 +894,30 @@ def _gzip_header_refused(source: CodecSource) -> bool:
         return refused(f)
 
 
+def _stream_prefix(source: CodecSource, size: int) -> bytes:
+    """The first ``size`` bytes of ``source`` (fewer when it is shorter), read without
+    moving it."""
+    with _peeking(source) as f:
+        f.seek(0)
+        return f.read(size)
+
+
+def _rapidgzip_may_read_as(source: CodecSource, *, gzip: bool, zlib: bool) -> bool:
+    """Whether rapidgzip may take ``source`` for a gzip or a zlib stream (the kinds
+    asked about), whatever codec opened it.
+
+    rapidgzip 0.16 is told no format: it looks at the first bytes and decodes a gzip
+    member, a zlib stream or raw DEFLATE, whichever they look like. So a raw DEFLATE
+    source that starts like gzip or zlib, or a zlib source that starts like gzip, is
+    decoded as that other format, where the standard library raises at the header.
+    The test is wider than rapidgzip's own (``determineFileType``): every header it
+    takes for zlib passes :func:`_zlib_header_plausible`, and every gzip one starts
+    ``1f 8b``.
+    """
+    prefix = _stream_prefix(source, 2)
+    return (gzip and prefix == b"\x1f\x8b") or (zlib and _zlib_header_plausible(prefix))
+
+
 def _gzip_isize_from_source(source: CodecSource) -> int | None:
     """The gzip ISIZE trailer when cheaply readable, else ``None`` (see the tri-state helper)."""
     return _gzip_isize_and_length(source)[1]
@@ -1306,6 +1330,19 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     raises ``TruncatedError``), and ``resume_points`` gives the blocks it had indexed
     before the error (``_bzip2_resume_points``; a block needs no window, see
     ``bzip2_resume``).
+
+    Once switched, a data error of the standard library leaves as the codec's typed
+    error (``translate``), as it does from the outer translator with the accelerator
+    off. A raw ``zlib.error`` would be taken for the accelerator's opaque end-of-input
+    error by the over-run probe of a declared size (``_probe_past_declared``), which
+    reads it as "no more data": a ZIP member declared empty with a body that is not
+    DEFLATE read as empty, where the accelerator off raises.
+
+    ``empty_to_stdlib`` hands a stream that ends before its first byte to the standard
+    library, which decodes a valid empty stream to nothing as well and raises on a cut
+    one. rapidgzip ends a raw DEFLATE stream cut before any output softly (``03``, a
+    final block with no end code, reads as empty). The second decode costs nothing that
+    matters: the stream produced no output.
     """
 
     readinto_passthrough = False
@@ -1320,6 +1357,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         limit: int | None = None,
         takes_over: Callable[[Exception], bool] | None = None,
         resume_points: _ResumePoints | None = None,
+        translate: Callable[[Exception], ArchiveyError | None] | None = None,
+        empty_to_stdlib: bool = False,
     ) -> None:
         super().__init__(inner)
         self._views = views
@@ -1328,6 +1367,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._limit = limit
         self._data_error = takes_over
         self._resume_points = resume_points
+        self._translate = translate
+        self._empty_to_stdlib = empty_to_stdlib
         self._position = 0
         self.switched = False
 
@@ -1337,22 +1378,46 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         return None if self.switched else self._inner
 
     def read(self, size: int = -1, /) -> bytes:
-        try:
-            data = self._restarting(lambda: self._inner.read(size))
-        except Exception as exc:
-            if not self._takes_over(exc):
-                raise
-            self._switch(resume=True)
-            data = self._restarting(lambda: self._inner.read(size))
-        if (
-            self._limit is not None
-            and not self.switched
-            and self._position + len(data) > self._limit
-        ):
-            self._switch()
-            data = self._restarting(lambda: self._inner.read(size))
+        with self._typed_after_switch():
+            try:
+                data = self._restarting(lambda: self._inner.read(size))
+            except Exception as exc:
+                if not self._takes_over(exc):
+                    raise
+                self._switch(resume=True)
+                data = self._restarting(lambda: self._inner.read(size))
+            if (
+                self._empty_to_stdlib
+                and not data
+                and size != 0
+                and self._position == 0
+                and not self.switched
+            ):
+                self._switch()
+                data = self._restarting(lambda: self._inner.read(size))
+            if (
+                self._limit is not None
+                and not self.switched
+                and self._position + len(data) > self._limit
+            ):
+                self._switch()
+                data = self._restarting(lambda: self._inner.read(size))
         self._position += len(data)
         return data
+
+    @contextmanager
+    def _typed_after_switch(self) -> Iterator[None]:
+        """Raise the standard library's data error as the codec's typed error once
+        switched; see the class docstring."""
+        try:
+            yield
+        except Exception as exc:
+            if not self.switched or self._translate is None or from_callers_source(exc):
+                raise
+            typed = self._translate(exc)
+            if typed is None:
+                raise
+            raise typed from exc
 
     def _takes_over(self, exc: Exception) -> bool:
         """Whether the standard library takes over after ``exc`` from rapidgzip."""
@@ -1378,14 +1443,15 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         inner_seek = functools.partial(super().seek, offset, whence)
-        try:
-            self._position = self._restarting(inner_seek)
-        except Exception as exc:
-            # A seek runs rapidgzip's decode too, and meets the same data errors.
-            if not self._takes_over(exc):
-                raise
-            self._switch(resume=True)
-            self._position = self._restarting(inner_seek)
+        with self._typed_after_switch():
+            try:
+                self._position = self._restarting(inner_seek)
+            except Exception as exc:
+                # A seek runs rapidgzip's decode too, and meets the same data errors.
+                if not self._takes_over(exc):
+                    raise
+                self._switch(resume=True)
+                self._position = self._restarting(inner_seek)
         return self._position
 
     def nearest_resume_offset(self, target: int) -> int | None:
@@ -2599,6 +2665,10 @@ class _DeflateFamilyCodec(StreamCodec):
     # DEFLATE or zlib stream looking for a concatenated member, and an AES pad after it
     # would look like a second member.
     _bounds_source: ClassVar[bool] = True
+    # Whether a stream rapidgzip ends before any output goes to the standard library
+    # (``empty_to_stdlib`` of :class:`_StdlibOnAcceleratorError`). gzip and zlib check
+    # that end in their own wrappers.
+    _empty_to_stdlib: ClassVar[bool] = False
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -2657,6 +2727,8 @@ class _DeflateFamilyCodec(StreamCodec):
             open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
             label=label,
             limit=self._accelerated_limit(params, config),
+            translate=self.translate,
+            empty_to_stdlib=self._empty_to_stdlib,
         )
         stream: BinaryIO = takeover if end_check is None else end_check(takeover)
         return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
@@ -2861,6 +2933,7 @@ class Bzip2Codec(StreamCodec):
                 label="bzip2",
                 takes_over=self._accelerator_data_error,
                 resume_points=_bzip2_resume_points,
+                translate=self.translate,
             )
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
             return _StdlibSeekContract(
@@ -3381,10 +3454,22 @@ class _ZlibErrorCodec(_DeflateFamilyCodec):
 
 class DeflateCodec(_ZlibErrorCodec):
     codec = Codec.DEFLATE
+    _empty_to_stdlib = True
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
+
+    def _open_accelerated(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO | None:
+        if _rapidgzip_may_read_as(source, gzip=True, zlib=True):
+            # rapidgzip would decode a gzip or zlib stream here; the standard library
+            # reads it as raw DEFLATE, as it does with the accelerator off. No encoder
+            # starts raw DEFLATE this way: the zlib-like first byte is a stored block
+            # with nonzero padding bits.
+            return None
+        return super()._open_accelerated(source, params, config)
 
     def _accelerated_limit(
         self, params: CodecParams, config: StreamConfig
@@ -3434,6 +3519,16 @@ class ZlibCodec(_ZlibErrorCodec):
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return _stdlib_zlib(source, config)
+
+    def _open_accelerated(
+        self, source: CodecSource, params: CodecParams, config: StreamConfig
+    ) -> BinaryIO | None:
+        if not _rapidgzip_may_read_as(source, gzip=False, zlib=True):
+            # Not a zlib header: rapidgzip would decode a gzip member or raw DEFLATE,
+            # and the standard library raises at the first read, as it does with the
+            # accelerator off.
+            return None
+        return super()._open_accelerated(source, params, config)
 
     def _end_check(
         self,
