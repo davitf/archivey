@@ -223,7 +223,7 @@ class _AcceleratorStream(DelegatingStream):
         super().__init__(ensure_binaryio(inner))
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
-        self._finalize = weakref.finalize(self, self._close_inner, self._inner)
+        self._finalize = weakref.finalize(self, self._close_inner, self._inner, trap)
         # Bug 3 containment: when rapidgzip reads a caller-owned Python source through a
         # ``_TrappingSource``, a source-side fault is swallowed into ``trap`` (so it never
         # crosses into rapidgzip's C++ and aborts the process) and re-raised here after each
@@ -234,13 +234,15 @@ class _AcceleratorStream(DelegatingStream):
         self._lost: str | None = None
 
     @staticmethod
-    def _close_inner(inner: BinaryIO) -> None:
+    def _close_inner(inner: BinaryIO, trap: "_TrappingSource | None") -> None:
         # close() — not join_threads() — stops the C++ worker thread, and must run before the
         # interpreter finalizes or the process aborts. Best-effort; the guard runs it once.
         try:
             inner.close()
         except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
             pass
+        if trap is not None:
+            trap.release()
 
     def _reraise_trapped(self) -> None:
         # Surface a fault the source shim parked, after the accelerator call that observed
@@ -468,7 +470,8 @@ class _TrappingSource(io.RawIOBase):
     re-raises the stored fault after the accelerator call, turning the abort into a normal Python
     exception. It traps ``BaseException`` (not just ``Exception``): even a ``KeyboardInterrupt`` /
     ``SystemExit`` must never cross into C++, so a control-flow exception is **deferred** to the
-    next accelerator boundary and re-raised there — never swallowed. It deliberately exposes
+    next accelerator boundary and re-raised there — never swallowed while the stream is open
+    (:meth:`release` drops a fault still parked at close). It deliberately exposes
     **no** ``fileno`` so rapidgzip stays on its Python read path (a valid fileno would let it
     bypass this shim). Wraps only caller-owned sources; path sources open their own fd and are
     immune, so they are never trapped.
@@ -478,6 +481,25 @@ class _TrappingSource(io.RawIOBase):
         super().__init__()
         self._inner = inner
         self.trapped: BaseException | None = None
+
+    def release(self) -> None:
+        """Drop the source, once the decoder that reads through this shim is closed.
+
+        rapidgzip 0.16 never releases the Python file object it is given, closed or not
+        (measured with a weak reference: ``IndexedBzip2File(f).close()`` leaves ``f``
+        alive), so this shim outlives the stream. Without this, so would the source, and
+        an ``io.BytesIO`` source with a full copy of its buffer: a fuzz run over the
+        accelerated bzip2 path ran out of memory on it
+        (``test_indexed_bzip2_frees_a_stream_source_after_close`` pins the fix). A call
+        that still arrives reads an empty source.
+
+        A fault still parked here goes too. Its traceback holds the frame of the
+        source's own ``read``, whose ``self`` is the source, so keeping it would keep the
+        source; and past the open, only a read-ahead nobody waited on parks one (see
+        ``_AcceleratorStream._reraise_trapped``).
+        """
+        self._inner = io.BytesIO()
+        self.trapped = None
 
     def _store(self, exc: BaseException) -> None:
         if self.trapped is None:
@@ -1027,7 +1049,9 @@ def _open_accelerator(
         raw = open_fn(trap, parallelization=0)
     except Exception:
         # As in _AcceleratorStream.read: the parked fault is the real cause of an
-        # ordinary error, but never replaces an interrupt.
+        # ordinary error, but never replaces an interrupt. No wrapper exists here to
+        # release the trap; IndexedBzip2File has not been seen to raise at construction
+        # (damaged, cut, empty and random inputs all raise on the first read instead).
         _raise_parked(trap)
         raise
     stream = _AcceleratorStream(raw, trap=trap)
