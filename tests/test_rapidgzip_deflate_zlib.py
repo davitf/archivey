@@ -12,7 +12,6 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
-import os
 import random
 import zlib
 from pathlib import Path
@@ -33,7 +32,7 @@ from tests.corruption_util import raises_corruption_not_truncation
 
 # Large enough that compressed size exceeds the AUTO threshold for less-compressible
 # payloads; used when a test needs AUTO to select rapidgzip.
-_LARGE = os.urandom(2 * 1024 * 1024)
+_LARGE = random.Random(1).randbytes(2 * 1024 * 1024)
 # The AUTO threshold these tests run against. The shipped one (16 MiB) would need
 # inputs eight times larger; `_low_auto_threshold` lowers it for the tests that
 # exercise AUTO selecting rapidgzip.
@@ -588,7 +587,7 @@ def _zlib_with_dictionary(data: bytes) -> bytes:
     return co.compress(data) + co.flush()
 
 
-_PAYLOAD = os.urandom(64) * 100
+_PAYLOAD = random.Random(0).randbytes(64) * 100
 _OTHER_FORMATS = {
     "deflate-given-gzip": (Codec.DEFLATE, gzip.compress(_PAYLOAD)),
     "deflate-given-zlib": (Codec.DEFLATE, zlib.compress(_PAYLOAD)),
