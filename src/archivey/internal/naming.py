@@ -350,13 +350,13 @@ def resolve_link_target_name(
     applies to it: ``../x`` names the member stored as ``../x``, and a leading ``/`` is
     kept, as :func:`normalize_member_name` keeps it in a name (``tar -P`` stores ``/a``
     and a hardlink ``/b`` naming ``/a``). Extraction never follows the target path. It
-    links to the member the target names, and refuses the link when it refuses that
-    member. ``within_root`` restores the escape test for a hardlink-kind target, for a
-    caller that has no such refusal: a RAR file copy is a FILE, and extraction writes
-    its source's bytes under the copy's own name. That test runs on the collapsed form,
-    with a leading ``/`` set aside. A hardlink target with no segment left (``.``,
-    ``/``) names nothing. The caller looks the result up against normalized member
-    names with :func:`link_target_name_keys`.
+    links to the member at the end of the hard-link chain, and refuses the link when it
+    refuses that member. ``within_root`` restores the escape test for a hardlink-kind
+    target, for a caller that has no such refusal: a RAR file copy is a FILE, and
+    extraction writes its source's bytes under the copy's own name. That test runs on
+    the collapsed form, with a leading ``/`` set aside. A hardlink target with no
+    segment left (``.``, ``/``) names nothing. The caller looks the result up against
+    normalized member names with :func:`link_target_name_keys`.
 
     A backslash in ``target`` is a literal character, exactly as in member names: the
     backend that decoded the member already converted ``\\`` to ``/`` where the source

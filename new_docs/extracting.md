@@ -120,10 +120,11 @@ such as `../evil.txt`, and that member is then written under its new name. Devic
 refused whatever the filter does, and a link pointing outside is refused unless the filter also
 changes its target. `archivey.sanitize_names` is a ready-made filter for this, passed as
 `filter=` to `extract_all`. It drops a leading `/` or drive letter, resolves or drops `..`,
-removes the hidden characters, and adds `_` to names Windows reserves, such as `CON`. It
-leaves a symlink's target as stored. A hardlink links to the member its target names, so it is
-written when that member is written and refused when that member is refused, and changing its
-target in a filter does nothing.
+removes the hidden characters, and adds `_` to names Windows reserves, such as `CON`. In a
+symlink's target it makes only the character and reserved-name fixes, and it leaves a
+hardlink's target as stored. A hardlink is a second name for the file at the end of its chain
+of links, so it is written when that file is written and refused when that file is refused,
+and changing its target in a filter does nothing.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, with the path it was written to in `result.path` and the

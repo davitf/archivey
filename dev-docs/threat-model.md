@@ -86,19 +86,21 @@ no member replaces the destination itself.
   target check and the parent resolution. A later member that changes a path the link
   resolved through gets it rechecked
   ([below](#a-later-member-cannot-make-an-extracted-symlink-escape)).
-- A hardlink target must name an earlier member, and that member must not have been
-  refused (maintainer decision, 2026-10-07). The target is a member name, never a
-  path: it resolves to the latest earlier member of that name (`internal/naming.py`
-  `resolve_link_target_name`, `..` and a leading `/` kept), so a duplicate name
-  cannot redirect a link, and the link is made to the file that member was written to
-  (`_write_hardlink`, `_place_link`). `check_universal` therefore reads nothing of
-  the target string, and a filter's change to it does nothing.
-  `ExtractionCoordinator._source_refused` refuses a link whose member was refused:
-  this run's result for that member when there is one, otherwise the policy's own
-  checks on the member as listed (a selector or filter excluded it). Without that, the
-  second pass would write a refused member's bytes, such as `../x`'s, under the link's
-  name. A RAR file copy is a `FILE`, so its source lookup keeps the escape test instead
-  (`within_root`).
+- A hardlink target must name an earlier member, and the member the link gets its bytes
+  from must not have been refused (maintainer decision, 2026-10-07). The target is a
+  member name, never a path: it resolves to the latest earlier member of that name
+  (`internal/naming.py` `resolve_link_target_name`, `..` and a leading `/` kept), so a
+  duplicate name cannot redirect a link, and the link is made to the file its source,
+  the end of the link chain (`link_target_member`), was written to (`_write_hardlink`,
+  `_place_link`). `check_universal` therefore reads nothing of the target string, and a
+  filter's change to it does nothing. `ExtractionCoordinator._source_refused` refuses a
+  link whose source was refused: this run's result for the source when there is one,
+  otherwise the policy's own checks on the source as listed (a selector or filter
+  excluded it). Without that, the second pass would write a refused member's bytes, such
+  as `../x`'s, under the link's name. A refused link in the middle of a chain refuses
+  nothing after it, and a hardlink to a symlink is written as that symlink and gets the
+  symlink checks. A RAR file copy is a `FILE`, so its source lookup keeps the escape
+  test instead (`within_root`).
 - Overwrites replace a symlink rather than follow it (`_prepare_destination`,
   `_place_link`), and file data is written to a `.archivey-tmp-<random>` sibling
   (`_temp_sibling`) and moved with `os.replace` (`_write_file_atomic`), so an
@@ -128,6 +130,9 @@ files, which are safe to delete.
 `test_a_filter_that_rewrites_a_hardlink_target_changes_nothing`,
 `test_a_filter_that_makes_the_source_unsafe_refuses_its_links`,
 `test_a_hardlink_with_a_rooted_or_drive_target_gets_what_its_member_gets`,
+`test_a_hardlink_through_a_refused_middle_name_links_to_its_written_source`,
+`test_a_hardlink_to_a_refused_symlink_is_written_as_a_symlink`,
+`test_a_refused_source_refuses_links_through_a_safe_middle_name`,
 `test_check_universal_does_not_read_a_hardlink_target`.
 `tests/test_property_safety.py` covers `normalize_member_name`, `check_universal` and
 `resolve_link_target_name` over arbitrary input, and the mutation harness asserts the

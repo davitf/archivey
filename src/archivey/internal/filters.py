@@ -286,7 +286,7 @@ def check_universal(
     archive, and the link is made to the file that member was written to, so the
     string never becomes a path, and a NUL or an unencodable character in it reaches
     no OS call. The coordinator refuses the link instead when it refuses the member
-    the target names (``ExtractionCoordinator._refuse_if_source_refused``).
+    the link gets its bytes from (``ExtractionCoordinator._source_refused``).
     """
     name = member.name
 
@@ -675,7 +675,7 @@ def _sanitize_characters(name: str) -> str:
 
 
 def _sanitize_path(name: str) -> str:
-    """Every ``sanitize_names`` rewrite of one path: a member name or a hardlink target."""
+    """Every ``sanitize_names`` rewrite of a member name."""
     name = _sanitize_characters(name)
     # Only a rooted name loses its root. A drive-relative "a:b" is kept, and the
     # segment rewrite below turns its colon into "_".
@@ -718,11 +718,7 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
       ``_``.
     - a NUL character: becomes ``_``.
 
-    A hardlink's target gets the same rewrite, and extraction ignores it, as it ignores
-    any filter's change to a hardlink target. The link is made to the member the
-    stored target names, resolved when the archive was listed, and the target string
-    never becomes a path. So a hardlink to ``../a`` extracts once this filter has
-    written ``../a`` as ``a``, and is refused when the member it names is refused.
+    A hardlink's target is left as stored: it names a member, not a path.
 
     A symlink's target gets the character and segment rewrites only (``file:stream`` →
     ``file_stream``, ``sub/NUL`` → ``sub/NUL_``), so a link to a rewritten member points
@@ -747,14 +743,10 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
     if name != member.name:
         changes["name"] = name
     target = member.link_target
-    if target is not None and member.type is MemberType.HARDLINK:
-        new_target = _sanitize_path(target)
-    elif target is not None and member.type is MemberType.SYMLINK:
+    if target is not None and member.type is MemberType.SYMLINK:
         new_target = _sanitize_symlink_target(target)
-    else:
-        new_target = target
-    if new_target != target:
-        changes["link_target"] = new_target
+        if new_target != target:
+            changes["link_target"] = new_target
     return member.replace(**changes) if changes else member
 
 

@@ -308,11 +308,13 @@ def test_sanitize_names_returns_the_same_member_when_nothing_changes() -> None:
     assert sanitize_names(member) is member
 
 
-def test_sanitize_names_rewrites_hardlink_targets_not_symlink_targets() -> None:
+def test_sanitize_names_keeps_a_hardlink_target_and_symlink_dot_dots() -> None:
+    """A hardlink target is a member name: rewriting it would name another member.
+    A symlink target keeps its ``..``, since it is a path."""
     hard = sanitize_names(
         _member("/x/../h", type=MemberType.HARDLINK, link_target="/x/../a")
     )
-    assert (hard.name, hard.link_target) == ("h", "a")
+    assert (hard.name, hard.link_target) == ("h", "/x/../a")
     sym = sanitize_names(_member("s", type=MemberType.SYMLINK, link_target="../a"))
     assert sym.link_target == "../a"
 
@@ -408,8 +410,6 @@ def test_reroot_is_recorded_in_presented_name(tmp_path: Path) -> None:
     assert presented == {"/etc/x": "/etc/x", "/etc/y": None}
 
 
-def test_sanitize_names_rewrites_a_hardlink_target_like_the_name() -> None:
-    hard = sanitize_names(
-        _member("h", type=MemberType.HARDLINK, link_target="d/CON.txt")
-    )
-    assert hard.link_target == sanitize_names(_member("d/CON.txt")).name == "d/CON_.txt"
+def test_sanitize_names_leaves_a_hardlink_target_unchanged() -> None:
+    hard = _member("h", type=MemberType.HARDLINK, link_target="d/CON.txt")
+    assert sanitize_names(hard) is hard

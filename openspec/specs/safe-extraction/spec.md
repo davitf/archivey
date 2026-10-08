@@ -106,10 +106,9 @@ is reject/raise, with one rewrite:
   refusing, at any policy: it strips a root, resolves `..` against the segment before
   it and drops a `..` with nothing to climb out of (`a/../b` → `b`, `../x` → `x`),
   removes bidi override/isolate characters, appends `_` to a Windows-reserved stem
-  (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`. It applies the same
-  rewrites to a HARDLINK target, which changes nothing: extraction ignores any
-  filter's change to a HARDLINK target and links to the member the stored target
-  names. A SYMLINK target gets the character and segment rewrites only (`file:stream` →
+  (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`. It leaves a HARDLINK
+  target as stored: the target is a member name, and rewriting it would name another
+  member. A SYMLINK target gets the character and segment rewrites only (`file:stream` →
   `file_stream`); its root and its `..` components are kept, and one with a drive or
   UNC root stays refused. A SYMLINK target read only after the filter ran (see
   `archive-reading`, "Link targets stored as member data are read only when
@@ -460,24 +459,32 @@ the orphaned link unrecoverable and therefore a per-member failure governed by
 `OnError`. A hardlink that merely precedes its selected source is linked after the
 source is written, with one read and one bomb-limit count for the source bytes.
 
-**A HARDLINK's target SHALL name an earlier member, and that member SHALL NOT have been
-refused** (maintainer decision, 2026-10-07). That is the whole rule for the target: the
-target string is a member name, never a path, so it gets no path check (no
-containment join, no drive, UNC or rooted-`\` refusal, no NUL or encoding check), and
-the link is made to the file its member was written to. A caller filter that changes
-a HARDLINK's `link_target` changes nothing; the link follows the stored name. A link
-whose member was refused SHALL be refused with `FilterRejectionError` ("Hardlink target
-was refused"), so `BLOCKED`, in both access modes, at every policy and on every OS:
-otherwise the second pass would write the refused member's bytes under the link's name.
-Which member counts is the one the target names directly, so each link of a chain to a
-refused member is refused. When the run recorded a result for that member, the result
-decides: `BLOCKED` is a refusal, anything else is not, after the caller's filter. A
-filter that renames the member to an unsafe name therefore refuses its links as well,
-and one that renames an unsafe member to a safe one lets them through. A member the
-`members` selector or the `filter` excluded has no result; for it the policy's own
-steps (the absolute-name re-root, the universal checks and the name policy) run on the
-member as listed, without the filter. A refused one refuses its links; any other is
-recovered as above.
+**A HARDLINK's target SHALL name an earlier member, and the member the link gets its
+bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
+whole rule for the target: the target string is a member name, never a path, so it
+gets no path check (no containment join, no drive, UNC or rooted-`\` refusal, no NUL or
+encoding check), and the link is made to the file its source was written to. A caller
+filter that changes a HARDLINK's `link_target` changes nothing; the link follows the
+stored name. A link whose source was refused SHALL be refused with
+`FilterRejectionError` ("Hardlink target was refused"), so `BLOCKED`, in both access
+modes, at every policy and on every OS: otherwise the second pass would write the
+refused member's bytes under the link's name.
+
+Which member counts is the source, `link_target_member`: the end of the hard-link
+chain, the member the link is made to or whose bytes the second pass reads. A link in
+the middle of the chain that was refused for its own name does not refuse the links
+after it, since they do not use that name: `h2` → `../h1` → `a` links to `a` when `a`
+was written. A refused source refuses every link whose chain ends at it, whatever the
+names in between. A HARDLINK whose chain ends at a SYMLINK is written as that symlink
+(a second name for it, as GNU tar makes) and copies no bytes, so it gets the SYMLINK
+checks on its own name and the symlink's target instead of this rule. When the run
+recorded a result for the source, the result decides: `BLOCKED` is a refusal, anything
+else is not, after the caller's filter. A filter that renames the source to an unsafe
+name therefore refuses its links as well, and one that renames an unsafe source to a
+safe one lets them through. A source the `members` selector or the `filter` excluded
+has no result; for it the policy's own steps (the absolute-name re-root, the universal
+checks and the name policy) run on the source as listed, without the filter. A refused
+one refuses its links; any other is recovered as above.
 
 #### Scenario: hardlink matrix
 
@@ -490,6 +497,9 @@ recovered as above.
 | HARDLINK appears before its also-selected source | After the pass it links to the extracted source inode; source bytes read and counted once |
 | HARDLINK whose resolved source is not a FILE (e.g. a DIRECTORY member) | Per-member `ExtractionError` naming the source's type (for a directory: a hard link to one cannot be created); the source itself still extracts |
 | HARDLINK to a member refused by the policy (`../x` at any policy, `/x` under `STRICT`), selected or excluded, either mode | `BLOCKED` with `FilterRejectionError` ("Hardlink target was refused"); nothing written for the link |
+| HARDLINK `h` → `m` → `../x`: a safe middle name, a refused source, selected or excluded | `h` (and `m`, when selected) `BLOCKED` ("Hardlink target was refused") |
+| HARDLINK `h2` → `../h1` → `a`, `a` extracted | `../h1` `BLOCKED` for its own name; `h2` linked to `a` |
+| HARDLINK `hl` → SYMLINK `/s` → `t`, `STRICT` | `/s` `BLOCKED` for its own name; `hl` written as a symlink to `t` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
 

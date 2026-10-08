@@ -116,17 +116,20 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   lists as `C:/Windows`, `..\up\x` as `../up/x`). Under `STRICT` and `STANDARD`, a `:` or
   a Windows-reserved device name in a target segment (`file:stream`, `sub/NUL`) is
   refused, as it is in a member name; `TRUSTED` leaves those to the OS.
-- **Hardlink targets** name an earlier member, and the link gets what that member
-  gets. The target is looked up as a member name (the latest earlier member of that
-  name, so a crafted duplicate cannot redirect a link) and is never used as a path:
-  the link is made to the file that member was written to. So the target string is not
-  checked, and a link is refused (`BLOCKED`, "Hardlink target was refused") when the
-  member it names is refused, as `../x` is at every policy and `/x`, `\x` or `C:/x`
-  are under `STRICT`. Under `STANDARD` and `TRUSTED` those last three members are
-  re-rooted and written, and their links extract. A target that names no earlier
-  member fails with `LinkTargetNotFoundError`. A `filter` that changes a hardlink's
-  `link_target` changes nothing, `sanitize_names` included: the link still follows the
-  stored name. A filter that renames the member it names does matter, both ways.
+- **Hardlink targets** name an earlier member, and the link gets what its source
+  gets: the member at the end of the chain of hard links, which holds the bytes. The
+  target is looked up as a member name (the latest earlier member of that name, so a
+  crafted duplicate cannot redirect a link) and is never used as a path: the link is
+  made to the file its source was written to. So the target string is not checked, and
+  a link is refused (`BLOCKED`, "Hardlink target was refused") when its source is
+  refused, as `../x` is at every policy and `/x`, `\x` or `C:/x` are under `STRICT`.
+  Under `STANDARD` and `TRUSTED` those last three members are re-rooted and written,
+  and their links extract. A link through a middle link that was refused for its own
+  name still extracts when the source was written. A hard link to a symlink is written
+  as that symlink and checked as one. A target that names no earlier member fails with
+  `LinkTargetNotFoundError`. A `filter` that changes a hardlink's `link_target` changes
+  nothing (`sanitize_names` leaves it as stored): the link still follows the stored
+  name. A filter that renames the source does matter, both ways.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never
   follows them; atomic temp-file + `os.replace` writes mean interrupted extraction
   never leaves a half-written destination file. The destination root itself is yours,

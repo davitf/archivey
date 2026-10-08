@@ -497,6 +497,7 @@ def test_resolve_hardlink_uses_target_as_archive_path(target: str) -> None:
 
 @example(target="../x")
 @example(target="/../a")
+@example(target="a/../b")
 @given(target=_pathish)
 def test_resolve_hardlink_keeps_dot_dot_like_a_member_name(target: str) -> None:
     """Without ``within_root``, a hardlink target resolves to the name

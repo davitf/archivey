@@ -556,11 +556,11 @@ class _RunState:
     # member on its chain that is not a HARDLINK, or ``None``.
     hardlink_ends: dict[int, ArchiveMember | None] = field(default_factory=dict)
     # Member id -> the index of the result recorded for it, so a hard link can read
-    # what this run did with the member it names (``_source_refused``).
+    # what this run did with its source (``_source_refused``).
     result_ids: dict[int, int] = field(default_factory=dict)
-    # ``_source_refused``'s memo for members this run recorded no result for (a
-    # selector or filter excluded them): member id -> whether the policy would refuse
-    # it.
+    # ``_source_refused``'s memo for hard-link sources this run recorded no result
+    # for (a selector or filter excluded them): member id -> whether the policy would
+    # refuse it.
     refusals: dict[int, bool] = field(default_factory=dict)
     # The symlinks this run created and the paths each one's resolution depends on,
     # so a later member that changes such a path gets them rechecked.
@@ -1400,18 +1400,18 @@ class ExtractionCoordinator:
             transformed = filtered
             if transformed.name != rerooted_name:
                 rerooted_from = None  # the filter chose this name; it is not a rewrite
-        # Read before `_as_written`, which can turn the HARDLINK into the symlink it
-        # is a second name for.
-        writes_hardlink = (
+        transformed = self._as_written(original, transformed)
+        # Read after `_as_written`: a hard link to a symlink is now the SYMLINK it is
+        # a second name for, which copies no bytes and gets the symlink checks below.
+        kept_hardlink = (
             original.type is MemberType.HARDLINK
             and transformed.type is MemberType.HARDLINK
         )
-        transformed = self._as_written(original, transformed)
         dest_root = self._state.dest_root
         # The checks run on the name that reaches disk; the name policy below runs on
         # the stored one, so its escape of a lone surrogate is the same on every OS.
         self._check_universal(transformed, dest_root)
-        if writes_hardlink and self._source_refused(original):
+        if kept_hardlink and self._source_refused(original):
             raise FilterRejectionError(
                 "Hardlink target was refused",
                 member_name=original.name,
@@ -1471,7 +1471,8 @@ class ExtractionCoordinator:
         return on_disk, rerooted_from or transformed.name
 
     def _source_refused(self, link: ArchiveMember) -> bool:
-        """Whether the member a HARDLINK names was refused, so the link is refused too.
+        """Whether the member a HARDLINK gets its bytes from was refused, so the link
+        is refused too.
 
         A hard link's target string is a member name and never becomes a path, so it
         gets no path check of its own (``check_universal``). What it can do is put a
@@ -1479,49 +1480,35 @@ class ExtractionCoordinator:
         writes an unwritten source's bytes at the link's path. So a link is refused
         when its source is, in both access modes and at every policy.
 
-        The member is the one the target names directly (``_hardlink_direct_target``),
-        not the end of the chain, so a link to a refused link is refused as well. Hard
-        links point only backward, so this run has already reached that member. When
-        it recorded a result for it, the result decides: ``BLOCKED`` is a refusal, and
-        anything else passed the checks, under the name the caller's filter gave it.
-        A filter that renames a member to an unsafe name thus refuses its links too,
-        and one that rescues an unsafe member lets them through. A member with no
-        result was excluded by the selector or the filter. The caller's filter is not
-        run on it, since a selector-excluded member was never meant to reach it;
-        instead the policy's own steps run on the member as listed
-        (``_policy_refuses``). A refused member's links are refused; any other
-        excluded source is recovered by the second pass, or fails the link on a
-        forward-only stream (``_write_hardlink``).
+        The source is ``link_target_member``, the end of the hard-link chain, which is
+        the member ``_write_hardlink`` links against or the second pass reads. A
+        refused link in the middle of the chain does not refuse this one: its name was
+        the unsafe part, and this link does not use that name. Hard links point only
+        backward, so this run has already reached the source. When it recorded a
+        result for it, the result decides: ``BLOCKED`` is a refusal, and anything else
+        passed the checks, under the name the caller's filter gave it. A filter that
+        renames a source to an unsafe name thus refuses its links too, and one that
+        rescues an unsafe source lets them through. A source with no result was
+        excluded by the selector or the filter. The caller's filter is not run on it,
+        since a selector-excluded member was never meant to reach it; instead the
+        policy's own steps run on the source as listed (``_policy_refuses``). A
+        refused source's links are refused; any other excluded source is recovered
+        by the second pass, or fails the link on a forward-only stream
+        (``_write_hardlink``).
         """
         state = self._state
-        reader = state.reader
-        if reader is None:
+        source = link.link_target_member
+        if state.reader is None or source is None or source._member_id is None:
+            # No source: `_write_hardlink` fails the link as not found.
             return False
-        # Walk the chain of direct targets until a verdict is known, memoizing it for
-        # every unrecorded member on the way: N chained links cost O(N) in total, as
-        # in ``_hardlink_chain_end``. Each step goes to an earlier member, so the walk
-        # ends.
-        path: list[int] = []
-        refused = False
-        current = reader._hardlink_direct_target(link)
-        while current is not None and current._member_id is not None:
-            member_id = current._member_id
-            index = state.result_ids.get(member_id)
-            if index is not None:
-                refused = state.results[index].status is ExtractionStatus.BLOCKED
-                break
-            if member_id in state.refusals:
-                refused = state.refusals[member_id]
-                break
-            path.append(member_id)
-            if self._policy_refuses(current):
-                refused = True
-                break
-            if current.type is not MemberType.HARDLINK:
-                break
-            current = reader._hardlink_direct_target(current)
-        for member_id in path:
-            state.refusals[member_id] = refused
+        member_id = source._member_id
+        index = state.result_ids.get(member_id)
+        if index is not None:
+            return state.results[index].status is ExtractionStatus.BLOCKED
+        refused = state.refusals.get(member_id)
+        if refused is None:
+            # Memoized, so N links to one excluded source run its checks once.
+            refused = state.refusals[member_id] = self._policy_refuses(source)
         return refused
 
     def _policy_refuses(self, member: ArchiveMember) -> bool:
@@ -1529,11 +1516,11 @@ class ExtractionCoordinator:
         caller's filter: the absolute-name re-root, the universal checks and the name
         policy, as ``_transform`` runs them. Only a ``FilterRejectionError`` is a
         refusal; a member whose parent cannot be resolved has failed, not been refused.
-        A hard link's own source is ``_source_refused``'s to follow."""
+        ``member`` is the end of a hard-link chain, which ``_as_written`` never
+        rewrites, so this skips that step."""
         candidate = member
         if self._policy is not ExtractionPolicy.STRICT:
             candidate = reroot_absolute(candidate)
-        candidate = self._as_written(member, candidate)
         try:
             check_universal(
                 disk_spelled(candidate),

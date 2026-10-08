@@ -308,12 +308,14 @@ forward-only one records each as a failure under `OnError`. A cross-device link 
 back to copying from a path already written. The full matrix is in
 [`format-tar`](../../openspec/specs/format-tar/spec.md).
 
-**A hardlink gets what the member it names gets.** The `linkname` is a member name, never
-a path: extraction links to the file that member was written to, and does not check the
-string (maintainer decision, 2026-10-07). A link to a member the policy refuses (`../x`,
-or `/x` under `STRICT`) is refused with it, selected or not, so the second pass never
-writes a refused member's bytes under the link's name. A filter's change to a link's
-`link_target` does nothing. `tests/test_hardlink_target_rule.py` has the matrix.
+**A hardlink gets what its source gets.** The `linkname` is a member name, never a path:
+extraction links to the file the end of the link chain was written to, and does not
+check the string (maintainer decision, 2026-10-07). A link whose source the policy
+refuses (`../x`, or `/x` under `STRICT`) is refused with it, selected or not, so the
+second pass never writes a refused member's bytes under the link's name. A middle link
+refused for its own name does not refuse the links after it, and a hardlink to a
+symlink is written as that symlink. A filter's change to a link's `link_target` does
+nothing. `tests/test_hardlink_target_rule.py` has the matrix.
 
 **Special files are blocked.** A device, FIFO or socket member is `OTHER`, and the
 default filter records it as `BLOCKED` with `FilterRejectionError` rather than creating it.

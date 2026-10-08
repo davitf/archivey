@@ -1,10 +1,13 @@
 """One rule for a hard link's target at extraction (maintainer decision, 2026-10-07).
 
-A hard link's target must name an earlier member of the archive, and that member must
-not have been refused. The target string gets no path check of its own: extraction
-links to the file the named member was written to, so the string never becomes a path.
-A link to a member the policy refuses is refused too (``BLOCKED``), because otherwise
-the second pass would write the refused member's bytes under the link's name.
+A hard link's target must name an earlier member of the archive, and the member the
+link gets its bytes from, the end of the hard-link chain, must not have been refused.
+The target string gets no path check of its own: extraction links to the file that
+member was written to, so the string never becomes a path. A link whose source the
+policy refuses is refused too (``BLOCKED``), because otherwise the second pass would
+write the refused member's bytes under the link's name. A refused link in the middle
+of the chain does not refuse the links after it, and a hard link to a symlink is
+written as that symlink and gets the symlink checks.
 """
 
 from __future__ import annotations
@@ -42,7 +45,8 @@ _POLICIES = pytest.mark.parametrize(
 
 def _tar(path: Path, entries: list[tuple[str, str | None]]) -> Path:
     """A tar of ``(name, linkname)`` entries: a regular file holding its own name
-    when ``linkname`` is ``None``, else a hard link to ``linkname``."""
+    when ``linkname`` is ``None``, a symlink to ``linkname`` after a ``sym:``
+    prefix, else a hard link to ``linkname``."""
     with tarfile.open(path, "w", format=tarfile.GNU_FORMAT) as tf:
         for name, linkname in entries:
             info = tarfile.TarInfo(name)
@@ -50,6 +54,10 @@ def _tar(path: Path, entries: list[tuple[str, str | None]]) -> Path:
                 data = name.encode()
                 info.size = len(data)
                 tf.addfile(info, io.BytesIO(data))
+            elif linkname.startswith("sym:"):
+                info.type = tarfile.SYMTYPE
+                info.linkname = linkname.removeprefix("sym:")
+                tf.addfile(info)
             else:
                 info.type = tarfile.LNKTYPE
                 info.linkname = linkname
@@ -79,6 +87,13 @@ def _assert_refused(result: ExtractionResult, dest: Path) -> None:
     assert isinstance(result.error, FilterRejectionError)
     assert result.error.message == _REFUSED
     assert not os.path.lexists(dest / result.member.name)
+
+
+def _assert_refused_name(result: ExtractionResult) -> None:
+    """Refused for its own name, not as a link to a refused member."""
+    assert result.status is ExtractionStatus.BLOCKED, result.error
+    assert isinstance(result.error, FilterRejectionError)
+    assert result.error.message != _REFUSED
 
 
 @_MODES
@@ -145,6 +160,64 @@ def test_a_hardlink_to_an_excluded_refused_member_is_refused(
     assert set(results) == {"h2", "ok"}
     _assert_refused(results["h2"], dest)
     assert results["ok"].status is ExtractionStatus.EXTRACTED
+
+
+@_MODES
+@_POLICIES
+@pytest.mark.parametrize("members", [None, ["a", "h2"]], ids=["all", "no-middle"])
+def test_a_hardlink_through_a_refused_middle_name_links_to_its_written_source(
+    tmp_path: Path,
+    streaming: bool,
+    policy: ExtractionPolicy,
+    members: list[str] | None,
+) -> None:
+    """``../h1`` is refused for its own name, but ``h2`` links against ``a``, the end
+    of the chain, which this run wrote: the unsafe name is not used."""
+    path = _tar(tmp_path / "a.tar", [("a", None), ("../h1", "a"), ("h2", "../h1")])
+    dest = tmp_path / "out"
+    results = _extract(path, dest, streaming=streaming, policy=policy, members=members)
+    if members is None:
+        _assert_refused_name(results["../h1"])
+    assert results["h2"].status is ExtractionStatus.EXTRACTED, results["h2"].error
+    assert (dest / "h2").read_bytes() == b"a"
+    if os.name == "posix":
+        assert os.path.samefile(dest / "a", dest / "h2")
+    assert not (tmp_path / "h1").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@_MODES
+def test_a_hardlink_to_a_refused_symlink_is_written_as_a_symlink(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """A hard link to a symlink is that symlink under another name: it copies no
+    bytes, so the symlink checks decide, on the link's own name, not the refusal of
+    the absolute ``/s`` it names."""
+    path = _tar(tmp_path / "a.tar", [("t", None), ("/s", "sym:t"), ("hl", "/s")])
+    dest = tmp_path / "out"
+    results = _extract(path, dest, streaming=streaming, policy=ExtractionPolicy.STRICT)
+    _assert_refused_name(results["/s"])
+    assert results["hl"].status is ExtractionStatus.EXTRACTED, results["hl"].error
+    assert os.readlink(dest / "hl") == "t"
+    assert (dest / "hl").read_bytes() == b"t"
+
+
+@_MODES
+@pytest.mark.parametrize(
+    "members", [None, ["h"], ["m", "h"]], ids=["all", "only-h", "no-source"]
+)
+def test_a_refused_source_refuses_links_through_a_safe_middle_name(
+    tmp_path: Path, streaming: bool, members: list[str] | None
+) -> None:
+    """The source ``../x`` is refused, selected or not, so every link whose chain
+    ends there is refused, whatever the names in between."""
+    path = _tar(tmp_path / "a.tar", [("../x", None), ("m", "../x"), ("h", "m")])
+    dest = tmp_path / "out"
+    results = _extract(path, dest, streaming=streaming, members=members)
+    _assert_refused(results["h"], dest)
+    if members is None or "m" in members:
+        _assert_refused(results["m"], dest)
+    assert not (tmp_path / "x").exists()
 
 
 def test_a_hardlink_to_a_selector_excluded_member_is_materialized(
