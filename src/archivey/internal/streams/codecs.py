@@ -223,7 +223,7 @@ class _AcceleratorStream(DelegatingStream):
         super().__init__(ensure_binaryio(inner))
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
-        self._finalize = weakref.finalize(self, self._close_inner, self._inner)
+        self._finalize = weakref.finalize(self, self._close_inner, self._inner, trap)
         # Bug 3 containment: when rapidgzip reads a caller-owned Python source through a
         # ``_TrappingSource``, a source-side fault is swallowed into ``trap`` (so it never
         # crosses into rapidgzip's C++ and aborts the process) and re-raised here after each
@@ -234,13 +234,15 @@ class _AcceleratorStream(DelegatingStream):
         self._lost: str | None = None
 
     @staticmethod
-    def _close_inner(inner: BinaryIO) -> None:
+    def _close_inner(inner: BinaryIO, trap: "_TrappingSource | None") -> None:
         # close() — not join_threads() — stops the C++ worker thread, and must run before the
         # interpreter finalizes or the process aborts. Best-effort; the guard runs it once.
         try:
             inner.close()
         except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
             pass
+        if trap is not None:
+            trap.release()
 
     def _reraise_trapped(self) -> None:
         # Surface a fault the source shim parked, after the accelerator call that observed
@@ -468,7 +470,8 @@ class _TrappingSource(io.RawIOBase):
     re-raises the stored fault after the accelerator call, turning the abort into a normal Python
     exception. It traps ``BaseException`` (not just ``Exception``): even a ``KeyboardInterrupt`` /
     ``SystemExit`` must never cross into C++, so a control-flow exception is **deferred** to the
-    next accelerator boundary and re-raised there — never swallowed. It deliberately exposes
+    next accelerator boundary and re-raised there — never swallowed while the stream is open
+    (:meth:`release` drops a fault still parked at close). It deliberately exposes
     **no** ``fileno`` so rapidgzip stays on its Python read path (a valid fileno would let it
     bypass this shim). Wraps only caller-owned sources; path sources open their own fd and are
     immune, so they are never trapped.
@@ -478,6 +481,25 @@ class _TrappingSource(io.RawIOBase):
         super().__init__()
         self._inner = inner
         self.trapped: BaseException | None = None
+
+    def release(self) -> None:
+        """Drop the source, once the decoder that reads through this shim is closed.
+
+        rapidgzip 0.16 never releases the Python file object it is given, closed or not
+        (measured with a weak reference: ``IndexedBzip2File(f).close()`` leaves ``f``
+        alive), so this shim outlives the stream. Without this, so would the source, and
+        an ``io.BytesIO`` source with a full copy of its buffer: a fuzz run over the
+        accelerated bzip2 path ran out of memory on it
+        (``test_indexed_bzip2_frees_a_stream_source_after_close`` pins the fix). A call
+        that still arrives reads an empty source.
+
+        A fault still parked here goes too. Its traceback holds the frame of the
+        source's own ``read``, whose ``self`` is the source, so keeping it would keep the
+        source; and past the open, only a read-ahead nobody waited on parks one (see
+        ``_AcceleratorStream._reraise_trapped``).
+        """
+        self._inner = io.BytesIO()
+        self.trapped = None
 
     def _store(self, exc: BaseException) -> None:
         if self.trapped is None:
@@ -1065,7 +1087,9 @@ def _open_accelerator(
         raw = open_fn(trap, parallelization=0)
     except Exception:
         # As in _AcceleratorStream.read: the parked fault is the real cause of an
-        # ordinary error, but never replaces an interrupt.
+        # ordinary error, but never replaces an interrupt. No wrapper exists here to
+        # release the trap; IndexedBzip2File has not been seen to raise at construction
+        # (damaged, cut, empty and random inputs all raise on the first read instead).
         _raise_parked(trap)
         raise
     stream = _AcceleratorStream(raw, trap=trap)
@@ -1533,12 +1557,19 @@ class _GzipTruncationCheckStream(DelegatingStream):
        truncation is loud and any recoverable prefix is streamed (valid empty gzip still
        succeeds with zero bytes). Switching the inner keeps ``tell``/``seek``/`seekable`
        honest (ADR 0014: content faults raise from reads, never ``close()``).
-    2. On EOF after **non-empty** delivery — compare decompressed length (mod 2**32) to
-       the gzip ISIZE trailer (single-member). On a mismatch, a file with a further
-       member that zlib confirms (:func:`gzip_has_additional_member`) is taken as
-       multi-member and nothing is raised: the trailer is only the last member's size
-       (a per-member ISIZE sum is deferred). Any other mismatch hands the read to the
-       standard library.
+    2. On EOF after **non-empty** delivery — check that rapidgzip decoded to the end of
+       the source (its compressed position), then compare decompressed length (mod
+       2**32) to the gzip ISIZE trailer (single-member). On a mismatch, a file with a
+       further member that zlib confirms (:func:`gzip_has_additional_member`) is taken
+       as multi-member and nothing is raised: the trailer is only the last member's
+       size (a per-member ISIZE sum is deferred). A decode that stopped short of the
+       end, or any other mismatch, hands the read to the standard library.
+
+       The compressed position is what tells a cut member followed by a complete one
+       from a multi-member file: the trailer is then the last member's, and the further
+       member is real, but rapidgzip stopped at the cut and never decoded it (found by
+       the accelerator fuzz targets). It also keeps a forged ISIZE that matches the
+       bytes delivered before a soft end from passing.
 
     ISIZE and the source length are **captured up front** (``isize`` / ``source_len``) so no
     per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ a
@@ -1661,11 +1692,13 @@ class _GzipTruncationCheckStream(DelegatingStream):
             # so never invent a truncation we can't prove.
             return b""
         # Below 18 bytes no gzip member is complete, so the delivered bytes are a
-        # truncation; otherwise an ISIZE mismatch is one, unless this is a concatenated
-        # multi-member gzip (then the trailer is only the last member's size). A
-        # confirmed further member => do not raise (a cut or damaged multi-member file
-        # can pass; the per-member ISIZE sum is deferred).
-        if self._source_len >= 18:
+        # truncation. So is a decode that stopped short of the end of the source: the
+        # trailer there is not this output's ISIZE. Otherwise an ISIZE mismatch is one,
+        # unless this is a concatenated multi-member gzip (then the trailer is only the
+        # last member's size). A confirmed further member => do not raise (a cut whose
+        # decode still reaches the end, with zlib confirming a later member, can pass;
+        # the per-member ISIZE sum is deferred).
+        if self._source_len >= 18 and self._decoded_to_the_end():
             if self._isize is None:
                 return b""  # length known but ISIZE unread (should not happen here)
             if self._pos % (1 << 32) == self._isize:
@@ -1678,6 +1711,15 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # reads: it carries on from here, and raises the truncation or reports the bytes.
         self._takeover.switch_to_stdlib()
         return self._inner.read(size)
+
+    def _decoded_to_the_end(self) -> bool:
+        """Whether rapidgzip's decode reached the end of the source; ``True`` when it
+        cannot say, which leaves the checks after it as they were."""
+        position = getattr(self._takeover.accelerator, "compressed_position", None)
+        if position is None or self._source_len is None:
+            return True
+        end = position()
+        return end is None or end >= self._source_len
 
     def _has_additional_gzip_member(self) -> bool:
         # Closed via the context manager: a real fd close for a path source, a no-op

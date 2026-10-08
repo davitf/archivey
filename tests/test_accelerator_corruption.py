@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import base64
 import bz2
+import gc
 import gzip
 import io
 import random
+import subprocess
+import sys
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -293,6 +297,72 @@ def test_rapidgzip_multimember_not_flagged(tmp_path: Path) -> None:
         assert s.read() == b"A" * 4000 + b"B" * 2500
 
 
+# A cut member and then a complete one: the trailer is the last member's ISIZE and the
+# further member is real, but rapidgzip stops at the cut and never decodes it. Found by
+# the accelerator fuzz targets.
+_GZ_CUT_THEN_MEMBER = gzip.compress(
+    random.Random(7).randbytes(60_000) + b"x" * 120_000, mtime=0
+)[:40_000] + gzip.compress(b"tail member\n" * 20, mtime=0)
+
+
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+@pytest.mark.parametrize("mode", [AcceleratorMode.ON, AcceleratorMode.OFF])
+def test_gzip_cut_member_before_a_complete_one_raises(
+    tmp_path: Path, source_kind: str, mode: AcceleratorMode
+) -> None:
+    if mode is AcceleratorMode.ON:
+        pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data = _GZ_CUT_THEN_MEMBER
+    source = (
+        _write(tmp_path, "cut.gz", data) if source_kind == "path" else io.BytesIO(data)
+    )
+    config = StreamConfig(use_rapidgzip=mode, seekable=True)
+    with open_codec_stream(Codec.GZIP, source, config=config) as s:
+        with pytest.raises(TruncatedError):
+            s.read()
+
+
+# Reads a cut gzip with raw rapidgzip and prints how many bytes it delivered. It runs in a
+# child interpreter because rapidgzip 0.16 aborts the process on some cuts (see
+# test_accelerator_truncation_abort.py), and opens the file as archivey's worker does.
+_SOFT_END_PROBE = """
+import sys, rapidgzip
+with rapidgzip.open(sys.argv[1], parallelization=0) as f:
+    try:
+        print(len(f.read()))
+    except ValueError:
+        print("RAISED")
+"""
+
+
+def test_gzip_cut_member_with_a_forged_isize_raises(tmp_path: Path) -> None:
+    # The trailer of a cut file is whatever bytes the cut left there. Set to the length
+    # rapidgzip delivers before its soft end, it matched, and the short read passed.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    cut = bytearray(
+        gzip.compress(random.Random(1).randbytes(300_000) + b"x" * 600_000, mtime=0)[
+            :200_000
+        ]
+    )
+    path = tmp_path / "cut.gz"
+    path.write_bytes(cut)
+    proc = subprocess.run(
+        [sys.executable, "-c", _SOFT_END_PROBE, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or proc.stdout.strip() == "RAISED":
+        # Some builds raise or abort on the cut instead of ending softly (macOS raises;
+        # Linux wheels abort on other cuts). Archivey then reports the truncation without
+        # a soft end, and there is no soft end to forge a trailer for.
+        pytest.skip("this rapidgzip build does not end softly on this cut")
+    cut[-4:] = int(proc.stdout).to_bytes(4, "little")
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(cut)), config=_GZ_ON) as s:
+        with pytest.raises(TruncatedError):
+            s.read()
+
+
 # --- rapidgzip truncation backstop on non-path (caller-owned) seekable sources ---------
 # The backstop was path-only; these assert parity for a caller-owned BinaryIO (BytesIO or a
 # real file object), where the accelerator + multi-member scan coordinate through a
@@ -393,6 +463,37 @@ def test_indexed_bzip2_intact_reads_clean(tmp_path: Path) -> None:
     path = _write(tmp_path, "ok.bz2", bz2.compress(payload))
     with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:
         assert s.read() == payload
+
+
+class _Source(io.BytesIO):
+    """A ``BytesIO`` a weak reference can point at."""
+
+
+@pytest.mark.parametrize("closed", [True, False], ids=["closed", "dropped"])
+@pytest.mark.parametrize("damaged", [False, True], ids=["intact", "damaged"])
+def test_indexed_bzip2_frees_a_stream_source_after_close(
+    damaged: bool, closed: bool
+) -> None:
+    """rapidgzip keeps the Python file object it reads from after ``close()``; the shim
+    between them drops the source, so an ``io.BytesIO`` and its buffer are freed. A
+    stream nobody closed releases it too, through the finalize guard."""
+    pytest.importorskip("rapidgzip")
+    data = bytearray(bz2.compress(b"payload " * 400))
+    if damaged:
+        data[len(data) // 2] ^= 0xFF
+    source = _Source(bytes(data))
+    alive = weakref.ref(source)
+    s = open_codec_stream(Codec.BZIP2, source, config=_BZ_ON)
+    if damaged:
+        with pytest.raises(ReadError):
+            s.read()
+    else:
+        s.read()
+    if closed:
+        s.close()
+    del source, s
+    gc.collect()
+    assert alive() is None
 
 
 @pytest.mark.parametrize("source_kind", ["path", "bytesio"])
@@ -668,6 +769,12 @@ def test_bzip2_not_a_stream_raises_in_every_accelerator_mode(
     )
     config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
     with open_codec_stream(Codec.BZIP2, source, config=config) as s:
+        with pytest.raises(expected):
+            s.read(1)
+        # A seek back to the start, where the failed read left the stream, restarts
+        # the decoder: the read raises the same verdict, not the spent decoder's
+        # ValueError (found by the accelerator fuzz targets).
+        assert s.seek(0) == 0
         with pytest.raises(expected):
             s.read(1)
 
