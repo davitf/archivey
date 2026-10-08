@@ -619,10 +619,11 @@ class CodecParams:
       coder), so the standard-library decoder ends at its end-of-stream marker rather
       than reading a further stream as a concatenated file. Under the accelerator it
       turns off the end handover to the standard library for a further stream. The
-      decoder itself still reads a stream that follows the first with no padding
-      between; that output runs past the container's declared size, and the
+      decoder itself still reads a stream that follows the first with no zero bytes
+      between, either right after it or after empty streams only (measured on
+      rapidgzip 0.16); that output runs past the container's declared size, and the
       container's size check raises where the standard library would have stopped
-      (``dev-docs/formats/bzip2.md`` §5).
+      (``dev-docs/formats/bzip2.md`` §5). After zero padding the decoder stops.
       Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
       end marker, refusing any input after it.
     """
@@ -1916,14 +1917,19 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     far: each stream starts where the one before it ended, after nothing but zero
     padding and empty streams, which the standard library also skips. At the first
     place that does not hold, the read stops, and the standard library takes over there
-    and gives the verdict, as with the accelerator off. The check is repeated only when
-    the decoder has read further into the source, so it costs one index query per
-    batch of blocks.
+    and gives the verdict, as with the accelerator off. The index is fetched again only
+    when a read ends past the entries already walked and the decoder has read further
+    into the source. Each fetch copies rapidgzip's whole index, so the cost grows with
+    the square of the block count (``dev-docs/formats/bzip2.md`` §2.3).
 
     At the end, the decoder can also stop short: after zero padding it does not find a
     further stream, where the standard library decodes it. So when what follows the
     last stream starts another stream after any zero padding and empty streams, the
-    standard library takes over at the end, and decodes it or raises.
+    standard library takes over at the end, and decodes it or raises; not for a
+    container coder's single stream (``CodecParams.single_stream``), where that stream
+    is trailing data, as with the accelerator off. A seek that reaches the decoder's
+    end runs the same check first, so the position it returns is the standard
+    library's, never one past the decoder's short end.
     """
 
     # Side-effecting read() (first-empty fallback); disable passthrough so readinto does
@@ -1960,13 +1966,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         if takeover is not None:
             data = self._stop_at_layout_gap(takeover, before, data, size)
         if not self._armed:
-            if self._end_unchecked and (not data or size < 0):
-                data += self._check_end(size)
+            if self._end_unchecked and (not data or size < 0) and self._check_end():
+                data += self._inner.read(size)
             return data
         self._armed = False
         if data:
-            if size < 0:
-                data += self._check_end(size)
+            if size < 0 and self._check_end():
+                data += self._inner.read(size)
             return data
         self._end_unchecked = False  # the stdlib engine reports its own end
         return self._begin_stdlib_fallback(size)
@@ -2007,9 +2013,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         down, so an entry not walked yet cannot be at an output offset below the
         highest one walked (``covered``). A read that ends below it, or at it with
         output (a gap at the end of a read is the next read's), needs no new entries.
-        Otherwise the index is asked again, and only when the decoder has read further:
-        fetching it copies the whole index, so this keeps the walks to one per batch
-        of blocks the decoder reads ahead, not one per read."""
+        Otherwise the index is asked again, and only when the decoder has read further
+        into the source, which holds the fetches to one per batch of blocks the decoder
+        reads ahead. The ``covered`` test saves a fetch only for a read that stays
+        below the entries already walked, such as a repeat read after a backward seek;
+        a forward read usually ends past ``covered``, which lags the output by up to a
+        block. Each fetch copies the whole index; the walk itself takes only the new
+        entries (:meth:`_Bzip2Layout.first_gap`)."""
         layout = self._layout
         if layout.gap is None and (
             end < layout.covered or (nonempty and end == layout.covered)
@@ -2033,13 +2043,12 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             return inner.accelerator
         return inner
 
-    def _check_end(self, size: int) -> bytes:
-        """Check the combined CRCs, then what follows the last stream. Return what a
-        read of ``size`` gets after that: ``b""``, unless the standard library took over
-        to decode a further stream."""
+    def _check_end(self) -> bool:
+        """Check the combined CRCs, then what follows the last stream. Return whether
+        the standard library took over at the end to decode a further stream."""
         self._end_unchecked = False
         self._check_combined_crcs()
-        return self._check_trailing_data(size)
+        return self._check_trailing_data()
 
     def _check_combined_crcs(self) -> None:
         """Check each stream's combined CRC, which the accelerator does not.
@@ -2082,7 +2091,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                     combined = 0
                     stream_end = -(-(bit + 80) // 8) * 8
 
-    def _check_trailing_data(self, size: int) -> bytes:
+    def _check_trailing_data(self) -> bool:
         """Find the first byte after the last stream that is neither zero padding nor
         part of an empty stream. The accelerator skips such bytes. Report it, or, when
         a stream header starts there, hand the read to the standard library.
@@ -2098,22 +2107,22 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         stopped before it, so the standard library takes over at the end and decides
         (class docstring). For a container coder's single stream the standard library
         would not read a further stream either, so that stream is reported as trailing
-        bytes instead. The return value is what a read of ``size`` gets then.
+        bytes instead. Return whether the standard library took over.
         """
         end = getattr(self._accelerator(), "compressed_position", lambda: None)()
         if end is None:
-            return b""
+            return False
         found = self._first_trailing_byte(end)
         if found is None:
-            return b""
+            return False
         offset, starts_stream = found
         takeover = self._takeover()
         if starts_stream and takeover is not None and not self._single_stream:
             takeover.switch_to_stdlib()
-            return self._inner.read(size)
+            return True
         if self._config.report_trailing_data:
             report_trailing_data(self._config.collector, "bzip2", offset)
-        return b""
+        return False
 
     def _first_trailing_byte(self, end: int) -> tuple[int, bool] | None:
         """The offset of the first byte from ``end`` that is neither zero padding nor
@@ -2141,9 +2150,26 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                 offset += skipped
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        target = offset
+        if whence == io.SEEK_CUR:
+            target = self._inner.tell() + offset
         result = super().seek(offset, whence)
         if result != 0:
             self._armed = False
+        reached_end = whence == io.SEEK_END or result < target
+        if (
+            reached_end
+            and self._end_unchecked
+            and not self._armed
+            and self._takeover() is not None
+            and self._check_end()
+        ):
+            # The decoder's end was short of a further stream, and the standard
+            # library now holds the real one: seek again, so the caller is not given
+            # a position the stream below cannot hold.
+            if whence == io.SEEK_END:
+                return super().seek(offset, whence)
+            return super().seek(target, io.SEEK_SET)
         return result
 
     def nearest_resume_offset(self, target: int) -> int | None:

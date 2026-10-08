@@ -43,6 +43,7 @@ from tests.corruption_util import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import BinaryIO
 
     from _typeshed import WriteableBuffer
@@ -912,6 +913,43 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
             s.seek(target, whence)
             with pytest.raises(CorruptionError):
                 s.read(10)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(lambda c: c, id="valid"),
+        pytest.param(lambda c: c[:-20], id="cut"),
+        pytest.param(lambda c: b"BZh9" + bytes(40), id="bare-header"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("target", "whence"),
+    [(0, io.SEEK_END), (1500, io.SEEK_SET), (2500, io.SEEK_SET), (1500, io.SEEK_CUR)],
+)
+def test_bzip2_accelerator_seeks_past_padding_as_off(
+    tail: Callable[[bytes], bytes], target: int, whence: int
+) -> None:
+    # The decoder stops at zero padding, so its end is short of the stream after it. A
+    # seek that reaches that end must not hand out a position from it: the end check
+    # runs first, and the standard library seeks to the real one.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    # Every offset of the second stream holds a different byte from its neighbours, so
+    # a read from the wrong place does not pass.
+    c = bz2.compress(bytes(range(200)) * 5)
+    data = _bz2_stream(b"A") + bytes(16) + tail(c)
+    outcomes = []
+    for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
+        config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
+        with open_codec_stream(Codec.BZIP2, io.BytesIO(data), config=config) as s:
+            outcome: list[object] = []
+            try:
+                outcome.append(s.seek(target, whence))
+                outcome += [s.read(20), s.tell()]
+            except (CorruptionError, TruncatedError) as exc:
+                outcome.append(type(exc))
+            outcomes.append(outcome)
+    assert outcomes[1] == outcomes[0]
 
 
 @pytest.mark.parametrize(
