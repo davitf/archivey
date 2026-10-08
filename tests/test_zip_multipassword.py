@@ -36,6 +36,7 @@ from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
 from tests.conftest import requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.zipcrypto import (
+    build_stored_zipcrypto_zip,
     build_zipcrypto_zip,
     corrupt_zipcrypto_payload,
     find_check_byte_collision,
@@ -439,6 +440,21 @@ def test_stored_crc_floor_counts_the_body_not_the_declared_size(
     assert recorded == []
 
 
+def test_stored_provider_encryption_error_propagates_unchanged() -> None:
+    """A provider failure on the STORED path is the same error, with the member named."""
+    blob = build_stored_zipcrypto_zip([(RIGHT, NAME.encode(), DATA)])
+    provider_error = EncryptionError("password service unavailable")
+
+    def provider(request: PasswordRequest) -> bytes:
+        raise provider_error
+
+    with pytest.raises(EncryptionError, match="password service unavailable") as caught:
+        _read_member(blob, provider)
+
+    assert caught.value is provider_error
+    assert caught.value.member_name == NAME
+
+
 def test_provider_encryption_error_is_not_rewritten_after_candidate_failure() -> None:
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
@@ -491,6 +507,43 @@ def test_provider_password_is_reused_as_known_good() -> None:
         assert ar.read(NAME) == DATA
 
     assert calls == 1
+
+
+def test_stored_zipcrypto_builder_matches_single_member_archive() -> None:
+    """The multi-member STORED writer is the single-member writer for one entry."""
+    password, name, data = b"pw", b"a.txt", b"hello-stored"
+    assert build_stored_zipcrypto_zip([(password, name, data)]) == build_zipcrypto_zip(
+        password, name, data, compression=zipfile.ZIP_STORED
+    )
+
+
+def test_stored_zipcrypto_provider_repeat_does_not_end_the_provider() -> None:
+    """A known-good password the provider leads with must not end the STORED loop.
+
+    ``a.txt`` succeeds with ``pw_a``, so that password is tried first on ``b.txt``.
+    A provider that leads with ``pw_a`` still has ``pw_b`` next. Stopping at the
+    repeat leaves ``b.txt`` unread. The shared candidate loop already asks again
+    (#430); this is that case on the STORED ZipCrypto path.
+    """
+    pw_a, pw_b = b"pw_a", b"pw_b"
+    data_a, data_b = b"member-a-payload!!", b"member-b-payload!!"
+    blob = build_stored_zipcrypto_zip(
+        [(pw_a, b"a.txt", data_a), (pw_b, b"b.txt", data_b)]
+    )
+    answers = [pw_a, pw_b]
+    asks: list[tuple[str | None, int]] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        name = None if request.member is None else request.member.name
+        asks.append((name, request.attempt))
+        return answers[request.attempt - 1] if request.attempt <= len(answers) else None
+
+    with open_archive(io.BytesIO(blob), password=provider) as ar:
+        assert ar.read("a.txt") == data_a
+        assert asks == [("a.txt", 1)]
+        asks.clear()
+        assert ar.read("b.txt") == data_b
+        assert asks == [("b.txt", 1), ("b.txt", 2)]
 
 
 def test_unrelated_oserror_propagates_and_failed_stream_closes(

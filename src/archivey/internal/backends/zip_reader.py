@@ -2010,22 +2010,26 @@ class ZipReader(BaseArchiveReader):
             # Phase 2 — one shared CRC pass over the survivors.
             winner = disambiguate(survivors)
 
-            # Phase 3 — provider fallback: ask, cheap-check, per-candidate CRC pass, repeat.
-            attempt = 1
-            while winner is None and self._passwords.has_provider():
-                try:
-                    password = self._passwords.ask_provider(member, attempt)
-                except EncryptionError as exc:
-                    self._stamp_error_context(exc, member.name)
-                    raise
-                if password is None:
-                    break
-                if password in tried:
-                    break
-                tried.add(password)
-                if weak_ok(password):
-                    winner = disambiguate([password])
-                attempt += 1
+            # Phase 3 — provider fallback. An answer already in ``tried`` (a
+            # known-good password from an earlier member, or a static candidate)
+            # is skipped and the provider is asked again. The loop stops when
+            # the provider repeats an answer it already gave for this member,
+            # the same rule as ``_PasswordCandidates.attempt``.
+            if winner is None:
+
+                def provider_answers() -> Iterator[bytes]:
+                    try:
+                        yield from self._passwords.iter_provider_answers(member, tried)
+                    except EncryptionError as exc:
+                        self._stamp_error_context(exc, member.name)
+                        raise
+
+                for password in provider_answers():
+                    tried.add(password)
+                    if weak_ok(password):
+                        winner = disambiguate([password])
+                        if winner is not None:
+                            break
         finally:
             raw.close()
 
