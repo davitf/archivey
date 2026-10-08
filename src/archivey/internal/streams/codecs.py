@@ -26,6 +26,7 @@ import bz2
 import functools
 import gzip
 import importlib
+import importlib.util
 import io
 import itertools
 import lzma
@@ -167,20 +168,94 @@ def _optional_zstd() -> ModuleType | None:
     return None
 
 
+class _LazyOptional:
+    """An optional package that is found without importing it, and imported on first use.
+
+    On a free-threaded CPython, importing an extension module that has not declared
+    free-thread support re-enables the GIL for the whole process. pyppmd, inflate64,
+    brotli and rapidgzip are such modules (measured 2026-10-08 on 3.13t, 3.14t and
+    3.15t). Importing them when this module loads would re-enable the GIL for every
+    program that imports archivey with them installed, even one that never opens a
+    stream they decode. So :meth:`available` only looks the package up, and the import
+    waits for :meth:`load`, which a codec calls when it opens a stream that needs it.
+    zstd and lz4 keep the GIL disabled and stay eager imports.
+
+    There is no lock: two threads in :meth:`load` at once both get the same module
+    (the import system serialises the import), and every field write stores the value
+    the other thread would store, so a lost update changes nothing. A new field that is
+    not repeat-safe in that way needs a lock.
+    """
+
+    def __init__(self, name: str, *, present: bool | None = None) -> None:
+        self.name = name
+        # ``present=`` overrides the lookup, for tests: ``False`` stands for an absent
+        # package, ``True`` for an installed one.
+        self._present = present
+        self._module: ModuleType | None = None
+        self._import_failed = False
+
+    def available(self) -> bool:
+        """Whether the package is installed. Does not import it."""
+        if self._present is None:
+            try:
+                self._present = importlib.util.find_spec(self.name) is not None
+            except (ImportError, ValueError):
+                self._present = False
+        return self._present
+
+    def load(self) -> ModuleType | None:
+        """The imported package, or ``None`` if it is absent or fails to import.
+
+        A package that is found but fails to import (a broken wheel, a missing shared
+        library) is logged once and then treated as absent, as it was when these were
+        imported with this module. Any exception counts: the import runs inside a codec
+        open, where an untranslated error from another package would be a surprise.
+        """
+        if self._module is None and not self._import_failed and self.available():
+            try:
+                self._module = importlib.import_module(self.name)
+            except Exception as exc:  # noqa: BLE001 - any import failure means absent
+                self._import_failed = True
+                logs.streams.warning(
+                    "%r is installed but failed to import (%r); archivey reads as "
+                    "if it were absent.",
+                    self.name,
+                    exc,
+                )
+        return self._module
+
+    def loaded(self) -> ModuleType | None:
+        """The package if it has been imported already, else ``None``. Never imports.
+
+        For exception translation: an exception from a package that was never
+        imported cannot be one of that package's own types.
+        """
+        return self._module
+
+
 _zstd = _optional_zstd()
 _lz4_frame = _optional("lz4.frame")
 _lz4_block = _optional("lz4.block")
-_brotli = _optional("brotli")
-_pyppmd = _optional("pyppmd")
-_inflate64 = _optional("inflate64")
-_rapidgzip = _optional("rapidgzip")
-# bzip2 random access is provided by rapidgzip's *bundled* IndexedBzip2File, NOT the separate
-# ``indexed_bzip2`` package. Loading both rapidgzip and indexed_bzip2 into one process corrupts
-# the heap and aborts on macOS (they statically bundle an overlapping C++ core, whose symbols
-# collide under dyld). Routing both gzip and bzip2 through rapidgzip keeps a single accelerator
-# library in the process, which is safe on every platform. See ADR 0008 and
-# dev-docs/investigations/rapidgzip-upstream-report.md §7.
-_rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
+_brotli = _LazyOptional("brotli")
+_pyppmd = _LazyOptional("pyppmd")
+_inflate64 = _LazyOptional("inflate64")
+# gzip, zlib and raw deflate run rapidgzip in a child process, so this process only needs
+# to know it is installed. bzip2 random access imports it here (see _rapidgzip_bzip2).
+_rapidgzip = _LazyOptional("rapidgzip")
+
+
+def _rapidgzip_bzip2() -> type | None:
+    """rapidgzip's bundled ``IndexedBzip2File``, imported now if it was not yet.
+
+    bzip2 random access is provided by rapidgzip's *bundled* IndexedBzip2File, NOT the
+    separate ``indexed_bzip2`` package. Loading both rapidgzip and indexed_bzip2 into one
+    process corrupts the heap and aborts on macOS (they statically bundle an overlapping
+    C++ core, whose symbols collide under dyld). Routing both gzip and bzip2 through
+    rapidgzip keeps a single accelerator library in the process, which is safe on every
+    platform. See ADR 0008 and dev-docs/investigations/rapidgzip-upstream-report.md §7.
+    """
+    return getattr(_rapidgzip.load(), "IndexedBzip2File", None)
+
 
 # The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip
 # is an *accelerator* they only demand when random access was explicitly requested. It still
@@ -740,7 +815,7 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
 def _warn_if_auto_without_child(config: StreamConfig) -> None:
     """At a DEFLATE-family open: warn (once per process) if ``AUTO`` wanted rapidgzip
     and reads with the stdlib because no child process can run here."""
-    why = _auto_without_child(config, available=_rapidgzip is not None)
+    why = _auto_without_child(config, available=_rapidgzip.available())
     if why is not None:
         _warn_child_fallback(why)
 
@@ -764,7 +839,7 @@ def _rapidgzip_rewind_warning(
     return RewindWarning(
         codec_name,
         accelerator="rapidgzip",
-        suggest_install=not engaged and _rapidgzip is None,
+        suggest_install=not engaged and not _rapidgzip.available(),
     )
 
 
@@ -985,12 +1060,23 @@ def _config_with_gzip_isize(source: CodecSource, config: StreamConfig) -> Stream
 
 def _deflate_family_uses_accelerator(config: StreamConfig) -> bool:
     """Whether gzip/zlib/deflate will open through rapidgzip for this config."""
-    return _rapidgzip is not None and _rapidgzip_enabled(config, available=True)
+    return _rapidgzip.available() and _rapidgzip_enabled(config, available=True)
 
 
 def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
-    return _rapidgzip_bzip2 is not None and config.use_indexed_bzip2.enabled_for(
-        seekable=config.seekable, available=True
+    """Whether bzip2 opens through rapidgzip for this config.
+
+    Imports rapidgzip when the config asks for it, so that a package that is found but
+    fails to import reads as unavailable: ``AUTO`` then falls back to the standard
+    library, as it does for a missing package. Called only on the way to opening a
+    bzip2 stream (:func:`resolve_codec`, :meth:`Bzip2Codec.open`).
+    """
+    return (
+        _rapidgzip.available()
+        and config.use_indexed_bzip2.enabled_for(
+            seekable=config.seekable, available=True
+        )
+        and _rapidgzip_bzip2() is not None
     )
 
 
@@ -3032,9 +3118,9 @@ class _DeflateFamilyCodec(StreamCodec):
         and cannot have it: rapidgzip is absent, or the source cannot seek."""
         label = self.codec.value
         _warn_if_auto_without_child(config)
-        if not _rapidgzip_enabled(config, available=_rapidgzip is not None):
+        if not _rapidgzip_enabled(config, available=_rapidgzip.available()):
             return False
-        if _rapidgzip is None:
+        if not _rapidgzip.available():
             raise PackageNotInstalledError(
                 _RAPIDGZIP_REQUIREMENT.message(f"{label} random access")
             )
@@ -3250,13 +3336,11 @@ class Bzip2Codec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if config.use_indexed_bzip2.enabled_for(
-            seekable=config.seekable, available=_rapidgzip_bzip2 is not None
-        ):
-            if _rapidgzip_bzip2 is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
-                )
+        # Imports rapidgzip into this process, which on a free-threaded build re-enables
+        # the GIL (see _LazyOptional).
+        if _bzip2_uses_accelerator(config):
+            indexed_bzip2_file = _rapidgzip_bzip2()
+            assert indexed_bzip2_file is not None
             _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
@@ -3265,7 +3349,7 @@ class Bzip2Codec(StreamCodec):
             accel_source, views = _accelerator_backstop_source(
                 _bound_rapidgzip_source(source, params, config)
             )
-            stream = _open_accelerator(_rapidgzip_bzip2, accel_source)
+            stream = _open_accelerator(indexed_bzip2_file, accel_source)
             # _refuse_forward_only_accelerator has refused a source that cannot seek.
             assert views is not None
             # A data error hands the read to the standard library, which delivers what
@@ -3287,6 +3371,10 @@ class Bzip2Codec(StreamCodec):
                     config=config,
                     single_stream=params.single_stream,
                 )
+            )
+        if config.use_indexed_bzip2 is AcceleratorMode.ON:
+            raise PackageNotInstalledError(
+                _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
             )
         # A rewind re-decompresses from the start; the outer ArchiveStream warns about
         # that (see rewind_warning). The [seekable] accelerator (above) gives real
@@ -3312,7 +3400,7 @@ class Bzip2Codec(StreamCodec):
             "bzip2",
             accelerator="rapidgzip",
             suggest_install=not _bzip2_uses_accelerator(config)
-            and _rapidgzip_bzip2 is None,
+            and not _rapidgzip.available(),
         )
 
     def _accelerator_data_error(self, exc: Exception) -> bool:
@@ -4131,12 +4219,12 @@ class BrotliCodec(StreamCodec):
     )
 
     def _backend_present(self) -> bool:
-        return _brotli is not None
+        return _brotli.available()
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if _brotli is None:
+        if _brotli.load() is None:
             raise self._missing("Brotli streams")
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
         # outer ArchiveStream warns — see rewind_warning).
@@ -4150,7 +4238,8 @@ class BrotliCodec(StreamCodec):
         # brotli raises its own brotli.error for corrupt data; a truncated stream doesn't
         # raise here (the decompressor just never reports finished), so the base
         # DecompressorStream surfaces that as TruncatedError on its own.
-        if _brotli is not None and isinstance(exc, _brotli.error):
+        brotli = _brotli.loaded()
+        if brotli is not None and isinstance(exc, brotli.error):
             return CorruptionError(f"Error reading brotli stream: {exc!r}")
         return None
 
@@ -4246,12 +4335,12 @@ class PpmdCodec(StreamCodec):
     )
 
     def _backend_present(self) -> bool:
-        return _pyppmd is not None
+        return _pyppmd.available()
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if _pyppmd is None:
+        if _pyppmd.load() is None:
             raise self._missing("PPMd streams")
         # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
         # var.H properties blob (PPMd7). Prefer an explicit ``pack_size``; fall back to
@@ -4299,7 +4388,8 @@ class PpmdCodec(StreamCodec):
             return TruncatedError(f"PPMd stream is truncated: {exc!r}")
         if isinstance(exc, ValueError):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
-        if _pyppmd is not None and isinstance(exc, getattr(_pyppmd, "PpmdError", ())):
+        pyppmd = _pyppmd.loaded()
+        if pyppmd is not None and isinstance(exc, getattr(pyppmd, "PpmdError", ())):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
         # A corrupt PPMd8 payload can surface as SystemError from the C extension.
         if isinstance(exc, SystemError):
@@ -4322,12 +4412,12 @@ class Deflate64Codec(StreamCodec):
     )
 
     def _backend_present(self) -> bool:
-        return _inflate64 is not None
+        return _inflate64.available()
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if _inflate64 is None:
+        if _inflate64.load() is None:
             raise self._missing("Deflate64 streams")
         return Deflate64DecompressorStream(source)
 

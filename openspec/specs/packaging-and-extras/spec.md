@@ -66,7 +66,8 @@ codecs, encryption, ISO, seeking accelerators, and the CLI.
 The system SHALL make `[recommended]` the sensible all-useful install and `[seekable]`
 an opt-in on top of it. `[seekable]` MUST remain separate rather than folded into
 `[recommended]`: it is a heavy native build that can fail to compile, importing it
-re-enables the GIL on free-threaded builds, and it carries the accelerator
+into the process (which bzip2 random access does) re-enables the GIL on free-threaded
+builds, and it carries the accelerator
 close-before-finalize hazard recorded in `dev-docs/investigations/rapidgzip-upstream-report.md`.
 
 The system SHALL NOT ship an extra per format. Removed names (`[7z]`, `[rar]`,
@@ -104,6 +105,12 @@ collapse into `[recommended]`. It MUST NOT be read as a claim that archivey is o
 free-thread-safe with it. CI MUST install exactly this set on a free-threaded interpreter
 and assert the GIL is still disabled, so the set cannot rot silently.
 
+Optional packages that re-enable the GIL when imported (today `pyppmd`, `inflate64`,
+`brotli` and `rapidgzip`) MUST NOT be imported by `import archivey` or by listing formats
+and their availability. The system SHALL import each one only when it opens a stream that
+decodes with it in this process, so having one installed does not by itself re-enable the
+GIL. A package that is installed but fails to import SHALL be treated as absent.
+
 The system SHALL keep `[all]` as the conventional superset; it MUST resolve to
 `[recommended]` + `[seekable]`.
 
@@ -136,6 +143,7 @@ NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 | `pip install archivey[recommended]` on free-threaded 3.13 | **Fails** — `cryptography` -> `cffi` does not support free-threaded 3.13; documented, not worked around |
 | `pip install archivey[free-threaded]` on free-threaded 3.13 | Resolves without `cryptography`; importing every included package leaves the GIL disabled |
 | `pip install archivey[free-threaded]` on free-threaded 3.14 | Resolves **with** `cryptography` (cffi supports 3.14t); GIL still disabled |
+| `[all]` on a free-threaded build, then `import archivey` and list formats | GIL still disabled; none of pyppmd, inflate64, brotli, rapidgzip imported |
 | `pip install archivey[all]` | `[recommended]` + `[seekable]` |
 | ZIP member needs Deflate64 with no extras | `PackageNotInstalledError` naming `archivey[recommended]`, never a format-named extra |
 | Any optional package absent, compared across both channels | The hint in the raised error and the one reported by `format_availability()` are the same string |

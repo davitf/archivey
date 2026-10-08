@@ -2402,12 +2402,18 @@ def test_absent_codec_backend_hint_is_installable(
 ) -> None:
     """A read that fails for a missing package must advise an extra that exists.
 
-    Forcing the module global to ``None`` exercises the raise in every dependency leg,
+    Forcing the module global to "absent" exercises the raise in every dependency leg,
     including the one where the package *is* installed — which is where the hint used to
     rot unnoticed, because ``format_availability`` reported the updated string while
     ``open()`` still advertised a deleted extra.
     """
-    monkeypatch.setattr(codecs_module, absent_global, None, raising=True)
+    current = getattr(codecs_module, absent_global)
+    absent = (
+        codecs_module._LazyOptional(current.name, present=False)
+        if isinstance(current, codecs_module._LazyOptional)
+        else None
+    )
+    monkeypatch.setattr(codecs_module, absent_global, absent, raising=True)
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))

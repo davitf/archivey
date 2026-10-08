@@ -512,7 +512,7 @@ class BrotliDecoder(BaseDecoder):
     """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
 
     The ``brotli`` import is local because it's an optional dependency with no type stubs;
-    the codec layer's ``_open_brotli`` gates on its presence before constructing this, so
+    ``BrotliCodec.open`` in the codec layer gates on its presence before constructing this, so
     the import here always succeeds.
 
     Brotli ≥1.2.0 exposes ``process(..., output_buffer_limit=)`` and

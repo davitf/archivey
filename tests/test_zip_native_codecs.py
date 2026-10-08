@@ -143,7 +143,11 @@ def test_zip_deflate64_without_inflate64_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _7z_zip(tmp_path, "Deflate64", _PAYLOAD)
-    monkeypatch.setattr(codecs_module, "_inflate64", None)
+    monkeypatch.setattr(
+        codecs_module,
+        "_inflate64",
+        codecs_module._LazyOptional("inflate64", present=False),
+    )
     with open_archive(archive) as ar:
         (member,) = ar.members()
         with pytest.raises(PackageNotInstalledError, match="inflate64"):
@@ -155,7 +159,9 @@ def test_zip_ppmd_without_pyppmd_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _7z_zip(tmp_path, "PPMd", _PAYLOAD)
-    monkeypatch.setattr(codecs_module, "_pyppmd", None)
+    monkeypatch.setattr(
+        codecs_module, "_pyppmd", codecs_module._LazyOptional("pyppmd", present=False)
+    )
     with open_archive(archive) as ar:
         (member,) = ar.members()
         with pytest.raises(PackageNotInstalledError, match="pyppmd"):
