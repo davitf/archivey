@@ -293,6 +293,49 @@ def test_rapidgzip_multimember_not_flagged(tmp_path: Path) -> None:
         assert s.read() == b"A" * 4000 + b"B" * 2500
 
 
+# A cut member and then a complete one: the trailer is the last member's ISIZE and the
+# further member is real, but rapidgzip stops at the cut and never decodes it. Found by
+# the accelerator fuzz targets.
+_GZ_CUT_THEN_MEMBER = gzip.compress(
+    random.Random(7).randbytes(60_000) + b"x" * 120_000, mtime=0
+)[:40_000] + gzip.compress(b"tail member\n" * 20, mtime=0)
+
+
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+@pytest.mark.parametrize("mode", [AcceleratorMode.ON, AcceleratorMode.OFF])
+def test_gzip_cut_member_before_a_complete_one_raises(
+    tmp_path: Path, source_kind: str, mode: AcceleratorMode
+) -> None:
+    if mode is AcceleratorMode.ON:
+        pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data = _GZ_CUT_THEN_MEMBER
+    source = (
+        _write(tmp_path, "cut.gz", data) if source_kind == "path" else io.BytesIO(data)
+    )
+    config = StreamConfig(use_rapidgzip=mode, seekable=True)
+    with open_codec_stream(Codec.GZIP, source, config=config) as s:
+        with pytest.raises(TruncatedError):
+            s.read()
+
+
+def test_gzip_cut_member_with_a_forged_isize_raises() -> None:
+    # The trailer of a cut file is whatever bytes the cut left there. Set to the length
+    # rapidgzip delivers before its soft end, it matched, and the short read passed.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    import rapidgzip
+
+    cut = bytearray(
+        gzip.compress(random.Random(1).randbytes(300_000) + b"x" * 600_000, mtime=0)[
+            :200_000
+        ]
+    )
+    with rapidgzip.RapidgzipFile(io.BytesIO(bytes(cut)), parallelization=1) as f:
+        cut[-4:] = len(f.read()).to_bytes(4, "little")
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(cut)), config=_GZ_ON) as s:
+        with pytest.raises(TruncatedError):
+            s.read()
+
+
 # --- rapidgzip truncation backstop on non-path (caller-owned) seekable sources ---------
 # The backstop was path-only; these assert parity for a caller-owned BinaryIO (BytesIO or a
 # real file object), where the accelerator + multi-member scan coordinate through a
