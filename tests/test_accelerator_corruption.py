@@ -15,6 +15,8 @@ import bz2
 import gzip
 import io
 import random
+import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -318,27 +320,42 @@ def test_gzip_cut_member_before_a_complete_one_raises(
             s.read()
 
 
-def test_gzip_cut_member_with_a_forged_isize_raises() -> None:
+# Reads a cut gzip with raw rapidgzip and prints how many bytes it delivered. It runs in a
+# child interpreter because rapidgzip 0.16 aborts the process on some cuts (see
+# test_accelerator_truncation_abort.py), and opens the file as archivey's worker does.
+_SOFT_END_PROBE = """
+import sys, rapidgzip
+with rapidgzip.open(sys.argv[1], parallelization=0) as f:
+    try:
+        print(len(f.read()))
+    except ValueError:
+        print("RAISED")
+"""
+
+
+def test_gzip_cut_member_with_a_forged_isize_raises(tmp_path: Path) -> None:
     # The trailer of a cut file is whatever bytes the cut left there. Set to the length
     # rapidgzip delivers before its soft end, it matched, and the short read passed.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
-    import rapidgzip
-
     cut = bytearray(
         gzip.compress(random.Random(1).randbytes(300_000) + b"x" * 600_000, mtime=0)[
             :200_000
         ]
     )
-    with rapidgzip.RapidgzipFile(io.BytesIO(bytes(cut)), parallelization=1) as f:
-        try:
-            delivered = len(f.read())
-        except ValueError:
-            # macOS builds raise on the cut instead of ending softly; the standard
-            # library then takes over, and there is no soft end to forge a trailer for.
-            pytest.skip(
-                "this rapidgzip build raises on the cut instead of ending softly"
-            )
-    cut[-4:] = delivered.to_bytes(4, "little")
+    path = tmp_path / "cut.gz"
+    path.write_bytes(cut)
+    proc = subprocess.run(
+        [sys.executable, "-c", _SOFT_END_PROBE, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or proc.stdout.strip() == "RAISED":
+        # Some builds raise or abort on the cut instead of ending softly (macOS raises;
+        # Linux wheels abort on other cuts). Archivey then reports the truncation without
+        # a soft end, and there is no soft end to forge a trailer for.
+        pytest.skip("this rapidgzip build does not end softly on this cut")
+    cut[-4:] = int(proc.stdout).to_bytes(4, "little")
     with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(cut)), config=_GZ_ON) as s:
         with pytest.raises(TruncatedError):
             s.read()

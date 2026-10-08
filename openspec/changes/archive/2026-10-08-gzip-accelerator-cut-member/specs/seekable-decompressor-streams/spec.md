@@ -22,9 +22,9 @@ standard library decoder, whose verdict it then gives (`TruncatedError` for a cu
 a further gzip member follows the first: then the trailer records only the last member, and
 the backstop SHALL stand down. Before it compares the length or stands down, the backstop SHALL
 check that rapidgzip's decode reached the end of the source; a decode that stopped short of it
-SHALL be handed to the standard library decoder the same way. A `1f 8b 08` in the file SHALL count as a further member only
-when zlib's gzip decoder accepts the header there and decodes from it without an error, to the
-member's verified end or through a bounded probe; three bytes that turn up by chance in a
+SHALL be handed to the standard library decoder the same way. A `1f 8b 08` in the file SHALL
+count as a further member only when zlib's gzip decoder accepts the header there and decodes
+from it without an error, to the member's verified end or through a bounded probe; three bytes that turn up by chance in a
 compressed body, or a member the source ends inside, SHALL NOT silence the backstop.
 
 A **caller-owned** source driven through the accelerator SHALL NOT be closed by the accelerator

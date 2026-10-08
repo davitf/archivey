@@ -188,10 +188,10 @@ source that is seekable, `_GzipTruncationCheckStream` backs it up:
    the standard library engine. This is what tells a member cut short and followed by a
    complete one from a multi-member file: there the trailer and the further member are
    both real, but `rapidgzip` stopped at the cut and never decoded the rest. Otherwise
-   the length of the output mod 2³² is compared with the
-   ISIZE trailer, read at open. A mismatch hands the rest of the read to the standard
-   library engine, which raises the truncation, raises the checksum error for a wrong
-   ISIZE, or reports bytes appended to the file. The exception is a file with a further
+   the length of the output mod 2³² is compared with the ISIZE trailer, read at open. A
+   mismatch hands the rest of the read to the standard library engine, which raises the
+   truncation, raises the checksum error for a wrong ISIZE, or reports bytes appended to
+   the file. The exception is a file with a further
    member: its trailer is only the last member's size, so a mismatch is expected and
    nothing is raised. `gzip_has_additional_member` decides that. It looks for `1f 8b 08`
    after offset 0, and since those three bytes turn up by chance in a compressed body

@@ -1584,10 +1584,12 @@ class _GzipTruncationCheckStream(DelegatingStream):
             # so never invent a truncation we can't prove.
             return b""
         # Below 18 bytes no gzip member is complete, so the delivered bytes are a
-        # truncation; otherwise an ISIZE mismatch is one, unless this is a concatenated
-        # multi-member gzip (then the trailer is only the last member's size). A
-        # confirmed further member => do not raise (a cut or damaged multi-member file
-        # can pass; the per-member ISIZE sum is deferred).
+        # truncation. So is a decode that stopped short of the end of the source: the
+        # trailer there is not this output's ISIZE. Otherwise an ISIZE mismatch is one,
+        # unless this is a concatenated multi-member gzip (then the trailer is only the
+        # last member's size). A confirmed further member => do not raise (a cut whose
+        # decode still reaches the end, with zlib confirming a later member, can pass;
+        # the per-member ISIZE sum is deferred).
         if self._source_len >= 18 and self._decoded_to_the_end():
             if self._isize is None:
                 return b""  # length known but ISIZE unread (should not happen here)
