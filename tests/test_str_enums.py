@@ -1,13 +1,16 @@
-"""Public string enums return their value from ``str()`` and f-strings.
+"""Which public enums are ``StrEnum``, and what ``str()`` returns for each.
 
-On Python 3.11 and later, a ``(str, Enum)`` member renders as ``Class.NAME``.
-``StrEnum`` still subclasses ``str``, still compares equal to its value, and
-``str()`` and f-strings return that value.
+A public enum whose members are strings is a ``StrEnum``. ``str()`` and
+f-strings then return the value, and the member still compares equal to that
+value. An enum that does not subclass ``str`` stays a plain ``Enum``, and
+``str()`` of a member is ``Class.NAME``. ``MemberType`` and
+``CompressionAlgorithm`` are that case. On Python 3.11 and later a
+``(str, Enum)`` base also renders as ``Class.NAME``, so the source scan
+rejects it.
 
-These classes are ``StrEnum``: ``HashAlgorithm``, ``ContainerFormat``,
-``StreamFormat``, ``DiagnosticCode``, ``DiagnosticDisposition``, ``AbortOn``,
-``ExtractionStatus``. The source scan fails if another class inherits
-``(str, Enum)``.
+The ``StrEnum`` classes are ``HashAlgorithm``, ``ContainerFormat``,
+``StreamFormat``, ``DiagnosticCode``, ``DiagnosticDisposition``, ``AbortOn``
+and ``ExtractionStatus``.
 """
 
 from __future__ import annotations
@@ -95,7 +98,7 @@ def test_str_and_format_return_the_value(enum_cls: type[StrEnum]) -> None:
 
 
 def test_source_uses_strenum_for_string_enums() -> None:
-    """No ``(str, Enum)`` class, and every ``StrEnum`` is one of the seven."""
+    """The ``StrEnum`` inventory is the public string enums, and nothing else."""
     mixin: list[str] = []
     strenums: set[str] = set()
     for path in sorted(_SRC.rglob("*.py")):
@@ -105,5 +108,15 @@ def test_source_uses_strenum_for_string_enums() -> None:
                 mixin.append(f"{rel}:{lineno}: {name}({', '.join(labels)})")
             if _is_strenum(labels):
                 strenums.add(name)
-    assert mixin == []
-    assert strenums == {cls.__name__ for cls in STR_VALUE_ENUMS}
+    assert mixin == [], (
+        "A public enum whose members are strings is a StrEnum, so str() "
+        "returns the value. (str, Enum) renders as Class.NAME on Python 3.11 "
+        "and later. Found:\n" + "\n".join(mixin)
+    )
+    expected = {cls.__name__ for cls in STR_VALUE_ENUMS}
+    assert strenums == expected, (
+        "StrEnum is for an enum whose members are strings, so str() returns "
+        "the value. An enum that does not subclass str stays a plain Enum, "
+        "and str() of a member is Class.NAME. "
+        f"Found {sorted(strenums)}; expected {sorted(expected)}."
+    )

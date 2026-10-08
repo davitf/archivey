@@ -53,7 +53,6 @@ class _JsonSafeContext:
         return dataclasses.asdict(self)
 
 
-# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
 class DiagnosticCode(StrEnum):
     """Stable machine codes for advisory events."""
 
@@ -84,7 +83,6 @@ class DiagnosticCode(StrEnum):
     # the placement clause in ``openspec/specs/diagnostics``.
 
 
-# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
 class DiagnosticDisposition(StrEnum):
     """Per-code policy disposition for an emitted diagnostic."""
 

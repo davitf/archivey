@@ -66,7 +66,6 @@ class MemberStreams(Flag):
     SEEKABLE = auto()
 
 
-# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
 class ContainerFormat(StrEnum):
     ZIP = "zip"
     TAR = "tar"
@@ -78,7 +77,6 @@ class ContainerFormat(StrEnum):
     UNKNOWN = "unknown"
 
 
-# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
 class StreamFormat(StrEnum):
     UNCOMPRESSED = "uncompressed"
     GZIP = "gz"
@@ -113,14 +111,14 @@ class ArchiveFormat:
     stream: StreamFormat
 
     def __post_init__(self) -> None:
-        # Converted, not only checked: both enums mix in ``str``, so a string pair
-        # compares and hashes equal to the named format, while the code that decides
-        # behaviour tests ``container is ContainerFormat.RAW_STREAM`` and would take
-        # the other branch for it. Holding members makes the two agree. A member
-        # of another enum is refused as a container, but left as it is as a
-        # stream: the codec registry is keyed on these pairs, and a codec
-        # registered from outside (``tests/test_codec_descriptor.py`` does) brings
-        # its own stream enum.
+        # Converted, not only checked: both enums are ``StrEnum``, so a member is a
+        # ``str`` and a string pair compares and hashes equal to the named format,
+        # while the code that decides behaviour tests ``container is
+        # ContainerFormat.RAW_STREAM`` and would take the other branch for it.
+        # Holding members makes the two agree. A member of another enum is refused
+        # as a container, but left as it is as a stream: the codec registry is keyed
+        # on these pairs, and a codec registered from outside
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
         if not isinstance(self.container, ContainerFormat):
             object.__setattr__(
                 self,
@@ -339,7 +337,10 @@ class MemberType(Enum):
     ANTI = "anti"
 
 
-# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
+# ``StrEnum`` because the member is a ``str``: ``str()`` and f-strings return the
+# value. A public enum that does not subclass ``str``, such as ``MemberType``
+# above, stays a plain ``Enum``, and ``str()`` of a member is ``Class.NAME``.
+# ``tests/test_str_enums.py`` lists the ``StrEnum`` classes.
 class HashAlgorithm(StrEnum):
     """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
 
@@ -1026,7 +1027,6 @@ class OnError(Enum):
 OnErrorStr = Literal["stop", "continue"]
 
 
-# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
 class AbortOn(StrEnum):
     """Events that abort the whole extraction the first time they occur.
 
@@ -1078,7 +1078,6 @@ AbortOnStr = Literal[
 ]
 
 
-# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
 class ExtractionStatus(StrEnum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
