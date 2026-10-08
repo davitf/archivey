@@ -1907,7 +1907,8 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     check, as it does for the gzip backstop: the stream has shown it has content there.
     That cannot hide garbage. For input it reads as empty, the decoder clamps every seek
     to 0 (measured on rapidgzip 0.16: ``seek(100)`` over 40 000 zero bytes returns 0), so
-    the check stays armed and the next read still falls back.
+    the check stays armed, and that seek, landing short of its target at the decoder's
+    end, falls back there: the error arrives at the seek, as it would at a read.
 
     The decoder also skips what it cannot read between blocks. It finds blocks by their
     magic, so junk before the first stream, a stream whose header is damaged, or one
@@ -1981,8 +1982,8 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             if size < 0 and self._check_end():
                 data += self._inner.read(size)
             return data
-        self._end_unchecked = False  # the stdlib engine reports its own end
-        return self._begin_stdlib_fallback(size)
+        self._fall_back_to_stdlib()
+        return self._inner.read(size)
 
     def _takeover(self) -> _StdlibOnAcceleratorError | None:
         """The takeover stream while the accelerator is still the decoder, else ``None``."""
@@ -2184,9 +2185,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         hands over at it, then the end check runs (combined CRCs, and what follows the
         last stream)."""
         if self._armed:
-            self._armed = False
-            self._end_unchecked = False
-            self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
+            self._fall_back_to_stdlib()
             return True
         takeover = self._takeover()
         if takeover is None:
@@ -2210,9 +2209,12 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         # Sits on the decompressed chain (accelerator, then maybe stdlib fallback).
         return ask_resume_offset(self._inner, target)
 
-    def _begin_stdlib_fallback(self, size: int) -> bytes:
+    def _fall_back_to_stdlib(self) -> None:
+        """Replace a decoder that read the stream as empty with the standard library,
+        from the start; a read and a seek fall back here alike."""
+        self._armed = False
+        self._end_unchecked = False  # the stdlib engine reports its own end
         self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
-        return self._inner.read(size)
 
 
 # The 48-bit magic numbers that start a bzip2 block and an end-of-stream marker. Each

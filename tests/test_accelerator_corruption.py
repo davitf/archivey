@@ -957,7 +957,7 @@ def test_bzip2_accelerator_seeks_past_padding_as_off(
 
 
 _BZ2_SEEK_CASES = {
-    **{f"gap-{name}": data for name, data in _BZ2_LAYOUT_CASES.items()},
+    **{f"layout-{name}": data for name, data in _BZ2_LAYOUT_CASES.items()},
     "header-and-zeros": b"BZh9" + bytes(40),
     "zeros": bytes(64),
     "empty-stream-then-header": _BZ2_EMPTY + b"BZh9" + bytes(40),
@@ -972,9 +972,11 @@ _BZ2_SEEK_CASES = {
 def test_bzip2_accelerator_seeks_into_damage_as_off(
     case: str, target: int, whence: int
 ) -> None:
-    # A seek that lands past a skipped region, or at the end of a stream the decoder
-    # read as empty, raises at the seek as with the accelerator off: a caller sizing
-    # the stream with seek(0, SEEK_END) gets the error, not a plausible size.
+    # A seek gets the verdict a read would, as with the accelerator off, by three
+    # paths: past a skipped region it hands over there; at the decoder's end it runs
+    # the end check (padding or empty streams between streams, trailing data); at the
+    # end of a stream the decoder read as empty it falls back. A caller sizing the
+    # stream with seek(0, SEEK_END) gets the error, not a plausible size.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _BZ2_SEEK_CASES[case]
     outcomes = []
