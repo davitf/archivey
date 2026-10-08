@@ -235,11 +235,19 @@ def test_gzip_bytes_after_the_data_are_reported_with_the_accelerator(tmp_path) -
 
 
 @requires("rapidgzip")
+@pytest.mark.parametrize(
+    "blob",
+    [
+        pytest.param(_magic_case("second-member"), id="second-member"),
+        pytest.param(gzip.compress(bytes(range(256)) * 800, mtime=0), id="one-member"),
+    ],
+)
 def test_a_real_further_gzip_member_needs_no_second_decode(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, blob: bytes
 ) -> None:
     """A multi-member file's trailer is only its last member's size: the mismatch is
-    expected, and the confirmed member keeps the standard library out of it."""
+    expected, and the confirmed member keeps the standard library out of it. A healthy
+    one-member file matches its trailer, and its decode reaches the end of the source."""
     handovers: list[object] = []
     original = codecs._StdlibOnAcceleratorError.switch_to_stdlib
 
@@ -248,7 +256,6 @@ def test_a_real_further_gzip_member_needs_no_second_decode(
         original(self, *args)  # type: ignore[arg-type]
 
     monkeypatch.setattr(codecs._StdlibOnAcceleratorError, "switch_to_stdlib", spy)
-    blob = _magic_case("second-member")
     got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
     assert error is None
     assert got == gzip.decompress(blob)
