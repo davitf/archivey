@@ -167,7 +167,7 @@ def test_password_provider_reentry_raises() -> None:
     def provider(req):  # noqa: ANN001
         # Same-reader reentry while the provider lock marks depth > 0.
         with pytest.raises(ArchiveyUsageError, match="reentered"):
-            box["c"].ask_provider(None, 99)
+            box["c"]._call_provider(None, 99)
         return b"pw" if req.attempt == 1 else None
 
     candidates = _PasswordCandidates.from_input(provider)
@@ -203,7 +203,7 @@ def test_password_provider_second_thread_waits_instead_of_raising() -> None:
 
     def ask(name: str) -> None:
         try:
-            results[name] = candidates.ask_provider(None, 1)
+            results[name] = candidates._call_provider(None, 1)
         except BaseException as exc:  # noqa: BLE001 - reported below
             results[name] = exc
 
@@ -233,7 +233,7 @@ def test_password_provider_reentry_from_a_context_carrying_thread_raises() -> No
 
     def helper() -> None:
         try:
-            box["result"] = candidates.ask_provider(None, 99)
+            box["result"] = candidates._call_provider(None, 99)
         except ArchiveyUsageError as exc:
             box["result"] = exc
 
@@ -246,7 +246,7 @@ def test_password_provider_reentry_from_a_context_carrying_thread_raises() -> No
         return b"pw"
 
     candidates = _PasswordCandidates.from_input(provider)
-    assert candidates.ask_provider(None, 1) == b"pw"
+    assert candidates._call_provider(None, 1) == b"pw"
     assert box["deadlocked"] is False
     assert isinstance(box["result"], ArchiveyUsageError)
     assert "reentered" in str(box["result"])
@@ -264,10 +264,10 @@ def test_password_provider_turn_released_when_provider_raises() -> None:
 
     candidates = _PasswordCandidates.from_input(provider)
     with pytest.raises(RuntimeError, match="prompt cancelled"):
-        candidates.ask_provider(None, 1)
+        candidates._call_provider(None, 1)
     worker: dict[str, object] = {}
     thread = threading.Thread(
-        target=lambda: worker.update(pw=candidates.ask_provider(None, 1))
+        target=lambda: worker.update(pw=candidates._call_provider(None, 1))
     )
     thread.start()
     thread.join(5)

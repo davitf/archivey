@@ -546,6 +546,49 @@ def test_stored_zipcrypto_provider_repeat_does_not_end_the_provider() -> None:
         assert asks == [("b.txt", 1), ("b.txt", 2)]
 
 
+def test_stored_zipcrypto_provider_repeat_terminates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider that repeats one wrong password stops after one CRC pass.
+
+    Each distinct answer on the STORED path re-reads the member for its CRC-32.
+    ``iter_provider_answers`` ends when the provider repeats an answer, so the
+    second call does not start another pass.
+    """
+    password = b"right-password"
+    name = b"a.txt"
+    data = b"stored-member-body"
+    blob = build_stored_zipcrypto_zip([(password, name, data)])
+    wrong = find_check_byte_collision(blob, name.decode(), password)
+    asks: list[int] = []
+    crc_calls = 0
+    original = zip_reader.parallel_plaintext_crc32
+
+    def counting_crc(
+        passwords: list[bytes],
+        header_ciphertext: bytes,
+        body: BinaryIO,
+        *,
+        chunk_size: int = 64 * 1024,
+    ) -> list[tuple[bytes, int]]:
+        nonlocal crc_calls
+        crc_calls += 1
+        return original(passwords, header_ciphertext, body, chunk_size=chunk_size)
+
+    monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting_crc)
+
+    def provider(request: PasswordRequest) -> bytes:
+        asks.append(request.attempt)
+        return wrong
+
+    with pytest.raises(EncryptionError, match="integrity"):
+        with open_archive(io.BytesIO(blob), password=provider) as archive:
+            archive.read(name.decode())
+
+    assert asks == [1, 2]
+    assert crc_calls == 1
+
+
 def test_unrelated_oserror_propagates_and_failed_stream_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -37,6 +37,16 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#642 K6 — a wrong gzip ISIZE hidden by four appended length bytes.** The
+  `gzip_accel` shard on #642 (run 37839602752, job 113525332796) found a one-member
+  gzip whose ISIZE is wrong and whose last four bytes equal the decoded length. The
+  accelerator returns the payload. The standard library raises `incorrect length
+  check`. The crash input is in that run's `atheris-crashes-1` artifact, kept 30
+  days. A fixture that fails on `main` is #643. Telling those bytes from the zero
+  padding `gzip-padded-isize-accepted` already accepts needs a CRC-32 of the output
+  or a second decode, the cost that change declined. The nightlies before this shard
+  were green, so the short budget is what found it.
+
 - **#607 K6 — nothing in the suite notices a leaked thread.** `tests/leak_oracle.py`
   fails a test that leaves a child process running or an owning stream unclosed, but does
   not look at threads, so a FIFO writer thread stayed blocked in `open()` from a test's
