@@ -11,6 +11,7 @@ from __future__ import annotations
 import gzip
 import io
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
@@ -20,7 +21,10 @@ import archivey
 from archivey import ArchiveyConfig
 from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import DiagnosticRaisedError
+from archivey.internal.config import StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.codecs import _stdlib_bzip2
+from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -183,3 +187,28 @@ def test_a_raise_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
             # One request larger than the payload: the decode comes back short.
             stream.read(len(payload) + 100_000)
         assert _largest_library_local(caught.value) < 4096
+
+
+@pytest.mark.parametrize(
+    ("make", "data"),
+    [
+        (lambda src: _stdlib_bzip2(src, StreamConfig(seekable=True)), b"not bzip2"),
+        (lambda src: ZlibDecompressorStream(src, wbits=-15), b"\xff" * 64),
+    ],
+    ids=["bzip2", "deflate"],
+)
+def test_a_decoder_error_is_raised_again_after_a_seek_to_the_same_place(
+    make: Callable[[BinaryIO], BinaryIO], data: bytes
+) -> None:
+    # The decoder raised at offset 0, so seek(0) moves nothing; it must still restart
+    # the decoder rather than feed the spent one, which raises ValueError.
+    stream = make(io.BytesIO(data))
+    with pytest.raises(Exception) as first:
+        stream.read(10)
+    assert not isinstance(first.value, ValueError)
+    for _ in range(2):
+        assert stream.seek(0) == 0
+        with pytest.raises(type(first.value)):
+            stream.read(10)
+    with pytest.raises(type(first.value)):
+        stream.read(10)  # and without a seek, the verdict stays
