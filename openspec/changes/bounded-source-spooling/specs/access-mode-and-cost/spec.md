@@ -157,8 +157,10 @@ Eager seek-point building is not exposed.
 **Every** stream source SHALL be made full-count at the source boundary
 (`ensure_full_count_reads`): a raw `read(n)` may legally return short, and some header
 parsers, archivey's and the stdlib's alike, issue one `read(n)` and raise or treat a
-short as EOF. The source kinds get that guarantee by different means, and the
-difference is read-ahead:
+short as EOF. A `None` from the caller's `read` (nothing ready on a non-blocking raw)
+is not a short read and not EOF: the boundary raises `BlockingIOError`, including when
+`None` follows a short chunk. The source kinds get that guarantee by different means,
+and the difference is read-ahead:
 
 | Source | Boundary wrapper | Read-ahead |
 | --- | --- | --- |
@@ -182,6 +184,15 @@ probe, and closes nothing. This is how
 regardless of what a backend wraps the source in afterwards: the borrow defaults of the
 individual wrappers govern those wrappers, and a caller's object passed through unwrapped
 is outside them.
+
+#### Scenario: a non-blocking raw read is not end of file
+
+| Case | Expected |
+| --- | --- |
+| Non-seekable raw stream, `read` returns `None` | `ArchiveSource.read`, `read(-1)`, `readall`, `readinto` and `peek` raise `BlockingIOError` |
+| Same stream returns a short chunk, then `None` | Same error. The short chunk is not the result of the read |
+| `open_archive(..., streaming=True)` on a stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
+| `open_archive(..., streaming=True)` on a stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
 
 #### Scenario: open mode matrix
 

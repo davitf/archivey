@@ -11,6 +11,7 @@ oracle, which run unchanged over this object.
 
 from __future__ import annotations
 
+import gzip
 import io
 import os
 import subprocess
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from archivey import open_archive
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -162,6 +164,98 @@ def test_sized_read_past_eof_returns_the_remainder() -> None:
     assert source.consumed == 5
     assert wrapped.read(5) == b""
     assert wrapped.readinto(bytearray(4)) == 0
+
+
+class _NothingReady(io.RawIOBase):
+    """A non-blocking raw: ``read`` returns ``None``, which is not EOF.
+
+    ``b""`` is end of file for a blocking and a non-blocking stream alike.
+    ``None`` means nothing is ready yet.
+    """
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        return None
+
+
+class _ShortThenNothing(io.RawIOBase):
+    """One short chunk, then ``None`` on every later read."""
+
+    def __init__(self, first: bytes) -> None:
+        super().__init__()
+        self._first = first
+        self.calls = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        self.calls += 1
+        if self._first:
+            take = len(self._first) if n < 0 else min(n, len(self._first))
+            chunk = self._first[:take]
+            self._first = self._first[take:]
+            return chunk
+        return None
+
+
+def test_non_blocking_none_is_not_end_of_file() -> None:
+    """``None`` from a non-blocking raw must not look like an empty archive."""
+    wrapped = ArchiveSource.for_stream(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(10)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(-1)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.readall()
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.peek(8)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.readinto(bytearray(4))
+
+
+def test_short_chunk_then_none_is_not_a_finished_read() -> None:
+    """Bytes already in hand, then ``None``, are not the end of the request."""
+    inner = _ShortThenNothing(b"ab")
+    wrapped = ArchiveSource.for_stream(inner)  # type: ignore[arg-type]  # RawIOBase double
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(10)
+    # The short chunk was taken, and the follow-up that returned ``None`` was
+    # not reported as EOF.
+    assert inner.calls == 2
+
+
+def _read_non_blocking(stream: io.RawIOBase) -> bytes:
+    """Open ``stream`` and return the bytes of its single streamed member."""
+    reader = open_archive(stream, streaming=True)  # type: ignore[arg-type]  # RawIOBase double
+    try:
+        chunks: list[bytes] = []
+        for _member, member_stream in reader.stream_members():
+            if member_stream is not None:
+                chunks.append(member_stream.read())
+        return b"".join(chunks)
+    finally:
+        reader.close()
+
+
+def test_open_archive_refuses_a_stream_with_nothing_ready() -> None:
+    """No bytes ready is not an empty archive."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_NothingReady())
+
+
+def test_open_archive_refuses_a_complete_prefix_followed_by_none() -> None:
+    """A whole gzip, then ``None``, is not a finished archive.
+
+    ``None`` means nothing is ready, not that the source ended. The bytes
+    happen to be a complete gzip of ``b"hello"``; reading them back would
+    hide a caller that still has more to send.
+    """
+    payload = gzip.compress(b"hello")
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_ShortThenNothing(payload))
 
 
 # ---------------------------------------------------------------------------

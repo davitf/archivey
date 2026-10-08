@@ -7,11 +7,13 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
 
 - **Full-count.** ``read(n)`` returns ``n`` bytes unless the source is exhausted. A raw
   ``read(n)`` may legally return short, and header parsers — archivey's and the stdlib's —
-  issue one ``read(n)`` and treat a short as EOF. How the guarantee is supplied is chosen
-  once, at construction: an already-buffered source (``BytesIO``, an ``open()`` handle, a
-  path's own handle) passes through; a seekable raw source gets a fixed-size read buffer
-  this object builds and owns; a non-seekable raw source is gathered by re-asking for the
-  missing bytes, with no read-ahead.
+  issue one ``read(n)`` and treat a short as EOF. ``None`` from the caller's ``read`` is
+  not exhaustion: a non-blocking raw returns it when nothing is ready, and this object
+  raises ``BlockingIOError`` rather than handing that on as a short read. How the
+  guarantee is supplied is chosen once, at construction: an already-buffered source
+  (``BytesIO``, an ``open()`` handle, a path's own handle) passes through; a seekable raw
+  source gets a fixed-size read buffer this object builds and owns; a non-seekable raw
+  source is gathered by re-asking for the missing bytes, with no read-ahead.
 - **Ownership.** It closes what archivey opened or built — a path's handle, a joined
   volume set, its own read buffer — and never the caller's object. The buffer is
   detached rather than closed, so the caller's raw stream survives it.
@@ -67,6 +69,7 @@ from archivey.internal.streams.streamtools import (
     source_name,
     source_size_fact,
 )
+from archivey.internal.streams.streamtools.binaryio import read_blocking
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -91,6 +94,24 @@ class JoinedVolumes(Protocol):
     def close(self) -> None: ...
 
 
+class _BlockingReads:
+    """``read`` that raises when a non-blocking raw returns ``None``.
+
+    :func:`read_exact` treats a falsy return, ``None`` included, as the end of the
+    stream. The gathering reader uses it for the bytes still missing after a short
+    read, and a ``None`` there would end the archive. Routing the follow-up through
+    :func:`read_blocking` is the same refusal the first read makes.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: BinaryIO) -> None:
+        self._inner = inner
+
+    def read(self, n: int = -1, /) -> bytes:
+        return read_blocking(self._inner, n)
+
+
 class _GatheringReader:
     """Full-count ``read(n)`` over a non-seekable raw source, with no buffer of its own.
 
@@ -99,8 +120,10 @@ class _GatheringReader:
     (:func:`read_exact`), so ``read(n)`` takes exactly ``n`` bytes from the source.
 
     The inner is the caller's object, un-normalised. The one assumption made about it is
-    that ``read(n)`` for ``n > 0`` returns at most ``n`` bytes, and empty only at EOF; more
-    than ``n`` raises. ``read(-1)`` is never forwarded: an inner may have no ``readall``
+    that ``read(n)`` for ``n > 0`` returns at most ``n`` bytes, and ``b""`` only at EOF;
+    more than ``n`` raises. ``None`` — nothing ready on a non-blocking raw, which is not
+    EOF — raises ``BlockingIOError``, including when it follows a short chunk.
+    ``read(-1)`` is never forwarded: an inner may have no ``readall``
     (``io.BufferedRWPair``, ``GzipFile`` over a pipe), so a drain is served as sized
     reads instead.
     """
@@ -117,9 +140,7 @@ class _GatheringReader:
             while chunk := self.read(io.DEFAULT_BUFFER_SIZE):
                 chunks.append(chunk)
             return b"".join(chunks)
-        data = self._inner.read(n)
-        if data is None:
-            return b""
+        data = read_blocking(self._inner, n)
         got = len(data)
         if got == n:
             return data  # common case: no copy
@@ -129,7 +150,7 @@ class _GatheringReader:
             )
         if got == 0:
             return b""
-        return data + read_exact(self._inner, n - got)
+        return data + read_exact(_BlockingReads(self._inner), n - got)
 
 
 class ArchiveSource(ReadOnlyIOStream):

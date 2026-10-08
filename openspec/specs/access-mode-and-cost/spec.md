@@ -46,7 +46,7 @@ passed — a path, a stream, or a volume list:
 
 | Guarantee | What `ArchiveSource` SHALL do |
 | --- | --- |
-| Full-count | `read(n)` returns `n` bytes unless the source is exhausted. A raw `read(n)` may legally return short, and header parsers, archivey's and the stdlib's alike, issue one `read(n)` and treat a short as EOF |
+| Full-count | `read(n)` returns `n` bytes unless the source is exhausted. A raw `read(n)` may legally return short, and header parsers, archivey's and the stdlib's alike, issue one `read(n)` and treat a short as EOF. A `None` from the caller's `read` (nothing ready on a non-blocking raw) is not exhaustion: `ArchiveSource` raises `BlockingIOError` instead of returning a short read or EOF, including when `None` follows a short chunk |
 | Ownership | Close what archivey opened or built — a path's handle, a joined volume set, its own read buffer — and never the caller's object, including a caller stream inside a volume list |
 | Bounded reads | No `read(n)` asks the source for more than it can still supply: clamped when the remaining length is a fact, served in steps when it is not, so a length an archive declares cannot become an allocation at the source |
 | Cheap facts | The path when a real file exists (not a pipe or device, which is read once, through the source), the volume paths of a joined set, the size when it is a fact (so that anything built over the source, which asks `source_byte_size`, clamps on a fact or steps too), a caller's `size` hint kept apart for reporting only, and the name, each settled once at the boundary |
@@ -76,6 +76,15 @@ This is how "archivey never closes a caller-supplied `BinaryIO`" (`archive-readi
 kept regardless of what a backend builds on top of the source: the caller's object is
 never handed past the boundary, so no wrapper a backend adds can reach it except through
 `ArchiveSource`, which borrows it.
+
+#### Scenario: a non-blocking raw read is not end of file
+
+| Case | Expected |
+| --- | --- |
+| Non-seekable raw stream, `read` returns `None` | `ArchiveSource.read`, `read(-1)`, `readall`, `readinto` and `peek` raise `BlockingIOError` |
+| Same stream returns a short chunk, then `None` | Same error. The short chunk is not the result of the read |
+| `open_archive(..., streaming=True)` on a stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
+| `open_archive(..., streaming=True)` on a stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
 
 #### Scenario: open mode matrix
 

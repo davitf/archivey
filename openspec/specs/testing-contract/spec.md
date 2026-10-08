@@ -602,3 +602,4 @@ and views that no boundary buffer sits in front of.
 | `ArchiveSource` over a non-seekable raw source, constructed directly | `seekable()` is `False`; no read-ahead is buffered |
 | `ArchiveSource` over an already-buffered non-seekable source (`io.BufferedReader`) | Reads through that buffer with no second buffer in front of it |
 | `read(-1)` / `readall()` on the `ArchiveSource` over a non-seekable short-returning source | Returns every remaining byte, and keeps doing so when the inner also returns short on `read(-1)` — the drain must not depend on the inner's `readall()` |
+| `ArchiveSource` over a non-seekable raw whose `read` returns `None`, and `open_archive` on that stream | `BlockingIOError`. A short chunk, or a complete gzip, followed by `None` raises the same way and is not returned as the archive |
