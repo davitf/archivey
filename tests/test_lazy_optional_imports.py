@@ -9,11 +9,21 @@ fresh interpreter, because this pytest process has imported them already.
 
 from __future__ import annotations
 
+import bz2
+import importlib.util
+import io
+import logging
+import os
 import subprocess
 import sys
 import sysconfig
 import textwrap
+from pathlib import Path
 
+import pytest
+
+from archivey.exceptions import PackageNotInstalledError
+from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 
 _GIL_REENABLING = ("pyppmd", "inflate64", "brotli", "rapidgzip")
@@ -32,6 +42,15 @@ _PROBE = textwrap.dedent(
 
 
 def test_import_and_format_listing_do_not_import_gil_reenabling_packages() -> None:
+    installed = [m for m in _GIL_REENABLING if importlib.util.find_spec(m)]
+    if not installed:
+        # The free-threaded CI job sets this on the step that installs them, so that
+        # step cannot pass by skipping.
+        if os.environ.get("ARCHIVEY_EXPECT_GIL_REENABLING_PACKAGES"):
+            pytest.fail(f"none of {_GIL_REENABLING} is installed")
+        pytest.skip(
+            f"none of {_GIL_REENABLING} is installed; nothing to leave unimported"
+        )
     proc = subprocess.run(
         [sys.executable, "-W", "ignore", "-c", _PROBE.format(names=_GIL_REENABLING)],
         capture_output=True,
@@ -45,14 +64,68 @@ def test_import_and_format_listing_do_not_import_gil_reenabling_packages() -> No
         assert gil == "False", "importing archivey re-enabled the GIL"
 
 
-def test_lazy_optional_looks_up_without_importing() -> None:
+def test_lazy_optional_looks_up_without_importing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     lazy = codecs._LazyOptional("archivey_no_such_package")
     assert not lazy.available()
     assert lazy.load() is None
     assert lazy.loaded() is None
 
-    present = codecs._LazyOptional("json")
+    name = "archivey_lazy_optional_stub"
+    (tmp_path / f"{name}.py").write_text("")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    present = codecs._LazyOptional(name)
     assert present.available()
     assert present.loaded() is None
-    assert present.load() is sys.modules["json"]
-    assert present.loaded() is sys.modules["json"]
+    assert name not in sys.modules
+    module = present.load()
+    assert module is not None and module is sys.modules[name]
+    assert present.loaded() is module
+
+
+@pytest.fixture
+def broken_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A package that ``find_spec`` finds and that raises when imported."""
+    name = "archivey_broken_optional_stub"
+    (tmp_path / name).mkdir()
+    (tmp_path / name / "__init__.py").write_text(
+        "raise OSError('libstdc++.so.6: cannot open shared object file')\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return name
+
+
+def test_lazy_optional_treats_a_failed_import_as_absent(
+    broken_package: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    lazy = codecs._LazyOptional(broken_package)
+    assert lazy.available()
+    with caplog.at_level(logging.WARNING, logger="archivey.streams"):
+        assert lazy.load() is None
+        assert lazy.load() is None
+    assert lazy.loaded() is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 1, messages
+    assert "failed to import" in messages[0] and "libstdc++" in messages[0]
+
+
+def test_bzip2_auto_falls_back_when_rapidgzip_fails_to_import(
+    broken_package: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(codecs, "_rapidgzip", codecs._LazyOptional(broken_package))
+    data = b"hello bzip2 " * 1000
+    auto = StreamConfig(seekable=True)
+    assert auto.use_indexed_bzip2 is AcceleratorMode.AUTO
+    with codecs.open_codec_stream(
+        codecs.Codec.BZIP2, io.BytesIO(bz2.compress(data)), config=auto
+    ) as stream:
+        assert stream.read() == data
+    assert not codecs._bzip2_uses_accelerator(auto)
+
+    on = StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON)
+    with pytest.raises(PackageNotInstalledError):
+        codecs.open_codec_stream(
+            codecs.Codec.BZIP2, io.BytesIO(bz2.compress(data)), config=on
+        )

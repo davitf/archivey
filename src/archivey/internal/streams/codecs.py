@@ -177,11 +177,17 @@ class _LazyOptional:
     stream they decode. So :meth:`available` only looks the package up, and the import
     waits for :meth:`load`, which a codec calls when it opens a stream that needs it.
     zstd and lz4 keep the GIL disabled and stay eager imports.
+
+    There is no lock: two threads in :meth:`load` at once both get the same module
+    (the import system serialises the import), and every field write stores the value
+    the other thread would store, so a lost update changes nothing. A new field that is
+    not repeat-safe in that way needs a lock.
     """
 
     def __init__(self, name: str, *, present: bool | None = None) -> None:
         self.name = name
-        # ``present=False`` stands for an absent package, for tests.
+        # ``present=`` overrides the lookup, for tests: ``False`` stands for an absent
+        # package, ``True`` for an installed one.
         self._present = present
         self._module: ModuleType | None = None
         self._import_failed = False
@@ -196,12 +202,24 @@ class _LazyOptional:
         return self._present
 
     def load(self) -> ModuleType | None:
-        """The imported package, or ``None`` if it is absent or fails to import."""
+        """The imported package, or ``None`` if it is absent or fails to import.
+
+        A package that is found but fails to import (a broken wheel, a missing shared
+        library) is logged once and then treated as absent, as it was when these were
+        imported with this module. Any exception counts: the import runs inside a codec
+        open, where an untranslated error from another package would be a surprise.
+        """
         if self._module is None and not self._import_failed and self.available():
             try:
                 self._module = importlib.import_module(self.name)
-            except ImportError:
+            except Exception as exc:  # noqa: BLE001 - any import failure means absent
                 self._import_failed = True
+                logs.streams.warning(
+                    "%r is installed but failed to import (%r); archivey reads as "
+                    "if it were absent.",
+                    self.name,
+                    exc,
+                )
         return self._module
 
     def loaded(self) -> ModuleType | None:
@@ -976,8 +994,19 @@ def _deflate_family_uses_accelerator(config: StreamConfig) -> bool:
 
 
 def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
-    return _rapidgzip.available() and config.use_indexed_bzip2.enabled_for(
-        seekable=config.seekable, available=True
+    """Whether bzip2 opens through rapidgzip for this config.
+
+    Imports rapidgzip when the config asks for it, so that a package that is found but
+    fails to import reads as unavailable: ``AUTO`` then falls back to the standard
+    library, as it does for a missing package. Called only on the way to opening a
+    bzip2 stream (:func:`resolve_codec`, :meth:`Bzip2Codec.open`).
+    """
+    return (
+        _rapidgzip.available()
+        and config.use_indexed_bzip2.enabled_for(
+            seekable=config.seekable, available=True
+        )
+        and _rapidgzip_bzip2() is not None
     )
 
 
@@ -2890,16 +2919,11 @@ class Bzip2Codec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if config.use_indexed_bzip2.enabled_for(
-            seekable=config.seekable, available=_rapidgzip.available()
-        ):
-            # Imports rapidgzip into this process, which on a free-threaded build
-            # re-enables the GIL (see _LazyOptional).
+        # Imports rapidgzip into this process, which on a free-threaded build re-enables
+        # the GIL (see _LazyOptional).
+        if _bzip2_uses_accelerator(config):
             indexed_bzip2_file = _rapidgzip_bzip2()
-            if indexed_bzip2_file is None:
-                raise PackageNotInstalledError(
-                    _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
-                )
+            assert indexed_bzip2_file is not None
             _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
@@ -2925,6 +2949,10 @@ class Bzip2Codec(StreamCodec):
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
             return _StdlibSeekContract(
                 _Bzip2EmptyStreamCheck(takeover, views=views, config=config)
+            )
+        if config.use_indexed_bzip2 is AcceleratorMode.ON:
+            raise PackageNotInstalledError(
+                _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
             )
         # A rewind re-decompresses from the start; the outer ArchiveStream warns about
         # that (see rewind_warning). The [seekable] accelerator (above) gives real
