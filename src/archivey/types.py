@@ -948,15 +948,15 @@ class ExtractionPolicy(Enum):
     anything whose outcome would differ by OS. A symlink target with a Windows drive
     letter or UNC root (``C:/Windows``, ``//server/share``) is refused on every OS,
     because Windows refuses it, so a Windows symlink to a drive path does not round-trip
-    at any policy. A hardlink target is not a path: it names an earlier member, and
-    the link is refused exactly when that member is. A link to the member ``C:/x``
-    extracts under ``STANDARD`` and ``TRUSTED``, which re-root that member, and a link
-    to the member ``C:x`` extracts at no policy. Those are universal. It *does* extract a name built to
-    display as something else (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD``
-    refuse with ``FilterRejectionError``: such a member lands inside the destination
-    under exactly its stored bytes, so the risk is to a human reading the directory
-    afterwards, not to the filesystem. Choosing ``TRUSTED`` accepts that, which is what
-    makes faithful round-tripping possible. See
+    at any policy. A hardlink target is not a path: it names an earlier member, and the
+    link is refused exactly when that member is. A link to the member ``C:/x`` extracts
+    under ``STANDARD`` and ``TRUSTED``, which re-root that member, and a link to the
+    member ``C:x`` extracts at no policy. Those are universal. It *does* extract a name
+    built to display as something else (``evil<U+202E>gnp.exe``), which
+    ``STRICT``/``STANDARD`` refuse with ``FilterRejectionError``: such a member lands
+    inside the destination under exactly its stored bytes, so the risk is to a human
+    reading the directory afterwards, not to the filesystem. Choosing ``TRUSTED``
+    accepts that, which is what makes faithful round-tripping possible. See
     ``dev-docs/decisions/0017-bidi-override-rejection-is-policy-keyed.md``.
     """
 

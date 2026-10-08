@@ -2686,15 +2686,15 @@ class RarReader(BaseArchiveReader):
         """Point each RAR5 file copy's ``link_target_member`` at its source.
 
         The source is the latest member before the copy whose name the stored target
-        names (read as a hard link's target is: archive-root relative), and it must be
-        a ``FILE``. A target that ``..``-escapes the archive root names no source
-        (``within_root``): extraction writes a copy from its source's bytes and does
-        not refuse it for a refused source, as it refuses a hard link. ``rar`` always writes the source first, and ``unrar`` copies from a
-        file it has already extracted, so only earlier members count; that also rules
-        out a copy of itself and any cycle. A source that is itself a copy stands for
-        its own source, so a chain collapses to the one member that holds the bytes.
-        A copy left unresolved stays listed and raises ``LinkTargetNotFoundError``
-        when read (:meth:`_open_file_copy`).
+        names (read as a hard link's target is: archive-root relative), and it must be a
+        ``FILE``. A target that ``..``-escapes the archive root names no source
+        (``within_root``): extraction writes a copy from its source's bytes and does not
+        refuse it for a refused source, as it refuses a hard link. ``rar`` always writes
+        the source first, and ``unrar`` copies from a file it has already extracted, so
+        only earlier members count; that also rules out a copy of itself and any cycle.
+        A source that is itself a copy stands for its own source, so a chain collapses
+        to the one member that holds the bytes. A copy left unresolved stays listed and
+        raises ``LinkTargetNotFoundError`` when read (:meth:`_open_file_copy`).
         """
         latest: dict[str, ArchiveMember] = {}
         for member in self._members:
