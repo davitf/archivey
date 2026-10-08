@@ -128,6 +128,28 @@ Python exceptions only. So it runs in the caller's process, with these guards ar
   CRCs as bzip2 does (rotate left by one, then XOR) and raises `CorruptionError` where an
   end-of-stream marker disagrees. Nothing is decoded again. A read that stops before the
   end checks nothing, as with the standard library, which checks at the end marker.
+- **What the decoder skips between streams must not reach the caller.** The decoder
+  finds blocks by their magic, so it passes over junk before the first stream, a stream
+  whose header is damaged, and a stream whose block and end-of-stream magics are both
+  damaged, and its output goes on with the next block it recognises: three 1000-byte
+  streams with two bytes flipped in the second read as 2000 bytes with no error. The
+  combined CRC does not see it, since nothing of the skipped region is in the index.
+  Before each read returns, `_Bzip2Layout` walks the index built so far
+  (`available_block_offsets()`, which forces nothing): the first stream starts at byte
+  0, and each later one where the previous end-of-stream marker ends, rounded up to a
+  byte, after nothing but zeros and whole empty streams, with its first block right
+  after its 4-byte header. At the first place that does not hold, the read stops at that
+  output offset and the standard library takes over there, and raises or reads on as it
+  does with the accelerator off. A read that comes back empty is checked too, since
+  after a seek to the end it is the only read. More than 1 MiB of padding and empty
+  streams between two streams counts as a gap, which only hands the read to the
+  standard library. The walk reads 11 bytes per new index entry, and asks for the index
+  only when a read goes past the entries already walked and the decoder's compressed
+  position has moved. rapidgzip copies its whole index on each such query, so the cost
+  grows with the square of the block count: measured on rapidgzip 0.16 with level-1
+  input (100 kB blocks) read in 64 KiB pieces, 5% of the read time for 300 MB and 10%
+  for 1 GB. Level 9, bzip2's default, has 900 kB blocks, so the same file has a ninth
+  of the blocks. Found by the accelerator fuzz targets.
 - **Bytes after the last stream must be reported the same way.** The decoder skips them
   and prints a warning to standard error, which archivey cannot catch. At the end of data,
   `_Bzip2EmptyStreamCheck` asks the decoder for its compressed position
@@ -137,7 +159,11 @@ Python exceptions only. So it runs in the caller's process, with these guards ar
   fresh view of the source from there, skips zeros and whole empty streams (the `BZh`
   header, the end-of-stream marker and a zero CRC: 14 bytes), and reports the first other
   byte at the offset the standard library engine would. Before this skip, a trailing
-  empty stream was reported as trailing data under the accelerator only.
+  empty stream was reported as trailing data under the accelerator only. When that byte
+  starts a stream header (`BZh` and a digit 1 to 9), the decoder stopped short of a
+  stream the standard library decodes or rejects (it does not read a stream after zero
+  padding, and leaves a cut or damaged empty stream alone), so the standard library takes
+  over at the end and gives the verdict instead of a trailing-data report.
 - **An exception from the caller's source must not abort the process.** `rapidgzip` calls
   `std::terminate` when a Python file object it reads from raises. The source is wrapped in
   `_TrappingSource`, which parks the exception, hands the decoder an end of data, and lets
@@ -194,7 +220,7 @@ accelerator `OFF` and `ON`.
 | `bzip2` | Reads |
 | `pbzip2`, `lbzip2` | Reads, as a run of streams |
 | Two `bzip2` files concatenated, nothing between them | Reads both payloads, with the accelerator off and on |
-| Two `bzip2` files with zero bytes between them | With the accelerator off, reads both payloads. With it on, reads the first payload only, then `ARCHIVE_TRAILING_DATA` at the start of the second stream (§5). `bzip2` 1.0.8 does what the accelerator does: `bzip2 -d` writes the first payload only, warns "trailing garbage after EOF ignored" and exits 0 |
+| Two `bzip2` files with zero bytes between them | Reads both payloads, with the accelerator off and on (with it on, the standard library reads the second stream, §2.3). `bzip2` 1.0.8 does not: `bzip2 -d` writes the first payload only, warns "trailing garbage after EOF ignored" and exits 0 |
 | A stream and empty streams (`bzip2 -c /dev/null`) concatenated, the empty ones before, between or after | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` accepts it |
 | The same, with zero bytes between or after the streams | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` warns "trailing garbage after EOF ignored" and exits 0: it stops at the first zero byte |
 | A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, "[Warning] Trailing garbage after EOF ignored!" is also printed to standard error. `bzip2 -t` warns and exits 0 |
@@ -223,13 +249,15 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
+| Each accelerated bzip2 open of a caller's own stream (a file object or `io.BytesIO`) leaks about 1.7 kB of Python objects; every accelerated open, from a path too, leaks a few kB of native memory | **library** | rapidgzip keeps the file object it reads from; archivey frees the caller's stream behind it, so its size does not matter (`known-issues.md` Bug 5) |
 | `member.size` is `None` for a `.bz2` | **format** | No size field (§1) |
 | Opening a small `.bz2` decodes up to 900 kB | **format** | Open-time validation needs the first block (§1, §2.2) |
 | "[Warning] Trailing garbage after EOF ignored!" on standard error | **library** | The accelerator prints it for bytes after the last stream in a standalone file; archivey cannot route it into diagnostics. Tracked internally |
 | A backward seek re-decodes from the start | **format** | Install `[seekable]` and pass `seekable_members=True` |
 | A cold backward seek with the accelerator still re-decodes up to a block, and may log it | **format** | Blocks are the unit of random access |
-| With the accelerator, a stream after zero padding is not read: the read returns the data before the padding, and `ARCHIVE_TRAILING_DATA` names the offset of the next stream. Under the default policy that is a warning, so the caller gets a short read with no error; `DiagnosticPolicy.strict()` raises `DiagnosticRaisedError` | **library** | The accelerator (`ON`, or `AUTO` with `seekable_members=True`) stops at the first byte after a stream that is not `BZh`, as `bzip2` 1.0.8 does. The standard library engine skips zeros and reads on (§2.3, §3). Set `use_indexed_bzip2=OFF` to read the whole file |
-| An empty stream that is cut short or has a non-zero CRC is `ARCHIVE_TRAILING_DATA` with the accelerator, but `TruncatedError` or `CorruptionError` without it | **archivey** | The accelerator's end scan skips only a whole, valid empty stream (§2.3) and reports anything else as trailing bytes; the standard library engine decodes it and raises |
+| A stream after zero padding, or a cut or damaged stream after the data, costs a second decode of the file with the accelerator | **archivey** | The accelerator stops before it, and the standard library takes over at the end from the start of the file (§2.3) |
+| A ZIP or 7z bzip2 member whose data holds a second stream with no zero padding before it (right after the first, or after empty streams only), or a damaged stream or a stream header with junk after it before a further stream, raises `CorruptionError` with the accelerator, and reads as the first stream without it | **library** / **archivey** | The accelerator decodes the second stream, and its output overruns the member's declared size; at a damaged stretch the standard library takes over without the single-stream flag, reads on, and raises. After any zero padding it stops, as the standard library does for a container's single stream |
+| Reading a large level-1 `.bz2` with the accelerator spends 5 to 10% of the time checking for skipped streams | **archivey** | The check copies the decoder's whole index per batch of blocks (§2.3) |
 | Trailing junk after the last stream is a warning | **archivey** | The rule every codec shares ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
 
 ## 6. Decisions
@@ -243,6 +271,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | No size threshold for `AUTO` | The in-process decoder costs no child start; seeking was asked for | Reusing the 16 MiB DEFLATE gate |
 | Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
 | Find the accelerator's end from its compressed position and scan the source | Its warning goes to standard error, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
+| A stream header after the data hands the end to the standard library | An accelerator changes speed, not behaviour; the 2026-10-03 ruling below applies that to cut and damaged files, and a stream after zero padding is the same file read two ways. The decoder stops at zero padding and reports a damaged empty stream as trailing bytes | Reporting a stream after padding as trailing data, which read a short file with only a warning |
+| Check the stream layout from the index before a read returns (`_Bzip2Layout`) | Bytes from after a skipped region must not reach the caller; the index already says where each stream's first block is | Checking at the end of data only, after the wrong bytes were delivered |
 | The scan skips whole empty streams as well as zeros | The compressed position stops before trailing empty streams, and the standard library engine reads them as part of the data | Reading the end from the decoder's block offsets, whose last entry is where an end-of-stream marker starts: undocumented, and it forces the full index |
 | On a data error from the accelerator, the standard library takes over and gives the verdict (maintainer ruling, 2026-10-03) | The accelerator must not change what a cut or damaged file delivers or raises; its `std::exception` names no cause | Mapping `std::exception` to `TruncatedError`, which would mislabel damage |
 | The takeover resumes at a block from the accelerator's index | A block needs no window; decoding again from the origin costs as much as the bytes already delivered | Scanning the source for the block magic, which gives no decompressed offset |
@@ -272,6 +302,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Garbage raises in every accelerator mode; a valid empty stream reads empty | `::test_corrupt_bz2_raises_whatever_the_accelerator_mode`, `tests/test_accelerator_corruption.py::test_bzip2_not_a_stream_raises_in_every_accelerator_mode`, `::test_indexed_bzip2_valid_empty_stream_reads_empty` |
 | A seek before the first read does not bypass the check | `::test_indexed_bzip2_seek_before_read_still_raises` |
 | Empty streams anywhere in the file are data in every accelerator and access mode; bytes after them report at the same offset | `tests/test_stream_trailing_data.py::test_empty_bzip2_streams_are_part_of_the_data`, `::test_bytes_after_empty_bzip2_streams_are_reported_past_them`, `::test_the_accelerator_scan_finds_empty_streams_across_its_reads` |
+| A stream after zero padding is read, and a cut or damaged stream after the data raises, in both modes | `tests/test_stream_trailing_data.py::test_a_stream_after_zero_padding_is_read_in_both_modes`, `::test_a_damaged_stream_after_the_last_raises_in_both_modes` |
+| Junk or a damaged stream before or between streams reads as with the accelerator off | `tests/test_accelerator_corruption.py::test_bzip2_accelerator_reads_stream_gaps_as_the_standard_library_does` |
+| A seek gets the verdict a read would, past padding or a skipped stream, into damage, and to the end | `tests/test_accelerator_corruption.py::test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it`, `::test_bzip2_accelerator_seeks_past_padding_as_off`, `::test_bzip2_accelerator_seeks_into_damage_as_off` |
+| A ZIP or 7z coder's single stream reads as with the accelerator off, except the four stretches §5 lists | `tests/test_accelerator_corruption.py::test_bzip2_accelerator_reads_a_container_coders_single_stream_as_off`, `::test_bzip2_accelerator_container_single_stream_differences` |
 | Accelerator errors become `CorruptionError`; intact files read clean | `::test_indexed_bzip2_corrupt_translates_to_corruption`, `::test_indexed_bzip2_intact_reads_clean` |
 | A cut or damaged stream delivers the same bytes and error with the accelerator off, `AUTO` and `ON`, for a cut in the first block, a later block, the end marker and a second stream; seeks after a takeover | `tests/test_accelerator_takeover.py::test_a_cut_bzip2_reads_as_it_does_with_the_accelerator_off`, `::test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off`, `::test_after_a_bzip2_takeover_seeks_back_and_forward_read_the_data` |
 | A resume from any block reproduces the data and never gives a verdict at the stream's end | `tests/test_bzip2_resume.py::test_every_block_resumes_to_the_stream_end`, `::test_the_bit_shifter_matches_a_whole_shift` |
