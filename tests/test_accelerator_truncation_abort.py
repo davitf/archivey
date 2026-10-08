@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import importlib.metadata
 import io
 import logging
 import os
@@ -59,10 +60,11 @@ _ON = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.ON)
 _OFF = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.OFF)
 _POSIX = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 
-# On Linux the child's abort names the truncation, so it maps to TruncatedError. Elsewhere
-# rapidgzip may raise instead of aborting, or abort without the message (Windows), and a
-# truncation it reports without its detail maps to CorruptionError (see
-# ``_translate_rapidgzip``).
+# On Linux the truncation detail survives, in the child's abort message or in the
+# exception rapidgzip raises instead ("Unexpected end of file", from a build that does
+# not abort), so it maps to TruncatedError either way. Elsewhere the detail can be lost
+# (Windows aborts without the message), and a truncation reported without it maps to
+# CorruptionError (see ``_translate_rapidgzip``).
 _TRUNCATION_ERRORS = (
     {"archivey.exceptions TruncatedError"}
     if sys.platform.startswith("linux")
@@ -128,21 +130,67 @@ print(outcome)
 """
 
 
+def _is_prebuilt_linux_wheel(wheel_metadata: str) -> bool:
+    """True if a ``WHEEL`` file's tags name a PyPI Linux wheel (manylinux or musllinux).
+
+    A build from source carries a plain ``linux_x86_64`` tag instead.
+    """
+    return any(
+        line.startswith("Tag:") and ("manylinux" in line or "musllinux" in line)
+        for line in wheel_metadata.splitlines()
+    )
+
+
+def _rapidgzip_is_prebuilt_linux_wheel() -> bool:
+    """True if the installed rapidgzip came from one of its prebuilt Linux wheels."""
+    wheel = importlib.metadata.distribution("rapidgzip").read_text("WHEEL")
+    if wheel is None:
+        raise AssertionError(
+            "rapidgzip has no WHEEL metadata, so the canary cannot tell which build "
+            "it is testing"
+        )
+    return _is_prebuilt_linux_wheel(wheel)
+
+
+@pytest.mark.parametrize(
+    ("tags", "prebuilt"),
+    [
+        (
+            "Tag: cp311-cp311-manylinux_2_27_x86_64\nTag: cp311-cp311-manylinux_2_28_x86_64",
+            True,
+        ),
+        ("Tag: cp312-cp312-musllinux_1_2_x86_64", True),
+        ("Tag: cp315-cp315-linux_x86_64", False),
+        ("Tag: cp314-cp314-macosx_11_0_arm64", False),
+    ],
+)
+def test_prebuilt_linux_wheel_tags(tags: str, prebuilt: bool) -> None:
+    wheel = f"Wheel-Version: 1.0\nGenerator: setuptools (71.1.0)\nRoot-Is-Purelib: false\n{tags}\n"
+    assert _is_prebuilt_linux_wheel(wheel) is prebuilt
+
+
 @pytest.mark.parametrize("cut", _CUTS)
 def test_raw_rapidgzip_aborts_on_truncated_gzip(tmp_path: Path, cut: int) -> None:
     """Canary: the upstream hazard the child process guards against still exists.
 
-    On Linux, rapidgzip 0.16 aborts on each of these inputs. The macOS build raises an
-    exception on them instead ("Unexpected end of file when getting block ..."), so there
-    the canary accepts an abort or a raise. On every platform, rapidgzip must not decode
-    the truncated input without an error. If a later rapidgzip stops aborting on Linux,
-    this test fails: the signal that rapidgzip may be safe to run in-process again.
+    rapidgzip 0.16's prebuilt Linux wheels (manylinux and musllinux) abort on each of
+    these inputs. The macOS build raises an exception on them instead ("Unexpected end
+    of file when getting block ..."), and so can a build from source: on CPython 3.15,
+    which has no wheel yet, the build on the GitHub runner raised and a local one
+    aborted. So only a prebuilt Linux wheel must abort; any other build may abort or
+    raise. Every build must not decode the truncated input without an error. If a later
+    Linux wheel stops aborting, this test fails: the signal that rapidgzip may be safe
+    to run in-process again.
     """
     path = _write(tmp_path, "cut.gz", gzip.compress(_payload())[:-cut])
     proc = _run(_RAW_RAPIDGZIP, str(path))
     if proc.returncode != 0:
         return  # aborted: the hazard is present
-    assert not sys.platform.startswith("linux"), ("no abort", proc.stdout, proc.stderr)
+    assert not _rapidgzip_is_prebuilt_linux_wheel(), (
+        "no abort",
+        proc.stdout,
+        proc.stderr,
+    )
     assert proc.stdout.strip().startswith("RAISED "), (proc.stdout, proc.stderr)
 
 
