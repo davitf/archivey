@@ -14,6 +14,35 @@
 
 ## Backends & format coverage
 
+- **Read ZIPs over 4 GiB that macOS wrote without ZIP64 (post-0.2.0)** — Finder's
+  Compress (and probably `ditto -c -k`) writes a classic ZIP past 4 GiB, so every offset
+  past 2³² is stored mod 2³². Archivey fails such members with "Bad magic number" or
+  "Overlapped entries", and 7-Zip cannot open the archive. Finder reads it back, so the bug
+  goes unnoticed on the Mac that made it. A July 2026 report says current macOS still does
+  this. The archives come from people sending large photo or video sets.
+  A real 4.9 GB, 2 122-member archive from a scan
+  ([`investigations/2026-10-backup-scan.md`](investigations/2026-10-backup-scan.md) §4)
+  is fully recovered by one rule: offsets must increase, so when a member's offset is
+  below the previous member's end, add 2³² until it is not. The central directory's own
+  offset in the end record follows the same rule. Each member there is under 4 GiB, so
+  the central directory's compressed sizes are exact. The markers to recognize the
+  producer are version made by Unix 2.1, the Info-ZIP `UX` extra (`0x5855`), and signed
+  32-bit data descriptors. Before applying the rule, check that a local header with the
+  central entry's name sits at the corrected offset, and keep the CRC check, so a crafted
+  archive cannot use the rule to point a member at other data. Record a diagnostic when
+  it fires.
+  **Open: a single member over 4 GiB.** Its sizes are then wrapped as well, in the central
+  directory and in the 32-bit data descriptor, so "previous member's end" is known only
+  mod 2³². Each candidate offset `end + k·2³²` has to be tried, and the one where a local
+  header with the next member's name appears is chosen; the member's own size is then
+  that distance minus its headers. The data stream also has to be read past its declared
+  size, which archivey refuses today (compare §3.5 of the investigation). Settle this
+  once a real archive with a member over 4 GiB has been made on a current Mac: check
+  with `zipinfo -v` whether it has a ZIP64 end record and how its entries' sizes and
+  offsets are stored. A test needs no 4 GiB file for the basic rule: a small archive
+  whose stored offsets are reduced by 2³² simulates it, built as in
+  `tests/test_audit_backup_scan.py`.
+
 - **Let the source boundary join a RAR set, as it joins numbered parts** — today a RAR set
   arrives at `RarReader` as volume 1's path, and the reader re-discovers the siblings and
   builds its own `ConcatenatedFile` (`_owned_concat`); an explicit path list is joined by
