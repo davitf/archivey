@@ -88,7 +88,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   `filter` runs before these checks, so it sees every member and can rename an unsafe
   one; the name it returns is the one checked. `archivey.sanitize_names` is a ready-made
   filter that renames instead of refusing: it drops roots, resolves or drops `..`,
-  removes bidi overrides, and adds `_` to Windows-reserved names and `:`.
+  removes bidi overrides, and adds `_` to Windows-reserved names and `:`. It rewrites a
+  symlink target's characters and segments the same way (`file:stream` →
+  `file_stream`), but keeps its root and its `..`, and leaves a drive or UNC target to
+  be refused. A target read only after your filter ran (see "Symlink targets stored as
+  member data" below) is rewritten too, because `extract_all` calls the filter again.
 - **Extraction-root overwrite:** a *file* member whose normalized name is `"."` or `""`
   is rejected (`FilterRejectionError`); only a directory member may name the extraction
   root. Prevents a corrupt archive from replacing the destination directory with a
@@ -102,6 +106,20 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   extracted. A link that now escapes is removed, and its result, which a progress
   callback may already have seen as `EXTRACTED`, becomes `BLOCKED`. A `..` in a target
   that stays inside the destination is not refused.
+- **Windows link targets:** a symlink or hardlink target with a drive letter
+  (`C:/Windows`, `C:x`) or a UNC root (`//server/share`) is refused at every policy and
+  on every OS. Windows would follow it out of the destination, and refusing it
+  everywhere means an archive extracts the same way wherever you extract it. (Under
+  `STANDARD` and `TRUSTED` a hardlink's rooted target is re-rooted first.) One
+  exception, for symlinks only: a symlink target that starts with a single `\` (`\foo`)
+  extracts on POSIX, where a backslash is an ordinary filename character; Windows
+  refuses it. A hardlink target `\x` names a member, and gets what a member `\x` gets:
+  `STRICT` refuses it on every OS, `STANDARD` and `TRUSTED` re-root it. A Windows
+  symlink or junction from a ZIP, 7z or RAR archive lists with `/` separators and
+  without the `\??\` prefix (`\??\C:\Windows` lists as `C:/Windows`, `..\up\x` as
+  `../up/x`). Under `STRICT` and `STANDARD`, a `:` or a Windows-reserved device name in
+  a target segment (`file:stream`, `sub/NUL`) is refused, as it is in a member name;
+  `TRUSTED` leaves those to the OS.
 - **Hardlink targets** are containment-checked and resolved positionally (an earlier
   same-named member), so a crafted duplicate-name archive cannot redirect a link.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never
@@ -449,11 +467,15 @@ that data, which can mean decompressing it and asking your password provider. By
 links or not; on 7z that decodes each link's folder up to its last link, once. For an
 untrusted archive you only mean to list, `read_link_targets=False` stops the reader
 reading any of them on its own: those links list with `link_target=None` and no
-diagnostic. Extraction still writes them. `extract_all` runs your `members` selector and
-`filter` on the link first, with `link_target=None`, and reads the target only for a link
-both accept; a target it cannot read fails that member under `on_error`. `open()` on a
-link reads its target to follow it. Either way the target is filled in place on the
-member you hold. Like `listing_limits`, the setting is fixed for the reader's lifetime.
+diagnostic. Extraction still writes them. When extraction reaches a link whose target is
+still unread, under `read_link_targets=False` or in a streaming pass, `extract_all` runs
+your `members` selector and `filter` on the link first, with `link_target=None`, and
+reads the target only for a link both accept; it then calls your `filter` again with the
+target, so a filter that rewrites targets, such as `sanitize_names`, sees it, and a
+filter can see such a link twice. A target it cannot read fails that member under
+`on_error`. `open()` on a link reads its target to follow it. Either way the target is
+filled in place on the member you hold. Like `listing_limits`, the setting is fixed for
+the reader's lifetime.
 
 That read can show the member is not a link at all. A member flagged as a Windows
 reparse point whose data is not a reparse buffer is a file, and listing would have

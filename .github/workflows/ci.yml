@@ -136,6 +136,11 @@ jobs:
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
     timeout-minutes: 20
+    # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
+    # release candidate, or a dependency with no wheel for it yet, is not a regression.
+    # A row without the key compares null to true, which GitHub evaluates as false, so
+    # every other row still fails the run.
+    continue-on-error: ${{ matrix.prerelease == true }}
     # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
     # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
     # with coverage, 1m52s with -n 4 and --no-cov, same results. The distro-unar probe and
@@ -163,6 +168,9 @@ jobs:
           # addopts already sets, only because an empty string is false in a GitHub
           # expression: `matrix.coverage && '' || '--no-cov'` would give --no-cov here too.
           - { os: ubuntu-latest, python-version: "3.14", install: all, coverage: true }
+          # CPython 3.15 prerelease (3.15.0rc3 as of 2026-10-08), allowed to fail. Drop
+          # `prerelease` and add the classifier once 3.15.0 final is out.
+          - { os: ubuntu-latest, python-version: "3.15", install: all, prerelease: true }
           # Minimum supported library versions (uv --resolution lowest-direct) on the min
           # Python: the [all] legs above run the *current* versions of every dependency, so
           # this leg pins each declared dep to its floor (pycdlib 1.16, zstandard 0.23, …) to
@@ -565,10 +573,23 @@ jobs:
   #     free-threaded 3.14 or newer"), so it cannot be installed. It IS in the extra
   #     behind a python_version >= '3.14' marker, where it keeps the GIL disabled.
   # Revisit both lists on 3.14t. See docs/support-matrix.md.
+  #
+  # 3.15t is the 3.15 prerelease, allowed to fail like the 3.15 test leg. No wheels for
+  # lz4 or cryptography on it yet (2026-10-08), so both build from source; cryptography
+  # keeps the GIL disabled there, as on 3.14t.
   free-threaded-concurrency:
-    name: free-threaded-concurrency / py3.13t / core + GIL-safe extras
+    name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # As in the test job: a row without `prerelease` (3.13t, a required check) can fail.
+    continue-on-error: ${{ matrix.prerelease == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.13t"
+          - python: "3.15t"
+            prerelease: true
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -576,12 +597,12 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - name: Install free-threaded CPython 3.13t
-        run: uv python install 3.13t
+      - name: Install free-threaded CPython ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
       - name: Sync zero-dep core
-        run: uv sync --python 3.13t --no-dev
+        run: uv sync --python ${{ matrix.python }} --no-dev
       - name: Assert zero-dependency core
-        run: uv run --python 3.13t --no-sync python tests/check_zero_dep_core.py
+        run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
       # The whole suite, not just the concurrent_reader subset: single-threaded
       # free-threaded breakage (dict/list races in shared state, C-API assumptions) shows
       # up here, and the marked subset is only ~46 of ~2000 tests.
@@ -593,27 +614,23 @@ jobs:
       # fired, which is why that method is set at all.
       - name: Run full suite (core-only)
         run: >
-          uv run --python 3.13t --no-sync
+          uv run --python ${{ matrix.python }} --no-sync
           --with pytest --with pytest-timeout
           pytest tests/ -q --timeout=120 -o addopts=
 
       - name: Sync GIL-safe extras
         # [free-threaded] IS this list, so the job now installs the documented extra
         # rather than a hand-maintained copy of it that could drift from the packaging.
-        run: uv sync --python 3.13t --no-dev --extra free-threaded
+        run: uv sync --python ${{ matrix.python }} --no-dev --extra free-threaded
       - name: Assert the GIL is still disabled with those extras
         # Fail loudly if a future release of one of these starts re-enabling the GIL:
         # the job would otherwise keep passing while testing nothing free-threaded.
-        # cryptography is deliberately absent here: its cffi dependency does not build on
-        # free-threaded 3.13, so [free-threaded] gates it behind python_version >= '3.14'.
-        run: >
-          uv run --python 3.13t --no-sync python -W ignore -c
-          "import sys, pycdlib, lz4.frame, tqdm, backports.zstd;
-          assert not sys._is_gil_enabled(), 'an extra re-enabled the GIL';
-          print('GIL still disabled with [free-threaded]')"
+        # The script reads the package list from the installed archivey's [free-threaded]
+        # metadata, so it follows the extra and its per-interpreter markers by itself.
+        run: uv run --python ${{ matrix.python }} --no-sync python tests/check_free_threaded_gil.py
       - name: Run full suite + concurrent_reader (GIL-safe extras)
         run: >
-          uv run --python 3.13t --no-sync
+          uv run --python ${{ matrix.python }} --no-sync
           --with pytest --with pytest-timeout
           pytest tests/ -q --timeout=120 -o addopts=
 

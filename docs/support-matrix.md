@@ -18,6 +18,10 @@ own), so it runs anywhere CPython does. What CI *proves* on every pull request:
 | macOS | 3.11, 3.14 | all extras |
 | Windows | 3.11, 3.14 | all extras |
 
+CI also runs the CPython 3.15 prerelease on Linux: all extras on 3.15, and core plus the
+GIL-safe extras on 3.15t. Those two jobs are allowed to fail, so a green check does not
+assert 3.15 support yet.
+
 The minimum-versions leg matters more than it looks: optional libraries change behaviour
 by their *version* as well as their presence, so the floor of each declared range is
 tested, not just the newest release.
@@ -55,7 +59,9 @@ with open_archive("photos.zip", concurrent_members=True) as reader:
 
 This is verified by a required CI job on **Linux, CPython 3.13t**, which runs the **whole
 test suite** (not just the concurrency tests) in two stages: the zero-dependency core,
-then the core plus the extras that keep the GIL disabled.
+then the core plus the extras that keep the GIL disabled. The same job also runs on the
+CPython 3.15t release candidate, where it is allowed to fail: it reports, but a green
+check does not depend on it.
 
 ### Which extras are free-threaded
 
@@ -64,15 +70,16 @@ free-thread support, importing it makes CPython **silently re-enable the GIL** �
 program keeps working, but you are no longer running free-threaded.
 
 **`pip install archivey[free-threaded]`** is the install line for these builds: it is
-exactly the measured subset that leaves the GIL disabled. Measured on CPython 3.13.7t:
+exactly the measured subset that leaves the GIL disabled. Measured on CPython 3.13.7t, and
+on 3.15.0rc3t for the last column:
 
-| Package | In `[free-threaded]`? | Free-threaded on 3.13t? |
-| --- | --- | --- |
-| `pycdlib` (ISO) | Yes | Yes — covered by CI |
-| `backports.zstd` | Yes | Yes — covered by CI |
-| `lz4` | Yes | Yes — covered by CI |
-| `tqdm` (CLI progress) | Yes | Yes — covered by CI |
-| `cryptography` | 3.14+ only | **Cannot install on 3.13t** — its `cffi` dependency rejects free-threaded 3.13 outright ("upgrade to free-threaded 3.14 or newer"). Installs on 3.14t and keeps the GIL disabled |
+| Package | In `[free-threaded]`? | Free-threaded on 3.13t? | On 3.15t? |
+| --- | --- | --- | --- |
+| `pycdlib` (ISO) | Yes | Yes — covered by CI | Yes — preview CI job |
+| `backports.zstd` | Below 3.14 only | Yes — covered by CI | Not installed: 3.14+ has `compression.zstd` |
+| `lz4` | Yes | Yes — covered by CI | Yes — preview CI job (built from source; no wheel yet) |
+| `tqdm` (CLI progress) | Yes | Yes — covered by CI | Yes — preview CI job |
+| `cryptography` | 3.14+ only | **Cannot install on 3.13t** — its `cffi` dependency rejects free-threaded 3.13 outright ("upgrade to free-threaded 3.14 or newer") | Yes — preview CI job (built from source; no wheel yet) |
 | `rapidgzip` (`[seekable]`) | No | **No** — import re-enables the GIL |
 | `pyppmd`, `inflate64`, `brotli` | No | **No** — import re-enables the GIL |
 
@@ -91,8 +98,10 @@ Two consequences worth stating plainly:
 
 None of this is Archivey's own code — it is the state of the wider wheel ecosystem on
 3.13t, and it should improve on 3.14t. The CI job asserts the GIL is *still* disabled
-after installing `[free-threaded]`, so if one of its packages regresses the job fails
-rather than quietly testing a GIL-ed interpreter.
+after installing `[free-threaded]`, so if one of its packages regresses on 3.13t the job
+fails rather than quietly testing a GIL-ed interpreter. On 3.15t the same assertion runs,
+but since that job is allowed to fail, a regression there shows only as a red preview
+job.
 
 ### What is *not* claimed
 

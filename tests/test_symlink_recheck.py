@@ -342,16 +342,14 @@ def test_a_revised_link_does_not_stop_the_run_under_on_error_stop(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize(
-    "prefix", ["", "/", "/."], ids=["plain", "double-slash", "dot"]
-)
+@pytest.mark.parametrize("prefix", ["", "/."], ids=["plain", "dot"])
 def test_an_absolute_target_inside_the_destination_is_rechecked(
     tmp_path: Path, streaming: bool, prefix: str
 ) -> None:
     # An absolute target that lands inside the destination passes when created;
     # its components are the destination's own paths, not the link directory's.
-    # POSIX leaves a leading ``//`` to the implementation, and Linux and macOS read
-    # it as ``/``.
+    # A leading ``//`` is not a case here: it is a UNC root on Windows, so it is
+    # refused before any of this on every OS (test_link_target_portability.py).
     dest_root = (tmp_path / "out").resolve()
     dest, results = _extract(
         tmp_path,
