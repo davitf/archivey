@@ -670,6 +670,12 @@ def test_bzip2_not_a_stream_raises_in_every_accelerator_mode(
     with open_codec_stream(Codec.BZIP2, source, config=config) as s:
         with pytest.raises(expected):
             s.read(1)
+        # A seek back to the start, where the failed read left the stream, restarts
+        # the decoder: the read raises the same verdict, not the spent decoder's
+        # ValueError (found by the accelerator fuzz targets).
+        assert s.seek(0) == 0
+        with pytest.raises(expected):
+            s.read(1)
 
 
 @pytest.mark.parametrize("source_kind", ["path", "bytesio"])
