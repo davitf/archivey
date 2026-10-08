@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import zlib
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -335,6 +336,40 @@ def _check_against_reference(what: str, got: bytes, ref: bytes, *, at: int = 0) 
         )
 
 
+def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
+    """The content of ``data`` as gzip members whose ISIZE may be wrong, or ``None`` when
+    it fails on anything else.
+
+    rapidgzip checks each member's CRC-32 but not its ISIZE, and the spec accepts that: a
+    wrong ISIZE over data the CRC-32 confirms is a malformed trailer, not damaged data.
+    The ISIZE backstop reads the last four bytes of the file, so zero padding can stand in
+    for the last member's ISIZE too. zlib checks the CRC-32 before the length, so a member
+    that fails only "incorrect length check" has its data confirmed. Fed a byte at a time
+    so the output before that error is kept and the member's end is known; only called on
+    the rare input where the two decodes disagree that way.
+    """
+    out = bytearray()
+    pos = 0
+    while pos < len(data):
+        if not any(data[pos:]):
+            break  # zero padding after the last member, as GzipFile skips it
+        decoder = zlib.decompressobj(31)
+        while True:
+            if pos >= len(data):
+                return None  # cut inside a member
+            try:
+                out += decoder.decompress(data[pos : pos + 1])
+            except zlib.error as exc:
+                if "incorrect length check" not in str(exc):
+                    return None
+                pos += 1
+                break
+            pos += 1
+            if decoder.eof:
+                break
+    return bytes(out)
+
+
 def make_accel_codec_one(codec: Codec, *, sized: bool) -> Callable[[bytes], None]:
     """Build a differential target for ``codec`` with its accelerator forced on.
 
@@ -361,6 +396,11 @@ def make_accel_codec_one(codec: Codec, *, sized: bool) -> Callable[[bytes], None
                     error is None
                     and ref_error is not None
                     and len(got) < _MAX_STREAM_READ_BYTES
+                    and not (
+                        codec is Codec.GZIP
+                        and "incorrect length check" in str(ref_error)
+                        and _gzip_ignoring_lengths(data) == got
+                    )
                 ):
                     raise AssertionError(
                         f"accelerated read ended cleanly after {len(got)} bytes; "

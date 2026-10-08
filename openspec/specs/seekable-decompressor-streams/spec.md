@@ -244,7 +244,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated standalone deflate through rapidgzip | Corruption in a block → `CorruptionError`; a clean mid-stream cut MAY return a short read undetected (no checksum backstop) |
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
-| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF` |
+| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`, except the zero-padding case `compressed-streams` accepts |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
 | Two zlib streams through rapidgzip, completing read or seek to the end | The first stream, and a trailing-data report, as with the accelerator `OFF` |
 | Valid empty gzip through rapidgzip | Succeeds with zero bytes |
