@@ -156,9 +156,11 @@ meets its end gives whatever seeks came before. On a mismatch the read SHALL be 
 standard library decoder, whose verdict it then gives (`TruncatedError` for a cut,
 `CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except where
 a further gzip member follows the first: then the trailer records only the last member, and
-the backstop SHALL stand down. A `1f 8b 08` in the file SHALL count as a further member only
-when zlib's gzip decoder accepts the header there and decodes from it without an error, to the
-member's verified end or through a bounded probe; three bytes that turn up by chance in a
+the backstop SHALL stand down. Before it compares the length or stands down, the backstop SHALL
+check that rapidgzip's decode reached the end of the source; a decode that stopped short of it
+SHALL be handed to the standard library decoder the same way. A `1f 8b 08` in the file SHALL
+count as a further member only when zlib's gzip decoder accepts the header there and decodes
+from it without an error, to the member's verified end or through a bounded probe; three bytes that turn up by chance in a
 compressed body, or a member the source ends inside, SHALL NOT silence the backstop.
 
 A **caller-owned** source driven through the accelerator SHALL NOT be closed by the accelerator
@@ -244,6 +246,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated standalone deflate through rapidgzip | Corruption in a block → `CorruptionError`; a clean mid-stream cut MAY return a short read undetected (no checksum backstop) |
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
+| A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
 | Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`, except the zero-padding case `compressed-streams` accepts |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
 | Two zlib streams through rapidgzip, completing read or seek to the end | The first stream, and a trailing-data report, as with the accelerator `OFF` |
