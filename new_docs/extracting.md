@@ -11,8 +11,8 @@ with archivey.open_archive("download.zip") as archive:
 outside `out/`, and an archive that expands far beyond its size is stopped. [What each policy does
 with unusual members](#what-each-policy-does-with-unusual-members) has the details.
 
-To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in
-order, so it needs nothing more.
+To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in order,
+so it needs no other option.
 
 Its `members` argument picks what to extract. It takes names,
 [`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing, or a mix of both:
@@ -45,6 +45,7 @@ with archivey.open_archive("download.zip") as archive:
         abort_on=[],         # events that stop the whole extraction at once
         on_progress=None,    # called as files are written
         limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
+        dry_run=False,       # run it without keeping anything
     )
 ```
 
@@ -95,6 +96,10 @@ well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, 
 the bytes and members done so far, and the expected totals when the archive records them. It's
 meant for progress bars.
 
+`dry_run=True` runs the same extraction into a temporary folder, which is deleted before the call
+returns. Nothing is written to `out/`, and the report shows what would have happened to each member,
+with the path it would have been written to.
+
 ## What each policy does with unusual members
 
 Some members are refused under every policy, and others depend on it:
@@ -113,8 +118,8 @@ Some members are refused under every policy, and others depend on it:
 | A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
 
 `"strict"` and `"standard"` treat `README` and `readme` as the same file on every system, since
-they are the same file on macOS and Windows. An archive that writes more in total than `limits`
-allows stops the whole extraction, whatever the policy.
+macOS and Windows can't tell them apart by default. An archive that writes more in total than
+`limits` allows stops the whole extraction, whatever the policy.
 
 A `filter` sees each member before these checks run, so it can rename one they would refuse,
 such as `../evil.txt`, and that member is then written under its new name. Device files are
