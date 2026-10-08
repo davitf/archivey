@@ -1473,12 +1473,19 @@ class _GzipTruncationCheckStream(DelegatingStream):
        truncation is loud and any recoverable prefix is streamed (valid empty gzip still
        succeeds with zero bytes). Switching the inner keeps ``tell``/``seek``/`seekable`
        honest (ADR 0014: content faults raise from reads, never ``close()``).
-    2. On EOF after **non-empty** delivery — compare decompressed length (mod 2**32) to
-       the gzip ISIZE trailer (single-member). On a mismatch, a file with a further
-       member that zlib confirms (:func:`gzip_has_additional_member`) is taken as
-       multi-member and nothing is raised: the trailer is only the last member's size
-       (a per-member ISIZE sum is deferred). Any other mismatch hands the read to the
-       standard library.
+    2. On EOF after **non-empty** delivery — check that rapidgzip decoded to the end of
+       the source (its compressed position), then compare decompressed length (mod
+       2**32) to the gzip ISIZE trailer (single-member). On a mismatch, a file with a
+       further member that zlib confirms (:func:`gzip_has_additional_member`) is taken
+       as multi-member and nothing is raised: the trailer is only the last member's
+       size (a per-member ISIZE sum is deferred). A decode that stopped short of the
+       end, or any other mismatch, hands the read to the standard library.
+
+       The compressed position is what tells a cut member followed by a complete one
+       from a multi-member file: the trailer is then the last member's, and the further
+       member is real, but rapidgzip stopped at the cut and never decoded it (found by
+       the accelerator fuzz targets). It also keeps a forged ISIZE that matches the
+       bytes delivered before a soft end from passing.
 
     ISIZE and the source length are **captured up front** (``isize`` / ``source_len``) so no
     per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ a
@@ -1601,11 +1608,13 @@ class _GzipTruncationCheckStream(DelegatingStream):
             # so never invent a truncation we can't prove.
             return b""
         # Below 18 bytes no gzip member is complete, so the delivered bytes are a
-        # truncation; otherwise an ISIZE mismatch is one, unless this is a concatenated
-        # multi-member gzip (then the trailer is only the last member's size). A
-        # confirmed further member => do not raise (a cut or damaged multi-member file
-        # can pass; the per-member ISIZE sum is deferred).
-        if self._source_len >= 18:
+        # truncation. So is a decode that stopped short of the end of the source: the
+        # trailer there is not this output's ISIZE. Otherwise an ISIZE mismatch is one,
+        # unless this is a concatenated multi-member gzip (then the trailer is only the
+        # last member's size). A confirmed further member => do not raise (a cut whose
+        # decode still reaches the end, with zlib confirming a later member, can pass;
+        # the per-member ISIZE sum is deferred).
+        if self._source_len >= 18 and self._decoded_to_the_end():
             if self._isize is None:
                 return b""  # length known but ISIZE unread (should not happen here)
             if self._pos % (1 << 32) == self._isize:
@@ -1618,6 +1627,15 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # reads: it carries on from here, and raises the truncation or reports the bytes.
         self._takeover.switch_to_stdlib()
         return self._inner.read(size)
+
+    def _decoded_to_the_end(self) -> bool:
+        """Whether rapidgzip's decode reached the end of the source; ``True`` when it
+        cannot say, which leaves the checks after it as they were."""
+        position = getattr(self._takeover.accelerator, "compressed_position", None)
+        if position is None or self._source_len is None:
+            return True
+        end = position()
+        return end is None or end >= self._source_len
 
     def _has_additional_gzip_member(self) -> bool:
         # Closed via the context manager: a real fd close for a path source, a no-op
