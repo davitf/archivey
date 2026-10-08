@@ -96,9 +96,11 @@ well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, 
 the bytes and members done so far, and the expected totals when the archive records them. It's
 meant for progress bars.
 
-`dry_run=True` runs the same extraction into a temporary folder, which is deleted before the call
-returns. Nothing is written to `out/`, and the report shows what would have happened to each member,
-with the path it would have been written to.
+`dry_run=True` runs the same extraction into an empty temporary folder, which is deleted before the
+call returns. Every member is decompressed and checked, but the files it creates stay empty, and
+nothing is written to `out/`. The report shows what extracting into an empty `out/` would do, with
+the path each member would be written to. Files already in `out/` aren't taken into account, so a
+member that would clash with one of them still shows as extracted.
 
 ## What each policy does with unusual members
 
