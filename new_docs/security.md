@@ -36,9 +36,12 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB by
   default) and in a child process above it. Under a tight memory limit, such as a container's, the
   in-process decoder can crash instead of raising an error.
-- **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken
-  for a damaged archive. `DecoderLimits` caps the memory an archive can ask a decoder for, 2 GiB by
-  default. Lower it if your process has less.
+- **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
+  a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
+  default. Everything else needs memory on top of that: the rest of your program, archivey itself,
+  other archives open at the same time, and other members read at once, each with its own decoder.
+  If memory is tight, such as in a container or on a server that opens many archives, a lower limit
+  makes an archive that asks for too much raise `ResourceLimitError` instead.
 - **Nothing limits how long an operation takes.** The limits cap bytes, entries and
   password-hashing work, not time. Raising an exception from `on_progress` stops an extraction, but
   the callback only runs between chunks of written data, so a decompressor that's slow to produce
@@ -58,9 +61,12 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
-- **Accelerators are on by default when installed.** With the `seekable` extra, archivey uses
-  rapidgzip for large gzip and DEFLATE data, and its bzip2 decoder, when you ask for seekable
-  streams. Archivey's fuzz testing doesn't cover them yet, and the bzip2 one runs in your process.
+- **Accelerators are on by default for seekable streams.** If you open an archive with
+  `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data, and
+  DEFLATE data over 16 MiB compressed, through rapidgzip. DEFLATE is the compression in gzip files
+  and in most ZIP members. rapidgzip marks places in the stream it can restart from as it reads, so
+  a seek jumps to the nearest one instead of decompressing from the start. Archivey's fuzz testing
+  doesn't cover them yet, and the bzip2 one runs in your process.
   To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
@@ -110,10 +116,11 @@ eight such members reach the default. Each password you try costs the same work 
 
 Going over a limit raises `ResourceLimitError`.
 
-For archives from strangers, keep the default `policy="strict"`, which the
-[policy table](extracting.md#what-each-policy-does-with-unusual-members) compares with the others.
-Extract into an empty folder that nothing else uses, and check what came out before moving it
-anywhere else.
+For archives from strangers, the default `policy="strict"` refuses or rewrites every kind of unsafe
+member archivey knows of. The [policy
+table](extracting.md#what-each-policy-does-with-unusual-members) on the Extracting page shows what
+each policy does. Untrusted archives should be extracted into an empty folder that nothing else
+uses, so you can check what came out before moving it anywhere else.
 
 ## Reporting a vulnerability
 

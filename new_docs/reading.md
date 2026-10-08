@@ -44,12 +44,13 @@ that can seek.
 Some code needs to seek inside a member: a library that reads a ZIP stored inside the archive, a
 Parquet reader, an image decoder. By default a member stream only moves forward, and `seek` raises.
 With `seekable_members=True`, streams from `open` can seek. Moving backwards in compressed data can
-mean decompressing the member again from its start. If you install the `seekable` extra, large gzip,
-DEFLATE and bzip2 data goes through an [accelerator](security.md#where-the-guarantees-stop) that
-marks places it can restart from as it reads, and every seek resumes from the nearest marked place
-before its target. Reading a member from start to end lets archivey notice if its data is damaged,
-but after a seek, damage may go unnoticed. If you'll seek a lot, extracting the member to a file
-first is often faster.
+mean decompressing the member again from its start. If you install the `seekable` extra, archivey
+reads bzip2 data, and large DEFLATE data, through an
+[accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
+reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
+compression in gzip files and in most ZIP members. Reading a member from start to end lets archivey
+notice if its data is damaged, but after a seek, damage may go unnoticed. If you'll seek a lot,
+extracting the member to a file first is often faster.
 
 ## Several members at once
 
