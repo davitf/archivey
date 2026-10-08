@@ -1,10 +1,10 @@
 # Choosing how to read
 
-With no options, `open_archive` lets you read any member at any time, one at a time. That
-suits most programs. Three options change it for the cases where the default is slow or not
-enough: `streaming`, `seekable_members` and `concurrent_members`. Opening an archive also applies
-a few limits, such as how many members it may list, which
-[Archives you trust](extracting.md#archives-you-trust) explains how to raise.
+With no options, `open_archive` lets you read members in any order, with one member open at a time.
+That suits most programs. Three options change it for the cases where the default is slow or not
+enough: `streaming`, `seekable_members` and `concurrent_members`. Opening an archive also applies a
+few limits, such as how many members it may list, which [Archives you
+trust](extracting.md#archives-you-trust) explains how to raise.
 
 ## Solid archives
 
@@ -35,8 +35,9 @@ even on an ordinary file. You get one pass, through `stream_members` or `extract
 is used up even if you leave the loop early.
 
 A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
-compressed files can come from one. ZIP, 7z, RAR and ISO keep their index at the end of the
-file, or jump around in it, so they need a file or another source that can seek.
+compressed files can come from one. ZIP and 7z keep their index at the end of the file, and reading
+a RAR or an ISO means jumping between places in the file, so all four need a file or another source
+that can seek.
 
 ## Seeking inside a member
 
@@ -65,8 +66,9 @@ source jump back and forth, and each jump throws away what it had buffered.
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off
-out-of-order reads. Each of these can be slow in some cases, or let damaged data go unnoticed,
-in ways the code doesn't show. With these defaults, the risky pattern raises instead of running.
+out-of-order reads. Each of these can be slow in some cases, or let damaged data go unnoticed, and
+nothing in the calling code shows it. With these defaults, the risky pattern raises instead of
+running.
 
 A ZIP can be read out of order at no cost, but a `.tar.gz` can't. If archivey raised only on the
 `.tar.gz`, code tested on ZIPs would first fail in production. So archivey raises on every
