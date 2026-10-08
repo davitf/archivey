@@ -424,6 +424,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs._Bzip2EmptyStreamCheck,
         codecs._StdlibOnAcceleratorError,
         codecs._StdlibSeekContract,
+        codecs._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -608,6 +609,7 @@ def test_delegating_stream_close_inventory() -> None:
         codecs._Bzip2EmptyStreamCheck,
         codecs._StdlibOnAcceleratorError,
         codecs._StdlibSeekContract,
+        codecs._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,

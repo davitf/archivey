@@ -14,17 +14,6 @@
 
 ## Backends & format coverage
 
-- **Slice a stored RAR member that carries its own solid flag** — `rar -s -ms<ext>` stores
-  a member inside a solid archive and sets its `file_solid` flag, yet its bytes are
-  plaintext at its data offset. `_is_directly_sliceable` sends it to the program anyway
-  (a rule shared by every `rar_decompressor`), while `_ensure_link_target` already reads a
-  RAR4 symlink target from such bytes. Under `rar_decompressor="none"` this is the
-  difference between reading the member and refusing it
-  (`tests/fixtures/rar/stored_solid_member__.rar`, `second.bin`). Widening needs its own
-  change: check `unrar`'s output against the slice for these members, and that the
-  dictionary-cost accounting does not assume such members are decoded. Raised by the
-  review of PR 624.
-
 - **Let the source boundary join a RAR set, as it joins numbered parts** — today a RAR set
   arrives at `RarReader` as volume 1's path, and the reader re-discovers the siblings and
   builds its own `ConcatenatedFile` (`_owned_concat`); an explicit path list is joined by

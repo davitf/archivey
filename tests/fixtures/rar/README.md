@@ -7,17 +7,22 @@ uv run python scripts/gen_rar_fixtures.py
 ```
 
 That script shells out to RARLAB `rar` (and, when the system `rar` is 7.x and
-lacks `-ma4`, downloads a pinned RAR 6.24 linux-x64 binary into the user cache
-solely to write RAR4 fixtures). Re-run the script after changing member layouts
-or compression flags, then commit the updated binaries.
+lacks `-ma4`, downloads Ubuntu's rar 6.23 package, checks its pinned SHA-256 and
+unpacks the binary into the user cache, solely to write RAR4 fixtures). Re-run the
+script after changing member layouts or compression flags, then commit the updated
+binaries. To add new fixtures without rewriting the others, pass
+`--only 'name*.rar'`.
 
 Multi-volume fixtures:
 
 | Files | Notes |
 | --- | --- |
 | `tinyvol.part1.rar` / `tinyvol.part2.rar` | RAR5 `-v` / `.partN.rar` naming |
+| `tinyvol_m3.part1.rar` / `tinyvol_m3.part2.rar` | RAR5 `-m3 -v900b`; a compressed member split across volumes, which still needs unrar (a stored one is joined natively) |
 | `tinyvol_hp.part1.rar` … `tinyvol_hp.part4.rar` | RAR5 `-m0 -v900b -hpheader_password`; every part repeats one encryption record, so the header key is derived once per set |
 | `tinyvol_rnn.rar` / `tinyvol_rnn.r00` | RAR4 `-ma4 -vn` classic `.rar` + `.r00` naming |
+| `tinyvol_cut.part1.rar` … `tinyvol_cut.part3.rar` | RAR5 `-m0 -v1500b`, members `a.txt` … `d.txt`; the fourth volume was deleted, so `d.txt` runs into a missing volume |
+| `tinyvol_cut_solid.part01.rar` … `tinyvol_cut_solid.part04.rar` | RAR5 `-s -m3 -v900b`, same members; the last volume was deleted |
 
 File-version (`-ver`) fixtures:
 
@@ -36,6 +41,9 @@ Encrypted / hash fixtures of note:
 | `encryption_blake2sp.rar` | RAR5 `-m0 -htb -ppassword`; HASHMAC tweaked BLAKE2sp |
 | `blake2sp.rar` | RAR5 `-m0 -htb`; plaintext BLAKE2sp (no encryption) |
 | `encryption_stored__.rar` | RAR5 `-m0 -ppassword`; stored *and* encrypted with the default CRC32, so the digest sits in the fixed FILE header and survives damage to the extra area |
+| `encryption_large__rar4.rar` | RAR4 `-ma4 -m3 -ppassword`; two 100 000-byte members, past the 64 KiB password-confirm prefix. Some wrong passwords (`wrong3`) decode the whole member with `unrar`, so only the CRC rejects them |
+| `encryption_large_solid__rar4.rar` | Same members, `-s`: one password for the solid stream |
+| `encryption_large_stored__rar4.rar` | RAR4 `-ma4 -m0 -ppassword`; one stored 100 000-byte member, which every wrong password decrypts to full length |
 
 ## Tests that still need the `rar` writer at runtime
 

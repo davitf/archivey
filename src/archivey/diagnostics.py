@@ -221,10 +221,17 @@ class ScanRaceContext(_JsonSafeContext):
 class ArchiveEofContext(_JsonSafeContext):
     """The end of the archive did not look the way the format says it should.
 
-    Four checks share this shape, told apart by ``expected_marker``:
+    Five checks share this shape, told apart by ``expected_marker``:
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
-      missing, short, or a non-null block.
+      missing (``observed_kind="absent"``), short (``"short"``), or a non-null block
+      where a header or the trailer belongs (``"nonzero"``). ``"nonzero"`` is always
+      escalated to ``CorruptionError``: tarfile rejected a header and the listing is
+      shortened, or the file has no member and is not shown to be a TAR archive.
+    - ``"second_zero_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the first TAR trailer
+      block is zero and ends the members, and the second is a full non-null block.
+      Every member is listed; only the marker is damaged. ``observed_kind`` is
+      ``"nonzero"`` and both byte counts are 512.
     - ``"end_of_archive_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a RAR5 archive, or
       a volume of a RAR5 set, ends without the end-of-archive block its writers always
       put last, so the file was most likely cut at a header boundary. ``format`` is
@@ -235,9 +242,10 @@ class ArchiveEofContext(_JsonSafeContext):
       block starts in its volume, and ``expected_bytes`` is 0. That offset counts
       from the volume's first byte, unlike member offsets, which count across the
       whole set; the message names the volume.
-    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — the trailer was complete but a
-      non-zero byte follows it within the first MiB past it, so the file carries
-      something the listing did not account for. ``observed_bytes`` is that byte's
+    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the TAR
+      trailer within the first MiB past it, so the file carries something the listing
+      did not account for. The trailer was complete, or its second block was damaged
+      and reported as ``"second_zero_block"`` first. ``observed_bytes`` is that byte's
       offset past the trailer.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
@@ -259,11 +267,11 @@ class MemberTimestampContext(_JsonSafeContext):
     """A stored timestamp field was present but unusable / out of range.
 
     ``source`` names the representation the value came from, such as ``"dos"``,
-    ``"ntfs"``, ``"tar"`` or ISO's ``"directory_record"``. ``field`` names the timestamp,
-    and its vocabulary differs by backend: RAR, 7z and ISO give the member attribute
-    (``"modified"``, ``"accessed"``, ``"created"``, ``"ctime"``), while ZIP and TAR give
-    the stored field's own name (ZIP ``"date_time"``, ``"mtime"``, ``"atime"``,
-    ``"ctime"``; TAR ``"mtime"``). ``value_repr`` is the stored value as text.
+    ``"ntfs"``, ``"tar"`` or ISO's ``"directory_record"``. ``field`` names the
+    ``ArchiveMember`` attribute the value would have filled (``"modified"``,
+    ``"accessed"``, ``"created"`` or ``"ctime"``) in every format; the stored field's
+    own name, such as ZIP's ``date_time`` or a PAX ``atime`` record, is in the message.
+    ``value_repr`` is the stored value as text.
     """
 
     kind: Literal["member_timestamp"] = "member_timestamp"
@@ -544,7 +552,9 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
             ),
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: (
                 "expected_marker",
-                frozenset({"two_zero_blocks", "end_of_archive_block"}),
+                frozenset(
+                    {"two_zero_blocks", "second_zero_block", "end_of_archive_block"}
+                ),
             ),
             DiagnosticCode.ARCHIVE_TRAILING_DATA: (
                 "expected_marker",

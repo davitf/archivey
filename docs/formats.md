@@ -164,6 +164,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       not raised. When a provably complete listing matters (inventory/dedupe sweeps), set
       that code to `RAISE` in the diagnostic policy (`DiagnosticPolicy.strict()` does) to
       turn the warning into `DiagnosticRaisedError`.
+    - A trailer whose **first block is zero and whose second is not** is reported the
+      same way, `ARCHIVE_EOF_MARKER_MISSING` with
+      `context.expected_marker="second_zero_block"`. The zero block ends the members,
+      so every member is listed and reads normally, as GNU tar ("A lone zero block")
+      and 7-Zip list them; `strict()` raises it. The trailing-data check below then
+      runs from the block after the damaged one. This needs at least one member before
+      the zero block: a file that is only a zero block and then other bytes is not shown
+      to be a TAR archive, and it raises `CorruptionError`.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes
@@ -254,10 +262,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
   so at open. `"unrar"` and `"unar"` use only that program. `"none"` runs no program
   at all, for when you don't want `unrar` or `unar` run on your archives: listing still
-  works, and so does reading a stored member that is not encrypted, not split across
-  volumes and not part of a solid stream (the first member of a solid archive is
-  not). Every other read raises `UnsupportedFeatureError`
-  before anything runs, and `ar.cost.notes` says so at open.
+  works, and so does reading a stored (uncompressed) member that is not encrypted,
+  also when it is split across volumes or sits in a solid archive. A compressed or
+  encrypted member, or a split one with a volume missing, raises
+  `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so at open.
   `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
   easy to install on macOS, but it reads less than `unrar`. Archivey runs each `unar`
   once on a small RAR5 archive and does not use one that decodes it wrong, as the
@@ -323,9 +331,26 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   block's next-volume flag is not trusted, so a volume set goes on to the next volume
   only when a member's own header says its data continues there. With encrypted headers
   this needs the password proven, as above; before that it is `EncryptionError`.
+- **A volume set with a volume missing lists what it has.** Whether the missing volume
+  is the first, one in the middle or the last, the members whose headers are in the
+  volumes present are listed, opened from any of them, and those wholly inside them read
+  normally. A member with data in the missing volume raises `TruncatedError` when read,
+  and so does every member past the gap in a solid archive. The listing then ends with
+  `TruncatedError` naming the missing volumes — the same as a cut file, and what
+  `unrar t` does. A later volume opened on its own by path is read the same way, as a
+  set missing the rest; opened as a stream, with no name to number it, it is still
+  refused with "Need first volume".
+- **A member compressed with a version RAR does not know is unsupported.** A RAR5 member
+  whose compression version is newer than RAR 7's, or a RAR 1.5-4 member whose unpack
+  version is outside 13-29, lists normally and raises `UnsupportedFeatureError` when
+  read, where `unrar` says "Unknown method". A stored member reads whatever it declares.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
-  list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
-  is given the first candidate, so put the right password first for those.
+  list is tried in order and the matching password is used. RAR3/4 records none, so with
+  more than one password archivey judges each by decoding the member: up to 64 KiB of
+  `unrar` output, which a wrong password usually fails, and, when several passwords get
+  that far, the whole member against its CRC. A stored member is checked by decrypting it
+  in archivey and comparing its CRC. The order of the list does not matter, but every
+  wrong password before the right one costs a decode, so put the likely one first.
 - **Partial reads of RAR3/4 encrypted data** emit `ENCRYPTED_MEMBER_UNVERIFIED`. With no
   password check, only the member's CRC at EOF catches a wrong password, and `unrar`
   can return the wrong key's bytes before that: a stored member always, a compressed
@@ -406,7 +431,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR
   opened from a `BytesIO` or a file object is copied whole to a temp file (a volume set,
   to a temp directory) on the first member read that needs `unrar`, and removed on close.
-  Stored members of a non-solid archive are read in place and need no copy. The copy is
+  Stored, unencrypted members are read in place and need no copy. The copy is
   bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
   over it, the read raises `ResourceLimitError` before anything is written. Open from a
   path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).

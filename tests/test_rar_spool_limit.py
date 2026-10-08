@@ -10,6 +10,7 @@ bounded the same way.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import shutil
 from collections.abc import Callable
@@ -30,8 +31,12 @@ from tests.conftest import requires_binary
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 # Solid, so every member goes through unrar and needs the copy.
 _SOLID = _FIXTURES / "basic_solid__.rar"
-_VOLUMES = [_FIXTURES / "tinyvol.part1.rar", _FIXTURES / "tinyvol.part2.rar"]
-_VOLUME_PAYLOAD = b"ABCDEFGH" * 200
+# Compressed, so unrar reads it and needs the volumes on disk; a stored member split
+# across volumes is joined natively and copies nothing.
+_VOLUMES = [_FIXTURES / "tinyvol_m3.part1.rar", _FIXTURES / "tinyvol_m3.part2.rar"]
+_VOLUME_PAYLOAD = b"".join(
+    hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(50)
+)
 
 
 def _config(max_bytes: int | None) -> ArchiveyConfig:

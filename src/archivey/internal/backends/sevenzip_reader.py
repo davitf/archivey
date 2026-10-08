@@ -101,6 +101,7 @@ from archivey.internal.password_confirm import (
     REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
+    attempt_with_confirm,
     plan_password_confirm,
     run_password_confirm_plan,
 )
@@ -322,8 +323,9 @@ class SevenZipReader(BaseArchiveReader):
         # A symlink's target is its member data, usually mid-way through a solid
         # folder, so link bytes are read ahead of resolution, a folder at a time
         # (``format-7z``, "A 7z folder is decoded at most once for its link targets"):
-        # by listing's folder sweep, or by a streaming pass as its cursor reaches the
-        # link. Keyed by member id. A value that is an exception is the failed read,
+        # by listing's folder sweep, or by a pass in either mode as its cursor reaches
+        # the link; an abandoned pass leaves its entries for a later listing or pass.
+        # Keyed by member id. A value that is an exception is the failed read,
         # raised again when the link resolves, so it gets the handling a direct read
         # would have got.
         self._link_data: dict[int, bytes | ArchiveyError] = {}
@@ -564,9 +566,11 @@ class SevenZipReader(BaseArchiveReader):
 
         def _cleanup() -> None:
             self._pass_link = None
-            # A finished pass has applied what it captured; an abandoned one never will,
-            # and a later read of those links opens them directly.
-            self._link_data.clear()
+            # Captured link bytes are kept even when the pass is abandoned: the archive's
+            # bytes are fixed, and a later listing or pass resolves from them instead of
+            # decoding the folder again. What stays is one entry per link the pass
+            # walked, each bounded by the target cap, released as each link resolves
+            # (or when the reader closes).
             folder.close()
 
         yield from self._drive_pass_streams(
@@ -595,11 +599,11 @@ class SevenZipReader(BaseArchiveReader):
 
         The pass yields no stream for it, and its folder decoder only moves when a later
         member is read, so without this the bytes go by unread and EOF finalization
-        would decode the folder again to get them. A streaming pass under
-        ``read_link_targets`` reads them now, through its own decoder, and keeps them
-        for finalization. Otherwise the pass only offers its decoder for this one
-        member, which is how ``extract_all`` reads an accepted link without a second
-        decode.
+        would decode the folder again to get them. A pass under ``read_link_targets``
+        (streaming or random access; both finalize links at the end) reads them now,
+        through its own decoder, and keeps them for finalization. Otherwise the pass
+        only offers its decoder for this one member, which is how ``extract_all``
+        reads an accepted link without a second decode.
         """
 
         def opener() -> ArchiveStream:
@@ -608,8 +612,7 @@ class SevenZipReader(BaseArchiveReader):
             )
 
         if (
-            self._streaming
-            and self._config.read_link_targets
+            self._config.read_link_targets
             and member.link_target is None
             and not member._link_target_resolved
         ):
@@ -689,7 +692,7 @@ class SevenZipReader(BaseArchiveReader):
     ) -> ContextManager[ReadableStream]:
         """Where ``_ensure_link_target`` reads ``member``'s bytes from.
 
-        Bytes read ahead (a listing sweep, a streaming pass) come first; then the data
+        Bytes read ahead (a listing sweep, a pass in either mode) come first; then the data
         pass sitting on this member, through its own decoder; then a direct open, which
         decodes the folder from its start (``open()`` following a link, a listing of
         one link).
@@ -748,9 +751,14 @@ class SevenZipReader(BaseArchiveReader):
             )
             if issue is not None:
                 ts_issues.append(issue)
+        # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
+        # "Created" from st_ctime, which ``created`` never holds.
+        written_on_unix = _written_on_unix(attrs)
         if record.creation_time:
             created, issue = filetime_to_datetime(
-                record.creation_time, presented_name, field="created"
+                record.creation_time,
+                presented_name,
+                field="ctime" if written_on_unix else "created",
             )
             if issue is not None:
                 ts_issues.append(issue)
@@ -760,9 +768,7 @@ class SevenZipReader(BaseArchiveReader):
             else MemberExtra()
         )
         ctime = None
-        if created is not None and _written_on_unix(attrs):
-            # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
-            # "Created" from st_ctime, which ``created`` never holds.
+        if created is not None and written_on_unix:
             created, ctime = None, created
         member = ArchiveMember(
             type=member_type,
@@ -932,36 +938,32 @@ class SevenZipReader(BaseArchiveReader):
             return self._folder_passwords[folder_index]
 
         plan = self._folder_password_confirm_plan(folder_index)
+        # The plan that walks to the folder's end anchor whatever the codec: it settles
+        # a candidate the bounded plan could only call inconclusive, when several
+        # candidates survive the bounded one.
+        full_plan = self._folder_password_confirm_plan(folder_index, full=True)
 
-        # The two callbacks below run once per candidate password, inside
-        # ``_PasswordCandidates.attempt``: the first judges the candidate against the
-        # folder (raising the wrong-password error to move on), the second decides
-        # whether the accepted candidate joins the known-good passwords that later
-        # folders try first.
-        def confirm_candidate_password(
-            candidate: bytes,
-        ) -> tuple[bytes, PasswordConfirmVerdict]:
+        # The callbacks below run once per candidate password, inside
+        # ``attempt_with_confirm``: each judges the candidate against the folder,
+        # raising the wrong-password error to move on.
+        def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
             return kdf_password, self._confirm_folder_password(
                 folder_index, kdf_password, plan
             )
 
-        def promote_candidate_password(
-            accepted: tuple[bytes, PasswordConfirmVerdict],
-        ) -> bool:
-            # A candidate password that survived without a checksum match is accepted
-            # for this folder but kept out of known-good when another candidate could
-            # still be the right one (archive-reading, "Confirm candidates when a weak
-            # check permits retries").
-            _, verdict = accepted
-            return (
-                verdict is PasswordConfirmVerdict.CONFIRMED
-                or not self._passwords.is_ambiguous()
+        def full_check(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+            kdf_password = _password_to_kdf_bytes(candidate)
+            return kdf_password, self._confirm_folder_password(
+                folder_index, kdf_password, full_plan
             )
 
         try:
-            password, verdict = self._passwords.attempt(
-                member, confirm_candidate_password, promote=promote_candidate_password
+            password, verdict = attempt_with_confirm(
+                self._passwords,
+                member,
+                probe,
+                None if full_plan == plan else full_check,
             )
         except _PasswordCandidatesExhausted as exc:
             raise EncryptionError(raw_message_of(exc)) from exc
@@ -970,14 +972,17 @@ class SevenZipReader(BaseArchiveReader):
         self._folder_passwords[folder_index] = password
         return password
 
-    def _folder_password_confirm_plan(self, folder_index: int) -> PasswordConfirmPlan:
+    def _folder_password_confirm_plan(
+        self, folder_index: int, *, full: bool = False
+    ) -> PasswordConfirmPlan:
         """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
 
         7z AES has no password check value, so rung 1 is empty here and the ladder
         starts at the integrity anchor: member CRCs in substream order, then the folder
         digest. The earliest anchor covering at least 4 bytes wins; one past
         ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
-        random input.
+        random input, or when ``full`` asks for the walk (several candidates survived
+        the bounded plan, and only the anchor can tell them apart).
         """
         folder = self._archive.folders[folder_index]
         substreams: list[tuple[int, int | None]] = []
@@ -1010,7 +1015,7 @@ class SevenZipReader(BaseArchiveReader):
             substreams,
             tail_crc,
             budget=PASSWORD_CONFIRM_PREFIX_BYTES,
-            codec_rejects=_folder_codec_rejects(folder),
+            codec_rejects=not full and _folder_codec_rejects(folder),
         )
 
     def _confirm_folder_password(

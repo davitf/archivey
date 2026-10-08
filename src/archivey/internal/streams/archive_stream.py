@@ -37,6 +37,8 @@ from archivey.internal.logs import streams as logger
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
+    check_read_size,
+    check_seek_args,
     is_seekable,
     readinto_via_read,
 )
@@ -458,9 +460,20 @@ class ArchiveStream(ReadOnlyIOStream):
         raise e
 
     def read(self, n: int | None = -1, /) -> bytes:
-        # ``None`` reads to EOF, as on any ``io`` stream.
-        if n is None:
-            n = -1
+        """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
+
+        A fused verifier with a declared size caps each read at the bytes left while it
+        is still checking, until it concludes or abandons. Otherwise ``n`` goes to the
+        backend as given, so what a very large ``n`` costs is the backend's: a TAR member's reader allocates a buffer of ``n`` bytes, and
+        ``read(2**62)`` raises ``MemoryError`` there, as ``open(path, "rb").read(2**62)``
+        does on a plain file. The stream is still usable afterwards.
+        """
+        # ``None`` reads to EOF, as on any ``io`` stream; a float or str is the caller's
+        # TypeError, and an int too wide for ``Py_ssize_t`` their OverflowError, both
+        # raised before anything is read. Passed inward, ``read(1.5)`` or ``read(2**70)``
+        # fails inside a decoder after its compressed chunk has left the source, and the
+        # member would then report damage on every later read, even after ``seek(0)``.
+        n = check_read_size(n)
         # _ensure_open is outside the try: its read-after-close ValueError is the
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.
@@ -506,14 +519,19 @@ class ArchiveStream(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable_hint:
             raise io.UnsupportedOperation("seek")
+        # The arguments are checked after seekability, as a buffered reader over a pipe
+        # does: ``seek(1.5)`` there is UnsupportedOperation, not TypeError. On a seekable
+        # member a non-integer offset or whence (``1.5``, ``None``) is ``io.BytesIO``'s
+        # TypeError, raised before anything moves: passed inward, a float makes some
+        # backends consume a chunk before failing (wrong bytes after a later seek(0))
+        # and others report damage that is not there. A bad position or whence is the
+        # caller's ValueError, checked here because inside the try a backend translator
+        # that reads ValueError as a corrupt offset (ZIP, ISO) would report an undamaged
+        # archive as corrupt. Checked, not resolved: the inner gets the caller's whence,
+        # and resolving a SEEK_END here would make a decompressor decode to its end for
+        # a size this layer does not need.
+        offset, whence = check_seek_args(offset, whence)
         inner = self._ensure_open()  # outside the try, same as read()
-        # A bad position or whence is the caller's error, raised as io raises it. Checked
-        # here because inside the try a backend translator that reads ValueError as a
-        # corrupt offset (ZIP, ISO) would report an undamaged archive as corrupt.
-        if whence == io.SEEK_SET and offset < 0:
-            raise ValueError(f"Negative seek position {offset}")
-        if whence not in (io.SEEK_SET, io.SEEK_CUR, io.SEEK_END):
-            raise ValueError(f"Invalid whence ({whence})")
         before: int | None = None
         try:
             before = inner.tell()

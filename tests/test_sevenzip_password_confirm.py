@@ -318,9 +318,31 @@ def test_store_aes_ambiguous_candidates_the_crc_picks_the_right_one(
         member = next(m for m in reader.members() if m.is_file)
         assert reader.read(member) == big
 
-    # Mutation check: skip the anchor pass (treat Copy as rejecting, so the plan stops
-    # at the prefix). "wrong" then survives as INCONCLUSIVE and is served.
+    # Treat Copy as rejecting, so the bounded plan stops at the prefix: both
+    # candidates survive it as INCONCLUSIVE, and the full check, which walks to the
+    # anchor, still picks the right one.
     monkeypatch.setattr(sevenzip_reader_mod, "_folder_codec_rejects", lambda _f: True)
+    with open_archive(archive, password=["wrong", _PASSWORD]) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        assert reader.read(member) == big
+
+    # Mutation check: take the full check away too (it gets the bounded plan). The
+    # first INCONCLUSIVE survivor, "wrong", is then served.
+    original_plan = sevenzip_reader_mod.SevenZipReader._folder_password_confirm_plan
+
+    def bounded_only(
+        self: sevenzip_reader_mod.SevenZipReader,
+        folder_index: int,
+        *,
+        full: bool = False,
+    ) -> PasswordConfirmPlan:
+        return original_plan(self, folder_index)
+
+    monkeypatch.setattr(
+        sevenzip_reader_mod.SevenZipReader,
+        "_folder_password_confirm_plan",
+        bounded_only,
+    )
     with open_archive(archive, password=["wrong", _PASSWORD]) as reader:
         member = next(m for m in reader.members() if m.is_file)
         try:

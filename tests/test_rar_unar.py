@@ -96,6 +96,9 @@ _DROP_ERRORS = ("TruncatedError", "CorruptionError")
 _PASSWORDS = {
     "encryption__.rar": "password",
     "encryption__rar4.rar": "password",
+    "encryption_large__rar4.rar": "password",
+    "encryption_large_solid__rar4.rar": "password",
+    "encryption_large_stored__rar4.rar": "password",
     "encryption_blake2sp.rar": "password",
     "encryption_solid__.rar": "password",
     "encryption_stored__.rar": "password",
@@ -106,7 +109,13 @@ _PASSWORDS = {
     "tinyvol_hp.part1.rar": "header_password",
 }
 # RAR 2.x-4.x encryption: unar 1.10.1 returns nothing even with the right password.
-_RAR4_ENCRYPTED = {"encryption__rar4.rar", "encrypted_header__rar4.rar"}
+_RAR4_ENCRYPTED = {
+    "encryption__rar4.rar",
+    "encrypted_header__rar4.rar",
+    "encryption_large__rar4.rar",
+    "encryption_large_solid__rar4.rar",
+    "encryption_large_stored__rar4.rar",
+}
 # A RAR5 volume set with encrypted headers: XADMaster 1.10.8 returns nothing.
 _HEADER_ENCRYPTED_VOLUMES = {"tinyvol_hp.part1.rar"}
 
@@ -389,7 +398,8 @@ def test_a_single_archive_is_linked_as_archive_rar(
         _file_digests(archive)
     assert names == ["archive.rar"]
     names.clear()
-    with open_archive(_RAR / "tinyvol.part1.rar", config=_UNAR) as archive:
+    # Compressed, so unar reads it; a stored split member is joined natively.
+    with open_archive(_RAR / "tinyvol_m3.part1.rar", config=_UNAR) as archive:
         _file_digests(archive)
     assert names == ["archive.part1.rar", "archive.part2.rar"]
 
@@ -407,7 +417,8 @@ def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
     "names",
     [
         (_CORPUS / "compressed.rar",),
-        (_RAR / "tinyvol.part1.rar", _RAR / "tinyvol.part2.rar"),
+        # Compressed, so unar reads it; a stored split member is joined natively.
+        (_RAR / "tinyvol_m3.part1.rar", _RAR / "tinyvol_m3.part2.rar"),
     ],
     ids=["single", "volumes"],
 )
@@ -945,9 +956,15 @@ def test_solid_pass_refuses_readable_members_past_the_cap(
     ],
     ids=["partN", "old-style"],
 )
-def test_stream_volume_set_reads_with_unar(names: tuple[str, ...]) -> None:
+def test_stream_volume_set_reads_with_unar(
+    monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...]
+) -> None:
     """Stream volumes are written under names archivey picks; both programs must find
-    them. unar looks for volume 2 only under the scheme the header names."""
+    them. unar looks for volume 2 only under the scheme the header names. The members
+    are stored, which the reader would join itself, so slicing is turned off."""
+    monkeypatch.setattr(
+        rar_reader.RarReader, "_is_directly_sliceable", lambda self, info: False
+    )
     expected = _read_members(_RAR / names[0], _UNRAR, streamed=False)
 
     def streams() -> list[io.BytesIO]:
@@ -1025,8 +1042,12 @@ def test_unar_is_refused_past_its_old_style_volume_limit(
 ) -> None:
     """unar stops after ``.z99`` (901 volumes) and calls the member damaged, so a
     longer old-style set is refused before unar runs. The limit is lowered to one
-    so the two-volume fixture stands in for a 902-volume set."""
+    so the two-volume fixture stands in for a 902-volume set. The fixture's member is
+    stored, which the reader would join itself, so slicing is turned off."""
     monkeypatch.setattr(rar_reader, "_UNAR_MAX_OLD_STYLE_VOLUMES", 1)
+    monkeypatch.setattr(
+        rar_reader.RarReader, "_is_directly_sliceable", lambda self, info: False
+    )
     names = ("tinyvol_rnn.rar", "tinyvol_rnn.r00")
     source: object = (
         [io.BytesIO((_RAR / name).read_bytes()) for name in names]

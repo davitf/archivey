@@ -270,8 +270,8 @@ check can decode the folder before the caller's read does; when it meets the sur
 there, the raised error SHALL be `EncryptionError` ("wrong password or corrupt"), with
 the surplus `CorruptionError` in its cause chain, as for any damage the check decodes.
 The check SHALL count the coder's decoded output, so AES padding in the coder's input
-is not surplus, and the output of concatenated streams in one coder (BZip2 streams,
-Zstd or LZ4 frames) counts together. The check SHALL ask the decoder for at most one
+is not surplus, and the output of concatenated Zstd or LZ4 frames in one coder counts
+together. The check SHALL ask the decoder for at most one
 byte of output past the declared size, and SHALL NOT decode the folder a second time.
 The decoder MAY read the rest of the coder's packed input to produce that byte (a tail
 of streams that decode to nothing), so the check's input cost is bounded by the coder's
@@ -279,6 +279,18 @@ packed size, the same bound as decoding the folder. A decoder error on that one 
 (input after the end of the stream, such as AES padding after an LZMA2 end marker) is
 not surplus output. LZMA1 and PPMd coders, which 7-Zip writes without an end marker,
 SHALL stop at their declared size, so their surplus output is not detected.
+
+A BZip2, LZMA (with an end marker), LZMA2 or Deflate coder's data SHALL be one stream,
+as 7-Zip reads it: the decoder SHALL end at the first stream's end and SHALL NOT decode
+a further stream after it as output. For BZip2 and Deflate the bytes after that end
+SHALL end the coder without a diagnostic, as AES padding does. For LZMA and LZMA2 any
+byte of the coder's input after the end marker, a zero byte included, SHALL raise
+`CorruptionError`, as 7-Zip reports a data error; the coder's input is its declared
+input size, so AES padding past it is not such a byte. An LZMA1 coder capped at its
+declared size SHALL apply this check when an end marker follows right at that size,
+and SHALL read clean when none does. Under the rapidgzip accelerator, a Deflate
+coder SHALL hand over to the standard-library decoder at its declared unpack size, so
+it reads what the standard library reads when that size stops after the first stream.
 
 #### Scenario: coder-chain matrix
 
@@ -307,7 +319,16 @@ SHALL stop at their declared size, so their surplus output is not detected.
 | Same, behind AES, in a folder the password check does not decode whole | `CorruptionError` |
 | LZMA1 coder whose data decodes past its declared unpack size | Reads clean, cut at the declared size |
 | AES then Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli, decrypted input ending in AES padding | Original bytes return; the padding is not surplus |
-| Two BZip2 streams, Zstd frames or LZ4 frames in one coder | Original bytes when the unpack size counts both; `CorruptionError` when it stops after the first |
+| Two Zstd frames or LZ4 frames in one coder | Original bytes when the unpack size counts both; `CorruptionError` when it stops after the first |
+| Two BZip2 or Deflate streams in one coder; unpack size and CRC count both | `TruncatedError` (the coder ends after the first; `7z t`: Data Error) |
+| Same; unpack size and CRC count the first | The first stream's bytes (`7z t` warns of data after the payload) |
+| Two LZMA (end-marked) or LZMA2 streams in one coder, whatever the unpack size counts | `CorruptionError` (`7z t`: Data Error) |
+| LZMA (end-marked) or LZMA2 coder whose input has one more byte after the end marker, a zero too | `CorruptionError` (`7z t`: Data Error) |
+| AES then LZMA or LZMA2, decrypted input ending in AES padding | Original bytes; the pad is past the coder's input size |
+| LZMA1 coder without an end marker, with input after its data | Reads clean, cut at the declared size (`7z t`: Data Error; not detectable through liblzma) |
+| 7-Zip's own LZMA, LZMA:eos, LZMA2, `-mhe=on`, solid, `-ms=off` and BCJ2 archives | Read clean |
+| Two BZip2 or Deflate streams under rapidgzip (`use_rapidgzip` or `use_indexed_bzip2` `ON`), size and CRC counting the first | Deflate: the first stream's bytes; BZip2: `CorruptionError` (surplus) |
+| Same under rapidgzip, size and CRC counting both | Both streams' bytes (the accelerator divergence `compressed-streams` allows) |
 
 ### Requirement: Reject unsupported codecs without fallback
 
@@ -474,6 +495,7 @@ order: pre-filters first, packing codec last. If a POSIX attribute block is abse
 | No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
 | "Created" stored, attribute high word holds a Unix mode with a file type (`S_IFMT` bits) | `created is None`; `ctime` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
 | "Created" stored, no Unix file type in the high word (`0x8000` alone or Windows attributes above `0xFFFF` included) | `created` holds it; `ctime is None` |
+| "Created" out of range | Both `None`; `MEMBER_TIMESTAMP_INVALID` with `field` `ctime` when the high word holds a Unix file type, else `created` |
 
 ### Requirement: Infer presented names for nameless 7z members
 
@@ -551,17 +573,28 @@ decoder.
 A 7z symlink's target is stored as the member's data, often in the middle of a solid
 folder. This refines the folder-decode budget of "Stream solid folders with bounded
 memory" for link targets. For its link targets, a 7z folder SHALL be decoded at most once
-per reader, and not past the end of its last link member. The consumer's own reads are
-covered by the bullets below.
+per reader, and not past the end of its last link member. The one exception is each pass
+the caller abandons before the folder's last link, as the abandoned-pass bullet says. The
+consumer's own reads are covered by the bullets below.
 
 - Random-access listing (`members()`, `scan_members()`) SHALL decode no more of the
   folder for link targets than the end of its last link member.
-- A streaming pass SHALL read link targets through its own folder decode. Per folder,
+- A `stream_members()` pass, in either access mode, SHALL read link targets through its
+  own folder decode, and a pass that reaches its end SHALL leave every link target it
+  read set on the members it yielded. Per folder,
   the pass SHALL decode from the start to the later of the end of the consumer's reads and
   the end of the last link member it reads, and SHALL decode nothing more at EOF. This
   holds when the consumer reads no data, when a link is the last member with data in its
   folder, and when a link is alone in its folder.
-- Which links a streaming pass reads when the caller's selector excludes them is set by
+- A pass the caller abandons SHALL keep the link bytes it has read and SHALL NOT set
+  their targets. A later listing or pass SHALL resolve those links from the kept bytes
+  and SHALL decode the folder only for the links the abandoned pass did not reach. A solid
+  decode cannot resume, so when such a link exists the folder is decoded again from its
+  start to the last of those links. The cost is per pass, not per reader: each abandoned
+  pass that reaches a link no earlier pass reached pays that folder's prefix again, so
+  the folder can be decoded once per such pass. A pass abandoned after the folder's last
+  link costs nothing more.
+- Which links a pass reads when the caller's selector excludes them is set by
   `archive-reading`, "Bounded-memory sequential streaming via stream_members".
 - With `read_link_targets=False`, listing and a pass advancing SHALL decode nothing for
   link targets. `extract_all` still reads the targets of the links it accepts. It always
@@ -577,6 +610,9 @@ covered by the bullets below.
 | `members()` on a solid 7z with links before, between and after its file members | Decoded bytes equal each folder's last-link end offset, not the sum of every link's end offset |
 | Streaming pass over the same 7z, reading every stream | Every link target resolved; decoded bytes equal the folder sizes, each folder decoded once |
 | Streaming pass over the same 7z, reading no stream | Every link target resolved; decoded bytes equal each folder's last-link end offset |
+| Random-access pass over the same 7z, no `members()` call, reading every stream or none | As the two streaming rows: every link target resolved on the yielded members, same decoded bytes |
+| Random-access pass over the same 7z reading no stream, abandoned after the last link, then `members()` | Every link target resolved; decoded bytes equal the folder's last-link end offset, nothing decoded by `members()` |
+| Random-access pass over the same 7z, abandoned after the second of three links, then `members()` | Every link target resolved; decoded bytes equal the second link's end offset plus the last link's end offset |
 | Non-solid 7z (`-ms=off`) with links | Each link's own folder decoded once, in both modes |
 | `read_link_targets=False`, `members()` then a pass reading no stream | No bytes decoded for link targets |
 | `read_link_targets=False`, `extract_all()` accepting every member, either mode | Each folder decoded once; accepted links resolved; no second decode for their targets |

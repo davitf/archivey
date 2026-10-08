@@ -764,7 +764,7 @@ READER_PACKAGES: dict[str, tuple[str, ...]] = {
 
 # External binaries the *reader* needs for member DATA, beyond what format availability
 # reports. RAR lists natively but reads member data through RARLAB ``unrar`` (only a
-# non-solid stored member takes the direct sliced view — see ``rar_reader``), and
+# stored, unencrypted member takes the direct sliced view — see ``rar_reader``), and
 # ``format_availability(RAR)`` reports FULL without it because listing works. Unlike
 # BUILDER_BINARIES, a committed fixture does **not** substitute for these: it saves you
 # from writing the archive, not from reading it.

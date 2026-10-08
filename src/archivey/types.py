@@ -944,13 +944,19 @@ class ExtractionPolicy(Enum):
     and extract inside the destination (``/etc/x`` → ``etc/x``), as tar and unzip do.
 
     What ``TRUSTED`` does **not** relax: anything where the write itself is unsafe — a
-    name that escapes the destination, carries a NUL, or names a device node. Those are
-    universal. It *does* extract a name built to display as something else
-    (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD`` refuse with
-    ``FilterRejectionError``: such a member lands inside the destination under exactly its
-    stored bytes, so the risk is to a human reading the directory afterwards, not to the
-    filesystem. Choosing ``TRUSTED`` accepts that, which is what makes faithful
-    round-tripping possible. See
+    name that escapes the destination, carries a NUL, or names a device node — and
+    anything whose outcome would differ by OS. A symlink target with a Windows drive
+    letter or UNC root (``C:/Windows``, ``//server/share``) is refused on every OS,
+    because Windows refuses it, so a Windows symlink to a drive path does not round-trip
+    at any policy. A hardlink target names a member, and ``STANDARD`` and ``TRUSTED``
+    re-root a rooted one first (``C:/x`` → ``x``), as they do the member; what is left
+    refused at every policy is a drive-relative hardlink target (``C:x``), and under
+    ``STRICT`` any rooted one. Those are universal. It *does* extract a name built to
+    display as something else (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD``
+    refuse with ``FilterRejectionError``: such a member lands inside the destination
+    under exactly its stored bytes, so the risk is to a human reading the directory
+    afterwards, not to the filesystem. Choosing ``TRUSTED`` accepts that, which is what
+    makes faithful round-tripping possible. See
     ``dev-docs/decisions/0017-bidi-override-rejection-is-policy-keyed.md``.
     """
 

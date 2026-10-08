@@ -2769,20 +2769,26 @@ def _to_filetime_ticks(unix_seconds: int) -> int:
 
 
 @pytest.mark.parametrize(
-    ("slot", "field"),
+    ("slot", "field", "attributes"),
     [
-        ("last_write_time", "modified"),
-        ("last_access_time", "accessed"),
-        ("creation_time", "created"),
+        ("last_write_time", "modified", None),
+        ("last_access_time", "accessed", None),
+        ("creation_time", "created", None),
+        ("creation_time", "created", 0x20),  # 7-Zip on Windows
+        # 7-Zip on Linux, p7zip: the slot would have filled ``ctime``.
+        ("creation_time", "ctime", 0x8000 | 0x20 | (0o100644 << 16)),
     ],
 )
-def test_an_out_of_range_filetime_is_none_and_reported(slot: str, field: str) -> None:
-    """Each of the three 7z time slots reports a value past datetime's range."""
+def test_an_out_of_range_filetime_is_none_and_reported(
+    slot: str, field: str, attributes: int | None
+) -> None:
+    """Each of the three 7z time slots reports a value past datetime's range, naming
+    the member field it would have filled."""
     from dataclasses import replace
 
     from archivey.diagnostics import MemberTimestampContext
 
-    record = replace(_created_slot_record(None), creation_time=None)
+    record = replace(_created_slot_record(attributes), creation_time=None)
     record = replace(record, **{slot: 2**64 - 1})
     with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
         assert isinstance(reader, SevenZipReader)

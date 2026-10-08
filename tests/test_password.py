@@ -484,3 +484,121 @@ def test_every_wrong_password_message_carries_the_mark() -> None:
                 if wording.search(message):
                     unmarked.add((path.relative_to(src).as_posix(), message))
     assert unmarked == _UNMARKED_WRONG_PASSWORD_MESSAGES
+
+
+def _verdict_decrypt(
+    verdicts: dict[bytes, str], tried: list[bytes]
+) -> Callable[[bytes], tuple[bytes, str]]:
+    """A probe that answers each password from ``verdicts`` (missing means rejected)."""
+
+    def decrypt(password: bytes) -> tuple[bytes, str]:
+        tried.append(password)
+        if password not in verdicts:
+            raise wrong_password_error("Wrong password for this test unit")
+        return password, verdicts[password]
+
+    return decrypt
+
+
+def _is_confirmed(result: tuple[bytes, str]) -> bool:
+    return result[1] == "confirmed"
+
+
+def test_a_settled_candidate_stops_the_loop() -> None:
+    """A confirmed candidate wins at once: an expensive probe runs for none after it."""
+    tried: list[bytes] = []
+    candidates = _PasswordCandidates.from_input([b"a", b"b", b"c"])
+    result = candidates.attempt(
+        None,
+        _verdict_decrypt({b"b": "confirmed", b"c": "confirmed"}, tried),
+        settled=_is_confirmed,
+        settle=lambda _password, _result: pytest.fail("no survivor to settle"),
+    )
+    assert result == (b"b", "confirmed")
+    assert tried == [b"a", b"b"]
+
+
+def test_an_unsettled_survivor_does_not_win_outright() -> None:
+    """The rest of the list is probed; a lone survivor then wins with no full check."""
+    tried: list[bytes] = []
+    candidates = _PasswordCandidates.from_input([b"a", b"b", b"c"])
+    result = candidates.attempt(
+        None,
+        _verdict_decrypt({b"a": "inconclusive"}, tried),
+        promote=_is_confirmed,
+        settled=_is_confirmed,
+        settle=lambda _password, _result: pytest.fail("one survivor needs no check"),
+    )
+    assert result == (b"a", "inconclusive")
+    assert tried == [b"a", b"b", b"c"]
+    # Kept out of known-good: another candidate could still be right for later units.
+    assert list(candidates.iter_candidates()) == [b"a", b"b", b"c"]
+
+
+def test_several_survivors_are_settled_in_order() -> None:
+    """The full check runs on each survivor until one settles; that one is promoted."""
+    tried: list[bytes] = []
+    settled_calls: list[bytes] = []
+
+    def settle(password: bytes, _result: tuple[bytes, str]) -> tuple[bytes, str]:
+        settled_calls.append(password)
+        if password == b"c":
+            return password, "confirmed"
+        raise wrong_password_error("Wrong password for this test unit")
+
+    candidates = _PasswordCandidates.from_input([b"a", b"b", b"c"])
+    result = candidates.attempt(
+        None,
+        _verdict_decrypt({b"a": "inconclusive", b"c": "inconclusive"}, tried),
+        promote=_is_confirmed,
+        settled=_is_confirmed,
+        settle=settle,
+    )
+    assert result == (b"c", "confirmed")
+    assert settled_calls == [b"a", b"c"]
+    assert next(candidates.iter_candidates()) == b"c"
+
+
+def test_survivors_the_full_check_cannot_settle_fall_back_to_the_first() -> None:
+    """A unit with nothing to walk to keeps the first survivor, as before."""
+    candidates = _PasswordCandidates.from_input([b"a", b"b"])
+    result = candidates.attempt(
+        None,
+        _verdict_decrypt({b"a": "inconclusive", b"b": "inconclusive"}, []),
+        settled=_is_confirmed,
+        settle=lambda password, result: result,
+    )
+    assert result == (b"a", "inconclusive")
+
+
+def test_survivors_the_full_check_all_rejects_exhaust_the_list() -> None:
+    def settle(_password: bytes, _result: tuple[bytes, str]) -> tuple[bytes, str]:
+        raise wrong_password_error("Wrong password for this test unit")
+
+    candidates = _PasswordCandidates.from_input([b"a", b"b"])
+    with pytest.raises(EncryptionError, match="Wrong password for this test unit"):
+        candidates.attempt(
+            None,
+            _verdict_decrypt({b"a": "inconclusive", b"b": "inconclusive"}, []),
+            settled=_is_confirmed,
+            settle=settle,
+        )
+
+
+def test_provider_answers_are_not_gathered() -> None:
+    """The provider is lazy: its first answer that survives the probe wins."""
+    asked: list[int] = []
+
+    def provider(request: PasswordRequest) -> str | None:
+        asked.append(request.attempt)
+        return ["a", "b"][request.attempt - 1] if request.attempt <= 2 else None
+
+    candidates = _PasswordCandidates.from_input(provider)
+    result = candidates.attempt(
+        None,
+        _verdict_decrypt({b"a": "inconclusive", b"b": "confirmed"}, []),
+        settled=_is_confirmed,
+        settle=lambda _password, _result: pytest.fail("provider answers not settled"),
+    )
+    assert result == (b"a", "inconclusive")
+    assert asked == [1]
