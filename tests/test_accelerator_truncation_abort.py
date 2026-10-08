@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import importlib.metadata
 import io
 import logging
 import os
@@ -128,21 +129,32 @@ print(outcome)
 """
 
 
+def _rapidgzip_is_manylinux_wheel() -> bool:
+    """True if the installed rapidgzip came from a PyPI manylinux wheel."""
+    wheel = importlib.metadata.distribution("rapidgzip").read_text("WHEEL") or ""
+    return any(
+        line.startswith("Tag:") and "manylinux" in line for line in wheel.splitlines()
+    )
+
+
 @pytest.mark.parametrize("cut", _CUTS)
 def test_raw_rapidgzip_aborts_on_truncated_gzip(tmp_path: Path, cut: int) -> None:
     """Canary: the upstream hazard the child process guards against still exists.
 
-    On Linux, rapidgzip 0.16 aborts on each of these inputs. The macOS build raises an
-    exception on them instead ("Unexpected end of file when getting block ..."), so there
-    the canary accepts an abort or a raise. On every platform, rapidgzip must not decode
-    the truncated input without an error. If a later rapidgzip stops aborting on Linux,
-    this test fails: the signal that rapidgzip may be safe to run in-process again.
+    rapidgzip 0.16's Linux (manylinux) wheels abort on each of these inputs. The macOS
+    build raises an exception on them instead ("Unexpected end of file when getting
+    block ..."), and so can a build from source: on CPython 3.15, which has no wheel
+    yet, the build on the GitHub runner raised and a local one aborted. So only the
+    manylinux wheel must abort; any other build may abort or raise. Every build must not
+    decode the truncated input without an error. If a later manylinux wheel stops
+    aborting, this test fails: the signal that rapidgzip may be safe to run in-process
+    again.
     """
     path = _write(tmp_path, "cut.gz", gzip.compress(_payload())[:-cut])
     proc = _run(_RAW_RAPIDGZIP, str(path))
     if proc.returncode != 0:
         return  # aborted: the hazard is present
-    assert not sys.platform.startswith("linux"), ("no abort", proc.stdout, proc.stderr)
+    assert not _rapidgzip_is_manylinux_wheel(), ("no abort", proc.stdout, proc.stderr)
     assert proc.stdout.strip().startswith("RAISED "), (proc.stdout, proc.stderr)
 
 
