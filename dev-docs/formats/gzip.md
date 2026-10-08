@@ -298,6 +298,23 @@ differ by platform (ISA-L on Linux, a different decoder on macOS, a bare
 `_translate_rapidgzip` maps each; the Windows one becomes `CorruptionError`, not
 `TruncatedError`, since the detail is lost.
 
+**`rapidgzip` is told no format.** It looks at the first bytes and tries a gzip member, a
+zlib stream, a bzip2 stream and then raw DEFLATE, in that order. So a raw DEFLATE source
+that starts with `1f 8b`, a zlib header or `BZh` and a digit, and a zlib source whose
+header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary),
+decode with the standard library engine, which raises at the header as it does with the
+accelerator off (`_rapidgzip_may_read_as_another_format`, `_rapidgzip_reads_as_zlib`). No
+encoder starts raw DEFLATE like zlib: that first byte is a stored block with nonzero
+padding bits. `BZh` and a digit is a possible start, so a real raw DEFLATE stream that
+has it decodes without the accelerator. `rapidgzip` also ends a raw DEFLATE stream cut
+before any output (`03`, a final block with no end code) softly, as if it were empty, so
+a raw DEFLATE stream that ends before its first byte goes to the standard library too,
+which reads a valid empty stream as empty and raises on a cut one. Once the standard
+library has taken over, its errors leave as archivey's typed errors, so the over-run
+probe of a declared size does not take a raw `zlib.error` for the end of the data. Before
+that, a ZIP member declared empty with a body that is not DEFLATE read as empty. The
+accelerator fuzz targets found all three.
+
 **Every accelerator object is closed, never only joined.** `rapidgzip`'s C++ worker
 threads call `std::terminate` if they are still running at interpreter finalization, and
 only `close()` stops them. `_AcceleratorStream` wraps each object with a `weakref.finalize`
@@ -388,7 +405,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A truncated multi-member `.gz` read through `rapidgzip` can end short with no error | **library** / **archivey** | `rapidgzip` ends softly. The backstop raises when the decode stopped before the end of the file; a cut whose decode still reaches the end, with zlib confirming a later member, can pass. Summing each member's ISIZE is deferred (§7) |
 | A member after the first with a header CRC that does not match or reserved `FLG` bits reads clean under `rapidgzip`; the standard library raises | **library** / **archivey** | `rapidgzip` does not check these, and hides member boundaries. The first member's header is checked (§2.3); the rest is the per-member question in §7 |
 | A wrong ISIZE on any member but the last reads clean under `rapidgzip`; the standard library raises | **library** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3) |
-| A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this |
+| A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this. A stream cut before its first byte of output raises, as with the accelerator off |
 | `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3). Found by `tests/test_nested_archives.py` |
 | Several zlib streams one after another, read in bounded reads to the end under `use_rapidgzip=ON`, read as one; the standard library reads the first alone and reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. A completing `read()` and a seek to the end stop at the first stream as with the accelerator off; bounded reads have the second stream's bytes before the end shows up, and the Adler-32 check accepts them when the standard library reproduces them stream by stream (§2.3), so they get those bytes as content and no `ARCHIVE_TRAILING_DATA` |
 | Trailing junk after a `.gz` is a warning, where `GzipFile` raises | **archivey** | The rule is shared by every codec ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
@@ -461,6 +478,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The ISIZE backstop and the empty-end fallback | `tests/test_accelerator_corruption.py::test_rapidgzip_truncation_is_reported`, `::test_rapidgzip_silent_empty_fallback_recovers_prefix`, `::test_rapidgzip_isize_soft_short_raises_on_readall`, `::test_rapidgzip_multimember_not_flagged`, `::test_gzip_backstop_keeps_raising_after_its_own_truncation`, `::test_gzip_cut_member_before_a_complete_one_raises`, `::test_gzip_cut_member_with_a_forged_isize_raises` |
 | A cut zlib stream delivers the bytes and error of `OFF` under `ON` and `AUTO`, cut in the first block, a later block or the trailer; the declared-size exception | `tests/test_accelerator_takeover.py::test_a_cut_zlib_reads_as_it_does_with_the_accelerator_off` |
 | Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data | `tests/test_rapidgzip_end_checks.py` |
+| A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source whose header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary), a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` | `tests/test_rapidgzip_deflate_zlib.py::test_a_stream_of_another_format_raises_as_with_the_accelerator_off`, `::test_raw_deflate_cut_before_any_output_raises_truncated`, `::test_a_declared_empty_stream_that_does_not_decode_raises` |
 | A cut bare zlib stream under `ON` without a size raises | `tests/test_rapidgzip_deflate_zlib.py::test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size` |
 | Close guard on shutdown; one accelerator library | `tests/test_accelerator_shutdown.py::test_accelerator_shutdown_canary`, `::test_archivey_uses_single_accelerator_library` |
 
