@@ -119,16 +119,35 @@ name mismatch of §3.3 accounts for 4 of them. The rest:
 
 **One ZIP over 4 GiB written without ZIP64** accounts for 4 158 of these failures: 2 122
 members, in two copies of the archive. Its central-directory offsets are the true offsets
-mod 2³². A wrapped offset lands in the middle of other data (bad magic) or makes two
-entries appear to overlap. A third copy, cut to exactly 2³² bytes, has no end record:
-archivey reports "central directory unreadable", and 7-Zip lists 261 entries by walking
-local headers. No tool the owner tried can salvage the whole archive. A reader that walks
-local headers forward, or one that tries `offset + k·2³²` until it finds a local header
-with the right name and CRC, could recover it. An unfinished attempt at the second
-approach exists in the earlier codebase. The producer is unknown. A lead, not yet
-verified: `java.util.zip` before JDK 7 had no ZIP64 support. Reproducing it needs an
-archive over 4 GiB, so a test would build a sparse file or patch the offsets of a small
-one.
+mod 2³², and so is the end record's central-directory offset. A wrapped offset lands in
+the middle of other data (bad magic) or makes two entries appear to overlap. 7-Zip cannot
+open it, and no tool the owner tried salvages it.
+
+**It is fully recoverable.** Checked on the file:
+
+- All members but one carry a data descriptor (flag bit 3), so the local headers hold zero
+  sizes. With the central directory's compressed sizes, which are exact because each
+  member is under 4 GiB, a walk from offset 0 meets all 2 122 local headers in
+  central-directory order and ends exactly where the central directory starts. Each
+  data descriptor is the 16-byte form with a signature.
+- The first 1 861 offsets are exact. The last 261 are off by exactly 2³².
+- So one rule recovers every offset: a member's offset cannot be below the previous
+  member's end, and when it is, add 2³² until it is not. The central directory's own
+  offset follows the same rule against the last member's end. Sampled members on both
+  sides of the wrap decode with matching CRCs.
+
+The producer markers are version made by Unix 2.1, version needed 2.0, the old Info-ZIP
+`UX` extra field (`0x5855`), and data descriptors with signatures. That combination is
+what macOS Archive Utility (`ditto -c -k`, Finder's Compress) writes. This is a strong
+lead, not a confirmed reproduction; `java.util.zip` does not write `UX` extras.
+
+A third copy shows what a recovery tool made of it: the tool wrote a new ZIP holding only
+the 261 wrapped members over the first 572 MiB of the file, which destroyed the original
+members stored there, and the file was cut at exactly 2³² bytes. 7-Zip reads that new
+261-member ZIP and reports the remaining 3.7 GB as trailing data.
+
+A test needs an archive over 4 GiB, or a small archive whose offsets are rewritten to
+simulate the wrap; the second is enough to test the rule.
 
 The others, checked on the files:
 
