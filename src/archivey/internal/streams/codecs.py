@@ -470,7 +470,8 @@ class _TrappingSource(io.RawIOBase):
     re-raises the stored fault after the accelerator call, turning the abort into a normal Python
     exception. It traps ``BaseException`` (not just ``Exception``): even a ``KeyboardInterrupt`` /
     ``SystemExit`` must never cross into C++, so a control-flow exception is **deferred** to the
-    next accelerator boundary and re-raised there — never swallowed. It deliberately exposes
+    next accelerator boundary and re-raised there — never swallowed while the stream is open
+    (:meth:`release` drops a fault still parked at close). It deliberately exposes
     **no** ``fileno`` so rapidgzip stays on its Python read path (a valid fileno would let it
     bypass this shim). Wraps only caller-owned sources; path sources open their own fd and are
     immune, so they are never trapped.
@@ -487,9 +488,15 @@ class _TrappingSource(io.RawIOBase):
         rapidgzip 0.16 never releases the Python file object it is given, closed or not
         (measured with a weak reference: ``IndexedBzip2File(f).close()`` leaves ``f``
         alive), so this shim outlives the stream. Without this, so would the source, and
-        an ``io.BytesIO`` source with a full copy of its buffer: the leak the
-        ``bzip2_accel`` fuzz target ran out of memory on. A call that still arrives reads
-        an empty source.
+        an ``io.BytesIO`` source with a full copy of its buffer: a fuzz run over the
+        accelerated bzip2 path ran out of memory on it
+        (``test_indexed_bzip2_frees_a_stream_source_after_close`` pins the fix). A call
+        that still arrives reads an empty source.
+
+        A fault still parked here goes too. Its traceback holds the frame of the
+        source's own ``read``, whose ``self`` is the source, so keeping it would keep the
+        source; and past the open, only a read-ahead nobody waited on parks one (see
+        ``_AcceleratorStream._reraise_trapped``).
         """
         self._inner = io.BytesIO()
         self.trapped = None
@@ -1042,7 +1049,9 @@ def _open_accelerator(
         raw = open_fn(trap, parallelization=0)
     except Exception:
         # As in _AcceleratorStream.read: the parked fault is the real cause of an
-        # ordinary error, but never replaces an interrupt.
+        # ordinary error, but never replaces an interrupt. No wrapper exists here to
+        # release the trap; IndexedBzip2File has not been seen to raise at construction
+        # (damaged, cut, empty and random inputs all raise on the first read instead).
         _raise_parked(trap)
         raise
     stream = _AcceleratorStream(raw, trap=trap)

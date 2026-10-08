@@ -246,19 +246,31 @@ raised a catchable `RuntimeError` after every chunk before the cut.
 
 **Symptom.** `IndexedBzip2File(f)` never releases `f`: after `close()` and a garbage
 collection, a weak reference to `f` is still alive, and so is every bound method of `f` it
-took. The bytes objects its reads returned leak too, and some native memory per open, more
-on damaged input. Measured on rapidgzip 0.16.0 with an `io.BytesIO` subclass, through
-archivey and directly.
+took. Each open also leaks a little native memory. Measured on rapidgzip 0.16.0 with an
+`io.BytesIO` subclass, through archivey and directly.
 
-**What archivey does.** bzip2 reads a caller-owned stream through `_TrappingSource`
+**What archivey does.** A path source is opened by rapidgzip itself and holds no Python
+object of the caller's. bzip2 reads a caller-owned stream through `_TrappingSource`
 (Bug 3), so rapidgzip holds the shim, not the caller's stream. When the accelerator stream
 closes, the shim drops the source (`_TrappingSource.release`), so the source and an
-`io.BytesIO`'s buffer are freed; the shim itself, a few hundred bytes, still leaks. Before
-that, every accelerated bzip2 open of a `BytesIO` leaked a full copy of its buffer, and
-the `bzip2_accel` fuzz target ran out of memory after about 36 000 inputs.
+`io.BytesIO`'s buffer are freed. Before that, every accelerated bzip2 open of a `BytesIO`
+leaked a full copy of its buffer, and a fuzz run over the accelerated bzip2 path ran out
+of memory after about 36 000 inputs. gzip, zlib and raw DEFLATE decode in a child process
+(Bug 4), whose memory goes when it ends.
+
+**What remains.** For a caller-owned stream, the shim and what rapidgzip keeps with it:
+about 1.7 kB of Python objects per open, whatever the input's size. For every source,
+path included, a few kB of native memory per open. A long-running process that opens
+many `.bz2` streams through the accelerator grows by that much per open.
+
+**Upstream.** Not filed.
+
+**Evidence.**
 `tests/test_accelerator_corruption.py::test_indexed_bzip2_frees_a_stream_source_after_close`
-pins it. gzip, zlib and raw DEFLATE decode in a child process (Bug 4), whose memory goes
-when it ends.
+fails without `release`. Python objects measured with `tracemalloc` over 1 000 opens after
+200 warm-up opens of a 4 kB `.bz2`: 0 bytes per open from a path, about 1.7 kB from an
+`io.BytesIO`. Native memory measured by RSS over 3 000 opens: 2 to 5 kB per open, noisy,
+for every source.
 
 ## Intermittent `pyppmd` native aborts on PPMd streams (open upstream)
 

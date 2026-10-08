@@ -401,21 +401,28 @@ class _Source(io.BytesIO):
     """A ``BytesIO`` a weak reference can point at."""
 
 
+@pytest.mark.parametrize("closed", [True, False], ids=["closed", "dropped"])
 @pytest.mark.parametrize("damaged", [False, True], ids=["intact", "damaged"])
-def test_indexed_bzip2_frees_a_stream_source_after_close(damaged: bool) -> None:
+def test_indexed_bzip2_frees_a_stream_source_after_close(
+    damaged: bool, closed: bool
+) -> None:
     """rapidgzip keeps the Python file object it reads from after ``close()``; the shim
-    between them drops the source, so an ``io.BytesIO`` and its buffer are freed."""
+    between them drops the source, so an ``io.BytesIO`` and its buffer are freed. A
+    stream nobody closed releases it too, through the finalize guard."""
     pytest.importorskip("rapidgzip")
     data = bytearray(bz2.compress(b"payload " * 400))
     if damaged:
         data[len(data) // 2] ^= 0xFF
     source = _Source(bytes(data))
     alive = weakref.ref(source)
-    with open_codec_stream(Codec.BZIP2, source, config=_BZ_ON) as s:
-        try:
+    s = open_codec_stream(Codec.BZIP2, source, config=_BZ_ON)
+    if damaged:
+        with pytest.raises(ReadError):
             s.read()
-        except ReadError:
-            assert damaged
+    else:
+        s.read()
+    if closed:
+        s.close()
     del source, s
     gc.collect()
     assert alive() is None
