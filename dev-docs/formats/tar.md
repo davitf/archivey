@@ -59,9 +59,10 @@ one, so duplicate names are ordinary and the last one is current.
 corrupt header after the first, and a source that simply ran out all end tarfile's walk
 the same way, with no exception. archivey reconstructs the reason from the block tarfile
 stopped on (§2.2), and the result has three outcomes: a non-null block where a header
-belonged is corruption; a missing or short trailer is a warning, because a complete
-tar written without a trailer and a tar truncated exactly at a member boundary are the
-same bytes; bytes after a good trailer are trailing data. An empty tar is nothing but
+belonged is corruption; a missing, short or damaged trailer is a warning, because a
+complete tar written without a trailer and a tar truncated exactly at a member boundary
+are the same bytes, and a zero block followed by a damaged one still ends a whole
+listing; bytes after a good trailer are trailing data. An empty tar is nothing but
 zeros, so a zero-filled file of any block-aligned length is a valid empty archive
 ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). Two tars joined
 with `cat` list as the first one plus a trailing-data diagnostic, because the first
@@ -151,14 +152,22 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
      it is `CorruptionError` whatever the diagnostic policy, and the same is true when
      that block is the last one in the file.
   2. Otherwise read the next block. tarfile has already consumed the first trailer block,
-     so this is the second. A null block is a good trailer. A non-null block is
-     `CorruptionError`. A short or empty read emits `ARCHIVE_EOF_MARKER_MISSING` under
-     the ordinary policy, a warning by default.
-  3. After a good trailer, scan up to 1 MiB for a non-zero byte and emit
-     `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar` pads to 10 KiB
-     records. On a compressed tar the tail is decompressed to look at it, and a tail
-     that does not decode (a truncated footer, junk after the compressed stream) ends
-     the scan with no diagnostic. A whole-stream checksum that fails there (gzip CRC-32
+     so this is the second. A null block is a good trailer. A short or empty read emits
+     `ARCHIVE_EOF_MARKER_MISSING` under the ordinary policy, a warning by default. A
+     non-null block depends on what tarfile stopped on, which `_TarInfo.fromtarfile`
+     records on the `_TarFile` because `TarFile.next()` swallows the error: after a zero
+     block, with at least one member listed, the listing is whole and only the
+     end-of-archive marker is damaged, so it is `ARCHIVE_EOF_MARKER_MISSING`
+     (`expected_marker="second_zero_block"`, `observed_kind="nonzero"`) under the
+     ordinary policy, as GNU tar ("A lone zero block") and 7-Zip list it with a warning
+     (maintainer ruling, 2026-10-06), and step 3 runs from the block after it. After a
+     rejected header, or with no member before the zero block, it is
+     `CorruptionError`, with `expected_marker="two_zero_blocks"`.
+  3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero
+     byte and emit `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar`
+     pads to 10 KiB records. On a compressed tar the tail is decompressed to look at
+     it, and a tail that does not decode (a truncated footer, junk after the compressed
+     stream) ends the scan with no diagnostic. A whole-stream checksum that fails there (gzip CRC-32
      or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) raises
      `CorruptionError`: it covers the members already read, and with `tar -b128`
      padding (64 KiB) the scan is where it is reached. When the scan stops at 1 MiB
@@ -207,8 +216,8 @@ there both lists grow for the whole pass.
 | `raw_name` | Rebuilt by `_recover_raw_name`. A PAX `path` is UTF-8 unless its own block says `hdrcharset=BINARY`; a ustar or GNU long name is re-encoded with the archive `encoding` and tarfile's `surrogateescape`. tarfile does not record where a name came from, so a name equal to `pax_headers["path"]` is taken as PAX. `None` when no codec reproduces it |
 | `link_target` | `linkname` exactly as stored, for symlinks and hardlinks. A hardlink stores an archive path, so a tar made from `./d` stores `./d/b` while the member it names is listed as `d/b`. `link_target_member` is the resolved one |
 | `size` | `TarInfo.size` for a file, which for a sparse member is its logical size. `None` for everything else. `compressed_size` is never set |
-| `modified` | `TarInfo.mtime`, where tarfile has already applied a PAX `mtime` with its fraction. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID` |
-| `accessed` | PAX `atime` only |
+| `modified` | `TarInfo.mtime`, where tarfile has already applied a PAX `mtime` with its fraction. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID`. So is a PAX `mtime` that is not a number, which tarfile reads as `0` without an error: it lists as `None`, not as the Unix epoch |
+| `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime` |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
 | `mode`, `uid`, `gid`, `uname`, `gname` | Straight from the header. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
@@ -415,6 +424,7 @@ extraction checks (§2.4).
 | Feed tarfile archivey's own decompressor, never `r:gz` | One codec layer for every format: the same seek points, accelerators, ratio guard, diagnostics and error translation as a bare `.gz` | tarfile's built-in modes, which cover four codecs and bypass all of that |
 | Classify the end from the block the walk stopped on | tarfile does not report why it stopped. The last read is the only evidence that needs no backward seek, which on a compressed tar would mean decoding again | Computing the next header's offset from `offset_data + size`, which is wrong for sparse members; treating every early end as a warning |
 | A rejected header is `CorruptionError` whatever the policy; a missing trailer is a warning | A complete tar never stops on a non-null block, so that one is certain. A missing trailer is ambiguous by construction | One disposition for both, which is either too loud for ordinary trailer-less tars or silent about corruption |
+| A zero block followed by a non-null one is a warning, not corruption (maintainer ruling, 2026-10-06) | The zero block ends the members, so the listing is whole and only the marker is damaged. GNU tar and 7-Zip list such an archive with a warning and exit 0; a damaged RAR end-of-archive block is handled the same way. `strict()` refuses it | `CorruptionError`, as before the ruling, which in random access threw away a whole listing |
 | A zero-filled file is a valid empty tar | It is byte-identical to one, at every block-aligned length ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)) | Refusing zero-member tars; a length rule |
 | Report trailing data, do not read past it | Two archives in one file is a fact worth reporting, and listing both would present members from an archive the caller did not name | `ignore_zeros=True`, which is how `tar -i` reads concatenated archives |
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
@@ -453,10 +463,13 @@ extraction checks (§2.4).
 | `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` | `::test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding`, `::test_ustar_raw_name_follows_the_archive_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec` |
 | ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` overrides; a PAX record that is not UTF-8 falls back to that same codec | `::test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale`, `::test_utf8_link_target_and_owner_decode_as_utf8_under_a_non_utf8_locale`, `::test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale`, `::test_caller_encoding_overrides_the_utf8_default`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding` |
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
+| A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch | `::test_bad_pax_time_is_reported`, `::test_several_bad_pax_times_on_one_member_are_each_reported`, `::test_pax_mtime_zero_is_the_epoch` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
 | End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |
 | Missing trailer warns, and raises under `RAISE` | `::test_missing_eof_blocks_warns_by_default`, `::test_missing_eof_blocks_raise_disposition_raises`, and the `_streaming_` pair |
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
+| A zero block then a damaged block lists and reads every member, warns, extracts everything, and raises under `strict()`, in both modes | `::test_damaged_second_eof_block_lists_every_member`, `::test_damaged_second_eof_block_gzip_lists_every_member`, `::test_damaged_second_eof_block_extracts_every_member`, `::test_damaged_second_eof_block_refused_under_strict`, `::test_zero_block_then_junk_with_no_member_stays_corruption` |
+| After a damaged second block the trailing scan still runs: a bad gzip CRC raises and junk is trailing data | `::test_bad_gzip_crc_is_reported_after_a_damaged_second_eof_block`, `::test_damaged_second_eof_block_then_junk_reports_trailing_data` |
 | The streaming last-block gap | `::test_corrupt_final_header_streaming_warns_not_corruption` |
 | Rejected header wins over `IGNORE` and `RAISE` | `::test_corrupt_final_header_ignore_disposition_still_raises`, `::test_corrupt_mid_header_raise_disposition_still_corruption` |
 | `extract_all` writes the salvageable members, then raises, in both modes | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |

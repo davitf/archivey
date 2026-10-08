@@ -18,7 +18,11 @@ import zlib
 from collections.abc import Sequence
 from typing import BinaryIO
 
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, read_exact
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    read_exact,
+    resolve_seek,
+)
 
 #: Length of the encryption header in front of every ZipCrypto member's data.
 ZIPCRYPTO_HEADER_LEN = 12
@@ -238,16 +242,9 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
         return self._logical
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        if whence == io.SEEK_SET:
-            if offset < 0:
-                raise ValueError(f"negative seek position {offset}")
-            target = offset
-        elif whence == io.SEEK_CUR:
-            target = max(0, self._logical + offset)
-        elif whence == io.SEEK_END:
-            target = max(0, self._length + offset)
-        else:
-            raise ValueError(f"invalid whence ({whence})")
+        target = resolve_seek(
+            offset, whence, pos=self._logical, end=lambda: self._length
+        )
         reach = min(target, self._length)
         if reach < self._pos:
             self._source.seek(self._origin)

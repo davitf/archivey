@@ -84,6 +84,7 @@ complete it by reading, without decrypting, the ciphertext the seeks skipped, an
 | Case | Expected |
 | --- | --- |
 | STORED / DEFLATE / BZIP2 / LZMA member, unencrypted | Decodes via the shared codec layer; CRC verified through `VerifyingStream` |
+| LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error"; with bit 1 clear, only a marker right at the declared size is checked |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
@@ -184,7 +185,10 @@ rules:
 | `is_encrypted` | `flag_bits & 0x1 != 0` |
 
 Invalid DOS or NTFS timestamp values SHALL fall through to the next valid
-precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`. With
+precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`, whose `field`
+SHALL name the member attribute: `modified` for the DOS stamp and the NTFS
+modification time, `accessed` for the NTFS access time, and `created` or `ctime`
+for the NTFS creation time, by the same host rule that fills those fields. With
 `read_link_targets=True` (the default), if listing cannot read an encrypted
 symlink target because no correct password is available, `link_target` SHALL
 remain unset and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with reason

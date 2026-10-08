@@ -52,6 +52,10 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
         ArchiveEofContext(expected_marker="two_zero_blocks"),
     ),
     (
+        DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+        ArchiveEofContext(expected_marker="second_zero_block"),
+    ),
+    (
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
         ArchiveEofContext(expected_marker="zeros_to_eof"),
     ),

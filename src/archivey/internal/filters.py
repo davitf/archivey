@@ -47,14 +47,34 @@ def _map_segments(name: str, fn: Callable[[str], str]) -> str:
     )
 
 
+def _has_drive_letter(name: str) -> bool:
+    """Whether ``name`` starts with a Windows drive letter: a single ASCII letter
+    followed by ``:`` (``C:\\``, ``C:/x``, ``C:foo``).
+
+    ASCII only, on purpose. ``str.isalpha()`` is Unicode-wide and would classify
+    ``Ä:foo`` — an ordinary POSIX filename — as a Windows drive path. That would make
+    TRUSTED refuse it as an absolute name, and every policy refuse a symlink to it.
+    """
+    return len(name) >= 2 and name[0] in string.ascii_letters and name[1] == ":"
+
+
 def _is_absolute(name: str) -> bool:
     """Whether ``name`` is an absolute path: a POSIX root, a UNC share, or a drive letter."""
     if name.startswith("/") or name.startswith("\\"):
         return True  # POSIX root or UNC / rooted-backslash
-    # Drive letter: a single ASCII letter followed by ':' (e.g. "C:\\", "C:foo").
-    # ``str.isalpha()`` is Unicode-wide and would classify "Ä:foo" — an ordinary POSIX
-    # filename — as a Windows absolute path, which is the one thing TRUSTED checks.
-    return len(name) >= 2 and name[0] in string.ascii_letters and name[1] == ":"
+    return _has_drive_letter(name)
+
+
+def _has_windows_root(target: str) -> bool:
+    """Whether ``target`` starts with a drive letter (``C:``, ``C:/x``, ``C:x``) or a UNC
+    root (two separators, ``//server/share`` or ``\\\\server\\share``).
+
+    A single leading ``\\`` (``\\foo``) is not a Windows root here; see the comment
+    in :func:`check_universal`.
+    """
+    if target[:1] in ("/", "\\") and target[1:2] in ("/", "\\"):
+        return True
+    return _has_drive_letter(target)
 
 
 def _is_rooted(name: str) -> bool:
@@ -256,9 +276,12 @@ def check_universal(
     one the link is created with in the scratch tree, so an absolute target is checked
     where it points there.
 
-    Everything here makes the *write itself* dangerous or impossible — escaping the
-    destination, a NUL the OS truncates on, a device node. A name that is merely
-    *deceptive to read* does not belong in that set and is policy-keyed instead; see
+    Everything here meets one of two criteria. Either the *write itself* is dangerous
+    or impossible — escaping the destination, a NUL the OS truncates on, a device
+    node — or the *outcome would differ by OS*: a link target with a Windows drive or
+    UNC root escapes on Windows and is an ordinary relative name on POSIX, so it is
+    refused everywhere (maintainer ruling, 2026-10-06). A name that is merely
+    *deceptive to read* meets neither and is policy-keyed instead; see
     ``apply_name_policy`` and ADR 0017.
     """
     name = member.name
@@ -334,13 +357,47 @@ def check_universal(
         _check_path_string(
             target, member_name=name, what="link target", link_target=target
         )
+        is_symlink = member.type == MemberType.SYMLINK
+        kind = "Symlink" if is_symlink else "Hardlink"
+        # A drive or UNC target leaves the destination on Windows and is a relative
+        # name on POSIX. It is refused on every OS so that one archive extracts the
+        # same way everywhere (maintainer ruling, 2026-10-06); unrar 7.00 on POSIX
+        # refuses the `\??\`-prefixed spellings too. This holds for a hardlink target
+        # as well. STANDARD and TRUSTED have already re-rooted a rooted one, so this
+        # catches STRICT's `C:/x` and `//host/x`, a drive-relative `C:x` at any
+        # policy, and whatever a caller filter returns.
+        if _has_windows_root(target):
+            raise FilterRejectionError(
+                f"{kind} target is a Windows drive or UNC path",
+                member_name=name,
+                link_target=member.link_target,
+            )
+        # Named exception: a symlink target rooted by a single `\` (`\foo`) is left
+        # alone. Windows resolves it to the drive root and refuses it as an escape,
+        # but on POSIX a backslash is an ordinary filename character, so `\foo` is
+        # a legitimate relative link there. Refusing it would block an archive that
+        # is valid on POSIX, and ADR 0013 rules that extracting beats refusing. Only
+        # TRUSTED keeps that `\` literal: STRICT and STANDARD write a TAR `\` as `/`,
+        # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
+        #
+        # A hardlink target gets no such exception. It names a member of the same
+        # archive, and a member named `\x` is refused as absolute under STRICT and
+        # re-rooted under STANDARD and TRUSTED, as is the target. So a `\`-rooted
+        # hardlink target reaches here only under STRICT (or from a caller filter),
+        # where it cannot name a member that was written; it is refused like the
+        # member, on every OS.
+        if not is_symlink and target.startswith("\\"):
+            raise FilterRejectionError(
+                "Hardlink target is an absolute path",
+                member_name=name,
+                link_target=member.link_target,
+            )
         if link_target_on_disk is not None:
             target = link_target_on_disk(target)
-        is_symlink = member.type == MemberType.SYMLINK
         base = (dest_root / name).parent if is_symlink else dest_root
         if _escapes(base / target, dest_root):
             raise FilterRejectionError(
-                f"{'Symlink' if is_symlink else 'Hardlink'} target escapes destination",
+                f"{kind} target escapes destination",
                 member_name=name,
                 link_target=member.link_target,
             )
@@ -520,16 +577,42 @@ def _strip_trailing_dot_space(name: str) -> str:
     return _map_segments(name, strip)
 
 
+def _reject_unsafe_segments(
+    path: str, *, member_name: str, where: str, link_target: str | None = None
+) -> None:
+    """Refuse a Windows-reserved device name or a ``:`` in any segment of ``path``.
+
+    Both are unsafe (device capture, NTFS alternate data stream), not merely awkward,
+    so ``STRICT`` and ``STANDARD`` refuse them on every platform.
+    """
+    for segment in _SEP_SPLIT.split(path):
+        if not segment:
+            continue
+        if _is_reserved_segment(segment):
+            raise FilterRejectionError(
+                f"Windows-reserved device name in {where}: {segment!r}",
+                member_name=member_name,
+                link_target=link_target,
+            )
+        if ":" in segment:
+            raise FilterRejectionError(
+                f"Colon in {where} segment (NTFS alternate data stream): {segment!r}",
+                member_name=member_name,
+                link_target=link_target,
+            )
+
+
 def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
     """Enforce the portable-name policy on ``member``'s final name.
 
     ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
-    names, ``:`` (NTFS alternate data stream), and bidi overrides — and **rewrite** the
-    merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3), and both levels
-    write a ``\\`` as ``/`` (in a link target too) and escape bytes that are not
-    UTF-8 and the characters Windows refuses, ``<>"|?*`` and 0x01-0x1F (O7). A lone
-    surrogate outside U+DC80-U+DCFF is escaped too, as its UTF-8 bytes
+    names, ``:`` (NTFS alternate data stream), and bidi overrides, in the name and in a
+    symlink's target — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
+    trailing dots/spaces (O3), and both levels write a ``\\`` as ``/`` (in a link target
+    too) and escape bytes that are not UTF-8 and the characters Windows refuses,
+    ``<>"|?*`` and 0x01-0x1F (O7). A lone surrogate outside U+DC80-U+DCFF is escaped too,
+    as its UTF-8 bytes
     (``hi\\ud800`` → ``hi%ED%A0%80``), so the result is the same on every OS;
     ``TRUSTED`` writes 7-Zip's bytes instead. Rewriting (not rejecting) a
     legitimate-but-awkward name keeps extraction working; refusal is reserved for
@@ -557,20 +640,17 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
         _reject_bidi_override(
             member.link_target, member_name=name, what=f"link target of {name!r}"
         )
-    for segment in _SEP_SPLIT.split(name):
-        if not segment:
-            continue
-        # Reserved device names and ':' are unsafe (device capture / NTFS alternate data
-        # stream), not merely awkward — rejected under STRICT and STANDARD on every platform.
-        if _is_reserved_segment(segment):
-            raise FilterRejectionError(
-                f"Windows-reserved device name in path: {segment!r}", member_name=name
-            )
-        if ":" in segment:
-            raise FilterRejectionError(
-                f"Colon in path segment (NTFS alternate data stream): {segment!r}",
-                member_name=name,
-            )
+    _reject_unsafe_segments(name, member_name=name, where="path")
+    if member.type is MemberType.SYMLINK and member.link_target:
+        # On Windows a link to ``t:stream`` names an alternate data stream of ``t``, and
+        # one to ``NUL`` names the device, so a target segment is held to the rule a
+        # name segment is. A hardlink target names a member, whose name is checked.
+        _reject_unsafe_segments(
+            member.link_target,
+            member_name=name,
+            where="link target",
+            link_target=member.link_target,
+        )
 
     # A trailing dot/space is silently stripped by Win32 — a legitimate macOS/Linux name
     # (e.g. a folder ending in '.'), not an attack. STRICT rewrites it to the portable
@@ -645,15 +725,37 @@ def _sanitize_segment(segment: str) -> str:
     return segment
 
 
-def _sanitize_path(name: str) -> str:
-    """Every ``sanitize_names`` rewrite of one path: a member name or a hardlink target."""
+def _sanitize_characters(name: str) -> str:
+    """``name`` without bidi override/isolate characters and with each NUL as ``_``."""
     if not name.isascii():
         name = "".join(c for c in name if c not in BIDI_REORDERING_CONTROLS)
-    name = name.replace("\x00", "_")
+    return name.replace("\x00", "_")
+
+
+def _sanitize_path(name: str) -> str:
+    """Every ``sanitize_names`` rewrite of one path: a member name or a hardlink target."""
+    name = _sanitize_characters(name)
     # Only a rooted name loses its root. A drive-relative "a:b" is kept, and the
     # segment rewrite below turns its colon into "_".
     name = _collapse_dotdot(strip_absolute_root(name))
     return _map_segments(name, _sanitize_segment)
+
+
+def _sanitize_symlink_target(target: str) -> str:
+    """The ``sanitize_names`` rewrite of a symlink target: characters and segments only.
+
+    The root and every ``..`` are kept, because a symlink target is a filesystem path
+    relative to the link, and ``../sibling`` or ``/etc/x`` mean what they say; one that
+    escapes is refused by extraction. A target that has a Windows drive or UNC root
+    once its characters are cleaned gets no segment rewrite, so extraction still
+    refuses it: rewriting ``C:/x`` to ``C_/x`` would make a different link rather than
+    a safe spelling of the same one. Its characters are still cleaned, so a bidi
+    override hidden before the drive letter does not survive the filter.
+    """
+    cleaned = _sanitize_characters(target)
+    if _has_windows_root(cleaned):
+        return cleaned
+    return _map_segments(cleaned, _sanitize_segment)
 
 
 def sanitize_names(member: ArchiveMember) -> ArchiveMember:
@@ -677,9 +779,19 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
     A hardlink's target gets the same rewrite. That keeps the target inside the
     destination, which extraction checks; it does not choose the linked member, which
     was resolved from the stored target when the archive was listed. A hardlink whose
-    stored target names no member (``../a``) still fails. A symlink's target is left as
-    stored: it is a path on the filesystem, and one that points outside the destination
-    is still refused.
+    stored target names no member (``../a``) still fails.
+
+    A symlink's target gets the character and segment rewrites only (``file:stream`` →
+    ``file_stream``, ``sub/NUL`` → ``sub/NUL_``), so a link to a rewritten member points
+    at the name that was written. Its root and its ``..`` components are kept: it is a
+    path on the filesystem, and one that points outside the destination is still
+    refused. A symlink target with a Windows drive or UNC root (``C:/x``,
+    ``//host/share``) gets the character rewrites only, and is still refused.
+
+    A symlink target the archive stores as member data and that is read only after
+    this filter has run (``ArchiveyConfig.read_link_targets=False``, or a streaming
+    pass) gets the same rewrite: ``extract_all`` calls the filter again once the
+    target is read.
 
     Two members can end up with the same name (``a/../x`` and ``x``). The second is then
     handled by the ``overwrite`` option like any other clash. The result's
@@ -692,10 +804,14 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
     if name != member.name:
         changes["name"] = name
     target = member.link_target
-    if member.type is MemberType.HARDLINK and target is not None:
+    if target is not None and member.type is MemberType.HARDLINK:
         new_target = _sanitize_path(target)
-        if new_target != target:
-            changes["link_target"] = new_target
+    elif target is not None and member.type is MemberType.SYMLINK:
+        new_target = _sanitize_symlink_target(target)
+    else:
+        new_target = target
+    if new_target != target:
+        changes["link_target"] = new_target
     return member.replace(**changes) if changes else member
 
 

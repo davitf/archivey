@@ -30,8 +30,8 @@ Listing and metadata work without it, except a compressed comment in a RAR 1.5 /
 archive, which is then `None`. When no RARLAB program is found, archivey uses `unar`
 1.10 or later instead if it is installed. `unar` reads fewer RAR archives and takes the
 password on its command line, where other local users can see it; set
-`ArchiveyConfig(rar_decompressor="unrar")` to never use it. See
-[Formats and extras](formats.md#rar).
+`ArchiveyConfig(rar_decompressor="unrar")` to never use it, or `"none"` to run
+neither program and read only stored members. See [Formats and extras](formats.md#rar).
 
 What each install line adds, by what you type. [Formats and extras](formats.md) stays
 the authority on what each format can do:

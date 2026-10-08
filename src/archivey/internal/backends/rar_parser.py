@@ -102,6 +102,10 @@ _RAR5_MAX_HEADER = 2 * 1024 * 1024
 # field: listing limits stay out of this parser, and a caller cannot usefully
 # raise a "more skipped extras" budget.
 _MAX_SKIPPED_HEADER_RECORDS = 16
+# The ``record`` of the ``skipped_header_records`` entry for bytes between a RAR5
+# header's fixed fields and its declared extra area. They are not a record, so the
+# reader words that diagnostic on its own.
+RAR5_UNPLACED_BYTES = "unplaced bytes"
 # SERVICE headers (``CMT``, ``QO``) are not members, so ``max_members`` never
 # counts them and a damaged one is retained for the reader to report. Both halves
 # of that are attacker-controlled: a 3.4 MB archive of nothing but damaged SERVICE
@@ -190,6 +194,11 @@ _RAR5_DICT_BASE = 0x20000
 _RAR5_DICT_SHIFT = 10
 _RAR5_ALGO_MASK = 0x3F
 _RAR5_ALGO_RAR50 = 0
+# The newest RAR5 compression-info version ``unrar`` 7.00 decodes (1: RAR 7.0).
+_RAR5_ALGO_NEWEST = 1
+# The ``UNP_VER`` range ``unrar`` 7.00 accepts for RAR 1.5-4 compressed data.
+_RAR3_UNP_VER_OLDEST = 13
+_RAR3_UNP_VER_NEWEST = 29
 
 _RAR5_ENC_HAS_CHECKVAL = 0x01
 _RAR5_XENC_CHECKVAL = 0x01
@@ -243,6 +252,10 @@ _RAR5_XREDIR_FILE_COPY = 5
 _RAR5_ENDARC_NEXT_VOLUME = 0x01
 
 _RAR3_ENDARC_NEXT_VOLUME = 0x0001
+_RAR3_ENDARC_DATACRC = 0x0002
+# RAR 3.0 and later record the volume's 0-based number in its end block (RARLAB
+# ``EARC_VOLNUMBER``); RAR 1.5 / 2.x do not.
+_RAR3_ENDARC_VOLNUMBER = 0x0008
 # 7-byte common header, then optional data CRC (4), volume number (2) and the
 # reserved space RAR 2.x writers leave (7).
 _RAR3_ENDARC_MAX_HEADER = 7 + 4 + 2 + 7
@@ -335,6 +348,17 @@ class RarMemberInfo:
     split_after: bool
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
+    # Where each part's packed bytes sit, as ``(data_offset, size)`` in the
+    # concatenated volume space, for a member merged across volumes; empty for a
+    # member in one part. ``data_offset`` and ``compress_size`` stay the first part's
+    # offset and the total. Each part continues the one before it
+    # (:func:`_merge_split_member`), and the merged member keeps the first part's
+    # ``split_before`` and the last part's ``split_after``: with both clear the list
+    # is the whole member. ``split_before`` set means the first part is in a volume
+    # outside the set; the parser refuses that only when the continuation is the
+    # first volume's first member. ``split_after`` set means the last part was not
+    # found (an end block that claimed no next volume).
+    data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from
     # the dictionary bits). A stored member declares one too, and no decoder uses
@@ -342,6 +366,13 @@ class RarMemberInfo:
     # and the reader checks it against ``DecoderLimits.max_decoder_memory`` before
     # a decompressor runs.
     dictionary_size: int = 0
+    # RAR5 only: the compression-info version field (bits 0-5). ``None`` for RAR
+    # 1.5-4, whose version is ``extract_version``.
+    rar5_algorithm_version: int | None = None
+    # A RAR3/4 encrypted member's own 8-byte salt (``FILE_SALT``); its data key and IV
+    # are derived from the password and this salt. ``None`` for RAR5, whose salt is in
+    # ``file_encryption``, and for a RAR3 member that stores none.
+    rar3_salt: bytes | None = None
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
@@ -408,6 +439,29 @@ class RarMemberInfo:
             and redir[0] == _RAR5_XREDIR_FILE_COPY
             and not self.is_directory
         )
+
+    def unknown_compression_version(self) -> str | None:
+        """The compression version this member declares and ``unrar`` cannot decode.
+
+        ``None`` when the data can be decoded, or is stored: a stored member is
+        copied whatever version it declares. Otherwise a short description of the
+        version, for a message. The bounds are ``unrar`` 7.00's, measured: RAR5
+        compression-info versions 0 (RAR 5.0) and 1 (RAR 7.0), and RAR 1.5-4
+        ``UNP_VER`` 13 to 29. Outside them ``unrar`` reports "Unknown method" and
+        "You may need a newer version of RAR" and writes nothing.
+        """
+        if self.compress_type == _RAR3_M0:
+            return None
+        if self.rar5_algorithm_version is not None:
+            if self.rar5_algorithm_version > _RAR5_ALGO_NEWEST:
+                return f"RAR5 compression version {self.rar5_algorithm_version}"
+            return None
+        version = self.extract_version
+        if version is not None and not (
+            _RAR3_UNP_VER_OLDEST <= version <= _RAR3_UNP_VER_NEWEST
+        ):
+            return f"RAR compression version {version}"
+        return None
 
     def is_file_version_history(self) -> bool:
         """True for a prior ``-ver`` revision (presented as ``path;n``)."""
@@ -553,6 +607,7 @@ def parse_rar_volumes(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     kdf_cache: RarKdfCache | None = None,
     name_encoding: str | None = None,
+    volume_numbers: Sequence[int] | None = None,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 
@@ -568,21 +623,48 @@ def parse_rar_volumes(
     Every volume shares one ``kdf_cache`` (the caller's, or a fresh one): each
     volume of a header-encrypted set carries its own encryption record, normally
     with the same salt, and would otherwise derive the same keys again.
+
+    ``volume_numbers`` gives each volume's 1-based position in its set, when the
+    set has gaps (volume 1 missing, or one in the middle); omitted, the volumes are
+    ``1..N``. Ruled 2026-10-06: everything in the volumes present is listed, and
+    the listing then ends with ``TruncatedError`` naming the missing volumes
+    (``RarArchive.truncated``). Across a gap nothing is merged: the member that ran
+    into it keeps ``split_after``, and a continuation that opens the volume after
+    it is listed on its own with ``split_before`` (unrar warns "You need to start
+    extraction from a previous volume" for it). Either flag left on a merged member
+    means part of its data is missing, which is what the reader refuses on.
     """
     if not volumes:
         raise ValueError("at least one RAR volume is required")
+    if volume_numbers is None:
+        volume_numbers = range(1, len(volumes) + 1)
+    if (
+        len(volume_numbers) != len(volumes)
+        or any(
+            later <= earlier
+            for earlier, later in zip(volume_numbers, volume_numbers[1:])
+        )
+        or volume_numbers[0] < 1
+    ):
+        raise ValueError("volume numbers must be increasing, from 1 up")
     if kdf_cache is None:
         kdf_cache = RarKdfCache()
 
     merged: RarArchive | None = None
     base_offset = 0
     password_proven = False
-    for index, volume in enumerate(volumes):
+    missing: list[int] = list(range(1, volume_numbers[0]))
+    previous = volume_numbers[0] - 1
+    for volume, number in zip(volumes, volume_numbers):
+        gap = number != previous + 1
+        if gap and previous:
+            missing.extend(range(previous + 1, number))
+        previous = number
         part = _parse_rar_volume(
             volume,
             password=password,
             kdf_cache=kdf_cache,
-            volume_index=index,
+            volume_index=number - 1,
             use_qo=use_qo,
             max_members=max_members,
             name_encoding=name_encoding,
@@ -593,11 +675,14 @@ def parse_rar_volumes(
         for member in part.members:
             member.header_offset += base_offset
             member.data_offset += base_offset
+            member.data_parts = [
+                (offset + base_offset, size) for offset, size in member.data_parts
+            ]
         if part.truncated is not None and len(volumes) > 1:
             # The walk's byte offsets are within this volume, not the concatenated
             # space the member offsets above use, so the message names the volume.
             part.truncated += (
-                f" (volume {index + 1} of the set; the offset is within that volume)"
+                f" (volume {number} of the set; the offset is within that volume)"
             )
 
         if merged is None:
@@ -631,8 +716,13 @@ def parse_rar_volumes(
             merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
-            for member in part.members:
-                _emit_file_member(merged.members, member, max_members=max_members)
+            for position, member in enumerate(part.members):
+                if gap and position == 0:
+                    # Its earlier parts are in the missing volume: listed on its
+                    # own, never folded into the member before the gap.
+                    _append_member(merged.members, member, max_members=max_members)
+                else:
+                    _emit_file_member(merged.members, member, max_members=max_members)
 
         # Size of this volume for absolute offset adjustment.
         pos = volume.tell()
@@ -646,11 +736,41 @@ def parse_rar_volumes(
             break
 
     assert merged is not None
-    if merged.needs_next_volume:
-        raise TruncatedError(
-            "Incomplete RAR multi-volume set: end of archive expects another volume"
-        )
+    mark_missing_next_volume(merged, volumes_read=previous, missing=missing)
     return merged
+
+
+def mark_missing_next_volume(
+    archive: RarArchive, *, volumes_read: int, missing: Sequence[int] = ()
+) -> None:
+    """Record the volumes a set is missing as a truncation.
+
+    ``volumes_read`` is the number of the last volume read, and ``missing`` the
+    numbers before it that were not there (volume 1, or a gap). The last volume
+    read saying another follows adds the one after it. The members of the volumes
+    present are kept and the listing ends with ``TruncatedError``, the same
+    channel as a cut single file: ``unrar`` lists and tests the members it has and
+    fails only on the ones that run into a missing volume. Those keep
+    ``split_after`` or ``split_before``, which is what the reader refuses their
+    data on. A cut the walk already recorded is the earlier fault and keeps its
+    own message.
+    """
+    if archive.truncated is not None:
+        return
+    reasons: list[str] = []
+    if missing:
+        listed = ", ".join(str(number) for number in missing[:10])
+        if len(missing) > 10:
+            listed += f" and {len(missing) - 10} more"
+        noun, verb = ("volume", "is") if len(missing) == 1 else ("volumes", "are")
+        reasons.append(f"{noun} {listed} {verb} missing")
+    if archive.needs_next_volume:
+        reasons.append(
+            "end of archive expects another volume "
+            f"(volume {volumes_read + 1} is missing)"
+        )
+    if reasons:
+        archive.truncated = "Incomplete RAR multi-volume set: " + "; ".join(reasons)
 
 
 def _append_damaged_service_header(
@@ -870,6 +990,23 @@ def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
     20 at most. Every FILE header carries ``LONG_BLOCK`` and is larger than that.
     """
     return not flags & _RAR3_LONG_BLOCK and header_size <= _RAR3_ENDARC_MAX_HEADER
+
+
+def _rar3_end_block_volume_number(
+    hdata: bytes, flags: int, header_size: int
+) -> int | None:
+    """The 0-based volume number a RAR 1.5-4 end block records, or ``None``.
+
+    It follows the 7-byte common header and the optional data CRC. RAR 3.0 and
+    later write it on every volume; RAR 1.5 / 2.x, and a header too short to hold
+    it, give ``None``.
+    """
+    if not flags & _RAR3_ENDARC_VOLNUMBER:
+        return None
+    pos = 7 + (4 if flags & _RAR3_ENDARC_DATACRC else 0)
+    if pos + 2 > header_size:
+        return None
+    return int.from_bytes(hdata[pos : pos + 2], "little")
 
 
 def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
@@ -1248,7 +1385,8 @@ def _decode_rar3_8bit_name(
         except UnicodeError:
             pass
     fallback = "cp437" if host_os in _RAR3_OEM_HOSTS else "windows-1252"
-    return raw.decode(fallback, "replace")
+    # windows-1252 leaves five bytes undefined; surrogateescape keeps each one distinct.
+    return raw.decode(fallback, "surrogateescape")
 
 
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
@@ -1264,6 +1402,23 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
             "Mismatched RAR split continuation: "
             f"{quoted(new.filename)} does not continue {quoted(old.filename)}"
         )
+    # A volume holds at most one part of a member: a continuation is the first file
+    # header of the next volume. A walk merges within one volume only when the volume
+    # repeats a continuation, and every repeat would add a retained part (and later a
+    # view) that ``max_members`` does not count: 200 000 one-byte parts in a 6.8 MB
+    # archive held 26 MB after open and peaked at 153 MB on the read. Refused, so
+    # the parts of a member stay bounded by the volumes the caller passed.
+    # ``old.volume_index`` stays the volume the member started in: a merge inside
+    # one volume's walk compares two members of that volume, and every merge across
+    # volumes compares against an earlier one, so ``==`` is the whole test.
+    if new.volume_index == old.volume_index:
+        raise CorruptionError(
+            f"RAR split continuation of {quoted(new.filename)} is in the same "
+            "volume as the part it continues"
+        )
+    if not old.data_parts:
+        old.data_parts.append((old.data_offset, old.compress_size))
+    old.data_parts.append((new.data_offset, new.compress_size))
     old.compress_size += new.compress_size
     if new.crc32 is not None:
         old.crc32 = new.crc32
@@ -1895,6 +2050,14 @@ def _parse_rar3(
                 proven=password_proven,
             )
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
+            volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
+            if volume_index == 0 and is_volume and volume_number:
+                # A later volume whose first member starts on its boundary: no
+                # member continues from an earlier volume, so only this number
+                # tells it from volume 1 (RAR5 reads MAIN's instead).
+                raise UnsupportedFeatureError(
+                    "Need first volume of multi-volume RAR archive"
+                )
             break
 
         if block_type in (_RAR3_FILE, _RAR3_SUB):
@@ -2071,8 +2234,9 @@ def _parse_rar3_file_header(
     if is_directory:
         filename = filename + "/"
 
+    rar3_salt: bytes | None = None
     if flags & _RAR3_FILE_SALT:
-        _salt, pos = _load_bytes(hdata, 8, pos)
+        rar3_salt, pos = _load_bytes(hdata, 8, pos)
 
     timestamp_issues: list[TimestampIssue] = []
     if mtime is None and dos_stamp != 0:
@@ -2128,6 +2292,7 @@ def _parse_rar3_file_header(
         dictionary_size=0
         if is_directory
         else _RAR3_DICT_BASE << ((flags & _RAR3_DICT_MASK) >> _RAR3_DICT_SHIFT),
+        rar3_salt=rar3_salt,
     )
     return member, crc_pos
 
@@ -2964,7 +3129,10 @@ def _parse_rar5_file_block(
     compress_info, pos = load_vint(hdata, pos)
     host_os_raw, pos = load_vint(hdata, pos)
     orig_filename, pos = _load_vstr(hdata, pos)
-    filename = orig_filename.decode("utf8", "replace").rstrip("/")
+    # surrogateescape, not replace: two names that differ only in bytes that are not
+    # UTF-8 stay two names, as they do in TAR, and the extraction name policy escapes
+    # those bytes (O7). unrar is addressed from ``orig_filename``, not from this.
+    filename = orig_filename.decode("utf8", "surrogateescape").rstrip("/")
 
     host_os = 2 if host_os_raw == _RAR5_OS_WINDOWS else 3  # RAR_OS_WIN32 / UNIX
     compress_type = _RAR3_M0 + ((compress_info >> 7) & 7)
@@ -2986,8 +3154,42 @@ def _parse_rar5_file_block(
     # and they are not the same fault, so the diagnostic must not name one of them
     # for all four: a single zero-size record is not "more than sixteen malformed".
     stop_reason: str | None = None
+    unplaced_bytes = 0
 
     if extra_size:
+        # The extra area is the header's last ``extra_size`` bytes, wherever the
+        # fixed fields end — the same rule as the MAIN locator walk, and the one
+        # ``unrar`` applies (``ProcessExtra50``). Walking on from the end of the
+        # name instead reads the wrong bytes as records whenever the two disagree.
+        extra_start = len(hdata) - extra_size
+        if extra_start <= 0:
+            # ``unrar`` 7.00 checks ``ExtraSize >= HeadSize`` when it reads the
+            # size and reports "Corrupt header": an extra area that does not fit
+            # in its own header is not one a walk can place. Both sizes count the
+            # whole header, its CRC and size vint included, which is ``hdata``;
+            # the oracle rows at ``len(hdata) - 1`` and ``len(hdata)`` pin it.
+            raise CorruptionError(
+                f"RAR5 header at offset {header_offset} declares an extra area of "
+                f"{extra_size} bytes in a {len(hdata)}-byte header"
+            )
+        if extra_start < pos:
+            # The area would overlap the fields already read. ``unrar`` ignores
+            # the extras then and lists the member from its fixed fields. Do the
+            # same, but through the stop reason: an unread area may hold the
+            # encryption record, so the member is ``encryption_unknown`` rather
+            # than silently plaintext.
+            stop_reason = "its extra area overlaps the header's fixed fields"
+            pos = len(hdata)
+        else:
+            # A writer leaves no room here: the fixed fields end where the extra
+            # area starts. ``unrar`` skips any bytes in between without a word and
+            # lists the member, and so does this walk; but bytes no writer puts
+            # there mean the header is damaged or crafted, which is what the
+            # diagnostic (and a strict policy) is for. Should a later RAR add a
+            # fixed field this parser does not read, this fires on every such
+            # header and is the place to teach it.
+            unplaced_bytes = extra_start - pos
+            pos = extra_start
         # Walk extras until near end (allow 1 byte of padding like rarfile).
         while pos < len(hdata) - 1:
             if len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS:
@@ -3071,7 +3273,7 @@ def _parse_rar5_file_block(
                     file_redir = (
                         redir_type,
                         redir_flags,
-                        redir_name.decode("utf8", "replace"),
+                        redir_name.decode("utf8", "surrogateescape"),
                     )
                 elif xtype == _RAR5_XFILE_VERSION:
                     _vflags, xpos = load_vint(xdata, xpos)
@@ -3092,6 +3294,19 @@ def _parse_rar5_file_block(
                 skipped_records.append(
                     (_RAR5_XNAMES.get(xtype, "unknown"), xtype, raw_message_of(exc))
                 )
+
+    if unplaced_bytes:
+        # Added after the walk so the cap on malformed records counts records
+        # only, and first because the bytes come first in the header.
+        skipped_records.insert(
+            0,
+            (
+                RAR5_UNPLACED_BYTES,
+                None,
+                f"{unplaced_bytes} bytes between its fixed fields and its "
+                "declared extra area",
+            ),
+        )
 
     is_symlink = False
     is_hardlink_or_copy = False
@@ -3148,6 +3363,7 @@ def _parse_rar5_file_block(
         dictionary_size=0
         if is_directory and not is_symlink
         else _rar5_dictionary_size(compress_info),
+        rar5_algorithm_version=compress_info & _RAR5_ALGO_MASK,
         skipped_header_records=tuple(skipped_records),
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),

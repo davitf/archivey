@@ -1487,7 +1487,7 @@ class ExtractionCoordinator:
             # comes only at EOF. The selector and the filter have now both accepted it,
             # with `link_target=None`, so reading it here is the read the caller asked
             # for (`archive-reading`, "Link targets stored as member data are read only
-            # when configured"). The target it yields is checked like any other below.
+            # when configured").
             reader._read_link_target_on_request(original)
             if original.type is not MemberType.SYMLINK:
                 # The data showed the member is not a link: a reparse-flagged member
@@ -1497,9 +1497,11 @@ class ExtractionCoordinator:
                 self._current.retyped = True
                 return self._transform(original)
             if original.link_target is not None:
-                if transformed is not original:
-                    transformed = transformed.replace(link_target=original.link_target)
-                self._check_universal(transformed, dest_root)
+                # The filter decided on a link with no target. Decide again with the
+                # target, so a filter that rewrites targets (`sanitize_names`) sees
+                # it, and the link gets the outcome it gets when listing read the
+                # target. The target is now set, so this runs once.
+                return self._transform(original)
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a

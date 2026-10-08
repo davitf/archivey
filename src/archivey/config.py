@@ -100,6 +100,12 @@ class RarDecompressor(Enum):
       neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
       This is the default. On a machine with ``unar`` and no RARLAB program, it means
       a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
+    - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
+      run on its archives. Opening and listing work as with the others, and so does
+      reading a stored (uncompressed) member that is not encrypted, also when it is
+      split across volumes or sits in a solid archive. A compressed or encrypted
+      member, or a split one with a volume missing, raises ``UnsupportedFeatureError``
+      before anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
@@ -109,6 +115,7 @@ class RarDecompressor(Enum):
     UNRAR = "unrar"
     UNAR = "unar"
     AUTO = "auto"
+    NONE = "none"
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
@@ -321,8 +328,11 @@ class ListingLimits:
     ``stream_members`` / ``streaming=True`` / forward-only iteration do not
     enforce these caps. 7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its
     comments against ``max_metadata_bytes`` (the declared sizes of compressed RAR
-    1.5/2.x comments before decoding them), and ISO the directory records ``pycdlib``
-    parses, so ``open_archive`` raises and none is an escape hatch.
+    1.5/2.x comments before decoding them), and ISO the directory records and path
+    tables ``pycdlib`` parses, so ``open_archive`` raises and none is an escape hatch.
+    ISO also counts each path-table entry against ``max_members`` (a table of more than
+    ``max_members + 1`` entries is refused): every entry is a directory, which is a
+    member anyway, so real images never notice.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than the whole ``max_metadata_bytes``, before reading it.
     """
@@ -593,7 +603,7 @@ class SpoolLimits:
     need it are refused without copying again.
 
     ``0`` refuses every copy: a stream source then reads only the members archivey can
-    read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
+    read without ``unrar``, such as stored, unencrypted RAR members. The copy goes
     to the platform temporary directory (``tempfile.gettempdir()``); where that is
     memory-backed, such as ``tmpfs``, this limit is a memory limit.
 
@@ -671,9 +681,9 @@ class ArchiveyConfig:
     rar_decompressor: RarDecompressor = RarDecompressor.AUTO
     """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
 
-    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``). The listing does not
-    depend on it, except that the selected program decodes compressed RAR 1.5/2.x
-    comments.
+    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
+    listing does not depend on it, except that the selected program decodes compressed
+    RAR 1.5/2.x comments.
     """
 
     read_link_targets: bool = True

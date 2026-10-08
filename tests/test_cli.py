@@ -6,17 +6,25 @@ import io
 import sys
 import tarfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionReport, ExtractionResult, ExtractionStatus
+from archivey import (
+    ExtractionReport,
+    ExtractionResult,
+    ExtractionStatus,
+    open_archive,
+)
+from archivey.cli import test_cmd
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.main import _inject_default_list, main
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveMember, MemberType
+from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 
 
@@ -2649,3 +2657,85 @@ def test_extract_reroot_never_prints_a_default_rewrite_line(
     assert "re-rooted: " not in err
     rooted = sum(1 for n in names if n.startswith("/"))
     assert f"re-rooted {rooted} absolute member name" in err
+
+
+# --- `archivey test` reports a symlink the same way on every format ---
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _zip_with_links(path: Path) -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", b"alpha\n")
+        for name, target in (("link", "a.txt"), ("dangling", "nowhere")):
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = 0o120777 << 16
+            zf.writestr(info, target.encode())
+    return path
+
+
+def _tar_with_links(path: Path) -> Path:
+    with tarfile.open(path, "w") as tf:
+        data = b"alpha\n"
+        info = tarfile.TarInfo("a.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+        for name, target in (("link", "a.txt"), ("dangling", "nowhere")):
+            link = tarfile.TarInfo(name)
+            link.type = tarfile.SYMTYPE
+            link.linkname = target
+            tf.addfile(link)
+    return path
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(_zip_with_links, id="zip"),
+        pytest.param(_tar_with_links, id="tar"),
+        pytest.param(
+            lambda _: _FIXTURES / "sevenzip" / "links_mid_folder_solid.7z", id="7z"
+        ),
+        pytest.param(
+            lambda _: _FIXTURES / "rar" / "symlinks_solid__rar4.rar",
+            id="rar4",
+            marks=requires_binary("unrar"),
+        ),
+        pytest.param(
+            lambda _: _FIXTURES / "rar" / "symlinks_solid__.rar",
+            id="rar5",
+            marks=requires_binary("unrar"),
+        ),
+    ],
+)
+def test_test_verb_skips_every_readable_symlink_alike(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    make: Callable[[Path], Path],
+) -> None:
+    """A symlink whose target the pass read prints ``skip`` and is not counted.
+
+    7z and RAR4 keep a symlink's target as member data. A random-access pass used to
+    leave it unread, so ``test`` opened each such link again after the pass (on a
+    solid 7z, a second decode of its folder) and counted it ``OK``, where ZIP, RAR5
+    and TAR printed ``skip``.
+    """
+    archive = make(tmp_path / "links.archive")
+    with open_archive(archive) as reader:
+        listed = reader.members()
+        links = [m.name for m in listed if m.type is MemberType.SYMLINK]
+        files = [m.name for m in listed if m.is_file]
+    assert links and files
+
+    def _no_reopen(*_args: object) -> None:
+        raise AssertionError("a link with a read target was opened again")
+
+    monkeypatch.setattr(test_cmd, "_verify_link", _no_reopen)
+    assert main(["test", "-v", "--hide-progress", str(archive)]) == EXIT_OK
+    lines = capsys.readouterr().err.splitlines()
+    for name in links:
+        assert f"skip {name}" in lines
+        assert f"OK   {name}" not in lines
+    assert f"{len(files)} OK, 0 failed" in lines

@@ -1287,7 +1287,12 @@ def test_chained_symlink_attack_symlink_payload_rejected(tmp_path: Path) -> None
     assert statuses["sub"] is ExtractionStatus.BLOCKED
     sub_error = next(r.error for r in report.results if r.member.name == "sub")
     assert isinstance(sub_error, FilterRejectionError)
-    assert sub_error.message == "Symlink target escapes destination"
+    # The absolute target is a drive path on Windows, refused by that rule first.
+    assert sub_error.message == (
+        "Symlink target is a Windows drive or UNC path"
+        if os.name == "nt"
+        else "Symlink target escapes destination"
+    )
     # Parent escape never planted, so the payload symlink resolves inside dest.
     assert list(outside.iterdir()) == []  # nothing leaked outside the destination
     assert not (dest / "sub").is_symlink()

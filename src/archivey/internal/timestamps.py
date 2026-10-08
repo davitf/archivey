@@ -59,11 +59,11 @@ class TimestampIssue:
 
     ``source`` names the field family (``"ntfs"``, ``"dos"``, ``"tar"``, …) so a backend that
     reads several timestamp representations (ZIP: DOS + NTFS + extended) can tag each.
-    ``field`` names the timestamp, in a vocabulary that differs by backend: RAR, 7z and
-    ISO use the member attribute (``"modified"``, ``"accessed"``, ``"created"``,
-    ``"ctime"``); ZIP and TAR use the stored field's own name (ZIP ``"date_time"`` for the
-    DOS stamp and ``"mtime"`` / ``"atime"`` / ``"ctime"`` for the NTFS extra, TAR
-    ``"mtime"``).
+    ``field`` names the ``ArchiveMember`` attribute the value would have filled
+    (``"modified"``, ``"accessed"``, ``"created"``, ``"ctime"``) once the backend emits
+    it. A parser may build the issue with its own slot name (RAR and ZIP use
+    ``"mtime"`` / ``"atime"`` / ``"ctime"``) and the reader maps it, because the creation
+    slot is ``created`` or ``ctime`` by the writer's host.
     """
 
     field: str

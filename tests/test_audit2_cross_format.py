@@ -1048,6 +1048,53 @@ def test_rar_damaged_last_block_not_shaped_as_an_end_block_stays_corruption(
         parse_rar_archive(io.BytesIO(bytes(out)), password=None)
 
 
+# The TAR twin of the rule above (maintainer ruling 2026-10-06): a zero block ends
+# the members and the second end-of-archive block is damaged. GNU tar ("A lone zero
+# block") and 7-Zip list every member with a warning and exit 0. archivey reports
+# ARCHIVE_EOF_MARKER_MISSING with expected_marker="second_zero_block", so the context
+# tells it from a rejected header, and a strict policy refuses it. tests/test_tar.py
+# carries the detailed cases.
+
+
+def _tar_with_damaged_second_eof_block() -> tuple[bytes, dict[str, bytes]]:
+    members = {"a.txt": b"aaa", "b.txt": b"b" * 4000}
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        for name, payload in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+    data = bytearray(buf.getvalue())
+    end = len(data)
+    while data[end - 512 : end] == bytes(512):
+        end -= 512
+    assert data[end : end + 1024] == bytes(1024)  # precondition: a two-block trailer
+    data[end + 512 + 100] = 1  # one stray byte in the second trailer block
+    return bytes(data), members
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_tar_damaged_second_eof_block_keeps_the_listing(streaming: bool) -> None:
+    data, members = _tar_with_damaged_second_eof_block()
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        assert dict(_members_and_bytes(reader)) == members
+        diagnostics = _eof_marker_diagnostics(reader.diagnostics)
+    assert len(diagnostics) == 1
+    context = diagnostics[0].context
+    assert isinstance(context, ArchiveEofContext)
+    assert context.format == "tar"
+    assert context.expected_marker == "second_zero_block"
+    assert context.observed_kind == "nonzero"
+
+
+def test_tar_damaged_second_eof_block_refused_under_strict() -> None:
+    data, _members = _tar_with_damaged_second_eof_block()
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        with pytest.raises(DiagnosticRaisedError):
+            reader.members()
+
+
 # ---------------------------------------------------------------------------
 # C2: lzip listing runs a pure-Python GF(2) matrix exponentiation per member
 # ---------------------------------------------------------------------------

@@ -30,7 +30,8 @@ with archivey.open_archive("photos.zip") as archive:
 `open_archive` identifies the format from the file's contents, so the same code opens a `.7z`
 or a `.tar.gz`. Each entry in the archive, whether a file, a directory or a link, is a
 *member*, as in `zipfile` and `tarfile`. [`ArchiveMember`](api.md#archivey.ArchiveMember)
-lists everything a member carries.
+lists everything a member carries. [Opening an archive](opening.md) covers passwords, formats
+and name encodings.
 
 ## Read a member
 
@@ -79,7 +80,8 @@ with archivey.open_archive("download.zip") as archive:
 outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
 stops archives that expand to far more data than they hold. [Extracting](extracting.md)
 lists every protection and how to relax them for archives you trust, and also shows how to
-extract only some files.
+extract only some files. [Security](security.md) covers what archivey relies on and where its
+guarantees stop.
 
 ## When something goes wrong
 

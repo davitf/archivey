@@ -483,10 +483,17 @@ def test_rapidgzip_zlib_good_stream_seeks_anywhere() -> None:
 
 def test_rapidgzip_zlib_concatenated_streams_pass_the_check() -> None:
     """rapidgzip reads concatenated zlib streams whole; the trailer covers only the last,
-    so the mismatch is settled by the standard-library confirmation, which passes."""
+    so the mismatch is settled by the standard-library confirmation. A completing read
+    stops at the end of the first stream, as the standard library does (the rest is
+    trailing data; ``test_rapidgzip_end_checks.py``). Bounded reads have the second
+    stream's bytes before the end shows up, and the confirmation decodes on through it
+    (``_ZlibAdlerCheckStream``)."""
     both = zlib.compress(_ADLER_PAYLOAD) + zlib.compress(b"second stream")
     with _on_zlib(both) as stream:
-        assert stream.read() == _ADLER_PAYLOAD + b"second stream"
+        assert stream.read() == _ADLER_PAYLOAD
+    with _on_zlib(both) as stream:
+        got = b"".join(iter(lambda: stream.read(1 << 16), b""))
+        assert got == _ADLER_PAYLOAD + b"second stream"
 
 
 def test_tar_zz_member_damage_raises_under_rapidgzip_on(tmp_path: Path) -> None:

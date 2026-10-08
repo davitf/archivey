@@ -157,13 +157,4 @@ decompressor may use. Those are set when you open the archive, through
 `config=archivey.ArchiveyConfig(...)`, and the [reference](api.md#archivey.ArchiveyConfig) lists
 them.
 
-## What archivey doesn't protect against
-
-Archivey assumes that no other program changes the archive while it's being read, or the
-destination folder while files are written into it. The limits apply to each archive separately,
-so be careful if you extract archives found inside other archives.
-
-Nothing limits how long an extraction takes. Raising an exception from `on_progress` stops it, but
-the callback only runs between chunks of written data, so a decompressor that's slow to produce the
-next chunk can't be interrupted. If you need a hard time limit, run the extraction in a process you
-can stop.
+[Security](security.md) covers what archivey relies on and where its guarantees stop.

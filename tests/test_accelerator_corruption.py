@@ -221,8 +221,8 @@ def test_rapidgzip_isize_soft_short_raises_on_readall(tmp_path: Path) -> None:
     """Silent-short (non-empty soft EOF): read(-1) must raise, not return then close-quiet.
 
     Concatenated gzip truncated mid-second-member often yields a non-empty soft EOF of
-    the first member on Linux; further-magic bailout may skip ISIZE — still must not
-    raise from close(). When ISIZE does fire (single-member soft-short), it raises here.
+    the first member on Linux; a further member zlib confirms skips ISIZE — still must
+    not raise from close(). When ISIZE does fire (single-member soft-short), it raises here.
     """
     pytest.importorskip("rapidgzip")
     # Single-member mid-body is soft-empty on Linux; build a cut that can soft-short by
@@ -284,7 +284,8 @@ def test_rapidgzip_intact_single_member_reads_clean(tmp_path: Path) -> None:
 
 def test_rapidgzip_multimember_not_flagged(tmp_path: Path) -> None:
     # The ISIZE backstop must not false-flag a valid concatenated gzip (its trailer is only
-    # the last member's size). Multi-member ISIZE summing is deferred — further-magic bailout.
+    # the last member's size). Multi-member ISIZE summing is deferred: a further member that
+    # zlib's gzip decoder confirms stands the check down.
     pytest.importorskip("rapidgzip")
     data = gzip.compress(b"A" * 4000) + gzip.compress(b"B" * 2500)
     path = _write(tmp_path, "multi.gz", data)

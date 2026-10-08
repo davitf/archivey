@@ -184,7 +184,8 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 | `stream_members()` handle with `seekable_members=True`, `streaming=False` or `True`, file source, every format | `seekable()` false; `seek()` → `io.UnsupportedOperation`; `tell()` + forward reads OK |
 | `extract_all()` with nothing declared | Completes; internal opens ungated |
 | `open_archive(p, member_streams=...)` | `TypeError` — the parameter no longer exists |
-| Seek before the start of a random `open()` stream with `seekable_members=True` | Relative (`SEEK_CUR` / `SEEK_END`) underflow clamps to 0, as `io.BytesIO`; negative `SEEK_SET` or unknown `whence` → `ValueError`, never a translated archive error. Directory member: relative underflow is the OS file's `OSError` |
+| Seek before the start of a random `open()` stream with `seekable_members=True` | Relative (`SEEK_CUR` / `SEEK_END`) underflow clamps to 0, as `io.BytesIO`; negative `SEEK_SET` or unknown `whence` → `ValueError`, never a translated archive error; a non-integer offset or `whence` (`seek(1.5)`) → `TypeError` with `io.BytesIO`'s message, before the stream moves. Directory member: relative underflow is the OS file's `OSError` |
+| `read(n)` on any member stream with a size that is neither an integer nor `None` (`read(1.5)`, `read("3")`), or an integer outside the `Py_ssize_t` range (`read(2**70)`) | `TypeError`, or `OverflowError` for the out-of-range integer, with `io.BytesIO`'s message, before anything is read; later reads return the member's bytes, never a translated archive error. `read(None)` reads to EOF |
 
 ### Requirement: Multi-volume and multi-source input
 
@@ -206,7 +207,10 @@ logical `ArchiveReader`:
 Joining is format-specific (`format-7z` / `format-rar`): 7z concatenates a split
 byte stream; RAR parses self-describing volumes in order and stitches
 boundary-spanning members. Incomplete/out-of-order sets SHALL raise
-`UnsupportedFeatureError` or a truncated/corrupt error — never a partial result.
+`UnsupportedFeatureError` or a truncated/corrupt error — never a partial result
+presented as complete. A RAR set with volumes missing (first, middle or last) lists
+the members the volumes present hold and then raises `TruncatedError`, the channel a
+cut file uses (`format-rar`).
 
 An explicitly passed sequence gets no discovery, so it SHALL be required to name the
 parts of one archive, and a sequence mixing two sets SHALL raise
@@ -268,7 +272,8 @@ self-describing.
 | `open_archive([Show.part1.rar, Show.part2.rar, Show.part1.r00])` | `ArchiveyUsageError`: two sets |
 | `open_archive([alpha.rar, beta.rar])` | One stream over both; no part number, so no set to check |
 | `open_archive([a/alpha.zip.001, b/alpha.zip.002])` across directories | One archive in that order |
-| Missing volume | Raise at open or first dependent read; no partial member list |
+| Missing volume | Raise at open or first dependent read; no partial member list presented as complete |
+| RAR set missing a volume (first, middle or last) | Members in the volumes present listed, from any of them, then `TruncatedError`; a member with data in a missing volume raises `TruncatedError` when read |
 
 ### Requirement: Archive metadata access
 
@@ -487,7 +492,7 @@ escape hatch there.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records it parses against `max_metadata_bytes`, which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records and path tables it parses against `max_metadata_bytes` and its count of path-table entries against `max_members` (more than `max_members + 1` entries; each is a directory, a member anyway), which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -695,7 +700,8 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 | Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
-| Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config) | The link's target is resolved; its folder is decoded up to the link once |
+| Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config), either access mode | The link's target is resolved; its folder is decoded up to the link once |
+| Pass to the end without `members()`, either access mode, over a ZIP, 7z, RAR4 or RAR5 holding symlinks (default config) | Each yielded symlink ends with the same `link_target` a `members()` call would set, unset where that read cannot produce one |
 | Encrypted solid 7z `[a.txt, link, b.txt]`, `read_link_targets=False`, `stream_members(lambda m: False)` to the end | Nothing decoded; provider never consulted; `link_target` unset; no `SYMLINK_TARGET_UNAVAILABLE` |
 | `stream_members(file_copy_streams=False)`, RAR5 file copy | The copy is yielded with stream `None`; its source with its bytes |
 | `stream_members(file_copy_streams=0)` | `ArchiveyUsageError` at the call |
@@ -908,10 +914,28 @@ exists to find whose output matches a stored checksum, and there is none to matc
 **When a digest exists but sits past the budget**, rung 2 governs, and the unbounded pass a
 non-rejecting chain runs there is per candidate when the set is ambiguous.
 
+**Resolving several candidates.** A `CONFIRMED` candidate SHALL be accepted at once,
+and no later candidate SHALL be probed for that unit. A `REJECTED` candidate SHALL be
+skipped. An `INCONCLUSIVE` candidate SHALL NOT be accepted while static candidates remain
+to probe: every remaining static candidate SHALL be probed with the same bounded plan.
+Then:
+
+- one survivor SHALL be accepted, `INCONCLUSIVE`;
+- several survivors SHALL each, in candidate order, run the **full check**: the plan that
+  walks to the unit's end anchor whatever the codec. The first survivor it confirms SHALL
+  be accepted. When the unit has no anchor to walk to, the first survivor SHALL be
+  accepted, `INCONCLUSIVE`. When the full check rejects every survivor, the provider, if
+  any, SHALL be consulted as if no static candidate had survived;
+- provider answers SHALL NOT be gathered this way: the provider stays lazy, and its first
+  answer that is not `REJECTED` SHALL be accepted.
+
+The full check is proportional to the unit's size, and it SHALL run only for candidates
+that survived the bounded plan when more than one did.
+
 A `CONFIRMED` candidate SHALL be added to known-good. An `INCONCLUSIVE` candidate
 SHALL be added to known-good only when the candidate set is unambiguous. The
 candidate loop remains `_PasswordCandidates.attempt`; confirmation supplies the
-probe. A second driver SHALL NOT be introduced.
+bounded probe and the full check. A second driver SHALL NOT be introduced.
 
 Accepting an `INCONCLUSIVE` candidate SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED` if the
 caller then abandons the member's stream before its declared digest is reached.
@@ -934,7 +958,10 @@ the format's normal lazy streaming path.
 | Case | Expected |
 | --- | --- |
 | Wrong candidate passes weak check first of two | Reject via confirmation; stream from correct candidate |
-| Large member, many candidates | Confirmation bounded — not proportional to member size |
+| Large member, many candidates, at most one survives the bounded plan | Confirmation bounded — not proportional to member size |
+| Rejecting codec, CRC past budget, two candidates survive the prefix | Each survivor in order walks to the CRC; the one it matches wins and joins known-good |
+| Rejecting codec, CRC past budget, the right candidate after a wrong one | Wrong one `REJECTED` or settled by the full check; the right one is served |
+| First candidate `CONFIRMED` | Later candidates are not probed |
 | Provider answer fails confirmation | Request next answer without pre-enumerating; accept only after confirm |
 | Anchor reachable within budget | Decode to the anchor only, never past it |
 | Unit carries both an early per-item checksum and a whole-unit checksum | The earlier one decides |
@@ -1348,7 +1375,9 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   member:
   - `extract_all` SHALL call its `members` selector and its `filter` on the link, with
     `link_target=None`, before reading the target, and SHALL read it only for a link both
-    accept. A target it cannot read fails that member as one whose target the archive
+    accept. Once the target is read, it SHALL call its `filter` again on the link, now
+    with the target, so a filter that rewrites targets gives the same outcome as under
+    `True`. A target it cannot read fails that member as one whose target the archive
     carries but the reader cannot reach, under `OnError`.
   - `open()` / `read()` on a link SHALL follow it as "Transparent link following"
     requires, reading its target first.
@@ -1371,7 +1400,7 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | --- | --- |
 | ZIP with an encrypted symlink, default config, no password, provider supplied | Provider consulted; on failure `link_target` unset with `SYMLINK_TARGET_UNAVAILABLE` |
 | Same archive, `read_link_targets=False`, `members()` | No member data read; provider not consulted; `link_target` unset; no diagnostic |
-| Same archive, `read_link_targets=False`, password supplied, `extract_all()` | The filter sees the link with `link_target=None`, then the target is read and the link is written |
+| Same archive, `read_link_targets=False`, password supplied, `extract_all()` | The filter sees the link with `link_target=None`, then the target is read, the filter sees the link again with its target, and the link is written |
 | Same archive, `read_link_targets=False`, filter rejects members with `link_target is None` | The target is never read; provider not consulted; the link is not written |
 | Same archive, `read_link_targets=False`, no password, `extract_all()` | The symlink member fails under `OnError`, as a locked target |
 | RAR5 symlink, `read_link_targets=False` | `link_target` set from the header |
