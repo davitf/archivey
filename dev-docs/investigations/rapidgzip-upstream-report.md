@@ -14,8 +14,9 @@ Archivey product mitigation (empty→stdlib fallback + single-member ISIZE backs
 **implemented** in `_GzipTruncationCheckStream` (OpenSpec change
 `rapidgzip-truncation-investigation`). The two defects archivey fixed on its side
 (closing accelerators at finalization, one accelerator library per process) are §6 and
-§7 below. The two live upstream defects (a raising Python source, a truncated DEFLATE
-stream) are Bugs 3 and 4 in `dev-docs/known-issues.md`.
+§7 below. The three live upstream defects (a raising Python source, a truncated DEFLATE
+stream, a file object never released) are Bugs 3 to 5 in `dev-docs/known-issues.md`; §9
+has a ready-to-file report for the third.
 
 Pinned: **rapidgzip 0.16.0** ≡ librapidarchive `1221a30` (`[version] Bump rapidgzip
 version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
@@ -29,6 +30,7 @@ version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
 | Soft EOF on truncated gzip / empty-short success | **by design** (not a bug) — Archivey limitation; mitigate with empty→stdlib + ISIZE. macOS raises more often than Linux/Windows but still silent at cut=10. |
 | `std::terminate` on a truncated DEFLATE stream | **bug-class** — contained by a child process; known-issues Bug 4 + §2 below |
 | Worker threads outlive an unclosed object; two libraries in one process | fixed in archivey; §6 and §7 below |
+| `IndexedBzip2File` never releases its Python file object | **bug-class** — contained by archivey; known-issues Bug 5 + §9 below |
 
 ## 1. Soft EOF on truncated input (by design — Archivey limitation)
 
@@ -110,6 +112,7 @@ not hostile.
 | Bug 2: rapidgzip and indexed_bzip2 in one process | §7 below, ADR 0008 |
 | Bug 3: Python source raises → terminate | `known-issues.md` |
 | Bug 4: truncated DEFLATE → terminate | `known-issues.md` |
+| Bug 5: `IndexedBzip2File` keeps its file object | `known-issues.md`, §9 below |
 
 Soft EOF (§1) is separate from this abort class.
 
@@ -237,3 +240,36 @@ per the author, "has more memory overhead and might be slightly slower"). Archiv
   `tests/leak_oracle.py`.
 - `scripts/macos_accelerator_debug.py` characterises the finalization behaviour (§6) across
   raw and guarded objects × cleanup strategies, each in its own subprocess.
+
+## 9. Bug 5: `IndexedBzip2File` keeps its Python file object (bug-class — contained)
+
+Ready to file. `rapidgzip.IndexedBzip2File(f)` holds a reference to `f` that `close()`
+does not drop, and the object is still alive after the `IndexedBzip2File` is deleted and
+the garbage collector has run. Every open of a Python file object therefore keeps that
+object, and an `io.BytesIO` keeps its whole buffer, for the life of the process. Each open
+also leaks a few kB of native memory, from a path too. Measured on rapidgzip 0.16.0, Linux,
+CPython 3.11:
+
+```python
+import bz2, gc, io, weakref
+import rapidgzip
+
+class Source(io.BytesIO):  # a plain BytesIO takes no weak reference
+    pass
+
+src = Source(bz2.compress(b"payload " * 400))
+alive = weakref.ref(src)
+f = rapidgzip.IndexedBzip2File(src, parallelization=1)
+assert f.read() == b"payload " * 400
+f.close()
+del f, src
+gc.collect()
+print("source still alive after close:", alive() is not None)  # True
+```
+
+Expected: `False`, as for `bz2.BZ2File`. The leak is per open, whatever the input's size,
+so a service that opens many `.bz2` streams from memory grows without bound; archivey's
+fuzz run over this decoder ran out of memory after about 36 000 inputs before the
+workaround. Archivey reads a caller's stream through a shim (`_TrappingSource`, known-issues
+Bug 3) and drops the stream from the shim at close, so only the shim leaks, about 1.7 kB
+per open.

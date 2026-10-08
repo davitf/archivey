@@ -33,6 +33,12 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "brotli": 8,
     "lz4": 8,
     "deflate64": 8,
+    # Accelerators forced on, compared with the accelerators-off decode. Each input
+    # decodes twice, and the gzip family starts a child process, so these run slower.
+    "gzip_accel": 15,
+    "zlib_accel": 10,
+    "deflate_accel": 10,
+    "bzip2_accel": 15,
 }
 
 TARGET_NAMES: tuple[str, ...] = tuple(DEFAULT_BUDGETS)

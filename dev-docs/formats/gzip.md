@@ -372,14 +372,16 @@ gzip-specific only; the shared items are [`single-file.md`](single-file.md) §4.
 
 - **`rapidgzip` is native code outside the defended surface.** It aborts on a truncated
   stream (contained by the child process), and the mutation harness found it busy-looping
-  on crafted input. A loop in the child is still a loop: there is no timeout. The fuzzers
-  run with accelerators off, and `SECURITY.md` tells callers with a latency budget to keep
-  them off for untrusted input (threat-model O5).
+  on crafted input. A loop in the child is still a loop: there is no timeout. The Atheris
+  `gzip_accel`, `zlib_accel` and `deflate_accel` targets fuzz it under libFuzzer's own
+  timeout, and `SECURITY.md` tells callers with a latency budget to keep it off for
+  untrusted input (threat-model O5).
 - **The ISIZE backstop trusts the trailer, but only after a decode to the end.** A crafted
   file whose ISIZE matches the bytes `rapidgzip` delivered before a soft end used to pass;
   the compressed-position check now hands it to the standard library engine. Within a
   decode that did reach the end, a wrong ISIZE on a member before the last still passes
-  (§5), with every member's CRC-32 checked.
+  (§5), and so does one on the last member behind zero padding whose last four bytes equal
+  the length decoded, with every member's CRC-32 checked.
 - **The multi-member scan reads the whole file.** When ISIZE disagrees, the backstop scans
   forward for a member magic in 1 MiB blocks, on an independent view, and has zlib decode
   from each match, at most 64 KiB of input and 1 MiB of output. It runs once per stream,
@@ -404,7 +406,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The same truncated `.gz` raises `TruncatedError` on Linux and `CorruptionError` on Windows under `rapidgzip` | **library** | Windows loses the message detail (§2.3). Catch `ReadError` for both |
 | A truncated multi-member `.gz` read through `rapidgzip` can end short with no error | **library** / **archivey** | `rapidgzip` ends softly. The backstop raises when the decode stopped before the end of the file; a cut whose decode still reaches the end, with zlib confirming a later member, can pass. Summing each member's ISIZE is deferred (§7) |
 | A member after the first with a header CRC that does not match or reserved `FLG` bits reads clean under `rapidgzip`; the standard library raises | **library** / **archivey** | `rapidgzip` does not check these, and hides member boundaries. The first member's header is checked (§2.3); the rest is the per-member question in §7 |
-| A wrong ISIZE on any member but the last reads clean under `rapidgzip`; the standard library raises | **library** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3) |
+| A wrong ISIZE on any member but the last reads clean under `rapidgzip`; the standard library raises. So does one on the last member when zero padding follows and the file's last four bytes equal the length decoded | **library** / **archivey** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3). The ISIZE backstop reads the file's last four bytes, and telling padding from a trailer that ends in zero bytes would need a CRC-32 over the output, or a second decode, for every file that ends in a zero byte. Found by the `gzip_accel` fuzz target |
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this. A stream cut before its first byte of output raises, as with the accelerator off |
 | `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3). Found by `tests/test_nested_archives.py` |
 | Several zlib streams one after another, read in bounded reads to the end under `use_rapidgzip=ON`, read as one; the standard library reads the first alone and reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. A completing `read()` and a seek to the end stop at the first stream as with the accelerator off; bounded reads have the second stream's bytes before the end shows up, and the Adler-32 check accepts them when the standard library reproduces them stream by stream (§2.3), so they get those bytes as content and no `ARCHIVE_TRAILING_DATA` |

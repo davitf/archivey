@@ -87,6 +87,7 @@ def run_target(
     budget: int | None = None,
     fixup: FixupFn | None = None,
     per_input_timeout: float | None = None,
+    libfuzzer_args: Sequence[str] = (),
     argv: list[str] | None = None,
     smoke: bool = False,
 ) -> int:
@@ -95,6 +96,10 @@ def run_target(
     Success contract: budget expires with only typed ``ArchiveyError`` or clean returns
     inside ``test_one_input`` (the target itself must swallow ``ArchiveyError``). Any other
     exception, timeout, or abort fails the run and persists the crashing input.
+
+    ``libfuzzer_args`` are extra libFuzzer flags from the target spec (the accelerator
+    targets' ``-timeout`` and ``-rss_limit_mb``). Their breaches are written by libFuzzer
+    itself under the artifact prefix (``timeout-*``, ``oom-*``), not by ``persist_crash``.
     """
     import atheris
 
@@ -114,6 +119,7 @@ def run_target(
         f"-max_total_time={max(1, seconds)}",
         f"-artifact_prefix={artifact_prefix}",
         "-print_final_stats=1",
+        *libfuzzer_args,
         str(corpus),
     ]
     if argv:

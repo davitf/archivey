@@ -643,7 +643,7 @@ abort the process ([accepted](#a-native-decoder-crash-or-memoryerror)).
 **Property.** Container and header parsing (the part of the defended surface archivey
 writes itself) is exercised against mutated and coverage-guided input.
 
-**Mechanism.** Three fuzz layers, all with accelerators off:
+**Mechanism.** Three fuzz layers; the first two run with accelerators off:
 1. `tests/test_mutation_fuzz.py` mutates every corpus archive (truncations, bit flips,
    zeroed blocks, garbage prefixes and suffixes) and drives open, list, read, extract
    and detection, asserting a typed error or success, no hang, and a destination that
@@ -652,7 +652,14 @@ writes itself) is exercised against mutated and coverage-guided input.
 2. `tests/test_property_safety.py` (Hypothesis) over the pure safety logic.
 3. `tests/atheris_fuzz/` (Atheris, coverage-guided) over 7z and RAR header parse with CRC
    fix-up, 7z/RAR open and list, `detect_format` with a cost-within-budget assertion,
-   ZIP open and bounded member read, TAR/ISO open and list, and the standalone codecs. A
+   ZIP open and bounded member read, TAR/ISO open and list, and the standalone codecs.
+   Four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
+   `bzip2_accel`) decode each input with the accelerator on and off and fail when the
+   accelerated bytes differ, before or after a seek, or when it ends cleanly where the
+   decode with it off raised. zlib and raw DEFLATE inputs carry a declared size, as a
+   ZIP member or 7z coder does, since `AUTO` engages rapidgzip on them only with one.
+   libFuzzer's own `-timeout` and `-rss_limit_mb` bound those targets: unlike a Python
+   alarm, they fire while the main thread is inside native code. A
    short partition runs on every pull request; the full one on a change-guarded nightly
    and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
@@ -868,7 +875,8 @@ keep a hostile archive from getting that far. Public:
 asks for seeking. They are third-party C++ that can busy-loop on crafted input, in a
 thread no Python timeout can cleanly interrupt. The gzip-family decoder runs in a child
 process, so an abort costs only the member, but a loop there has no read timeout. The
-fuzz layers run with accelerators off, so they sit outside the fuzzed surface. Callers
+Atheris accelerator targets fuzz them ([Parsers survive hostile bytes](#parsers-survive-hostile-bytes))
+under libFuzzer's timeout; a loop they have not found is still unbounded at run time. Callers
 with a hard latency budget set them to `OFF`. Public:
 [known and accepted limits](../docs/extracting.md#known-and-accepted-limits) and
 [hardening notes](../docs/extracting.md#hardening-notes-for-callers).
@@ -960,11 +968,6 @@ No detection tier decodes scan candidates today, so the 683-fold amplification i
 that does (makeself compressor needles after a `#!` stub, planned after 0.2.0) must draw
 on the shared `max_decode_input` allowance and be measured before this is settled.
 
-### Accelerator fuzzing
-
-Fuzzing the accelerators needs a sandbox that caps wall-clock and memory and kills the
-child on breach. Until then they stay [outside the fuzzed surface](#accelerators-on-by-default-and-unbounded-in-time).
-
 ### OSS-Fuzz
 
 Onboarding comes after the first release. The bar for calling archivey safe (threat
@@ -992,7 +995,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O2 | Case and Unicode-normalization collisions | [Names are safe](#names-are-safe-on-the-target-filesystem) |
 | O3 | Windows reserved names, trailing dots and spaces | [Names are safe](#names-are-safe-on-the-target-filesystem) |
 | O4 | NTFS alternate data streams | [Names are safe](#names-are-safe-on-the-target-filesystem) |
-| O5 | Fuzzing | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes), [OSS-Fuzz](#oss-fuzz), [Accelerator fuzzing](#accelerator-fuzzing) |
+| O5 | Fuzzing | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes), [OSS-Fuzz](#oss-fuzz) |
 | O5 (accelerator hang) | | [Accelerators on by default](#accelerators-on-by-default-and-unbounded-in-time) |
 | O5 (pycdlib cycle) | | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes) |
 | O5 (`"."` root poisoning) | | [Extraction stays in the destination](#extraction-stays-in-the-destination) |
