@@ -119,6 +119,7 @@ from archivey.internal.password_confirm import (
     REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
+    attempt_with_confirm,
     first_crc_match,
     plan_password_confirm,
     run_password_confirm_plan,
@@ -542,7 +543,7 @@ def _zip_timestamps(
         except ValueError:
             issues.append(
                 TimestampIssue(
-                    field="date_time",
+                    field="mtime",
                     source="dos",
                     value_repr=repr(info.date_time),
                     message=(
@@ -654,6 +655,18 @@ def _zip_created(
     if create_system in _ZIP_BIRTH_TIME_HOSTS:
         return stored, None
     return None, stored
+
+
+def _zip_timestamp_field(create_system: CreateSystem, slot: str) -> str:
+    """The ``ArchiveMember`` field a stored time slot would have filled.
+
+    The creation slot is ``created`` or ``ctime`` by host, as in :func:`_zip_created`.
+    That field may still hold a value from a lower-precedence layer, such as the DOS
+    stamp under a bad NTFS modification time.
+    """
+    if slot == "ctime":
+        return "created" if create_system in _ZIP_BIRTH_TIME_HOSTS else "ctime"
+    return {"mtime": "modified", "atime": "accessed"}[slot]
 
 
 def _reparse_fallback_type(
@@ -1172,7 +1185,8 @@ class ZipReader(BaseArchiveReader):
             member, reparse_fallback=reparse_fallback, member_id=index
         )
         for issue in ts_issues:
-            self._emit_timestamp_invalid(member, index, issue)
+            field = _zip_timestamp_field(create_system, issue.field)
+            self._emit_timestamp_invalid(member, index, replace(issue, field=field))
         return member
 
     def _zipcrypto_check_byte(self, info: zipfile.ZipInfo) -> int:
@@ -1687,7 +1701,9 @@ class ZipReader(BaseArchiveReader):
             try:
                 decoded: BinaryIO = self._finish_password_attempt(
                     member,
-                    lambda password: decode_body(stage(password)),
+                    lambda: self._passwords.attempt(
+                        member, lambda password: decode_body(stage(password))
+                    ),
                     ambiguous_holder=None,
                 )
             except _ZIP_MEMBER_READ_ERRORS as exc:
@@ -1735,7 +1751,11 @@ class ZipReader(BaseArchiveReader):
                 payload_complete=payload_complete,
             )
 
-        stream = self._finish_password_attempt(member, decrypt, ambiguous_holder=None)
+        stream = self._finish_password_attempt(
+            member,
+            lambda: self._passwords.attempt(member, decrypt),
+            ambiguous_holder=None,
+        )
         # Only the check byte vouched for this password; the CRC at EOF is the check.
         stream = self._watch_unverified(
             stream, info, member, cipher, check="weak_open_check"
@@ -1808,7 +1828,22 @@ class ZipReader(BaseArchiveReader):
                 ambiguous_holder[0] = failure
             return failure
 
-        def decrypt(password: bytes) -> tuple[ArchiveStream, PasswordConfirmVerdict]:
+        # The walk to the member's end: its CRC, or for WinZip AES the HMAC. Run for
+        # each candidate that survived the bounded plan when several did, since only
+        # the end can tell them apart. ``None`` when the bounded plan already is it.
+        full_plan: PasswordConfirmPlan | None = None
+        if (
+            not plan.confirms
+            and size > PASSWORD_CONFIRM_PREFIX_BYTES
+            and (crc_anchor is not None or cipher.is_aes)
+        ):
+            full_plan = PasswordConfirmPlan(
+                ((size, crc_anchor),), None, confirms=True, bounded=False
+            )
+
+        def run_plan(
+            password: bytes, walk: PasswordConfirmPlan, walk_to_hmac: bool
+        ) -> tuple[bytes, PasswordConfirmVerdict]:
             # A damaged local header, a short encryption header and a failed cheap
             # check all raise from the stage, before anything below can mistake them
             # for a wrong key's garbage.
@@ -1827,8 +1862,8 @@ class ZipReader(BaseArchiveReader):
                         "Password candidate decrypted codec settings over a decoder "
                         "limit for this ZIP member"
                     ) from exc
-                verdict = run_password_confirm_plan(probe, plan)
-                if verdict is not PasswordConfirmVerdict.REJECTED and reads_to_hmac:
+                verdict = run_password_confirm_plan(probe, walk)
+                if verdict is not PasswordConfirmVerdict.REJECTED and walk_to_hmac:
                     # The read that finds the end is the one that checks the HMAC.
                     if probe.read(1):
                         verdict = PasswordConfirmVerdict.REJECTED
@@ -1853,26 +1888,32 @@ class ZipReader(BaseArchiveReader):
                     probe.close()
             if verdict is PasswordConfirmVerdict.REJECTED:
                 raise candidate_failed(ended_early)
-            # Fresh stream for the caller: nothing decoded here is handed out.
-            return decode_body(stage(password)), verdict
+            return password, verdict
 
-        def promote_candidate_password(
-            accepted: tuple[ArchiveStream, PasswordConfirmVerdict],
-        ) -> bool:
-            # Decides whether the accepted candidate password joins known-good. This
-            # path runs only for an ambiguous candidate set, so a survivor with no
-            # confirming anchor stays out.
-            _, verdict = accepted
-            return verdict is PasswordConfirmVerdict.CONFIRMED
+        def bounded_check(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+            return run_plan(password, plan, reads_to_hmac)
 
-        decoded, verdict = self._finish_password_attempt(
+        def full_check(password: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+            assert full_plan is not None
+            return run_plan(password, full_plan, cipher.is_aes)
+
+        password, verdict = self._finish_password_attempt(
             member,
-            decrypt,
+            lambda: attempt_with_confirm(
+                self._passwords,
+                member,
+                bounded_check,
+                None if full_plan is None else full_check,
+            ),
             ambiguous_holder=ambiguous_holder,
-            promote=promote_candidate_password,
             failure_is_damage=cipher.is_aes,
             limit_holder=limit_holder,
         )
+        # Fresh stream for the caller: nothing decoded by a probe is handed out.
+        try:
+            decoded = decode_body(stage(password))
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise_member_error(exc, member.name)
         stream: BinaryIO = decoded
         if verdict is not PasswordConfirmVerdict.CONFIRMED:
             stream = self._watch_unverified(
@@ -2048,14 +2089,17 @@ class ZipReader(BaseArchiveReader):
     def _finish_password_attempt(
         self,
         member: ArchiveMember,
-        decrypt: Callable[[bytes], _T],
+        attempt: Callable[[], _T],
         *,
         ambiguous_holder: list[EncryptionError] | None,
-        promote: Callable[[_T], bool] | None = None,
         failure_is_damage: bool = False,
         limit_holder: list[ResourceLimitError] | None = None,
     ) -> _T:
-        """Try each password through ``decrypt``, and name what exhausting them means.
+        """Run ``attempt`` over the passwords, and name what exhausting them means.
+
+        ``attempt`` is the candidate loop: ``_PasswordCandidates.attempt`` for the one
+        possible password, :func:`~archivey.internal.password_confirm.attempt_with_confirm`
+        for several.
 
         ``failure_is_damage`` is for WinZip AES: a candidate that failed integrity had
         already passed the 16-bit ``pw_verify``, which a wrong password passes once in
@@ -2073,7 +2117,7 @@ class ZipReader(BaseArchiveReader):
         outcome: raising the limit may be all a right password needs.
         """
         try:
-            return self._passwords.attempt(member, decrypt, promote=promote)
+            return attempt()
         except _PasswordCandidatesExhausted as exc:
             if limit_holder:
                 noted = _unconfirmed_resource_limit(limit_holder[0])

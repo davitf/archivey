@@ -6,9 +6,11 @@ Usage (from the repo root)::
     uv run python scripts/gen_rar_fixtures.py
 
 Requires the RARLAB ``rar`` binary on ``PATH``. RAR 7 dropped ``-ma4`` (RAR4
-writing); when the system ``rar`` cannot write RAR4, this script downloads a
-pinned RAR 6.24 linux-x64 binary into the user cache and uses that for RAR4
-(and, when selected, all) fixture builds.
+writing); when the system ``rar`` cannot write RAR4, this script downloads
+Ubuntu's ``rar`` 6.23 package (linux x86-64), checks it against a pinned SHA-256,
+unpacks only the ``rar`` binary into the user cache, and uses that for the RAR4
+fixtures. The package is never installed. ``--only`` limits which fixtures are
+written, so new ones can be added without rewriting the existing ones.
 
 Legacy RAR 1.5 / 2.x archives (``rar15-comment.rar``, ``rar202-comment-nopsw.rar``)
 cannot be produced by modern ``rar`` and are left untouched — they were copied
@@ -19,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import fnmatch
 import hashlib
+import io
 import os
 import shutil
 import stat
@@ -35,10 +39,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = REPO_ROOT / "tests" / "fixtures" / "rar"
 
-# Pinned RARLAB build that still supports ``-ma4``.
-_RAR624_URL = "https://www.rarlab.com/rar/rarlinux-x64-624.tar.gz"
-_RAR624_SHA256 = "88e22a8e84125c947637bbf28c746e338a0a63279d80f9f9d7373603875db1eb"
-_RAR624_MEMBER = "rar/rar"
+# The last RARLAB ``rar`` that writes RAR4 (``-ma4``), as Ubuntu 22.04 ships it. The
+# SHA-256 is the one Ubuntu's jammy-updates multiverse ``Packages`` index lists for this
+# file; that index is covered by the signed ``InRelease``. Ubuntu's archive rather
+# than rarlab.com, because some build environments (Claude Code sessions among them)
+# can reach the first and not the second.
+_RAR623_DEB_URL = (
+    "https://archive.ubuntu.com/ubuntu/pool/multiverse/r/rar/"
+    "rar_6.23-1~22.04.1_amd64.deb"
+)
+_RAR623_DEB_SHA256 = "6f83c3b3880f0f44ce8f682b3a02fae027e9c6e61c006ef65a48bf0d9257efed"
+_RAR623_DEB_MEMBER = "./usr/bin/rar"
 
 # Fixtures modern ``rar`` cannot recreate — do not delete/overwrite.
 _LEGACY_KEEP = frozenset(
@@ -75,6 +86,28 @@ _COMMENT: tuple[_File, ...] = (
 _ENCRYPTION: tuple[_File, ...] = (
     _File("secret.txt", b"This is secret"),
     _File("also_secret.txt", b"This is also secret"),
+)
+
+
+def _hex_lines(seed: bytes, size: int) -> bytes:
+    """``size`` bytes of SHA-256 hex lines: about half the bits are entropy, so ``-m3``
+    packs them to roughly half their size, and every byte depends on ``seed``."""
+    lines = (
+        hashlib.sha256(seed + i.to_bytes(4, "big")).hexdigest().encode() + b"\n"
+        for i in range(size // 65 + 1)
+    )
+    return b"".join(lines)[:size]
+
+
+# About 100 KB packed per archive under ``-m3``: two members of 100 000 bytes each,
+# both past the 64 KiB confirm prefix.
+_ENCRYPTION_LARGE: tuple[_File, ...] = (
+    _File("large1.txt", _hex_lines(b"large1", 100_000)),
+    _File("large2.txt", _hex_lines(b"large2", 100_000)),
+)
+
+_ENCRYPTION_LARGE_STORED: tuple[_File, ...] = (
+    _File("large_stored.txt", _hex_lines(b"large_stored", 100_000)),
 )
 
 _SYMLINKS: tuple[_File, ...] = (
@@ -173,7 +206,7 @@ def _build_xtime(rar_bin: Path, out: Path, *, extra: Sequence[str] = ()) -> None
         path.write_bytes(_XTIME_PAYLOAD)
         _touch_times(path, mtime=_XTIME_MTIME, atime=_XTIME_ATIME)
         _rar_a(rar_bin, out, ["file.txt"], cwd=root, extra=(*extra, "-m0", "-tsmca"))
-    print(f"wrote {out.relative_to(REPO_ROOT)}")
+    print(f"wrote {_shown(out)}")
 
 
 def _run(cmd: Sequence[str], *, cwd: Path) -> None:
@@ -228,28 +261,59 @@ def _cache_dir() -> Path:
     return base / "archivey" / "rar-gen"
 
 
-def _fetch_rar624() -> Path:
-    """Download pinned RAR 6.24 into the user cache; return path to ``rar``."""
-    dest_dir = _cache_dir() / "rarlinux-x64-624"
+def _shown(path: Path) -> Path:
+    """``path`` relative to the repo when it is inside it (``--only`` builds elsewhere)."""
+    return path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
+
+
+def _ar_member(archive: bytes, name: str) -> bytes:
+    """The body of member ``name`` in a Unix ``ar`` archive (a ``.deb``)."""
+    if not archive.startswith(b"!<arch>\n"):
+        raise RuntimeError("not an ar archive")
+    pos = 8
+    while pos + 60 <= len(archive):
+        header = archive[pos : pos + 60]
+        member = header[:16].decode("ascii").strip().rstrip("/")
+        size = int(header[48:58].decode("ascii").strip())
+        body = archive[pos + 60 : pos + 60 + size]
+        if member == name:
+            return body
+        pos += 60 + size + (size & 1)
+    raise RuntimeError(f"{name} not found in the package")
+
+
+def _zstd_decompress(data: bytes) -> bytes:
+    try:
+        from compression import zstd  # type: ignore[import-not-found]  # 3.14+
+    except ImportError:
+        from backports import zstd  # type: ignore[no-redef]
+    return zstd.decompress(data)
+
+
+def _fetch_rar623() -> Path:
+    """Download Ubuntu's pinned rar 6.23 package; unpack ``rar`` into the user cache."""
+    dest_dir = _cache_dir() / "rar-6.23-ubuntu"
     rar_bin = dest_dir / "rar"
     if rar_bin.is_file() and os.access(rar_bin, os.X_OK) and _supports_ma4(rar_bin):
         return rar_bin
 
     dest_dir.mkdir(parents=True, exist_ok=True)
-    tarball = dest_dir / "rarlinux-x64-624.tar.gz"
-    print(f"Downloading {_RAR624_URL} -> {tarball}", file=sys.stderr)
-    urllib.request.urlretrieve(_RAR624_URL, tarball)  # noqa: S310 - pinned vendor URL
-    if _RAR624_SHA256:
-        digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
-        if digest != _RAR624_SHA256:
-            raise RuntimeError(
-                f"SHA-256 mismatch for rar 6.24 tarball: {digest} != {_RAR624_SHA256}"
-            )
-    with tarfile.open(tarball, "r:gz") as tf:
-        # Extract only the rar binary (and keep it flat as dest_dir/rar).
-        member = tf.getmember(_RAR624_MEMBER)
-        member.name = "rar"
-        tf.extract(member, path=dest_dir, filter="data")
+    print(f"Downloading {_RAR623_DEB_URL}", file=sys.stderr)
+    with urllib.request.urlopen(_RAR623_DEB_URL) as response:  # noqa: S310 - pinned
+        package = response.read()
+    digest = hashlib.sha256(package).hexdigest()
+    if digest != _RAR623_DEB_SHA256:
+        raise RuntimeError(
+            f"SHA-256 mismatch for the rar 6.23 package: {digest} != "
+            f"{_RAR623_DEB_SHA256}"
+        )
+    data_tar = _zstd_decompress(_ar_member(package, "data.tar.zst"))
+    with tarfile.open(fileobj=io.BytesIO(data_tar)) as tf:
+        member = tf.getmember(_RAR623_DEB_MEMBER)
+        extracted = tf.extractfile(member)
+        if extracted is None:
+            raise RuntimeError(f"{_RAR623_DEB_MEMBER} is not a regular file")
+        rar_bin.write_bytes(extracted.read())
     rar_bin.chmod(rar_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     if not _supports_ma4(rar_bin):
         raise RuntimeError(f"downloaded {rar_bin} still lacks -ma4")
@@ -269,19 +333,19 @@ def _resolve_rar(*, need_ma4: bool) -> Path:
     which = shutil.which("rar")
     if which is None:
         print(
-            "No system rar; fetching RAR 6.24"
+            "No system rar; fetching rar 6.23"
             + (" for -ma4 support" if need_ma4 else ""),
             file=sys.stderr,
         )
-        return _fetch_rar624()
+        return _fetch_rar623()
 
     system = Path(which)
     if need_ma4 and not _supports_ma4(system):
         print(
-            f"System rar ({system}) lacks -ma4; fetching RAR 6.24 for RAR4 fixtures",
+            f"System rar ({system}) lacks -ma4; fetching rar 6.23 for RAR4 fixtures",
             file=sys.stderr,
         )
-        return _fetch_rar624()
+        return _fetch_rar623()
     return system
 
 
@@ -342,7 +406,7 @@ def _build_file_version(
                 _rar_a(rar_bin, out, [path_name], cwd=root, extra=extras)
             else:
                 _rar_a_update(rar_bin, out, [path_name], cwd=root, extra=extras)
-    print(f"wrote {out.relative_to(REPO_ROOT)}")
+    print(f"wrote {_shown(out)}")
 
 
 def _build_file_version_solid(rar_bin: Path, out: Path) -> None:
@@ -357,7 +421,7 @@ def _build_file_version_solid(rar_bin: Path, out: Path) -> None:
         _rar_a(rar_bin, out, ["a.txt", "b.txt"], cwd=root, extra=extras)
         (root / "a.txt").write_bytes(_FILE_VERSION_SOLID_V2)
         _rar_a_update(rar_bin, out, ["a.txt"], cwd=root, extra=extras)
-    print(f"wrote {out.relative_to(REPO_ROOT)}")
+    print(f"wrote {_shown(out)}")
 
 
 def _ci_listing_recipe() -> tuple[int, int, int]:
@@ -400,7 +464,7 @@ def _build_store_listing_rar(
             cwd=root,
             extra=("-m0", "-s" if solid else "-s-", "-ep1"),
         )
-    print(f"wrote {out.relative_to(REPO_ROOT)}")
+    print(f"wrote {_shown(out)}")
 
 
 def _build_glob_named(
@@ -424,7 +488,7 @@ def _build_glob_named(
                 first = False
             else:
                 _rar_a_update(rar_bin, out, ["."], cwd=root, extra=extras)
-    print(f"wrote {out.relative_to(REPO_ROOT)}")
+    print(f"wrote {_shown(out)}")
 
 
 def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
@@ -450,7 +514,7 @@ def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
         star.mkdir()
         (star / "data*").write_bytes(_WILDCARD_VER_GLOB)
         _rar_a_update(rar_bin, out, ["."], cwd=star, extra=(*extras, "-r", "-ep"))
-    print(f"wrote {out.relative_to(REPO_ROOT)}")
+    print(f"wrote {_shown(out)}")
 
 
 # unar 1.10.1 writes nothing for a compressed RAR5 member when a Huffman lookup near
@@ -577,7 +641,44 @@ def _build_unar_drop(rar5_bin: Path, out_dir: Path) -> None:
             _rar_a(rar5_bin, out, names, cwd=root, extra=extra)
         if strip is not None:
             _strip_file_crc32(out, strip)
-        print(f"wrote {out.relative_to(REPO_ROOT)}")
+        print(f"wrote {_shown(out)}")
+
+
+def _cut_set_payload(index: int, size: int) -> bytes:
+    """Member ``index`` of the ``tinyvol_cut*`` sets: text that compresses about
+    twofold. ``tests/test_rar_missing_last_volume.py`` rebuilds the same bytes."""
+    digest = b"".join(
+        hashlib.sha256(f"{index}:{block}".encode()).digest()
+        for block in range(size // 32 + 1)
+    )
+    return bytes(b"abcdefgh \n"[byte % 10] for byte in digest[:size])
+
+
+# ``tinyvol_cut*``: (stem, member size, ``rar`` switches). Four members over several
+# volumes; the last volume is deleted, so the fourth member runs into it.
+_CUT_SETS: tuple[tuple[str, int, tuple[str, ...]], ...] = (
+    ("tinyvol_cut", 1000, ("-m0", "-v1500b")),
+    ("tinyvol_cut_solid", 2000, ("-s", "-m3", "-v900b")),
+)
+
+
+def _build_missing_last_volume(rar5_bin: Path, out_dir: Path) -> None:
+    """Volume sets with their last volume deleted, stored and solid."""
+    for stem, size, extra in _CUT_SETS:
+        for stale in out_dir.glob(f"{stem}.part*.rar"):
+            stale.unlink()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            names = [f"{letter}.txt" for letter in "abcd"]
+            for index, name in enumerate(names):
+                (root / name).write_bytes(_cut_set_payload(index, size))
+            _rar_a(rar5_bin, out_dir / f"{stem}.rar", names, cwd=root, extra=extra)
+        volumes = sorted(out_dir.glob(f"{stem}.part*.rar"))
+        if len(volumes) < 4:
+            raise RuntimeError(f"expected {stem} to span at least four volumes")
+        volumes[-1].unlink()
+        for volume in volumes[:-1]:
+            print(f"wrote {volume.relative_to(REPO_ROOT)}")
 
 
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
@@ -615,7 +716,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
             else:
                 names = _write_tree(root, files)
                 _rar_a(rar_bin, out, names, cwd=root, extra=extras)
-        print(f"wrote {out.relative_to(REPO_ROOT)}")
+        print(f"wrote {_shown(out)}")
 
     # --- RAR5 ---
     build(rar5_bin, "basic_nonsolid__.rar", _BASIC, extra=("-m0",))
@@ -682,6 +783,18 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     )
     _build_wildcard_ver(rar5_bin, out_dir / "wildcard_ver__.rar")
     _build_xtime(rar5_bin, out_dir / "xtime__.rar")
+    # Solid, with the second member stored (``-msbin``): rar sets that member's own
+    # solid flag although its bytes sit in the file as plaintext. The first member is
+    # compressed, so the archive is solid in more than name.
+    build(
+        rar5_bin,
+        "stored_solid_member__.rar",
+        (
+            _File("first.txt", b"compressible line\n" * 128),
+            _File("second.bin", hashlib.sha256(b"stored_solid_member").digest() * 64),
+        ),
+        extra=("-s", "-m3", "-msbin"),
+    )
     build(
         rar5_bin,
         "stored_m0.rar",
@@ -756,8 +869,38 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
             raise RuntimeError(f"expected {part1.name} and {part2.name}")
         if out.is_file():
             out.unlink()
-        print(f"wrote {part1.relative_to(REPO_ROOT)}")
-        print(f"wrote {part2.relative_to(REPO_ROOT)}")
+        print(f"wrote {_shown(part1)}")
+        print(f"wrote {_shown(part2)}")
+
+    # Compressed multi-volume: the reader joins a stored member's parts itself, so
+    # tests that need unrar to read across volumes (and the volumes to be copied for
+    # it) use this one. SHA-256 blocks keep the 1600 bytes from compressing below
+    # one volume.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "payload.bin").write_bytes(
+            b"".join(hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(50))
+        )
+        out = out_dir / "tinyvol_m3.rar"
+        _rar_a(
+            rar5_bin,
+            out,
+            ["payload.bin"],
+            cwd=root,
+            extra=("-m3", "-v900b"),
+        )
+        part1 = out_dir / "tinyvol_m3.part1.rar"
+        part2 = out_dir / "tinyvol_m3.part2.rar"
+        if (
+            not part1.is_file()
+            or not part2.is_file()
+            or (out_dir / "tinyvol_m3.part3.rar").exists()
+        ):
+            raise RuntimeError("expected tinyvol_m3 to span exactly two volumes")
+        if out.is_file():
+            out.unlink()
+        print(f"wrote {_shown(part1)}")
+        print(f"wrote {_shown(part2)}")
 
     # Header-encrypted volumes: every part carries its own encryption record with
     # the same salt, so a listing must derive the header key once, not per part.
@@ -783,7 +926,9 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         if out.is_file():
             out.unlink()
         for part in parts:
-            print(f"wrote {part.relative_to(REPO_ROOT)}")
+            print(f"wrote {_shown(part)}")
+
+    _build_missing_last_volume(rar5_bin, out_dir)
 
     # --- RAR4 (needs -ma4) ---
     # Classic extension volumes (name.rar + name.r00…): RAR4-only via -vn.
@@ -802,8 +947,8 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         vol1 = out_dir / "tinyvol_rnn.r00"
         if not vol0.is_file() or not vol1.is_file():
             raise RuntimeError(f"expected {vol0.name} and {vol1.name}")
-        print(f"wrote {vol0.relative_to(REPO_ROOT)}")
-        print(f"wrote {vol1.relative_to(REPO_ROOT)}")
+        print(f"wrote {_shown(vol0)}")
+        print(f"wrote {_shown(vol1)}")
 
     _build_xtime(rar4_bin, out_dir / "xtime__rar4.rar", extra=("-ma4",))
     build(rar4_bin, "basic_nonsolid__rar4.rar", _BASIC, extra=("-ma4", "-m0"))
@@ -838,6 +983,28 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         _FILE_VERSION_REVISIONS,
         extra=("-ma4", "-m0"),
     )
+    # Encrypted RAR4 members larger than the 64 KiB password-confirm prefix. RAR3/4
+    # data carries no password check, so a wrong password from a list can survive the
+    # prefix; these exercise the full check that settles it. ``-p`` encrypts the data
+    # only, so the listing needs no password.
+    build(
+        rar4_bin,
+        "encryption_large__rar4.rar",
+        _ENCRYPTION_LARGE,
+        extra=("-ma4", "-m3", "-ppassword"),
+    )
+    build(
+        rar4_bin,
+        "encryption_large_solid__rar4.rar",
+        _ENCRYPTION_LARGE,
+        extra=("-ma4", "-s", "-m3", "-ppassword"),
+    )
+    build(
+        rar4_bin,
+        "encryption_large_stored__rar4.rar",
+        _ENCRYPTION_LARGE_STORED,
+        extra=("-ma4", "-m0", "-ppassword"),
+    )
 
     kept = ", ".join(sorted(_LEGACY_KEEP))
     print(f"left legacy fixtures untouched: {kept}")
@@ -851,6 +1018,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=OUT_DIR,
         help=f"output directory (default: {OUT_DIR})",
     )
+    parser.add_argument(
+        "--only",
+        action="append",
+        metavar="GLOB",
+        help=(
+            "write only the fixtures whose file name matches GLOB (repeatable); "
+            "everything is still built, in a temporary directory, and the rest is "
+            "discarded, so existing fixtures stay byte-identical"
+        ),
+    )
     args = parser.parse_args(argv)
     out_dir = args.out_dir.resolve()
 
@@ -862,7 +1039,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"rar5 binary: {rar5}", file=sys.stderr)
     print(f"rar4 binary: {rar4}", file=sys.stderr)
-    generate_all(rar5_bin=rar5, rar4_bin=rar4, out_dir=out_dir)
+    if not args.only:
+        generate_all(rar5_bin=rar5, rar4_bin=rar4, out_dir=out_dir)
+        return 0
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td)
+        generate_all(rar5_bin=rar5, rar4_bin=rar4, out_dir=scratch)
+        chosen = sorted(
+            path
+            for path in scratch.iterdir()
+            if any(fnmatch.fnmatchcase(path.name, glob) for glob in args.only)
+        )
+        if not chosen:
+            raise SystemExit(f"--only matched no fixture: {args.only}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for path in chosen:
+            shutil.copyfile(path, out_dir / path.name)
+            print(f"kept {path.name}", file=sys.stderr)
     return 0
 
 

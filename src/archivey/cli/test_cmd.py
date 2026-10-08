@@ -166,9 +166,10 @@ def run_test(
                 on_progress.close()
 
         # Decided only now: a 7z or RAR4 link's target is member data the pass reads
-        # at its end, so which links need this is known only once the pass is over. A
-        # target the pass read was checked by that read, as listing checks a ZIP
-        # link's, and the link is skipped like a ZIP link.
+        # at its end, in either reader mode, so which links need this is known only
+        # once the pass is over. A target the pass read was checked by that read, as
+        # listing checks a ZIP link's, and the link is skipped like a ZIP link. Only a
+        # link the pass could not read a target for is opened again here.
         unverified: list[ArchiveMember] = []
         for link in pending_links:
             if _link_needs_verification(link):

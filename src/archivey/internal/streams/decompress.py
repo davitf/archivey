@@ -377,7 +377,8 @@ class FramedDecoder(BaseDecoder):
     ``magic`` begin another stream (a concatenated file); zeros are padding; anything
     else ends the data and sets :attr:`trailing_bytes`. A codec with no magic (LZMA
     Alone) passes a :data:`StreamStart` check of the header instead, which may raise to
-    refuse the next stream.
+    refuse the next stream. ``zero_padding=False`` hands zeros to that check too (raw
+    LZMA, where 7-Zip refuses any byte after the end marker).
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
@@ -391,9 +392,11 @@ class FramedDecoder(BaseDecoder):
         new_decompressor: Callable[[], _OneStreamDecompressor],
         *,
         magic: StreamStart,
+        zero_padding: bool = True,
     ) -> None:
         self._new = new_decompressor
         self._magic = magic
+        self._zero_padding = zero_padding
         self._decomp = new_decompressor()
         self._fed = False
         # Past a stream's end, looking for the next one.
@@ -409,11 +412,13 @@ class FramedDecoder(BaseDecoder):
         if isinstance(point.state, Bzip2Resume):
             # Only the bzip2 takeover adds such a point (``bzip2_resume``).
             return Bzip2ResumeDecoder(point.state, self)
-        return FramedDecoder(self._new, magic=self._magic)
+        return FramedDecoder(
+            self._new, magic=self._magic, zero_padding=self._zero_padding
+        )
 
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
-        rest = data.lstrip(b"\x00")
+        rest = data.lstrip(b"\x00") if self._zero_padding else data
         if not rest:
             return b""
         state = self._magic(rest)
@@ -1658,13 +1663,16 @@ def FramedDecompressorStream(
     *,
     codec_name: str,
     magic: StreamStart,
+    zero_padding: bool = True,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec (forward-only; O(n) rewind)."""
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: FramedDecoder(new_decompressor, magic=magic),
+        make_decoder=lambda _p, _i: FramedDecoder(
+            new_decompressor, magic=magic, zero_padding=zero_padding
+        ),
         collector=collector,
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,

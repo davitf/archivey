@@ -233,7 +233,7 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `raw_name` | The stored bytes `name` was decoded from, verbatim (no backslash rewrite) | — |
 | `extra["alternate_raw_name"]` | The CDH name bytes, when the Unicode Path field named the member | No such field, or it does not match |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
-| `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra`. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
+| `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra`. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
 | `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory via `ZipInfo.is_dir()` otherwise | — |
 | `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
 | `compression` | `compress_type` → `CompressionMethod` | — |
@@ -308,6 +308,19 @@ trailing slash to name normalization (whose diagnostic the backend suppresses fo
 stored with the directory convention, §2.2.1). It keeps the `reparse_data_unrecognized`
 reason, since that is still what happened; only the outcome differs.
 
+**What the target looks like, and what extraction does with it.** The buffer holds a
+Windows path, so the parser normalizes it (`normalize_windows_link_target`, shared with
+7z and with RAR5 redirect types 2 and 3): every `\` becomes `/`, a leading `\??\` or
+`\\?\` is dropped, and `UNC\` after it becomes `//`. So `\??\C:\Windows` lists as
+`C:/Windows`, `\??\UNC\srv\share` as `//srv/share` and `..\up\x` as `../up/x`, in
+all three formats. Extraction refuses a symlink target with a drive letter or a UNC root
+at every policy and on every OS (maintainer ruling 2026-10-06, `safe-extraction`): on
+POSIX `C:/Windows` would otherwise be created as a relative link into a directory named
+`C:`, and on Windows the same archive is refused, so one archive would extract two ways.
+`STRICT` and `STANDARD` also refuse a `:` or a Windows-reserved device name in a target
+segment (`file:stream`, `sub/NUL`), as they do in a member name.
+`tests/test_link_target_portability.py` pins each case in ZIP, 7z and RAR5.
+
 The junction path in the reader is therefore correct and unreachable from any archive
 these tools produce. It is kept, and tested against an assembled buffer, because the
 format permits a writer to store one and the `archive-data-model` spec promises the
@@ -372,6 +385,10 @@ byte vouched for, so both stay `CorruptionError` there and count as the candidat
 
 On the standard library path a bzip2 member ends at its first end-of-stream marker, as
 7-Zip, Info-ZIP and `zipfile` read it, and as a DEFLATE, LZMA or PPMd member ends at its own.
+An LZMA member ends at its end marker too (`lzma.LZMAFile` would start a second raw stream on
+the bytes after it and read that as content), and any byte of the member's compressed data
+after the marker, a zero too, is `CorruptionError`, as 7-Zip reports "Data Error" for it.
+With bit 1 clear the member ends at its declared size; a marker right there is still checked.
 The accelerators read on into a second stream, and they stay on for ZIP members: the declared
 size and CRC give the verdict (`compressed-streams`, *An accelerator preserves the error
 contract*), so output that matches both is the member's data and output that breaks either
@@ -647,6 +664,7 @@ move.
 | Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps` |
 | Joiner caches a few Path handles, cursor on sequential read | `tests/test_volumes.py::test_concatenated_file_backwards_seek_across_volume_boundaries`, `::test_concatenated_file_alternating_seek_reuses_cached_handles`, `::test_concatenated_file_handle_cache_evicts_past_capacity`, `::test_concatenated_file_cache_miss_reopens_beyond_capacity`, `::test_concatenated_file_sequential_read_does_not_search_offsets`, `::test_concatenated_file_mixed_path_and_stream`, `::test_concatenated_file_path_open_error_surfaces_on_read`, `::test_concatenated_file_missing_path_fails_at_construction` |
 | Timestamp precedence; an out-of-range NTFS time is an issue; the extended timestamp, a signed 32-bit field, is always a valid date (pre-1970 included) | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_pre_epoch`, `::test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime`, `tests/test_timestamps.py::test_filetime_out_of_range_is_an_issue`, `::test_unix32_to_datetime_covers_every_32_bit_value` |
+| A bad timestamp's diagnostic names the member field, the creation slot by host | `tests/test_zip.py::test_bad_ntfs_times_name_the_member_field` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version, empty or local-only field is ignored | `tests/test_audit2_zip.py::test_unicode_path_extra_field_names_the_member` and the four tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |

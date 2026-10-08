@@ -515,7 +515,8 @@ def _zip_with_reparse_member(
 
 
 def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
-    """A UNC target leaves the destination, so extraction refuses the link.
+    """A UNC target leaves the destination on Windows, so extraction refuses the link
+    on every OS.
 
     Before the parser kept the leading `//`, the same buffer produced the relative
     `UNC/server/share/dir`, which resolves inside the destination and was created.
@@ -535,7 +536,7 @@ def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
     assert result.member.link_target == "//server/share/dir"
     assert result.status is ExtractionStatus.BLOCKED
     assert isinstance(result.error, FilterRejectionError)
-    assert result.error.message == "Symlink target escapes destination"
+    assert result.error.message == "Symlink target is a Windows drive or UNC path"
     assert not (dest / "link").is_symlink()
 
 
@@ -980,23 +981,38 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "reason", "in_archive"),
+    ("fields", "value", "reason", "in_archive"),
     [
         pytest.param(
-            "is_encrypted", True, "target_data_encrypted", True, id="encrypted"
+            ("is_encrypted",), True, "target_data_encrypted", True, id="encrypted"
         ),
         pytest.param(
-            "split_after", True, "target_data_split_across_volumes", True, id="split"
+            ("split_after",), True, "target_data_split_across_volumes", True, id="split"
+        ),
+        # The parts of a target split across volumes are merged into one member
+        # before this branch sees it, so once the final part is in, neither split
+        # flag is left set. Merged, it records its parts and they are joined (the
+        # next test); ``spanned_volumes`` with no recorded parts is a target this
+        # read cannot reach.
+        pytest.param(
+            ("spanned_volumes",),
+            True,
+            "target_data_split_across_volumes",
+            True,
+            id="spanned",
         ),
         pytest.param(
-            "compress_type", 0x33, "target_data_compressed", True, id="compressed"
+            ("compress_type",), 0x33, "target_data_compressed", True, id="compressed"
         ),
-        pytest.param("file_size", 0, "no_target_data", False, id="empty"),
+        # Both sizes: only one of them zero is a damaged header, not an empty target.
+        pytest.param(
+            ("file_size", "compress_size"), 0, "no_target_data", False, id="empty"
+        ),
     ],
 )
 def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     monkeypatch: pytest.MonkeyPatch,
-    field: str,
+    fields: tuple[str, ...],
     value: object,
     reason: str,
     in_archive: bool,
@@ -1020,7 +1036,8 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)  # type: ignore[arg-type]
         if self.is_symlink:
-            setattr(self, field, value)
+            for name in fields:
+                setattr(self, name, value)
 
     monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
 
@@ -1071,6 +1088,44 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
             # Not a failure, so the library default carries on through it.
             with open_archive(fixture) as opened:
                 opened.extract_all(dest / "stop", members=only_links)
+
+
+def test_a_rar_symlink_target_split_across_real_volumes_is_joined(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A merged split target is read part by part, not from its first volume onward.
+
+    ``tinyvol_rnn.rar`` + ``.r00`` is a RAR 2.0 set whose one stored, non-solid member
+    is split: 1600 bytes starting at byte 68 of a 1000-byte first volume. Merged, it
+    has neither split flag. Read in place from its first volume, the target would be
+    the rest of volume 1 and the start of volume 2; its recorded parts give the
+    member's own bytes. The member is made a symlink through the same constructor hook
+    as above: no RAR writer this repo installs makes a RAR4 set.
+    """
+    original_init = RarMemberInfo.__init__
+
+    def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        self.is_symlink = True
+
+    monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
+    fixtures = Path(__file__).parent / "fixtures" / "rar"
+    for source, name in (
+        ("tinyvol_rnn.rar", "x.part1.rar"),
+        ("tinyvol_rnn.r00", "x.part2.rar"),
+    ):
+        (tmp_path / name).write_bytes((fixtures / source).read_bytes())
+
+    with open_archive(tmp_path / "x.part1.rar") as opened:
+        (link,) = opened.members()
+        assert link.type is MemberType.SYMLINK
+        raw = link._raw
+        assert isinstance(raw, RarMemberInfo)
+        assert raw.spanned_volumes
+        assert len(raw.data_parts) == 2
+        assert not (raw.split_before or raw.split_after)
+        assert link.link_target == "ABCDEFGH" * 200
+        assert _unavailable_reasons(opened) == []
 
 
 def test_a_streaming_symlink_is_written(tmp_path: Path) -> None:

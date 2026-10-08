@@ -144,16 +144,26 @@ def _count_walks(
     [
         pytest.param(_LINKS_SOLID, id="7z"),
         pytest.param(_RAR5_SOLID, id="solid-rar"),
+        pytest.param(_RAR4_SOLID, id="solid-rar4"),
     ],
 )
 @pytest.mark.parametrize("streaming", _MODES)
 def test_stream_members_registers_every_member(path: Path, streaming: bool) -> None:
-    """7z and solid RAR used to stream their private list, never registered."""
+    """7z and solid RAR used to stream their private list, never registered.
+
+    A pass to the end also leaves each yielded symlink with the target ``members()``
+    would set. Random access used to leave 7z and RAR4 targets unset. No ``unrar``
+    gate: the pass reads no stream, and a RAR4 target is read from the archive bytes.
+    """
+    with open_archive(path) as listing:
+        expected = _link_targets(listing.members())
+    assert expected and all(expected.values())
     with open_archive(path, streaming=streaming) as reader:
         members = [m for m, _ in reader.stream_members()]
         assert members
         assert [m.member_id for m in members] == list(range(len(members)))
         assert all(m in reader for m in members)
+        assert _link_targets(members) == expected
 
 
 @pytest.mark.parametrize("kind", _KINDS)
@@ -712,30 +722,88 @@ def test_7z_listing_decodes_a_folder_once_up_to_its_last_link() -> None:
         assert _decoded(reader) == _LINK_ENDS[-1] != sum(_LINK_ENDS)
 
 
+@pytest.mark.parametrize("streaming", _MODES)
 @pytest.mark.parametrize("read_streams", [True, False], ids=["read-all", "read-none"])
-def test_7z_streaming_pass_reads_links_through_its_own_decode(
-    read_streams: bool,
+def test_7z_pass_reads_links_through_its_own_decode(
+    read_streams: bool, streaming: bool
 ) -> None:
-    with enable_measurement(), open_archive(_LINKS_SOLID, streaming=True) as reader:
-        for _member, stream in reader.stream_members():
+    """A pass to the end sets the targets on the members it yielded, in both modes.
+
+    Random access used to leave them unset until ``members()`` was called, which then
+    decoded the folder a second time for them.
+    """
+    with (
+        enable_measurement(),
+        open_archive(_LINKS_SOLID, streaming=streaming) as reader,
+    ):
+        yielded = []
+        for member, stream in reader.stream_members():
+            yielded.append(member)
             if read_streams and stream is not None:
                 stream.read()
+        # The yielded objects themselves, before anything else could resolve them.
+        assert _link_targets(yielded) == _EXPECTED_TARGETS
+        expected = _FOLDER_SIZE if read_streams else _LINK_ENDS[-1]
+        assert _decoded(reader) == expected
         members = reader.scan_members()
         assert _link_targets(members) == _EXPECTED_TARGETS
-        expected = _FOLDER_SIZE if read_streams else _LINK_ENDS[-1]
         assert _decoded(reader) == expected
 
 
-def test_7z_abandoned_pass_keeps_no_link_bytes() -> None:
-    """A pass left before its end never applies what it captured, so it keeps none."""
-    with open_archive(_LINKS_SOLID, streaming=True) as reader:
+@pytest.mark.parametrize("streaming", _MODES)
+def test_7z_abandoned_pass_keeps_link_bytes_and_resolves_nothing(
+    streaming: bool,
+) -> None:
+    """A pass left before its end publishes nothing and sets no target.
+
+    It keeps the link bytes it read, for a later listing. Fails if finalization moves
+    above the yields (or into a ``finally``).
+    """
+    with open_archive(_LINKS_SOLID, streaming=streaming) as reader:
+        links: list[ArchiveMember] = []
+        for member, _stream in reader.stream_members():
+            if member.type is MemberType.SYMLINK:
+                links.append(member)
+                if len(links) == 2:
+                    break
+        assert len(links) == 2
+        base = _base(reader)
+        assert base._materialized is None  # type: ignore[attr-defined]
+        assert [m.link_target for m in links] == [None, None]
+        kept = base._link_data  # type: ignore[attr-defined]
+        assert set(kept) == {m.member_id for m in links}
+
+
+@pytest.mark.parametrize("streaming", _MODES)
+@pytest.mark.parametrize(
+    ("abandon_after", "expected"),
+    [
+        # The pass read every link, so listing decodes nothing more.
+        pytest.param(3, _LINK_ENDS[-1], id="after-last-link"),
+        # A solid decode cannot resume: the last link costs a decode from the start.
+        pytest.param(2, _LINK_ENDS[1] + _LINK_ENDS[-1], id="after-second-link"),
+    ],
+)
+def test_7z_listing_after_an_abandoned_pass_reuses_its_link_bytes(
+    abandon_after: int, expected: int, streaming: bool
+) -> None:
+    """Listing used to drop what the abandoned pass read and decode the folder again.
+
+    A streaming reader refuses ``members()``, so it lists with ``scan_members()``.
+    """
+    with (
+        enable_measurement(),
+        open_archive(_LINKS_SOLID, streaming=streaming) as reader,
+    ):
         seen = 0
         for member, _stream in reader.stream_members():
             seen += member.type is MemberType.SYMLINK
-            if seen == 2:
+            if seen == abandon_after:
                 break
-        assert seen == 2
-        assert _base(reader)._link_data == {}  # type: ignore[attr-defined]
+        assert _decoded(reader) == _LINK_ENDS[abandon_after - 1]
+        members = reader.scan_members() if streaming else reader.members()
+        assert _link_targets(members) == _EXPECTED_TARGETS
+        assert _decoded(reader) == expected
 
 
 @pytest.mark.parametrize("streaming", _MODES)

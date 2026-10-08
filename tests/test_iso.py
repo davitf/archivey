@@ -713,13 +713,21 @@ def test_listing_limits_count_directory_record_bytes_at_open(
         open_archive(rock_ridge_iso, config=tight)
 
 
-def test_the_record_counter_is_inert_outside_archivey_opens() -> None:
-    """The ``DirectoryRecord.parse`` hook counts nothing when pycdlib is used directly."""
+def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
+    """Every hook archivey installs in pycdlib leaves a direct pycdlib open alone.
+
+    The hooks on ``DirectoryRecord.parse``, ``RockRidge.parse``,
+    ``PyCdlib._parse_path_table`` and ``PathTableRecord.parse`` act only while
+    ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``; outside,
+    both are unset, and a Rock Ridge and Joliet image (path tables included) opens
+    and reads through pycdlib as it would without archivey.
+    """
     import pycdlib
 
     from archivey.internal.backends import iso_reader
 
     assert iso_reader._PARSE_BUDGET.get() is None
+    assert not iso_reader._inside_our_open()
     iso = pycdlib.PyCdlib()
     iso.open_fp(io.BytesIO(_build_iso(rock_ridge=True, joliet=True)))
     try:
@@ -1544,6 +1552,31 @@ def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
         assert [d.code for d in by_name["AAA"].diagnostics] == [
             DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         ]
+
+
+def test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib() -> None:
+    """From pycdlib 1.20, ``ce_entries`` stays ``None`` until a continuation area is
+    parsed; a record with neither an ``NM`` nor such an area has no ``NM`` name.
+
+    The locked pycdlib always allocates ``ce_entries``, so the 1.20 shape is set by
+    hand here; the end-to-end case is the cut-area test above, on pycdlib 1.20+.
+    """
+    import pycdlib
+
+    from archivey.internal.backends.iso_reader import _nm_name, _rr_entry_groups
+
+    iso = pycdlib.PyCdlib()
+    iso.open_fp(io.BytesIO(_build_rr_iso(_two_rr_files)))
+    try:
+        record = iso.get_record(rr_path="/aaa")
+        rr = record.rock_ridge
+        assert rr is not None
+        rr.ce_entries = None
+        assert _rr_entry_groups(rr) == (rr.dr_entries,)
+        rr.dr_entries.nm_records = []
+        assert _nm_name(record) is None
+    finally:
+        iso.close()
 
 
 def test_a_symlink_whose_entries_are_cut_withholds_its_target() -> None:

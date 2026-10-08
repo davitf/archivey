@@ -10,6 +10,7 @@ bounded the same way.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import shutil
 from collections.abc import Callable
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, SpoolLimits, open_archive
+from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
 from archivey.exceptions import (
     ArchiveyUsageError,
     ResourceLimitError,
@@ -30,12 +31,25 @@ from tests.conftest import requires_binary
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 # Solid, so every member goes through unrar and needs the copy.
 _SOLID = _FIXTURES / "basic_solid__.rar"
-_VOLUMES = [_FIXTURES / "tinyvol.part1.rar", _FIXTURES / "tinyvol.part2.rar"]
-_VOLUME_PAYLOAD = b"ABCDEFGH" * 200
+# Compressed, so unrar reads it and needs the volumes on disk; a stored member split
+# across volumes is joined natively and copies nothing.
+_VOLUMES = [_FIXTURES / "tinyvol_m3.part1.rar", _FIXTURES / "tinyvol_m3.part2.rar"]
+_VOLUME_PAYLOAD = b"".join(
+    hashlib.sha256(i.to_bytes(4, "big")).digest() for i in range(50)
+)
 
 
 def _config(max_bytes: int | None) -> ArchiveyConfig:
     return ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=max_bytes))
+
+
+def _unrar_config(max_bytes: int | None) -> ArchiveyConfig:
+    """Pinned to unrar, so a test of unrar's staging cannot fall back to unar's
+    private directory where ``AUTO`` would reject the installed ``unrar``."""
+    return ArchiveyConfig(
+        rar_decompressor=RarDecompressor.UNRAR,
+        spool_limits=SpoolLimits(max_bytes=max_bytes),
+    )
 
 
 def _volume_streams() -> list[io.BytesIO]:
@@ -501,6 +515,72 @@ def test_volume_set_limit_stops_mid_copy_and_removes_the_directory(
     """
     monkeypatch.setattr(SpoolBudget, "check_total", lambda self, total: None)
     with open_archive(sources(), config=_config(limit)) as archive:
+        with pytest.raises(ResourceLimitError):
+            archive.read("payload.bin")
+    assert len(temp_artifacts) == 1
+    assert not temp_artifacts[0].exists()
+
+
+def _spread_volumes(tmp_path: Path) -> list[Path]:
+    """The volumes in two directories, so unrar cannot find the second by name and
+    the reader stages the set in a private directory under its own names."""
+    paths = []
+    for index, volume in enumerate(_VOLUMES):
+        directory = tmp_path / f"dir{index}"
+        directory.mkdir()
+        paths.append(Path(shutil.copy(volume, directory)))
+    return paths
+
+
+def _refuse_to_link_the_second(monkeypatch: pytest.MonkeyPatch) -> None:
+    link = rar_reader._link_file
+
+    def refuse_the_second(source: Path, dest: Path) -> None:
+        if source.name == _VOLUMES[1].name:
+            raise OSError("this volume will not link")
+        link(source, dest)
+
+    monkeypatch.setattr(rar_reader, "_link_file", refuse_the_second)
+
+
+@requires_binary("unrar")
+def test_staged_volume_set_charges_only_the_volumes_it_copies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Where one volume will not link, only that one is copied and charged.
+
+    The fallback used to copy the whole set once any link failed, so a limit that
+    held the one unlinkable volume still refused the read. unar's private directory
+    already copied only the volumes that would not link; both now share that rule.
+    """
+    paths = _spread_volumes(tmp_path)
+    _refuse_to_link_the_second(monkeypatch)
+    second = _VOLUMES[1].stat().st_size
+    assert second < _volume_total() - 1
+    with open_archive(paths, config=_unrar_config(second)) as archive:
+        assert archive.read("payload.bin") == _VOLUME_PAYLOAD
+    with open_archive(paths, config=_unrar_config(second - 1)) as archive:
+        with pytest.raises(ResourceLimitError, match=r"beside the others"):
+            archive.read("payload.bin")
+
+
+@requires_binary("unrar")
+def test_staged_volume_set_stops_mid_copy_and_removes_the_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    temp_artifacts: list[Path],
+    no_unrar: None,
+) -> None:
+    """The staging copy enforces the limit itself, and a refusal leaves nothing.
+
+    The up-front check is switched off, so what refuses is the budget running out
+    part-way through the one volume that will not link.
+    """
+    paths = _spread_volumes(tmp_path)
+    _refuse_to_link_the_second(monkeypatch)
+    monkeypatch.setattr(SpoolBudget, "check_total", lambda self, total: None)
+    limit = _VOLUMES[1].stat().st_size // 2
+    with open_archive(paths, config=_unrar_config(limit)) as archive:
         with pytest.raises(ResourceLimitError):
             archive.read("payload.bin")
     assert len(temp_artifacts) == 1
