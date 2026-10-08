@@ -85,13 +85,11 @@ _SIZED_DRAIN_CHUNK = _COMPRESSED_READ_SIZE_MAX
 
 
 def _algo_key(algorithm: HashAlgorithm | str) -> str:
-    """Normalize a hash key to a lowercase algorithm name.
+    """Return the lowercase algorithm name used to choose a hasher.
 
-    ``str(HashAlgorithm.CRC32)`` is ``"HashAlgorithm.CRC32"``; use the enum value
-    so registry lookup matches ``"crc32"``.
+    A ``HashAlgorithm`` stringifies to its value. A bare string is folded the
+    same way, so ``"CRC32"`` and the enum member share one lookup key.
     """
-    if isinstance(algorithm, HashAlgorithm):
-        return algorithm.value
     return str(algorithm).lower()
 
 

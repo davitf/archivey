@@ -777,7 +777,7 @@ class ExtractionResult:
     failure_group_size: int | None = None
     collided_with: Path | None = None
 
-class ExtractionStatus(str, Enum):
+class ExtractionStatus(StrEnum):
     EXTRACTED = "extracted"
     NOT_OVERWRITTEN = "not_overwritten"
     SUPERSEDED = "superseded"
@@ -1219,7 +1219,7 @@ rewritten name then collides and is renamed).
 halting the whole extraction the first time a named event occurs.
 
 ```python
-class AbortOn(str, Enum):
+class AbortOn(StrEnum):
     BLOCKED_MEMBER = "blocked_member"
     NAME_COLLISION = "name_collision"
     NAME_SANITIZED = "name_sanitized"

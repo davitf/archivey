@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
-from enum import Enum, Flag, auto
+from enum import Enum, Flag, StrEnum, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -66,7 +66,8 @@ class MemberStreams(Flag):
     SEEKABLE = auto()
 
 
-class ContainerFormat(str, Enum):
+# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
+class ContainerFormat(StrEnum):
     ZIP = "zip"
     TAR = "tar"
     RAR = "rar"
@@ -77,7 +78,8 @@ class ContainerFormat(str, Enum):
     UNKNOWN = "unknown"
 
 
-class StreamFormat(str, Enum):
+# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
+class StreamFormat(StrEnum):
     UNCOMPRESSED = "uncompressed"
     GZIP = "gz"
     BZIP2 = "bz2"
@@ -337,7 +339,8 @@ class MemberType(Enum):
     ANTI = "anti"
 
 
-class HashAlgorithm(str, Enum):
+# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
+class HashAlgorithm(StrEnum):
     """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
 
     CRC32 = "crc32"
@@ -1023,7 +1026,8 @@ class OnError(Enum):
 OnErrorStr = Literal["stop", "continue"]
 
 
-class AbortOn(str, Enum):
+# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
+class AbortOn(StrEnum):
     """Events that abort the whole extraction the first time they occur.
 
     Passed as ``abort_on=`` to ``extract_all()`` (a collection; empty by
@@ -1074,7 +1078,8 @@ AbortOnStr = Literal[
 ]
 
 
-class ExtractionStatus(str, Enum):
+# str() and f-strings return the value. (str, Enum) returns Class.NAME on 3.11+.
+class ExtractionStatus(StrEnum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
     EXTRACTED = "extracted"
