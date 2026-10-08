@@ -138,6 +138,8 @@ jobs:
     timeout-minutes: 20
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
     # release candidate, or a dependency with no wheel for it yet, is not a regression.
+    # A row without the key compares null to true, which GitHub evaluates as false, so
+    # every other row still fails the run.
     continue-on-error: ${{ matrix.prerelease == true }}
     # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
     # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
@@ -579,15 +581,14 @@ jobs:
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # As in the test job: a row without `prerelease` (3.13t, a required check) can fail.
     continue-on-error: ${{ matrix.prerelease == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - python: "3.13t"
-            gil-safe-imports: pycdlib, lz4.frame, tqdm, backports.zstd
           - python: "3.15t"
-            gil-safe-imports: pycdlib, lz4.frame, tqdm, cryptography.hazmat.primitives.ciphers
             prerelease: true
     steps:
       - uses: actions/checkout@v4
@@ -624,14 +625,9 @@ jobs:
       - name: Assert the GIL is still disabled with those extras
         # Fail loudly if a future release of one of these starts re-enabling the GIL:
         # the job would otherwise keep passing while testing nothing free-threaded.
-        # The list differs per interpreter: [free-threaded] has backports.zstd below 3.14
-        # and cryptography from 3.14 (its cffi dependency does not build on free-threaded
-        # 3.13).
-        run: >
-          uv run --python ${{ matrix.python }} --no-sync python -W ignore -c
-          "import sys, ${{ matrix.gil-safe-imports }};
-          assert not sys._is_gil_enabled(), 'an extra re-enabled the GIL';
-          print('GIL still disabled with [free-threaded]')"
+        # The script reads the package list from the installed archivey's [free-threaded]
+        # metadata, so it follows the extra and its per-interpreter markers by itself.
+        run: uv run --python ${{ matrix.python }} --no-sync python tests/check_free_threaded_gil.py
       - name: Run full suite + concurrent_reader (GIL-safe extras)
         run: >
           uv run --python ${{ matrix.python }} --no-sync

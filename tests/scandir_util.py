@@ -4,8 +4,10 @@ Tests that race the directory reader (an entry vanishing, or a symlink replaced 
 file, between ``os.scandir`` listing it and the reader's ``lstat``) used to patch
 ``os.DirEntry.stat``. CPython 3.15 makes ``os.DirEntry`` an immutable type, so that
 raises ``TypeError``. :func:`patch_dir_entry_stat` patches ``os.scandir`` instead, and
-the entries it yields are proxies whose ``stat`` is the replacement; every other
-attribute is the real entry's.
+the entries it yields are proxies whose ``stat`` is the replacement. Other named
+attributes (``name``, ``path``, ``is_dir()``, ...) and ``os.fspath`` come from the real
+entry. A proxy is not an ``os.DirEntry`` instance, and other special methods are not
+forwarded.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from typing import Callable, Iterator
 
 import pytest
 
-StatReplacement = Callable[["os.DirEntry[str]", Callable[..., os.stat_result]], object]
+StatReplacement = Callable[["os.DirEntry[str]", Callable[[], os.stat_result]], object]
 
 
 class _Entry:
@@ -27,6 +29,9 @@ class _Entry:
 
     def stat(self, *args: object, **kwargs: object) -> object:
         return self._replacement(self._entry, lambda: self._entry.stat(*args, **kwargs))
+
+    def __fspath__(self) -> str:
+        return self._entry.path
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._entry, name)
