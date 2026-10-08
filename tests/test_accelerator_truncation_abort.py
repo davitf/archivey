@@ -1128,7 +1128,11 @@ def test_no_fallback_warning_when_rapidgzip_is_not_installed(
     no child to fail."""
     monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
     monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
-    monkeypatch.setattr(codecs_module, "_rapidgzip", None)
+    monkeypatch.setattr(
+        codecs_module,
+        "_rapidgzip",
+        codecs_module._LazyOptional("rapidgzip", present=False),
+    )
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     caplog.set_level(logging.WARNING, logger="archivey.streams")
     payload = _payload()

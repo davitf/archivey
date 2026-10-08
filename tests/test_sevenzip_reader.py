@@ -1416,7 +1416,9 @@ def test_unknown_folder_method_is_rejected() -> None:
 
 def test_ppmd_without_pyppmd_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = _reader_for_unit_tests()
-    monkeypatch.setattr(codecs, "_pyppmd", None)
+    monkeypatch.setattr(
+        codecs, "_pyppmd", codecs._LazyOptional("pyppmd", present=False)
+    )
     properties = struct.pack("<BL", 6, 1 << 20)
 
     with pytest.raises(PackageNotInstalledError, match="pyppmd"):

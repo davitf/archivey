@@ -77,8 +77,11 @@ exactly the measured subset that leaves the GIL disabled. Measured on CPython 3.
 | `pyppmd`, `inflate64`, `brotli` | No | **No** — import re-enables the GIL |
 
 So on a free-threaded build today you can use the core formats plus ISO, zstd and lz4 and
-stay genuinely GIL-free. Pull in the 7z codecs or the seek accelerator and you are back to
-a GIL-ed interpreter.
+stay genuinely GIL-free. Having the other packages installed does not change that:
+Archivey imports each one only when it opens a stream that needs it. The first PPMd,
+Deflate64 or Brotli stream, or the first seek in a bzip2 stream with the accelerator on,
+puts you back on a GIL-ed interpreter for the rest of the process. Seekable gzip is the
+exception, because rapidgzip runs in a child process for it and never loads into yours.
 
 Two consequences worth stating plainly:
 
