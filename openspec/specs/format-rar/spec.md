@@ -488,7 +488,9 @@ written. A hardlink whose only same-named member comes after it has no
 `link_target_member`; opening it raises `LinkTargetNotFoundError`. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`) SHALL be
 exposed as `MemberType.FILE` with `extra["is_file_copy"] == True`, `link_target` set
 to the stored source path and `link_target_member` set to the source: the latest
-earlier `FILE` member that path names. Reading a copy SHALL return the source's bytes,
+earlier `FILE` member that path names. A path that `..`-escapes the archive root names
+no source: extraction writes a copy from its source's bytes under the copy's own name,
+and does not refuse a copy of a refused member as it refuses a hard link. Reading a copy SHALL return the source's bytes,
 and extraction SHALL write it as an independent file, as `unrar` does. A copy with no
 such source SHALL raise `LinkTargetNotFoundError` when read.
 Unix symlinks and Windows symlinks/junctions (`RAR5_XREDIR_UNIX_SYMLINK`,

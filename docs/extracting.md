@@ -82,8 +82,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   letter or a UNC prefix) is refused under `STRICT`. `STANDARD` and `TRUSTED` drop the
   root and extract it inside the destination (`/etc/x` → `etc/x`, `C:/x` → `x`), as
   GNU tar, bsdtar, unzip and 7-Zip do, and record the stored name in
-  `ExtractionResult.presented_name`; a hardlink's absolute target is re-rooted the same
-  way. A drive letter with no separator after it (`a:b`) is refused at every policy: it
+  `ExtractionResult.presented_name`. A drive letter with no separator after it (`a:b`)
+  is refused at every policy: it
   is also an ordinary POSIX name, so there is no root to drop. Your
   `filter` runs before these checks, so it sees every member and can rename an unsafe
   one; the name it returns is the one checked. `archivey.sanitize_names` is a ready-made
@@ -106,22 +106,27 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   extracted. A link that now escapes is removed, and its result, which a progress
   callback may already have seen as `EXTRACTED`, becomes `BLOCKED`. A `..` in a target
   that stays inside the destination is not refused.
-- **Windows link targets:** a symlink or hardlink target with a drive letter
-  (`C:/Windows`, `C:x`) or a UNC root (`//server/share`) is refused at every policy and
-  on every OS. Windows would follow it out of the destination, and refusing it
-  everywhere means an archive extracts the same way wherever you extract it. (Under
-  `STANDARD` and `TRUSTED` a hardlink's rooted target is re-rooted first.) One
-  exception, for symlinks only: a symlink target that starts with a single `\` (`\foo`)
-  extracts on POSIX, where a backslash is an ordinary filename character; Windows
-  refuses it. A hardlink target `\x` names a member, and gets what a member `\x` gets:
-  `STRICT` refuses it on every OS, `STANDARD` and `TRUSTED` re-root it. A Windows
-  symlink or junction from a ZIP, 7z or RAR archive lists with `/` separators and
+- **Windows symlink targets:** a symlink target with a drive letter (`C:/Windows`,
+  `C:x`) or a UNC root (`//server/share`) is refused at every policy and on every OS.
+  Windows would follow it out of the destination, and refusing it everywhere means an
+  archive extracts the same way wherever you extract it. One exception: a symlink
+  target that starts with a single `\` (`\foo`) extracts on POSIX, where a backslash
+  is an ordinary filename character; Windows refuses it. A Windows symlink or junction from a ZIP, 7z or RAR archive lists with `/` separators and
   without the `\??\` prefix (`\??\C:\Windows` lists as `C:/Windows`, `..\up\x` as
   `../up/x`). Under `STRICT` and `STANDARD`, a `:` or a Windows-reserved device name in
   a target segment (`file:stream`, `sub/NUL`) is refused, as it is in a member name;
   `TRUSTED` leaves those to the OS.
-- **Hardlink targets** are containment-checked and resolved positionally (an earlier
-  same-named member), so a crafted duplicate-name archive cannot redirect a link.
+- **Hardlink targets** name an earlier member, and the link gets what that member
+  gets. The target is looked up as a member name (the latest earlier member of that
+  name, so a crafted duplicate cannot redirect a link) and is never used as a path:
+  the link is made to the file that member was written to. So the target string is not
+  checked, and a link is refused (`BLOCKED`, "Hardlink target was refused") when the
+  member it names is refused, as `../x` is at every policy and `/x`, `\x` or `C:/x`
+  are under `STRICT`. Under `STANDARD` and `TRUSTED` those last three members are
+  re-rooted and written, and their links extract. A target that names no earlier
+  member fails with `LinkTargetNotFoundError`. A `filter` that changes a hardlink's
+  `link_target` changes nothing, `sanitize_names` included: the link still follows the
+  stored name. A filter that renames the member it names does matter, both ways.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never
   follows them; atomic temp-file + `os.replace` writes mean interrupted extraction
   never leaves a half-written destination file. The destination root itself is yours,
@@ -366,7 +371,7 @@ Archive order and identity matter more than “the” name.
 | `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |
 | `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. To raise instead, pass `abort_on={AbortOn.BLOCKED_MEMBER}`. |
 | `TRUSTED` still won’t traverse | Ownership / sticky bits only when allowed; path safety stays on. |
-| Hardlinks + filters | Excluding a hardlink’s source can orphan the link (especially on streaming sources); `OnError` decides fail vs continue. |
+| Hardlinks + filters | Excluding a hardlink’s source can orphan the link (especially on streaming sources); `OnError` decides fail vs continue. A source the policy would refuse is not recovered: the link is `BLOCKED`. Rewriting a hardlink’s `link_target` in a filter has no effect. |
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |

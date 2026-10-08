@@ -206,14 +206,25 @@ def test_dots_only_stem_extracts_under_every_policy(
 
 def test_hardlink_target_retains_dot_dot_like_member_names() -> None:
     """A hardlink target is a stored member name: ``a/../b`` names the member stored
-    as ``a/../b``, never the unrelated ``b``. A symlink target is a filesystem path,
-    so its ``..`` is collapsed."""
+    as ``a/../b``, never the unrelated ``b``, and one that climbs out of the root
+    names the member stored that way too (extraction refuses both). Only a RAR file
+    copy's caller keeps the escape test. A symlink target is a filesystem path, so its
+    ``..`` is collapsed."""
     from archivey.internal.naming import resolve_link_target_name
 
     assert resolve_link_target_name("x", "a/../b", MemberType.HARDLINK) == "a/../b"
     assert resolve_link_target_name("x", "./a//b/./c", MemberType.HARDLINK) == "a/b/c"
-    assert resolve_link_target_name("x", "a/../../b", MemberType.HARDLINK) is None
-    assert resolve_link_target_name("x", "a/..", MemberType.HARDLINK) is None
+    assert (
+        resolve_link_target_name("x", "a/../../b", MemberType.HARDLINK) == "a/../../b"
+    )
+    assert resolve_link_target_name("x", "a/..", MemberType.HARDLINK) == "a/.."
+    for escaping in ("a/../../b", "a/..", "../b"):
+        assert (
+            resolve_link_target_name(
+                "x", escaping, MemberType.HARDLINK, within_root=True
+            )
+            is None
+        )
     assert resolve_link_target_name("x", "/abs", MemberType.HARDLINK) == "/abs"
     assert resolve_link_target_name("d/l", "../b", MemberType.SYMLINK) == "b"
     assert resolve_link_target_name("d/l", "../../b", MemberType.SYMLINK) is None

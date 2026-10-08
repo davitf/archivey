@@ -94,9 +94,10 @@ is reject/raise, with one rewrite:
   followed by `/` or `\`) loses that root, repeatedly (`/etc/x` → `etc/x`, `C:\x` →
   `x`), and the member extracts inside `dest`. A drive-relative name (`C:x`) is not
   rooted: it is also an ordinary POSIX name (`a:b`), so it is not rewritten and the
-  check below refuses it. A HARDLINK's absolute `link_target` is re-rooted the same
-  way, since it names another member of the archive. A SYMLINK target is not
-  re-rooted. `STRICT` does not re-root, so the check below refuses the member. This
+  check below refuses it. Link targets are not re-rooted: a SYMLINK target is a
+  filesystem path, and a HARDLINK target names a member, which is re-rooted on its own
+  turn (see "Hardlink Two-Pass Extraction"). `STRICT` does not re-root, so the check
+  below refuses the member. This
   matches GNU tar, bsdtar, unzip, 7-Zip and Python's `tarfile` `data` filter, which
   all strip the root. A re-root is a name rewrite: `AbortOn.NAME_SANITIZED` raises
   `NameRewrittenError` on it and `presented_name` records it, unless the filter
@@ -106,9 +107,9 @@ is reject/raise, with one rewrite:
   it and drops a `..` with nothing to climb out of (`a/../b` → `b`, `../x` → `x`),
   removes bidi override/isolate characters, appends `_` to a Windows-reserved stem
   (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`. It applies the same
-  rewrites to a HARDLINK target, which keeps the target inside `dest` for the
-  containment check (the linked member was resolved at listing and does not change).
-  A SYMLINK target gets the character and segment rewrites only (`file:stream` →
+  rewrites to a HARDLINK target, which changes nothing: extraction ignores any
+  filter's change to a HARDLINK target and links to the member the stored target
+  names. A SYMLINK target gets the character and segment rewrites only (`file:stream` →
   `file_stream`); its root and its `..` components are kept, and one with a drive or
   UNC root stays refused. A SYMLINK target read only after the filter ran (see
   `archive-reading`, "Link targets stored as member data are read only when
@@ -117,10 +118,12 @@ is reject/raise, with one rewrite:
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
-null bytes, and names/link targets the platform filesystem encoding cannot represent; then
-`(dest / member.name).parent.resolve()` must remain within `dest.resolve()` to catch
-symlinked intermediate components without following a final-component symlink; link
-targets are rechecked as described in the symlink and hardlink requirements. These
+null bytes, and names/symlink targets the platform filesystem encoding cannot represent;
+then `(dest / member.name).parent.resolve()` must remain within `dest.resolve()` to
+catch symlinked intermediate components without following a final-component symlink;
+symlink targets are rechecked as described in the symlink requirement. A HARDLINK
+target string gets none of these checks; the hardlink requirement says when a link is
+refused. These
 string checks SHALL raise `FilterRejectionError`, never a raw
 `UnicodeEncodeError`/`ValueError`.
 
@@ -130,30 +133,27 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Absolute path | `FilterRejectionError` | Leading `/`, Windows drive path, or UNC path |
 | Null byte | `FilterRejectionError` | `member.name` contains `\x00` |
 | Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
-| Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK/HARDLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
+| Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
 | Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
-| Link-target Windows root | `FilterRejectionError` | SYMLINK or HARDLINK whose `link_target` (after any re-root) starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a SYMLINK target rooted by a single `\` (`\foo`); a HARDLINK target so rooted is refused, as a member of that name is |
-| Hardlink escape | `FilterRejectionError` | HARDLINK whose target path resolves outside `dest` |
+| Link-target Windows root | `FilterRejectionError` | SYMLINK whose `link_target` starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a target rooted by a single `\` (`\foo`) |
+| Refused hardlink source | `FilterRejectionError` | HARDLINK whose target names a refused member (see "Hardlink Two-Pass Extraction") |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
 
-**A link target with a Windows root is refused on every OS.** Windows resolves a
+**A symlink target with a Windows root is refused on every OS.** Windows resolves a
 drive or UNC target outside `dest` and refuses it as an escape; POSIX would create it as
 a relative link into a directory named `C:`. The maintainer ruled on 2026-10-06 to
 refuse it on POSIX too, for the portability rule: the same archive SHALL give the same
 outcome on any OS, and Windows already refuses drive paths. The rule applies to every
-format, because it reads the target string. It covers a HARDLINK target as well:
-`STANDARD` and `TRUSTED` re-root a rooted one first, so it refuses `STRICT`'s `C:/x`
-and a drive-relative `C:x`, which is also what a member of that name gets.
+format, because it reads the target string. It is a SYMLINK rule: a HARDLINK target is
+a member name, never a path, so a link to the member `C:/x` or `C:x` gets what that
+member gets (see "Hardlink Two-Pass Extraction").
 
-The rule has one named exception, for a SYMLINK target only. A SYMLINK target rooted
-by a single `\` (`\foo`) SHALL extract on POSIX, where it is a relative link to a file
-named `\foo`, although Windows resolves it to the drive root and refuses it as an
-escape. On POSIX a backslash is an ordinary filename character, so refusing the target
-would block an archive that is valid there, and ADR 0013 rules that extracting beats
-refusing. A HARDLINK target names a member of the same archive, and a member named `\x`
-is refused under `STRICT` and re-rooted under `STANDARD` and `TRUSTED`. So a HARDLINK
-target rooted by a single `\` SHALL get what that member gets: `STRICT` refuses it on
-every OS, and the other two re-root it first. A Windows symlink or junction's target is
+The rule has one named exception. A SYMLINK target rooted by a single `\` (`\foo`)
+SHALL extract on POSIX, where it is a relative link to a file named `\foo`, although
+Windows resolves it to the drive root and refuses it as an escape. On POSIX a backslash
+is an ordinary filename character, so refusing the target would block an archive that
+is valid there, and ADR 0013 rules that extracting beats refusing. A Windows symlink or
+junction's target is
 normalized before this check in ZIP, 7z and RAR5 alike (`\` to `/`, the `\??\` prefix
 dropped, `UNC\` to `//`), so `\??\C:\Windows` is checked as `C:/Windows`.
 
@@ -204,7 +204,7 @@ read back.
 | `"foo/../bar"` | `FilterRejectionError` under reject/raise behavior even if it would stay in root |
 | Leading `/`, Windows drive, UNC path under `STRICT` | `FilterRejectionError`; no write |
 | `"/etc/x"` or `"C:/etc/x"` under `STANDARD` / `TRUSTED` | Extracted at `dest/etc/x`; `result.member.name` keeps the stored name |
-| HARDLINK `"/b"` → `"/a"` under `STANDARD` / `TRUSTED` | Re-rooted to `b` → `a`; linked to the extracted `a` |
+| HARDLINK `"/b"` → `"/a"` under `STANDARD` / `TRUSTED` | Both members re-rooted; `b` linked to the extracted `a` |
 | Absolute name, `abort_on={NAME_SANITIZED}`, `STANDARD` | `NameRewrittenError`; no report |
 | The same, with a filter that drops or renames the member | No error; the filter's outcome stands |
 | `"/etc/x"` under `STANDARD` | `presented_name="/etc/x"` |
@@ -214,11 +214,11 @@ read back.
 | `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
 | Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
-| SYMLINK/HARDLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
+| SYMLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
 | SYMLINK `link_target` `C:/Windows`, `C:/abs/y`, `t:stream` or `//srv/share`, any policy, any OS | `FilterRejectionError` ("Symlink target is a Windows drive or UNC path"); no link written |
-| HARDLINK `link_target` `C:/x` under `STRICT`, or `C:x` at any policy, any OS | `FilterRejectionError` ("Hardlink target is a Windows drive or UNC path"); no link written |
 | SYMLINK `link_target` `\foo`, any policy, POSIX | Extracted: a link to the file `\foo` beside it |
-| HARDLINK `hl` → `\x` beside a member `\x`, any OS | `STRICT`: both `FilterRejectionError` (`hl`: "Hardlink target is an absolute path"); `STANDARD`/`TRUSTED`: both re-rooted and extracted |
+| HARDLINK `hl` → `\x`, `C:/x` or `/x` beside a member of that name, any OS | `STRICT`: both `FilterRejectionError` (`hl`: "Hardlink target was refused"); `STANDARD`/`TRUSTED`: the member re-rooted, `hl` linked to it |
+| HARDLINK `hl` → `C:x` beside a member `C:x`, any policy, any OS | Both `FilterRejectionError` (`hl`: "Hardlink target was refused") |
 | SYMLINK `link_target` `file:stream` or `sub/NUL` with `filter=sanitize_names`, `STANDARD` | Extracted, pointing at `file_stream` or `sub/NUL_`; `C:/x` is still refused; the same with `read_link_targets=False` on a ZIP |
 | Windows symlink or junction stored as `\??\C:\Windows`, `\??\UNC\srv\share` or `..\up\x` (ZIP, 7z, RAR5) | Lists as `C:/Windows`, `//srv/share`, `../up/x`; the first two refused as above, the third as an escape |
 | Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
@@ -460,6 +460,25 @@ the orphaned link unrecoverable and therefore a per-member failure governed by
 `OnError`. A hardlink that merely precedes its selected source is linked after the
 source is written, with one read and one bomb-limit count for the source bytes.
 
+**A HARDLINK's target SHALL name an earlier member, and that member SHALL NOT have been
+refused** (maintainer decision, 2026-10-07). That is the whole rule for the target: the
+target string is a member name, never a path, so it gets no path check (no
+containment join, no drive, UNC or rooted-`\` refusal, no NUL or encoding check), and
+the link is made to the file its member was written to. A caller filter that changes
+a HARDLINK's `link_target` changes nothing; the link follows the stored name. A link
+whose member was refused SHALL be refused with `FilterRejectionError` ("Hardlink target
+was refused"), so `BLOCKED`, in both access modes, at every policy and on every OS:
+otherwise the second pass would write the refused member's bytes under the link's name.
+Which member counts is the one the target names directly, so each link of a chain to a
+refused member is refused. When the run recorded a result for that member, the result
+decides: `BLOCKED` is a refusal, anything else is not, after the caller's filter. A
+filter that renames the member to an unsafe name therefore refuses its links as well,
+and one that renames an unsafe member to a safe one lets them through. A member the
+`members` selector or the `filter` excluded has no result; for it the policy's own
+steps (the absolute-name re-root, the universal checks and the name policy) run on the
+member as listed, without the filter. A refused one refuses its links; any other is
+recovered as above.
+
 #### Scenario: hardlink matrix
 
 | Case | Expected |
@@ -470,6 +489,9 @@ source is written, with one read and one bomb-limit count for the source bytes.
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
 | HARDLINK appears before its also-selected source | After the pass it links to the extracted source inode; source bytes read and counted once |
 | HARDLINK whose resolved source is not a FILE (e.g. a DIRECTORY member) | Per-member `ExtractionError` naming the source's type (for a directory: a hard link to one cannot be created); the source itself still extracts |
+| HARDLINK to a member refused by the policy (`../x` at any policy, `/x` under `STRICT`), selected or excluded, either mode | `BLOCKED` with `FilterRejectionError` ("Hardlink target was refused"); nothing written for the link |
+| HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
+| Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
 
 ### Requirement: Policy-Specific Metadata Transforms
 

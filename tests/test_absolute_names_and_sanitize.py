@@ -99,8 +99,10 @@ def test_reroot_leaves_relative_members_and_symlink_targets_alone() -> None:
     rerooted = reroot_absolute(link)
     assert rerooted.name == "l"
     assert rerooted.link_target == "/etc/passwd"
+    # A hardlink target is a member name the link follows, never a path: the filter
+    # sees it as stored.
     hard = _member("/b", type=MemberType.HARDLINK, link_target="/a")
-    assert reroot_absolute(hard).link_target == "a"
+    assert reroot_absolute(hard).link_target == "/a"
 
 
 # --- extraction ----------------------------------------------------------------------
@@ -171,15 +173,31 @@ def test_absolute_hardlink_links_to_the_rerooted_member(tmp_path: Path) -> None:
         assert os.path.samefile(dest / "d" / "a", dest / "d" / "b")
 
 
-def test_strict_refuses_a_hardlink_to_an_absolute_target(tmp_path: Path) -> None:
-    src = _tar(tmp_path / "a.tar", [("file", "a", b"data"), ("hard", "c", "/a")])
+def test_strict_refuses_a_hardlink_to_an_absolute_member(tmp_path: Path) -> None:
+    """``/a`` names the member ``/a``, which STRICT refuses, so the link is refused
+    with it. ``/b`` names nothing (the archive holds ``b``), so it is not found: the
+    target is not re-rooted onto ``b``."""
+    src = _tar(
+        tmp_path / "a.tar",
+        [
+            ("file", "/a", b"data"),
+            ("file", "b", b"data"),
+            ("hard", "c", "/a"),
+            ("hard", "d", "/b"),
+        ],
+    )
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
             dest, policy=ExtractionPolicy.STRICT, on_error="continue"
         )
     statuses = {res.member.name: res.status for res in report.results}
-    assert statuses == {"a": ExtractionStatus.EXTRACTED, "c": ExtractionStatus.BLOCKED}
+    assert statuses == {
+        "/a": ExtractionStatus.BLOCKED,
+        "b": ExtractionStatus.EXTRACTED,
+        "c": ExtractionStatus.BLOCKED,
+        "d": ExtractionStatus.FAILED,
+    }
 
 
 def test_reroot_is_a_rewrite_for_abort_on_name_sanitized(tmp_path: Path) -> None:
@@ -330,7 +348,11 @@ def test_sanitize_names_extracts_what_would_be_refused(
 def test_hardlink_target_with_a_leading_slash_names_that_member() -> None:
     assert resolve_link_target_name("x", "/abs", MemberType.HARDLINK) == "/abs"
     assert resolve_link_target_name("x", "//a/./b", MemberType.HARDLINK) == "/a/b"
-    assert resolve_link_target_name("x", "/../a", MemberType.HARDLINK) is None
+    assert resolve_link_target_name("x", "/../a", MemberType.HARDLINK) == "/../a"
+    assert (
+        resolve_link_target_name("x", "/../a", MemberType.HARDLINK, within_root=True)
+        is None
+    )
     assert resolve_link_target_name("x", "/", MemberType.HARDLINK) is None
     assert resolve_link_target_name("x", "/abs", MemberType.SYMLINK) is None
 

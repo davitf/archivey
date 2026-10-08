@@ -115,22 +115,20 @@ def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
     Python's ``tarfile`` ``data`` filter all do. Only the root goes: a ``..`` component
     is left in place for :func:`check_universal` to refuse.
 
-    A hardlink's target is re-rooted too, because it names another member of the same
-    archive (``tar -P`` stores both with their ``/``). A symlink's target is left as
-    stored: it is a filesystem path, and an absolute one is refused as an escape.
+    Link targets are left as stored. A symlink's target is a filesystem path, and an
+    absolute one is refused as an escape. A hardlink's target is a member name:
+    extraction links to the member it names, which is re-rooted on its own turn
+    (``tar -P`` stores ``/a`` and a hardlink naming ``/a``), and the target string
+    never becomes a path. A caller filter therefore sees the target as stored.
 
     Only a rooted name is re-rooted (:func:`_is_rooted`); a drive-relative ``C:x`` is
     left for :func:`check_universal` to refuse.
 
     Returns ``member`` itself when there is nothing to change.
     """
-    changes: dict[str, object] = {}
-    if _is_rooted(member.name):
-        changes["name"] = strip_absolute_root(member.name)
-    target = member.link_target
-    if member.type is MemberType.HARDLINK and target is not None and _is_rooted(target):
-        changes["link_target"] = strip_absolute_root(target)
-    return member.replace(**changes) if changes else member
+    if not _is_rooted(member.name):
+        return member
+    return member.replace(name=strip_absolute_root(member.name))
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -278,11 +276,17 @@ def check_universal(
 
     Everything here meets one of two criteria. Either the *write itself* is dangerous
     or impossible — escaping the destination, a NUL the OS truncates on, a device
-    node — or the *outcome would differ by OS*: a link target with a Windows drive or
-    UNC root escapes on Windows and is an ordinary relative name on POSIX, so it is
+    node — or the *outcome would differ by OS*: a symlink target with a Windows drive
+    or UNC root escapes on Windows and is an ordinary relative name on POSIX, so it is
     refused everywhere (maintainer ruling, 2026-10-06). A name that is merely
     *deceptive to read* meets neither and is policy-keyed instead; see
     ``apply_name_policy`` and ADR 0017.
+
+    A HARDLINK's target string is not checked here. It names an earlier member of the
+    archive, and the link is made to the file that member was written to, so the
+    string never becomes a path, and a NUL or an unencodable character in it reaches
+    no OS call. The coordinator refuses the link instead when it refuses the member
+    the target names (``ExtractionCoordinator._refuse_if_source_refused``).
     """
     name = member.name
 
@@ -345,57 +349,38 @@ def check_universal(
                 member_name=name,
             )
 
-    # Link-target escape at planning time (the authoritative symlink check is re-run
-    # post-creation in the coordinator). A symlink target is relative to the link's own
-    # directory; a hardlink target is archive-root relative. An absolute target makes the
-    # join absolute, so it passes only when it names a path inside dest.
+    # Symlink-target escape at planning time (the authoritative check is re-run
+    # post-creation in the coordinator). The target is relative to the link's own
+    # directory; an absolute target makes the join absolute, so it passes only when it
+    # names a path inside dest.
     target = member.link_target
-    if target is not None and member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
+    if target is not None and member.type == MemberType.SYMLINK:
         # Same string-level guards as for names: a NUL or an unencodable target
         # cannot name a filesystem path, and would crash the resolves below with a
         # raw ValueError / UnicodeEncodeError instead of a typed rejection.
         _check_path_string(
             target, member_name=name, what="link target", link_target=target
         )
-        is_symlink = member.type == MemberType.SYMLINK
-        kind = "Symlink" if is_symlink else "Hardlink"
         # A drive or UNC target leaves the destination on Windows and is a relative
         # name on POSIX. It is refused on every OS so that one archive extracts the
         # same way everywhere (maintainer ruling, 2026-10-06); unrar 7.00 on POSIX
-        # refuses the `\??\`-prefixed spellings too. This holds for a hardlink target
-        # as well. STANDARD and TRUSTED have already re-rooted a rooted one, so this
-        # catches STRICT's `C:/x` and `//host/x`, a drive-relative `C:x` at any
-        # policy, and whatever a caller filter returns.
+        # refuses the `\??\`-prefixed spellings too.
         if _has_windows_root(target):
             raise FilterRejectionError(
-                f"{kind} target is a Windows drive or UNC path",
+                "Symlink target is a Windows drive or UNC path",
                 member_name=name,
                 link_target=member.link_target,
             )
-        # Named exception: a symlink target rooted by a single `\` (`\foo`) is left
-        # alone. Windows resolves it to the drive root and refuses it as an escape,
-        # but on POSIX a backslash is an ordinary filename character, so `\foo` is
-        # a legitimate relative link there. Refusing it would block an archive that
-        # is valid on POSIX, and ADR 0013 rules that extracting beats refusing.
-        #
-        # A hardlink target gets no such exception. It names a member of the same
-        # archive, and a member named `\x` is refused as absolute under STRICT and
-        # re-rooted under STANDARD and TRUSTED, as is the target. So a `\`-rooted
-        # hardlink target reaches here only under STRICT (or from a caller filter),
-        # where it cannot name a member that was written; it is refused like the
-        # member, on every OS.
-        if not is_symlink and target.startswith("\\"):
-            raise FilterRejectionError(
-                "Hardlink target is an absolute path",
-                member_name=name,
-                link_target=member.link_target,
-            )
+        # Named exception: a target rooted by a single `\` (`\foo`) is left alone.
+        # Windows resolves it to the drive root and refuses it as an escape, but on
+        # POSIX a backslash is an ordinary filename character, so `\foo` is a
+        # legitimate relative link there. Refusing it would block an archive that is
+        # valid on POSIX, and ADR 0013 rules that extracting beats refusing.
         if link_target_on_disk is not None:
             target = link_target_on_disk(target)
-        base = (dest_root / name).parent if is_symlink else dest_root
-        if _escapes(base / target, dest_root):
+        if _escapes((dest_root / name).parent / target, dest_root):
             raise FilterRejectionError(
-                f"{kind} target escapes destination",
+                "Symlink target escapes destination",
                 member_name=name,
                 link_target=member.link_target,
             )
@@ -733,10 +718,11 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
       ``_``.
     - a NUL character: becomes ``_``.
 
-    A hardlink's target gets the same rewrite. That keeps the target inside the
-    destination, which extraction checks; it does not choose the linked member, which
-    was resolved from the stored target when the archive was listed. A hardlink whose
-    stored target names no member (``../a``) still fails.
+    A hardlink's target gets the same rewrite, and extraction ignores it, as it ignores
+    any filter's change to a hardlink target. The link is made to the member the
+    stored target names, resolved when the archive was listed, and the target string
+    never becomes a path. So a hardlink to ``../a`` extracts once this filter has
+    written ``../a`` as ``a``, and is refused when the member it names is refused.
 
     A symlink's target gets the character and segment rewrites only (``file:stream`` →
     ``file_stream``, ``sub/NUL`` → ``sub/NUL_``), so a link to a rewritten member points

@@ -948,10 +948,10 @@ class ExtractionPolicy(Enum):
     anything whose outcome would differ by OS. A symlink target with a Windows drive
     letter or UNC root (``C:/Windows``, ``//server/share``) is refused on every OS,
     because Windows refuses it, so a Windows symlink to a drive path does not round-trip
-    at any policy. A hardlink target names a member, and ``STANDARD`` and ``TRUSTED``
-    re-root a rooted one first (``C:/x`` → ``x``), as they do the member; what is left
-    refused at every policy is a drive-relative hardlink target (``C:x``), and under
-    ``STRICT`` any rooted one. Those are universal. It *does* extract a name built to
+    at any policy. A hardlink target is not a path: it names an earlier member, and
+    the link is refused exactly when that member is. A link to the member ``C:/x``
+    extracts under ``STANDARD`` and ``TRUSTED``, which re-root that member, and a link
+    to the member ``C:x`` extracts at no policy. Those are universal. It *does* extract a name built to
     display as something else (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD``
     refuse with ``FilterRejectionError``: such a member lands inside the destination
     under exactly its stored bytes, so the risk is to a human reading the directory
