@@ -75,6 +75,7 @@ from archivey.internal.streams.rapidgzip_worker import (
     SRC_SEEK,
     SRC_TELL,
     SRC_VALUE,
+    TELL_COMPRESSED,
     read_exact_or_none,
 )
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
@@ -857,6 +858,26 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         except Exception:  # noqa: BLE001 - a diagnostic probe never breaks a read
             return None
         return value if value >= 0 else None
+
+    def compressed_position(self) -> int | None:
+        """How far into the source rapidgzip has decoded, in whole bytes; ``None`` when
+        the child cannot say.
+
+        After the read that met the end of the output, it is where the decoded data
+        ended. Measured on rapidgzip 0.16: the end of the file for a whole gzip of one
+        member or many (a BGZF file too), and short of it when the decoder stopped
+        early at a cut member, before what follows it. A child that dies during the
+        query raises its error, as the next read would.
+        """
+        if self._death is not None or self._proc is None:
+            return None
+        try:
+            value, _ = self._call(TELL_COMPRESSED, keep_parked=True)
+        except (ArchiveyError, OSError, MemoryError):
+            raise
+        except Exception:  # noqa: BLE001 - a probe; None leaves the caller's check as it was
+            return None
+        return -(-value // 8) if value >= 0 else None
 
     def close(self) -> None:
         if self.closed:
