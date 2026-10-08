@@ -805,3 +805,85 @@ def test_bzip2_callers_source_exception_reaches_the_caller_unchanged(
         with pytest.raises(ReadError, match="cannot be read further"):
             stream.read(1 << 16)
     assert info.value is failure
+
+
+# What rapidgzip's bzip2 decoder skips between streams (``_Bzip2Layout``) and where it
+# stops short (the end handover in ``_Bzip2EmptyStreamCheck``). Each source must read
+# the same with the accelerator on as off: the bytes, and the error type if any. Found
+# by the accelerator fuzz targets.
+def _bz2_stream(fill: bytes) -> bytes:
+    return bz2.compress(fill * 1000)
+
+
+def _bz2_without_markers(fill: bytes) -> bytes:
+    """A stream with one byte flipped in its block magic and one in its end marker."""
+    damaged = bytearray(_bz2_stream(fill))
+    damaged[4] ^= 0xFF  # the block magic starts right after the 4-byte header
+    damaged[-10] ^= 0xFF  # inside the end-of-stream marker
+    return bytes(damaged)
+
+
+_BZ2_LAYOUT_CASES = {
+    "junk-before-the-first-stream": b"BZh9" + bytes(40) + _bz2_stream(b"A"),
+    "junk-stream-between-streams": _bz2_stream(b"A")
+    + b"BZh9"
+    + bytes(40)
+    + _bz2_stream(b"C"),
+    "stream-without-markers-between": _bz2_stream(b"A")
+    + _bz2_without_markers(b"B")
+    + _bz2_stream(b"C"),
+    "zero-padding-between-streams": _bz2_stream(b"A") + bytes(16) + _bz2_stream(b"C"),
+    "empty-streams-and-padding-between": _bz2_stream(b"A")
+    + _BZ2_EMPTY
+    + bytes(3)
+    + _BZ2_EMPTY
+    + _bz2_stream(b"C"),
+    "junk-after-the-last-stream": _bz2_stream(b"A") + b"junkjunk",
+    "junk-stream-after-the-last-stream": _bz2_stream(b"A") + b"BZh9" + bytes(40),
+}
+
+
+def _read_bz2(
+    data: bytes, mode: AcceleratorMode, *, chunk: int
+) -> tuple[bytes, object]:
+    out = bytearray()
+    config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
+    try:
+        with open_codec_stream(Codec.BZIP2, io.BytesIO(data), config=config) as s:
+            if chunk < 0:
+                out += s.read()
+            else:
+                while block := s.read(chunk):
+                    out += block
+    except (CorruptionError, TruncatedError) as exc:
+        return bytes(out), type(exc)
+    return bytes(out), None
+
+
+@pytest.mark.parametrize("chunk", [-1, 333], ids=["read_all", "chunked"])
+@pytest.mark.parametrize("case", sorted(_BZ2_LAYOUT_CASES))
+def test_bzip2_accelerator_reads_stream_gaps_as_the_standard_library_does(
+    case: str, chunk: int
+) -> None:
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data = _BZ2_LAYOUT_CASES[case]
+    got, got_error = _read_bz2(data, AcceleratorMode.ON, chunk=chunk)
+    want, want_error = _read_bz2(data, AcceleratorMode.OFF, chunk=chunk)
+    assert got_error is want_error
+    if want_error is None:
+        assert got == want
+    else:
+        # Before an error, how much each engine delivers depends on how far it read
+        # ahead; what both delivered must agree.
+        assert got[: len(want)] == want[: len(got)]
+
+
+def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> None:
+    # A seek into the stream after the skipped one lands where the decoder's output
+    # already went on past the damage; the read raises instead of returning those bytes.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data = _BZ2_LAYOUT_CASES["stream-without-markers-between"]
+    with open_codec_stream(Codec.BZIP2, io.BytesIO(data), config=_BZ_ON) as s:
+        s.seek(1500)
+        with pytest.raises(CorruptionError):
+            s.read(10)
