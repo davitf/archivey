@@ -63,9 +63,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   error. Enforce a timeout outside archivey if you need one (a worker process you can
   kill is the reliable way).
 - **Accelerators are on by default when installed.** `AcceleratorMode.AUTO` uses them
-  when the `[seekable]` extra is present and a caller asks for seeking. They sit outside
-  the fuzzed surface (see the hardening notes below); set them to `OFF` for untrusted
-  input under a strict threat model.
+  when the `[seekable]` extra is present and a caller asks for seeking. They are
+  fuzzed, but they are native code with no time bound (see the hardening notes below);
+  set them to `OFF` for untrusted input under a strict threat model.
 - **After a seek, a crafted `.xz` or `.lz` index can serve the wrong bytes with no
   error.** The integrity guarantee covers a read from start to end with no seek
   ([Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
@@ -498,7 +498,8 @@ members as archives, bound the depth and the cumulative size yourself.
 ## Hardening notes for callers
 
 **Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2
-decoder) are a performance path, not part of the defended fuzz surface. The default is
+decoder) are a performance path. The fuzz harness decodes each input with them and
+without them, and fails when the bytes or the verdict differ. The default is
 `AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
 a caller asks for seeking, so turning them off is something you do yourself. The
 gzip, zlib and raw DEFLATE decoder runs in a child process, so a native abort there
@@ -506,8 +507,7 @@ costs only the member; a busy loop in that child is not bounded by a timeout. Th
 decoder runs in-process. Third-party C++ can busy-loop on crafted input in a way Python
 timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
 latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
-set to `AcceleratorMode.OFF`) or enforce their own resource limits. Mutation and
-Atheris harnesses run with accelerators off for this reason.
+set to `AcceleratorMode.OFF`) or enforce their own resource limits.
 
 **External tools:** RAR member *data* is decompressed by an external program: RARLAB
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB

@@ -350,9 +350,10 @@ gzip-specific only; the shared items are [`single-file.md`](single-file.md) §4.
 
 - **`rapidgzip` is native code outside the defended surface.** It aborts on a truncated
   stream (contained by the child process), and the mutation harness found it busy-looping
-  on crafted input. A loop in the child is still a loop: there is no timeout. The fuzzers
-  run with accelerators off, and `SECURITY.md` tells callers with a latency budget to keep
-  them off for untrusted input (threat-model O5).
+  on crafted input. A loop in the child is still a loop: there is no timeout. The Atheris
+  `gzip_accel`, `zlib_accel` and `deflate_accel` targets fuzz it under libFuzzer's own
+  timeout, and `SECURITY.md` tells callers with a latency budget to keep it off for
+  untrusted input (threat-model O5).
 - **The ISIZE backstop trusts the trailer.** A crafted file whose ISIZE matches the bytes
   `rapidgzip` delivered before a soft end passes it. The standard library engine checks
   every member's CRC-32 and ISIZE and has no such gap.

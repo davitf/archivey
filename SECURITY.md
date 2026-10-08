@@ -73,9 +73,9 @@ Out of scope for private security reports (use ordinary GitHub issues):
 
 ## Hardening notes for callers
 
-Guidance for processing untrusted archives — accelerators and the defended fuzz
-surface, the external RAR program (`unrar`, `rar` or `unar`, and the password `unar`
-takes on its command line) in your deployment's trust boundary, and extracting to a
+Guidance for processing untrusted archives — the optional accelerators, the external
+RAR program (`unrar`, `rar` or `unar`, and the password `unar` takes on its command
+line) in your deployment's trust boundary, and extracting to a
 scratch directory before promoting — lives in the user guide, next to the policies it
 qualifies:
 

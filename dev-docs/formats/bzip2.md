@@ -207,8 +207,8 @@ bzip2-specific only; the shared items are [`single-file.md`](single-file.md) §4
 - **The accelerator is native code in the caller's process.** Unlike the DEFLATE family,
   nothing contains an abort from the bzip2 decoder. None has been seen on cut or mutated
   input, and a raising Python source is trapped (§2.3), but a new abort would end the
-  caller. The fuzzers run with accelerators off, and `SECURITY.md` tells callers who need
-  that guarantee to keep them off for untrusted input (threat-model O5).
+  caller. The Atheris `bzip2_accel` target fuzzes it, and `SECURITY.md` tells callers who
+  need that guarantee to keep it off for untrusted input (threat-model O5).
 - **A small file costs a whole block.** Each block expands up to 900 kB before the first
   output byte, and detection's inner-TAR probe reads up to 1 MiB of compressed input to
   reach it. Both are bounded by the block size; the detection budget bounds the probe

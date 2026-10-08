@@ -319,10 +319,20 @@ MUST still pass without it.
 
 The test suite SHALL provide an Atheris (libFuzzer) coverage-guided fuzz harness
 over archivey-owned hostile-input entry points. The harness MUST seed from the
-declarative corpus and adversarial fixtures, force accelerators off, and treat
-success as: within each time budget, only typed `ArchiveyError` subclasses or
-clean returns — never an uncaught non-`ArchiveyError` exception, process abort,
-or hang past the slice timeout.
+declarative corpus and adversarial fixtures, force accelerators off outside the
+accelerator targets below, and treat success as: within each time budget, only
+typed `ArchiveyError` subclasses or clean returns — never an uncaught
+non-`ArchiveyError` exception, process abort, or hang past the slice timeout.
+
+The accelerator targets SHALL decode each input twice through `open_codec_stream`,
+seekable, with the codec's accelerator forced `ON` and forced `OFF`, and MUST fail
+when a byte the accelerated stream returns, on the first read or after a seek,
+differs from the `OFF` decode at the same offset, or when the accelerated read ends
+cleanly before the read cap where the `OFF` decode raised. zlib and raw DEFLATE
+inputs SHALL carry a declared decompressed size that both decodes get as
+`expected_decompressed_size`. These targets MUST bound each input with libFuzzer's
+own per-input timeout and RSS limit rather than a Python alarm, which cannot
+interrupt native code.
 
 For CRC/checksum-gated targets (native 7z header parse at minimum; ZIP member
 headers/payloads when the ZIP read path is exercised; RAR headers; other formats
@@ -351,6 +361,7 @@ budgets further.
 | RAR `open_archive` + member list | Reader/spine path after parse |
 | Stream/codec: unix-compress, xz, lzip, gzip, bzip2, lzma-alone, zlib | Direct `open_codec_stream` hostile input per standalone archivey-owned codec; seekable indexing on when the codec supports it; MUST use a per-input wall-clock kill timeout when hang classes are known |
 | Stream/codec optional extras (zstd, brotli, lz4, deflate64) | Same pattern when the backend is installed; skip-clean when absent |
+| Accelerators: gzip, zlib, raw DEFLATE (rapidgzip), bzip2 (rapidgzip's bzip2 decoder) | Accelerator `ON` against `OFF` on the same input; skip-clean when the accelerator cannot run |
 
 The Atheris CI workflow SHALL install RARLAB `unrar` on Linux so the RAR
 open+list target is not skipped solely for missing decompressor binary. RAR
@@ -393,6 +404,9 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 | ZIP target with fixup + bounded read | Post-CRC / post-local-header path reaches archivey codec or AES+codec stream; typed errors only |
 | Each required stream/codec target | Hostile inputs exercise decode (and seek-index when enabled) without raw exceptions; hang → slice failure with artifact |
 | Optional stream extra backend absent | That codec's target skipped; required stream targets still run |
+| Accelerator target, accelerated bytes differ from `OFF` at an offset, or a clean end where `OFF` raised | Slice failure with artifact |
+| Accelerator target, native hang or runaway memory | libFuzzer timeout or RSS limit kills the slice; artifact saved |
+| `[seekable]` extra absent | Accelerator targets skipped; other targets still run |
 | Broken-CRC sample / minority path | Typed CRC/corruption failure; reject path still hit |
 | Mutation harness / `ARCHIVEY_FUZZ` | Still available and unchanged in role |
 

@@ -55,7 +55,8 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   careful if you extract archives found inside other archives.
 - **Accelerators are on by default when installed.** With the `seekable` extra, archivey uses
   rapidgzip for large gzip and DEFLATE data, and its bzip2 decoder, when you ask for seekable
-  streams. Archivey's fuzz testing doesn't cover them yet, and the bzip2 one runs in your process.
+  streams. They're native code, and the bzip2 one runs in your process, so a crash in it would end
+  your program. Archivey's fuzz tests run them and compare their output with the standard decoders.
   To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
