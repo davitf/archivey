@@ -107,9 +107,13 @@ is reject/raise, with one rewrite:
   removes bidi override/isolate characters, appends `_` to a Windows-reserved stem
   (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`. It applies the same
   rewrites to a HARDLINK target, which keeps the target inside `dest` for the
-  containment check (the linked member was resolved at listing and does not change),
-  and leaves a SYMLINK target as stored. It returns the member unchanged when nothing
-  needs rewriting.
+  containment check (the linked member was resolved at listing and does not change).
+  A SYMLINK target gets the character and segment rewrites only (`file:stream` →
+  `file_stream`); its root and its `..` components are kept, and one with a drive or
+  UNC root stays refused. A SYMLINK target read only after the filter ran (see
+  `archive-reading`, "Link targets stored as member data are read only when
+  configured") gets the same rewrite, because `extract_all` calls the filter again once
+  the target is read. It returns the member unchanged when nothing needs rewriting.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
@@ -128,15 +132,39 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
 | Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK/HARDLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
 | Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
+| Link-target Windows root | `FilterRejectionError` | SYMLINK or HARDLINK whose `link_target` (after any re-root) starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a SYMLINK target rooted by a single `\` (`\foo`); a HARDLINK target so rooted is refused, as a member of that name is |
 | Hardlink escape | `FilterRejectionError` | HARDLINK whose target path resolves outside `dest` |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
 
+**A link target with a Windows root is refused on every OS.** Windows resolves a
+drive or UNC target outside `dest` and refuses it as an escape; POSIX would create it as
+a relative link into a directory named `C:`. The maintainer ruled on 2026-10-06 to
+refuse it on POSIX too, for the portability rule: the same archive SHALL give the same
+outcome on any OS, and Windows already refuses drive paths. The rule applies to every
+format, because it reads the target string. It covers a HARDLINK target as well:
+`STANDARD` and `TRUSTED` re-root a rooted one first, so it refuses `STRICT`'s `C:/x`
+and a drive-relative `C:x`, which is also what a member of that name gets.
+
+The rule has one named exception, for a SYMLINK target only. A SYMLINK target rooted
+by a single `\` (`\foo`) SHALL extract on POSIX, where it is a relative link to a file
+named `\foo`, although Windows resolves it to the drive root and refuses it as an
+escape. On POSIX a backslash is an ordinary filename character, so refusing the target
+would block an archive that is valid there, and ADR 0013 rules that extracting beats
+refusing. A HARDLINK target names a member of the same archive, and a member named `\x`
+is refused under `STRICT` and re-rooted under `STANDARD` and `TRUSTED`. So a HARDLINK
+target rooted by a single `\` SHALL get what that member gets: `STRICT` refuses it on
+every OS, and the other two re-root it first. A Windows symlink or junction's target is
+normalized before this check in ZIP, 7z and RAR5 alike (`\` to `/`, the `\??\` prefix
+dropped, `UNC\` to `//`), so `\??\C:\Windows` is checked as `C:/Windows`.
+
 **Bidi overrides are rejected by the *policy*, not universally.** Every other
-constraint in this requirement makes the **write itself** dangerous or impossible — it
-escapes the destination, carries a NUL the OS truncates on, or names a device. A bidi
-override does neither: the member lands inside `dest` under exactly its stored bytes, and
-what is compromised is the name a person **reads back afterwards**. That is a
-presentation property, and presentation is the axis `ExtractionPolicy` owns.
+constraint in this requirement meets one of two criteria: the **write itself** is
+dangerous or impossible — it escapes the destination, carries a NUL the OS truncates on,
+or names a device — or the **outcome would differ by OS**, as for a link target with a
+Windows root. A bidi override meets neither: the member lands inside `dest` under
+exactly its stored bytes, and what is compromised is the name a person **reads back
+afterwards**. That is a presentation property, and presentation is the axis
+`ExtractionPolicy` owns.
 
 The rejection therefore lives in the portable-name policy below, which means
 `ExtractionPolicy.TRUSTED` — defined as *faithful bytes, no name rejection or rewrite* —
@@ -187,6 +215,12 @@ read back.
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
 | Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
 | SYMLINK/HARDLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
+| SYMLINK `link_target` `C:/Windows`, `C:/abs/y`, `t:stream` or `//srv/share`, any policy, any OS | `FilterRejectionError` ("Symlink target is a Windows drive or UNC path"); no link written |
+| HARDLINK `link_target` `C:/x` under `STRICT`, or `C:x` at any policy, any OS | `FilterRejectionError` ("Hardlink target is a Windows drive or UNC path"); no link written |
+| SYMLINK `link_target` `\foo`, any policy, POSIX | Extracted: a link to the file `\foo` beside it |
+| HARDLINK `hl` → `\x` beside a member `\x`, any OS | `STRICT`: both `FilterRejectionError` (`hl`: "Hardlink target is an absolute path"); `STANDARD`/`TRUSTED`: both re-rooted and extracted |
+| SYMLINK `link_target` `file:stream` or `sub/NUL` with `filter=sanitize_names`, `STANDARD` | Extracted, pointing at `file_stream` or `sub/NUL_`; `C:/x` is still refused; the same with `read_link_targets=False` on a ZIP |
+| Windows symlink or junction stored as `\??\C:\Windows`, `\??\UNC\srv\share` or `..\up\x` (ZIP, 7z, RAR5) | Lists as `C:/Windows`, `//srv/share`, `../up/x`; the first two refused as above, the third as an escape |
 | Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
 | `MemberType.OTHER` | `FilterRejectionError`; all policies |
 
@@ -1130,7 +1164,10 @@ first name free **both on disk and in the collision map**, in member-processing 
 **Portable-name enforcement (O3/O4).** Windows-reserved device names (`CON`, `PRN`, `AUX`,
 `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`; case-insensitive, with or without extension) and `:`
 within a segment are **unsafe** (device capture / NTFS alternate data stream) and SHALL be
-rejected under `STRICT` and `STANDARD` on **every** platform. A trailing dot or space is a
+rejected under `STRICT` and `STANDARD` on **every** platform, in each segment of the
+member name and in each segment of a SYMLINK's `link_target` (on Windows a link to
+`file:stream` names an alternate data stream, and one to `NUL` the device). `TRUSTED`
+checks neither. A trailing dot or space is a
 legitimate macOS/Linux name that Win32 merely trims; rejecting it would halt a legitimate
 archive, so under `STRICT` each path segment's trailing dot/space SHALL be **stripped** to
 its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on every platform,
@@ -1170,6 +1207,7 @@ rewritten name then collides and is renamed).
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`; `STANDARD` keeps faithful | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
+| SYMLINK whose `link_target` has a segment with `:` (`file:stream`) or a reserved name (`sub/NUL`) | Rejected on all platforms | Local OS behavior |
 | Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |
