@@ -39,7 +39,7 @@ import stat
 import struct
 import zipfile
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import (
     IO,
     TYPE_CHECKING,
+    Any,
     BinaryIO,
     Iterator,
     Literal,
@@ -64,6 +65,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     NameEncodingContext,
     raw_name_to_base64,
@@ -128,6 +130,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
+    decode_lzma_filter_properties,
     open_codec_stream,
 )
 from archivey.internal.streams.streamtools import (
@@ -238,16 +241,32 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
 # the native parsers.
 _MAX_DATA_OFFSET = 1 << 40
 
-# stdlib exposes no public decoder for a raw LZMA1 property blob → filter dict; zipfile and
-# the 7z reader rely on the same private helper.
-_raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
-if _raw_decode_filter_properties is None:  # pragma: no cover
-    raise ImportError(
-        "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
-        "archivey needs to decode ZIP LZMA (method 14) member properties. "
-        "Please report this to archivey (with your Python version)."
-    )
-_decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
+
+# The end-of-central-directory record as stdlib parsed it: the classic record, or the
+# ZIP64 one when stdlib found and used it. `_EndRecData` and the `_ECD_*` indices into
+# its result are private stdlib API, bound once here so a Python that drops or renames
+# them fails at import rather than silently skipping (or misreading) the end-record
+# checks, which compare against the counts and sizes zipfile actually read with.
+def _zipfile_private(name: str) -> Any:
+    value = getattr(zipfile, name, None)
+    if value is None:  # pragma: no cover
+        raise ImportError(
+            f"This Python's `zipfile` module no longer exposes `{name}`, which archivey "
+            "needs to check the ZIP end record. Please report this to archivey (with "
+            "your Python version)."
+        )
+    return value
+
+
+_end_rec_data: Callable[[IO[bytes]], list | None] = _zipfile_private("_EndRecData")
+_ECD_SIGNATURE: int = _zipfile_private("_ECD_SIGNATURE")
+_ECD_ENTRIES_TOTAL: int = _zipfile_private("_ECD_ENTRIES_TOTAL")
+_ECD_SIZE: int = _zipfile_private("_ECD_SIZE")
+_ECD_COMMENT_SIZE: int = _zipfile_private("_ECD_COMMENT_SIZE")
+_ECD_COMMENT: int = _zipfile_private("_ECD_COMMENT")
+_ECD_LOCATION: int = _zipfile_private("_ECD_LOCATION")
+_EOCD_SIZE = 22
+_CD_HEADER_SIZE = 46
 
 # ZIP create-system values whose entries use "\" as a path separator (DOS/Windows family).
 # For these, a stored backslash is a separator; for Unix/other entries it is a literal
@@ -396,6 +415,10 @@ def _is_unverified_data_error(error: BaseException) -> bool:
 #: encrypted, so a wrong password that passes the one-byte check decrypts them to
 #: garbage, and a garbage dictionary or memory size trips ``max_decoder_memory``.
 _ZIP_KEYED_SETTINGS_METHODS = frozenset({14, 98})
+
+# PPMd8 restore method 2 (freeze): 7-Zip says "Unsupported Method". 0 and 1 decode;
+# anything above 2 is a "Data Error".
+_ZIP_PPMD_RESTORE_UNSUPPORTED = 2
 
 _UNCONFIRMED_RESOURCE_LIMIT_NOTE = (
     "Under ZipCrypto the password may be wrong: it checks only one byte of the "
@@ -831,6 +854,20 @@ class ZipReader(BaseArchiveReader):
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
+        # Reported after the members (``_iter_members``), so the listing completes.
+        # Computed here rather than there because the handle is still private to
+        # ``__init__``: these seeks need no ``_handle_guard()``, while the same reads
+        # at the end of the walk would race member reads under ``CONCURRENT``.
+        self._end_record_findings: list[tuple[str, ArchiveEofContext]] = (
+            _end_record_findings(
+                fp,
+                start_dir=self._archive.start_dir,
+                infos=self._archive.infolist(),
+                archive_name=archive_name,
+            )
+            if fp is not None
+            else []
+        )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, zipfile.BadZipFile):
@@ -884,6 +921,16 @@ class ZipReader(BaseArchiveReader):
         # so a diagnostic raised while typing can name the member before it has an id.
         for index, info in enumerate(self._archive.infolist()):
             yield self._to_member(info, index)
+        # The end record and the central directory disagree. Info-ZIP unzip and 7-Zip
+        # list and test every member, then report the damage; so does this, once the
+        # members are out, and a strict policy refuses the archive.
+        for message, context in self._end_record_findings:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+                message=message,
+                context=context,
+                logger=logger,
+            )
 
     def _sniff_unflagged_name(
         self, raw_name: bytes, cp437_decoded: str
@@ -1149,7 +1196,7 @@ class ZipReader(BaseArchiveReader):
             # Fail LOUD if a future Python drops the attribute: a silent 0 fallback would
             # make every candidate fail the 1-byte check, misreporting correct passwords
             # as wrong for data-descriptor members (same policy as the loud import-time
-            # bind of lzma._decode_filter_properties in the 7z reader).
+            # bind of lzma._decode_filter_properties in the codec layer).
             raw_time = getattr(info, "_raw_time", None)
             if raw_time is None:
                 raise RuntimeError(
@@ -1266,8 +1313,14 @@ class ZipReader(BaseArchiveReader):
             check_open=_check_open,
         )
 
-    def _zip_lzma_params(self, raw: BinaryIO) -> CodecParams:
-        """Peel the ZIP method-14 LZMA header and return RAW LZMA1 :class:`CodecParams`."""
+    def _zip_lzma_params(self, raw: BinaryIO, *, keyed: bool) -> CodecParams:
+        """Peel the ZIP method-14 LZMA header and return RAW LZMA1 :class:`CodecParams`.
+
+        ``keyed`` marks a header a ZipCrypto key decrypted (see
+        :attr:`_ZipCipher.keyed_settings`): an lc/lp liblzma cannot decode may then be
+        a wrong key's garbage, so it stays a ``CorruptionError`` the password ladder
+        counts as a failed candidate.
+        """
         # version (2) + properties size (2) + properties
         header = read_exact(raw, 4)
         if len(header) != 4:
@@ -1290,11 +1343,30 @@ class ZipReader(BaseArchiveReader):
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
-        filters = [_decode_filter_properties(lzma.FILTER_LZMA1, props)]
-        return CodecParams(filters=filters)
+        try:
+            lzma_filter = decode_lzma_filter_properties(
+                lzma.FILTER_LZMA1, props, what="ZIP LZMA member"
+            )
+        except UnsupportedFeatureError as exc:
+            # 7-Zip writes and reads lc + lp over 4 (``-mm=LZMA:lc=8``); liblzma
+            # cannot decode it, so the archive is valid and unreadable here. When
+            # keyed, every ZipCrypto open path re-raises this CorruptionError as the
+            # password-or-damage EncryptionError, so its "not supported" wording is
+            # only ever read as that error's ``__cause__``.
+            error_type = CorruptionError if keyed else UnsupportedFeatureError
+            raise error_type(
+                raw_message_of(exc),
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            ) from exc
+        return CodecParams(filters=[lzma_filter])
 
-    def _zip_ppmd_params(self, raw: BinaryIO) -> CodecParams:
-        """Peel the ZIP method-98 2-byte PPMd8 header into :class:`CodecParams`."""
+    def _zip_ppmd_params(self, raw: BinaryIO, *, keyed: bool) -> CodecParams:
+        """Peel the ZIP method-98 2-byte PPMd8 header into :class:`CodecParams`.
+
+        ``keyed`` as in :meth:`_zip_lzma_params`: under ZipCrypto an unsupported
+        restore method may be a wrong key's garbage, so it reads as corruption.
+        """
         header = read_exact(raw, 2)
         if len(header) != 2:
             raise TruncatedError(
@@ -1309,6 +1381,26 @@ class ZipReader(BaseArchiveReader):
         if order < 2 or order > 64 or mem_mb < 1:
             raise CorruptionError(
                 f"Invalid ZIP PPMd header parameters: order={order} mem_mb={mem_mb}",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        # PPMd8 restore methods: 0 restart, 1 cut off, 2 freeze. 7-Zip builds without
+        # freeze and reports it as an unsupported method; anything above 2 is its
+        # data error. pyppmd must not be handed these either: it is built without
+        # PPMD8_FREEZE_SUPPORT yet accepts any value silently, so a 2 (or a 3 to 15)
+        # passed on decodes to wrong bytes once a large member fills the model,
+        # rather than failing.
+        if restore > _ZIP_PPMD_RESTORE_UNSUPPORTED or (
+            restore == _ZIP_PPMD_RESTORE_UNSUPPORTED and keyed
+        ):
+            raise CorruptionError(
+                f"Invalid ZIP PPMd header parameters: restore method {restore}",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        if restore == _ZIP_PPMD_RESTORE_UNSUPPORTED:
+            raise UnsupportedFeatureError(
+                f"ZIP PPMd restore method {restore} is not supported",
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
@@ -1340,6 +1432,7 @@ class ZipReader(BaseArchiveReader):
         method: int,
         codec: Codec,
         sequential_body: bool = False,
+        keyed_settings: bool = False,
     ) -> ArchiveStream:
         """Decode a member body through the shared codec layer.
 
@@ -1350,6 +1443,8 @@ class ZipReader(BaseArchiveReader):
         ``sequential_body`` marks a body that seeks only by re-reading from its start
         (the ZipCrypto stage). ``AUTO`` accelerators then stay off: they read their
         input at scattered offsets, and every step back would decrypt the member again.
+        ``keyed_settings`` marks codec settings a ZipCrypto key decrypted
+        (:attr:`_ZipCipher.keyed_settings`).
         """
         size = member.size
         config = replace(self._stream_config, expected_decompressed_size=size)
@@ -1362,7 +1457,7 @@ class ZipReader(BaseArchiveReader):
         try:
             params = CodecParams()
             if method == 14:  # ZIP LZMA
-                params = self._zip_lzma_params(body)
+                params = self._zip_lzma_params(body, keyed=keyed_settings)
                 # Without the EOS-marker flag the stream has no end marker (APPNOTE
                 # 4.4.4): the declared size is where it ends, so the decoder stops
                 # there. With the flag set it stays unbounded, and an over-long or
@@ -1374,7 +1469,7 @@ class ZipReader(BaseArchiveReader):
                 ):
                     params = replace(params, unpack_size=size)
             elif method == 98:  # ZIP PPMd8
-                params = self._zip_ppmd_params(body)
+                params = self._zip_ppmd_params(body, keyed=keyed_settings)
                 # Bound PPMd decode to the member size when known (defensive; PPMd8
                 # usually has an end mark, but max_length still matches py7zr practice).
                 if size is not None and size >= 0:
@@ -1563,6 +1658,7 @@ class ZipReader(BaseArchiveReader):
                 method=cipher.method,
                 codec=cipher.codec,
                 sequential_body=not cipher.is_aes,
+                keyed_settings=cipher.keyed_settings,
             )
 
         def payload_complete() -> bool:
@@ -2200,6 +2296,141 @@ def _find_classic_eocd(fp: IO[bytes]) -> tuple[bytes, int, int] | None:
         return tail, idx, size
     finally:
         fp.seek(pos)
+
+
+def _end_record_findings(
+    fp: IO[bytes],
+    *,
+    start_dir: int,
+    infos: Sequence[zipfile.ZipInfo],
+    archive_name: str | None,
+) -> list[tuple[str, ArchiveEofContext]]:
+    """Where the end record and the central directory disagree, as diagnostics.
+
+    stdlib zipfile reads entries until it has consumed the directory size the end
+    record gives, and ignores the rest: an entry count that does not match, an archive
+    comment length past the end of the file, and an entry whose name, extra field or
+    comment runs past the directory (it cuts the field at the directory's end). Info-ZIP
+    unzip warns or errors on each, and 7-Zip reports "Headers Error". ``fp``'s position
+    is restored.
+
+    The record checked is the one stdlib chose, the last end-record signature in the
+    file's tail. A decoy signature inside the archive comment is therefore compared
+    with the (empty) directory it describes and agrees with it: such an archive lists
+    as empty, with no finding here.
+    """
+    pos = fp.tell()
+    try:
+        endrec = _end_rec_data(fp)
+        if endrec is None:
+            return []
+        findings: list[tuple[str, ArchiveEofContext]] = []
+        eocd_offset = endrec[_ECD_LOCATION]
+        is_zip64 = endrec[_ECD_SIGNATURE] != b"PK\x05\x06"
+
+        declared = endrec[_ECD_ENTRIES_TOTAL]
+        read = len(infos)
+        # A classic record counts in 16 bits. Old 7-Zip versions stored the low 16 bits
+        # of a larger count there without writing ZIP64; current 7-Zip (ZipIn.cpp)
+        # accepts that with a "16-bit overflow for number of files in headers" note
+        # rather than a Headers Error, so the comparison here is modulo 65536 too.
+        if declared != (read if is_zip64 else read & 0xFFFF):
+            record = "ZIP64 end of central directory" if is_zip64 else "end record"
+            findings.append(
+                (
+                    f"ZIP {record} declares {declared} entries, but the central "
+                    f"directory holds {read}.",
+                    ArchiveEofContext(
+                        archive_name=archive_name,
+                        format="zip",
+                        expected_marker="end_of_central_directory",
+                        expected_bytes=0,
+                        observed_bytes=eocd_offset,
+                        observed_kind="nonzero",
+                    ),
+                )
+            )
+
+        # The comment length is the classic record's own (ZIP64 has none), and stdlib
+        # slices the comment out of a buffer that ends at the end of the file, so the
+        # bytes it holds fall short of the declared length exactly when the comment
+        # runs past the end of the file.
+        comment_length = endrec[_ECD_COMMENT_SIZE]
+        available = len(endrec[_ECD_COMMENT])
+        if comment_length > available:
+            findings.append(
+                (
+                    f"ZIP archive comment is declared as {comment_length} bytes, "
+                    f"but the file ends {available} bytes after the end record; "
+                    f"the comment is cut short.",
+                    ArchiveEofContext(
+                        archive_name=archive_name,
+                        format="zip",
+                        expected_marker="end_of_central_directory",
+                        expected_bytes=_EOCD_SIZE + comment_length,
+                        observed_bytes=_EOCD_SIZE + available,
+                        observed_kind="short",
+                    ),
+                )
+            )
+
+        overrun = _central_directory_overrun(
+            fp, start_dir=start_dir, size_cd=endrec[_ECD_SIZE]
+        )
+        if overrun is not None:
+            index, field, entry_end = overrun
+            name = infos[index].filename if index < len(infos) else f"#{index}"
+            article = "an" if field.startswith("extra") else "a"
+            findings.append(
+                (
+                    f"ZIP central directory entry {quoted(name)} declares {article} "
+                    f"{field} that runs {entry_end - endrec[_ECD_SIZE]} bytes past "
+                    f"the central directory's end; its {field} is cut short.",
+                    ArchiveEofContext(
+                        archive_name=archive_name,
+                        format="zip",
+                        expected_marker="central_directory",
+                        expected_bytes=endrec[_ECD_SIZE],
+                        observed_bytes=entry_end,
+                        observed_kind="nonzero",
+                    ),
+                )
+            )
+        return findings
+    finally:
+        fp.seek(pos)
+
+
+def _central_directory_overrun(
+    fp: IO[bytes], *, start_dir: int, size_cd: int
+) -> tuple[int, str, int] | None:
+    """The entry whose variable fields run past the directory's ``size_cd`` bytes.
+
+    Returns ``(index, field, end)``: the entry's position, which field crosses the end
+    (``"name"``, ``"extra field"`` or ``"comment"``), and where the entry ends counting
+    from the directory's start. stdlib stops at the first entry that reaches the end, so
+    only one can overrun. Reads the directory as stdlib does, in one piece.
+    """
+    fp.seek(start_dir)
+    data = fp.read(size_cd)
+    offset = 0
+    index = 0
+    while offset + _CD_HEADER_SIZE <= len(data):
+        name_len, extra_len, comment_len = struct.unpack_from("<HHH", data, offset + 28)
+        name_end = offset + _CD_HEADER_SIZE + name_len
+        extra_end = name_end + extra_len
+        entry_end = extra_end + comment_len
+        if entry_end > size_cd:
+            if name_end > size_cd:
+                field = "name"
+            elif extra_end > size_cd:
+                field = "extra field"
+            else:
+                field = "comment"
+            return index, field, entry_end
+        offset = entry_end
+        index += 1
+    return None
 
 
 def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:

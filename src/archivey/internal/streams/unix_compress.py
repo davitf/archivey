@@ -100,9 +100,10 @@ def _parse_header(header: bytes) -> tuple[int, bool]:
             f"of {_INITIAL_CODE_WIDTH}"
         )
     if max_width > _MAX_CODE_WIDTH:
-        raise CorruptionError(
-            f"unix-compress (.Z) max code width {max_width} exceeds the format "
-            f"ceiling of {_MAX_CODE_WIDTH}"
+        # gzip and ncompress: "compressed with 17 bits, can only handle 16 bits".
+        raise UnsupportedFeatureError(
+            f"unix-compress (.Z) max code width {max_width} is not supported: "
+            f"decoders handle up to {_MAX_CODE_WIDTH} bits"
         )
     block_mode = bool(flag_byte & _BLOCK_MODE_FLAG)
     return max_width, block_mode
@@ -116,7 +117,8 @@ class LzwState:
     :class:`SeekPoint` registration belong to the stream wrapper.
 
     Format errors raise :class:`CorruptionError` directly (same pattern as native
-    xz/lzip). Unknown reserved header flags raise :class:`UnsupportedFeatureError`.
+    xz/lzip). Unknown reserved header flags and a maximum code width over 16 raise
+    :class:`UnsupportedFeatureError`.
     At EOF, :attr:`truncation` names the evidence of a cut when there is some: a source
     that ended inside the header, inside a CLEAR's realignment padding, or with nonzero
     leftover bits after the last complete code. Zero leftover bits are normal for

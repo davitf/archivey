@@ -369,3 +369,31 @@ open are unknown for such a file, and the open-time one-byte read raises
 | --- | --- |
 | A member in version 0, 2 or 255, anywhere in the file | A read or a seek that reaches it raises `UnsupportedFeatureError` |
 | A version-1 member + `LZIP` and a version byte, with no dictionary byte | `TruncatedError` on a read and on a seek alike |
+
+### Requirement: A stream header its tool calls unsupported is unsupported
+
+A compressed-stream header that the format's own tool refuses as unsupported, rather
+than as damaged, SHALL raise `UnsupportedFeatureError`, not `CorruptionError`, and SHALL
+NOT be decoded:
+
+- gzip: a member whose compression method is not 8 (deflate) or whose header sets a
+  reserved FLG bit (gzip: "unknown method N -- not supported", "has flags 0xN -- not
+  supported", "is encrypted -- not supported"), on the first member or a later one;
+- lz4: a frame whose version bits are not `01` (`ERROR_headerVersion_wrong`);
+- zstd: a frame that names a dictionary (zstd: "Dictionary mismatch"); archivey has no
+  way to be given one;
+- `.Z`: a maximum code width over 16 bits (gzip and ncompress: "compressed with 17
+  bits, can only handle 16 bits").
+
+A header the tool reports as damaged stays `CorruptionError`, such as a gzip header CRC
+that does not match.
+
+#### Scenario: unsupported stream headers
+
+| Source | Expected |
+| --- | --- |
+| gzip member with CM 7, or FLG bit 5, 6 or 7 set, first or later member, accelerator on or off | `UnsupportedFeatureError` |
+| lz4 frame with version bits `00`, `10` or `11` | `UnsupportedFeatureError` |
+| zstd frame compressed with a dictionary | `UnsupportedFeatureError` |
+| `.Z` with maximum code width 17 or 31 | `UnsupportedFeatureError` |
+| gzip header CRC mismatch | `CorruptionError` |

@@ -745,14 +745,15 @@ def test_unix_compress_truncated_readall_then_rewind_raises_again() -> None:
             stream.read()
 
 
-@requires("ncompress")
-def test_unix_compress_maxbits_above_16_rejected() -> None:
-    """Format ceiling is 16; 17–31 must raise CorruptionError (not grow the dict)."""
-    for maxbits in (17, 24, 31):
-        header = bytes([0x1F, 0x9D, 0x80 | maxbits])
-        with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
-            with raises_corruption_not_truncation(match="ceiling of 16"):
-                stream.read()
+@pytest.mark.parametrize("maxbits", [17, 24, 31])
+def test_unix_compress_maxbits_above_16_rejected(maxbits: int) -> None:
+    """Decoders handle up to 16 bits; 17–31 must be refused, not grow the dictionary.
+    gzip and ncompress call it unsupported ("compressed with 17 bits, can only handle
+    16 bits"), so it is UnsupportedFeatureError, not corruption."""
+    header = bytes([0x1F, 0x9D, 0x80 | maxbits])
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
+        with pytest.raises(UnsupportedFeatureError, match=f"width {maxbits}"):
+            stream.read()
 
 
 @requires("ncompress")
@@ -2449,3 +2450,67 @@ def test_no_source_file_advertises_a_deleted_extra() -> None:
     assert not offenders, "source names extras that no longer exist:\n" + "\n".join(
         offenders
     )
+
+
+# A header the format's own tool refuses as "not supported" is UnsupportedFeatureError,
+# not corruption (the lzip version-0 ruling, applied to the other stream codecs).
+
+
+@pytest.mark.parametrize(
+    ("byte", "value", "accel"),
+    [
+        pytest.param(2, 7, AcceleratorMode.OFF, id="cm7"),
+        pytest.param(3, 0x80, AcceleratorMode.OFF, id="flg80"),
+        pytest.param(3, 0x20, AcceleratorMode.OFF, id="flg20"),
+        pytest.param(2, 7, AcceleratorMode.ON, id="cm7-accel"),
+        pytest.param(3, 0x80, AcceleratorMode.ON, id="flg80-accel"),
+    ],
+)
+def test_gzip_unsupported_member_header_is_unsupported(
+    byte: int, value: int, accel: AcceleratorMode
+) -> None:
+    """gzip: "unknown method 7 -- not supported", "has flags 0x80 -- not supported",
+    "is encrypted -- not supported" (FLG bit 5)."""
+    if accel is AcceleratorMode.ON and importlib.util.find_spec("rapidgzip") is None:
+        pytest.skip("rapidgzip not installed")
+    data = bytearray(gzip.compress(CONTENT, mtime=0))
+    data[byte] = value if byte == 2 else data[byte] | value
+    config = StreamConfig(use_rapidgzip=accel, seekable=True)
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(data)), config=config) as s:
+        with pytest.raises(UnsupportedFeatureError, match="gzip member header"):
+            s.read()
+
+
+def test_gzip_later_member_with_unknown_method_is_unsupported() -> None:
+    member = gzip.compress(CONTENT, mtime=0)
+    second = bytearray(member)
+    second[2] = 7
+    source = io.BytesIO(member + bytes(second))
+    with open_codec_stream(Codec.GZIP, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(UnsupportedFeatureError):
+            stream.read()
+
+
+@requires("lz4")
+@pytest.mark.parametrize("version_bits", [0b00, 0b10, 0b11])
+def test_lz4_frame_version_other_than_01_is_unsupported(version_bits: int) -> None:
+    import lz4.frame
+
+    data = bytearray(lz4.frame.compress(CONTENT))
+    data[4] = (data[4] & 0x3F) | (version_bits << 6)  # FLG: version in bits 7-6
+    with open_codec_stream(Codec.LZ4, io.BytesIO(bytes(data))) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="lz4 frame version"):
+            stream.read()
+
+
+@requires_zstd()
+def test_zstd_frame_needing_a_dictionary_is_unsupported() -> None:
+    """zstd: "Dictionary mismatch". The frame names a dictionary archivey has no way
+    to be given."""
+    zstd = zstd_backend()
+    samples = [bytes([i]) * 50 + b"common prefix %d" % i for i in range(200)]
+    dictionary = zstd.train_dict(samples, 4096)
+    data = zstd.compress(CONTENT, zstd_dict=dictionary)
+    with open_codec_stream(Codec.ZSTD, io.BytesIO(data)) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="dictionary"):
+            stream.read()

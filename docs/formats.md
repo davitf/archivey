@@ -90,7 +90,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   entries are addressed by disk number — and is rejected with
   ``UnsupportedFeatureError``; rejoin it with the tool that made it.
 - Unsupported compression methods: listing succeeds; reading raises
-  ``UnsupportedFeatureError``.
+  ``UnsupportedFeatureError``. So does an LZMA member with ``lc + lp`` over 4, which
+  7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
+  restore method 2. Under ZipCrypto both read as the password-or-damage
+  ``EncryptionError`` instead, because those settings are encrypted.
+- An end record that disagrees with the central directory is a warning, not an error:
+  an entry count that does not match, an archive comment length past the end of the
+  file, or a directory entry whose name, extra field or comment runs past the
+  directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
+  which ``DiagnosticPolicy.strict()`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
 - An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
   extraction skips it. The mode is read only when "version made by" says Unix.
@@ -529,6 +537,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
   wherever it is in the file: a member that starts with the `LZIP` magic is never
   skipped as trailing data.
+- A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
+  not `CorruptionError`: a gzip member with a method other than deflate or a reserved
+  flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
+  dictionary, and a `.Z` file with a code width over 16 bits.
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable

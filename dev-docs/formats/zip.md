@@ -16,7 +16,7 @@ states the behaviour and links the row.
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
+| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).
@@ -348,6 +348,24 @@ redirects with no data stream, so its CRC32 field covers zero bytes and archivey
 no digest at all rather than the constant `crc32(b"")` —
 [`formats/rar.md`](rar.md) §2.2.
 
+**The end record is checked against the directory stdlib read.** Stdlib reads
+directory entries until it has consumed the size the end record gives and ignores the
+rest of the record. After the members, the reader emits `ARCHIVE_EOF_MARKER_MISSING`
+for an entry count that differs from the entries read (the ZIP64 record's count when
+stdlib used it; a classic count modulo 65536, because old 7-Zip versions stored a
+larger count's low 16 bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that
+with a "16-bit overflow" note), an archive comment length past the end of the file, and
+an entry whose name, extra field or comment runs past the directory, which stdlib cuts
+at the directory's end. Info-ZIP
+unzip warns or errors on each and 7-Zip says "Headers Error", after testing every
+member, so the default policy lists and reads; `strict()` refuses.
+`_end_record_findings` takes the counts and the declared and present comment lengths
+from stdlib's own `_EndRecData` result (indices bound through `zipfile._ECD_*`), and
+reads the directory once more to find the entry that overruns it. Because the checks use
+the record stdlib chose, a decoy end-record signature inside the archive comment passes
+them: the archive lists as empty (`EMPTY_ARCHIVE`), as with Info-ZIP unzip, where 7-Zip
+searches further back and lists the real members.
+
 ### 2.3 Member data
 
 **`zipfile`'s own decoders are not used** — meaning `ZipExtFile`, not the standard library:
@@ -364,6 +382,15 @@ registry already advertised for ZIP. It also puts ZIP member reads on the same
 body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
 since `use_rapidgzip` covers raw deflate.
+
+**Codec settings 7-Zip names but this reader cannot decode are unsupported, not
+corrupt.** An LZMA member's properties byte with `lc + lp` over 4 (7-Zip accepts up to
+12 and writes it with `-mm=LZMA:lc=8`; liblzma stops at 4) raises
+`UnsupportedFeatureError` through `decode_lzma_filter_properties`, the check the 7z
+pipeline uses for the same byte. A PPMd member's restore method 2 is
+`UnsupportedFeatureError` and 3 to 15 `CorruptionError`, as 7-Zip reports "Unsupported
+Method" and "Data Error". Under ZipCrypto those settings are decrypted with a key one
+byte vouched for, so both stay `CorruptionError` there and count as the candidate failing.
 
 On the standard library path a bzip2 member ends at its first end-of-stream marker, as
 7-Zip, Info-ZIP and `zipfile` read it, and as a DEFLATE, LZMA or PPMd member ends at its own.
@@ -594,6 +621,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | After a seek, no CRC checks a ZipCrypto member, and a wrong password that passed the check byte goes unnoticed on a STORED member | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order, so a seek gives it up (ADR 0014). Keeping it for a read that returns over bytes already hashed, as the AES HMAC does, is tracked internally. A compressed member's decoder usually still objects to a wrong key on the bytes a forward seek decodes; a STORED member has no decoder, so a seek then a read returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
 | Under an accelerator, a DEFLATE or bzip2 member holding two streams whose size and CRC cover both reads clean; without it, the member is truncated. A bzip2 member whose size and CRC cover only the first stream reads under the standard library and raises under the accelerator | **library** / **archivey** | zlib and `bz2` stop at the first stream's end; `rapidgzip` and its bzip2 decoder read on, and the declared size and CRC decide (§2.3). Only a crafted member does this. A DEFLATE member whose accelerated output passes the declared size finishes on zlib instead, so that case agrees |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
+| An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
 
 ## 6. Decisions
 
@@ -615,6 +643,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A WinZip AES member every candidate fails on the HMAC raises `CorruptionError`, as one password does | A wrong password passes `pw_verify` once in 65 536, so damage is far likelier, and one error type for both password paths means a symlink with a damaged target lists the same way under either (S28-K4, davi 2026-09-26) | ZipCrypto's ambiguous `EncryptionError`, which fits an 8-bit check but made the same damaged AES member raise two different types depending on how many passwords the caller passed |
 | A damaged symlink target leaves the link listed without a target | One member's damage says nothing about the others, and listing raised for the whole archive. The link is reported (`target_data_damaged`) and raises when opened or extracted; a strict policy still refuses the archive | Raising from `members()`, which took every other member with it |
 | WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
+| Leave LZMA1 `lc + lp` over 4 unsupported | 7-Zip writes it only when asked (`lc=8`). Decoding it needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; a pure-Python LZMA1 decoder (very slow); handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma |
 
 ## 7. Open questions
 

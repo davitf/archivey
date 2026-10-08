@@ -20,7 +20,7 @@ states the behaviour and links the row.
 | Digests | None. The format has no checksum |
 | Metadata | None beyond the shared fields |
 | Truncation | **Best-effort.** About half of the cuts measured on a 16-bit file read as a shorter complete file with no error (§1) |
-| Refuses | A header with reserved flag bits set (`UnsupportedFeatureError`); a maximum code width outside 9 to 16 (`CorruptionError`) |
+| Refuses | A header with reserved flag bits set (`UnsupportedFeatureError`); a maximum code width over 16 (`UnsupportedFeatureError`, as gzip and ncompress say "can only handle 16 bits") or under 9 (`CorruptionError`) |
 
 **Three things a reader might expect and will not find.** A cut `.Z` file is not always
 reported: the format has nothing that would show the cut. Damaged data decodes to wrong
@@ -80,7 +80,9 @@ is empty ([`single-file.md`](single-file.md) §2.2).
 `UnixCompressDecompressorStream` is `DecompressorStream` over the native LZW decoder
 (`LzwState`). The header is checked first: reserved flag bits (`0x60`) are
 `UnsupportedFeatureError`, since a writer that set them meant something archivey does not
-know; a maximum code width below 9 or above 16 is `CorruptionError`. Then codes are decoded
+know; a maximum code width above 16 is `UnsupportedFeatureError` (gzip and ncompress:
+"compressed with 17 bits, can only handle 16 bits"), and one below 9 is `CorruptionError`.
+Then codes are decoded
 forward, with no need to seek, so a pipe reads too (in streaming mode, per
 [`single-file.md`](single-file.md) §2.2).
 
