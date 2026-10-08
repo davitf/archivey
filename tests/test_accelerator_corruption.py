@@ -330,7 +330,15 @@ def test_gzip_cut_member_with_a_forged_isize_raises() -> None:
         ]
     )
     with rapidgzip.RapidgzipFile(io.BytesIO(bytes(cut)), parallelization=1) as f:
-        cut[-4:] = len(f.read()).to_bytes(4, "little")
+        try:
+            delivered = len(f.read())
+        except ValueError:
+            # macOS builds raise on the cut instead of ending softly; the standard
+            # library then takes over, and there is no soft end to forge a trailer for.
+            pytest.skip(
+                "this rapidgzip build raises on the cut instead of ending softly"
+            )
+    cut[-4:] = delivered.to_bytes(4, "little")
     with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(cut)), config=_GZ_ON) as s:
         with pytest.raises(TruncatedError):
             s.read()
