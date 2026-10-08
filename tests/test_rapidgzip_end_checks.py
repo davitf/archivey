@@ -235,6 +235,25 @@ def test_gzip_bytes_after_the_data_are_reported_with_the_accelerator(tmp_path) -
 
 
 @requires("rapidgzip")
+def test_appended_length_bytes_do_not_hide_a_wrong_gzip_isize() -> None:
+    """Four bytes after a wrong ISIZE are not the trailer, even when they equal the length.
+
+    The backstop compares the decoded length with the last four bytes of the file.
+    Appending the real length there makes that comparison succeed, and the accelerator
+    returns the payload. The standard library still raises on the real trailer. Those
+    four bytes are not the zero padding the spec accepts for a wrong last ISIZE.
+    The ``gzip_accel`` fuzz target found this shape.
+    """
+    payload = b"atheris seed payload\n" * 8
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    blob[-1] ^= 0x01
+    blob += len(payload).to_bytes(4, "little")
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
 @pytest.mark.parametrize(
     "blob",
     [
