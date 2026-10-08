@@ -146,7 +146,7 @@ other backends.
 
 ## rapidgzip accelerator: upstream defects
 
-Bugs 3 and 4 below are live in rapidgzip 0.16.0, the current and floor version. Bugs 1 and
+Bugs 3, 4 and 5 below are live in rapidgzip 0.16.0, the current and floor version. Bugs 1 and
 2 (closing accelerator objects at finalization, one accelerator library per process) are
 fixed on archivey's side and written up in
 [`rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md) §6 and §7.
@@ -241,6 +241,24 @@ raised a catchable `RuntimeError` after every chunk before the cut.
 
 **Evidence.** [`rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §2; the design and costs are in [`formats/gzip.md`](formats/gzip.md) §2.3.
+
+### Bug 5: rapidgzip keeps the Python file object it reads from (open, contained)
+
+**Symptom.** `IndexedBzip2File(f)` never releases `f`: after `close()` and a garbage
+collection, a weak reference to `f` is still alive, and so is every bound method of `f` it
+took. The bytes objects its reads returned leak too, and some native memory per open, more
+on damaged input. Measured on rapidgzip 0.16.0 with an `io.BytesIO` subclass, through
+archivey and directly.
+
+**What archivey does.** bzip2 reads a caller-owned stream through `_TrappingSource`
+(Bug 3), so rapidgzip holds the shim, not the caller's stream. When the accelerator stream
+closes, the shim drops the source (`_TrappingSource.release`), so the source and an
+`io.BytesIO`'s buffer are freed; the shim itself, a few hundred bytes, still leaks. Before
+that, every accelerated bzip2 open of a `BytesIO` leaked a full copy of its buffer, and
+the `bzip2_accel` fuzz target ran out of memory after about 36 000 inputs.
+`tests/test_accelerator_corruption.py::test_indexed_bzip2_frees_a_stream_source_after_close`
+pins it. gzip, zlib and raw DEFLATE decode in a child process (Bug 4), whose memory goes
+when it ends.
 
 ## Intermittent `pyppmd` native aborts on PPMd streams (open upstream)
 

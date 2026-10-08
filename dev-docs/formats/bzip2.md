@@ -223,6 +223,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
+| Each bzip2 open through the accelerator leaks a little memory: a few hundred bytes of Python objects, and some native memory, more on damaged input | **library** | rapidgzip keeps the file object it reads from; archivey frees the caller's stream behind it (`known-issues.md` Bug 5) |
 | `member.size` is `None` for a `.bz2` | **format** | No size field (§1) |
 | Opening a small `.bz2` decodes up to 900 kB | **format** | Open-time validation needs the first block (§1, §2.2) |
 | "[Warning] Trailing garbage after EOF ignored!" on standard error | **library** | The accelerator prints it for bytes after the last stream in a standalone file; archivey cannot route it into diagnostics. Tracked internally |

@@ -223,7 +223,7 @@ class _AcceleratorStream(DelegatingStream):
         super().__init__(ensure_binaryio(inner))
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
-        self._finalize = weakref.finalize(self, self._close_inner, self._inner)
+        self._finalize = weakref.finalize(self, self._close_inner, self._inner, trap)
         # Bug 3 containment: when rapidgzip reads a caller-owned Python source through a
         # ``_TrappingSource``, a source-side fault is swallowed into ``trap`` (so it never
         # crosses into rapidgzip's C++ and aborts the process) and re-raised here after each
@@ -234,13 +234,15 @@ class _AcceleratorStream(DelegatingStream):
         self._lost: str | None = None
 
     @staticmethod
-    def _close_inner(inner: BinaryIO) -> None:
+    def _close_inner(inner: BinaryIO, trap: "_TrappingSource | None") -> None:
         # close() — not join_threads() — stops the C++ worker thread, and must run before the
         # interpreter finalizes or the process aborts. Best-effort; the guard runs it once.
         try:
             inner.close()
         except Exception:  # noqa: BLE001 - best-effort; the object is going away regardless
             pass
+        if trap is not None:
+            trap.release()
 
     def _reraise_trapped(self) -> None:
         # Surface a fault the source shim parked, after the accelerator call that observed
@@ -478,6 +480,19 @@ class _TrappingSource(io.RawIOBase):
         super().__init__()
         self._inner = inner
         self.trapped: BaseException | None = None
+
+    def release(self) -> None:
+        """Drop the source, once the decoder that reads through this shim is closed.
+
+        rapidgzip 0.16 never releases the Python file object it is given, closed or not
+        (measured with a weak reference: ``IndexedBzip2File(f).close()`` leaves ``f``
+        alive), so this shim outlives the stream. Without this, so would the source, and
+        an ``io.BytesIO`` source with a full copy of its buffer: the leak the
+        ``bzip2_accel`` fuzz target ran out of memory on. A call that still arrives reads
+        an empty source.
+        """
+        self._inner = io.BytesIO()
+        self.trapped = None
 
     def _store(self, exc: BaseException) -> None:
         if self.trapped is None:
