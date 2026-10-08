@@ -1351,7 +1351,8 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     error by the over-run probe of a declared size (``_probe_past_declared``), which
     reads it as "no more data": a ZIP member declared empty with a body that is not
     DEFLATE read as empty, where the accelerator off raises. Only the DEFLATE family
-    passes ``translate``: bzip2 has no over-run probe, and its translator maps every
+    passes ``translate``: bzip2's accelerated path adds no ``_wrap_accelerated_length``
+    verifier, so no over-run probe sits inside it, and its translator maps every
     ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage
     error (a closed source) that ``ArchiveStream`` reports as one.
 

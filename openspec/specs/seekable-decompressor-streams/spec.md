@@ -106,11 +106,12 @@ stdlib `zlib`.
 Because rapidgzip auto-detects the format, the codec SHALL decode with the stdlib backend a
 source rapidgzip could take for another format: a `deflate` source that starts with `1f 8b`,
 a valid zlib header or `BZh` and a digit from 1 to 9, and a `zlib` source that does not start
-with a valid zlib header without a preset dictionary. A
-raw DEFLATE stream that rapidgzip ends before its first byte of output SHALL be decoded by the
-stdlib backend, which gives the verdict. Once the stdlib backend has taken over from
-rapidgzip, its errors SHALL leave as the codec's typed errors, so the over-run probe of a
-declared size never takes a data error for the end of the data.
+with a valid zlib header. A `zlib` source whose header sets a preset dictionary SHALL use the
+stdlib backend too: rapidgzip does not take that header for zlib. A raw DEFLATE stream that
+rapidgzip ends before its first byte of output SHALL be decoded by the stdlib backend, which
+gives the verdict. Once the stdlib backend has taken over from rapidgzip, its errors SHALL
+leave as the codec's typed errors, so the over-run probe of a declared size never takes a
+data error for the end of the data.
 
 rapidgzip 0.16 aborts the process on a DEFLATE-family stream that ends early, so the system
 SHALL run the gzip, zlib and deflate decoders in a child process and MUST NOT decode those
@@ -144,7 +145,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | Accelerator fed an over-long/unbounded slice | May raise a spurious decode error on trailing bytes; callers MUST bound the input |
 | No child can be started (frozen interpreter, zip import, refused spawn or temporary file), `AUTO` | stdlib backend |
 | No child can be started, `ON` | `ResourceLimitError` at open |
-| A `deflate` source that starts like gzip, zlib or bzip2, or a `zlib` source that does not start with a zlib header without a preset dictionary, `ON` | The bytes and error of `OFF` (`CorruptionError` at the header) |
+| A `deflate` source that starts like gzip, zlib or bzip2, or a `zlib` source with no valid zlib header or with a preset dictionary, `ON` | The bytes and error of `OFF` (`CorruptionError` at the header) |
 | A raw DEFLATE stream cut before any output (`03`), `ON`, with or without a declared size | `TruncatedError`, as with `OFF` |
 | A `deflate` or `zlib` stream declared empty that does not decode, `ON` | `CorruptionError`, as with `OFF` |
 
