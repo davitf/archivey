@@ -188,9 +188,10 @@ def test_a_raise_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
 
 
 def test_a_decoder_error_is_raised_again_after_a_seek_to_the_same_place() -> None:
-    # The decoder raised at offset 0, so seek(0) moves nothing; it must still restart
-    # the decoder rather than feed the spent one. bz2 then raises ValueError on
-    # CPython 3.11.17 and 3.12.15, which the bzip2 translator reads as a truncation.
+    # The real library: the decoder raised at offset 0, so seek(0) moves nothing; it
+    # must still restart the decoder rather than feed the spent one. Whether a spent
+    # bz2 decoder raises ValueError or repeats its OSError depends on the CPython build,
+    # so the fake decoder below is the check that does not.
     stream = _stdlib_bzip2(io.BytesIO(b"not bzip2"), StreamConfig(seekable=True))
     with pytest.raises(OSError, match="Invalid data stream"):
         stream.read(10)
@@ -202,26 +203,28 @@ def test_a_decoder_error_is_raised_again_after_a_seek_to_the_same_place() -> Non
         stream.read(10)  # and without a seek, the verdict stays
 
 
-class _FailsOnSecondFeed(BaseDecoder):
-    """Emits the first 100 bytes of its first chunk, raises on the second, then is spent.
+class _FailsOnFeed(BaseDecoder):
+    """Emits the first 100 bytes of each chunk before feed number ``fails_on``, raises
+    on that one, then is spent.
 
     Once it has raised it answers every call with ``ValueError``, as ``bz2`` does on
-    CPython 3.11.17 and 3.12.15.
+    some CPython builds.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, fails_on: int) -> None:
+        self._fails_on = fails_on
         self._feeds = 0
         self._raised = False
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _FailsOnSecondFeed:
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _FailsOnFeed:
         del point, inner
-        return _FailsOnSecondFeed()
+        return _FailsOnFeed(self._fails_on)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if self._raised:
             raise ValueError("Decompressor is unusable after a previous error")
         self._feeds += 1
-        if self._feeds == 2:
+        if self._feeds == self._fails_on:
             self._raised = True
             raise OSError("Invalid data stream")
         return DecodeOut(chunk[:100])
@@ -238,12 +241,27 @@ class _FailsOnSecondFeed(BaseDecoder):
         return True
 
 
+def test_a_spent_decoder_is_restarted_by_a_seek_to_the_same_place() -> None:
+    # The decoder raises on its first feed, so the stream is still at 0 and seek(0)
+    # moves nothing. It must restart the decoder anyway: the spent one would answer
+    # with ValueError, which the assertion does not accept.
+    stream = DecompressorStream(
+        io.BytesIO(_DATA), make_decoder=lambda point, inner: _FailsOnFeed(1)
+    )
+    with pytest.raises(OSError, match="Invalid data stream"):
+        stream.read(10)
+    for _ in range(2):
+        assert stream.seek(0) == 0
+        with pytest.raises(OSError, match="Invalid data stream"):
+            stream.read(10)
+
+
 def test_a_decoder_error_after_output_hands_back_the_buffer_then_raises() -> None:
     # The read that reaches the error raises with the first chunk's output buffered.
     # Later reads hand that output back, then raise the same error; none of them
     # feeds the spent decoder, whose ValueError would replace the verdict.
     stream = DecompressorStream(
-        io.BytesIO(_DATA), make_decoder=lambda point, inner: _FailsOnSecondFeed()
+        io.BytesIO(_DATA), make_decoder=lambda point, inner: _FailsOnFeed(2)
     )
     with pytest.raises(OSError, match="Invalid data stream") as first:
         stream.read(len(_DATA))

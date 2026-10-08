@@ -784,14 +784,15 @@ class DecompressorStream(ReadOnlyIOStream):
         """Make one decoder call, keeping an error it raises as this stream's verdict.
 
         A decoder that raised is left in a state nothing defines, and restarting it from
-        a seek point is the only defined way back. What the standard library does when
-        fed again differs: ``bz2`` raises ``ValueError("Decompressor is unusable after a
-        previous error")`` on CPython 3.11.17 and 3.12.15 (3.12.13 repeats its
-        ``OSError``), which ``BzipCodec.translate`` would report as a truncation;
-        ``lzma`` raises ``LZMAError("Internal error")``; ``zlib`` repeats its first
-        error. So the error goes into ``_spent``, as a deferred one does
-        (:meth:`_raise_deferred`): reads hand back what is already buffered, then raise
-        it again, and a seek restarts the decoder from a seek point, also a seek to the
+        a seek point is the only defined way back. Fed again, a standard-library decoder
+        may refuse every later call or repeat its first error, and neither is a verdict
+        this stream can read: on CPython 3.11.17, ``bz2`` answers with ``ValueError(
+        "Decompressor is unusable after a previous error")``, which
+        ``BzipCodec.translate`` would report as a truncation, and ``lzma`` with
+        ``LZMAError("Internal error")``. So the error goes into ``_spent``, as a deferred
+        one does (:meth:`_raise_deferred`): a bounded read hands back what is already
+        buffered, then raises it again, and ``readall`` raises at once, as it does for a
+        deferred error. A seek restarts the decoder from a seek point, also a seek to the
         position the stream is already at.
 
         Every exception counts, not only a verdict on the data: an ``OSError`` from the
@@ -855,6 +856,8 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def readall(self) -> bytes:
         if self._spent is not None:
+            # The caller asked for the whole stream, which cannot be had: raise now,
+            # even with output buffered, as for a deferred error below.
             self._raise_spent()
         # Prefer join-of-chunks over staging through the shared bytearray: a whole-stream
         # read never needs the partial-read buffer, and the extend + bytes(buffer) copy
