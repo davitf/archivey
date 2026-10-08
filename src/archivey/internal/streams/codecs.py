@@ -902,20 +902,34 @@ def _stream_prefix(source: CodecSource, size: int) -> bytes:
         return f.read(size)
 
 
-def _rapidgzip_may_read_as(source: CodecSource, *, gzip: bool, zlib: bool) -> bool:
-    """Whether rapidgzip may take ``source`` for a gzip or a zlib stream (the kinds
-    asked about), whatever codec opened it.
+def _rapidgzip_may_read_as_another_format(source: CodecSource) -> bool:
+    """Whether rapidgzip may take raw DEFLATE ``source`` for gzip, zlib or bzip2.
 
-    rapidgzip 0.16 is told no format: it looks at the first bytes and decodes a gzip
-    member, a zlib stream or raw DEFLATE, whichever they look like. So a raw DEFLATE
-    source that starts like gzip or zlib, or a zlib source that starts like gzip, is
-    decoded as that other format, where the standard library raises at the header.
-    The test is wider than rapidgzip's own (``determineFileType``): every header it
-    takes for zlib passes :func:`_zlib_header_plausible`, and every gzip one starts
-    ``1f 8b``.
+    rapidgzip 0.16 is told no format: it looks at the first bytes and tries gzip, zlib,
+    bzip2 and then raw DEFLATE (``determineFileTypeAndOffset``), so a raw DEFLATE source
+    that starts like one of the others is decoded as that format, where the standard
+    library raises at the first block. The test is wider than rapidgzip's own: every
+    header it takes for zlib passes :func:`_zlib_header_plausible`, every gzip one
+    starts ``1f 8b``, and every bzip2 one is ``BZh`` and a digit from 1 to 9.
+    """
+    prefix = _stream_prefix(source, 4)
+    return (
+        prefix[:2] == b"\x1f\x8b"
+        or _zlib_header_plausible(prefix[:2])
+        or (len(prefix) == 4 and prefix[:3] == b"BZh" and prefix[3] in b"123456789")
+    )
+
+
+def _rapidgzip_reads_as_zlib(source: CodecSource) -> bool:
+    """Whether rapidgzip takes zlib ``source`` for a zlib stream.
+
+    Its zlib header check is :func:`_zlib_header_plausible` without a preset
+    dictionary (``FDICT``): a header with one is not zlib to rapidgzip, which then
+    decodes the source as raw DEFLATE from its first byte. The standard library reads
+    the header and raises for the missing dictionary.
     """
     prefix = _stream_prefix(source, 2)
-    return (gzip and prefix == b"\x1f\x8b") or (zlib and _zlib_header_plausible(prefix))
+    return _zlib_header_plausible(prefix) and not prefix[1] & 0x20
 
 
 def _gzip_isize_from_source(source: CodecSource) -> int | None:
@@ -1336,7 +1350,10 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     off. A raw ``zlib.error`` would be taken for the accelerator's opaque end-of-input
     error by the over-run probe of a declared size (``_probe_past_declared``), which
     reads it as "no more data": a ZIP member declared empty with a body that is not
-    DEFLATE read as empty, where the accelerator off raises.
+    DEFLATE read as empty, where the accelerator off raises. Only the DEFLATE family
+    passes ``translate``: bzip2 has no over-run probe, and its translator maps every
+    ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage
+    error (a closed source) that ``ArchiveStream`` reports as one.
 
     ``empty_to_stdlib`` hands a stream that ends before its first byte to the standard
     library, which decodes a valid empty stream to nothing as well and raises on a cut
@@ -2933,7 +2950,6 @@ class Bzip2Codec(StreamCodec):
                 label="bzip2",
                 takes_over=self._accelerator_data_error,
                 resume_points=_bzip2_resume_points,
-                translate=self.translate,
             )
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
             return _StdlibSeekContract(
@@ -3463,11 +3479,12 @@ class DeflateCodec(_ZlibErrorCodec):
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO | None:
-        if _rapidgzip_may_read_as(source, gzip=True, zlib=True):
-            # rapidgzip would decode a gzip or zlib stream here; the standard library
-            # reads it as raw DEFLATE, as it does with the accelerator off. No encoder
-            # starts raw DEFLATE this way: the zlib-like first byte is a stored block
-            # with nonzero padding bits.
+        if _rapidgzip_may_read_as_another_format(source):
+            # rapidgzip would decode a gzip, zlib or bzip2 stream here; the standard
+            # library reads it as raw DEFLATE, as it does with the accelerator off. No
+            # encoder starts raw DEFLATE like zlib: that first byte is a stored block
+            # with nonzero padding bits. ``BZh`` and a digit is a possible start, so a
+            # real stream that has it decodes without the accelerator.
             return None
         return super()._open_accelerated(source, params, config)
 
@@ -3523,10 +3540,10 @@ class ZlibCodec(_ZlibErrorCodec):
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO | None:
-        if not _rapidgzip_may_read_as(source, gzip=False, zlib=True):
-            # Not a zlib header: rapidgzip would decode a gzip member or raw DEFLATE,
-            # and the standard library raises at the first read, as it does with the
-            # accelerator off.
+        if not _rapidgzip_reads_as_zlib(source):
+            # Not a zlib header rapidgzip accepts: it would decode a gzip member, a
+            # bzip2 stream or raw DEFLATE, and the standard library raises at the
+            # first read, as it does with the accelerator off.
             return None
         return super()._open_accelerated(source, params, config)
 

@@ -293,19 +293,22 @@ differ by platform (ISA-L on Linux, a different decoder on macOS, a bare
 `_translate_rapidgzip` maps each; the Windows one becomes `CorruptionError`, not
 `TruncatedError`, since the detail is lost.
 
-**`rapidgzip` is told no format.** It looks at the first bytes and decodes a gzip member,
-a zlib stream or raw DEFLATE, whichever they look like. So a raw DEFLATE source that
-starts with `1f 8b` or a zlib header, and a zlib source that does not start with a zlib
-header, decode with the standard library engine, which raises at the header as it does
-with the accelerator off (`_rapidgzip_may_read_as`). No encoder starts raw DEFLATE that
-way: a zlib-like first byte is a stored block with nonzero padding bits. `rapidgzip` also
+**`rapidgzip` is told no format.** It looks at the first bytes and tries a gzip member, a
+zlib stream, a bzip2 stream and then raw DEFLATE, in that order. So a raw DEFLATE source
+that starts with `1f 8b`, a zlib header or `BZh` and a digit, and a zlib source whose
+header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary),
+decode with the standard library engine, which raises at the header as it does with the
+accelerator off (`_rapidgzip_may_read_as_another_format`, `_rapidgzip_reads_as_zlib`). No
+encoder starts raw DEFLATE like zlib: that first byte is a stored block with nonzero
+padding bits. `BZh` and a digit is a possible start, so a real raw DEFLATE stream that
+has it decodes without the accelerator. `rapidgzip` also
 ends a raw DEFLATE stream cut before any output (`03`, a final block with no end code)
 softly, as if it were empty, so a raw DEFLATE stream that ends before its first byte goes
 to the standard library too, which reads a valid empty stream as empty and raises on a
 cut one. Once the standard library has taken over, its errors leave as archivey's typed
-errors: the over-run probe of a declared size took a raw `zlib.error` for the end of the
-data, and read a ZIP member declared empty with a body that is not DEFLATE as empty. The
-accelerator fuzz targets found all three.
+errors, so the over-run probe of a declared size does not take a raw `zlib.error` for
+the end of the data. Before that, a ZIP member declared empty with a body that is not
+DEFLATE read as empty. The accelerator fuzz targets found all three.
 
 **Every accelerator object is closed, never only joined.** `rapidgzip`'s C++ worker
 threads call `std::terminate` if they are still running at interpreter finalization, and
@@ -468,7 +471,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The ISIZE backstop and the empty-end fallback | `tests/test_accelerator_corruption.py::test_rapidgzip_truncation_is_reported`, `::test_rapidgzip_silent_empty_fallback_recovers_prefix`, `::test_rapidgzip_isize_soft_short_raises_on_readall`, `::test_rapidgzip_multimember_not_flagged`, `::test_gzip_backstop_keeps_raising_after_its_own_truncation` |
 | A cut zlib stream delivers the bytes and error of `OFF` under `ON` and `AUTO`, cut in the first block, a later block or the trailer; the declared-size exception | `tests/test_accelerator_takeover.py::test_a_cut_zlib_reads_as_it_does_with_the_accelerator_off` |
 | Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data | `tests/test_rapidgzip_end_checks.py` |
-| A raw DEFLATE source that looks like gzip or zlib, a zlib source that does not, a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` | `tests/test_rapidgzip_deflate_zlib.py::test_a_stream_of_another_format_raises_as_with_the_accelerator_off`, `::test_raw_deflate_cut_before_any_output_raises_truncated`, `::test_a_declared_empty_stream_that_does_not_decode_raises` |
+| A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source that does not, a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` | `tests/test_rapidgzip_deflate_zlib.py::test_a_stream_of_another_format_raises_as_with_the_accelerator_off`, `::test_raw_deflate_cut_before_any_output_raises_truncated`, `::test_a_declared_empty_stream_that_does_not_decode_raises` |
 | A cut bare zlib stream under `ON` without a size raises | `tests/test_rapidgzip_deflate_zlib.py::test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size` |
 | Close guard on shutdown; one accelerator library | `tests/test_accelerator_shutdown.py::test_accelerator_shutdown_canary`, `::test_archivey_uses_single_accelerator_library` |
 
