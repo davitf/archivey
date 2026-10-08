@@ -619,11 +619,14 @@ class CodecParams:
       coder), so the standard-library decoder ends at its end-of-stream marker rather
       than reading a further stream as a concatenated file. Under the accelerator it
       turns off the end handover to the standard library for a further stream. The
-      decoder itself still reads a stream that follows the first with no zero bytes
+      decoder itself still reads a stream that follows the first with no zero padding
       between, either right after it or after empty streams only (measured on
       rapidgzip 0.16); that output runs past the container's declared size, and the
-      container's size check raises where the standard library would have stopped
-      (``dev-docs/formats/bzip2.md`` §5). After zero padding the decoder stops.
+      container's size check raises where the standard library would have stopped.
+      A damaged stream, or a stream header with junk after it, between the first
+      stream and a further one makes the standard library take over without the
+      flag, and it raises instead of stopping (``dev-docs/formats/bzip2.md`` §5).
+      After zero padding the decoder stops.
       Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
       end marker, refusing any input after it.
     """
@@ -1927,9 +1930,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     last stream starts another stream after any zero padding and empty streams, the
     standard library takes over at the end, and decodes it or raises; not for a
     container coder's single stream (``CodecParams.single_stream``), where that stream
-    is trailing data, as with the accelerator off. A seek that reaches the decoder's
-    end runs the same check first, so the position it returns is the standard
-    library's, never one past the decoder's short end.
+    is trailing data, as with the accelerator off.
+
+    A seek gets the same verdicts as a read. A seek past a skipped region hands over
+    at it, and a seek that reaches the decoder's end runs the end check, or, when the
+    decoder read the stream as empty, the first-empty fallback. The standard library
+    then seeks, and raises where it does with the accelerator off, so a caller sizing
+    the stream with ``seek(0, SEEK_END)`` gets the error rather than a wrong size.
     """
 
     # Side-effecting read() (first-empty fallback); disable passthrough so readinto does
@@ -2150,27 +2157,54 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                 offset += skipped
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        target = offset
-        if whence == io.SEEK_CUR:
-            target = self._inner.tell() + offset
+        # The one caller, _StdlibSeekContract, resolves a relative seek itself and
+        # passes SEEK_SET or SEEK_END only.
         result = super().seek(offset, whence)
         if result != 0:
             self._armed = False
-        reached_end = whence == io.SEEK_END or result < target
-        if (
-            reached_end
-            and self._end_unchecked
-            and not self._armed
-            and self._takeover() is not None
-            and self._check_end()
-        ):
-            # The decoder's end was short of a further stream, and the standard
-            # library now holds the real one: seek again, so the caller is not given
-            # a position the stream below cannot hold.
-            if whence == io.SEEK_END:
+        if whence == io.SEEK_END or result < offset:
+            # The seek reached the decoder's end, which can be short or wrong: settle
+            # it before a position is handed out, as a read at the end would.
+            if self._settle_end_for_seek(result):
+                # The standard library holds the stream now; it seeks to the real
+                # place, or raises as it does with the accelerator off.
                 return super().seek(offset, whence)
-            return super().seek(target, io.SEEK_SET)
+        else:
+            takeover = self._takeover()
+            if takeover is not None and self._hand_over_at_layout_gap(takeover, result):
+                return super().seek(offset, whence)
         return result
+
+    def _settle_end_for_seek(self, position: int) -> bool:
+        """Run the checks a read at the decoder's end runs, for a seek that reached it
+        at output ``position``; return whether the standard library took over.
+
+        An armed check means the decoder read the stream as empty: the standard library
+        decides, as on the first read. Otherwise a skipped region before ``position``
+        hands over at it, then the end check runs (combined CRCs, and what follows the
+        last stream)."""
+        if self._armed:
+            self._armed = False
+            self._end_unchecked = False
+            self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
+            return True
+        takeover = self._takeover()
+        if takeover is None:
+            return False
+        if self._hand_over_at_layout_gap(takeover, position):
+            return True
+        return self._end_unchecked and self._check_end()
+
+    def _hand_over_at_layout_gap(
+        self, takeover: _StdlibOnAcceleratorError, position: int
+    ) -> bool:
+        """Hand over at the first skipped region at or before output ``position``, so
+        a seek past it gets the standard library's verdict; return whether it did."""
+        gap = self._layout_gap(position, False)
+        if gap is None or gap > position:
+            return False
+        takeover.switch_to_stdlib(gap)
+        return True
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # Sits on the decompressed chain (accelerator, then maybe stdlib fallback).
