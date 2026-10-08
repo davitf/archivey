@@ -98,7 +98,12 @@ class DetectionCostReceipt:
     """
 
     unique_bytes_read: int = 0
-    """Bytes actually fetched from the source (each source byte counted once)."""
+    """Bytes fetched from the source.
+
+    A forward read of the prefix counts each of those bytes once. The trailer
+    read counts its block as well, including when a later tier then reads the
+    same bytes as part of the prefix.
+    """
 
     far_bytes: int = 0
     """Bytes the far-magic tier peeked. Bounded by ``max_far_bytes``."""

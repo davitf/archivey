@@ -16,6 +16,7 @@ import archivey
 from archivey import (
     AbortOn,
     ExtractionPolicy,
+    FormatSupport,
     OverwritePolicy,
     format_availability,
     list_known_formats,
@@ -511,6 +512,13 @@ def _print_version(*, verbose: bool, out: TextIO) -> None:
         if avail.missing:
             missing = "; ".join(f"{m.name} ({m.install_hint})" for m in avail.missing)
             print(f"  {label}: {avail.support.value} — missing {missing}", file=out)
+        elif avail.support is FormatSupport.NONE:
+            # A registered format with nothing missing is recognised and not
+            # readable. Every other ``none`` on this list names a component.
+            print(
+                f"  {label}: {avail.support.value} — recognised, not readable",
+                file=out,
+            )
         else:
             print(f"  {label}: {avail.support.value}", file=out)
 

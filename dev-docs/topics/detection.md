@@ -155,8 +155,11 @@ an old image. The block starts with `koly`, version 4, and a header size of 512,
 big-endian: the same 12 bytes 7-Zip checks. Offset 0 is ordinary near magic. The block
 at the end is this step.
 
-It runs after far magic, so an ISO that already matched is not asked for a tail read,
-and before the content probes, so a zlib-first image is named as the image. The read is
+It runs after far magic, so an ISO that already matched is not asked for a tail read.
+An uncompressed image of an ISO 9660 disk is that case: `CD001` at 32 769 wins, and
+the file is read as an ISO. It runs before the content probes, so a zlib-first image
+is named as the image. What a compressed block contains, and why that is not a
+signature detection can use, is on [`formats/dmg.md`](../formats/dmg.md) §1. The read is
 one seek to the last 512 bytes on a path or a plain seekable stream, then a seek back to
 the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end. When
 the length is unknown the far-magic step has already read its window, so an image
@@ -348,24 +351,35 @@ runs before the reader, and a caller comparing sources wants each number on its 
 
 ### 4.2 One forward pass
 
-Every step reads the front of the source through one `PrefixWorkspace` that only grows.
-Extending the window reads only the new bytes, so near magic, then a 2 MiB scan, then the
-far peek fetch each source byte once. Detection makes one forward pass from the origin and
-never seeks back to fetch bytes the workspace already has. That rule is stated flatly and
-not derived from a cost model, because `StreamCapability` cannot tell a cheap seek from an
-expensive one. A network range reader or a member stream inside a solid 7z block would pay
-heavily for a rewind.
+Every step that reads the front of the source does so through one `PrefixWorkspace`
+that only grows. Extending the window reads only the new prefix bytes, so near magic,
+then a 2 MiB scan, then the far peek fetch each of those bytes once. Detection makes
+one forward pass from the origin and does not seek back to fetch bytes the buffer
+already holds. That rule is stated flatly and not derived from a cost model, because
+`StreamCapability` cannot tell a cheap seek from an expensive one. A network range
+reader or a member stream inside a solid 7z block would pay heavily for a rewind.
 
-A backward seek is allowed only to put the handle back, because none of them re-reads
-the prefix:
+The trailer read is not part of that buffer. It seeks to the last 512 bytes and seeks
+back to the end of the prefix, and it does not keep the bytes. When a later tier grows
+the prefix over that range, it fetches them again, and `unique_bytes_read` counts the
+512 twice. A seekable bzip2 or xz file larger than the prefix does this: the
+near-magic hit is in the trailer's `preempts` list, so the tail is read before the
+inner-TAR probe reads the file. A file that already fits in the prefix has the block
+in the buffer, and there is no second fetch. Gzip, ZIP and ISO return before that
+step, so they still fetch
+each byte once. A `koly` hit returns at the trailer, before the probe, so those 512
+bytes are fetched once.
+
+A backward seek puts the handle back. It does not re-read the prefix:
 
 - On exit, a seekable stream is seeked back to the caller's entry position. That is the
   non-consumption contract, and it happens once.
 - `read_at` on a cheap-seek source seeks back to the end of the prefix after its probe
   read (§4.1), so the next forward fetch continues where the prefix ends. `read_at` never
   takes that path on an `ArchiveStream`, where a rewind would re-decode.
-- The UDIF trailer read does the same restore after its 512-byte read (§2.4). A pipe and
-  an `ArchiveStream` are not asked.
+- The UDIF trailer read seeks back to the end of the prefix after its 512-byte read
+  (§2.4). On a source that reached the step, that is a second backward seek, ahead of
+  the exit restore. A pipe and an `ArchiveStream` are not asked.
 
 ### 4.3 Source kinds
 
@@ -388,6 +402,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | --- | --- | --- |
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
 | A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | The one tail read is the 512-byte `koly` block (§2.4), not a ZIP trailer. `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
+| An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
 | Some binary files (OLE/CFB, COFF) detect as LZMA Alone and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). O10, P12 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.6) |
 | A v7 tar inside gzip, named `.tar.gz`, opens as bare `GZ` | **format** | No `ustar`, so no inner-TAR upgrade. [`formats/tar.md`](../formats/tar.md) §2.1 |
@@ -450,7 +465,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A receipt over budget always names a step cut short, for one pass and two (§4.1) | `tests/test_detection_workspace.py::test_over_budget_receipt_always_names_a_cut_short_tier`, `::test_two_pass_receipt_over_budget_also_names_a_cut_short_tier` |
 | A stub-volume detection's receipt keeps the stub pass (§2.7, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
 | The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
-| One forward pass over the prefix, each prefix byte fetched once. A backward seek only restores the handle, including after the `koly` read (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
+| One forward pass over the prefix. Gzip, ZIP and ISO fetch each byte once and seek backward only to restore the handle. A seekable bzip2 or xz file also reads the 512-byte trailer, then fetches those bytes again when a later tier reads the file (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_seekable_bzip2_rereads_the_trailer_bytes`, `::test_seekable_koly_image_reads_the_trailer_once`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
 | A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) | `tests/test_udif.py` |
 | Detection leaves a non-seekable stream readable by the backend (§4.3) | `tests/test_detection.py::test_peekable_stream_not_consumed` |
 | A directory is decided without reading, with the zero receipt (§2.7) | `::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |

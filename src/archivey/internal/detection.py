@@ -9,16 +9,19 @@ not hand-maintained here: each registered backend declares its ``MAGIC`` / ``EXT
 as data and the detector aggregates them, so a new format becomes detectable by
 registering its backend (see ``format-detection`` and ``backend-registry``).
 
-Detection never consumes bytes from the source: paths keep one detection handle; seekable
-streams are read forward once and restored to their **starting position** (the archive is
-taken to begin wherever the stream is positioned when handed in); a non-seekable stream
+Detection never consumes bytes from the source: paths keep one detection handle; a
+seekable stream is restored to its **starting position** (the archive is taken to begin
+wherever the stream is positioned when handed in); a non-seekable stream
 is peeked through the :class:`~archivey.internal.source.ArchiveSource` the opener built,
 whose replay prefix keeps the bytes for the backend. A raw non-seekable stream handed to
 ``detect_format`` directly loses what detection read, unless the caller buffers it.
 
 Every front-of-source read goes through one detection-owned
 :class:`~archivey.internal.detection_workspace.PrefixWorkspace` that grows monotonically —
-extending the window reads only the delta; bytes already retrieved are never re-read.
+extending the window reads only the delta, and bytes already in the prefix buffer are
+not fetched again. The trailer read is outside that buffer: it seeks to its block and
+restores the handle, and a later tier that grows the prefix over those bytes fetches
+them again.
 
 Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
 at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
@@ -906,8 +909,10 @@ def _detect_format_body(
                     )
 
         # 4. Trailer magic (UDIF's koly block). After far magic, so an ISO whose
-        # CD001 already matched is not asked for a tail read. Before the probes,
-        # so a zlib-first image is the image and not its first block.
+        # CD001 already matched is read as that ISO — an uncompressed UDIF image
+        # of an ISO 9660 disk included — and is not asked for a tail read.
+        # Before the probes, so a zlib-first image is the image and not its
+        # first block.
         trailer_fmt = _match_trailer(workspace, trailers)
         if trailer_fmt is not None:
             return conclude(

@@ -498,8 +498,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   the first 12 when an old image puts the block at the start — and refused with
   `UnsupportedFeatureError`. A compressed image stores its blocks as zlib, bzip2 or
   xz, so opening one used to extract the first block and treat the rest as trailing
-  data. Reading the image is not supported. A pipe is not rewound. A short image is
-  still refused, because detection has already read through to its end. A longer
+  data. An uncompressed image whose disk is an ISO 9660 filesystem is reported as
+  that ISO instead: `CD001` at byte 32 769 is checked first, and the image is read
+  as an ISO. Reading a UDIF image itself is not supported. To get at the files,
+  convert or mount the image first (for example with `7z x`, `dmg2img`, or
+  `hdiutil attach` on macOS). A pipe is not rewound. A short image is still
+  refused, because detection has already read through to its end. A longer
   zlib-first image on a pipe still opens as that stream.
 
 ## Directory

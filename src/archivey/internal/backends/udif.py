@@ -53,6 +53,10 @@ class UdifBackend(ReadBackend):
     )
     READ_IMPLEMENTED = False
     UNSUPPORTED_MESSAGE = UDIF_UNSUPPORTED_MESSAGE
+    # Nothing reads the image, and open refuses before the seekability check.
+    # The flag only feeds ``required_source``. ``FORWARD_ONLY`` keeps the
+    # published spool recipe from copying a file that is refused either way.
+    SUPPORTS_STREAMING_NON_SEEKABLE = True
 
     def open_read(
         self,

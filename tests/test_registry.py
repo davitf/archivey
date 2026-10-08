@@ -378,7 +378,13 @@ class _NonSeekable(io.RawIOBase):
 # The documented table, written out rather than derived, so a backend that flips
 # SUPPORTS_STREAMING_NON_SEEKABLE has to change this list too instead of silently
 # agreeing with itself.
-_FORWARD_ONLY_CONTAINERS = {ContainerFormat.TAR, ContainerFormat.RAW_STREAM}
+# TAR and the raw codecs read from a pipe. DMG reports the same shape so the
+# spool recipe does not copy a file that open refuses from either shape.
+_FORWARD_ONLY_CONTAINERS = {
+    ContainerFormat.TAR,
+    ContainerFormat.RAW_STREAM,
+    ContainerFormat.DMG,
+}
 
 
 @pytest.mark.parametrize("fmt", list_known_formats(), ids=lambda f: f.display_name)

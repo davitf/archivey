@@ -1,11 +1,19 @@
 """Detection-owned prefix workspace: one handle, one growing buffer, range views.
 
 Every tier that reads from the front of a source does so through a
-:class:`PrefixWorkspace`. Extending the window reads only the delta; bytes already
-retrieved are never re-fetched. A seekable caller stream records its entry position,
-reads forward once, and restores once in an exception-safe exit. A non-seekable
-:class:`~archivey.internal.source.ArchiveSource` is peeked, so its replay prefix holds
-the bytes and the backend reads them from the same object.
+:class:`PrefixWorkspace`. Extending the window reads only the delta of the prefix;
+bytes already in the buffer are not fetched again. :meth:`PrefixWorkspace.read_tail`
+sits outside that buffer. It seeks to a fixed block at the end and restores the
+handle, and it does not keep the bytes. A later tier that grows the prefix over
+that range fetches them again. A seekable bzip2 or xz file larger than the prefix
+does this: the trailer check runs when the near magic matches, and the inner-TAR
+probe then reads the rest of the file. A file that already fits in the prefix has
+the block in the buffer.
+
+A seekable caller stream records its entry position and restores it on the way
+out. The tail read adds one seek out and one seek back before that restore. A
+non-seekable :class:`~archivey.internal.source.ArchiveSource` is peeked, so its
+replay prefix holds the bytes and the backend reads them from the same object.
 
 The access-shape rule and the seeks it allows: ``dev-docs/topics/detection.md`` §4.2.
 """

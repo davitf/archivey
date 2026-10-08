@@ -42,7 +42,7 @@ class DetectionBudget:
 @dataclass(frozen=True)
 class DetectionCostReceipt:
     prefix_bytes: int      # sum of range lengths requested from the workspace
-    unique_bytes_read: int # actually fetched from the source (each byte once)
+    unique_bytes_read: int # bytes fetched from the source. The prefix counts each byte once; a trailer read counts its block again when a later tier reads those bytes as part of the prefix
     far_bytes: int
     scanned_bytes: int
     decode_input: int

@@ -9,13 +9,17 @@ Measured on ``main`` before this change (seekable stream through ``detect_format
 | ZIP, TAR | 1 | 0 | 1 |
 
 The workspace makes the shape normative for the **prefix tiers**: zero backward seeks
-for growing peeks, and each source byte fetched at most once. Content-probe ``read_at``
-on cheap random-access sources may seek and restore the handle (bounded by the Brotli
-chain-walk link cap); those restores are not "re-fetch rewinds".
+for growing peeks, and each prefix byte fetched at most once. The UDIF trailer read
+sits outside that buffer. A seekable bzip2 or xz file fetches its last 512 bytes
+there, and a later tier that reads the file fetches them again.
+Content-probe ``read_at`` on cheap random-access sources may seek and restore the
+handle (bounded by the Brotli chain-walk link cap); those restores are not
+"re-fetch rewinds".
 """
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
 import os
@@ -147,9 +151,11 @@ def test_seekable_detection_has_zero_backward_seeks(
     src = InstrumentedBytesIO(payload)
     info = detect_format(src)
     assert info.format == expect_format
-    # The exit path restores the caller's entry position (one seek back). That is the
-    # non-consumption contract, not a re-read rewind — the old defect was five rewinds
-    # that each re-fetched the same prefix. Unique bytes == bytes read pins "fetched once".
+    # These three return before the trailer step. The exit path restores the caller's
+    # entry position (one seek back). That is the non-consumption contract, not a
+    # re-read rewind — the old defect was five rewinds that each re-fetched the same
+    # prefix. Unique bytes == bytes read pins "fetched once" for a detection that
+    # never reads the tail. A bzip2 or xz file does, and has its own test.
     assert src.unique_bytes == src.bytes_read, (
         f"{label}: re-fetched bytes (unique={src.unique_bytes}, read={src.bytes_read})"
     )
@@ -158,9 +164,42 @@ def test_seekable_detection_has_zero_backward_seeks(
         f"(reads={src.read_calls}, forward={src.forward_seeks})"
     )
     assert src.tell() == 0  # non-consuming
-    # No tier seeks towards the end. The bound leaves room for one content-probe
-    # ``read_at``, which restores the position afterwards.
+    # No tier on this path seeks towards the end. The bound leaves room for one
+    # content-probe ``read_at``, which restores the position afterwards.
     assert src.forward_seeks <= 1
+    assert src.tell() == 0
+
+
+def test_seekable_bzip2_rereads_the_trailer_bytes() -> None:
+    """A bzip2 near-magic hit reads the koly block, then the inner-TAR probe reads the file.
+
+    The tail bytes are not kept, so the later read fetches them again. The delta is
+    512. A trailer tier that cached the bytes, or that did not run, would report 0.
+    """
+    payload = bz2.compress(os.urandom(20_000))
+    assert len(payload) > 4096
+    src = InstrumentedBytesIO(payload)
+    info = detect_format(src)
+    assert info.format == ArchiveFormat.BZ2
+    assert src.bytes_read - src.unique_bytes == 512
+    assert src.backward_seeks == 2
+    assert src.forward_seeks == 1
+    assert src.tell() == 0
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.unique_bytes_read == src.unique_bytes + 512
+
+
+def test_seekable_koly_image_reads_the_trailer_once() -> None:
+    """A koly hit returns at the trailer, before the inner-TAR probe re-reads the file."""
+    payload = bz2.compress(os.urandom(20_000))
+    trailer = bytearray(512)
+    trailer[:12] = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
+    src = InstrumentedBytesIO(payload + bytes(trailer))
+    info = detect_format(src)
+    assert info.format == ArchiveFormat.DMG
+    assert src.bytes_read == src.unique_bytes
+    assert src.backward_seeks == 2
+    assert src.forward_seeks == 1
     assert src.tell() == 0
 
 

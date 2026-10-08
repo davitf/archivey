@@ -18,6 +18,7 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    StreamCapability,
     UnsupportedFeatureError,
     detect_format,
     format_availability,
@@ -25,6 +26,7 @@ from archivey import (
     list_supported_formats,
     open_archive,
 )
+from archivey.internal.registry import get_registry
 from archivey.types import FormatSupport
 from tests.streams_util import NonSeekableBytesIO
 
@@ -169,5 +171,28 @@ def test_dmg_is_known_and_not_supported() -> None:
     availability = format_availability(ArchiveFormat.DMG)
     assert availability.support is FormatSupport.NONE
     assert availability.missing == ()
+    # FORWARD_ONLY so the spool recipe does not copy a file open refuses either way.
+    assert availability.required_source is StreamCapability.FORWARD_ONLY
     assert ArchiveFormat.DMG in list_known_formats()
     assert ArchiveFormat.DMG not in list_supported_formats()
+
+
+def test_reader_for_format_refuses_dmg_without_an_archive_name() -> None:
+    """The registry raise is the same text, and it has no archive name.
+
+    ``open_archive`` refuses first so the exception can carry the name. This is
+    the path a direct ``reader_for_format`` call actually takes.
+    """
+    with pytest.raises(UnsupportedFeatureError, match="UDIF") as excinfo:
+        get_registry().reader_for_format(ArchiveFormat.DMG)
+    assert excinfo.value.archive_name is None
+
+
+def test_an_iso_payload_with_a_koly_trailer_is_the_iso() -> None:
+    """Far magic runs first, so an ISO 9660 disk inside a UDIF image is that ISO."""
+    data = bytearray(40_000)
+    data[32768] = 1
+    data[32769:32774] = b"CD001"
+    info = detect_format(io.BytesIO(_udif(bytes(data))))
+    assert info.format is ArchiveFormat.ISO
+    assert info.detected_by == "magic"

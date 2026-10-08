@@ -280,7 +280,9 @@ class BackendRegistry:
 
         if not backend_cls.READ_IMPLEMENTED:
             # Recognised, not readable. An empty ``missing`` is the answer: there
-            # is nothing to install, and open raises UnsupportedFeatureError.
+            # is nothing to install, and open raises UnsupportedFeatureError
+            # before the seekability check. ``required_source`` is still the
+            # flag, which is what the spool recipe branches on.
             return FormatAvailability(fmt, FormatSupport.NONE, (), required_source)
 
         if not self._backend_available(backend_cls):

@@ -209,7 +209,9 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | Magic table consulted for zlib | No zlib entry; CMF/FLG → zlib probe |
 | `ustar` at 257, ≥512 bytes | TAR, `CERTAIN`, `magic` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
-| `koly` block at offset 0, or at the start of the last 512 bytes | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO`, `CERTAIN`, `magic` — far magic already matched, so the trailer is not consulted |
 | Starts `02 21 4C 18` (legacy LZ4) | LZ4, `CERTAIN`, `magic` |
 
 #### Scenario: zstd frame prefix
@@ -513,8 +515,10 @@ the underlying source.
 
 Every tier that reads from the front SHALL do so through **one detection-owned prefix
 workspace** that grows monotonically: extending the window reads only the delta, and bytes
-already retrieved are never re-read. A path keeps one detection handle; a seekable caller
-stream records its entry position, reads forward once, and restores once in an
+already in the prefix buffer SHALL NOT be fetched again. The trailer read is outside that
+buffer. It seeks to its block and restores the handle, and a later tier that grows the
+prefix over those bytes fetches them again. A path keeps one detection handle; a seekable
+caller stream records its entry position, reads forward, and restores it in an
 exception-safe exit; a non-seekable source uses the same replay buffer the backend will
 consume.
 
@@ -536,14 +540,18 @@ consume.
 
 ### Requirement: Detection's access shape is bounded, not only its byte count
 
-Detection SHALL perform at most: **one forward-only pass** from the detection origin; then
-at most **one seek towards the end**; then **one read to end**. No backward seek, and no
-re-reading of bytes already retrieved.
+Detection SHALL perform **one forward-only pass** over the prefix from the detection
+origin. Bytes already in the prefix buffer SHALL NOT be fetched again. The trailer tier,
+when it runs, SHALL add one seek towards the end, one read of its block, and one seek
+back to the end of the prefix. Those bytes are not kept, so a later tier that reads
+them as part of the prefix fetches them again. No other backward seek re-reads the
+prefix. The exit restore of a seekable caller stream is the non-consumption contract.
 
-This holds for every source kind. A network range reader pays at most two requests; a
-member stream from a solid block decodes forward once and never rewinds into a block it has
-left; a local file loses nothing. The rule is stated flatly rather than derived from a cost
-model because `StreamCapability` cannot distinguish a cheap seek from an expensive one.
+This holds for every source kind. A network range reader pays for the prefix pass and,
+when the trailer runs, one range for that block; a member stream from a solid block is
+not asked for the trailer, because a rewind would re-decode, and it decodes the prefix
+forward once. The rule is stated flatly rather than derived from a cost model because
+`StreamCapability` cannot distinguish a cheap seek from an expensive one.
 
 Resolving an exact `payload_offset` through a central-directory walk does not fit this
 shape — the directory is reached backwards from the end and points backwards again. Offset
@@ -555,8 +563,11 @@ resolution is therefore separable from identification, and no tier does it today
 | --- | --- | --- | --- |
 | gzip at offset 0, seekable stream | 1 pass | 0 | **0** |
 | ISO far magic, seekable stream | 1 pass | 0 | **0** |
-| Tail tier when enabled (not scheduled yet) | 1 pass | 1 | **0** |
+| Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
+| `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
+
+The backward-seek column does not count the exit restore of a seekable caller stream.
 
 ### Requirement: Structural checks receive a candidate-relative view
 
@@ -852,11 +863,13 @@ evidence strength only, with no error-reporting consequence attached.
 
 ### Requirement: Refuse a UDIF disk image by name
 
-The system SHALL report a UDIF image (`koly` block at offset 0 or at the start of the
-last 512 bytes) as `ArchiveFormat.DMG` / `CERTAIN` / `magic`, and `open_archive` SHALL
-raise `UnsupportedFeatureError` naming UDIF. `format_availability(DMG)` SHALL be `NONE`
-with an empty `missing`: known, not supported, nothing to install. The `.dmg` suffix
-SHALL NOT select the format.
+The system SHALL report a UDIF image as `ArchiveFormat.DMG` / `CERTAIN` / `magic`, and
+`open_archive` SHALL raise `UnsupportedFeatureError` naming UDIF, when the `koly` block
+is at offset 0, or at the start of the last 512 bytes and no earlier step matched.
+Far magic runs first, so an uncompressed image whose disk is an ISO 9660 filesystem
+(`CD001` at 32 769) SHALL be reported as `ISO` and read as one; the trailer is not
+consulted. `format_availability(DMG)` SHALL be `NONE` with an empty `missing`: known,
+not supported, nothing to install. The `.dmg` suffix SHALL NOT select the format.
 
 #### Scenario: UDIF matrix
 
@@ -864,6 +877,7 @@ SHALL NOT select the format.
 | --- | --- |
 | Seekable image, zlib, bzip2 or xz first block, `koly` trailer | `DMG` / `CERTAIN` / `magic`; `open_archive` raises `UnsupportedFeatureError` naming UDIF |
 | `koly` block at offset 0 | `DMG` / `CERTAIN` / `magic`; the same refusal |
+| `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO` / `CERTAIN` / `magic`; the image is read as an ISO |
 | Real zlib, bzip2 or xz stream, no `koly` block | Unchanged |
 | Version other than 4 | Not `DMG` |
 | ZIP whose name ends in `.dmg` | `ZIP` |

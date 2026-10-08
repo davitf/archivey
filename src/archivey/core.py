@@ -528,8 +528,9 @@ def _open_resolved(
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
-    # Claimed by detection so the refusal can name the image. Ahead of the
-    # registry, which would otherwise report the format as unavailable.
+    # Detection claims DMG so this refusal can name the image and carry
+    # ``archive_name``. ``reader_for_format`` and ``UdifBackend.open_read`` raise
+    # the same error for a caller that reaches them, and neither has the name.
     if resolved_format == ArchiveFormat.DMG:
         raise UnsupportedFeatureError(
             UDIF_UNSUPPORTED_MESSAGE,
