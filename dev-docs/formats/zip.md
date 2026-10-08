@@ -317,6 +317,19 @@ trailing slash to name normalization (whose diagnostic the backend suppresses fo
 stored with the directory convention, §2.2.1). It keeps the `reparse_data_unrecognized`
 reason, since that is still what happened; only the outcome differs.
 
+**What the target looks like, and what extraction does with it.** The buffer holds a
+Windows path, so the parser normalizes it (`normalize_windows_link_target`, shared with
+7z and with RAR5 redirect types 2 and 3): every `\` becomes `/`, a leading `\??\` or
+`\\?\` is dropped, and `UNC\` after it becomes `//`. So `\??\C:\Windows` lists as
+`C:/Windows`, `\??\UNC\srv\share` as `//srv/share` and `..\up\x` as `../up/x`, in
+all three formats. Extraction refuses a symlink target with a drive letter or a UNC root
+at every policy and on every OS (maintainer ruling 2026-10-06, `safe-extraction`): on
+POSIX `C:/Windows` would otherwise be created as a relative link into a directory named
+`C:`, and on Windows the same archive is refused, so one archive would extract two ways.
+`STRICT` and `STANDARD` also refuse a `:` or a Windows-reserved device name in a target
+segment (`file:stream`, `sub/NUL`), as they do in a member name.
+`tests/test_link_target_portability.py` pins each case in ZIP, 7z and RAR5.
+
 The junction path in the reader is therefore correct and unreachable from any archive
 these tools produce. It is kept, and tested against an assembled buffer, because the
 format permits a writer to store one and the `archive-data-model` spec promises the

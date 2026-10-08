@@ -515,7 +515,8 @@ def _zip_with_reparse_member(
 
 
 def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
-    """A UNC target leaves the destination, so extraction refuses the link.
+    """A UNC target leaves the destination on Windows, so extraction refuses the link
+    on every OS.
 
     Before the parser kept the leading `//`, the same buffer produced the relative
     `UNC/server/share/dir`, which resolves inside the destination and was created.
@@ -535,7 +536,7 @@ def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
     assert result.member.link_target == "//server/share/dir"
     assert result.status is ExtractionStatus.BLOCKED
     assert isinstance(result.error, FilterRejectionError)
-    assert result.error.message == "Symlink target escapes destination"
+    assert result.error.message == "Symlink target is a Windows drive or UNC path"
     assert not (dest / "link").is_symlink()
 
 

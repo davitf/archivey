@@ -1383,7 +1383,9 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   member:
   - `extract_all` SHALL call its `members` selector and its `filter` on the link, with
     `link_target=None`, before reading the target, and SHALL read it only for a link both
-    accept. A target it cannot read fails that member as one whose target the archive
+    accept. Once the target is read, it SHALL call its `filter` again on the link, now
+    with the target, so a filter that rewrites targets gives the same outcome as under
+    `True`. A target it cannot read fails that member as one whose target the archive
     carries but the reader cannot reach, under `OnError`.
   - `open()` / `read()` on a link SHALL follow it as "Transparent link following"
     requires, reading its target first.
@@ -1406,7 +1408,7 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | --- | --- |
 | ZIP with an encrypted symlink, default config, no password, provider supplied | Provider consulted; on failure `link_target` unset with `SYMLINK_TARGET_UNAVAILABLE` |
 | Same archive, `read_link_targets=False`, `members()` | No member data read; provider not consulted; `link_target` unset; no diagnostic |
-| Same archive, `read_link_targets=False`, password supplied, `extract_all()` | The filter sees the link with `link_target=None`, then the target is read and the link is written |
+| Same archive, `read_link_targets=False`, password supplied, `extract_all()` | The filter sees the link with `link_target=None`, then the target is read, the filter sees the link again with its target, and the link is written |
 | Same archive, `read_link_targets=False`, filter rejects members with `link_target is None` | The target is never read; provider not consulted; the link is not written |
 | Same archive, `read_link_targets=False`, no password, `extract_all()` | The symlink member fails under `OnError`, as a locked target |
 | RAR5 symlink, `read_link_targets=False` | `link_target` set from the header |

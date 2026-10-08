@@ -26,6 +26,7 @@ __all__ = [
     "IO_REPARSE_TAG_SYMLINK",
     "REPARSE_HEADER_BYTES",
     "ReparsePoint",
+    "normalize_windows_link_target",
     "parse_reparse_data",
     "reparse_payload_length",
 ]
@@ -49,13 +50,16 @@ _NAMES = struct.Struct("<HHHH")
 # A SYMLINK payload has an extra ULONG Flags before PathBuffer; MOUNT_POINT has none.
 _SYMLINK_FLAGS_SIZE = 4
 
-# The NT object-manager prefix on a substitute name ("\??\C:\dir"). It is how the
-# kernel names the target and is meaningless as a path, so it is stripped.
-_NT_PREFIXES = ("\\??\\", "\\\\?\\")
+# The NT object-manager prefix on a substitute name ("\??\C:\dir"), and the Win32
+# long-path one ("\\?\C:\dir"), after ``\`` has become ``/``. Each is how Windows
+# names the target and is meaningless as a path, so it is stripped. RAR 5.1 and later
+# store a Windows link's target with ``/`` separators, so ``/??/`` is also how the
+# prefix arrives from a RAR5 redirect record (unrar ``ExtractUnixLink50``).
+_NT_PREFIXES = ("/??/", "//?/")
 # What follows that prefix for a network target: "\??\UNC\server\share" names
-# "\\server\share". Stripping the prefix alone would leave "UNC\server\share", a
+# "\\server\share". Stripping the prefix alone would leave "UNC/server/share", a
 # relative path to a directory called UNC.
-_NT_UNC_PREFIX = "UNC\\"
+_NT_UNC_PREFIX = "UNC/"
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,29 @@ class ReparsePoint:
 
     is_junction: bool
     """True for ``IO_REPARSE_TAG_MOUNT_POINT``."""
+
+
+def normalize_windows_link_target(target: str) -> str:
+    """A Windows link target as a ``/``-separated path, without the NT prefix.
+
+    For the target of a Windows symlink or junction: a reparse buffer's name (ZIP, 7z)
+    or a RAR5 redirect of type 2 or 3. Every ``\\`` becomes ``/``, as unrar's
+    ``DosSlashToUnix`` does, because a Windows path never holds a literal backslash.
+    Then a leading ``\\??\\`` or ``\\\\?\\`` is removed, and ``UNC\\`` after it
+    becomes ``//``: ``\\??\\C:\\Windows`` gives ``C:/Windows`` and
+    ``\\??\\UNC\\srv\\share`` gives ``//srv/share``. An absolute result is kept as
+    it is; extraction refuses it (``filters.check_universal``).
+
+    A POSIX symlink target must not come here: there ``\\`` is an ordinary character.
+    """
+    target = target.replace("\\", "/")
+    for prefix in _NT_PREFIXES:
+        if target.startswith(prefix):
+            target = target[len(prefix) :]
+            if target[: len(_NT_UNC_PREFIX)].upper() == _NT_UNC_PREFIX:
+                target = "//" + target[len(_NT_UNC_PREFIX) :]
+            break
+    return target
 
 
 def _decode_path(buffer: bytes, offset: int, length: int) -> str:
@@ -150,15 +177,9 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
     target = _decode_path(paths, print_offset, print_length)
     if not target:
         target = _decode_path(paths, subst_offset, subst_length)
-        for prefix in _NT_PREFIXES:
-            if target.startswith(prefix):
-                target = target[len(prefix) :]
-                if target[: len(_NT_UNC_PREFIX)].upper() == _NT_UNC_PREFIX:
-                    target = "\\\\" + target[len(_NT_UNC_PREFIX) :]
-                break
 
     return ReparsePoint(
         tag=tag,
-        target=target.replace("\\", "/"),
+        target=normalize_windows_link_target(target),
         is_junction=tag == IO_REPARSE_TAG_MOUNT_POINT,
     )

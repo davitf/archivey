@@ -6,8 +6,10 @@ import gzip
 import io
 import json
 import logging
+import os
 import zipfile
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -39,6 +41,7 @@ from archivey.exceptions import (
 from archivey.internal.diagnostics_collector import DiagnosticCollector, EmitLog
 from archivey.types import MemberType
 from tests.extract_util import open_and_extract
+from tests.scandir_util import patch_dir_entry_stat
 
 
 def _norm_context(**overrides: object) -> NameNormalizationContext:
@@ -566,17 +569,14 @@ def test_member_name_normalized_attaches(tmp_path: Path) -> None:
 def test_directory_scan_race_diagnostic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
     (tmp_path / "a.txt").write_text("x")
-    real_stat = os.DirEntry.stat
 
-    def flaky_stat(self: os.DirEntry, *args: object, **kwargs: object):
-        if self.name == "a.txt":
-            raise FileNotFoundError(self.path)
-        return real_stat(self, *args, **kwargs)
+    def flaky_stat(entry: os.DirEntry[str], real_stat: Callable[[], object]) -> object:
+        if entry.name == "a.txt":
+            raise FileNotFoundError(entry.path)
+        return real_stat()
 
-    monkeypatch.setattr(os.DirEntry, "stat", flaky_stat)
+    patch_dir_entry_stat(monkeypatch, flaky_stat)
     with open_archive(tmp_path) as reader:
         list(reader.members())
         assert DiagnosticCode.SCAN_ENTRY_VANISHED in reader.diagnostics.counts

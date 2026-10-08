@@ -24,7 +24,7 @@ import pytest
 
 from archivey import AcceleratorMode, ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError, TruncatedError
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
@@ -679,12 +679,8 @@ def test_bytes_after_empty_bzip2_streams_are_reported_past_them(
             (1 << 16) - 5 + len(_BZ2_EMPTY),
             id="split-by-scan-then-junk",
         ),
-        # The file ends inside what would be an empty stream: that is not one.
-        pytest.param(_BZ2_EMPTY[:5], 0, id="cut-empty-stream"),
-        pytest.param(b"\x00" * 3 + _BZ2_EMPTY[:-1], 3, id="cut-after-padding"),
-        # Shaped like an empty stream but not one: the combined CRC of no blocks is
-        # zero, and the block-size digit is 1 to 9.
-        pytest.param(_BZ2_EMPTY[:-4] + b"\xde\xad\xbe\xef", 0, id="non-zero-crc"),
+        # Shaped like an empty stream but not one: the block-size digit is 1 to 9, so
+        # this is not a stream header either.
         pytest.param(b"BZh0" + _BZ2_EMPTY[4:], 0, id="digit-out-of-range"),
     ],
 )
@@ -699,6 +695,48 @@ def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
         found = [report.observed_bytes for report in _reports(reader)]
     expected = [] if reported_at is None else [len(compressed) + reported_at]
     assert found == expected
+
+
+@pytest.mark.parametrize("mode", _BZ2_MODES)
+@pytest.mark.parametrize(
+    ("tail", "error"),
+    [
+        # The file ends inside what would be an empty stream: that is not one.
+        pytest.param(_BZ2_EMPTY[:5], TruncatedError, id="cut-empty-stream"),
+        pytest.param(
+            b"\x00" * 3 + _BZ2_EMPTY[:-1], TruncatedError, id="cut-after-padding"
+        ),
+        # Shaped like an empty stream but not one: the combined CRC of no blocks is zero.
+        pytest.param(
+            _BZ2_EMPTY[:-4] + b"\xde\xad\xbe\xef", CorruptionError, id="non-zero-crc"
+        ),
+    ],
+)
+def test_a_damaged_stream_after_the_last_raises_in_both_modes(
+    tmp_path: Path, mode: AcceleratorMode, tail: bytes, error: type[Exception]
+) -> None:
+    """A stream header after the data starts a stream, which the standard library
+    decodes and rejects. With the accelerator on, the standard library takes over at
+    the end and gives that verdict, rather than reporting the bytes as trailing data."""
+    path = _write(tmp_path, ".bz2", bz2.compress(_PAYLOAD) + tail)
+    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        with pytest.raises(error):
+            reader.read(reader.members()[0])
+
+
+@pytest.mark.parametrize("mode", _BZ2_MODES)
+def test_a_stream_after_zero_padding_is_read_in_both_modes(
+    tmp_path: Path, mode: AcceleratorMode
+) -> None:
+    """The accelerator stops at the padding; the standard library takes over at the
+    end and reads the next stream, as it does with the accelerator off."""
+    data = bz2.compress(_PAYLOAD) + b"\x00" * 16 + bz2.compress(_PAYLOAD)
+    path = _write(tmp_path, ".bz2", data)
+    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        assert reader.read(reader.members()[0]) == _PAYLOAD * 2
+        assert _reports(reader) == []
 
 
 @pytest.mark.parametrize(("report", "expected"), [(False, 0), (True, 1)])
