@@ -8,9 +8,10 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
 - **Full-count.** ``read(n)`` returns ``n`` bytes unless the source is exhausted. A raw
   ``read(n)`` may legally return short, and header parsers — archivey's and the stdlib's —
   issue one ``read(n)`` and treat a short as EOF. ``None`` from the caller's ``read`` is
-  not exhaustion: a non-blocking raw returns it when nothing is ready, and this object
-  raises ``BlockingIOError`` rather than handing that on as a short read. How the
-  guarantee is supplied is chosen once, at construction: an already-buffered source
+  not exhaustion: a non-blocking stream returns it when nothing is ready, and this object
+  raises ``BlockingIOError`` rather than handing that on as a short read or as EOF. That
+  holds for a raw source and for one that is already buffered. How the guarantee is
+  supplied is chosen once, at construction: an already-buffered source
   (``BytesIO``, an ``open()`` handle, a path's own handle) passes through; a seekable raw
   source gets a fixed-size read buffer this object builds and owns; a non-seekable raw
   source is gathered by re-asking for the missing bytes, with no read-ahead.
@@ -69,7 +70,7 @@ from archivey.internal.streams.streamtools import (
     source_name,
     source_size_fact,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -95,12 +96,18 @@ class JoinedVolumes(Protocol):
 
 
 class _BlockingReads:
-    """``read`` that raises when a non-blocking raw returns ``None``.
+    """``read`` that raises when a non-blocking stream returns ``None``.
 
     :func:`read_exact` treats a falsy return, ``None`` included, as the end of the
     stream. The gathering reader uses it for the bytes still missing after a short
     read, and a ``None`` there would end the archive. Routing the follow-up through
-    :func:`read_blocking` is the same refusal the first read makes.
+    :func:`read_blocking` is the same refusal the first read makes. A buffered
+    source has no gatherer, so the same adapter sits in front of
+    :func:`read_within_reach`, which would otherwise take ``None`` as bytes.
+
+    ``read_exact`` only asks for a positive remainder. The default stays, so this
+    still matches the ``read`` protocol that function expects. A negative count is
+    refused here rather than forwarded: an inner may have no ``readall``.
     """
 
     __slots__ = ("_inner",)
@@ -109,6 +116,8 @@ class _BlockingReads:
         self._inner = inner
 
     def read(self, n: int = -1, /) -> bytes:
+        if n < 0:
+            raise ValueError("n must be non-negative")
         return read_blocking(self._inner, n)
 
 
@@ -123,6 +132,11 @@ class _GatheringReader:
     that ``read(n)`` for ``n > 0`` returns at most ``n`` bytes, and ``b""`` only at EOF;
     more than ``n`` raises. ``None`` — nothing ready on a non-blocking raw, which is not
     EOF — raises ``BlockingIOError``, including when it follows a short chunk.
+    The first refusal has taken nothing, so the caller can read again. A refusal
+    after a short chunk has already taken those bytes out of the source; they are
+    not returned and cannot be read again. A ``read(-1)`` drain that gathered some
+    chunks and then saw ``None`` drops those chunks the same way. Handing them back
+    would report a finished read.
     ``read(-1)`` is never forwarded: an inner may have no ``readall``
     (``io.BufferedRWPair``, ``GzipFile`` over a pipe), so a drain is served as sized
     reads instead.
@@ -322,8 +336,10 @@ class ArchiveSource(ReadOnlyIOStream):
         # :meth:`rebase_to_current_position`), and the clamp counts from it.
         position = stream.tell() if seekable else 0
         if isinstance(stream, io.BufferedIOBase):
-            # Already full-count: ``BufferedIOBase.read(n)`` keeps asking its raw until it
-            # has ``n`` or reaches EOF. No second buffer, and ``fileno()`` still forwards.
+            # Already full-count when the stream blocks: ``BufferedIOBase.read(n)``
+            # keeps asking its raw until it has ``n`` or reaches EOF. No second
+            # buffer, and ``fileno()`` still forwards. A non-blocking ``None`` is
+            # not that short return; the reads below refuse it.
             return cls(
                 path=None,
                 reader=stream,
@@ -483,7 +499,9 @@ class ArchiveSource(ReadOnlyIOStream):
         reader = self._reader
         length = self._length
         if length is not None and reader is not None:
-            data = reader.read(min(n, max(length - self._pos, 0)))
+            # A fact length skips replay and gathering. It does not promise the
+            # inner's ``read`` returns bytes: ``None`` is still a stall.
+            data = read_blocking(reader, min(n, max(length - self._pos, 0)))
             self._pos += len(data)
             return data
         if n == 0:
@@ -504,8 +522,15 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._stream()
 
     def _read_source(self, n: int) -> bytes:
-        reader = self._full_count_reader()
         remaining = None if self._length is None else self._length - self._pos
+        if self._gatherer is not None:
+            # The gatherer already refuses ``None``. Wrapping it again would
+            # only add a frame on the raw path.
+            reader: BinaryIO | _GatheringReader | _BlockingReads = self._gatherer
+        else:
+            # A buffered or path source has no gatherer. ``read_within_reach``
+            # would take ``None`` as bytes, or a later one as EOF.
+            reader = _BlockingReads(self._stream())
         data = read_within_reach(
             reader, n, remaining=remaining, step=self._UNKNOWN_LENGTH_READ_STEP
         )
@@ -531,7 +556,8 @@ class ArchiveSource(ReadOnlyIOStream):
                 chunks.append(chunk)
             rest = b"".join(chunks)
         else:
-            rest = self._stream().read(-1) or b""
+            # This shape has no gatherer, so ``read(-1)`` can still return ``None``.
+            rest = read_blocking(self._stream(), -1)
             self._pos += len(rest)
         return head + rest if head else rest
 
@@ -545,10 +571,11 @@ class ArchiveSource(ReadOnlyIOStream):
             remaining = max(self._length - self._pos, 0)
             if len(view) > remaining:
                 view = view[:remaining]
-        readinto = getattr(self._reader, "readinto", None)
-        if readinto is None:
+        # ``None`` from ``readinto`` is a stall. A missing or refused
+        # ``readinto`` falls back to ``read``, which refuses ``None`` too.
+        got = try_readinto(self._reader, view)
+        if got is None:
             return super().readinto(b)
-        got = readinto(view) or 0
         self._pos += got
         return got
 
@@ -556,8 +583,10 @@ class ArchiveSource(ReadOnlyIOStream):
         """The first ``n`` unconsumed bytes, without consuming them; non-seekable only.
 
         Fills the replay prefix detection reads from. Fewer than ``n`` bytes come back
-        only when the source ends first. A seekable source is rewound instead of replayed,
-        so this refuses there rather than growing a buffer nobody drains.
+        only when the source ends first. ``None`` from the source raises
+        ``BlockingIOError`` rather than coming back as an empty prefix. A seekable
+        source is rewound instead of replayed, so this refuses there rather than
+        growing a buffer nobody drains.
         """
         if n < 0:
             raise ValueError("peek size must be non-negative")
@@ -566,9 +595,11 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
         missing = n - len(replay)
         if missing > 0:
-            # One full-count read: a short return is EOF. Not bounded by the step —
-            # ``n`` is detection's own window, never a number read out of the archive.
-            chunk = self._full_count_reader().read(missing)
+            # One full-count read: a short return is EOF. ``None`` is a stall, so
+            # it raises instead of leaving this prefix empty. Not bounded by the
+            # step — ``n`` is detection's own window, never a number read out of
+            # the archive.
+            chunk = read_blocking(self._full_count_reader(), missing)
             if chunk:
                 replay.extend(chunk)
         return bytes(replay[:n])
