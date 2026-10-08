@@ -28,6 +28,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.streams.codecs import (
     Codec,
+    CodecParams,
     _AcceleratorStream,
     _GzipTruncationCheckStream,
     _SourceViews,
@@ -843,6 +844,23 @@ _BZ2_LAYOUT_CASES = {
 }
 
 
+def _bz2_intact_prefix(data: bytes) -> bytes:
+    """The output of the whole streams at the start of ``data``, up to the first
+    damage, skipping zero padding between them."""
+    out = bytearray()
+    while data:
+        decompressor = bz2.BZ2Decompressor()
+        try:
+            chunk = decompressor.decompress(data)
+        except OSError:
+            break
+        if not decompressor.eof:
+            break
+        out += chunk
+        data = decompressor.unused_data.lstrip(b"\0")
+    return bytes(out)
+
+
 def _read_bz2(
     data: bytes, mode: AcceleratorMode, *, chunk: int
 ) -> tuple[bytes, object]:
@@ -874,8 +892,12 @@ def test_bzip2_accelerator_reads_stream_gaps_as_the_standard_library_does(
         assert got == want
     else:
         # Before an error, how much each engine delivers depends on how far it read
-        # ahead; what both delivered must agree.
+        # ahead; what both delivered must agree, and neither may go past the output
+        # of the streams before the damage: more would be bytes from past it.
         assert got[: len(want)] == want[: len(got)]
+        intact = _bz2_intact_prefix(data)
+        assert len(got) <= len(intact)
+        assert got == intact[: len(got)]
 
 
 def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> None:
@@ -883,7 +905,32 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
     # already went on past the damage; the read raises instead of returning those bytes.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _BZ2_LAYOUT_CASES["stream-without-markers-between"]
-    with open_codec_stream(Codec.BZIP2, io.BytesIO(data), config=_BZ_ON) as s:
-        s.seek(1500)
-        with pytest.raises(CorruptionError):
-            s.read(10)
+    # 1500 lands inside the stream after the damage; 2000 is the end of the output the
+    # decoder produced, where the read comes back empty and is still checked.
+    for target, whence in ((1500, io.SEEK_SET), (2000, io.SEEK_SET), (0, io.SEEK_END)):
+        with open_codec_stream(Codec.BZIP2, io.BytesIO(data), config=_BZ_ON) as s:
+            s.seek(target, whence)
+            with pytest.raises(CorruptionError):
+                s.read(10)
+
+
+@pytest.mark.parametrize(
+    "between", [bytes(16), b"junkjunk"], ids=["zero-padding", "junk"]
+)
+def test_bzip2_accelerator_reads_a_container_coders_single_stream_as_off(
+    between: bytes,
+) -> None:
+    # A ZIP or 7z coder's data is one stream (CodecParams.single_stream); the standard
+    # library stops at its end. The accelerator stops at the padding too, and the end
+    # check must not hand a following stream to a standard library that reads it.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data = _bz2_stream(b"X") + between + _bz2_stream(b"Y")
+    params = CodecParams(single_stream=True)
+    results = []
+    for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
+        config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
+        with open_codec_stream(
+            Codec.BZIP2, io.BytesIO(data), config=config, params=params
+        ) as s:
+            results.append(s.read())
+    assert results == [b"X" * 1000, b"X" * 1000]

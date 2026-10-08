@@ -140,9 +140,16 @@ Python exceptions only. So it runs in the caller's process, with these guards ar
   byte, after nothing but zeros and whole empty streams, with its first block right
   after its 4-byte header. At the first place that does not hold, the read stops at that
   output offset and the standard library takes over there, and raises or reads on as it
-  does with the accelerator off. The walk runs again only when the decoder's compressed
-  position has moved, and reads 11 bytes per new index entry: no measurable cost on a
-  100 MB file read in 64 KiB pieces. Found by the accelerator fuzz targets.
+  does with the accelerator off. A read that comes back empty is checked too, since
+  after a seek to the end it is the only read. More than 1 MiB of padding and empty
+  streams between two streams counts as a gap, which only hands the read to the
+  standard library. The walk reads 11 bytes per new index entry, and asks for the index
+  only when a read goes past the entries already walked and the decoder's compressed
+  position has moved. rapidgzip copies its whole index on each such query, so the cost
+  grows with the square of the block count: measured on rapidgzip 0.16 with level-1
+  input (100 kB blocks) read in 64 KiB pieces, 5% of the read time for 300 MB and 10%
+  for 1 GB. Level 9, bzip2's default, has 900 kB blocks, so the same file has a ninth
+  of the blocks. Found by the accelerator fuzz targets.
 - **Bytes after the last stream must be reported the same way.** The decoder skips them
   and prints a warning to standard error, which archivey cannot catch. At the end of data,
   `_Bzip2EmptyStreamCheck` asks the decoder for its compressed position
@@ -248,6 +255,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A backward seek re-decodes from the start | **format** | Install `[seekable]` and pass `seekable_members=True` |
 | A cold backward seek with the accelerator still re-decodes up to a block, and may log it | **format** | Blocks are the unit of random access |
 | A stream after zero padding, or a cut or damaged stream after the data, costs a second decode of the file with the accelerator | **archivey** | The accelerator stops before it, and the standard library takes over at the end from the start of the file (§2.3) |
+| A ZIP or 7z bzip2 member whose data holds a second stream right after the first raises `CorruptionError` with the accelerator, and reads as the first stream without it | **library** | The accelerator decodes the second stream, and its output overruns the member's declared size. After zero padding it stops, as the standard library does for a container's single stream |
+| Reading a large level-1 `.bz2` with the accelerator spends 5 to 10% of the time checking for skipped streams | **archivey** | The check copies the decoder's whole index per batch of blocks (§2.3) |
 | Trailing junk after the last stream is a warning | **archivey** | The rule every codec shares ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
 
 ## 6. Decisions
