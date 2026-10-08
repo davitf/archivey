@@ -72,6 +72,8 @@ class ContainerFormat(str, Enum):
     RAR = "rar"
     SEVEN_Z = "7z"
     ISO = "iso"
+    # Recognised so an open can refuse the image by name. Nothing reads it.
+    DMG = "dmg"
     DIRECTORY = "directory"
     RAW_STREAM = "raw_stream"
     UNKNOWN = "unknown"
@@ -159,6 +161,7 @@ class ArchiveFormat:
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
+    DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
 
@@ -229,6 +232,7 @@ ArchiveFormat.SEVEN_Z = ArchiveFormat(
 )
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
 )
@@ -319,6 +323,20 @@ class MagicSignature(NamedTuple):
     offset: int
     magic: bytes
     format: "ArchiveFormat"
+
+
+class TrailerSignature(NamedTuple):
+    """Exact magic at the start of a fixed-length block at the end of the source.
+
+    ``preempts`` lists near-magic formats this trailer outranks. A UDIF image's
+    first block is a real bzip2 or xz stream, so that hit is a block of the
+    image and the trailer is the file.
+    """
+
+    length: int
+    magic: bytes
+    format: "ArchiveFormat"
+    preempts: tuple["ArchiveFormat", ...] = ()
 
 
 class MemberType(Enum):

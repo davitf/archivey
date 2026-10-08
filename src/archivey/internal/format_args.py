@@ -69,15 +69,18 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
 def _accepted_archive_formats() -> str:
     """The spellings worth recommending, for a refusal message.
 
-    Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension and
-    are still accepted by the table, but neither opens anything — ``format="unknown"``
-    raises ``UnsupportedFeatureError`` and ``format="directory"`` an ``OSError`` — so a
-    message offering them as repairs would be sending the caller somewhere worse.
-    Lowercasing keeps the list from implying that case is significant, in a message
-    whose subject is a spelling that ignores it.
+    Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension,
+    so the check below drops them: ``format="unknown"`` raises
+    ``UnsupportedFeatureError`` and ``format="directory"`` an ``OSError``. ``DMG``
+    has an extension, and offering it would do the same — the spelling resolves,
+    then open refuses the image — so it is excluded by name. Lowercasing keeps the
+    list from implying that case is significant, in a message whose subject is a
+    spelling that ignores it.
     """
     spellings = sorted(
-        fmt.file_extension().lower() for fmt in _FORMAT_NAMES if fmt.file_extension()
+        fmt.file_extension().lower()
+        for fmt in _FORMAT_NAMES
+        if fmt.file_extension() and fmt.container is not ContainerFormat.DMG
     )
     return ", ".join(repr(s) for s in spellings)
 

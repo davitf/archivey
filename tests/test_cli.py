@@ -118,6 +118,7 @@ def test_version_verbose_lists_formats(capsys: pytest.CaptureFixture[str]) -> No
     assert out.startswith("archivey ")
     assert "formats:" in out
     assert "zip:" in out
+    assert "dmg: none — recognised, not readable" in out
     assert main(["-v", "--version"]) == EXIT_OK
     assert "formats:" in capsys.readouterr().out
 

@@ -134,6 +134,7 @@ from archivey.types import (
     OnErrorStr,
     OverwritePolicy,
     OverwritePolicyStr,
+    TrailerSignature,
 )
 
 MAX_LINK_TARGET_BYTES = 4096
@@ -281,6 +282,14 @@ class ReadBackend(ABC):
     # probe instead: (format, probe) pairs, where the probe inspects a peeked prefix and
     # returns True on a match (Brotli has no signature; zlib's 2-byte header is too weak).
     CONTENT_PROBES: tuple[tuple[ArchiveFormat, ContentProbe], ...] = ()
+    # Exact magic at the start of a fixed-length block at EOF. A hit is ``magic`` /
+    # ``CERTAIN``, and it outranks a near-magic format listed in ``preempts``.
+    TRAILER: tuple[TrailerSignature, ...] = ()
+    # False when the backend exists so detection can name the format, and open
+    # refuses it. Availability is NONE with nothing to install.
+    READ_IMPLEMENTED: bool = True
+    # The ``UnsupportedFeatureError`` text when ``READ_IMPLEMENTED`` is false.
+    UNSUPPORTED_MESSAGE: str | None = None
     # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for
     # formats walkable front-to-back (TAR, the single-file codecs), false for formats
     # whose index/metadata is not at the front (ZIP's central directory, ISO's
