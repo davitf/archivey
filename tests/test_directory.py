@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -22,6 +23,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from tests.scandir_util import patch_dir_entry_stat
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -699,15 +701,16 @@ def test_symlink_replaced_by_file_mid_scan_lists_as_file(
     (tmp_path / "a.txt").write_bytes(b"a")
     os.symlink("a.txt", tmp_path / "link")
     (tmp_path / "z.txt").write_bytes(b"z")
-    real_stat = os.DirEntry.stat
 
-    def replacing_stat(self: os.DirEntry, *args: object, **kwargs: object):
-        if self.name == "link" and os.path.islink(self.path):
-            os.unlink(self.path)
-            Path(self.path).write_bytes(b"now a file")
-        return real_stat(self, *args, **kwargs)
+    def replacing_stat(
+        entry: os.DirEntry[str], real_stat: Callable[[], object]
+    ) -> object:
+        if entry.name == "link" and os.path.islink(entry.path):
+            os.unlink(entry.path)
+            Path(entry.path).write_bytes(b"now a file")
+        return real_stat()
 
-    monkeypatch.setattr(os.DirEntry, "stat", replacing_stat)
+    patch_dir_entry_stat(monkeypatch, replacing_stat)
     with open_archive(tmp_path) as reader:
         types = {m.name: m.type for m in reader.members()}
     assert types == {

@@ -18,6 +18,10 @@ own), so it runs anywhere CPython does. What CI *proves* on every pull request:
 | macOS | 3.11, 3.14 | all extras |
 | Windows | 3.11, 3.14 | all extras |
 
+CI also runs the CPython 3.15 prerelease on Linux: all extras on 3.15, and core plus the
+GIL-safe extras on 3.15t. Those two jobs are allowed to fail, so a green check does not
+assert 3.15 support yet.
+
 The minimum-versions leg matters more than it looks: optional libraries change behaviour
 by their *version* as well as their presence, so the floor of each declared range is
 tested, not just the newest release.
