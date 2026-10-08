@@ -99,8 +99,9 @@ no member replaces the destination itself.
   excluded it). Without that, the second pass would write a refused member's bytes, such
   as `../x`'s, under the link's name. A refused link in the middle of a chain refuses
   nothing after it, and a hardlink to a symlink is written as that symlink and gets the
-  symlink checks. A RAR file copy is a `FILE`, so its source lookup keeps the escape
-  test instead (`within_root`).
+  symlink checks (one to a symlink with no target fails, and is not refused for it). A
+  RAR file copy is a `FILE`, so its source lookup keeps the escape test instead
+  (`within_root`).
 - Overwrites replace a symlink rather than follow it (`_prepare_destination`,
   `_place_link`), and file data is written to a `.archivey-tmp-<random>` sibling
   (`_temp_sibling`) and moved with `os.replace` (`_write_file_atomic`), so an

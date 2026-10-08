@@ -7,7 +7,8 @@ member was written to, so the string never becomes a path. A link whose source t
 policy refuses is refused too (``BLOCKED``), because otherwise the second pass would
 write the refused member's bytes under the link's name. A refused link in the middle
 of the chain does not refuse the links after it, and a hard link to a symlink is
-written as that symlink and gets the symlink checks.
+written as that symlink and gets the symlink checks. A hard link to a symlink with no
+target fails, whether or not the symlink was refused.
 """
 
 from __future__ import annotations
@@ -202,6 +203,39 @@ def test_a_hardlink_to_a_refused_symlink_is_written_as_a_symlink(
     assert (dest / "hl").read_bytes() == b"t"
 
 
+@pytest.mark.parametrize("symlink", ["/s", "s"], ids=["refused", "kept"])
+@pytest.mark.parametrize("members", [None, ["t", "hl"]], ids=["all", "no-symlink"])
+@pytest.mark.parametrize("listed", [True, False], ids=["listed", "fresh"])
+def test_a_hardlink_to_a_targetless_symlink_fails_whether_or_not_it_was_refused(
+    tmp_path: Path, symlink: str, members: list[str] | None, listed: bool
+) -> None:
+    """A symlink with no target (an empty ``linkname``) cannot be written as the
+    link, and it copies no bytes, so a refusal of the symlink's own name does not
+    refuse the link: the outcome is the same whether ``STRICT`` refuses the absolute
+    ``/s`` or keeps ``s``. With the listing read first, the link's
+    ``link_target_member`` is the symlink and the link fails as a link to a
+    non-file; a fresh pass leaves it unset and the link is not found."""
+    path = _tar(tmp_path / "a.tar", [("t", None), (symlink, "sym:"), ("hl", symlink)])
+    dest = tmp_path / "out"
+    with open_archive(path) as archive:
+        if listed:
+            archive.members()
+        report = archive.extract_all(
+            dest,
+            policy=ExtractionPolicy.STRICT,
+            members=members,
+            on_error=OnError.CONTINUE,
+        )
+    result = {r.member.name: r for r in report.results}["hl"]
+    assert result.status is ExtractionStatus.FAILED, result.error
+    if listed:
+        assert type(result.error) is ExtractionError
+        assert "is a symlink, not a regular file" in str(result.error)
+    else:
+        assert isinstance(result.error, LinkTargetNotFoundError)
+    assert not os.path.lexists(dest / "hl")
+
+
 @_MODES
 @pytest.mark.parametrize(
     "members", [None, ["h"], ["m", "h"]], ids=["all", "only-h", "no-source"]
@@ -297,9 +331,9 @@ def test_a_filter_that_rescues_the_source_lets_its_links_through(
     assert (dest / "x").read_bytes() == b"../x"
 
 
-# The target spellings #620 refused on the string. Each names an earlier member of
-# that name, and the link gets what that member gets: refused where the member is,
-# linked where the member is written (re-rooted under STANDARD and TRUSTED).
+# Target spellings that look like paths. Each names an earlier member of that name,
+# and the link gets what that member gets: refused where the member is, linked where
+# the member is written (re-rooted under STANDARD and TRUSTED).
 _ROOTED = ["/abs", "\\foo", "C:/x"]
 
 

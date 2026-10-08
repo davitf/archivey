@@ -1480,26 +1480,33 @@ class ExtractionCoordinator:
         writes an unwritten source's bytes at the link's path. So a link is refused
         when its source is, in both access modes and at every policy.
 
-        The source is ``link_target_member``, the end of the hard-link chain, which is
-        the member ``_write_hardlink`` links against or the second pass reads. A
-        refused link in the middle of the chain does not refuse this one: its name was
-        the unsafe part, and this link does not use that name. Hard links point only
-        backward, so this run has already reached the source. When it recorded a
-        result for it, the result decides: ``BLOCKED`` is a refusal, and anything else
-        passed the checks, under the name the caller's filter gave it. A filter that
-        renames a source to an unsafe name thus refuses its links too, and one that
-        rescues an unsafe source lets them through. A source with no result was
-        excluded by the selector or the filter. The caller's filter is not run on it,
-        since a selector-excluded member was never meant to reach it; instead the
-        policy's own steps run on the source as listed (``_policy_refuses``). A
-        refused source's links are refused; any other excluded source is recovered
-        by the second pass, or fails the link on a forward-only stream
-        (``_write_hardlink``).
+        The source is ``link_target_member``, the end of the link chain (symlinks
+        included), which is the member ``_write_hardlink`` links against or the second
+        pass reads. A refused link in the middle of the chain does not refuse this
+        one: its name was the unsafe part, and this link does not use that name. The
+        chain ends at a SYMLINK only when that symlink has no target, and then
+        nothing is refused: the link copies no bytes, and ``_write_hardlink`` fails it
+        as a link to a non-file whatever happened to the symlink's own name. (A
+        symlink with a target is not a source: ``_as_written`` wrote the link as that
+        symlink.) Hard links point only backward, so this run has already reached the
+        source. When it recorded a result for it, the result decides: ``BLOCKED`` is
+        a refusal, and anything else passed the checks, under the name the caller's
+        filter gave it. A filter that renames a source to an unsafe name thus refuses
+        its links too, and one that rescues an unsafe source lets them through. A
+        source with no result was excluded by the selector or the filter. The
+        caller's filter is not run on it, since a selector-excluded member was never
+        meant to reach it; instead the policy's own steps run on the source as listed
+        (``_policy_refuses``). A refused source's links are refused; any other
+        excluded source is recovered by the second pass, or fails the link on a
+        forward-only stream (``_write_hardlink``).
         """
         state = self._state
         source = link.link_target_member
         if state.reader is None or source is None or source._member_id is None:
             # No source: `_write_hardlink` fails the link as not found.
+            return False
+        if source.type is MemberType.SYMLINK:
+            # A targetless symlink: no bytes to refuse.
             return False
         member_id = source._member_id
         index = state.result_ids.get(member_id)
@@ -1516,8 +1523,8 @@ class ExtractionCoordinator:
         caller's filter: the absolute-name re-root, the universal checks and the name
         policy, as ``_transform`` runs them. Only a ``FilterRejectionError`` is a
         refusal; a member whose parent cannot be resolved has failed, not been refused.
-        ``member`` is the end of a hard-link chain, which ``_as_written`` never
-        rewrites, so this skips that step."""
+        ``member`` is the end of a link chain and not a link itself, which
+        ``_as_written`` never rewrites, so this skips that step."""
         candidate = member
         if self._policy is not ExtractionPolicy.STRICT:
             candidate = reroot_absolute(candidate)

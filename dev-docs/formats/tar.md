@@ -314,8 +314,9 @@ check the string (maintainer decision, 2026-10-07). A link whose source the poli
 refuses (`../x`, or `/x` under `STRICT`) is refused with it, selected or not, so the
 second pass never writes a refused member's bytes under the link's name. A middle link
 refused for its own name does not refuse the links after it, and a hardlink to a
-symlink is written as that symlink. A filter's change to a link's `link_target` does
-nothing. `tests/test_hardlink_target_rule.py` has the matrix.
+symlink is written as that symlink. A hardlink to a symlink with an empty `linkname`
+fails as a link to a non-file, refused symlink or not. A filter's change to a link's
+`link_target` does nothing. `tests/test_hardlink_target_rule.py` has the matrix.
 
 **Special files are blocked.** A device, FIFO or socket member is `OTHER`, and the
 default filter records it as `BLOCKED` with `FilterRejectionError` rather than creating it.

@@ -13,10 +13,11 @@ except one rooted by a single ``\\``, which POSIX reads as a filename. A ``:`` o
 Windows-reserved device name in a target segment is refused under ``STRICT`` and
 ``STANDARD``, as it is in a member name; ``TRUSTED`` keeps deferring to the OS.
 
-A hardlink target is not a path. It names an earlier member, and the link gets what
-that member gets (maintainer decision, 2026-10-07): refused where the member is
-refused, linked where it is written. ``tests/test_hardlink_target_rule.py`` has the
-full matrix.
+A hardlink target is not a path. It names an earlier member (maintainer decision,
+2026-10-07), and the link gets what its source gets: the member at the end of its
+chain (``link_target_member``), which here is always the member the target names. The
+link is refused where the source is refused and linked where it is written.
+``tests/test_hardlink_target_rule.py`` has the full matrix, chains included.
 """
 
 from __future__ import annotations

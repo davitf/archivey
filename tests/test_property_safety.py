@@ -459,7 +459,8 @@ def test_resolve_link_never_returns_escaping_name(
 ) -> None:
     """A symlink target, and a hardlink-kind target under ``within_root`` (a RAR file
     copy), never resolves outside the archive namespace. A plain hardlink target is a
-    member name and may (``../x``); extraction refuses a link to a refused member."""
+    member name and may (``../x``); extraction refuses a link whose source was
+    refused."""
     result = resolve_link_target_name(link_name, target, member_type, within_root=True)
     if result is None:
         return

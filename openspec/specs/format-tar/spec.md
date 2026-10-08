@@ -106,7 +106,7 @@ stdlib `tarfile` looks it up), in random access as in a streaming pass. A hardli
 only same-named member comes after it has no `link_target_member`; opening it raises
 `LinkTargetNotFoundError`, and extraction fails it the same way. The `linkname` is
 looked up as a member name, `..` and a leading `/` included, and never checked as a
-path; a hardlink to a member extraction refuses is refused with it (`safe-extraction`,
+path; a hardlink whose source extraction refuses is refused with it (`safe-extraction`,
 "Hardlink Two-Pass Extraction").
 
 The core algorithm SHALL write selected members in one forward pass, recording

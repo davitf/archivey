@@ -135,7 +135,7 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
 | Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
 | Link-target Windows root | `FilterRejectionError` | SYMLINK whose `link_target` starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a target rooted by a single `\` (`\foo`) |
-| Refused hardlink source | `FilterRejectionError` | HARDLINK whose target names a refused member (see "Hardlink Two-Pass Extraction") |
+| Refused hardlink source | `FilterRejectionError` | HARDLINK whose source (`link_target_member`, the end of its chain) was refused (see "Hardlink Two-Pass Extraction") |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
 
 **A symlink target with a Windows root is refused on every OS.** Windows resolves a
@@ -470,21 +470,25 @@ stored name. A link whose source was refused SHALL be refused with
 modes, at every policy and on every OS: otherwise the second pass would write the
 refused member's bytes under the link's name.
 
-Which member counts is the source, `link_target_member`: the end of the hard-link
-chain, the member the link is made to or whose bytes the second pass reads. A link in
-the middle of the chain that was refused for its own name does not refuse the links
-after it, since they do not use that name: `h2` → `../h1` → `a` links to `a` when `a`
-was written. A refused source refuses every link whose chain ends at it, whatever the
-names in between. A HARDLINK whose chain ends at a SYMLINK is written as that symlink
-(a second name for it, as GNU tar makes) and copies no bytes, so it gets the SYMLINK
-checks on its own name and the symlink's target instead of this rule. When the run
-recorded a result for the source, the result decides: `BLOCKED` is a refusal, anything
-else is not, after the caller's filter. A filter that renames the source to an unsafe
-name therefore refuses its links as well, and one that renames an unsafe source to a
-safe one lets them through. A source the `members` selector or the `filter` excluded
-has no result; for it the policy's own steps (the absolute-name re-root, the universal
-checks and the name policy) run on the source as listed, without the filter. A refused
-one refuses its links; any other is recovered as above.
+Which member counts is the source, `link_target_member`: the end of the link chain, the
+member the link is made to or whose bytes the second pass reads. A link in the middle of
+the chain that was refused for its own name does not refuse the links after it, since
+they do not use that name: `h2` → `../h1` → `a` links to `a` when `a` was written. A
+refused source refuses every link whose chain ends at it, whatever the names in between.
+A HARDLINK whose chain ends at a SYMLINK is written as that symlink (a second name for
+it, as GNU tar makes) and copies no bytes, so it gets the SYMLINK checks on its own name
+and the symlink's target instead of this rule. A symlink with no target (a TAR symlink
+with an empty `linkname`) cannot be written that way, and copies no bytes either: the
+link fails, whether or not the symlink was refused for its own name. Only TAR, RAR5 and
+a directory list hard links, and all three carry a symlink's target in the header or the
+filesystem, so `read_link_targets` does not change these outcomes. When the run recorded
+a result for the source, the result decides: `BLOCKED` is a refusal, anything else is
+not, after the caller's filter. A filter that renames the source to an unsafe name
+therefore refuses its links as well, and one that renames an unsafe source to a safe one
+lets them through. A source the `members` selector or the `filter` excluded has no
+result; for it the policy's own steps (the absolute-name re-root, the universal checks
+and the name policy) run on the source as listed, without the filter. A refused one
+refuses its links; any other is recovered as above.
 
 #### Scenario: hardlink matrix
 
@@ -500,6 +504,7 @@ one refuses its links; any other is recovered as above.
 | HARDLINK `h` → `m` → `../x`: a safe middle name, a refused source, selected or excluded | `h` (and `m`, when selected) `BLOCKED` ("Hardlink target was refused") |
 | HARDLINK `h2` → `../h1` → `a`, `a` extracted | `../h1` `BLOCKED` for its own name; `h2` linked to `a` |
 | HARDLINK `hl` → SYMLINK `/s` → `t`, `STRICT` | `/s` `BLOCKED` for its own name; `hl` written as a symlink to `t` |
+| HARDLINK `hl` → SYMLINK with no target (`/s` under `STRICT`, or `s`) | `hl` `FAILED`, not refused for `/s`'s name: `ExtractionError` naming the source's type when the listing was read first, else `LinkTargetNotFoundError` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
 
@@ -608,11 +613,13 @@ SHALL no longer serve as the source: a re-readable source is re-read by the seco
 as an excluded one is, and a forward-only one fails the link. A source path that is not
 a regular file when the link is made (a symlink put there) SHALL NOT be linked.
 
-A HARDLINK whose target member is a SYMLINK, directly or through other hard links,
-SHALL be written as a symlink with that member's target, read from the hardlink's own
+A HARDLINK whose target member is a SYMLINK, directly or through other hard links, SHALL
+be written as a symlink with that member's target, read from the hardlink's own
 directory, and checked like any symlink: it is a second name for the symlink, as GNU tar
-creates it. The caller's filter SHALL see the HARDLINK as listed, and the member on its
-`ExtractionResult` stays that HARDLINK; only what is written is a symlink.
+creates it. When that member has no target, the HARDLINK SHALL fail instead, and SHALL
+NOT be refused because the symlink was. The caller's filter SHALL see the HARDLINK as
+listed, and the member on its `ExtractionResult` stays that HARDLINK; only what is
+written is a symlink.
 
 A HARDLINK SHALL resolve only to a member listed before it, in every format and in both
 modes: a link whose only target comes later fails in random access as in a streaming

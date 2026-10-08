@@ -222,7 +222,7 @@ def test_check_universal_names_a_symlink_escape_not_a_hardlink_target(
     ):
         check_universal(sym, tmp_path)
     # A hardlink target names a member and never becomes a path, so it is not
-    # checked here; the coordinator refuses a link to a refused member instead.
+    # checked here; the coordinator refuses a link whose source was refused instead.
     hard = _member("h", type=MemberType.HARDLINK, link_target="../outside.txt")
     check_universal(hard, tmp_path)
 
