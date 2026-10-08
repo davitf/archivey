@@ -24,7 +24,9 @@ Parent to child:
   decompressed offset; the reply's argument is how many index points there are, and its
   payload is ``POINTS_REPLY``: the decompressed and compressed bit offsets of the
   largest point after 0 at or before the offset, then of the smallest point after it,
-  each -1 when there is none; every point is the start of a DEFLATE block).
+  each -1 when there is none; every point is the start of a DEFLATE block),
+  ``TELL_COMPRESSED`` (the reply's argument is rapidgzip's ``tell_compressed()``, in
+  bits).
 - ``SRC_DATA`` (payload: bytes read), ``SRC_VALUE`` (argument: a position),
   ``SRC_FAIL``: the answers to the child's ``SRC_*`` requests. ``SRC_FAIL`` means the
   parent's source raised; the parent keeps that exception and raises it to its caller.
@@ -57,7 +59,7 @@ FRAME = struct.Struct("<BqI")
 # The range of FRAME's integer argument, its signed 64-bit ``q``.
 ARG_MIN, ARG_MAX = -(1 << 63), (1 << 63) - 1
 
-OPEN, READ, SEEK, RESUME, POINTS = 1, 2, 3, 4, 5
+OPEN, READ, SEEK, RESUME, POINTS, TELL_COMPRESSED = 1, 2, 3, 4, 5, 6
 POINTS_REPLY = struct.Struct("<qqqq")
 SRC_DATA, SRC_VALUE, SRC_FAIL = 10, 11, 12
 OK, ERR = 1, 2
@@ -218,6 +220,8 @@ def _serve(channel: _Channel, stream: Any) -> None:
                 ok = channel.send(OK, max(preceding) if preceding else -1)
             elif tag == POINTS:
                 ok = channel.send(OK, *_points_around(stream, arg))
+            elif tag == TELL_COMPRESSED:
+                ok = channel.send(OK, stream.tell_compressed())
             else:
                 ok = channel.send(ERR, 0, _error_payload(ValueError(f"bad tag {tag}")))
         except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
