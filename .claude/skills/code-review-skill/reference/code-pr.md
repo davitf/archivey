@@ -104,20 +104,24 @@ act (`VISION.md`).
 
 ### Load-bearing claims (rank findings against these)
 
-From `VISION.md` / `review/README.md` — a finding that undercuts a marketing claim
-outranks a same-severity nit that does not:
+`VISION.md` has two load-bearing claims. A finding that undercuts one of them outranks a
+same-severity nit that does not:
 
-1. **One uniform interface** with honest cost / capability signals (no silent
-   per-format guesses).
-2. **Safe by default** — zip-slip, symlink escape, and decompression bombs require
+1. **Safe by default** — zip-slip, symlink escape, and decompression bombs require
    explicit opt-out; safety is a contract, not a flag.
-3. **Memory-safe parsing of hostile input** — pure-Python parsers preferred so crafted
-   archives cannot *corrupt* native parser memory; failures must be honest errors.
-4. **Damaged input is first-class** — recoverable members + an honest error beat a
-   bare exception at open (salvage mode is backlog; don’t invent it in a PR review).
-5. **≤ ~1.3× stdlib** on common ZIP/TAR open/list/read/extract paths (up to ~2× when
-   safety/correctness justifies it). Track **bytes decompressed and seeks**, not only
-   wall time — silent solid-block re-decode fails the budget even if a tiny fixture hides it.
+2. **Memory-safe parsing of hostile input** — pure-Python parsers so crafted archives
+   cannot *corrupt* native parser memory; failures must be honest errors.
+
+VISION's other priorities still rank findings, below those two:
+
+- **One uniform interface** with honest cost / capability signals (no silent per-format
+  guesses).
+- **Damaged input is first-class** — recoverable members + an honest error beat a bare
+  exception at open (salvage mode is not built; don’t invent it in a PR review).
+- **The performance bands** (≤ ~1.3× stdlib on common decompression-dominated paths, up
+  to ~2× when safety/correctness justifies it), which VISION calls aspirational. Track
+  **bytes decompressed and seeks**, not only wall time — silent solid-block re-decode
+  fails the structural gate even if a tiny fixture hides it.
 
 ### Non-goals (don’t demand these in reviews)
 
@@ -164,11 +168,11 @@ those rules PRs in this repo actually break, and how to label a break. Violating
 - [ ] **Every policy bound is reachable from `ArchiveyConfig`.** A new `_MAX_…` inside a
   parser or reader is a finding *unless* the constant carries a stated structural reason
   and a spec row, which CONTRIBUTING allows. Check for that reason before filing
-- [ ] **Clean-as-you-go, with no unspoken deferral.** A "we'll clean this later" shortcut
-  needs an explicit home (PR note, `IDEAS.md`, `review/backlog.md`); an unrecorded one is
-  debt
-- [ ] **Pause-and-ask** on a real design discrepancy — neither author nor reviewer
-  silently picks a winner
+- [ ] **Clean-as-you-go, with no deferral.** A "we'll clean this later" shortcut is fixed
+  in the PR, or split into its own PR when it is too big to fix in place; it is not parked
+  in `dev-docs/IDEAS.md` or `review/backlog.md`. A shortcut with no PR behind it is debt
+- [ ] **Pause-and-ask** on a real design discrepancy that no rule in
+  `dev-docs/design-rules.md` settles — neither author nor reviewer silently picks a winner
 - [ ] **Comments** explain *why*, carry no history, point at nothing the diff removed, and
   claim nothing stronger than the code guarantees
 - [ ] **A preview or summary reports from the run's own state**, not a re-derivation from
@@ -186,7 +190,7 @@ grep would miss the ones that matter and fire on the ones that do not. Read the 
 
 A pre-existing bug in the **mechanism the PR is already editing**, where the fix is
 proportionate, is in scope and is a normal finding. Do not soften it to "pre-existing, not
-this PR's" or route it to the backlog. Being in a touched *file* is not the test. A
+this PR's" or route it elsewhere. Being in a touched *file* is not the test. A
 **sweep** across files the PR does not touch is the follow-up. The maintainer has ruled
 "fix it in this PR" on #342, #344 and #349, and "not in this PR" only where the ask was a
 cross-file sweep (#339, #353) — so this one does not need another decision packet.
@@ -225,8 +229,7 @@ tests; do not re-run the suite (`SKILL.md` §6).
   `[all-lowest]`, `[core-only]`
 
 "No test in the suite catches this" is usually a **strategy** gap — property, fuzz,
-fault-injection — not one missing example. Flag thin coverage honestly
-(`review/backlog.md` Topic 4).
+fault-injection — not one missing example. Flag thin coverage honestly.
 
 ## Domain checklist
 
@@ -257,7 +260,7 @@ looking for. Severity: 🔴 blocking / 🟡 important / 🟢 nit.
 
 - [ ] Public vs `internal/` boundary respected, and new `__all__` entries are intentional
   (`CONTRIBUTING.md`). The CLI reaching into `internal/` usually means an API gap — see
-  `review/api-coherence/`
+  `review/archive/2026-07-19-api-coherence/`
 - [ ] Format backends stay behind the uniform reader contracts
 - [ ] Sync-first: no accidental async public API
 

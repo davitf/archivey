@@ -25,6 +25,6 @@ time.
 5. Shrink `parallel-reader.md` to a short “historical audit” or move lock-order tables
    next to `reader-concurrency` if still useful.
 
-Root docs that stay put: `VISION.md`, `IDEAS.md`, `CONTRIBUTING.md`,
-`CLAUDE.md`, `AGENTS.md`. Thin redirect stubs remain at the old root paths for
-`SPEC.md` / `ARCHITECTURE.md` / `COMPARISON.md` / `ASYNC.md`.
+Root docs that stay put: `VISION.md`, `CONTRIBUTING.md`, `CLAUDE.md`, `AGENTS.md`
+(`IDEAS.md` lives in `dev-docs/`). No redirect stubs remain at the old root paths for
+`SPEC.md` / `ARCHITECTURE.md` / `COMPARISON.md` / `ASYNC.md`; link the copies here.

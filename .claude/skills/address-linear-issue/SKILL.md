@@ -24,8 +24,9 @@ GitHub Actions job runs `code-review-skill` in a Claude session that has none of
 this one’s context and posts to the pull request. This skill’s job is to get the
 pull request into that loop, not to spawn a reviewer of its own.
 
-Runs on Cursor desktop, Cursor Cloud Agent, and Claude Code. The handoff is the
-same everywhere, because it happens on GitHub rather than in this session.
+Runs in Claude Code (and in Cursor, through its project command, if Cursor comes
+back). The handoff is the same everywhere, because it happens on GitHub rather than
+in this session.
 
 ## 1. Read the issue
 

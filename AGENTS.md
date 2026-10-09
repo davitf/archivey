@@ -19,7 +19,7 @@ single-file-compressed (gz/bz2/xz/lzip/LZMA Alone/zstd/lz4/zlib/Brotli/.Z).
 ## Where things live
 
 **Everyday maintainer/agent loop:** [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md)
-(investigate → grill into handbook → thin brief → implement → other-agent review →
+(investigate → grill into handbook → thin brief → implement → the review loop →
 decision packets). **Start with [`dev-docs/code-map.md`](dev-docs/code-map.md)** when the
 question is *where in the source do I make this change*. Format/topic handbook pages are
 created **with the first real change** that needs them (see pair-workflow); until then
@@ -38,17 +38,18 @@ that one is the code map.
 - `docs/` — the **published** end-user guide, and nothing else: `index`, `install`,
   `opening-and-listing`, `reading-members`, `extracting`, `gotchas`, `access-and-cost`,
   `formats`, `errors-and-diagnostics`, `cli`, `migrating`, `support-matrix`, `philosophy`,
-  `how-it-works`, `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
-  `scripts/check_docs_nav.py` fails CI otherwise. Placement rule for a new doc:
-  `CONTRIBUTING.md` §"Where does a new doc go?".
+  `how-it-is-built`, `how-it-works`, `api`, `acknowledgements`. Every file under `docs/`
+  has a nav entry in `mkdocs.yml` and `scripts/check_docs_nav.py` fails CI otherwise.
+  Placement rule for a new doc: `CONTRIBUTING.md` §"Where does a new doc go?".
 - `dev-docs/` — **unpublished** maintainer material: pair workflow, format/topic handbook,
   `code-map.md`, `decisions/` (rare repo-wide ADRs; prefer handbook notes for new
   decisions), threat model, codec analysis, known issues, `investigations/` (finished
   evidence), `discussions/` (design questions written for circulation; each gets a
   RESOLVED header once settled), `history/` (superseded `SPEC` / `ARCHITECTURE` /
-  `COMPARISON` / `ASYNC` prose, not normative). Index: `dev-docs/index.md`.
-- `dev-docs/threat-model.md` — trust boundaries + the open security/compat gap
-  register (each open item becomes an OpenSpec change when tackled).
+  `COMPARISON` / `ASYNC` / `PLAN` prose, not normative). Index: `dev-docs/index.md`.
+- `dev-docs/threat-model.md` — the security design: who archivey defends against, where
+  trust stops, what enforces each promise, and (§5) the open design gaps. It is a design
+  doc, not a defect register; a bug in a mechanism goes in `known-issues.md`.
 - `review/` — the **deep-review program**: `README.md` (conventions, ranking, deliverable
   shape), `STATUS.md` (live triage of in-flight rounds — read this before starting a
   review), `backlog.md` (deferred topics with reasons), and `archive/<date>-<topic>/` for
@@ -163,9 +164,9 @@ hand after a manual clone; it is idempotent.
 
 **Do not skip this.** RAR data tests and the benchmark gate's `rar_*` cases *skip*
 when `unrar` is absent, and encrypted-ZIP fixtures skip without `7z` — quietly. A
-container missing them runs about a hundred fewer tests while still reporting all-green, and
-`--update-baselines` there would rewrite `structural.json` without those cases. The
-script ends by printing what is missing; read that line.
+container missing them runs about a hundred fewer tests while still reporting all-green
+(`--update-baselines` refuses to run there). The script ends by printing what is missing;
+read that line.
 
 ## Environment and tooling
 
@@ -281,8 +282,8 @@ Non-obvious gotchas:
   `scripts/install-unar-from-source.sh --dest ~/.local/bin` (about 20 s; build deps are
   in the script header). CI does the same on Linux.
 - Both of the above skip **quietly**, which is the trap: a container without them runs
-  about a hundred fewer tests, with the suite still green. `--update-baselines` in that state would also rewrite
-  `structural.json` without the `rar_*` cases (it now refuses instead). If you are
+  about a hundred fewer tests, with the suite still green. `--update-baselines` refuses to
+  run in that state rather than write a partial `structural.json`. If you are
   unsure whether the environment is complete, run `scripts/setup-dev-env.sh`; its
   closing verification block names anything missing.
 - **`openspec` CLI** lives at `~/.local/bin` (on `PATH`). The plain
@@ -295,14 +296,16 @@ Non-obvious gotchas:
   `--no-dev` / lowest-resolution leg, restore the everyday env with
   `uv sync --group dev --extra all`.
 - Docs (optional): `uv run --group docs mkdocs build --strict`.
-- **Atheris fuzz** is a separate main-push / `workflow_dispatch` job (not the PR matrix).
-  Install with `uv sync --group fuzz --group dev --extra all`, then
+- **Atheris fuzz** is its own workflow: short sharded budgets on every pull request, and
+  the full partition nightly or on `workflow_dispatch`. Install with
+  `uv sync --group fuzz --group dev --extra all`, then
   `uv run --no-sync python -m tests.atheris_fuzz --smoke`. Mutation /
   `ARCHIVEY_FUZZ` harnesses are unchanged. See `CONTRIBUTING.md` ("Coverage-guided fuzz").
 - **CI matrix Python versions**: repo `.python-version` pins local/default envs to 3.11.
-  The test matrix in `.github/workflows/ci.yml` must pass `--python <matrix>` (and set
-  `UV_PYTHON`) on every `uv sync` / `uv run`, or "py3.12/3.13/3.14" legs silently re-test
-  3.11. The free-threaded and atheris jobs already did this; the main `test` job must too.
+  A matrix job must pin its Python on every `uv sync` / `uv run`, or "py3.12/3.13/3.14"
+  legs silently re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes
+  `--python`; the free-threaded job and the stress workflows pin each call with
+  `--python` or `UV_PYTHON`. Keep that when you add a step.
 
 
 ## Cross-platform traps (you develop on Linux; CI runs Windows and macOS)
@@ -332,18 +335,18 @@ new tests and new message-formatting code for all four:
 ## OpenSpec CLI
 
 Installed by the setup script above. If you need it manually, it ships as the npm
-package `@fission-ai/openspec` (Node is available):
+package `@fission-ai/openspec` (Node is available). Install it the way the setup script
+does, into a prefix that is writable and already on `PATH`:
 
 ```bash
-npm install -g @fission-ai/openspec
+npm install -g --prefix "$HOME/.local" @fission-ai/openspec
 ```
 
 The bare `openspec` package on npm is an unrelated empty stub — install the
-`@fission-ai/...` scoped package, not that one. On images where the global npm
-prefix is not user-writable this fails with `EACCES`; use
-`npm install -g --prefix "$HOME/.local" @fission-ai/openspec` instead (what the
-setup script does). Verify with `openspec --version` (known-good: 1.4.1). Common
-commands, run from the repo root:
+`@fission-ai/...` scoped package, not that one. On a machine where the global npm
+prefix is user-writable, plain `npm install -g @fission-ai/openspec` also works; on the
+cloud images it fails with `EACCES`. Verify with `openspec --version` (known-good:
+1.4.1). Common commands, run from the repo root:
 
 ```bash
 openspec list                 # in-flight changes + task progress
@@ -385,7 +388,7 @@ changes. See `openspec/schemas/library/README.md` and `openspec/config.yaml`.
 
 ## Reference repository: `archivey-dev`
 
-`archivey-dev` is the **v1 / DEV** codebase that v2 selectively ports from and
+`archivey-dev` is the **v1 / DEV** codebase that v2 selectively ported from and
 whose `openspec/changes/` contain the native-reader explorations. It is a separate
 repo and is NOT in this session's GitHub-tool scope.
 
@@ -399,14 +402,14 @@ Notes:
 - The GitHub **API** (and WebFetch against `api.github.com`) is rate-limited for
   unauthenticated calls and returns `403` — do not conclude the repo is private;
   use `git clone` instead.
-- Pin to a specific commit for reproducible ports. Known-good revision used while
-  authoring these specs: `730275b7a755f8b5b8d08d3d4d9b267b5bdadb0d` (default
+- Pin to a specific commit when you compare against it. Known-good revision the specs
+  were written against: `730275b7a755f8b5b8d08d3d4d9b267b5bdadb0d` (default
   branch HEAD; the clone carries no release tags).
 - High-value paths inside it:
   - `openspec/changes/sevenzip-native-reader/` and
     `openspec/changes/rar-native-metadata-reader/` (+ `docs/*-native-reader-design.md`)
     — the native-parser designs this repo's `format-7z` / `format-rar` specs follow.
-  - `src/archivey/` — the source to port (Phase 1).
+  - `src/archivey/` — the v1 source this repo was ported from (the port is done).
   - `tests/` — the declarative test harness and fixtures.
 
 ## 7z / RAR reading strategy (native-first)
@@ -452,8 +455,9 @@ Adding a rule means editing one file — if you find yourself editing a second, 
 in the wrong place.
 
 
-1. **A separate agent reviews** the PR with **`/code-review-skill`** — not a bare
-   `/code-review`, which is a *builtin* skill in both Claude Code and Cursor and is not
+1. **A separate agent reviews** the PR with **`/code-review-skill`**, in a session the
+   [review loop](dev-docs/review-loop.md) starts when the `review` label is added — not a
+   bare `/code-review`, which is a *builtin* skill in both Claude Code and Cursor and is not
    this one; the Cursor project command `.cursor/commands/code-review.md` is what makes
    `/code-review` land correctly there. It posts the **full** findings to the PR (blocks
    1–2 for the implementor; block 3 packets for the maintainer). When also chatting with
@@ -468,8 +472,9 @@ in the wrong place.
    previous ID when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
    (Cursor: `/address-review`). Every finding gets an explicit disposition — fixed,
-   disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and
-   nothing is "fixed" without being reproduced first. Escalations to the maintainer use
+   disproven, escalated, or split into its own PR when it is too big to fix in place. Nits
+   are fixed, not deferred. Nothing is dropped silently, and nothing is "fixed" without
+   being reproduced first. Escalations to the maintainer use
    the **decision packet** shape only (same section of `pair-workflow.md`).
 
 3. **An agent may pick the review up without being asked.** A session subscribed to PR
@@ -518,14 +523,13 @@ written*. "The dedup is ARC-54, not this change's job" is fine. "See ARC-54 for 
 measurement" is not — put the measurement here. Test it by deleting the key: if the
 sentence still says everything a reader needs, it was a tracking tag; if the sentence
 now has a hole, the content is in the wrong place. The existing citations in
-`threat-model.md`, `investigations/adr-0014-investigation.md` and two
-`openspec/changes/` files all pass that test, so this is a rule for new writing, not a
-sweep.
+`investigations/adr-0014-investigation.md` and three `openspec/changes/` files all pass
+that test, so this is a rule for new writing, not a sweep.
 
-Where a finding deserves a durable in-repo home, that is `review/backlog.md` under
-"Parked from PR reviews", with the reasoning in the format handbook
-(`dev-docs/formats/<fmt>.md` §6). The cross-reference runs one way only: put the PR URL on
-the tracker item, never the reverse.
+A finding is not parked in the repo. Fix it in the PR, or open its own PR when it is too
+big to fix in place; anything still left is tracked internally, with the reasoning in the
+format handbook (`dev-docs/formats/<fmt>.md` §6) when it is a design point. The
+cross-reference runs one way only: put the PR URL on the tracker item, never the reverse.
 
 Two things about this repo make the handoff sharper than it looks:
 
@@ -533,9 +537,12 @@ Two things about this repo make the handoff sharper than it looks:
   identity (`cursor[bot]`, `qodo-code-review[bot]`). So a comment from the `davitf` login
   carrying an agent attribution footer — `_Generated by [Claude Code](https://claude.ai/code)_`
   in Claude Code sessions, the equivalent elsewhere — is an agent; the same login *without*
-  one is the human. Make your own PR comments identifiable the same way, and read inline
-  threads carefully: the maintainer's own questions arrive that way and carry more weight
-  than an automated finding.
+  one is the human. End every comment and review you post with
+  `\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_`, written by you (never
+  leave it out on the hope that a tool adds it: the current paths append nothing, and two
+  footers on a body are better than none), and
+  read inline threads carefully: the maintainer's own questions arrive that way and
+  carry more weight than an automated finding.
 - **Escalate one decision packet at a time.** Shape and fields:
   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
   Do not dump the full finding list into chat — that stays on the PR. A batched list of
@@ -611,5 +618,6 @@ maintainer. Repository settings, publishing and the PyPI name are the maintainer
   ("Before pushing…").
 - See `CONTRIBUTING.md` for coding/testing standards (incl. behaviour-focused tests,
   **leave the code self-explanatory** with inline *why*, and the rule to
-  **pause and ask the maintainer on spec/design discrepancies** rather than silently
-  resolving them).
+  **surface spec/doc discrepancies** rather than silently resolving them). A design
+  question goes through `dev-docs/design-rules.md` first; ask the maintainer only when no
+  rule settles it.

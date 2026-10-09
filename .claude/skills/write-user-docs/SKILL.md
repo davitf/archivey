@@ -13,11 +13,11 @@ description: |
 # Write user docs
 
 How the `new_docs/` rewrite was written (PR #523, started 2026-09-29), kept so the next
-pages are written the same way. The rewritten pages live in `new_docs/` (on #523's branch
-until it merges), and `docs/` stays the live site until `new_docs/` replaces it. The maintainer found the old `docs/` too flat, too
-prescriptive and too detailed. This process fixed that by working in small agreed steps
-and by putting "reads as if a person wrote it" above the sentence rules, below only
-being true and being impossible to misread.
+pages are written the same way. The rewritten pages live in `new_docs/` on `main`, and
+`docs/` stays the live site until `new_docs/` replaces it. The maintainer found the old
+`docs/` too flat, too prescriptive and too detailed. This process fixed that by working
+in small agreed steps and by putting "reads as if a person wrote it" above the sentence
+rules, below only being true and being impossible to misread.
 
 This skill sets the voice for **all user docs prose**, in `docs/` and `new_docs/`. Its loop
 is for writing or rewriting a page with the maintainer. For a one-sentence fix, use the

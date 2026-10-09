@@ -69,8 +69,8 @@ progress report look tidy.
 Python **3.11+**. Tooling runs through [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync                         # create/refresh the dev environment
-./scripts/install-git-hooks.sh  # required: auto ruff fix+format on commit
+uv sync --group dev --extra all  # create/refresh the dev environment
+./scripts/install-git-hooks.sh   # required: auto ruff fix+format on commit
 ```
 
 On macOS, Homebrew no longer ships RARLAB `unrar`; `scripts/setup-dev-env.sh`
@@ -153,7 +153,7 @@ The three legs, which `--all-configs` runs in order:
 uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 
 # 2. Minimum supported versions — every declared dependency pinned to its floor
-#    (`pycdlib 1.16`, `zstandard 0.23`, …), so version-specific library bugs in the
+#    (`pycdlib 1.16`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
 uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
 
@@ -246,9 +246,10 @@ maintainer.
   belongs to. Being in a file the change touches is not enough on its own — the test is
   the mechanism under change, not the file. What does *not* land here is a
   **sweep**: the same mistake across files this change does not touch, or a rename that
-  ripples through specs and archived changes. That is a follow-up, recorded in
-  `review/backlog.md` or `dev-docs/IDEAS.md` with a reason. The line is whether you are
-  still in the code under review, not whether the bug is old.
+  ripples through specs and archived changes. That is its own PR; anything not yet
+  picked up is tracked internally, not parked in `review/backlog.md` or
+  `dev-docs/IDEAS.md`. The line is whether you are still in the code under review, not
+  whether the bug is old.
 - **Leave the code self-explanatory.** The *resulting* tree — names, structure, and
   nearby comments — must make sense to a future editor who never saw the PR. They will
   read the current code, not the diff or the OpenSpec change / `design.md` / PR body
@@ -483,12 +484,14 @@ repro command.
 
 ## Working with the specs (please read)
 
-When you hit a **discrepancy** — specs disagreeing with the prose docs, the specs
-disagreeing with each other, or the design simply not covering your case — **pause and
-ask the maintainer** rather than silently picking an interpretation. A conflict usually
-means a decision hasn't been made yet, and guessing bakes the wrong one into the code.
-Surface it (an issue, a PR comment, or an `openspec/changes/` proposal) and let it be
-decided explicitly.
+When you hit a **discrepancy** — specs disagreeing with the prose docs, or the specs
+disagreeing with each other — **pause and ask the maintainer** rather than silently
+picking an interpretation. A conflict usually means a decision hasn't been made yet, and
+guessing bakes the wrong one into the code. Surface it (an issue, a PR comment, or an
+`openspec/changes/` proposal) and let it be decided explicitly. When the design simply
+does not cover your case, check
+[`dev-docs/design-rules.md`](dev-docs/design-rules.md) first: if a rule settles it, do
+what it says and name the rule in the PR; ask only when no rule does.
 
 **Thin as you go.** Specs stay the authoritative *machine* contract for now (pair-workflow
 DP1 = C), but we are migrating executable detail into **tests** and human truth into
@@ -519,7 +522,7 @@ Five questions, in order. The first `yes` wins.
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
    (rewrite in place; light decision bullets, not a new ADR). **Create the file in the
    same PR that needs it** — do not add empty `formats/` / `topics/` trees. Format pages
-   follow the eight-section shape in
+   follow the shape (At a glance, then sections 1–9) in
    [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Format page structure, with
    [`dev-docs/formats/zip.md`](dev-docs/formats/zip.md) as the worked example. Everyday
    loop: same doc.

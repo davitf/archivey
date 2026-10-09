@@ -103,3 +103,14 @@ conflicts rather than open space.
   and case-insensitive filesystems by this change. It is a rare, low-value adversarial shape
   (the primary O2 threat is file-content silent-merge, which is covered); tracking file↔dir
   cross-collisions is deferred rather than risk regressing normal directory handling.
+
+## Amendment (2026-10-06, before 0.2.0)
+
+- **The two diagnostic codes are gone.** `EXTRACTION_NAME_COLLISION` and
+  `EXTRACTION_NAME_SANITIZED` no longer exist. The facts they carried are now fields on
+  each `ExtractionResult`: `collided_with` names the already-written destination a member
+  collided with (set under the same condition the collision diagnostic fired on), and
+  `presented_name` records the name before a safety rewrite that reached disk. A caller
+  who wants either event to be fatal sets `AbortOn.NAME_COLLISION` or
+  `AbortOn.NAME_SANITIZED`. Decisions 4 and 6 above still describe the behaviour; only
+  where it is reported moved.

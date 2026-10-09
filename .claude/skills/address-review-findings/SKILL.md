@@ -8,7 +8,8 @@ description: |
   findings, this one dispositions them.
   Use when: addressing review comments, responding to a PR review, "the reviewer said…",
     working through review findings, fixing CI failures on a PR, replying to review
-    feedback, handling a code review, or when the user invokes /address-review.
+    feedback, handling a code review, or when the user invokes /address-review-findings
+    (Cursor: /address-review).
 allowed-tools:
   - Read
   - Grep
@@ -22,9 +23,9 @@ allowed-tools:
 # Addressing review findings
 
 A separate agent reviewed this PR (`code-review-skill`) and posted findings. Your job is
-to give **every** finding an explicit disposition — fixed, disproven, or escalated — and
-to leave the PR in a state where the maintainer can see at a glance what happened to each
-one.
+to give **every** finding an explicit disposition — fixed, disproven, split into its own
+PR, or escalated — and to leave the PR in a state where the maintainer can see at a glance
+what happened to each one.
 
 **The two failure modes this skill exists to prevent:**
 
@@ -97,7 +98,7 @@ For each one, the disposition is exactly one of:
 | **Fix** | You agree; it is in scope | Code change + a reply |
 | **Disproven** | You traced it; the code is correct | A reply with the trace — and see below |
 | **Escalate** | Needs a human call | §6, one at a time |
-| **Defer** | Real, out of scope for this PR — **never available for a 🟢 nit** | `review/backlog.md` or `dev-docs/IDEAS.md` with a reason — *recorded*, not just mentioned |
+| **Split** | Real, but too big to fix in place — **never available for a 🟢 nit** | Its own PR, linked from your reply. Anything still left after that is tracked internally — not parked in `review/backlog.md` or `dev-docs/IDEAS.md` |
 
 **A 🟢 nit has no deferred disposition.** In this repo a nit is *small*, not *optional*:
 it is fixed on this PR, or the maintainer waives it explicitly and you record that waiver
@@ -111,13 +112,13 @@ escalation (§6), not a disposition.
 already edits and the fix is proportionate, fix it here — that is the maintainer's
 standing ruling (#342, #344, #349), not a scope question to re-ask. What is genuinely out
 of scope is a *sweep*: the same mistake across files this PR does not touch, or a rename
-rippling through specs and archived changes (#339, #353). Defer that, with a written home.
+rippling through specs and archived changes (#339, #353). Split that into its own PR.
 
 **A disproven finding is rarely nothing.** The review skill's routing rule runs in this
 direction too: if a careful reviewer read this code and concluded it was broken, ask why.
 Usually the answer is that the code is not self-documenting, which makes it 🟡 doc-debt —
-a comment or an assertion that encodes the invariant, not a shrug. "Deferred" without a
-written home is just dropping it slowly.
+a comment or an assertion that encodes the invariant, not a shrug. "Later" with no PR
+and no tracked item is just dropping it slowly.
 
 ---
 
@@ -164,7 +165,7 @@ Standard repo rules apply — they are not relaxed because the change is review-
   findings across 38 pull requests (2026-09-23/24), among them `_RAR_PART_RE` left at
   `\d+` beside a capped sibling, and a new default the pipeline entry points never passed.
 - **Check every "every", "all", "never", "always" and "only" you write.** A comment,
-  docstring, spec line or CHANGELOG entry with one of those words is a claim about every
+  docstring, spec line or PR description with one of those words is a claim about every
   path, and the path you were looking at is one of them. Check it against the axes this
   repo's claims keep failing on — the seven backends (ZIP, 7z, RAR, TAR, ISO, directory,
   single-file compressors), streaming vs random access, seekable vs non-seekable
@@ -272,7 +273,8 @@ body still describing round 1 was its own finding twice.
 This is the part that most needs care, because the maintainer is deciding **without having
 read the diff, the review, or the surrounding docs**, and does not know the identifiers.
 
-**One question per turn.** Use `AskUserQuestion`. Resolve it, then raise the next one.
+**One question per turn.** Ask the maintainer with the `AskUserQuestion` tool if your host
+has it, and in plain text otherwise. Resolve it, then raise the next one.
 Do not batch a numbered list of five decisions — that pushes the reconstruction work back
 onto the person you are asking.
 
@@ -280,15 +282,16 @@ onto the person you are asking.
 
 - You **disagree** with a finding and the disagreement is substantive (not "I traced it and
   it's fine" — that is a disproven finding, §2, and belongs in a reply).
-- The fix requires a **product or contract call**: a VISION trade-off, a spec that would
-  have to change, a public-API shape, a threat-model residual moving between "closed" and
-  "accepted".
+- The fix requires a **product or contract call** that no rule in
+  [`dev-docs/design-rules.md`](../../../dev-docs/design-rules.md) settles: a VISION
+  trade-off, a spec that would have to change, a public-API shape, a threat-model residual
+  moving between "closed" and "accepted".
 - Two authoritative sources **conflict** (spec vs docs vs code), which is the standing
   pause-and-ask rule.
 - The fix is **out of proportion** to the PR and you want a scope ruling.
 
-**Do not escalate** routine implementation choices, anything the specs already settle, or
-questions manufactured to look thorough.
+**Do not escalate** routine implementation choices, anything the specs or the design rules
+already settle, or questions manufactured to look thorough.
 
 ### Decision packet (required escalate shape)
 
@@ -345,7 +348,7 @@ Once the round is done, the PR should record what happened to every finding.
   ones that are still open — including anything escalated in §6 and not yet decided. A
   wall of stale unresolved threads is how a later round loses track of what was settled;
   #236 finished with four threads that had been answered and fixed but never resolved.
-- **Say what you did not do, and why.** Deferred and disproven findings get a line each.
+- **Say what you did not do, and why.** Split-off and disproven findings get a line each.
 - **Attribute every settled decision to the maintainer** (§6). A bullet decided by a human
   is tagged `maintainer decision` where the others carry `important` or `nit`, so the
   implementor can see at a glance which ones are not open to argument.
@@ -371,12 +374,10 @@ Once the round is done, the PR should record what happened to every finding.
   through the maintainer's account, that line is what makes a thread scannable — the avatar
   says `davitf` for most of them.
 
-  **In Claude Code, do not write the trailing footer yourself: the posting tool appends it**
-  (verified on #326 for review bodies, inline comments and replies; a footer you add as well
-  is deduplicated on comments but *not* on a review body, which then shows it twice). Hosts
-  whose posting path does not append one — Cursor among them — must still add their own.
-  Full rule and the check to run if you are unsure:
-  [`code-review-skill` §6](../code-review-skill/SKILL.md).
+  **End every comment, reply and review body with the footer, written by you:**
+  `\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_`. Do not count on the
+  posting tool to add it; the current paths append nothing. Same rule as
+  [`code-review-skill` §6](../code-review-skill/SKILL.md) and `AGENTS.md` §Review workflow.
 
 Reply once per round, not once per fix.
 
@@ -406,6 +407,11 @@ disposition comment. The workflow lets that label through and trusts your judgem
 If the label is still on the pull request a few minutes after you added it, no round
 started: resolve any merge conflict or merge `main`, then remove the label and add it
 again.
+
+**After an approving verdict with CI green**, you may merge a straightforward PR. A tricky
+one goes to the maintainer instead: a behaviour trade-off, a design reversal, removing or
+renaming a public name (before 0.2.0 too), a very large diff, or anything an open decision
+touches (`AGENTS.md` §Working with the maintainer).
 
 ---
 

@@ -100,6 +100,8 @@ Comprehensive guidelines for conducting effective code reviews.
 - Missing documentation for complex logic
 
 ### Nice to Have (Non-blocking)
+In this repo even these are fixed before merge, not deferred (`SKILL.md` §4), and doc debt
+is 🟡 rather than optional.
 - Style preferences beyond linting
 - Minor optimizations
 - Additional test cases
@@ -110,7 +112,8 @@ Comprehensive guidelines for conducting effective code reviews.
 ### Reviewer Anti-Patterns
 - **Rubber stamping**: Approving without actually reviewing
 - **Bike shedding**: Debating trivial details extensively
-- **Scope creep**: "While you're at it, can you also..."
+- **Scope creep**: "While you're at it, can you also..." (not a pre-existing bug in the
+  mechanism the PR edits, which is in scope here: `code-pr.md` §Pre-existing bugs)
 - **Ghosting**: Requesting changes then disappearing
 - **Perfectionism**: Blocking for minor style preferences
 

@@ -220,7 +220,7 @@ same issue (likely not).
 
 ```bash
 # Archivey env already has pyppmd 1.3.1
-cd /path/to/archivey-2
+cd /path/to/archivey
 
 # Classic crash families (subprocess children)
 uv run --no-sync python scripts/pyppmd_crash_repro.py 30 --mode extra-null

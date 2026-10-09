@@ -19,11 +19,11 @@ completed changes out of `changes/`.
 
 | Dir | Review | Status |
 |-----|--------|--------|
-| `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–4 done (IA migrate, guide splits, guardrails). Stays in flight until `docs-content/` lands: its remaining deliverable is `how-it-works.md`, which D2 assigns to Topic 8. |
+| `docs/` | Documentation full review — audience separation + information architecture | Brief 2026-07-29; phases 1–4 done (IA migrate, guide splits, guardrails). Its remaining deliverable, `how-it-works.md` (D2 assigns it to Topic 8), landed in #588; open only until it is archived with `docs-content/`. |
 | `docs-content/` | Documentation **content** (Topic 8) — accuracy vs the code, then gaps, then register | Brief 2026-08-15 at `d4668c3`. Commissioned once the library churn the prose was waiting on (`#225`, `#232`, `#233`–`#236`) had landed. Pass 0 done: [`scope.md`](docs-content/scope.md) routes all 16 pages under D-f and re-derives the worklist (~455 → ~174 lines); its six scope questions are all decided. Steps 2–3 (the claim inventory, [`claims.md`](docs-content/claims.md)) and pass 1 done 2026-08-18. Next: passes 2–4 and the prose. |
 | `problem-catalogue/` | The **problem catalogue** (Topic 10) — every non-trivial problem the project has had to solve, stated solution-neutrally | Brief 2026-08-15 at `d4668c3`. Extraction and normalization over ~180 existing documents, not a new review. Runs in parallel with Topic 8 (disjoint sources) and feeds a later fresh-design comparison. **Delivered 2026-08-17** ([`SUMMARY.md`](problem-catalogue/SUMMARY.md), 146 entries); open only for its §Outstanding (the code-comment harvest, two PPMd documents, the unrun experiment). |
 | `typing-escape-hatches/` | Type-checker escape hatches in `src/` — `# type: ignore`, `cast()`, `Any`, `TypeGuard` | Brief 2026-09-11 at `8e88e4f`. **Inventory 2026-09-17** at `94468bd0` (`SUMMARY.md` + `inventory.md`). 89 sites dispositioned; S1/S6 closed. Every staged fix PR is done or moot on `main` (checked 2026-09-25); open only until it is archived. Parallel with `exception-catchalls/` (disjoint sources). |
-| `sweep/` | The whole-codebase **sweep** — a cold end-to-end reading pass over `src/`, one batch at a time | Conventions only; the state lives on [#315](https://github.com/davitf/archivey/pull/315). Holds the batch [`brief-template.md`](sweep/brief-template.md) and the `SWEPT` per-file marker rule that makes coverage countable. Which batches have run is recorded on #315; how much of `src/` that covers comes from `scripts/sweep_coverage.py`, not from a figure written here. |
+| `sweep/` | The whole-codebase **sweep** — a cold end-to-end reading pass over `src/`, one batch at a time | Not running: the hub [#315](https://github.com/davitf/archivey/pull/315) was closed on 2026-10-02 after the first pass, and the formal sweep is planned for after the release. Conventions only. Holds the batch [`brief-template.md`](sweep/brief-template.md) and the `SWEPT` per-file marker rule that makes coverage countable. Which batches have run is recorded on #315; how much of `src/` that covers comes from `scripts/sweep_coverage.py`, not from a figure written here. |
 | [`api-freeze/`](api-freeze/brief.md) | The **public API at the `0.2.0` freeze** — a re-review of `archive/2026-07-19-api-coherence/` | Brief 2026-09-21 at `b0fe664`, refreshed 2026-09-25 at `c599fc5`. Commissioned because the surface turned over without the count moving: `__all__` is 90 as in July, but 15 names left and **15 arrived**. **Delivered 2026-09-25** at `878c75f` ([`SUMMARY.md`](api-freeze/SUMMARY.md)): the surface is ready to freeze; the diagnostics mechanism is sound and the docs never explain it (one-page fix written, `0-diagnostics.md` §The page); five Medium findings and seven questions for the maintainer in [`QUESTIONS.md`](api-freeze/QUESTIONS.md). Deliberately **non-security** — threat analysis hands off to `dev-docs/threat-model.md`. |
 | `exception-catchalls/` | Blind `except Exception` / `except BaseException` in `src/` | Brief 2026-09-11 at `8e88e4f`. Verify each blind handler either re-raises or records why swallowing is correct; tighten the rest. A **verification** review — recon found every marked site already carries an inline reason, in five recognisable patterns. Sibling of `typing-escape-hatches/`. **Done 2026-09-25** at `5bbbfdc` ([`SUMMARY.md`](exception-catchalls/SUMMARY.md)): 69 handlers, seven fixed, the rest fine (the last four judged after an open PR merged, one of them a fix); house rules in `dev-docs/topics/exception-handlers.md`. |
 
@@ -67,18 +67,20 @@ Briefs reference this section instead of repeating it.
 - **Baseline first.** Capture a green baseline before hunting and record it (tests
   passed/skipped, coverage, `pyrefly`, `ty`, `ruff`). Briefs are the exception to
   the review skill's no-re-run default (`SKILL.md` §6) — no CI run to inherit. The
-  `openspec` CLI is not preinstalled: `npm install -g @fission-ai/openspec` (see
-  `CLAUDE.md`).
+  `openspec` CLI comes from `scripts/setup-dev-env.sh`; to install it by hand,
+  `npm install -g --prefix "$HOME/.local" @fission-ai/openspec` (`AGENTS.md`
+  §OpenSpec CLI).
 - **Three dependency configs.** Behaviour changes by both presence and version of
   optional libs. Exact commands in `CONTRIBUTING.md` → "Before pushing": `[all]`,
   `[all-lowest]` (`--resolution lowest-direct`), and zero-dep `[core-only]`. Say
   which config a finding reproduces in.
-- **VISION is the tie-breaker.** Rank findings against the load-bearing claims:
-  (1) one uniform interface + honest cost signals, (2) parse untrusted archives
-  without native-code parser attack surface, (3) damaged input is a first-class
-  citizen (recoverable members + an honest error), (4) the ≤1.3× stdlib perf
-  budget. A finding that undercuts a marketing claim outranks a same-severity one
-  that doesn't.
+- **VISION is the tie-breaker.** Rank findings against its two load-bearing claims:
+  (1) safe by default (extraction cannot be zip-slipped, symlink-escaped or
+  decompression-bombed unless the caller opts out), (2) memory-safe parsing of hostile
+  input (no native-code parser attack surface). A finding that undercuts one of them
+  outranks a same-severity one that doesn't. VISION's other priorities (one uniform
+  interface, honest cost signals, damaged input, the perf bands, which it calls
+  aspirational) still count, below those two.
 - **Error contract** (`CONTRIBUTING.md`): raw library/`OSError`s crossing the
   boundary are translated to the `ArchiveyError` tree; unrecognized exceptions
   propagate raw (no catch-all); `ArchiveyUsageError` sits deliberately outside the
@@ -89,7 +91,8 @@ Briefs reference this section instead of repeating it.
   from code (`file:line`), behaviour-focused (a fix-worthy finding names the
   concrete input/state that triggers it), with a runnable repro where practical.
   **Pause and ask** rather than silently resolving a spec/design discrepancy
-  (`CLAUDE.md`).
+  (`CONTRIBUTING.md` §Working with the specs); a design question no spec covers goes
+  through `dev-docs/design-rules.md` first.
 
 ## Provenance notes
 
