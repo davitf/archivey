@@ -7,7 +7,7 @@ derived from, and what would reopen it.
 
 Use this page before you ask. If a rule here settles the question, do what it says and
 name the rule in the pull request ("settled by DR-7"), so the maintainer can still object.
-If the question is one of the [conflicts that need a real decision](#conflicts-that-need-a-real-decision),
+If the question is a [clash between consistency and the official tool](#when-consistency-and-the-official-tool-disagree) that the factors do not settle,
 or is on the [escalation list](#what-still-goes-to-the-maintainer), ask.
 
 Where these rules come from: maintainer rulings in pull requests, ADRs, handbook pages
@@ -23,8 +23,8 @@ numbered rule below is one of these applied to a kind of question.
 
 1. **Consistent behaviour between formats and libraries** (DR-5).
 2. **Follow the official tool's behaviour** (DR-6).
-3. **When the previous two conflict, that needs a real decision.** No ranking settles
-   it; see below.
+3. **When the previous two conflict, that needs a real decision.** The factors below
+   settle the clear cases; the rest go to the maintainer.
 4. **No surprises or gotchas for users** (DR-8, DR-10).
 5. **Never output incorrect or incomplete data without raising on a straightforward full
    read** (DR-1, DR-2, DR-4a).
@@ -36,30 +36,38 @@ numbered rule below is one of these applied to a kind of question.
    server down? (DR-9a).
 8. **Generalise fixes and approaches across all formats** (DR-0).
 
-None of these is black and white. They are strong defaults, and a case can still depend
-on its details. Principles 5 and 7 weigh the most: departing from them needs a concrete
-reason, written down, and the maintainer's agreement. The rest give way more easily,
-but say which one you are relaxing and why. The numbered rules below work the same way:
-a rule settles a question when the case looks like the rulings it came from, and a case
-that differs in an important way goes back to the maintainer.
+Principles 5 and 7 are firm: no other principle outranks them, and "only crafted archives
+hit it" is no excuse there. The others are strong defaults whose answer depends on the
+case. The numbered rules below work the same way: a rule settles a question when the case
+looks like the rulings it came from, and a case that differs in an important way goes back
+to the maintainer.
 
-## Conflicts that need a real decision
+## When consistency and the official tool disagree
 
-When consistency between formats (1) and the official tool (2) point different ways,
-neither wins by default; it depends on the case. Put the question to the maintainer, with what each format's tool
-does, what the other formats do, and whether only crafted archives reach the case (6).
+Neither wins by default; it depends on the case. Weigh these factors. When they all
+point the same way, follow them and say so in the pull request. When they split, ask the
+maintainer, with what each format's tool does, what the other formats do, and how each
+factor came out.
 
-Past decisions on such conflicts, to cite as precedent:
-- Device, FIFO and socket entries are `OTHER` in every format, although unzip and 7-Zip
-  write them as empty files. Consistency won: "they're useless as files" (2026-10-06,
-  PR 610).
-- A 7z name holding a lone UTF-16 surrogate lists the way 7-Zip does, but is
-  percent-escaped under STRICT and STANDARD like every other unrepresentable name. TRUSTED
-  writes 7-Zip's bytes (2026-10-03 and 2026-10-06, PRs 564 and 577).
-- Leftover compressed input inside a ZIP or 7z member raises, as 7-Zip and archivey's
-  other codecs already did; unzip accepts some of these (2026-10-07).
-
-A precedent settles a later case only when the reasons carry over. If they don't, ask.
+- **Is the tool's result useful?** If it is useless to a caller, consistency wins. Device,
+  FIFO and socket entries are `OTHER` in every format, although unzip and 7-Zip write
+  them as empty files: "they're useless as files" (2026-10-06, PR 610).
+- **Would the tool's result break a promise archivey makes?** Principles 5 and 7, and the
+  policy levels' promises, come first. A 7z name holding a lone UTF-16 surrogate lists
+  the way 7-Zip does, but is percent-escaped under STRICT and STANDARD, which promise the
+  same result on every OS. TRUSTED, the faithful level, writes 7-Zip's bytes (PRs 564 and
+  577).
+- **Could the lenient behaviour hide bytes or weaken a check?** Then the stricter side
+  wins. Leftover compressed input inside a ZIP or 7z member raises, as 7-Zip does, though
+  unzip accepts some of it (2026-10-07).
+- **Does only a crafted archive reach the case?** Then prefer the answer that needs the
+  least code (DR-5a), within principles 5 and 7.
+- **Would matching need plumbing across layers?** For a rare case, that weighs against
+  matching. U+DC80 to U+DCFF surrogates keep archivey's one-byte meaning instead of
+  7-Zip's bytes (2026-10-03, PR 564).
+- **Would users compare the two results directly?** Extraction output on disk is compared
+  with the tool's far more often than a diagnostic's wording. Where the comparison is
+  likely, the tool's behaviour weighs more.
 
 ### DR-0. Fix the class, not the instance
 
@@ -225,8 +233,9 @@ on every platform rather than diverge.
 
 **Rule.** Consistency can be relaxed for malformed input, particularly a shape so specific
 that only a crafted archive produces it. There, a format may keep its own behaviour if
-making it match would add real code or plumbing. DR-1 and DR-9a weigh much more: relax
-them only with a written reason and the maintainer's agreement.
+making it match would add real code or plumbing. This never relaxes DR-1 or DR-9a: no
+wrong or incomplete data on a full read without raising, no unbounded resources, no
+crash.
 
 **Why.** Cross-format plumbing for a shape nobody writes costs more than the difference
 it removes.
@@ -256,7 +265,8 @@ Absolute member names re-root inside the destination like every mainstream extra
 (ADR 0015).
 
 **Limits.** When this rule and DR-5 disagree, that is a
-[real decision](#conflicts-that-need-a-real-decision), not a tie this page breaks.
+[real decision](#when-consistency-and-the-official-tool-disagree): weigh the factors,
+and ask when they split.
 ZIP and ISO have no single official tool; see [Open gaps](#open-gaps).
 
 ### DR-7. Trust self-validating data over caller hints
@@ -333,8 +343,8 @@ Native code that can crash runs in a child process (DR-20). Every allocation an 
 can steer is checked against a limit before it is made (DR-9).
 
 **Why.** An attacker crafts archives at will and picks whichever loophole is left
-(2026-10-09). "Only crafted archives hit it" is a reason to relax consistency (DR-5a),
-not this rule.
+(2026-10-09). "Only crafted archives hit it" can relax consistency (DR-5a), never this
+rule.
 
 **Rulings.**
 - PPMd decoding past the end could corrupt memory, so it runs in a child process
@@ -581,8 +591,7 @@ reaches him.
 - A **new public name**, or removing or renaming one after 0.2.0.
 - Accepting a **residual risk** in the threat model.
 - **Reversing** an earlier ruling. This needs a new argument, not a restatement (ADR 0019).
-- A **conflict between consistency and the official tool** (principle 3), unless a past
-  decision's reasons carry over.
+- A **clash between consistency and the official tool** where the factors split.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
 - Merging a **tricky** pull request: a behaviour trade-off, a design reversal, a public
@@ -597,8 +606,9 @@ Questions no rule here settles yet.
 - **The official tool for ZIP and ISO.** DR-6 names none. Asked on 2026-10-02 and not
   answered.
 - **bzip2 after zero padding.** The standard library reads both streams; `bzip2` 1.0.8
-  and the accelerator stop after the first. This is a consistency-versus-official-tool
-  conflict, so it needs a real decision. Raised 2026-10-08.
+  and the accelerator stop after the first. The factors split: nothing hides (the second
+  stream is reported as trailing data), the shape is unusual but not crafted, and only
+  the standard-library path differs. Raised 2026-10-08.
 - **The stricter `DecoderLimits` preset.** The numbers are chosen (256 MiB, 2**24); the
   name, and whether it should be a mode rather than numbers, are open.
 
