@@ -114,6 +114,10 @@ class _Probe:
     pending_what: str = ""
     kdf_rounds: int = 0
     spool_bytes: int = 0
+    # Nesting depth of format detection in progress. Its content probes open codecs
+    # on every unplaced file, so the LZMA Alone probe reads bytes 1-4 of a git
+    # object or an OLE file as a dictionary size; those are not allocations.
+    detecting: int = 0
     # Archivey's own WARNING log records for the archive being scanned.
     warnings: list[str] = field(default_factory=list)
 
@@ -147,7 +151,7 @@ def _install_probes() -> list[str]:
         original_exceeds = internal_config.exceeds_decoder_memory
 
         def exceeds(declared: int, limits: DecoderLimits) -> bool:
-            if declared > PROBE.decoder_memory_peak:
+            if not PROBE.detecting and declared > PROBE.decoder_memory_peak:
                 PROBE.decoder_memory_peak = declared
                 # The LZMA Alone codec branches on this directly, without going
                 # through ``check_decoder_memory``, so it has no ``what``.
@@ -175,6 +179,20 @@ def _install_probes() -> list[str]:
                 setattr(module, "exceeds_decoder_memory", exceeds)
             if getattr(module, "check_decoder_memory", None) is original_check:
                 setattr(module, "check_decoder_memory", check)
+
+        from archivey.internal import detection
+
+        original_detect = detection._detect_format_body
+
+        def detect(*args: Any, **kwargs: Any) -> Any:
+            PROBE.detecting += 1
+            try:
+                return original_detect(*args, **kwargs)
+            finally:
+                PROBE.detecting -= 1
+
+        # Called through its module's global by both detection entry points.
+        setattr(detection, "_detect_format_body", detect)
 
         budget_cls = internal_config.KeyDerivationBudget
         original_spend = budget_cls.spend

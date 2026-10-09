@@ -55,6 +55,7 @@ def _accelerator_engaged(stream: object) -> bool:
     inner = getattr(stream, "_inner", None)
     # Length-verifying / ISIZE wraps sit outside the accelerator.
     from archivey.internal.streams.codecs import (
+        _DeflateEndCheckStream,
         _GzipTruncationCheckStream,
         _StdlibOnAcceleratorError,
         _StdlibSeekContract,
@@ -65,6 +66,7 @@ def _accelerator_engaged(stream: object) -> bool:
         inner,
         (
             VerifyingStream,
+            _DeflateEndCheckStream,
             _GzipTruncationCheckStream,
             _StdlibOnAcceleratorError,
             _StdlibSeekContract,
