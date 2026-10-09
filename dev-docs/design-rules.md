@@ -207,7 +207,8 @@ their indexes the same way.
 - **Entry point.** Public functions agree with each other (`detect_format` recognises
   what `open_archive` opens).
 
-**Why.** "Consistent behavior unless we have a good reason not to" (2026-10-07). A field
+**Why.** "Consistency between formats is a core promise of the library" (PR 290).
+"Consistent behavior unless we have a good reason not to" (2026-10-07). A field
 that is right on one format and wrong on another breaks callers silently.
 
 **Rulings.**
@@ -463,6 +464,27 @@ catch-all.
 
 **Rulings.** 2026-09-25, recorded in the ADR 0012 amendment.
 
+### DR-15a. Translate archive problems; let I/O problems through
+
+**Rule.** Errors about the archive's content become archivey errors. Runtime failures not
+about decoding, such as a disk read error or a dropped network connection, raise the
+original exception. A known library exception is mapped; an unknown one propagates. An
+error message states the fact, with no advice the reader cannot act on.
+
+**Rulings.** "Actual runtime unpredictable filesystem-level errors … should still raise
+the original exception, as they're not directly related to archive decoding" (PR 3,
+reaffirmed in PR 18). `MemoryError` is not translated, so running out of memory is never
+mistaken for damage (threat model §4).
+
+### DR-15b. Fail at open, but do no expensive work there
+
+**Rule.** A problem that open can detect cheaply (contradictory options, a missing
+package, an unreadable header) raises at open, not at the first read. Work proportional
+to the archive's data (a full CRC scan, decoding members) waits until a read asks for it.
+
+**Rulings.** Single-file readers open their stream eagerly so init errors surface at open
+(PR 13). The gzip trailer CRC is decided at read and never scanned at open (2026-09-24).
+
 ### DR-16. A feature must deliver its promise
 
 **Rule.** If archivey advertises a capability, it works in every format that claims it,
@@ -539,6 +561,40 @@ replacement, record the limitation where users will find it and fix it in the re
 until the post-0.2.0 zipfile replacement (2026-10-06).
 
 ---
+
+## Code and tests
+
+### DR-23. Zero debt in the code you touch
+
+**Rule.**
+- "Previously existing code is not a good justification, we're striving for zero debt."
+  Remove dead code and unused fields; prefer the cleaner structure over the smallest
+  diff.
+- A simple bug in code the PR already touches is fixed in that PR. A sweep across files
+  the PR does not touch is its own PR.
+- Review nits are fixed, not deferred. Something too big to fix in place is split into
+  its own PR, not parked.
+- Before adding a class or mechanism, check whether the standard library or an existing
+  helper does it. "Do we really need a custom class for this cache?" (PR 418).
+- Comments and maintainer docs describe the code as it is and why: "Don't talk about the
+  past. Code maintainers need to understand the current state and the reasons behind
+  it" (PR 400). History belongs in PRs and ADRs.
+- Names are spelled out and carry their context (`detection_budget`, not `budget`).
+  No logic in `__init__.py`. Code is grouped by format, not by pipeline phase (PR 443).
+- Raise naming questions at proposal review. A rename after implementation needs a
+  reason beyond taste.
+
+### DR-24. Tests pin behaviour against real producers
+
+**Rule.** A bug fix starts with a failing test (red, then green). Tests check behaviour,
+not internals. Fixtures come from the real tools users run (the gzip command line,
+RARLAB `rar`, 7-Zip), pinned by hash where they are committed, and a matrix row says
+when no available tool writes that case. A refactor that breaks a test means the fix or
+the test is wrong: find out which and report it, never quietly edit the test.
+
+**Rulings.** gzip `FNAME` is Latin-1 per RFC 1952, fixed red/green with a
+command-line fixture (PR 13 era). Committed RAR fixtures (ADR 0016). The corner-case
+cleanup's rule for refactors (2026-10-02).
 
 ## Documentation
 
