@@ -326,7 +326,7 @@ exits. The measurements and the canary that watches for an upstream fix are in
 bytes after a gzip member for the start of another and fails on them, or, in the child,
 delivers the payload and then takes the file's last four bytes, now junk, for ISIZE. Both
 cases switch to the standard library engine at the position already delivered
-(`_StdlibOnAcceleratorError` in `internal/streams/codecs.py`): a data error from
+(`_StdlibOnAcceleratorError` in `internal/streams/codecs/stdlib_takeover.py`): a data error from
 `rapidgzip` does it inside the read or a seek, and an ISIZE mismatch with no confirmed
 further member does it through the truncation check. A seek meets these errors too:
 `rapidgzip`'s seek through a valid file with NUL padding after it fails on the padding,
@@ -503,8 +503,9 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [ADR 0014](../decisions/0014-integrity-verdicts-from-reads-not-close.md) ·
   [`library-analysis.md`](../library-analysis.md) §gzip, §raw Deflate / zlib
-- Code: `internal/streams/codecs.py` (`GzipCodec`, `ZlibCodec`, `DeflateCodec`, the
-  accelerator selection, `_GzipTruncationCheckStream`) · `internal/streams/decompress.py`
+- Code: `internal/streams/codecs/` (`gzip_codec.py`: `GzipCodec`,
+  `_GzipTruncationCheckStream`; `zlib_codec.py`: `ZlibCodec`, `DeflateCodec`;
+  `rapidgzip_select.py`: the accelerator selection; `stdlib_takeover.py`) · `internal/streams/decompress.py`
   (`GzipDecoder`, `ZlibDecoder`) · `internal/streams/rapidgzip_child.py`,
   `rapidgzip_worker.py`
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (DEFLATE members) ·

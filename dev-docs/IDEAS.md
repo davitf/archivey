@@ -37,7 +37,7 @@
   because a path is what buys a fresh descriptor: rapidgzip opens its own fd (so a
   source-side fault cannot abort the process), the gzip truncation backstop reopens the
   file for its scan, and concurrent single-file opens each get their own handle. That
-  is why `CodecSource` still includes `str | os.PathLike` and `codecs.py` carries eight
+  is why `CodecSource` still includes `str | os.PathLike` and the codec modules carry eight
   path branches. An `ArchiveSource.open_independent()` (a fresh handle for a path
   source, a lock-sharing view otherwise) would let codecs take the source itself and
   ask it, and would let `SharedSource` give each view its own descriptor instead of one

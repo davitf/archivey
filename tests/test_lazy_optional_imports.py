@@ -2,7 +2,7 @@
 
 On a free-threaded CPython, importing an extension module that has not declared
 free-thread support re-enables the GIL for the whole process. pyppmd, inflate64, brotli
-and rapidgzip are such modules, so ``codecs.py`` finds them without importing them and
+and rapidgzip are such modules, so ``codecs/deps.py`` finds them without importing them and
 imports each one only when a stream needs it (``_LazyOptional``). These tests run a
 fresh interpreter, because this pytest process has imported them already.
 """
@@ -67,7 +67,7 @@ def test_import_and_format_listing_do_not_import_gil_reenabling_packages() -> No
 def test_lazy_optional_looks_up_without_importing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lazy = codecs._LazyOptional("archivey_no_such_package")
+    lazy = codecs.deps.LazyOptional("archivey_no_such_package")
     assert not lazy.available()
     assert lazy.load() is None
     assert lazy.loaded() is None
@@ -76,7 +76,7 @@ def test_lazy_optional_looks_up_without_importing(
     (tmp_path / f"{name}.py").write_text("")
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delitem(sys.modules, name, raising=False)
-    present = codecs._LazyOptional(name)
+    present = codecs.deps.LazyOptional(name)
     assert present.available()
     assert present.loaded() is None
     assert name not in sys.modules
@@ -100,7 +100,7 @@ def broken_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 def test_lazy_optional_treats_a_failed_import_as_absent(
     broken_package: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    lazy = codecs._LazyOptional(broken_package)
+    lazy = codecs.deps.LazyOptional(broken_package)
     assert lazy.available()
     with caplog.at_level(logging.WARNING, logger="archivey.streams"):
         assert lazy.load() is None
@@ -114,7 +114,9 @@ def test_lazy_optional_treats_a_failed_import_as_absent(
 def test_bzip2_auto_falls_back_when_rapidgzip_fails_to_import(
     broken_package: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(codecs, "_rapidgzip", codecs._LazyOptional(broken_package))
+    monkeypatch.setattr(
+        codecs.deps, "rapidgzip", codecs.deps.LazyOptional(broken_package)
+    )
     data = b"hello bzip2 " * 1000
     auto = StreamConfig(seekable=True)
     assert auto.use_indexed_bzip2 is AcceleratorMode.AUTO
@@ -122,7 +124,7 @@ def test_bzip2_auto_falls_back_when_rapidgzip_fails_to_import(
         codecs.Codec.BZIP2, io.BytesIO(bz2.compress(data)), config=auto
     ) as stream:
         assert stream.read() == data
-    assert not codecs._bzip2_uses_accelerator(auto)
+    assert not codecs.bzip2_codec._bzip2_uses_accelerator(auto)
 
     on = StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON)
     with pytest.raises(PackageNotInstalledError):

@@ -19,7 +19,10 @@ import pytest
 import archivey
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.reader_state import LifecycleState
-from archivey.internal.streams.codecs import _AcceleratorStream, _TrappingSource
+from archivey.internal.streams.codecs.rapidgzip_inprocess import (
+    _AcceleratorStream,
+    _TrappingSource,
+)
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
 
@@ -92,7 +95,7 @@ def test_overrun_probe_still_reads_an_opaque_decoder_error_as_the_end() -> None:
 
 @requires("rapidgzip")
 def test_bzip2_accelerator_traps_a_failing_caller_source() -> None:
-    """codecs.py: the bzip2 accelerator reads a caller's stream through the trap too.
+    """codecs/bzip2_codec.py: the bzip2 accelerator reads a caller's stream through the trap too.
 
     Without it, the caller's ``OSError`` crossed into rapidgzip's C++ callback and
     aborted the interpreter (``std::invalid_argument``), so this runs in a child.
@@ -170,7 +173,7 @@ def _call(stream: _AcceleratorStream, how: str) -> None:
 
 @pytest.mark.parametrize("how", ["read", "readinto", "seek"])
 def test_parked_source_fault_wins_over_the_accelerator_error(how: str) -> None:
-    """codecs.py ``_AcceleratorStream``: when the accelerator raises its own error on
+    """codecs/rapidgzip_inprocess.py ``_AcceleratorStream``: when the accelerator raises its own error on
     the shim's EOF-shaped answer, the parked source fault is what propagates."""
     stream, _ = _accelerator_over_failing_source(RuntimeError("Unexpected end of file"))
     with pytest.raises(OSError, match="disk gone") as info:
@@ -191,9 +194,9 @@ def test_an_interrupt_is_not_replaced_by_a_parked_fault(how: str) -> None:
 
 
 def test_fault_parked_during_accelerator_open_raises_at_open() -> None:
-    """codecs.py ``_open_accelerator``: a fault seen while the decoder opens (through
+    """codecs/rapidgzip_inprocess.py ``_open_accelerator``: a fault seen while the decoder opens (through
     the shim's ``seekable``/``tell``) raises there, not on a later read."""
-    from archivey.internal.streams.codecs import _open_accelerator
+    from archivey.internal.streams.codecs.rapidgzip_inprocess import _open_accelerator
 
     class _Broken(io.BytesIO):
         def seekable(self) -> bool:

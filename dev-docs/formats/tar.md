@@ -529,7 +529,7 @@ python -c "import archivey; archivey.open_archive('sparse.tar').extract_all('out
   [`threat-model.md`](../threat-model.md) O1, O15 ·
   [ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)
 - Code: `internal/backends/tar_reader.py` (the whole backend) ·
-  `internal/detection.py` (`_probe_inner_tar`) · `internal/streams/codecs.py` (the
+  `internal/detection.py` (`_probe_inner_tar`) · `internal/streams/codecs/` (the
   decompressors tarfile reads) · `internal/extraction.py` (hardlinks, the ratio guard) ·
   `internal/naming.py`
 - Handbook: [`7z.md`](7z.md) (link targets as member data, for contrast) ·

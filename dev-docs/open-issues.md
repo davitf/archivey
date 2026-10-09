@@ -67,7 +67,7 @@ same change when relevant.
 - **Today:** Upstream rapidgzip 0.16 can `terminate()` if the Python source raises
   under a live accelerator stream. Archivey avoids closing *its* SharedSource under
   the stream. The in-process bzip2 decoder reads a **caller-owned** source through
-  `_TrappingSource` (`internal/streams/codecs.py`), which parks the callback's exception
+  `_TrappingSource` (`internal/streams/codecs/rapidgzip_inprocess.py`), which parks the callback's exception
   and re-raises it in Python after the call; gzip / zlib / deflate run rapidgzip in a
   child process whose source reads this process serves (`rapidgzip_child.py`). What
   remains open is upstream: the abort paths that do not start in a Python callback,
@@ -552,7 +552,7 @@ same shape as the gzip empty→stdlib fallback. Original write-up below.
 
 - **What happens.** With `[seekable]` installed and `seekable_members=True`, a bzip2
   single-file member opens through **rapidgzip's bundled bzip2 decoder**
-  (`codecs.py: BZip2Codec.open` → `_rapidgzip_bzip2`, gated by
+  (`codecs/bzip2_codec.py: Bzip2Codec.open` → `deps.rapidgzip_bzip2`, gated by
   `use_indexed_bzip2.enabled_for(seekable=...)`, default `AUTO`). That decoder returns
   **zero bytes with no error** for input the stdlib decoder rejects. The capability flag,
   not the data, decides whether a corrupt archive raises.

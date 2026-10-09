@@ -433,8 +433,8 @@ def accelerator_available(codec: Codec) -> Callable[[], bool]:
     """Whether ``codec``'s accelerator can run here (rapidgzip installed, child spawnable)."""
 
     def _check() -> bool:
-        from archivey.internal.streams.codecs import (
-            _bzip2_uses_accelerator,
+        from archivey.internal.streams.codecs.bzip2_codec import _bzip2_uses_accelerator
+        from archivey.internal.streams.codecs.rapidgzip_select import (
             _deflate_family_uses_accelerator,
         )
         from archivey.internal.streams.rapidgzip_child import (

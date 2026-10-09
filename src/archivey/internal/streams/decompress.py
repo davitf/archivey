@@ -951,7 +951,7 @@ class PpmdDecoder(BaseDecoder):
         """Create the decoder ``_decomp``, in this process or in a child one.
 
         ``mem_size`` is bounded one layer up, by ``check_decoder_memory`` in
-        ``codecs.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
+        ``codecs/ppmd_codec.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
         because these constructor calls are the allocation and there is no catching
         it once it has been made (pyppmd 1.3.1 aborts the process rather than raising
         when it is refused). Two paths reach this class without passing that guard: a

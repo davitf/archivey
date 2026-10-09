@@ -211,7 +211,9 @@ def test_a_resumed_decode_that_ends_its_member_starts_over(
         real_init(self, resume, *args, **kwargs)  # type: ignore[arg-type]
 
     restarts: list[int] = []
-    real_restart = codecs_module._StdlibOnAcceleratorError._restart_without_resume
+    real_restart = (
+        codecs_module.stdlib_takeover._StdlibOnAcceleratorError._restart_without_resume
+    )
 
     def count_restart(self: object) -> None:
         restarts.append(1)
@@ -219,7 +221,7 @@ def test_a_resumed_decode_that_ends_its_member_starts_over(
 
     monkeypatch.setattr(DeflateResumeDecoder, "__init__", spy)
     monkeypatch.setattr(
-        codecs_module._StdlibOnAcceleratorError,
+        codecs_module.stdlib_takeover._StdlibOnAcceleratorError,
         "_restart_without_resume",
         count_restart,
     )
@@ -365,7 +367,9 @@ def test_the_start_over_never_reaches_the_caller(
         real_init(self, resume, *args, **kw)  # type: ignore[arg-type]
 
     restarts: list[int] = []
-    real_restart = codecs_module._StdlibOnAcceleratorError._restart_without_resume
+    real_restart = (
+        codecs_module.stdlib_takeover._StdlibOnAcceleratorError._restart_without_resume
+    )
 
     def count_restart(self: object) -> None:
         restarts.append(1)
@@ -373,7 +377,7 @@ def test_the_start_over_never_reaches_the_caller(
 
     monkeypatch.setattr(DeflateResumeDecoder, "__init__", spy)
     monkeypatch.setattr(
-        codecs_module._StdlibOnAcceleratorError,
+        codecs_module.stdlib_takeover._StdlibOnAcceleratorError,
         "_restart_without_resume",
         count_restart,
     )

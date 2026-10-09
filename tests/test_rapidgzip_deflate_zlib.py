@@ -24,7 +24,10 @@ from archivey.exceptions import CorruptionError, ReadError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import Codec, open_codec_stream
-from archivey.internal.streams.decompressor_stream import DecompressorStream
+from archivey.internal.streams.decompressor_stream import (
+    DecompressorStream,
+    _StreamChecksumError,
+)
 from archivey.internal.streams.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.streamtools import SlicingStream
 from archivey.internal.streams.verify import VerifyingStream
@@ -54,12 +57,12 @@ def _accelerator_engaged(stream: object) -> bool:
     takeover replaces it."""
     inner = getattr(stream, "_inner", None)
     # Length-verifying / ISIZE wraps sit outside the accelerator.
-    from archivey.internal.streams.codecs import (
-        _GzipTruncationCheckStream,
+    from archivey.internal.streams.codecs.gzip_codec import _GzipTruncationCheckStream
+    from archivey.internal.streams.codecs.rapidgzip_select import _StdlibSeekContract
+    from archivey.internal.streams.codecs.stdlib_takeover import (
         _StdlibOnAcceleratorError,
-        _StdlibSeekContract,
-        _ZlibAdlerCheckStream,
     )
+    from archivey.internal.streams.codecs.zlib_codec import _ZlibAdlerCheckStream
 
     while isinstance(
         inner,
@@ -183,7 +186,9 @@ def test_on_forces_rapidgzip_below_threshold(codec: Codec) -> None:
 
 @pytest.fixture
 def _low_auto_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(codecs, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", _TEST_THRESHOLD)
+    monkeypatch.setattr(
+        codecs.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", _TEST_THRESHOLD
+    )
 
 
 def test_the_auto_threshold_is_past_the_child_break_even() -> None:
@@ -453,7 +458,7 @@ def test_rapidgzip_zlib_damage_raises_from_the_adler_check(where: str) -> None:
         bad = _flip(good, len(good) - 1)
     else:
         bad = _body_flip_the_stdlib_rejects(good)
-    expected = codecs._StreamChecksumError if where == "trailer" else ReadError
+    expected = _StreamChecksumError if where == "trailer" else ReadError
     with _on_zlib(bad) as stream:
         with pytest.raises(expected):
             stream.read()
@@ -473,7 +478,7 @@ def test_rapidgzip_zlib_adler_check_survives_seeks() -> None:
         stream.seek(400_000)  # forward: read through
         assert stream.tell() == 400_000
         assert stream.read(10) == _ADLER_PAYLOAD[400_000:400_010]
-        with pytest.raises(codecs._StreamChecksumError):
+        with pytest.raises(_StreamChecksumError):
             stream.seek(0, io.SEEK_END)
 
 

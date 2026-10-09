@@ -455,7 +455,9 @@ def test_bzip2_stays_in_process() -> None:
         config=StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON),
     ) as stream:
         inner = stream
-        while not isinstance(inner, codecs_module._AcceleratorStream):
+        while not isinstance(
+            inner, codecs_module.rapidgzip_inprocess._AcceleratorStream
+        ):
             inner = getattr(inner, "_inner")
         assert stream.read() == b"x" * 1000
 
@@ -986,10 +988,14 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
     """A frozen application has no interpreter to run the worker. AUTO decodes with the
     standard library; ON, which asked for rapidgzip, is refused rather than run in-process."""
     monkeypatch.setattr(
-        codecs_module, "rapidgzip_child_unavailable_reason", lambda: "no child here"
+        codecs_module.rapidgzip_select,
+        "rapidgzip_child_unavailable_reason",
+        lambda: "no child here",
     )
     # Low enough that AUTO would otherwise pick rapidgzip for this input.
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     payload = _payload()
     path = _write(tmp_path, "valid.gz", gzip.compress(payload))
     auto = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.AUTO)
@@ -1043,7 +1049,9 @@ def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
     """AUTO decodes with the standard library when no child starts, as it does when
     rapidgzip is absent: valid data reads, and cut or damaged data raises as the stdlib
     backend reports it (translated, from the original start of the source)."""
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     payload = _payload()
     data = _compress(codec, payload)
     damaged = bytearray(data)
@@ -1111,8 +1119,10 @@ def test_an_auto_fallback_warns_once_per_process(
     """A child that cannot start is a fact about the environment: AUTO logs it once,
     naming why, however many streams fall back. A normal open, and ON (which raises),
     log nothing."""
-    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     caplog.set_level(logging.WARNING, logger="archivey.streams")
     payload = _payload()
     path = _write(tmp_path, "valid.gz", gzip.compress(payload))
@@ -1149,8 +1159,10 @@ def test_resolving_a_codec_does_not_warn(
 ) -> None:
     """``resolve_codec`` is a query that opens nothing, so it logs nothing; the open
     that then reads with the stdlib is what warns."""
-    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     caplog.set_level(logging.WARNING, logger="archivey.streams")
     payload = _payload()
     data = zlib.compress(payload)
@@ -1174,12 +1186,14 @@ def test_no_fallback_warning_when_rapidgzip_is_not_installed(
 ) -> None:
     """Without rapidgzip, AUTO reads with the stdlib as it always has, quietly: there is
     no child to fail."""
-    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
     monkeypatch.setattr(
-        codecs_module,
-        "_rapidgzip",
-        codecs_module._LazyOptional("rapidgzip", present=False),
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
+    monkeypatch.setattr(
+        codecs_module.deps,
+        "rapidgzip",
+        codecs_module.deps.LazyOptional("rapidgzip", present=False),
     )
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     caplog.set_level(logging.WARNING, logger="archivey.streams")

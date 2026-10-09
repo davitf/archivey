@@ -19,7 +19,7 @@ that reaches the end of its DEFLATE stream raises :class:`ResumeReachedStreamEnd
 the caller decodes from the start instead, which checks it. Reaching the end of the
 input first is a truncation, which a checksum would not change.
 
-The caller is ``_StdlibOnAcceleratorError`` in ``codecs.py``, which takes over a read
+The caller is ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py``, which takes over a read
 from rapidgzip; the points come from ``RapidgzipChildStream.resume_point``.
 """
 

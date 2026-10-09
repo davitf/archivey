@@ -338,7 +338,7 @@ src/archivey/
     │   ├── tar_reader.py
     │   └── sevenzip_reader.py
     └── streams/
-        ├── codecs.py
+        ├── codecs/
         └── decompress.py
 ```
 

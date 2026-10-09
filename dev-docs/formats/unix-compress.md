@@ -234,5 +234,5 @@ The truncation gap is the format's, not an open question;
   LZW kernel (notice at the end of `unix_compress.py`)
 - Decisions: [`library-analysis.md`](../library-analysis.md) §unix-compress
 - Code: `internal/streams/unix_compress.py` (`LzwState`, `UnixCompressDecoder`,
-  `UnixCompressDecompressorStream`) · `internal/streams/codecs.py` (`UnixCompressCodec`)
+  `UnixCompressDecompressorStream`) · `internal/streams/codecs/unix_compress_codec.py` (`UnixCompressCodec`)
 - Handbook: [`single-file.md`](single-file.md) · [`tar.md`](tar.md)
