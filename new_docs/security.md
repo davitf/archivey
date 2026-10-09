@@ -85,11 +85,13 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
 when neither is installed. Like the optional packages, it's [trusted not to be
-malicious](#what-archivey-relies-on), and archivey checks only that it runs and is a recent enough
-version. `unar` receives the password on its command line, where other users on the same machine can
-see it while it runs. If you set `rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`,
-archivey never runs `unar`. With `RarDecompressor.NONE` it runs no external program at all, so
-stored, unencrypted RAR members still read, and the rest raise `UnsupportedFeatureError`.
+malicious](#what-archivey-relies-on), and archivey checks only that it runs and that archivey works
+with its version, which can be several years old. Older versions can have security bugs that later
+ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
+where other users on the same machine can see it while it runs. If you set
+`rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
+`RarDecompressor.NONE` it runs no external program at all, so stored, unencrypted RAR members still
+read, and the rest raise `UnsupportedFeatureError`.
 
 Every limit has a default that lets large legitimate archives through. A higher limit lets a
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
