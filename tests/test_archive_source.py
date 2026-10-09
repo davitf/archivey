@@ -11,15 +11,18 @@ oracle, which run unchanged over this object.
 
 from __future__ import annotations
 
+import gzip
 import io
 import os
 import subprocess
 import sys
+import tarfile
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from archivey import open_archive
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -161,6 +164,409 @@ def test_sized_read_past_eof_returns_the_remainder() -> None:
     assert wrapped.read(100) == b"abcde"
     assert source.consumed == 5
     assert wrapped.read(5) == b""
+    assert wrapped.readinto(bytearray(4)) == 0
+
+
+class _NothingReady(io.RawIOBase):
+    """A non-blocking raw: ``read`` returns ``None``, which is not EOF.
+
+    ``b""`` is end of file for a blocking and a non-blocking stream alike.
+    ``None`` means nothing is ready yet.
+    """
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        return None
+
+
+class _ShortThenNothing(io.RawIOBase):
+    """One short chunk, then ``None`` on every later read."""
+
+    def __init__(self, first: bytes) -> None:
+        super().__init__()
+        self._first = first
+        self.calls = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        self.calls += 1
+        if self._first:
+            take = len(self._first) if n < 0 else min(n, len(self._first))
+            chunk = self._first[:take]
+            self._first = self._first[take:]
+            return chunk
+        return None
+
+
+def test_non_blocking_none_is_not_end_of_file() -> None:
+    """``None`` from a non-blocking raw must not look like an empty archive."""
+    wrapped = ArchiveSource.for_stream(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(10)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(-1)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.readall()
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.peek(8)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.readinto(bytearray(4))
+
+
+def test_short_chunk_then_none_is_not_a_finished_read() -> None:
+    """Bytes already in hand, then ``None``, are not the end of the request."""
+    inner = _ShortThenNothing(b"ab")
+    wrapped = ArchiveSource.for_stream(inner)  # type: ignore[arg-type]  # RawIOBase double
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(10)
+    # The short chunk was taken, and the follow-up that returned ``None`` was
+    # not reported as EOF.
+    assert inner.calls == 2
+
+
+def _read_non_blocking(stream: io.IOBase) -> bytes:
+    """Open ``stream`` and return the bytes of its single streamed member."""
+    reader = open_archive(stream, streaming=True)  # type: ignore[arg-type]  # IOBase double
+    try:
+        chunks: list[bytes] = []
+        for _member, member_stream in reader.stream_members():
+            if member_stream is not None:
+                chunks.append(member_stream.read())
+        return b"".join(chunks)
+    finally:
+        reader.close()
+
+
+def test_open_archive_refuses_a_stream_with_nothing_ready() -> None:
+    """No bytes ready is not an empty archive."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_NothingReady())
+
+
+def test_open_archive_refuses_a_complete_prefix_followed_by_none() -> None:
+    """A whole gzip, then ``None``, is not a finished archive.
+
+    ``None`` means nothing is ready, not that the source ended. The bytes
+    happen to be a complete gzip of ``b"hello"``; reading them back would
+    hide a caller that still has more to send.
+    """
+    payload = gzip.compress(b"hello")
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_ShortThenNothing(payload))
+
+
+def _assert_stall_is_refused(stream: io.IOBase) -> None:
+    """``None`` from ``stream`` is ``BlockingIOError`` on every source read."""
+    wrapped = ArchiveSource.for_stream(stream)  # type: ignore[arg-type]  # IOBase double
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(10)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(-1)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.readall()
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.peek(8)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.readinto(bytearray(4))
+
+
+class _BufferedNothingReady(io.BufferedIOBase):
+    """An already-buffered non-blocking stream: ``read`` / ``readinto`` return ``None``."""
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        return None
+
+    def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
+        return None
+
+
+class _BufferedThenNothing(io.BufferedIOBase):
+    """One buffered payload, then ``None`` once it has been handed out."""
+
+    def __init__(self, first: bytes) -> None:
+        super().__init__()
+        self._first = first
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        if not self._first:
+            return None
+        if size is None or size < 0:
+            chunk, self._first = self._first, b""
+            return chunk
+        take = min(size, len(self._first))
+        chunk = self._first[:take]
+        self._first = self._first[take:]
+        return chunk
+
+
+class _FactLengthStalls(io.BytesIO):
+    """A seekable buffer with a fact length whose ``read`` still returns ``None``."""
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        return None
+
+
+def test_buffered_non_blocking_none_is_not_end_of_file() -> None:
+    """An already-buffered stream has no gatherer; ``None`` is still not EOF."""
+    _assert_stall_is_refused(_BufferedNothingReady())
+
+
+def test_fact_length_none_is_not_end_of_file() -> None:
+    """The sized-read fast path also refuses ``None`` instead of calling ``len`` on it."""
+    wrapped = ArchiveSource.for_stream(_FactLengthStalls(b"hello"))
+    assert wrapped._length == 5
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(10)
+    assert wrapped.read(0) == b""
+
+
+def test_open_archive_refuses_a_buffered_stream_with_nothing_ready() -> None:
+    """No bytes ready on an already-buffered stream is not an empty archive."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_BufferedNothingReady())
+
+
+def test_open_archive_refuses_a_buffered_gzip_followed_by_none() -> None:
+    """A whole gzip from an already-buffered stream, then ``None``, is not finished."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_BufferedThenNothing(gzip.compress(b"hello")))
+
+
+def _nonblocking_pipe(payload: bytes | None = None) -> tuple[io.BufferedReader, int]:
+    """Read end of a pipe with nothing more ready. The write end stays open.
+
+    Closing it would be a real EOF (``b""``). Leaving it open and writing
+    nothing — or only ``payload`` — is the stall ``None`` means.
+    """
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    if payload:
+        os.write(write_fd, payload)
+    return open(read_fd, "rb"), write_fd
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+def test_nonblocking_pipe_none_is_not_end_of_file() -> None:
+    """``open`` on an ``O_NONBLOCK`` pipe is a ``BufferedReader`` with no gatherer."""
+    buffered, write_fd = _nonblocking_pipe()
+    try:
+        assert isinstance(buffered, io.BufferedReader)
+        assert buffered.read(1) is None
+        wrapped = ArchiveSource.for_stream(buffered)
+        assert wrapped._gatherer is None
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            wrapped.read(10)
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            wrapped.read(-1)
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            wrapped.readall()
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            wrapped.readinto(bytearray(4))
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            wrapped.peek(8)
+    finally:
+        buffered.close()
+        os.close(write_fd)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+def test_open_archive_refuses_a_nonblocking_pipe() -> None:
+    """Nothing ready on a pipe is not an empty archive."""
+    buffered, write_fd = _nonblocking_pipe()
+    try:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            _read_non_blocking(buffered)
+    finally:
+        buffered.close()
+        os.close(write_fd)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+def test_open_archive_refuses_a_nonblocking_pipe_after_a_complete_gzip() -> None:
+    """A complete gzip already in a non-blocking pipe, then a stall, is not finished."""
+    buffered, write_fd = _nonblocking_pipe(gzip.compress(b"hello"))
+    try:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            _read_non_blocking(buffered)
+    finally:
+        buffered.close()
+        os.close(write_fd)
+
+
+def test_blocking_reads_refuses_a_negative_count() -> None:
+    """The follow-up adapter does not forward ``read(-1)`` to the inner.
+
+    ``read_exact`` never asks for a drain. The default stays, because that
+    function's ``read`` protocol has one, and a negative count is refused
+    before the inner is touched.
+    """
+    from archivey.internal.source import _BlockingReads
+
+    adapter = _BlockingReads(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
+    with pytest.raises(ValueError, match="non-negative"):
+        adapter.read(-1)
+
+
+class _BufferedShortThenStall(io.BufferedIOBase):
+    """An already-buffered non-blocking stream with ``data`` arrived and nothing more yet.
+
+    Like ``BufferedReader`` over an ``O_NONBLOCK`` pipe: a read larger than what has
+    arrived returns it short, and only the read after that answers ``None``.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._data = data
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        if not self._data:
+            return None
+        take = len(self._data) if size is None or size < 0 else size
+        chunk, self._data = self._data[:take], self._data[take:]
+        return chunk
+
+    def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
+        chunk = self.read(len(b))
+        if chunk is None:
+            return None
+        b[: len(chunk)] = chunk
+        return len(chunk)
+
+
+_SHORT_THEN_STALL_READS: dict[str, Callable[[ArchiveSource], object]] = {
+    "read(n)": lambda s: s.read(10),
+    "read(-1)": lambda s: s.read(-1),
+    "readall": lambda s: s.readall(),
+    "peek": lambda s: s.peek(512),
+    "readinto": lambda s: s.readinto(bytearray(10)),
+}
+
+
+@pytest.mark.parametrize(
+    "call", _SHORT_THEN_STALL_READS.values(), ids=_SHORT_THEN_STALL_READS
+)
+def test_buffered_short_then_stall_is_not_end_of_file(
+    call: Callable[[ArchiveSource], object],
+) -> None:
+    """Bytes that have arrived, then a stall, are not a short source.
+
+    The buffered shape has no gatherer, and its first read hands back ``b"ABCDE"``
+    without ever returning ``None``. Taken as final, that is a truncated prefix
+    reported as the whole source.
+    """
+    wrapped = ArchiveSource.for_stream(_BufferedShortThenStall(b"ABCDE"))  # type: ignore[arg-type]  # BufferedIOBase double
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        call(wrapped)
+
+
+def _tar_head(n: int) -> bytes:
+    """The first ``n`` bytes of a one-member tar."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        payload = b"x" * 2000
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()[:n]
+
+
+def test_open_archive_refuses_a_buffered_partial_tar_then_stall() -> None:
+    """Part of a tar header arrived, then nothing: not an unrecognisable archive."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_BufferedShortThenStall(_tar_head(100)))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+@pytest.mark.parametrize(
+    "call", _SHORT_THEN_STALL_READS.values(), ids=_SHORT_THEN_STALL_READS
+)
+def test_nonblocking_pipe_partial_then_stall_is_not_end_of_file(
+    call: Callable[[ArchiveSource], object],
+) -> None:
+    """The real shape: some bytes in an ``O_NONBLOCK`` pipe, write end still open."""
+    buffered, write_fd = _nonblocking_pipe(b"ABCDE")
+    try:
+        wrapped = ArchiveSource.for_stream(buffered)
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            call(wrapped)
+    finally:
+        buffered.close()
+        os.close(write_fd)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+def test_open_archive_refuses_a_nonblocking_pipe_with_a_partial_tar() -> None:
+    """100 bytes of a tar in a non-blocking pipe, then a stall."""
+    buffered, write_fd = _nonblocking_pipe(_tar_head(100))
+    try:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            _read_non_blocking(buffered)
+    finally:
+        buffered.close()
+        os.close(write_fd)
+
+
+class _NoneForZero(io.BytesIO):
+    """A duck-typed buffer that answers ``None`` to an empty request; others are real."""
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        if size == 0:
+            return None
+        return super().read(size)
+
+    def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
+        if not len(b):
+            return None
+        return super().readinto(b)
+
+
+def test_fact_length_read_answers_zero_without_io() -> None:
+    """Nothing asked, or nothing left, is ``b""`` without asking the inner."""
+    wrapped = ArchiveSource.for_stream(_NoneForZero(b"hi"))
+    assert wrapped._length == 2
+    assert wrapped.read(0) == b""
+    assert wrapped.read(8) == b"hi"
+    assert wrapped.read(8) == b""
+    assert wrapped.read(0) == b""
+    assert wrapped.read(-1) == b""
+    assert wrapped.readall() == b""
     assert wrapped.readinto(bytearray(4)) == 0
 
 

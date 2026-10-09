@@ -7,11 +7,17 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
 
 - **Full-count.** ``read(n)`` returns ``n`` bytes unless the source is exhausted. A raw
   ``read(n)`` may legally return short, and header parsers — archivey's and the stdlib's —
-  issue one ``read(n)`` and treat a short as EOF. How the guarantee is supplied is chosen
-  once, at construction: an already-buffered source (``BytesIO``, an ``open()`` handle, a
-  path's own handle) passes through; a seekable raw source gets a fixed-size read buffer
-  this object builds and owns; a non-seekable raw source is gathered by re-asking for the
-  missing bytes, with no read-ahead.
+  issue one ``read(n)`` and treat a short as EOF. ``None`` from the caller's ``read`` is
+  not exhaustion: a non-blocking stream returns it when nothing is ready, and this object
+  raises ``BlockingIOError`` rather than handing that on as a short read or as EOF. That
+  holds for a raw source and for one that is already buffered. How the guarantee is
+  supplied is chosen once, at construction: an already-buffered source
+  (``BytesIO``, an ``open()`` handle, a path's own handle) passes through; a seekable raw
+  source gets a fixed-size read buffer this object builds and owns; a non-seekable raw
+  source is gathered by re-asking for the missing bytes, with no read-ahead. Off the
+  fact-length fast path, a read re-asks after a short return whatever the shape,
+  because a non-blocking buffered stream hands back what has arrived short and only
+  answers ``None`` on the next read.
 - **Ownership.** It closes what archivey opened or built — a path's handle, a joined
   volume set, its own read buffer — and never the caller's object. The buffer is
   detached rather than closed, so the caller's raw stream survives it.
@@ -67,6 +73,7 @@ from archivey.internal.streams.streamtools import (
     source_name,
     source_size_fact,
 )
+from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -91,18 +98,17 @@ class JoinedVolumes(Protocol):
     def close(self) -> None: ...
 
 
-class _GatheringReader:
-    """Full-count ``read(n)`` over a non-seekable raw source, with no buffer of its own.
+class _BlockingReads:
+    """``read`` that raises when a non-blocking stream returns ``None``.
 
-    ``BufferedReader`` would also be full-count, but it reads *ahead*, and from a pipe that
-    over-read cannot be given back. This re-asks for the bytes still missing instead
-    (:func:`read_exact`), so ``read(n)`` takes exactly ``n`` bytes from the source.
+    :func:`read_exact` treats a falsy return, ``None`` included, as the end of the
+    stream. The gathering reader uses it for the bytes still missing after a short
+    read, and a ``None`` there would end the archive. Routing the follow-up through
+    :func:`read_blocking` is the same refusal the first read makes.
 
-    The inner is the caller's object, un-normalised. The one assumption made about it is
-    that ``read(n)`` for ``n > 0`` returns at most ``n`` bytes, and empty only at EOF; more
-    than ``n`` raises. ``read(-1)`` is never forwarded: an inner may have no ``readall``
-    (``io.BufferedRWPair``, ``GzipFile`` over a pipe), so a drain is served as sized
-    reads instead.
+    ``read_exact`` only ever asks for a positive remainder, so a negative count is a
+    caller bug and is refused rather than forwarded. The default stays so this still
+    matches the ``read`` protocol that function expects.
     """
 
     __slots__ = ("_inner",)
@@ -112,14 +118,63 @@ class _GatheringReader:
 
     def read(self, n: int = -1, /) -> bytes:
         if n < 0:
+            raise ValueError("n must be non-negative")
+        return read_blocking(self._inner, n)
+
+
+class _GatheringReader:
+    """Full-count ``read(n)`` over a source that may return short, with no buffer.
+
+    ``BufferedReader`` would also be full-count, but it reads *ahead*, and from a pipe that
+    over-read cannot be given back. This re-asks for the bytes still missing instead
+    (:func:`read_exact`), so ``read(n)`` takes exactly ``n`` bytes from the source.
+    Every read of a non-seekable raw source goes through one. The other shapes use one
+    for every read off :meth:`ArchiveSource.read`'s fact-length fast path. A blocking
+    buffered inner is already full-count, so a sized read costs one extra read at EOF
+    there, and a drain costs one Python-level read per ``drain_chunk`` plus the join.
+    A non-blocking buffered inner returns short with what has arrived before it ever
+    returns ``None``, which is why the re-ask is needed there at all.
+
+    The inner is the caller's object or a path's handle, un-normalised. The one
+    assumption made about it is that ``read(n)`` for ``n > 0`` returns at most ``n``
+    bytes, and ``b""`` only at EOF; more than ``n`` raises. ``read(0)`` is answered
+    without asking it, since ``read(0)`` is not free on every source. ``None`` —
+    nothing ready on a non-blocking stream, which is not EOF — raises
+    ``BlockingIOError``, including when it follows a short chunk. The first refusal
+    has taken nothing, so the caller can read again. A refusal after a short chunk
+    has already taken those bytes out of the source; they are not returned and
+    cannot be read again. A ``read(-1)`` drain that gathered some chunks and then
+    saw ``None`` drops those chunks the same way. Handing them back would report a
+    finished read.
+
+    ``read(-1)`` is never forwarded: an inner may have no ``readall``
+    (``io.BufferedRWPair``, ``GzipFile`` over a pipe), and a non-blocking buffered
+    one hands back the arrived prefix rather than ``None``. A drain is served as
+    full-count reads of ``drain_chunk`` bytes instead. A raw inner drains in
+    ``io.DEFAULT_BUFFER_SIZE`` steps, because a raw ``read(n)`` allocates ``n``
+    bytes on every call whatever arrives; a buffered one takes larger steps, since
+    it fills each request itself.
+    """
+
+    __slots__ = ("_drain_chunk", "_inner")
+
+    def __init__(
+        self, inner: BinaryIO, *, drain_chunk: int = io.DEFAULT_BUFFER_SIZE
+    ) -> None:
+        self._inner = inner
+        self._drain_chunk = drain_chunk
+
+    def read(self, n: int = -1, /) -> bytes:
+        if n <= 0:
+            if n == 0:
+                return b""
             # Drain in sized reads rather than forward ``read(-1)``; see the docstring.
             chunks = []
-            while chunk := self.read(io.DEFAULT_BUFFER_SIZE):
+            step = self._drain_chunk
+            while chunk := self.read(step):
                 chunks.append(chunk)
             return b"".join(chunks)
-        data = self._inner.read(n)
-        if data is None:
-            return b""
+        data = read_blocking(self._inner, n)
         got = len(data)
         if got == n:
             return data  # common case: no copy
@@ -129,7 +184,7 @@ class _GatheringReader:
             )
         if got == 0:
             return b""
-        return data + read_exact(self._inner, n - got)
+        return data + read_exact(_BlockingReads(self._inner), n - got)
 
 
 class ArchiveSource(ReadOnlyIOStream):
@@ -179,6 +234,7 @@ class ArchiveSource(ReadOnlyIOStream):
     _owned: BinaryIO | JoinedVolumes | None = None
     _buffer: io.BufferedIOBase | None = None
     _replay: bytearray | None = None
+    _full_count: _GatheringReader | None = None
 
     def __init__(
         self,
@@ -230,6 +286,10 @@ class ArchiveSource(ReadOnlyIOStream):
         # Set for a non-seekable raw source, whose reads all go through it; ``_reader`` is
         # then the caller's object, used for nothing but identity.
         self._gatherer = gatherer
+        # The full-count reader every read off the fact-length fast path shares: the
+        # gatherer itself for a non-seekable raw source, else built over ``_stream()`` on
+        # first use, since a path source's handle opens lazily (:meth:`_full_count_reader`).
+        self._full_count = gatherer
         # The two implications the class docstring's table states and ``read`` relies on.
         assert length is None or seekable, "a fact length on a non-seekable source"
         assert gatherer is None or not seekable, "a gatherer on a seekable source"
@@ -301,8 +361,12 @@ class ArchiveSource(ReadOnlyIOStream):
         # :meth:`rebase_to_current_position`), and the clamp counts from it.
         position = stream.tell() if seekable else 0
         if isinstance(stream, io.BufferedIOBase):
-            # Already full-count: ``BufferedIOBase.read(n)`` keeps asking its raw until it
-            # has ``n`` or reaches EOF. No second buffer, and ``fileno()`` still forwards.
+            # Already full-count when the stream blocks: ``BufferedIOBase.read(n)``
+            # keeps asking its raw until it has ``n`` or reaches EOF. No second
+            # buffer, and ``fileno()`` still forwards. A non-blocking one returns
+            # short with what has arrived, then ``None``; the reads off the sized
+            # fast path re-ask after a short return (:meth:`_full_count_reader`), so
+            # that ``None`` raises instead of the short read passing for EOF.
             return cls(
                 path=None,
                 reader=stream,
@@ -462,7 +526,17 @@ class ArchiveSource(ReadOnlyIOStream):
         reader = self._reader
         length = self._length
         if length is not None and reader is not None:
-            data = reader.read(min(n, max(length - self._pos, 0)))
+            # A fact length skips replay and gathering. It does not promise the
+            # inner's ``read`` returns bytes: ``None`` is still a stall. Nothing left,
+            # or nothing asked, is answered without I/O. A short return is taken as
+            # final with no re-ask: a fact length comes only from a regular file, a
+            # memory buffer or a joined set (``source_size_fact``, ``for_volumes``),
+            # each full-count by construction, so a short here is the inner breaking
+            # its own contract, not a stall.
+            avail = min(n, length - self._pos)
+            if avail <= 0:
+                return b""
+            data = read_blocking(reader, avail)
             self._pos += len(data)
             return data
         if n == 0:
@@ -477,16 +551,28 @@ class ArchiveSource(ReadOnlyIOStream):
             return head + self._read_source(n - len(head))
         return self._read_source(n)
 
-    def _full_count_reader(self) -> BinaryIO | _GatheringReader:
-        if self._gatherer is not None:
-            return self._gatherer
-        return self._stream()
+    def _full_count_reader(self) -> _GatheringReader:
+        """The one full-count, ``None``-refusing reader off the fact-length fast path.
+
+        ``read_within_reach`` and :meth:`peek` take one short ``read`` as final, so the
+        reader under them re-asks; see :class:`_GatheringReader` for what that costs on
+        each shape. Built on first use and dropped when ``_stream()`` changes
+        (:meth:`rebase_to_current_position`, :meth:`close`).
+        """
+        reader = self._full_count
+        if reader is None:
+            reader = self._full_count = _GatheringReader(
+                self._stream(), drain_chunk=self._UNKNOWN_LENGTH_READ_STEP
+            )
+        return reader
 
     def _read_source(self, n: int) -> bytes:
-        reader = self._full_count_reader()
         remaining = None if self._length is None else self._length - self._pos
         data = read_within_reach(
-            reader, n, remaining=remaining, step=self._UNKNOWN_LENGTH_READ_STEP
+            self._full_count_reader(),
+            n,
+            remaining=remaining,
+            step=self._UNKNOWN_LENGTH_READ_STEP,
         )
         self._pos += len(data)
         return data
@@ -500,17 +586,10 @@ class ArchiveSource(ReadOnlyIOStream):
             self._pos += len(head)
         if self._length is not None:
             rest = self._read_source(max(self._length - self._pos, 0))
-        elif self._gatherer is not None:
-            # Sized reads only: the inner may have no ``readall``.
-            chunks = []
-            while True:
-                chunk = self._read_source(io.DEFAULT_BUFFER_SIZE)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            rest = b"".join(chunks)
         else:
-            rest = self._stream().read(-1) or b""
+            # A drain in sized reads (the inner may have no ``readall``), each one
+            # full-count, so a stall after a short chunk raises.
+            rest = self._full_count_reader().read(-1)
             self._pos += len(rest)
         return head + rest if head else rest
 
@@ -524,19 +603,37 @@ class ArchiveSource(ReadOnlyIOStream):
             remaining = max(self._length - self._pos, 0)
             if len(view) > remaining:
                 view = view[:remaining]
-        readinto = getattr(self._reader, "readinto", None)
-        if readinto is None:
+        if not len(view):
+            # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
+            return 0
+        # ``None`` from ``readinto`` is a stall. A missing or refused
+        # ``readinto`` falls back to ``read``, which refuses ``None`` too.
+        reader = self._reader
+        got = try_readinto(reader, view)
+        if got is None:
             return super().readinto(b)
-        got = readinto(view) or 0
-        self._pos += got
-        return got
+        # Full-count, as ``read`` is: a short fill is asked again, so a non-blocking
+        # buffered stream's next ``None`` raises instead of the short fill passing
+        # for EOF. A blocking one is short only at EOF, where this costs one call.
+        # ``try_readinto`` answers ``None`` only for an object with no usable
+        # ``readinto``, a property of its type: once the first call has filled
+        # bytes, a later ``None`` would be the object contradicting itself.
+        total = got
+        while 0 < got and total < len(view):
+            got = try_readinto(reader, view[total:])
+            assert got is not None, f"readinto refused after serving: {reader!r}"
+            total += got
+        self._pos += total
+        return total
 
     def peek(self, n: int) -> bytes:
         """The first ``n`` unconsumed bytes, without consuming them; non-seekable only.
 
         Fills the replay prefix detection reads from. Fewer than ``n`` bytes come back
-        only when the source ends first. A seekable source is rewound instead of replayed,
-        so this refuses there rather than growing a buffer nobody drains.
+        only when the source ends first. ``None`` from the source raises
+        ``BlockingIOError`` rather than coming back as an empty prefix. A seekable
+        source is rewound instead of replayed, so this refuses there rather than
+        growing a buffer nobody drains.
         """
         if n < 0:
             raise ValueError("peek size must be non-negative")
@@ -545,8 +642,10 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
         missing = n - len(replay)
         if missing > 0:
-            # One full-count read: a short return is EOF. Not bounded by the step —
-            # ``n`` is detection's own window, never a number read out of the archive.
+            # One full-count read: a short return is EOF. ``None`` is a stall, so
+            # it raises instead of leaving this prefix short or empty. Not bounded
+            # by the step — ``n`` is detection's own window, never a number read
+            # out of the archive.
             chunk = self._full_count_reader().read(missing)
             if chunk:
                 replay.extend(chunk)
@@ -593,6 +692,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # The slice borrows its inner, so closing this object still closes exactly what
         # it closed before: its own buffer and nothing of the caller's. It is told the
         # fact length rather than probing its inner, which could answer with a hint.
+        self._full_count = None
         self._reader = SlicingStream(
             self._stream(),
             start=start,
@@ -632,6 +732,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 # this source.
                 self._reader = None
                 self._gatherer = None
+                self._full_count = None
                 super().close()
 
     def __repr__(self) -> str:
