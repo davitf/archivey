@@ -487,7 +487,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
         z.writestr("café.txt", b"x")  # forces the UTF-8 flag
     with open_archive(path) as ar:
         member = ar.get("café.txt")
-        assert member.raw_name == "café.txt".encode()
+        assert member.raw_name == b"caf\xc3\xa9.txt"
 
 
 def test_extended_timestamp_precedence(tmp_path: Path) -> None:

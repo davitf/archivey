@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -450,7 +449,7 @@ def test_wall_drift_checks_regressions_and_noise() -> None:
 
 def test_wall_baseline_provenance_and_republish(tmp_path: Path) -> None:
     """measured_at age drives the 30d force-run; re-publish preserves it."""
-    from datetime import datetime, timedelta
+    from datetime import UTC, datetime, timedelta
 
     from benchmarks.wall_baseline import (
         MEASURE_MAX_AGE_SECONDS,

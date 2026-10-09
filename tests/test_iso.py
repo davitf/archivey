@@ -10,7 +10,6 @@ import io
 import os
 import struct
 from collections.abc import Callable, Iterator
-from datetime import UTC
 from pathlib import Path
 from typing import IO, Any
 
@@ -963,7 +962,7 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     """Through the reader: a TF modification time that differs from the directory
     record's date is the one ``modified`` reports. The record date used to win,
     because it is always present."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     import pycdlib
     from pycdlib.dates import DirectoryRecordDate

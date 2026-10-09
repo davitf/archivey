@@ -12,7 +12,6 @@ import sys
 import types
 import zlib
 from collections.abc import Iterator
-from datetime import UTC
 from pathlib import Path
 from typing import BinaryIO
 
@@ -2826,7 +2825,7 @@ def test_created_slot_follows_the_writer(
     attributes: int | None, unix_written: bool
 ) -> None:
     """A Unix writer's "Created" is st_ctime: ``ctime``, not ``created``."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
         assert isinstance(reader, SevenZipReader)

@@ -199,9 +199,9 @@ target-version = "py311"
 extend-select = ["I", "F", "C4", "ISC", "RET", "BLE", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-# One-off field-survey scripts that someone runs and sends back; rewriting their
-# printf-style report lines buys nothing.
-"scripts/exploration/*" = ["UP031"]
+# This survey promises to run on a bare Python 3.8+ interpreter, so the UP rules, which
+# assume the package's py311 floor, don't apply to it.
+"scripts/exploration/brotli_probe_field_survey.py" = ["UP"]
 
 [tool.pyrefly]
 search-path = ["src"]

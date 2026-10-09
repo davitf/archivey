@@ -51,7 +51,7 @@ import struct
 import sys
 import time
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 SCHEMA = "archivey-brotli-probe-survey/1"
 
@@ -833,7 +833,7 @@ def main(argv=None):
 
     report = {
         "schema": SCHEMA,
-        "generated_utc": datetime.now(UTC).isoformat(),
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
         "elapsed_s": round(time.time() - started, 1),
         "environment": {
             "system": platform.system(),

@@ -369,7 +369,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         m = ar.get("café.txt")
         assert m.name == "café.txt"  # decoded name round-trips
-        assert m.raw_name == "café.txt".encode()  # verbatim stored bytes
+        assert m.raw_name == b"caf\xc3\xa9.txt"  # verbatim stored bytes
 
 
 def test_pax_atime_ctime(tmp_path: Path) -> None:
@@ -1940,7 +1940,7 @@ def test_caller_encoding_overrides_the_utf8_default() -> None:
     with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = ar.members()
         assert member.name == "cafÃ©.txt"
-        assert member.raw_name == "café.txt".encode()
+        assert member.raw_name == b"caf\xc3\xa9.txt"
 
 
 def _pax_tar_with_non_utf8_path(raw: bytes) -> bytes:
