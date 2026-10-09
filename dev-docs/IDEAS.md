@@ -803,7 +803,7 @@
   per frame from its header; decompressed size from the frame's optional `Frame_Content_Size`
   field or, when present, the *Seekable Zstd* skippable-frame seek table) — getting the same
   frame-granularity seeking **for free**, with zero new heavy dependency and no macOS risk. This
-  is the zstd analogue of why we wrote `xz.py`/`lzip.py` instead of depending on `python-xz`.
+  is the zstd analogue of why we wrote `xz_decoder.py`/`lzip_decoder.py` instead of depending on `python-xz`.
 
   Things to confirm before committing to the native route:
   - **Does `indexed_zstd` do anything a frame-index reader wouldn't?** From the docs, no — it is

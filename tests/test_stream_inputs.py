@@ -41,8 +41,9 @@ import pytest
 from archivey.internal.config import StreamConfig
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.decompress import ZlibDecompressorStream
-from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
+from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
+from archivey.internal.streams.codecs.xz_decoder import XzDecompressorStream
 from archivey.internal.streams.streamtools import (
     BinaryIOWrapper,
     ensure_binaryio,
@@ -51,7 +52,6 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     read_exact,
 )
-from archivey.internal.streams.xz import XzDecompressorStream
 from tests.streams_util import (
     NonSeekableBytesIO,
     ShortReadBytesIO,

@@ -14,15 +14,15 @@ from typing import BinaryIO, TypeVar
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal.streams.codecs.base import CodecSource
+from archivey.internal.streams.codecs.rapidgzip_child import (
+    RapidgzipChildStream,
+    crashed_on_data,
+    from_callers_source,
+)
 from archivey.internal.streams.codecs.rapidgzip_select import _translate_rapidgzip
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
-)
-from archivey.internal.streams.rapidgzip_child import (
-    RapidgzipChildStream,
-    crashed_on_data,
-    from_callers_source,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd, ask_resume_offset
 from archivey.internal.streams.streamtools import (

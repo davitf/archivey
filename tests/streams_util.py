@@ -344,7 +344,10 @@ def brotli_compressed_metablock_header(*, first: bool = False) -> bytes:
     Used by framing / completeness / SFX tests that need a chain walk to stop at a
     successor link without depending on a real Brotli encoder for that header alone.
     """
-    from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
+    from archivey.internal.streams.codecs.brotli_framing import (
+        BrotliBlock,
+        parse_metablock,
+    )
 
     for seed in range(4096):
         hdr = bytes([(seed + j * 13) % 256 for j in range(24)])

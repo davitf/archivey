@@ -339,7 +339,7 @@ src/archivey/
     │   └── sevenzip_reader.py
     └── streams/
         ├── codecs/
-        └── decompress.py
+        └── decompressor_stream.py
 ```
 
 **By technical layer only (avoid as top-level split):**

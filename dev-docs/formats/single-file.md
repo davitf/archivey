@@ -243,7 +243,7 @@ have small fixed windows. The `.Z` decoder's table stays under about 19 MiB (abo
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
 trailer, zlib's Adler-32, the end of an xz stream, lzip member or LZMA Alone payload,
 and the end the bzip2, zstd and LZ4 libraries report for one stream. For bzip2, LZMA
-Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/decompress.py` runs one
+Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/codecs/framed_decoder.py` runs one
 library decompressor per stream and starts another only when the next bytes are that
 codec's magic (a zstd skippable frame counts), so a concatenated file still reads as one
 payload. LZMA Alone has no magic; the next bytes start a stream when the header's

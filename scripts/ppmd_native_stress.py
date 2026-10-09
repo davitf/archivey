@@ -249,7 +249,7 @@ def _write_driver(path: Path, scenario: str, *, rounds: int, seed: int) -> None:
             """\
             import io
             import pyppmd
-            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
             from archivey.internal.streams.streamtools import read_exact
             ORDER, MEM = 6, 1 << 20
             data = b"alpha\\n" * 100

@@ -434,11 +434,11 @@ def accelerator_available(codec: Codec) -> Callable[[], bool]:
 
     def _check() -> bool:
         from archivey.internal.streams.codecs.bzip2_codec import _bzip2_uses_accelerator
+        from archivey.internal.streams.codecs.rapidgzip_child import (
+            rapidgzip_child_unavailable_reason,
+        )
         from archivey.internal.streams.codecs.rapidgzip_select import (
             _deflate_family_uses_accelerator,
-        )
-        from archivey.internal.streams.rapidgzip_child import (
-            rapidgzip_child_unavailable_reason,
         )
 
         if codec is Codec.BZIP2:

@@ -24,11 +24,11 @@ from archivey.exceptions import CorruptionError, ReadError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import Codec, open_codec_stream
+from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     _StreamChecksumError,
 )
-from archivey.internal.streams.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.streamtools import SlicingStream
 from archivey.internal.streams.verify import VerifyingStream
 from tests.corruption_util import raises_corruption_not_truncation

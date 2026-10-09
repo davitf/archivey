@@ -1,4 +1,4 @@
-"""Child-process side of :class:`~archivey.internal.streams.ppmd_child.PpmdChildDecoder`.
+"""Child-process side of :class:`~archivey.internal.streams.codecs.ppmd_child.PpmdChildDecoder`.
 
 pyppmd can take the whole process down on corrupt input (it decodes past the end of
 a stream that has already ended; see ``dev-docs/known-issues.md``). Large PPMd members

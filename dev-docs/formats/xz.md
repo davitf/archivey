@@ -15,7 +15,7 @@ this page states the behaviour and links the row.
 | --- | --- |
 | Read | xz, lzip and LZMA Alone as one-member archives; `.tar.xz`, `.tar.lz`, `.tar.lzma` |
 | Write | **Not shipped** |
-| Backends | The standard library's `lzma`, always available. `streams/xz.py` and `streams/lzip.py` are archivey's own framing parsers over it |
+| Backends | The standard library's `lzma`, always available. `streams/codecs/xz_decoder.py` and `streams/codecs/lzip_decoder.py` are archivey's own framing parsers over it |
 | Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
 | Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source |
 | Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE` |
@@ -109,8 +109,8 @@ neither is known before the read ends.
 
 **Through bytes after the end.** The walk has to start at the last stream's end, not at
 the file's. Zero bytes are skipped first. For xz, `_data_end()` in
-`internal/streams/xz.py` then looks back for a footer that checks out: `YZ` at a 4-aligned
-end and a valid CRC-32 over its fields. For lzip, `_data_end()` in `lzip.py` looks for a
+`internal/streams/codecs/xz_decoder.py` then looks back for a footer that checks out: `YZ` at a 4-aligned
+end and a valid CRC-32 over its fields. For lzip, `_data_end()` in `lzip_decoder.py` looks for a
 trailer whose `member_size` leads back to an `LZIP` header; a candidate must end in the
 zero high bytes that any real `member_size` has, which rules out most offsets without a
 read. A `member_size` is not zero, so a trailer ends at most 7 bytes past the start of a
@@ -201,7 +201,7 @@ valid block naming a filter this liblzma lacks is therefore unsupported, not dam
 **A check liblzma cannot compute is a warning, not an error.** liblzma decodes a stream
 whose header names such a check ID without verifying it, and reports that only through
 `LZMA_TELL_UNSUPPORTED_CHECK`, which CPython never sets; its "Unsupported integrity check"
-error is therefore never raised. `streams/xz.py` reads the check ID from each stream header
+error is therefore never raised. `streams/codecs/xz_decoder.py` reads the check ID from each stream header
 (or, for a block resume after a seek, from the footer the seek point was read from) and
 emits `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`, `algorithm="xz check
 N"`) when `lzma.is_check_supported` says no, then keeps reading, as `xz -d` does (it warns,
@@ -339,8 +339,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   [`known-issues.md`](../known-issues.md)
 - Decisions: [`library-analysis.md`](../library-analysis.md) §xz, §lzip ·
   [ADR 0014](../decisions/0014-integrity-verdicts-from-reads-not-close.md)
-- Code: `internal/streams/xz.py` (`XzDecoder`, `_XzState`, `_XzBlockResume`,
-  `_read_xz_index_backwards`, `lzma_error_to_archivey`) · `internal/streams/lzip.py`
+- Code: `internal/streams/codecs/xz_decoder.py` (`XzDecoder`, `_XzState`, `_XzBlockResume`,
+  `_read_xz_index_backwards`, `lzma_error_to_archivey`) · `internal/streams/codecs/lzip_decoder.py`
   (`LzipDecoder`, `peek_index_summary`) · `internal/streams/codecs/lzma_codec.py` (`XzCodec`,
   `LzipCodec`, `LzmaAloneCodec`, `_alone_header_plausible`, `_RefusedAloneStream`)
 - Handbook: [`single-file.md`](single-file.md) · [`7z.md`](7z.md) (raw LZMA and LZMA2

@@ -14,10 +14,9 @@ Three names that are easy to mix up:
 - :class:`CodecBackend` — *resolved* open+translator for a given ``StreamConfig``
   (accelerator choice may change the translator). Returned by :func:`resolve_codec`.
 
-AES decrypt lives in ``crypto.py``; digest/length verify in ``verify.py``. Both
-compose *around* these codec streams in a pipeline. Seekable decode engines for
-raw deflate/Brotli/… live in ``decompressor_stream`` + ``decompress``; XZ/lzip/
-``.Z`` have their own modules and are opened from the matching ``StreamCodec``.
+AES decrypt lives in ``streams/crypto.py``; digest/length verify in
+``streams/verify.py``. Both compose *around* these codec streams in a pipeline. The
+seekable engine every decoder plugs into is ``streams/decompressor_stream.py``.
 
 The package, one module per codec plus the shared pieces:
 
@@ -30,7 +29,13 @@ The package, one module per codec plus the shared pieces:
   failed decode to the standard library. Checks that parse one format (the gzip ISIZE
   backstop, the zlib Adler-32 check, the bzip2 empty-stream check) live in that codec's
   module.
-- ``<name>_codec`` — one module per codec family.
+- ``<name>_codec`` — one module per codec family: its :class:`StreamCodec`.
+- The engines beside them: ``<name>_decoder`` (``deflate``, ``brotli``, ``ppmd``,
+  ``deflate64``, ``xz``, ``lzip``, ``unix_compress``, ``lzma_filter``), ``framed_decoder``
+  for the one-shot decompressors, framing and resume helpers (``zstd_framing``,
+  ``brotli_framing``, ``lz4_legacy``, ``bzip2_resume``, ``deflate_resume``), the 7z
+  filters (``arm64_filter``, ``bcj2_filter``), and the child processes and worker
+  scripts (``ppmd_child`` / ``ppmd_worker``, ``rapidgzip_child`` / ``rapidgzip_worker``).
 
 This module re-exports the names other modules use.
 """

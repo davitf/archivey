@@ -62,7 +62,7 @@ from archivey.internal.sfx import (
     scan_for_magic,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.brotli_framing import (
+from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     parse_metablock,
 )

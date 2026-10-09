@@ -32,15 +32,15 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.config import StreamConfig
-from archivey.internal.streams import decompress as decompress_module
-from archivey.internal.streams import ppmd_child as ppmd_child_module
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
     PpmdCodec,
     open_codec_stream,
 )
-from archivey.internal.streams.ppmd_child import (
+from archivey.internal.streams.codecs import ppmd_child as ppmd_child_module
+from archivey.internal.streams.codecs import ppmd_decoder as decompress_module
+from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildDecoder,
     PpmdChildError,
     PpmdChildReportedError,
@@ -372,7 +372,7 @@ def test_the_child_writes_no_core_dump() -> None:
     probe = textwrap.dedent(
         """
         import ctypes
-        from archivey.internal.streams.ppmd_worker import disable_core_dumps
+        from archivey.internal.streams.codecs.ppmd_worker import disable_core_dumps
         disable_core_dumps()
         print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))  # PR_GET_DUMPABLE
         """

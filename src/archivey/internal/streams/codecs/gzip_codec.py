@@ -25,12 +25,12 @@ from archivey.internal.streams.codecs.base import (
     _peeking,
     _source_tail,
 )
+from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
-from archivey.internal.streams.decompress import GzipDecompressorStream
 from archivey.internal.streams.decompressor_stream import gzip_error
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream

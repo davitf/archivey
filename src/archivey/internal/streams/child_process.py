@@ -36,7 +36,7 @@ def python_argv(script: Path, fail: StartFailure) -> list[str]:
     if not sys.executable:
         raise fail("sys.executable is not set")
     # -P: the script's own directory is not put on sys.path, so its sibling modules
-    # (the ``codecs`` package) cannot shadow the standard library.
+    # (the other codec modules) cannot shadow the standard library.
     return [sys.executable, "-P", str(script)]
 
 

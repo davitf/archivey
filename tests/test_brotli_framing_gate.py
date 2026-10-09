@@ -20,12 +20,12 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
 )
-from archivey.internal.streams.brotli_framing import (
+from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
+from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     first_block_overruns_source,
     parse_metablock,
 )
-from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
 from tests.conftest import requires
 from tests.streams_util import brotli_compressed_metablock_header, truncated_brotli
 

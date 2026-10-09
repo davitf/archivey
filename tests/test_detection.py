@@ -678,7 +678,7 @@ def test_zstd_skippable_frame_larger_than_the_prefix_is_not_claimed() -> None:
 def test_zstd_skippable_walk_arithmetic() -> None:
     # The walk itself: exact arithmetic over the peeked bytes, no decoding. `None` is the
     # declined answer (a declared size past the prefix), distinct from offset 0.
-    from archivey.internal.streams.zstd_framing import skippable_prefix_end
+    from archivey.internal.streams.codecs.zstd_framing import skippable_prefix_end
 
     assert skippable_prefix_end(b"\x28\xb5\x2f\xfd" + b"\x00" * 32) == 0  # regular only
     assert skippable_prefix_end(b"\x00" * 64) == 0  # not a frame magic at all

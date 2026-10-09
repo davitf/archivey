@@ -23,12 +23,12 @@ from archivey.internal.streams.codecs.base import (
     _source_tail,
     _stream_prefix,
 )
+from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
-from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     gzip_corruption,

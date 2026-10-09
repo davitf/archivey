@@ -289,7 +289,7 @@ rewrite (upstream PR #126): 1.1.1 and 1.2.0 do not crash on it but return wrong 
 chunked decodes, which is why `[recommended]` requires `pyppmd>=1.3.1`. The random-input
 crash affects 1.2.0 and 1.3.x.
 
-**What archivey does.** `PpmdDecoder` (`streams/decompress.py`) bounds every request by
+**What archivey does.** `PpmdDecoder` (`streams/codecs/ppmd_decoder.py`) bounds every request by
 the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 at
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one

@@ -47,8 +47,8 @@ Two recurring notes:
 |-------|----------------|--------------|----------------|------------|------------|
 | gzip | gzip-window `DecompressorStream` (+ `rapidgzip` for random access) | core (`[seekable]` for accel) | via `rapidgzip` | yes (CRC) | yes¹ |
 | bzip2 | stdlib `bz2` (+ `rapidgzip.IndexedBzip2File`) | core (`[seekable]` for accel) | via `rapidgzip` | yes (block CRC) | yes |
-| xz | native `xz.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
-| lzip | native `lzip.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
+| xz | native `xz_decoder.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
+| lzip | native `lzip_decoder.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
 | LZMA1/LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core | n/a (container-owned) | yes | yes |
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters throughout | core | n/a (filter stage) | yes | yes |
 | BCJ ARM64 (7z) | archivey's own decoder (pure Python; stdlib `lzma` refuses filter id 10) | core | n/a (filter stage) | yes | yes |
@@ -56,7 +56,7 @@ Two recurring notes:
 | zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[recommended]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[recommended]` | no (rewind) | yes | yes |
 | brotli | `brotli` | `[recommended]` | no (rewind) | yes | partial² |
-| unix-compress (`.Z`) | native `unix_compress.py` (LZW) | core | **yes** (CLEAR seek points) | yes | best-effort³ |
+| unix-compress (`.Z`) | native `unix_compress_decoder.py` (LZW) | core | **yes** (CLEAR seek points) | yes | best-effort³ |
 | Deflate64 | `inflate64` | `[recommended]` | no | yes | yes |
 | PPMd (var.H) | `pyppmd` | `[recommended]` | no | yes | yes |
 
@@ -177,7 +177,7 @@ rewinding seek"). The candidates were:
 
 ## xz — native parser over stdlib `lzma`
 
-**Decision:** XZ is read by Archivey's **own** `internal/streams/xz.py` over stdlib `lzma`, not
+**Decision:** XZ is read by Archivey's **own** `internal/streams/codecs/xz_decoder.py` over stdlib `lzma`, not
 by any third-party library. (Originally implemented in
 [`davitf/archivey-dev#214`](https://github.com/davitf/archivey-dev/pull/214); the full rationale
 is recorded below so this doc stands on its own.)
@@ -274,9 +274,9 @@ library in the process. This is the **single-accelerator macOS constraint** docu
 [`rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md) §7 and matches
 the rapidgzip author's own guidance.
 
-### lzip — native `lzip.py` over stdlib `lzma`
+### lzip — native `lzip_decoder.py` over stdlib `lzma`
 
-Read by Archivey's own `LzipDecompressorStream` (the framework `xz.py` later reused): stdlib
+Read by Archivey's own `LzipDecompressorStream` (the framework `xz_decoder.py` later reused): stdlib
 `lzma` provides the LZMA1 codec, and the lzip member trailer (CRC32 + sizes) is scanned for
 efficient seeking and size reporting. Zero-dep core; no third-party lzip library is needed or
 preferred.
@@ -312,7 +312,7 @@ only filter is a branch filter, a separately-staged BCJ frames its input as LZMA
 *uncompressed* chunks (3 bytes per 64 KiB, no compression work) so the chain becomes
 `[<branch filter>, FILTER_LZMA2]`. Output is byte-identical to `pybcj`'s wherever `pybcj`
 is correct, verified across all six filters; see `investigations/pybcj-upstream-report.md`. BCJ2 is not a
-liblzma filter; archivey decodes it in pure Python (`internal/streams/bcj2.py`).
+liblzma filter; archivey decodes it in pure Python (`internal/streams/codecs/bcj2_filter.py`).
 
 ### raw Deflate / zlib — stdlib `zlib`, accelerated by `rapidgzip`
 
