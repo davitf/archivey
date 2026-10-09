@@ -588,7 +588,7 @@ candidate "would defeat the whole purpose of supporting multiple passwords", so 
 candidate is probed (2026-10-06; shipped in PR 627). Anything on by default is fuzzed:
 "if they're the default, we should fuzz them", so the accelerator fuzzing gap was closed
 instead of keeping the "accelerators are not fuzzed" caveat in the docs (2026-10-06, PR
-638).
+638). Closing a gap rather than documenting it is DR-22a.
 
 ---
 
@@ -682,6 +682,34 @@ known limitation due to being untestable" (2026-09-24).
 **Rulings.** Top-level docs review (2026-09-28). Detection topic page (2026-09-26).
 Ballpark numbers (2026-10-07). User-doc voice: see the `write-user-docs` skill.
 
+### DR-22a. A caveat in the docs is a question for the code
+
+**Rule.** When a behaviour needs a caveat, a gotcha or a "be aware that" in the docs,
+first ask whether the code can change so the caveat is no longer needed. If it can, fix
+the code and drop the caveat. Keep the caveat only when the fix is impossible (the
+format gives nothing to work with, as in DR-21a, or the data is unknowable, principle 1)
+or costs more than it buys; then the caveat says why. When the fix changes public
+behaviour, put it to the maintainer as a choice between "fix it" and "document it",
+with the fix recommended unless something argues against it.
+
+**Why.** A caveat is work for every reader, and most readers never see it (principles
+3 and 4). Writing the docs keeps turning up inconsistencies: questions the maintainer
+raised while rewriting the user docs repeatedly turned out to be behaviour to fix, not
+to explain (2026-10-09).
+
+**Rulings.**
+- Accelerators were not fuzzed, and the docs said so. The gap was closed instead of
+  keeping the caveat (DR-16, 2026-10-06).
+- `MEMBER_TIMESTAMP_INVALID` named its field differently in ZIP and TAR. "Keep the split
+  and list both vocabularies in the docs" was offered and turned down in favour of one
+  vocabulary (2026-10-07, PR 608).
+- The `encoding=` rule came out of writing the opening page: valid UTF-8 names are to
+  win over `encoding=` in every format, rather than the page explaining a per-format
+  difference (ruled 2026-10-07).
+
+**Reopen if** a fix would break the upload-server test or hide data (principles 1 and
+2); then the caveat stays.
+
 ---
 
 ## Code and tests
@@ -750,6 +778,8 @@ reaches him.
 - **Is it actually simpler?** For a large design, ask for a fresh review before building
   it. The detection evidence ledger was dropped after one said the small fixes were
   enough (2026-09-25).
+- **Does this need a caveat in the docs?** If so, can the code change so it doesn't?
+  (DR-22a)
 - **Is the premise right?** Check the finding against current `main` and measure before
   asking. Several questions were withdrawn because the finding was stale.
 
