@@ -36,13 +36,17 @@ numbered rule below is one of these applied to a kind of question.
    server down? (DR-9a).
 8. **Generalise fixes and approaches across all formats** (DR-0).
 
-Principles 5 and 7 are absolute: no other principle outranks them. Principles 1, 2 and 4
-are weighed against each other only through principle 3.
+None of these is black and white. They are strong defaults, and a case can still depend
+on its details. Principles 5 and 7 weigh the most: departing from them needs a concrete
+reason, written down, and the maintainer's agreement. The rest give way more easily,
+but say which one you are relaxing and why. The numbered rules below work the same way:
+a rule settles a question when the case looks like the rulings it came from, and a case
+that differs in an important way goes back to the maintainer.
 
 ## Conflicts that need a real decision
 
 When consistency between formats (1) and the official tool (2) point different ways,
-neither wins by default. Put the question to the maintainer, with what each format's tool
+neither wins by default; it depends on the case. Put the question to the maintainer, with what each format's tool
 does, what the other formats do, and whether only crafted archives reach the case (6).
 
 Past decisions on such conflicts, to cite as precedent:
@@ -221,8 +225,8 @@ on every platform rather than diverge.
 
 **Rule.** Consistency can be relaxed for malformed input, particularly a shape so specific
 that only a crafted archive produces it. There, a format may keep its own behaviour if
-making it match would add real code or plumbing. DR-1 and DR-9a still hold in full: no
-wrong data on a full read, no unbounded resources, no crash.
+making it match would add real code or plumbing. DR-1 and DR-9a weigh much more: relax
+them only with a written reason and the maintainer's agreement.
 
 **Why.** Cross-format plumbing for a shape nobody writes costs more than the difference
 it removes.
@@ -329,8 +333,8 @@ Native code that can crash runs in a child process (DR-20). Every allocation an 
 can steer is checked against a limit before it is made (DR-9).
 
 **Why.** An attacker crafts archives at will and picks whichever loophole is left
-(2026-10-09). "Only crafted archives hit it" relaxes consistency (DR-5a), never this
-rule.
+(2026-10-09). "Only crafted archives hit it" is a reason to relax consistency (DR-5a),
+not this rule.
 
 **Rulings.**
 - PPMd decoding past the end could corrupt memory, so it runs in a child process
