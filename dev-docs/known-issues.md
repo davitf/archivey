@@ -146,7 +146,7 @@ other backends.
 
 ## rapidgzip accelerator: upstream defects
 
-Bugs 3 and 4 below are live in rapidgzip 0.16.0, the current and floor version. Bugs 1 and
+Bugs 3, 4 and 5 below are live in rapidgzip 0.16.0, the current and floor version. Bugs 1 and
 2 (closing accelerator objects at finalization, one accelerator library per process) are
 fixed on archivey's side and written up in
 [`rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md) §6 and §7.
@@ -241,6 +241,37 @@ raised a catchable `RuntimeError` after every chunk before the cut.
 
 **Evidence.** [`rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §2; the design and costs are in [`formats/gzip.md`](formats/gzip.md) §2.3.
+
+### Bug 5: rapidgzip keeps the Python file object it reads from (open, contained)
+
+**Symptom.** `IndexedBzip2File(f)` never releases `f`: after `close()` and a garbage
+collection, a weak reference to `f` is still alive, and so is every bound method of `f` it
+took. Each open also leaks a little native memory. Measured on rapidgzip 0.16.0 with an
+`io.BytesIO` subclass, through archivey and directly.
+
+**What archivey does.** A path source is opened by rapidgzip itself and holds no Python
+object of the caller's. bzip2 reads a caller-owned stream through `_TrappingSource`
+(Bug 3), so rapidgzip holds the shim, not the caller's stream. When the accelerator stream
+closes, the shim drops the source (`_TrappingSource.release`), so the source and an
+`io.BytesIO`'s buffer are freed. Before that, every accelerated bzip2 open of a `BytesIO`
+leaked a full copy of its buffer, and a fuzz run over the accelerated bzip2 path ran out
+of memory after about 36 000 inputs. gzip, zlib and raw DEFLATE decode in a child process
+(Bug 4), whose memory goes when it ends.
+
+**What remains.** For a caller-owned stream, the shim and what rapidgzip keeps with it:
+about 1.7 kB of Python objects per open, whatever the input's size. For every source,
+path included, a few kB of native memory per open. A long-running process that opens
+many `.bz2` streams through the accelerator grows by that much per open.
+
+**Upstream.** Not filed. The report, with a ten-line reproduction, is ready in
+[`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md) §9.
+
+**Evidence.**
+`tests/test_accelerator_corruption.py::test_indexed_bzip2_frees_a_stream_source_after_close`
+fails without `release`. Python objects measured with `tracemalloc` over 1 000 opens after
+200 warm-up opens of a 4 kB `.bz2`: 0 bytes per open from a path, about 1.7 kB from an
+`io.BytesIO`. Native memory measured by RSS over 3 000 opens: 2 to 5 kB per open, noisy,
+for every source.
 
 ## Intermittent `pyppmd` native aborts on PPMd streams (open upstream)
 

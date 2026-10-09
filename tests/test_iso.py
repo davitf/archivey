@@ -31,7 +31,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.iso_reader import IsoReader
+from archivey.internal.backends.iso_reader import IsoReader, _strip_version
 from archivey.internal.registry import get_registry
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
@@ -713,13 +713,21 @@ def test_listing_limits_count_directory_record_bytes_at_open(
         open_archive(rock_ridge_iso, config=tight)
 
 
-def test_the_record_counter_is_inert_outside_archivey_opens() -> None:
-    """The ``DirectoryRecord.parse`` hook counts nothing when pycdlib is used directly."""
+def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
+    """Every hook archivey installs in pycdlib leaves a direct pycdlib open alone.
+
+    The hooks on ``DirectoryRecord.parse``, ``RockRidge.parse``,
+    ``PyCdlib._parse_path_table`` and ``PathTableRecord.parse`` act only while
+    ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``; outside,
+    both are unset, and a Rock Ridge and Joliet image (path tables included) opens
+    and reads through pycdlib as it would without archivey.
+    """
     import pycdlib
 
     from archivey.internal.backends import iso_reader
 
     assert iso_reader._PARSE_BUDGET.get() is None
+    assert not iso_reader._inside_our_open()
     iso = pycdlib.PyCdlib()
     iso.open_fp(io.BytesIO(_build_iso(rock_ridge=True, joliet=True)))
     try:
@@ -1546,6 +1554,31 @@ def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
         ]
 
 
+def test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib() -> None:
+    """From pycdlib 1.20, ``ce_entries`` stays ``None`` until a continuation area is
+    parsed; a record with neither an ``NM`` nor such an area has no ``NM`` name.
+
+    The locked pycdlib always allocates ``ce_entries``, so the 1.20 shape is set by
+    hand here; the end-to-end case is the cut-area test above, on pycdlib 1.20+.
+    """
+    import pycdlib
+
+    from archivey.internal.backends.iso_reader import _nm_name, _rr_entry_groups
+
+    iso = pycdlib.PyCdlib()
+    iso.open_fp(io.BytesIO(_build_rr_iso(_two_rr_files)))
+    try:
+        record = iso.get_record(rr_path="/aaa")
+        rr = record.rock_ridge
+        assert rr is not None
+        rr.ce_entries = None
+        assert _rr_entry_groups(rr) == (rr.dr_entries,)
+        rr.dr_entries.nm_records = []
+        assert _nm_name(record) is None
+    finally:
+        iso.close()
+
+
 def test_a_symlink_whose_entries_are_cut_withholds_its_target() -> None:
     """The target may have run on past the malformed entry (genisoimage's long
     targets do), so it is not reported cut short."""
@@ -1856,3 +1889,33 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
         [member] = ar.members()
         assert member.name == "café.txt"
         assert member.raw_name == "café.txt".encode()
+
+
+@pytest.mark.parametrize(
+    ("name", "iso9660", "expected"),
+    [
+        ("FOO.;1", True, ("FOO", 1)),
+        ("FOO.;1", False, ("FOO.", 1)),
+        ("FOO;1", True, ("FOO", 1)),
+        ("FOO;1", False, ("FOO", 1)),
+        ("A.;12", True, ("A", 12)),
+        ("A.;12", False, ("A.", 12)),
+        # A bare ``;N`` is a plain ISO 9660 name; Joliet strips it to nothing.
+        (";1", True, (";1", None)),
+        (";1", False, ("", 1)),
+        # A lone dot is kept: it is the whole stem, not an empty extension.
+        (".;1", True, (".", 1)),
+        (".;1", False, (".", 1)),
+        ("..;3", True, (".", 3)),
+        ("..;3", False, ("..", 3)),
+        ("FOO.;", True, ("FOO.;", None)),
+        ("FOO.;", False, ("FOO.;", None)),
+        # A final newline is part of the name, so no version follows it.
+        ("FOO;1\n", True, ("FOO;1\n", None)),
+        ("FOO;1\n", False, ("FOO;1\n", None)),
+    ],
+)
+def test_strip_version_rules(
+    name: str, iso9660: bool, expected: tuple[str, int | None]
+) -> None:
+    assert _strip_version(name, iso9660=iso9660) == expected

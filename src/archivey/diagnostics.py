@@ -19,7 +19,7 @@ import base64
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
@@ -53,7 +53,7 @@ class _JsonSafeContext:
         return dataclasses.asdict(self)
 
 
-class DiagnosticCode(str, Enum):
+class DiagnosticCode(StrEnum):
     """Stable machine codes for advisory events."""
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
@@ -83,7 +83,7 @@ class DiagnosticCode(str, Enum):
     # the placement clause in ``openspec/specs/diagnostics``.
 
 
-class DiagnosticDisposition(str, Enum):
+class DiagnosticDisposition(StrEnum):
     """Per-code policy disposition for an emitted diagnostic."""
 
     IGNORE = "ignore"
@@ -221,18 +221,44 @@ class ScanRaceContext(_JsonSafeContext):
 class ArchiveEofContext(_JsonSafeContext):
     """The end of the archive did not look the way the format says it should.
 
-    Four checks share this shape, told apart by ``expected_marker``:
+    These checks share this shape, told apart by ``expected_marker``:
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
-      missing, short, or a non-null block.
+      missing (``observed_kind="absent"``), short (``"short"``), or a non-null block
+      where a header or the trailer belongs (``"nonzero"``). ``"nonzero"`` is always
+      escalated to ``CorruptionError``: tarfile rejected a header and the listing is
+      shortened, or the file has no member and is not shown to be a TAR archive.
+    - ``"second_zero_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the first TAR trailer
+      block is zero and ends the members, and the second is a full non-null block.
+      Every member is listed; only the marker is damaged. ``observed_kind`` is
+      ``"nonzero"`` and both byte counts are 512.
     - ``"end_of_archive_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a RAR5 archive, or
       a volume of a RAR5 set, ends without the end-of-archive block its writers always
       put last, so the file was most likely cut at a header boundary. ``format`` is
       ``"rar"``, ``observed_kind`` is ``"absent"`` and both byte counts are 0: the
-      block has no fixed size.
-    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — the trailer was complete but a
-      non-zero byte follows it within the first MiB past it, so the file carries
-      something the listing did not account for. ``observed_bytes`` is that byte's
+      block has no fixed size. The same marker with ``observed_kind="nonzero"``
+      reports an end-of-archive block that is there but fails its header CRC; the
+      members before it are all listed, ``observed_bytes`` is the offset where that
+      block starts in its volume, and ``expected_bytes`` is 0. That offset counts
+      from the volume's first byte, unlike member offsets, which count across the
+      whole set; the message names the volume.
+    - ``"end_of_central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a ZIP end
+      record that does not match the archive. ``observed_kind="nonzero"``: the entry
+      count it declares (classic, or ZIP64 when stdlib used that record) is not the
+      number of entries the central directory holds; ``observed_bytes`` is the
+      record's offset and ``expected_bytes`` is 0. ``observed_kind="short"``: the
+      archive comment length runs past the end of the file; ``expected_bytes`` is
+      the record's declared size (22 plus the comment length) and ``observed_bytes``
+      the bytes from the record to the end of the file.
+    - ``"central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a ZIP central
+      directory entry's name, extra field or comment length runs past the directory
+      size the end record gives, and that field is cut short. ``expected_bytes`` is
+      that directory size and ``observed_bytes`` where the entry would end, both
+      counted from the directory's start; ``observed_kind`` is ``"nonzero"``.
+    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the TAR
+      trailer within the first MiB past it, so the file carries something the listing
+      did not account for. The trailer was complete, or its second block was damaged
+      and reported as ``"second_zero_block"`` first. ``observed_bytes`` is that byte's
       offset past the trailer.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
@@ -251,7 +277,15 @@ class ArchiveEofContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class MemberTimestampContext(_JsonSafeContext):
-    """A stored timestamp field was present but unusable / out of range."""
+    """A stored timestamp field was present but unusable / out of range.
+
+    ``source`` names the representation the value came from, such as ``"dos"``,
+    ``"ntfs"``, ``"tar"`` or ISO's ``"directory_record"``. ``field`` names the
+    ``ArchiveMember`` attribute the value would have filled (``"modified"``,
+    ``"accessed"``, ``"created"`` or ``"ctime"``) in every format; the stored field's
+    own name, such as ZIP's ``date_time`` or a PAX ``atime`` record, is in the message.
+    ``value_repr`` is the stored value as text.
+    """
 
     kind: Literal["member_timestamp"] = "member_timestamp"
     archive_name: str | None = None
@@ -531,7 +565,15 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
             ),
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: (
                 "expected_marker",
-                frozenset({"two_zero_blocks", "end_of_archive_block"}),
+                frozenset(
+                    {
+                        "two_zero_blocks",
+                        "second_zero_block",
+                        "end_of_archive_block",
+                        "end_of_central_directory",
+                        "central_directory",
+                    }
+                ),
             ),
             DiagnosticCode.ARCHIVE_TRAILING_DATA: (
                 "expected_marker",
@@ -728,12 +770,10 @@ class ExtractionReport:
     filled in place.
 
     The report iterates, indexes, and sizes as its ``results`` sequence, so the common
-    ``for result in extract(...)`` / ``len(...)`` / ``report[0]`` idioms keep working while
-    ``report.diagnostics`` exposes the operation's diagnostic summary. Its scope depends
-    on who opened the reader: from :meth:`ForwardArchiveReader.extract_all` it covers
-    that call only (open-phase diagnostics stay on ``reader.diagnostics``); from the
-    one-shot :func:`archivey.extract` it covers detection, open and extraction
-    together, because the caller has no reader to ask.
+    ``for result in reader.extract_all(...)`` / ``len(...)`` / ``report[0]`` idioms keep
+    working while ``report.diagnostics`` exposes the call's diagnostic summary. It covers
+    that :meth:`ForwardArchiveReader.extract_all` call only; detection and open
+    diagnostics stay on ``reader.diagnostics``.
     """
 
     results: tuple[ExtractionResult, ...]

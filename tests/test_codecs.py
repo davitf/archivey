@@ -745,14 +745,15 @@ def test_unix_compress_truncated_readall_then_rewind_raises_again() -> None:
             stream.read()
 
 
-@requires("ncompress")
-def test_unix_compress_maxbits_above_16_rejected() -> None:
-    """Format ceiling is 16; 17–31 must raise CorruptionError (not grow the dict)."""
-    for maxbits in (17, 24, 31):
-        header = bytes([0x1F, 0x9D, 0x80 | maxbits])
-        with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
-            with raises_corruption_not_truncation(match="ceiling of 16"):
-                stream.read()
+@pytest.mark.parametrize("maxbits", [17, 24, 31])
+def test_unix_compress_maxbits_above_16_rejected(maxbits: int) -> None:
+    """Decoders handle up to 16 bits; 17–31 must be refused, not grow the dictionary.
+    gzip and ncompress call it unsupported ("compressed with 17 bits, can only handle
+    16 bits"), so it is UnsupportedFeatureError, not corruption."""
+    header = bytes([0x1F, 0x9D, 0x80 | maxbits])
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
+        with pytest.raises(UnsupportedFeatureError, match=f"width {maxbits}"):
+            stream.read()
 
 
 @requires("ncompress")
@@ -1779,6 +1780,14 @@ def test_verify_seek_to_declared_size_cannot_silence_overrun() -> None:
         stream.read(-1)
     stream.close()
 
+    # declared size 0: nothing is read before the seek, so the frontier already
+    # equals the declared size. A bounded read must still probe, not return b"".
+    stream = VerifyingStream(io.BytesIO(overlong), {}, expected_size=0)
+    stream.seek(2)
+    with raises_corruption_not_truncation(match="exceeds its declared size"):
+        stream.read(1)
+    stream.close()
+
 
 def test_verify_sized_readall_propagates_oserror_not_truncation() -> None:
     """Resource errors on the sized drain must not be relabeled TruncatedError."""
@@ -1956,25 +1965,44 @@ def test_verify_wrong_width_digest_mismatches_not_raises() -> None:
 def _make_gzip_check_stream(inner, path):
     """Wire a ``_GzipTruncationCheckStream`` over a path source, mirroring ``GzipCodec.open``.
 
-    ``inner`` stands in for the accelerator's decompressed output; the backstop reads ISIZE
-    and scans the real gzip file at ``path`` via a fresh independent handle.
+    ``inner`` stands in for the accelerator's decompressed output, under the
+    ``_StdlibOnAcceleratorError`` that hands an ISIZE mismatch to the standard library;
+    the backstop reads ISIZE and scans the real gzip file at ``path`` via a fresh
+    independent handle.
     """
     from archivey.internal.config import DEFAULT_STREAM_CONFIG
     from archivey.internal.streams.codecs import (
         _gzip_isize_and_length,
         _GzipTruncationCheckStream,
+        _SourceViews,
         _stdlib_gzip,
+        _StdlibOnAcceleratorError,
     )
 
     source_len, isize = _gzip_isize_and_length(str(path))
+    views = _SourceViews.of_path(str(path))
+
+    def open_stdlib(fallback):
+        return _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG)
+
     return _GzipTruncationCheckStream(
-        inner,
-        reopen=lambda: open(str(path), "rb"),
+        _StdlibOnAcceleratorError(
+            inner, views=views, open_stdlib=open_stdlib, label="gzip"
+        ),
+        views=views,
         isize=isize,
         source_len=source_len,
-        fallback_path=str(path),
-        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
+        open_stdlib=open_stdlib,
     )
+
+
+def _cut_gzip_file(tmp_path):
+    """A gzip file cut inside its deflate data, and the whole payload it was cut from."""
+    payload = b"".join(f"line {i:05d} of the payload\n".encode() for i in range(4000))
+    whole = gzip.compress(payload)
+    path = tmp_path / "cut.gz"
+    path.write_bytes(whole[: len(whole) // 2])
+    return payload, path
 
 
 def test_gzip_truncation_check_read0_mid_stream_is_not_eof(tmp_path) -> None:
@@ -2028,11 +2056,10 @@ def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> No
 
 
 def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
-    payload = b"hello world" * 100
-    path = tmp_path / "f.gz"
-    path.write_bytes(gzip.compress(payload))
+    payload, path = _cut_gzip_file(tmp_path)
 
-    # Simulate an accelerator that silently stopped short of the real payload.
+    # Simulate an accelerator that silently stopped short on a cut file: the ISIZE
+    # mismatch hands the read to the standard library, which raises at the cut.
     # Completing read(-1) observes soft EOF and raises TruncatedError there
     # (ADR 0014 — not on a later empty read / close).
     stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
@@ -2047,13 +2074,24 @@ def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
         stream.read()
 
 
+def test_gzip_truncation_check_hands_a_too_short_file_to_the_stdlib(tmp_path) -> None:
+    # Below 18 bytes no gzip member is complete. An accelerator that still delivered
+    # bytes from such a file hands over like an ISIZE mismatch, and the standard
+    # library keeps raising the truncation on later reads.
+    payload, path = _cut_gzip_file(tmp_path)
+    path.write_bytes(path.read_bytes()[:15])
+
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:5]), path)
+    with pytest.raises(TruncatedError):
+        stream.read(-1)
+    with pytest.raises(TruncatedError):
+        stream.read()
+
+
 def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
-    # A seek that does not leave the sequential frontier (tell()-style seek(0, SEEK_CUR),
-    # or a seek to the current offset) keeps the ISIZE check armed, so a short
+    # A tell()-style seek(0, SEEK_CUR) keeps the ISIZE check armed, so a short
     # accelerator output is still caught on the completing read.
-    payload = b"hello world" * 100
-    path = tmp_path / "f.gz"
-    path.write_bytes(gzip.compress(payload))
+    payload, path = _cut_gzip_file(tmp_path)
 
     stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     stream.read(16)
@@ -2062,16 +2100,26 @@ def test_gzip_truncation_check_noop_seek_keeps_verification(tmp_path) -> None:
         stream.read(-1)
 
 
-def test_gzip_truncation_check_real_seek_disables_verification(tmp_path) -> None:
+def test_gzip_truncation_check_real_seek_keeps_verification(tmp_path) -> None:
+    # A seek back to the start keeps the ISIZE check armed too: the check compares the
+    # output position, not a count of bytes read, so it still holds after random access.
+    payload, path = _cut_gzip_file(tmp_path)
+    stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
+    stream.read(16)
+    stream.seek(0)
+    with pytest.raises(TruncatedError):
+        stream.read(-1)
+
+    # On an intact file the short output after the seek hands over to the standard
+    # library, which delivers the rest of the member rather than a short read.
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
-
     stream = _make_gzip_check_stream(io.BytesIO(payload[:64]), path)
     stream.read(16)
-    stream.seek(0)  # genuine random access: the sequential total is meaningless now
-    stream.read(-1)
-    assert stream.read() == b""  # no spurious TruncatedError after a real seek
+    stream.seek(0)
+    assert stream.read(-1) == payload
+    assert stream.read() == b""
 
 
 def test_codec_stream_size_via_cheap_index(tmp_path) -> None:
@@ -2354,12 +2402,18 @@ def test_absent_codec_backend_hint_is_installable(
 ) -> None:
     """A read that fails for a missing package must advise an extra that exists.
 
-    Forcing the module global to ``None`` exercises the raise in every dependency leg,
+    Forcing the module global to "absent" exercises the raise in every dependency leg,
     including the one where the package *is* installed — which is where the hint used to
     rot unnoticed, because ``format_availability`` reported the updated string while
     ``open()`` still advertised a deleted extra.
     """
-    monkeypatch.setattr(codecs_module, absent_global, None, raising=True)
+    current = getattr(codecs_module, absent_global)
+    absent = (
+        codecs_module._LazyOptional(current.name, present=False)
+        if isinstance(current, codecs_module._LazyOptional)
+        else None
+    )
+    monkeypatch.setattr(codecs_module, absent_global, absent, raising=True)
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))
@@ -2402,3 +2456,67 @@ def test_no_source_file_advertises_a_deleted_extra() -> None:
     assert not offenders, "source names extras that no longer exist:\n" + "\n".join(
         offenders
     )
+
+
+# A header the format's own tool refuses as "not supported" is UnsupportedFeatureError,
+# not corruption (the lzip version-0 ruling, applied to the other stream codecs).
+
+
+@pytest.mark.parametrize(
+    ("byte", "value", "accel"),
+    [
+        pytest.param(2, 7, AcceleratorMode.OFF, id="cm7"),
+        pytest.param(3, 0x80, AcceleratorMode.OFF, id="flg80"),
+        pytest.param(3, 0x20, AcceleratorMode.OFF, id="flg20"),
+        pytest.param(2, 7, AcceleratorMode.ON, id="cm7-accel"),
+        pytest.param(3, 0x80, AcceleratorMode.ON, id="flg80-accel"),
+    ],
+)
+def test_gzip_unsupported_member_header_is_unsupported(
+    byte: int, value: int, accel: AcceleratorMode
+) -> None:
+    """gzip: "unknown method 7 -- not supported", "has flags 0x80 -- not supported",
+    "is encrypted -- not supported" (FLG bit 5)."""
+    if accel is AcceleratorMode.ON and importlib.util.find_spec("rapidgzip") is None:
+        pytest.skip("rapidgzip not installed")
+    data = bytearray(gzip.compress(CONTENT, mtime=0))
+    data[byte] = value if byte == 2 else data[byte] | value
+    config = StreamConfig(use_rapidgzip=accel, seekable=True)
+    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(data)), config=config) as s:
+        with pytest.raises(UnsupportedFeatureError, match="gzip member header"):
+            s.read()
+
+
+def test_gzip_later_member_with_unknown_method_is_unsupported() -> None:
+    member = gzip.compress(CONTENT, mtime=0)
+    second = bytearray(member)
+    second[2] = 7
+    source = io.BytesIO(member + bytes(second))
+    with open_codec_stream(Codec.GZIP, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(UnsupportedFeatureError):
+            stream.read()
+
+
+@requires("lz4")
+@pytest.mark.parametrize("version_bits", [0b00, 0b10, 0b11])
+def test_lz4_frame_version_other_than_01_is_unsupported(version_bits: int) -> None:
+    import lz4.frame
+
+    data = bytearray(lz4.frame.compress(CONTENT))
+    data[4] = (data[4] & 0x3F) | (version_bits << 6)  # FLG: version in bits 7-6
+    with open_codec_stream(Codec.LZ4, io.BytesIO(bytes(data))) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="lz4 frame version"):
+            stream.read()
+
+
+@requires_zstd()
+def test_zstd_frame_needing_a_dictionary_is_unsupported() -> None:
+    """zstd: "Dictionary mismatch". The frame names a dictionary archivey has no way
+    to be given."""
+    zstd = zstd_backend()
+    samples = [bytes([i]) * 50 + b"common prefix %d" % i for i in range(200)]
+    dictionary = zstd.train_dict(samples, 4096)
+    data = zstd.compress(CONTENT, zstd_dict=dictionary)
+    with open_codec_stream(Codec.ZSTD, io.BytesIO(data)) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="dictionary"):
+            stream.read()

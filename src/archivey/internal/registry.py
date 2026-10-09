@@ -42,6 +42,7 @@ from archivey.types import (
     MagicSignature,
     MissingComponent,
     StreamFormat,
+    TrailerSignature,
 )
 
 
@@ -203,6 +204,18 @@ class BackendRegistry:
                 mapping[sig.format] = validator
         return mapping
 
+    def trailer_entries(self) -> list[TrailerSignature]:
+        """Trailer magic declared by registered backends.
+
+        Exact magic at the start of a fixed-length block at EOF. The detector
+        reads that block only on a cheap seek, and a hit outranks a near-magic
+        format the trailer lists in ``preempts``.
+        """
+        entries: list[TrailerSignature] = []
+        for cls in self._reader_classes:
+            entries.extend(cls.TRAILER)
+        return entries
+
     def content_probes(
         self,
     ) -> list[tuple[ArchiveFormat, ContentProbe]]:
@@ -265,6 +278,13 @@ class BackendRegistry:
             else StreamCapability.SEEKABLE
         )
 
+        if not backend_cls.READ_IMPLEMENTED:
+            # Recognised, not readable. An empty ``missing`` is the answer: there
+            # is nothing to install, and open raises UnsupportedFeatureError
+            # before the seekability check. ``required_source`` is still the
+            # flag, which is what the spool recipe branches on.
+            return FormatAvailability(fmt, FormatSupport.NONE, (), required_source)
+
         if not self._backend_available(backend_cls):
             dep = backend_cls.OPTIONAL_DEPENDENCY
             assert (
@@ -315,6 +335,12 @@ class BackendRegistry:
             if backend_cls is None:
                 raise UnsupportedFeatureError(
                     f"No read backend registered for format {fmt.display_name}",
+                    source_format=fmt,
+                )
+            if not backend_cls.READ_IMPLEMENTED:
+                raise UnsupportedFeatureError(
+                    backend_cls.UNSUPPORTED_MESSAGE
+                    or f"Reading {fmt.display_name} is not supported.",
                     source_format=fmt,
                 )
             hints = "; ".join(

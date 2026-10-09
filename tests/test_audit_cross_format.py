@@ -1,9 +1,8 @@
 """Cross-format audit: a protection one backend applies and another skips.
 
-Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` with the
-gap it pins, so a fix turns it into an XPASS failure and the marker has to go. The
-per-backend audits cover each format in depth; these are the cells of the protection
-matrix where formats disagree with each other or with the published docs.
+The per-backend audits cover each format in depth; these tests pin the cells of the
+protection matrix where formats disagreed with each other or with the published docs,
+so each format keeps the promised behaviour.
 """
 
 from __future__ import annotations
@@ -12,11 +11,11 @@ import bz2
 import io
 import lzma
 import os
+import re
 import stat
 import struct
 import subprocess
 import tarfile
-import tracemalloc
 import zipfile
 import zlib
 from collections.abc import Callable
@@ -28,9 +27,11 @@ from archivey import open_archive
 from archivey.cli.exit_codes import EXIT_FAIL
 from archivey.cli.main import main
 from archivey.config import ArchiveyConfig, ListingLimits
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.exceptions import ArchiveyUsageError, ResourceLimitError
+from archivey.terminal import quoted
 from tests.conftest import requires, requires_binary
+from tests.memory_util import traced_peak
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -221,23 +222,95 @@ def _iso_month_13(tmp_path: Path) -> Path:
     return out
 
 
+def _zip_month_13(tmp_path: Path) -> Path:
+    out = tmp_path / "month13.zip"
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("f.txt", date_time=(2001, 13, 1, 0, 0, 0)), b"x")
+    return out
+
+
+def _tar_mtime_overflow(tmp_path: Path) -> Path:
+    out = tmp_path / "mtime.tar"
+    # PAX on purpose: GNU stores the value as base-256 and USTAR refuses it.
+    with tarfile.open(out, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("f.txt")
+        info.size = 1
+        info.mtime = 2**62  # past datetime's range
+        tf.addfile(info, io.BytesIO(b"x"))
+    return out
+
+
+# ``field`` is the member attribute in every format; the stored record's own name is
+# only in the message. See MemberTimestampContext.
 @pytest.mark.parametrize(
-    "build",
+    ("build", "label", "source", "value_re"),
     [
-        pytest.param(_rar4_month_13, id="rar4-dos-month-13"),
-        pytest.param(_rar5_filetime_overflow, id="rar5-filetime-overflow"),
-        pytest.param(_iso_month_13, id="iso-month-13", marks=requires("pycdlib")),
+        pytest.param(
+            _rar4_month_13,
+            "RAR DOS timestamp",
+            "dos",
+            "0x5daca824",
+            id="rar4-dos-month-13",
+        ),
+        pytest.param(
+            _rar5_filetime_overflow,
+            "NTFS timestamp",
+            "ntfs",
+            str(2**64 - 1),
+            id="rar5-filetime-overflow",
+        ),
+        # pycdlib stamps the build time, so only the patched month is fixed.
+        pytest.param(
+            _iso_month_13,
+            "ISO 9660 date",
+            "directory_record",
+            r"\(\d+, 13, \d+, \d+, \d+, \d+\)",
+            id="iso-month-13",
+            marks=requires("pycdlib"),
+        ),
+        pytest.param(
+            _zip_month_13,
+            "ZIP date_time",
+            "dos",
+            re.escape("(2001, 13, 1, 0, 0, 0)"),
+            id="zip-month-13",
+        ),
+        # The pax record carries the time as a decimal string; tarfile reads it back
+        # as a float.
+        pytest.param(
+            _tar_mtime_overflow,
+            "TAR mtime",
+            "tar",
+            r"4\.6116\d*e\+18",
+            id="tar-mtime-overflow",
+        ),
     ],
 )
 def test_invalid_timestamp_is_none_and_reported(
-    build: Callable[[Path], Path], tmp_path: Path
+    build: Callable[[Path], Path],
+    label: str,
+    source: str,
+    value_re: str,
+    tmp_path: Path,
 ) -> None:
     archive = build(tmp_path)
     with open_archive(archive) as reader:
         member = next(m for m in reader.members() if m.is_file)
         counts = reader.diagnostics.counts
+        (diagnostic,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
     assert member.modified is None
     assert counts.get(DiagnosticCode.MEMBER_TIMESTAMP_INVALID, 0) == 1
+    context = diagnostic.context
+    assert isinstance(context, MemberTimestampContext)
+    assert (context.field, context.source) == ("modified", source)
+    assert re.fullmatch(value_re, context.value_repr)
+    assert diagnostic.message == (
+        f"Invalid {label} for {quoted(member.name)}: {context.value_repr}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -293,14 +366,13 @@ def test_tar_pax_header_costs_the_metadata_cap_not_the_header(tmp_path: Path) ->
 
     cap = 64 * 1024
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=cap))
-    tracemalloc.start()
-    try:
+
+    def attempt() -> None:
         with pytest.raises(ResourceLimitError):
             with open_archive(archive, config=config) as reader:
                 reader.members()
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+
+    peak = traced_peak(attempt)
     # "an over-limit tar costs the cap rather than the archive, PAX keywords and
     # values included" (threat model O1). Generous slack: 1/4 of the value.
     assert peak < value_size // 4, f"peak {peak} bytes for a {cap}-byte cap"

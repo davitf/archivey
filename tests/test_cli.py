@@ -4,14 +4,27 @@ from __future__ import annotations
 
 import io
 import sys
+import tarfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from archivey import (
+    ExtractionReport,
+    ExtractionResult,
+    ExtractionStatus,
+    open_archive,
+)
+from archivey.cli import test_cmd
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
+from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.main import _inject_default_list, main
+from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError
+from archivey.types import ArchiveMember, MemberType
+from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 
 
@@ -105,6 +118,7 @@ def test_version_verbose_lists_formats(capsys: pytest.CaptureFixture[str]) -> No
     assert out.startswith("archivey ")
     assert "formats:" in out
     assert "zip:" in out
+    assert "dmg: none — recognised, not readable" in out
     assert main(["-v", "--version"]) == EXIT_OK
     assert "formats:" in capsys.readouterr().out
 
@@ -121,6 +135,18 @@ def test_default_list_dispatch(
 def test_list_alias(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["l", str(sample_zip)]) == EXIT_OK
     assert "a.txt" in capsys.readouterr().out
+
+
+def test_list_digests_names_the_algorithm_by_value(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--digests`` prints ``crc32=<hex>``, not the enum's repr-like ``str()``."""
+    with zipfile.ZipFile(sample_zip) as zf:
+        crc = zf.getinfo("a.txt").CRC
+    assert main(["list", "--digests", str(sample_zip)]) == EXIT_OK
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.endswith("]"))
+    assert "a.txt" in line
+    assert line.endswith(f"[crc32={crc:08x}]")
 
 
 def test_list_incomplete_members_report_exits_one(
@@ -526,6 +552,107 @@ def test_extract_reports_renames(
     assert any(p.name.startswith("a (") for p in dest.iterdir())
 
 
+def test_extract_reports_a_renamed_directory_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One directory renamed around a file is one rename, however much it holds.
+
+    Every member inside the directory follows it and so reports
+    ``requested_path != path``; the CLI used to print a ``renamed:`` line for each and
+    count them all, so one rename read as a dozen.
+    """
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("dd/", b"")
+        for i in range(3):
+            zf.writestr(f"dd/f{i}", b"x")
+        zf.writestr("dd/s/", b"")
+        zf.writestr("dd/s/g", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    assert (
+        main(["extract", str(z), "-d", str(dest), "--overwrite", "rename"]) == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert _report_lines(err, "renamed:") == ["renamed: dd -> dd (1)"]
+    assert "6 extracted, 1 renamed, 0 skipped" in err
+    assert (dest / "dd (1)" / "s" / "g").read_bytes() == b"y"
+
+
+def test_extract_reports_a_renamed_directory_stored_twice_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With the directory entry stored twice, the first copy is superseded and the
+    rename is carried by the later one. The members written between the two still
+    only moved with the directory, and are not reported as renames."""
+    a = tmp_path / "a.tar"
+    with tarfile.open(a, "w") as tf:
+
+        def add(name: str, data: bytes | None) -> None:
+            info = tarfile.TarInfo(name)
+            if data is None:
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                tf.addfile(info)
+            else:
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+        add("dd/", None)
+        for i in range(5):
+            add(f"dd/f{i}", b"x")
+        add("dd/", None)
+        add("dd/g", b"y")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "dd").write_bytes(b"callers")
+    assert (
+        main(["extract", str(a), "-d", str(dest), "--overwrite", "rename"]) == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert _report_lines(err, "renamed:") == ["renamed: dd -> dd (1)"]
+    assert "7 extracted, 1 renamed, 1 skipped" in err
+    assert (dest / "dd (1)" / "f4").read_bytes() == b"x"
+
+
+def test_extract_reports_a_rename_inside_a_renamed_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A member that moved with its directory *and* was renamed on its own is still
+    reported: only the inherited part of the move is collapsed."""
+
+    def result(
+        type_: MemberType, name: str, requested: str, path: str
+    ) -> ExtractionResult:
+        return ExtractionResult(
+            ArchiveMember(type=type_, name=name),
+            tmp_path / path,
+            ExtractionStatus.EXTRACTED,
+            None,
+            requested_path=tmp_path / requested,
+        )
+
+    report = ExtractionReport(
+        results=(
+            result(MemberType.DIRECTORY, "dd/", "dd", "dd (1)"),
+            result(MemberType.FILE, "dd/a", "dd/a", "dd (1)/a"),
+            result(MemberType.FILE, "dd/b", "dd/b", "dd (1)/b (1)"),
+            # An anti-item deletes what an earlier member wrote; where it deleted is
+            # not a rename, though it followed the directory too.
+            result(MemberType.ANTI, "dd/a", "dd/a", "dd (1)/a"),
+        ),
+        diagnostics=DiagnosticSummary.empty(),
+    )
+    err = io.StringIO()
+    _report_extraction(report, target=tmp_path, verbose=False, err=err)
+    assert _report_lines(err.getvalue(), "renamed:") == [
+        "renamed: dd -> dd (1)",
+        "renamed: dd/b -> dd (1)/b (1)",
+    ]
+    assert "4 extracted, 2 renamed, 0 skipped" in err.getvalue()
+
+
 def test_extract_verbose_lists_members(
     sample_zip: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -560,9 +687,9 @@ def test_cli_list_unencrypted_format_without_password(
 
 def test_c_is_not_integrity_alias(sample_zip: Path) -> None:
     # Integrity check is `test`/`t`; letter `c` is reserved for future `create`.
-    from archivey.cli.main import _VERBS
+    from archivey.cli.main import _grammar
 
-    assert "c" not in _VERBS
+    assert "c" not in _grammar().verbs
     assert main(["t", str(sample_zip)]) == EXIT_OK
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
 
@@ -1545,9 +1672,11 @@ def _report_lines(err: str, marker: str) -> list[str]:
 
 
 # A member name carrying an ANSI erase-line plus a CR: printed raw, everything before
-# the CR is wiped and the archive gets to author the whole terminal line. Windows cannot
-# hold such a name at all (control bytes are illegal in NTFS names, WinError 123), so
-# tests using it are Unix-only — the write fails there before any report line is reached.
+# the CR is wiped and the archive gets to author the whole terminal line. STRICT and
+# STANDARD write the control bytes as %XX (O7), so a report line built from the path on
+# disk never carries them; tests that need the raw name in such a line use
+# ``--policy trusted``. Windows cannot hold the raw name at all (control bytes are
+# illegal in NTFS names, WinError 123), so those tests are Unix-only.
 _SPOOF_ANSI = "ev\x1b[2Kil\rSUCCESS.txt"
 _ANSI_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
@@ -1568,7 +1697,7 @@ def test_extract_escapes_member_paths_in_overwrite_reports(
 ) -> None:
     """These lines print ``requested_path``, which is built from the member's own name.
 
-    The portable rewrite does not strip non-printable characters under any policy, so an
+    The portable rewrite escapes only the controls 0x01-0x1F, not U+2028, so an
     unescaped path here is the display-spoofing vector ``escape_member_name`` closes.
     """
     archive = _zip(
@@ -1609,10 +1738,26 @@ def test_extract_escapes_member_paths_in_rename_reports(
 def test_extract_escapes_ansi_spoof_in_overwrite_reports(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], overwrite: str, marker: str
 ) -> None:
-    """The real spoof: ESC[2K + CR would erase the line and rewrite it."""
-    archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
+    """The real spoof: ESC[2K + CR would erase the line and rewrite it.
+
+    TRUSTED writes the name as stored, so the raw bytes reach ``requested_path``. It has
+    no collision event for a case-only pair, so the clash here is a directory member
+    and then a file member of the same name, which meet as an existing entry.
+    """
+    archive = _zip(tmp_path / "c.zip", {f"{_SPOOF_ANSI}/": b"", _SPOOF_ANSI: b"B"})
     dest = tmp_path / "out"
-    main(["x", str(archive), "-d", str(dest), "--overwrite", overwrite])
+    main(
+        [
+            "x",
+            str(archive),
+            "-d",
+            str(dest),
+            "--overwrite",
+            overwrite,
+            "--policy",
+            "trusted",
+        ]
+    )
     err = capsys.readouterr().err
     lines = _report_lines(err, marker)
     assert lines
@@ -1699,7 +1844,9 @@ def test_extract_summary_escapes_the_single_root(
     """
     monkeypatch.chdir(tmp_path)
     archive = _zip(tmp_path / "one.zip", {f"{root}/a.txt": b"a", f"{root}/b.txt": b"b"})
-    assert main(["x", str(archive)]) == EXIT_OK
+    # TRUSTED: STRICT would write the control bytes as %XX, and the root as printed
+    # would no longer carry them.
+    assert main(["x", str(archive), "--policy", "trusted"]) == EXIT_OK
     lines = _summary_lines(capsys.readouterr().err)
     assert len(lines) == 1
     assert raw not in lines[0]
@@ -1736,7 +1883,8 @@ def test_extract_hoist_report_escapes_the_single_root(
     archive = _tar(
         tmp_path / "bundle.tar", {f"{root}/a.txt": b"a", f"{root}/b.txt": b"b"}
     )
-    assert main(["x", str(archive)]) == EXIT_OK
+    # TRUSTED, as in the summary test above: the root keeps its raw bytes on disk.
+    assert main(["x", str(archive), "--policy", "trusted"]) == EXIT_OK
     err = capsys.readouterr().err
     moved = _report_lines(err, "moved to ")
     assert moved == [f"moved to {escaped}/"]
@@ -1871,6 +2019,33 @@ def test_hoist_names_the_free_name_a_rename_chose(
     assert (tmp_path / "a (1).txt").read_bytes() == b"ARCHIVE"
     assert _report_lines(err, "moved to ") == ["moved to a (1).txt"]
     assert _summary_lines(err)[0].endswith("→ a (1).txt")
+
+
+@pytest.mark.parametrize(
+    ("entries", "mine", "landed"),
+    [
+        ({"top.txt": b"ARCHIVE"}, "top.txt", "top (1).txt"),
+        ({"top/": b"", "top/x.txt": b"ARCHIVE"}, "top", "top (1)/"),
+    ],
+    ids=["file", "dir-over-file"],
+)
+def test_summary_names_the_free_name_a_rename_chose_without_a_hoist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entries: dict[str, bytes],
+    mine: str,
+    landed: str,
+) -> None:
+    """An indexed archive with one top extracts straight into cwd, no hoist; the
+    summary still names where the rename put it, not the operator's own file."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / mine).write_bytes(b"MINE")
+    archive = _zip(tmp_path / "a.zip", entries)
+    assert main(["x", str(archive), "--overwrite", "rename"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert (tmp_path / mine).read_bytes() == b"MINE"
+    assert _summary_lines(err)[0].endswith(f"→ {landed}")
 
 
 def test_hoist_names_no_destination_when_skip_discards_the_root(
@@ -2162,16 +2337,15 @@ def test_abort_notice_escapes_the_error_message(
     assert "\\u2028" in err
 
 
-@_ANSI_ONLY
 def test_abort_notice_escapes_an_ansi_spoof(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The real spoof through the abort print site.
 
-    Unix-only: on Windows the member cannot be written at all (WinError 123), so the
-    run fails before two names ever collide. The name still reaches stderr there, in
-    the WARNING reporting that it could not be written — escaped by ``%r``, which
-    ``test_log_records_escape_archive_derived_text`` covers.
+    The default policy writes the control bytes as %XX, so the path in the notice is
+    already safe; the member name it also carries is the stored one, raw bytes and
+    all. With the bytes escaped on disk the member is written on Windows too, so this
+    runs on every platform.
     """
     archive = _zip(tmp_path / "c.zip", {_SPOOF_ANSI: b"A", _SPOOF_ANSI.upper(): b"B"})
     dest = tmp_path / "out"
@@ -2180,6 +2354,7 @@ def test_abort_notice_escapes_an_ansi_spoof(
     assert "Name collision" in err
     assert "\x1b" not in err
     assert "\r" not in err
+    assert "EV\\x1b[2KIL\\rSUCCESS.TXT" in err
 
 
 def test_test_verb_escapes_failure_detail(
@@ -2249,6 +2424,84 @@ def test_inject_default_list_puts_verb_before_separator() -> None:
     assert _inject_default_list(["--", "list"]) == ["list", "--", "list"]
     # A spelled verb before ``--`` is left alone.
     assert _inject_default_list(["list", "--", "a.zip"]) == ["list", "--", "a.zip"]
+
+
+def test_inject_default_list_skips_only_pre_verb_option_values() -> None:
+    # A value-taking option the main parser knows: its value is not the verb.
+    assert _inject_default_list(["--password", "list", "a.zip"]) == [
+        "--password",
+        "list",
+        "list",
+        "a.zip",
+    ]
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--abort-on", "--policy", "--overwrite", "-d", "--dest", "--exclude"],
+)
+def test_verb_option_before_verb_is_named_as_unrecognized(
+    flag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The main parser does not know a verb's options, so it does not consume their
+    # value. The value is then the first positional, and an injection that skipped it
+    # blamed the value as an invalid verb instead of naming the misplaced flag.
+    assert main([flag, "blocked-member", "x", "a.zip"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert f"unrecognized arguments: {flag}" in err
+    assert "invalid choice" not in err
+    # ...and names the verb it belongs to.
+    assert f"({flag} is an option of '" in err
+    assert "; it goes after " in err
+
+
+def test_verb_option_hint_names_every_verb_that_takes_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["--policy=strict", "a.zip"]) == EXIT_USAGE
+    assert (
+        "(--policy is an option of 'extract'; "
+        "it goes after that verb: archivey extract ARCHIVE --policy ...)"
+    ) in capsys.readouterr().err
+    assert main(["--exclude", "p", "a.zip"]) == EXIT_USAGE
+    assert (
+        "(--exclude is an option of 'list', 'test', 'extract'; "
+        "it goes after one of those verbs)"
+    ) in capsys.readouterr().err
+
+
+def test_verb_option_after_another_verb_is_not_called_misplaced(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The flag already follows a verb, just not one that takes it.
+    assert main(["list", str(sample_zip), "--policy", "strict"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "(--policy is an option of 'extract';" in err
+    assert "put it after the verb" not in err
+
+
+def test_tar_flag_hint_matches_whole_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # ``--my-list`` contains ``-l`` but is not the tar spelling of ``l``.
+    assert main(["x", "a.zip", "--my-list"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: --my-list" in err
+    assert "archivey l" not in err
+    # A stray positional is not a bundle either, even when its letters include i/l/t.
+    assert main(["info", "a.zip", "list"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: list" in err
+    assert "bare words" not in err
+
+
+@pytest.mark.parametrize(("bundle", "verb"), [("-xvf", "x"), ("-tzf", "t")])
+def test_tar_flag_hint_matches_short_option_bundles(
+    bundle: str, verb: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ``tar -xvf`` habit: the bundle's first verb letter is the verb meant.
+    assert main([bundle, "a.tar"]) == EXIT_USAGE
+    assert f"try 'archivey {verb} ARCHIVE'" in capsys.readouterr().err
 
 
 def test_double_dash_lists_dash_named_archive(
@@ -2405,3 +2658,85 @@ def test_extract_reroot_never_prints_a_default_rewrite_line(
     assert "re-rooted: " not in err
     rooted = sum(1 for n in names if n.startswith("/"))
     assert f"re-rooted {rooted} absolute member name" in err
+
+
+# --- `archivey test` reports a symlink the same way on every format ---
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _zip_with_links(path: Path) -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", b"alpha\n")
+        for name, target in (("link", "a.txt"), ("dangling", "nowhere")):
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = 0o120777 << 16
+            zf.writestr(info, target.encode())
+    return path
+
+
+def _tar_with_links(path: Path) -> Path:
+    with tarfile.open(path, "w") as tf:
+        data = b"alpha\n"
+        info = tarfile.TarInfo("a.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+        for name, target in (("link", "a.txt"), ("dangling", "nowhere")):
+            link = tarfile.TarInfo(name)
+            link.type = tarfile.SYMTYPE
+            link.linkname = target
+            tf.addfile(link)
+    return path
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(_zip_with_links, id="zip"),
+        pytest.param(_tar_with_links, id="tar"),
+        pytest.param(
+            lambda _: _FIXTURES / "sevenzip" / "links_mid_folder_solid.7z", id="7z"
+        ),
+        pytest.param(
+            lambda _: _FIXTURES / "rar" / "symlinks_solid__rar4.rar",
+            id="rar4",
+            marks=requires_binary("unrar"),
+        ),
+        pytest.param(
+            lambda _: _FIXTURES / "rar" / "symlinks_solid__.rar",
+            id="rar5",
+            marks=requires_binary("unrar"),
+        ),
+    ],
+)
+def test_test_verb_skips_every_readable_symlink_alike(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    make: Callable[[Path], Path],
+) -> None:
+    """A symlink whose target the pass read prints ``skip`` and is not counted.
+
+    7z and RAR4 keep a symlink's target as member data. A random-access pass used to
+    leave it unread, so ``test`` opened each such link again after the pass (on a
+    solid 7z, a second decode of its folder) and counted it ``OK``, where ZIP, RAR5
+    and TAR printed ``skip``.
+    """
+    archive = make(tmp_path / "links.archive")
+    with open_archive(archive) as reader:
+        listed = reader.members()
+        links = [m.name for m in listed if m.type is MemberType.SYMLINK]
+        files = [m.name for m in listed if m.is_file]
+    assert links and files
+
+    def _no_reopen(*_args: object) -> None:
+        raise AssertionError("a link with a read target was opened again")
+
+    monkeypatch.setattr(test_cmd, "_verify_link", _no_reopen)
+    assert main(["test", "-v", "--hide-progress", str(archive)]) == EXIT_OK
+    lines = capsys.readouterr().err.splitlines()
+    for name in links:
+        assert f"skip {name}" in lines
+        assert f"OK   {name}" not in lines
+    assert f"{len(files)} OK, 0 failed" in lines

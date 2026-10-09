@@ -2,12 +2,19 @@
 
 Archivey extracts **safely by default**. You opt *out* of protections; you do not opt in.
 
-## One-shot
+## Extracting everything
 
 ```python
-archivey.extract("archive.zip", "out/")
+with archivey.open_archive("archive.zip") as reader:
+    reader.extract_all("out/")
 # policy=ExtractionPolicy.STRICT, overwrite=ERROR, on_error=STOP
 ```
+
+To extract a TAR or a single-file compressed stream from a pipe or a socket, pass
+`streaming=True` to `open_archive`: extraction is a single forward pass, so it needs no
+random access. ZIP, ISO, 7z and RAR keep their index away from the front of the file, so
+they cannot be read from a pipe in either mode; save them to a file or a `BytesIO` first
+([Non-seekable sources](access-and-cost.md#non-seekable-sources)).
 
 ## Trust boundaries
 
@@ -56,9 +63,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   error. Enforce a timeout outside archivey if you need one (a worker process you can
   kill is the reliable way).
 - **Accelerators are on by default when installed.** `AcceleratorMode.AUTO` uses them
-  when the `[seekable]` extra is present and a caller asks for seeking. They sit outside
-  the fuzzed surface (see the hardening notes below); set them to `OFF` for untrusted
-  input under a strict threat model.
+  when the `[seekable]` extra is present and a caller asks for seeking. They are
+  fuzzed, but they are native code with no time bound (see the hardening notes below);
+  set them to `OFF` for untrusted input under a strict threat model.
 - **After a seek, a crafted `.xz` or `.lz` index can serve the wrong bytes with no
   error.** The integrity guarantee covers a read from start to end with no seek
   ([Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
@@ -81,7 +88,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   `filter` runs before these checks, so it sees every member and can rename an unsafe
   one; the name it returns is the one checked. `archivey.sanitize_names` is a ready-made
   filter that renames instead of refusing: it drops roots, resolves or drops `..`,
-  removes bidi overrides, and adds `_` to Windows-reserved names and `:`.
+  removes bidi overrides, and adds `_` to Windows-reserved names and `:`. It rewrites a
+  symlink target's characters and segments the same way (`file:stream` →
+  `file_stream`), but keeps its root and its `..`, and leaves a drive or UNC target to
+  be refused. A target read only after your filter ran (see "Symlink targets stored as
+  member data" below) is rewritten too, because `extract_all` calls the filter again.
 - **Extraction-root overwrite:** a *file* member whose normalized name is `"."` or `""`
   is rejected (`FilterRejectionError`); only a directory member may name the extraction
   root. Prevents a corrupt archive from replacing the destination directory with a
@@ -95,6 +106,20 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   extracted. A link that now escapes is removed, and its result, which a progress
   callback may already have seen as `EXTRACTED`, becomes `BLOCKED`. A `..` in a target
   that stays inside the destination is not refused.
+- **Windows link targets:** a symlink or hardlink target with a drive letter
+  (`C:/Windows`, `C:x`) or a UNC root (`//server/share`) is refused at every policy and
+  on every OS. Windows would follow it out of the destination, and refusing it
+  everywhere means an archive extracts the same way wherever you extract it. (Under
+  `STANDARD` and `TRUSTED` a hardlink's rooted target is re-rooted first.) One
+  exception, for symlinks only: a symlink target that starts with a single `\` (`\foo`)
+  extracts on POSIX, where a backslash is an ordinary filename character; Windows
+  refuses it. A hardlink target `\x` names a member, and gets what a member `\x` gets:
+  `STRICT` refuses it on every OS, `STANDARD` and `TRUSTED` re-root it. A Windows
+  symlink or junction from a ZIP, 7z or RAR archive lists with `/` separators and
+  without the `\??\` prefix (`\??\C:\Windows` lists as `C:/Windows`, `..\up\x` as
+  `../up/x`). Under `STRICT` and `STANDARD`, a `:` or a Windows-reserved device name in
+  a target segment (`file:stream`, `sub/NUL`) is refused, as it is in a member name;
+  `TRUSTED` leaves those to the OS.
 - **Hardlink targets** are containment-checked and resolved positionally (an earlier
   same-named member), so a crafted duplicate-name archive cannot redirect a link.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never
@@ -121,13 +146,13 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   that data is seen in time. The omission is the archive's, and it is reported as
   `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an archive-integrity code,
   so `DiagnosticPolicy.strict()` still refuses such an archive outright. A link whose
-  target the archive *does* carry but this read could not reach — encrypted, compressed,
-  split across volumes, or damaged — is a per-member failure instead, because recording
-  it as an outcome would drop a member the archive describes in full while reporting
-  success. In ZIP, 7z and RAR3/4, a damaged target (its data fails the CRC or HMAC, or
-  the decompressor) does not fail the listing: the link is listed without a target,
-  reported with `reason="target_data_damaged"`, and opening or extracting it raises the
-  damage.
+  target the archive *does* carry but this read could not reach — encrypted,
+  compressed, split across volumes with a part missing, or damaged — is a per-member
+  failure instead, because recording it as an outcome would drop a member the archive
+  describes in full while reporting success. In ZIP, 7z and RAR3/4, a damaged target
+  (its data fails the CRC or HMAC, or the decompressor) does not fail the listing: the
+  link is listed without a target, reported with `reason="target_data_damaged"`, and
+  opening or extracting it raises the damage.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small
@@ -163,9 +188,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
-  Directories are not in the collision map, so a *file* `Foo` and a *directory* `foo/`
-  that differ only by case are not detected as a collision: the outcome depends on
-  whether the destination filesystem is case-sensitive.
+  Directories are not in the collision map, and archivey checks a directory member
+  against it only when a file or symlink already holds its destination. So a *file* `x`
+  collides with a *directory* `x/` stored after it, but not with one stored before it.
+  A *file* `Foo` and a later *directory* `foo/` that differ only by case collide only
+  on a case-insensitive filesystem.
 - **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
   with context; genuine I/O errors propagate unchanged; no handler swallows or
   reclassifies an unknown exception.
@@ -184,14 +211,14 @@ re-running the extraction.
 ```python
 from archivey import ExtractionPolicy, OverwritePolicy, OnError, ExtractionLimits, ListingLimits
 
-archivey.extract(
-    "archive.zip",
-    "out/",
-    policy=ExtractionPolicy.STRICT,       # default
-    overwrite=OverwritePolicy.ERROR,      # or REPLACE / SKIP
-    on_error=OnError.STOP,                # or CONTINUE — failures only
-    limits=ExtractionLimits(...),         # or ExtractionLimits.UNLIMITED
-)
+with archivey.open_archive("archive.zip") as reader:
+    reader.extract_all(
+        "out/",
+        policy=ExtractionPolicy.STRICT,       # default
+        overwrite=OverwritePolicy.ERROR,      # or REPLACE / SKIP
+        on_error=OnError.STOP,                # or CONTINUE — failures only
+        limits=ExtractionLimits(...),         # or ExtractionLimits.UNLIMITED
+    )
 
 with archivey.open_archive(
     "huge.zip",
@@ -215,9 +242,15 @@ overwrite conflicts under `ERROR`). A policy **block** — an unsafe member refu
 universal path-safety check or a policy filter — is always recorded as `BLOCKED` and
 extraction continues, under either `STOP` or `CONTINUE`.
 
-A TAR archive has no index, so its extraction is one forward pass in either access
-mode. It does not fail closed: when a TAR is corrupt or truncated partway, the members
-read before the fault are already written, and then the call raises.
+An archive whose member list ends in damage (a TAR or RAR that is cut or corrupt
+partway, for example) does not fail closed. A TAR has no index, so its member list is
+read during its one forward pass, in either access mode; a RAR lists header by header.
+The members listed before the damage are written, and then the call raises the damage,
+usually `TruncatedError` or `CorruptionError`, under either `OnError`. No report is
+returned. This is what unrar and 7-Zip do, and the order `stream_members()` gives. A hard
+link in that prefix still gets its content, because its source always comes before it. A
+7z or ZIP keeps its member list in one index, so damage there fails `open_archive()` and
+nothing is written.
 
 To abort the whole archive on the first unsafe member (fail-closed strict security),
 pass `abort_on`:
@@ -225,7 +258,8 @@ pass `abort_on`:
 ```python
 from archivey import AbortOn
 
-archivey.extract("untrusted.zip", "out/", abort_on={AbortOn.BLOCKED_MEMBER})
+with archivey.open_archive("untrusted.zip") as reader:
+    reader.extract_all("out/", abort_on={AbortOn.BLOCKED_MEMBER})
 ```
 
 `abort_on` is independent of `OnError` and names three events:
@@ -257,7 +291,7 @@ read `ExtractionResult.presented_name` and let extraction finish.
 | `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
 | `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
 
-Selective extract on an open reader:
+Selective extract:
 
 ```python
 with archivey.open_archive("a.zip") as reader:
@@ -266,13 +300,14 @@ with archivey.open_archive("a.zip") as reader:
 
 ## Dry run
 
-Pass `dry_run=True` to `extract()` or `extract_all()` to see what an extraction would do
+Pass `dry_run=True` to `extract_all()` to see what an extraction would do
 without keeping anything:
 
 ```python
 from archivey import ExtractionStatus
 
-report = archivey.extract("backup.tar.gz", "out/", on_error="continue", dry_run=True)
+with archivey.open_archive("backup.tar.gz") as reader:
+    report = reader.extract_all("out/", on_error="continue", dry_run=True)
 for result in report.results:
     if result.status is not ExtractionStatus.EXTRACTED:
         print(result.status.value, result.member.name, result.error)
@@ -321,12 +356,15 @@ Archive order and identity matter more than “the” name.
 | Need to know | Detail |
 | --- | --- |
 | Safe ≠ unlimited | Traversal, symlink escapes, and bombs are blocked; huge/hostile archives can still raise `ResourceLimitError` unless you raise limits. |
-| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
+| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8 and the characters Windows refuses in a name (`<`, `>`, `"`, `?`, `*`, the vertical bar and the control characters, so `what?.txt` is written `what%3F.txt`), and write a `\` in a TAR name or link target as a separator, as Windows does; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
 | Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — the clobbered member's result is revised to `OVERWRITTEN`. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
-| Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename). It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
-| `REPLACE` and directories | `REPLACE` removes an existing directory only when it is empty. A non-empty one fails that member with `ExtractionError`, so a later member cannot delete files the run already wrote or files you already had. |
+| Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename), for a directory member landing on a file as for a file. It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
+| `RENAME` and directories | When a file or symlink, yours or the run's, holds a directory member's name, archivey writes the directory as `name (1)/` and keeps the file. The members inside it follow it: `dd/f` lands at `dd (1)/f`, and its result reports `requested_path` `dd/f` and `path` `dd (1)/f`. The CLI reports the directory's rename once, not once per member. |
+| `REPLACE` and directories | `REPLACE` removes an existing directory only when it is empty. A non-empty one fails that member with `ExtractionError`, so a later member cannot delete files the run already wrote or files you already had. When the run wrote the empty directory it removes, that directory's result is revised to `OVERWRITTEN`, like any clobbered member. Its `collided_with` stays `None` and `AbortOn.NAME_COLLISION` does not fire, because directories are not in the collision map. |
 | Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. |
-| Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `file:ads`, …). |
+| Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `COM¹`, `CONIN$`, `file:ads`, …). |
+| Links on Windows | A symlink target's `/` is written as `\`, so `sub/file` resolves as on POSIX. Creating a symlink needs Developer Mode or an elevated process; without it each symlink member fails with an `ExtractionError` that says so. NTFS allows 1024 names for one file; a hard link past that is written as a copy, and those copied bytes count toward `max_extracted_bytes` and the archive-wide `max_ratio`. |
+| Read-only members | A file, or an empty directory, that the archive stores without write permission is still replaced by a later member of the same name under `REPLACE`, on Windows too. |
 | `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |
 | `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. To raise instead, pass `abort_on={AbortOn.BLOCKED_MEMBER}`. |
 | `TRUSTED` still won’t traverse | Ownership / sticky bits only when allowed; path safety stays on. |
@@ -348,8 +386,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
   extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
   does not list first: it checks the limits as each member arrives in its one pass, so
-  members before the one that crosses a cap are already written when it raises. A
-  damaged TAR behaves the same way (see above). `stream_members()` / `streaming=True`
+  members before the one that crosses a cap are already written when it raises.
+  `stream_members()` / `streaming=True`
   stay unguarded by design, except on 7z, RAR and ISO where `max_members` is checked
   at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z, RAR or
   ISO. For 7z and RAR that parse bound is a member count, not a byte budget:
@@ -362,7 +400,7 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
-  `extract()`, so it is neither a listing nor an extraction cap. Trips raise
+  `extract_all()`, so it is neither a listing nor an extraction cap. Trips raise
   `ResourceLimitError`. Format detection is the exception: a `.lzma` or compressed-tar
   sample is decoded uncapped to recognise it, so under a memory cap an oversized
   declaration can surface as `MemoryError` from `open_archive` instead.
@@ -431,11 +469,15 @@ that data, which can mean decompressing it and asking your password provider. By
 links or not; on 7z that decodes each link's folder up to its last link, once. For an
 untrusted archive you only mean to list, `read_link_targets=False` stops the reader
 reading any of them on its own: those links list with `link_target=None` and no
-diagnostic. Extraction still writes them. `extract_all` runs your `members` selector and
-`filter` on the link first, with `link_target=None`, and reads the target only for a link
-both accept; a target it cannot read fails that member under `on_error`. `open()` on a
-link reads its target to follow it. Either way the target is filled in place on the
-member you hold. Like `listing_limits`, the setting is fixed for the reader's lifetime.
+diagnostic. Extraction still writes them. When extraction reaches a link whose target is
+still unread, under `read_link_targets=False` or in a streaming pass, `extract_all` runs
+your `members` selector and `filter` on the link first, with `link_target=None`, and
+reads the target only for a link both accept; it then calls your `filter` again with the
+target, so a filter that rewrites targets, such as `sanitize_names`, sees it, and a
+filter can see such a link twice. A target it cannot read fails that member under
+`on_error`. `open()` on a link reads its target to follow it. Either way the target is
+filled in place on the member you hold. Like `listing_limits`, the setting is fixed for
+the reader's lifetime.
 
 That read can show the member is not a link at all. A member flagged as a Windows
 reparse point whose data is not a reparse buffer is a file, and listing would have
@@ -458,7 +500,8 @@ members as archives, bound the depth and the cumulative size yourself.
 ## Hardening notes for callers
 
 **Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2
-decoder) are a performance path, not part of the defended fuzz surface. The default is
+decoder) are a performance path. The fuzz harness decodes each input with them and
+without them, and fails when the bytes or the verdict differ. The default is
 `AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
 a caller asks for seeking, so turning them off is something you do yourself. The
 gzip, zlib and raw DEFLATE decoder runs in a child process, so a native abort there
@@ -466,15 +509,18 @@ costs only the member; a busy loop in that child is not bounded by a timeout. Th
 decoder runs in-process. Third-party C++ can busy-loop on crafted input in a way Python
 timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
 latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
-set to `AcceleratorMode.OFF`) or enforce their own resource limits. Mutation and
-Atheris harnesses run with accelerators off for this reason.
+set to `AcceleratorMode.OFF`) or enforce their own resource limits.
 
 **External tools:** RAR member *data* is decompressed by an external program: RARLAB
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB
 program is installed. Each is found on the process `PATH`. `unar` receives a password on
 its command line, where other local users can see it while it runs; select
-`RarDecompressor.UNRAR` to rule that out. Keep these tools updated; treat their
-availability and behaviour as part of your deployment’s trust boundary.
+`RarDecompressor.UNRAR` to rule that out. If you don't trust either program, select
+`RarDecompressor.NONE`: archivey then runs neither, and refuses every RAR member it
+cannot read without them (anything compressed, encrypted or solid);
+`extract_all(..., on_error="continue")` then writes the members it can read and records
+the rest. Keep these tools updated; treat their availability and behaviour as part of
+your deployment’s trust boundary.
 
 Prefer extracting untrusted archives into a dedicated directory with limited
 permissions, then validating results before promoting them elsewhere.

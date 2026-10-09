@@ -12,8 +12,10 @@ from __future__ import annotations
 import bz2
 import hashlib
 import io
+import lzma
 import os
 import struct
+import subprocess
 import sys
 import zipfile
 import zlib
@@ -30,7 +32,9 @@ from archivey.exceptions import (
     CorruptionError,
     UnsupportedFeatureError,
 )
-from tests.conftest import requires
+from archivey.internal.streams.codecs import LzmaDataAfterEndError
+from tests.conftest import requires, requires_binary
+from tests.extract_util import open_and_extract
 
 
 @dataclass
@@ -48,6 +52,7 @@ class _Entry:
     header_offset: int | None = None  # central-directory value; default the real one
     extract_version: int = 20
     external_attr: int = 0o100644 << 16
+    flags: int = 0  # general-purpose bit flags, both headers
 
 
 def _build_zip(entries: list[_Entry]) -> bytes:
@@ -63,7 +68,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             "<4sHHHHHIIIHH",
             b"PK\x03\x04",
             e.extract_version,
-            0,  # flags
+            e.flags,
             e.method,
             0,  # time
             0x21,  # date: 1980-01-01
@@ -87,7 +92,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             20,  # version made by
             3,  # create system: Unix
             e.extract_version,
-            0,  # flags
+            e.flags,
             e.method,
             0,
             0x21,
@@ -177,7 +182,7 @@ def test_zip64_header_offset_past_ssize_max_is_typed(offset: int) -> None:
 def test_zip64_header_offset_past_ssize_max_extract_is_typed(tmp_path: Path) -> None:
     blob = _zip64_header_offset_zip(2**63)
     with pytest.raises(ArchiveyError):
-        archivey.extract(io.BytesIO(blob), tmp_path / "out")
+        open_and_extract(io.BytesIO(blob), tmp_path / "out")
 
 
 def test_zip64_header_offset_past_ssize_max_symlink_lists() -> None:
@@ -481,6 +486,91 @@ def test_bzip2_second_stream_that_breaks_the_crc_raises(
 
 
 # ---------------------------------------------------------------------------------------
+# S1: an LZMA (method 14) member and the bytes after its end marker.
+#
+# A member is one raw LZMA stream. It ended where liblzma's file reader ended it, which
+# starts a second raw stream on the bytes after an end marker and reads it as content.
+# `7z t` reports "Data Error" for any byte after the marker, whatever the declared size
+# covers, so that is CorruptionError here (bzip2 and DEFLATE, where 7-Zip only warns,
+# end the member silently; Z8 above).
+# ---------------------------------------------------------------------------------------
+
+_LZMA_EOS_FLAG = 0x0002  # general-purpose bit 1: the stream carries an end marker
+_LZMA1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
+
+
+def _lzma_member(stream: bytes, plain: bytes, *, flags: int = _LZMA_EOS_FLAG) -> bytes:
+    props = lzma._encode_filter_properties(_LZMA1)  # type: ignore[attr-defined]
+    # ZIP LZMA header: version 16.3, properties length, properties.
+    header = bytes([16, 3]) + len(props).to_bytes(2, "little") + props
+    entry = _Entry(
+        b"a", header + stream, method=14, plain=plain, extract_version=63, flags=flags
+    )
+    return _build_zip([entry])
+
+
+def _lzma_stream(plain: bytes = _BZ_PAYLOAD) -> bytes:
+    # Python's raw LZMA1 encoder always writes the end marker.
+    return lzma.compress(plain, format=lzma.FORMAT_RAW, filters=[_LZMA1])
+
+
+@pytest.mark.parametrize("plain", [_BZ_PAYLOAD * 2, _BZ_PAYLOAD], ids=["both", "first"])
+def test_lzma_member_with_a_second_stream_after_its_end_marker_is_corrupt(
+    plain: bytes,
+) -> None:
+    blob = _lzma_member(_lzma_stream() * 2, plain)
+    assert _outcome(blob) == ("raise", LzmaDataAfterEndError)
+
+
+@pytest.mark.parametrize("tail", [b"\x00", b"\x55" * 3], ids=["zero", "junk"])
+def test_lzma_member_with_any_byte_after_its_end_marker_is_corrupt(
+    tail: bytes,
+) -> None:
+    blob = _lzma_member(_lzma_stream(), _BZ_PAYLOAD)
+    assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
+    blob = _lzma_member(_lzma_stream() + tail, _BZ_PAYLOAD)
+    assert _outcome(blob) == ("raise", LzmaDataAfterEndError)
+
+
+def test_lzma_member_without_the_end_marker_flag() -> None:
+    # Bit 1 clear: the stream ends where the declared size says. One that does carry
+    # a marker there is still checked for input after it, as 7-Zip does...
+    blob = _lzma_member(_lzma_stream() * 2, _BZ_PAYLOAD, flags=0)
+    assert _outcome(blob) == ("raise", LzmaDataAfterEndError)
+    # ...and one without a marker (cut off here) reads to its size.
+    blob = _lzma_member(_lzma_stream()[:-5], _BZ_PAYLOAD, flags=0)
+    assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
+
+
+@requires_binary("7z")
+def test_7zip_and_zipfile_written_lzma_members_read_clean(tmp_path: Path) -> None:
+    files = {f"f{i}.txt": os.urandom(3000 + 1000 * i).hex().encode() for i in range(3)}
+    for name, content in files.items():
+        (tmp_path / name).write_bytes(content)
+    by_7zip = tmp_path / "7zip.zip"
+    subprocess.run(
+        [
+            "7z",
+            "a",
+            "-tzip",
+            "-mm=LZMA",
+            str(by_7zip),
+            *(str(tmp_path / n) for n in files),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    by_zipfile = tmp_path / "zipfile.zip"
+    with zipfile.ZipFile(by_zipfile, "w", compression=zipfile.ZIP_LZMA) as zf:
+        for name, content in files.items():
+            zf.writestr(name, content)
+    for archive in (by_7zip, by_zipfile):
+        with archivey.open_archive(archive) as ar:
+            read = {m.name: ar.read(m) for m in ar.members() if m.is_file}
+        assert read == files
+
+
+# ---------------------------------------------------------------------------------------
 # Z9: a member declaring size 0 is never verified on a chunked read.
 # ---------------------------------------------------------------------------------------
 
@@ -500,7 +590,7 @@ def test_zero_size_member_with_wrong_crc_raises_on_chunked_read() -> None:
 def test_zero_size_member_with_wrong_crc_does_not_extract_clean(tmp_path: Path) -> None:
     blob = _build_zip([_Entry(b"a", b"", crc=0x12345678)])
     with pytest.raises(CorruptionError):
-        archivey.extract(io.BytesIO(blob), tmp_path / "out")
+        open_and_extract(io.BytesIO(blob), tmp_path / "out")
 
 
 @pytest.mark.parametrize("method", [0, 8])
@@ -524,7 +614,7 @@ def test_zero_declared_size_with_data_does_not_extract_clean(tmp_path: Path) -> 
         [_Entry(b"a", _raw_deflate(b"hello"), method=8, plain=b"", usize=0)]
     )
     with pytest.raises(CorruptionError):
-        archivey.extract(io.BytesIO(blob), tmp_path / "out")
+        open_and_extract(io.BytesIO(blob), tmp_path / "out")
 
 
 # ---------------------------------------------------------------------------------------

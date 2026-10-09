@@ -17,6 +17,7 @@ import pytest
 
 import archivey
 from archivey.exceptions import ResourceLimitError, UnsupportedFeatureError
+from tests.extract_util import open_and_extract
 from tests.zipcrypto import _Keys, build_zipcrypto_zip
 
 # 7-Zip 16.02 `7z a -tzip -mm=LZMA:eos=off`: one LZMA (method 14) member `f.txt` with
@@ -39,7 +40,7 @@ def test_lzma_member_without_eos_marker_extracts(tmp_path: Path) -> None:
         assert not info.flag_bits & 0x2
         assert zf.read(info) == _LZMA_NO_EOS_PAYLOAD  # stdlib reads it
 
-    archivey.extract(io.BytesIO(_LZMA_NO_EOS_ZIP), tmp_path / "out")
+    open_and_extract(io.BytesIO(_LZMA_NO_EOS_ZIP), tmp_path / "out")
     assert (tmp_path / "out" / "f.txt").read_bytes() == _LZMA_NO_EOS_PAYLOAD
 
     # The canonical read loop: keep reading until b"".

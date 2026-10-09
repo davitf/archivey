@@ -23,11 +23,11 @@ from archivey import (
     ExtractionLimits,
     ListingLimits,
     MemberType,
-    extract,
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     DiagnosticDisposition,
     DiagnosticPolicy,
@@ -46,6 +46,7 @@ from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
 )
+from tests.extract_util import open_and_extract
 from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
@@ -827,10 +828,10 @@ def test_sparse_member_extracts_dense_and_counts_toward_ratio(tmp_path: Path) ->
     archive.write_bytes(_tar_sparse_gnu(logical))
 
     with pytest.raises(ResourceLimitError):
-        extract(archive, tmp_path / "default")
+        open_and_extract(archive, tmp_path / "default")
 
     out = tmp_path / "unlimited"
-    extract(archive, out, limits=ExtractionLimits(max_ratio=None))
+    open_and_extract(archive, out, limits=ExtractionLimits(max_ratio=None))
     written = out / "sparse.bin"
     assert written.stat().st_size == logical
     with written.open("rb") as f:
@@ -994,6 +995,167 @@ def test_corrupt_mid_header_streaming_extract_writes_then_raises(
     assert (dest / "a.txt").exists()
     assert (dest / "a.txt").read_bytes() == b"aaa"
     assert not (dest / "b.txt").exists()
+
+
+# A zero block, then a damaged second end-of-archive block: GNU tar ("A lone zero block")
+# and 7-Zip list every member with a warning and exit 0. The second block is damaged by
+# one stray byte, or holds a header-shaped run of junk.
+_DAMAGED_SECOND_BLOCKS = {
+    "stray_byte": b"\x00" * 100 + b"\x01" + b"\x00" * 411,
+    "junk_header": b"A" * 100 + b"\x00" * 412,
+}
+
+
+def _tar_damaged_second_eof_block(damage: bytes) -> bytes:
+    data = _tar_three()
+    end = _tar_content_end(data)
+    return data[:end] + b"\x00" * 512 + damage + b"\x00" * (512 * 8)
+
+
+def _eof_marker_contexts(ar: Any) -> list[ArchiveEofContext]:
+    contexts = [
+        d.context
+        for d in ar.diagnostics.retained
+        if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+    ]
+    assert all(isinstance(c, ArchiveEofContext) for c in contexts)
+    return contexts
+
+
+_THREE = {"a.txt": b"aaa", "b.txt": b"b" * 4000, "c.txt": b"ccc"}
+
+
+@pytest.mark.parametrize("damage", _DAMAGED_SECOND_BLOCKS, ids=str)
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_damaged_second_eof_block_lists_every_member(
+    streaming: bool, damage: str
+) -> None:
+    # The listing ends at the zero block, so it is whole: only the end-of-archive
+    # marker is damaged. That is the ARCHIVE_EOF_MARKER_MISSING diagnostic, not the
+    # CorruptionError a rejected header gets.
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS[damage])
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        read = {m.name: stream.read() for m, stream in ar.stream_members() if stream}
+        contexts = _eof_marker_contexts(ar)
+        if not streaming:
+            assert [m.name for m in ar.members()] == list(_THREE)
+            assert {m.name: ar.read(m) for m in ar.members()} == _THREE
+    assert read == _THREE
+    assert len(contexts) == 1
+    assert contexts[0].format == "tar"
+    # Its own marker, so the context says the listing is whole: a rejected header
+    # reports "two_zero_blocks" with the same observed_kind and raises.
+    assert contexts[0].expected_marker == "second_zero_block"
+    assert contexts[0].expected_bytes == 512
+    assert contexts[0].observed_bytes == 512
+    assert contexts[0].observed_kind == "nonzero"
+
+
+def test_damaged_second_eof_block_gzip_lists_every_member(tmp_path: Path) -> None:
+    import gzip
+
+    path = tmp_path / "damaged-end.tar.gz"
+    path.write_bytes(
+        gzip.compress(
+            _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+        )
+    )
+    with open_archive(path) as ar:
+        assert [m.name for m in ar.members()] == list(_THREE)
+        assert len(_eof_marker_contexts(ar)) == 1
+
+
+def _gzip_with_bad_crc(data: bytes) -> bytes:
+    import gzip
+
+    out = bytearray(gzip.compress(data))
+    out[-8] ^= 0xFF  # the footer's CRC-32 over the whole decoded stream
+    return bytes(out)
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    "tail",
+    ["healthy_trailer", "damaged_second_block"],
+)
+def test_bad_gzip_crc_is_reported_after_a_damaged_second_eof_block(
+    tmp_path: Path, streaming: bool, tail: str
+) -> None:
+    # The gzip footer sits past the trailer, in the record padding, so the trailing
+    # scan is where its CRC-32 over the members is checked. A damaged second block
+    # must not skip that scan and hand the members back as whole. The 64 KiB of
+    # padding is a ``tar -b128`` record; with less, the streaming codec can reach the
+    # footer while the last header is still being read.
+    if tail == "healthy_trailer":
+        plain = _tar_three()
+    else:
+        plain = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+    path = tmp_path / "bad-crc.tar.gz"
+    path.write_bytes(_gzip_with_bad_crc(plain + b"\x00" * (64 * 1024)))
+    with raises_corruption_not_truncation():
+        with open_archive(path, streaming=streaming) as ar:
+            list(ar.stream_members())
+
+
+def test_damaged_second_eof_block_then_junk_reports_trailing_data() -> None:
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+    end = _tar_content_end(data)  # the end of the damaged block
+    data = data[:end] + b"\x00" * 100 + b"junk" + data[end + 104 :]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        assert [m.name for m in ar.members()] == list(_THREE)
+        trailing = [
+            d.context
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+        assert len(_eof_marker_contexts(ar)) == 1
+    assert len(trailing) == 1
+    assert isinstance(trailing[0], ArchiveEofContext)
+    assert trailing[0].expected_marker == "zeros_to_eof"
+    assert trailing[0].observed_bytes == 100
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_damaged_second_eof_block_refused_under_strict(streaming: bool) -> None:
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(
+        source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
+    ) as ar:
+        with pytest.raises(DiagnosticRaisedError):
+            list(ar.stream_members())
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_damaged_second_eof_block_extracts_every_member(
+    tmp_path: Path, streaming: bool
+) -> None:
+    data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["junk_header"])
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    dest = tmp_path / "out"
+    with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+        ar.extract_all(dest)
+        assert len(_eof_marker_contexts(ar)) == 1
+    assert {p.name: p.read_bytes() for p in dest.iterdir()} == _THREE
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_zero_block_then_junk_with_no_member_stays_corruption(
+    streaming: bool,
+) -> None:
+    # With no member before the zero block there is no listing to keep, and a file
+    # that is a zero block and then junk is not shown to be a tar at all.
+    data = b"\x00" * 512 + b"A" * 100 + b"\x00" * (512 * 9 - 100)
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    with raises_corruption_not_truncation() as excinfo:
+        with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+            list(ar.stream_members())
+    # There is no member header and no listing to shorten, so the message says what
+    # is actually wrong.
+    assert "has no member" in str(excinfo.value)
+    assert "shortened listing" not in str(excinfo.value)
 
 
 def test_padded_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:
@@ -1468,10 +1630,10 @@ def test_chain_through_same_named_members_not_false_cycle() -> None:
         ) -> None:
             super().__init__(ArchiveFormat.TAR, streaming=False, archive_name=None)
             self._payloads = payloads
-            by_name_lists: dict[str, list[ArchiveMember]] = {}
+            self._listed = members
             for m in members:
-                BaseArchiveReader._index_member_name(by_name_lists, m)
-            self._publish_materialized(members, by_name_lists, error=None)
+                self._index_member_name(m)
+            self._publish_materialized(error=None)
 
         def _iter_members(self):
             materialized = self._materialized
@@ -1937,6 +2099,67 @@ def test_pre_1970_pax_atime_lists_its_date(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("key", "attr"),
+    [
+        ("atime", "accessed"),
+        ("ctime", "ctime"),
+        ("LIBARCHIVE.creationtime", "created"),
+        ("mtime", "modified"),
+    ],
+)
+@pytest.mark.parametrize("raw", ["not-a-time", "1e30", "nan"])
+def test_bad_pax_time_is_reported(
+    tmp_path: Path, key: str, attr: str, raw: str
+) -> None:
+    # Every PAX time record that does not decode is reported the same way: the field
+    # is None and MEMBER_TIMESTAMP_INVALID names the member field it would have
+    # filled, as every format does. tarfile itself turns a PAX mtime
+    # that is not a number into 0, which must not list as the Unix epoch.
+    path = tmp_path / "bad_time.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("t.txt")
+        info.mtime = 1_600_000_000
+        info.pax_headers = {key: raw}
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert getattr(member, attr) is None
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 1
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        assert diagnostic.context.field == attr
+        assert key in diagnostic.message
+
+
+def test_several_bad_pax_times_on_one_member_are_each_reported(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bad_times.tar"
+    keys = ("atime", "ctime", "LIBARCHIVE.creationtime")
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("t.txt")
+        info.pax_headers = dict.fromkeys(keys, "nan")
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert (member.accessed, member.ctime, member.created) == (None, None, None)
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 3
+        fields = sorted(d.context.field for d in member.diagnostics)
+        assert fields == ["accessed", "created", "ctime"]
+
+
+def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
+    path = tmp_path / "epoch.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("t.txt")
+        info.pax_headers = {"mtime": "0"}
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        assert ar.get("t.txt").modified == datetime(1970, 1, 1, tzinfo=timezone.utc)
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+
+
 def _tar_hardlink_then_target() -> bytes:
     """``h`` is a hardlink to ``t``; the only ``t`` comes after it, and an earlier
     ``u`` that a later ``u`` replaces is linked from ``hu`` between the two."""
@@ -1990,7 +2213,7 @@ def test_hardlink_resolves_to_an_earlier_member_only(
 
 @pytest.mark.parametrize("codec", ["gz", "bz2", "xz"])
 def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None:
-    """``archivey.extract`` on a compressed tar reads it in one forward pass: the
+    """``extract_all`` on a compressed tar reads it in one forward pass: the
     listing limits are enforced as members arrive rather than by listing the whole
     archive first, so no seek goes back and ``STREAM_REWIND_REDECOMPRESSES``, set to
     ``RAISE``, never fires. A 2 MiB member makes a rewind large enough to report."""
@@ -1998,7 +2221,6 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
     import gzip
     import lzma
 
-    import archivey
     from archivey.diagnostics import DiagnosticDisposition, DiagnosticPolicy
 
     payload = bytes(range(256)) * (8 * 1024)
@@ -2022,7 +2244,7 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
             }
         )
     )
-    report = archivey.extract(archive, tmp_path / "out", config=config)
+    report = open_and_extract(archive, tmp_path / "out", config=config)
     assert len(report.results) == 3
     for name in ("a.bin", "b.bin", "h.bin"):
         assert (tmp_path / "out" / name).read_bytes() == payload
@@ -2032,8 +2254,6 @@ def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None
 def test_extract_enforces_listing_limits_as_members_arrive(tmp_path: Path) -> None:
     """Without listing first, ``max_members`` still refuses the extraction, at the
     member that crosses it, before that member is written."""
-    import archivey
-
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w") as t:
         for i in range(5):
@@ -2044,7 +2264,7 @@ def test_extract_enforces_listing_limits_as_members_arrive(tmp_path: Path) -> No
     archive.write_bytes(raw.getvalue())
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
     with pytest.raises(ResourceLimitError, match="max_members"):
-        archivey.extract(archive, tmp_path / "out", config=config)
+        open_and_extract(archive, tmp_path / "out", config=config)
     assert not (tmp_path / "out" / "f3").exists()
 
 

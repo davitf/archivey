@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TextIO
@@ -39,6 +39,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,
+    MemberType,
 )
 
 
@@ -298,7 +299,24 @@ def _walk_stays_inside(
     return current
 
 
-def _links_stay_inside(root: Path) -> bool:
+def _disk_links(root: Path) -> Iterator[tuple[PurePath, str]]:
+    """Each symlink under ``root`` with its target, listed from disk as it is read."""
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    yield Path(entry.path), os.readlink(entry.path)
+                elif entry.is_dir():
+                    pending.append(Path(entry.path))
+
+
+def _links_stay_inside(
+    root: PurePath,
+    links: Iterable[tuple[PurePath, str]],
+    readlink: Callable[[PurePath], str | None] = _readlink_on_disk,
+) -> bool:
     """Whether every symlink under ``root`` reaches its target without leaving ``root``.
 
     The hoist moves ``root`` one level up after extraction checked its links against
@@ -313,29 +331,26 @@ def _links_stay_inside(root: Path) -> bool:
     The walk follows each symlink on the way, so a chain cannot hide a climb, and an
     absolute target always blocks. A path that ends at nothing is walked by name. A
     directory that cannot be listed blocks too: what is under it was not checked.
+
+    ``links`` is every symlink under ``root`` with its target, and ``readlink`` answers
+    each step from the same source. An ``OSError`` raised while ``links`` is listed
+    blocks: so a disk listing must be passed unconsumed, not as a list built first.
     """
-    pending = [root]
-    while pending:
-        directory = pending.pop()
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if entry.is_symlink():
-                        target = os.readlink(entry.path)
-                        if (
-                            _walk_stays_inside(
-                                directory, target, root, [_MAX_LINK_HOPS]
-                            )
-                            is None
-                        ):
-                            return False
-                    elif entry.is_dir():
-                        pending.append(Path(entry.path))
-        except OSError:
-            # A directory the walk cannot list could hold anything: keep the tree
-            # where it is rather than move what was not looked at.
-            return False
-    return True
+    try:
+        return all(
+            _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS], readlink)
+            is not None
+            for path, target in links
+        )
+    except OSError:
+        # A directory the walk cannot list could hold anything: keep the tree
+        # where it is rather than move what was not looked at.
+        return False
+
+
+def _disk_links_stay_inside(root: Path) -> bool:
+    """:func:`_links_stay_inside` for a tree on disk, listed and read as it is walked."""
+    return _links_stay_inside(root, _disk_links(root))
 
 
 def _recorded_links_stay_inside(top: str, links: tuple[tuple[str, str], ...]) -> bool:
@@ -346,34 +361,31 @@ def _recorded_links_stay_inside(top: str, links: tuple[tuple[str, str], ...]) ->
         PurePosixPath(name): target for name, target in links
     }
     root = PurePosixPath(top)
-    for path, target in targets.items():
-        if root not in path.parents:
-            continue
-        if (
-            _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS], targets.get)
-            is None
-        ):
-            return False
-    return True
+    under = ((path, t) for path, t in targets.items() if root in path.parents)
+    return _links_stay_inside(root, under, targets.get)
 
 
-def _keep_reason(wrapper_existed: bool, block: str | None) -> str | None:
+def _keep_reason(
+    wrapper_existed: bool, is_symlink: bool, links_leave: Callable[[], bool]
+) -> str | None:
     """Why the hoist leaves the wrapper's single entry in place, or ``None`` to move it.
 
-    ``block`` is what the tree itself says: ``"symlink"`` when the entry is a symlink,
-    ``"link_leaves"`` when a symlink in it leaves it on the way to its target
-    (:func:`_links_stay_inside`).
+    ``links_leave`` says whether a symlink in the entry may leave it on the way to its
+    target, which includes a tree that could not be fully walked
+    (:func:`_links_stay_inside`); it runs only when nothing earlier settled it.
     """
     if wrapper_existed:
         # The directory is the operator's, and its only entry may be their own file.
         return "the folder was already there, so its content may be your own"
-    if block == "symlink":
+    if is_symlink:
         # A link's relative target is read from its own directory, which the move
         # changes from the wrapper to the working directory: `b -> passwd` would then
         # name the operator's own `passwd`, and `b -> ../etc/passwd` one outside it.
         return "its only entry is a symlink, which the move would repoint"
-    if block == "link_leaves":
-        return "a symlink in it points outside it, and would point elsewhere if moved"
+    if links_leave():
+        return (
+            "it may hold a symlink that points outside it, which a move would repoint"
+        )
     return None
 
 
@@ -386,9 +398,8 @@ def maybe_hoist_single_root(
 ) -> _HoistResult:
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
-    The entry stays in the wrapper, and a line says why, when the wrapper was already
-    there (``wrapper_existed``), when the entry is a symlink, or when a symlink in the
-    entry leaves it on the way to its target (:func:`_links_stay_inside`).
+    The entry stays in the wrapper, and a line says why, for the reasons
+    :func:`_keep_reason` gives.
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
     after an always-wrap extract, without a pre-extract metadata pass. The final
@@ -407,14 +418,11 @@ def maybe_hoist_single_root(
     if len(children) != 1:
         return _HoistResult(wrapper)
     child = children[0]
-    block = None
-    if wrapper_existed:
-        pass  # the reason is settled; walking the tree would not change it
-    elif child.is_symlink():
-        block = "symlink"
-    elif child.is_dir() and not _links_stay_inside(child):
-        block = "link_leaves"
-    reason = _keep_reason(wrapper_existed, block)
+    reason = _keep_reason(
+        wrapper_existed,
+        child.is_symlink(),
+        lambda: child.is_dir() and not _disk_links_stay_inside(child),
+    )
     if reason is not None:
         print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
@@ -498,18 +506,15 @@ def predict_hoist(
         return _HoistResult(wrapper)
     ((name, is_dir),) = tops
     links = report._dry_run_links
-    block = None
-    if wrapper_existed:
-        pass  # the reason is settled, as in the hoist
-    elif links is None:
-        # Part of the scratch tree could not be read, and the hoist keeps a tree it
-        # cannot fully walk.
-        block = "link_leaves"
-    elif any(path == name for path, _ in links):
-        block = "symlink"
-    elif is_dir and not _recorded_links_stay_inside(name, links):
-        block = "link_leaves"
-    reason = _keep_reason(wrapper_existed, block)
+    # ``links`` is ``None`` when part of the scratch tree could not be read, and the
+    # hoist keeps a tree it cannot fully walk.
+    reason = _keep_reason(
+        wrapper_existed,
+        links is not None and any(path == name for path, _ in links),
+        lambda: (
+            links is None or (is_dir and not _recorded_links_stay_inside(name, links))
+        ),
+    )
     if reason is not None:
         print(f"would keep in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
@@ -533,33 +538,35 @@ def _summary_dest_label(
 ) -> str:
     """Closing summary destination; prefer the single extracted top when dest is cwd.
 
-    Returned terminal-safe. The single top is a member's own name, and the target is
-    either the operator's ``-d`` or a wrapper named after the archive file — any of
-    which can carry control bytes, and this is the last line the operator reads.
+    The single top is the name the run wrote, which a rename can move off the member's
+    own name: naming the member's would point at the operator's file. Returned
+    terminal-safe: the top, the operator's ``-d`` and a wrapper named after the archive
+    file can all carry control bytes, and this is the last line the operator reads.
 
-    A dry run wrote nothing to look at, so it answers from what its scratch tree held:
-    the target is a directory the run would create, and the single top's kind is the
-    one the scratch tree gave it."""
+    A dry run wrote nothing to look at, so it answers from what its scratch tree held,
+    which is what a real run's extracted results hold: the target is a directory the
+    run would create, and the single top's kind is the one the scratch tree gave it."""
     if target != Path("."):
         if dry_run or target.is_dir():
             return f"{escape_path(target)}/"
         return escape_path(target)
-    tops: set[str] = set()
-    for result in report:
-        if result.status is not ExtractionStatus.EXTRACTED:
-            continue
-        name = result.member.name.strip("/")
-        if name:
-            tops.add(name.split("/", 1)[0])
-    if len(tops) == 1:
-        only = next(iter(tops))
-        if dry_run:
-            is_dir = dict(_dry_run_top_level(report)).get(only, False)
-        else:
-            on_disk = Path(only)
-            is_dir = on_disk.is_dir() and not on_disk.is_symlink()
-        return f"{escape_member_name(only)}/" if is_dir else escape_member_name(only)
-    return "."
+    if dry_run:
+        tops = dict(_dry_run_top_level(report))
+    else:
+        written = (
+            _relative_name(r.path, target) or r.member.name.strip("/")
+            for r in report
+            if r.status is ExtractionStatus.EXTRACTED
+        )
+        # The kind is read from disk below, once there is a single top.
+        tops = dict.fromkeys({name.split("/", 1)[0] for name in written} - {""}, False)
+    if len(tops) != 1:
+        return "."
+    ((only, is_dir),) = tops.items()
+    if not dry_run:
+        on_disk = Path(only)
+        is_dir = on_disk.is_dir() and not on_disk.is_symlink()
+    return f"{escape_member_name(only)}/" if is_dir else escape_member_name(only)
 
 
 def _dry_run_top_level(report: ExtractionReport) -> tuple[tuple[str, bool], ...]:
@@ -569,6 +576,18 @@ def _dry_run_top_level(report: ExtractionReport) -> tuple[tuple[str, bool], ...]
     requirement records it as an exception. A dry run writes nothing, so nothing else
     can say what a real run would leave at the top of ``dest``."""
     return report._dry_run_top_level or ()
+
+
+def _follows_renamed_dir(
+    requested: Path, path: Path, renamed_dirs: dict[Path, Path]
+) -> bool:
+    """Whether ``requested`` -> ``path`` only moved with its nearest renamed ancestor
+    directory: the same tail under that directory's written name."""
+    for ancestor in requested.parents:
+        renamed_to = renamed_dirs.get(ancestor)
+        if renamed_to is not None:
+            return path == renamed_to / requested.relative_to(ancestor)
+    return False
 
 
 def _report_extraction(
@@ -603,6 +622,20 @@ def _report_extraction(
     blocked = 0
     failed = 0
     rerooted = 0
+    # Every directory rename in the run: requested path -> written path. A member
+    # inside a renamed directory follows it (``dd/f`` -> ``dd (1)/f``) and so also
+    # reports ``requested_path != path``; that is the directory's one rename, not a new
+    # one. Collected before the walk, as the result that carries the rename is not
+    # always first: with the directory stored twice, it is the later copy, after the
+    # members written between the two.
+    renamed_dirs = {
+        r.requested_path: r.path
+        for r in report.results
+        if r.member.type is MemberType.DIRECTORY
+        and r.requested_path is not None
+        and r.path is not None
+        and r.requested_path != r.path
+    }
     for result in report:
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
@@ -611,6 +644,11 @@ def _report_extraction(
                 result.requested_path is not None
                 and result.path is not None
                 and result.requested_path != result.path
+                # An anti-item deletes; where it deleted is not a rename.
+                and not result.member.is_anti
+                and not _follows_renamed_dir(
+                    result.requested_path, result.path, renamed_dirs
+                )
             )
             if was_renamed:
                 renamed += 1
@@ -731,10 +769,11 @@ def _report_extraction(
 def _escaped_where(result: ExtractionResult, target: Path) -> str:
     """The destination to report for a member that did not keep it, terminal-safe.
 
-    ``requested_path`` is built from the member's own name, so it carries whatever
-    control bytes the archive chose — the portable rewrite does not strip them under any
-    policy. Printing it raw is the line-spoofing vector ``escape_member_name`` exists to
-    close, so both the path and the name fallback go through it.
+    ``requested_path`` is built from the member's own name. STRICT and STANDARD write the
+    controls 0x01-0x1F as ``%XX``, but other non-printable characters (DEL, the C1
+    controls, U+2028) pass through, and TRUSTED writes every name as stored. Printing it
+    raw is the line-spoofing vector ``escape_member_name`` exists to close, so both the
+    path and the name fallback go through it.
 
     Rendered relative to the extraction root first, matching ``name rewritten:``. That is
     not only for brevity: ``escape_member_name`` escapes backslashes, so handing it a

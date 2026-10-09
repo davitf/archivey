@@ -34,8 +34,6 @@ from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
-    EncryptedVerificationContext,
-    MemberTimestampContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -55,6 +53,7 @@ from archivey.internal.backends.sevenzip_detect import (
 from archivey.internal.backends.sevenzip_methods import is_aes, lookup
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
+    FolderGraph,
     PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
@@ -70,6 +69,7 @@ from archivey.internal.backends.sevenzip_parser import (
     read_signature_and_next_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
+    HEADER_PASSWORD_REJECTED,
     decode_encoded_header,
     decode_folder_to_bytes,
     encoded_header_needs_password,
@@ -83,7 +83,6 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -102,7 +101,7 @@ from archivey.internal.password_confirm import (
     REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
-    UnverifiedPasswordReadWatch,
+    attempt_with_confirm,
     plan_password_confirm,
     run_password_confirm_plan,
 )
@@ -119,7 +118,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
-from archivey.terminal import quoted
+from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
@@ -137,7 +136,7 @@ from archivey.types import (
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-_S_IFMT = 0o170000
+_FILE_ATTRIBUTE_UNIX_EXTENSION = 0x8000
 
 
 def _written_on_unix(attrs: int | None) -> bool:
@@ -151,7 +150,7 @@ def _written_on_unix(attrs: int | None) -> bool:
     high word non-zero. A Windows word never has ``S_IFMT`` bits there, while every
     Unix ``st_mode`` does, so the file type is the test.
     """
-    return attrs is not None and bool((attrs >> 16) & _S_IFMT)
+    return attrs is not None and bool((attrs >> 16) & UNIX_FILE_TYPE_MASK)
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -169,12 +168,14 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
     )
 
 
-_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
+# ``\Z``, not ``$``: ``$`` also matches before a final newline, which would strip the
+# suffix from ``name.7z\n`` and leave the newline in the member name.
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?\Z", re.IGNORECASE)
+
+
 # The folder settles a wrong key inside the confirm prefix when a REJECTING_CODECS
 # codec decodes the AES output. Filters never reject: ``MethodKind.LZMA_FAMILY`` also
 # holds Delta and BCJ, which is why the check is by codec and not by method kind.
-
-
 def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
     """Whether a decoder of the decrypted bytes rejects random input (confirm rung 3).
 
@@ -184,26 +185,11 @@ def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
     reject one. Listing never validates the graph, so the walk tolerates any wiring.
     """
     coders = folder.coders
-    in_owner: dict[int, int] = {}
-    out_owner: dict[int, int] = {}
-    total_in = total_out = 0
-    for index, coder in enumerate(coders):
-        for offset in range(coder.num_in_streams):
-            in_owner[total_in + offset] = index
-        for offset in range(coder.num_out_streams):
-            out_owner[total_out + offset] = index
-        total_in += coder.num_in_streams
-        total_out += coder.num_out_streams
-    consumers: dict[int, list[int]] = {}
-    for in_index, out_index in folder.bind_pairs:
-        producer = out_owner.get(out_index)
-        consumer = in_owner.get(in_index)
-        if producer is not None and consumer is not None:
-            consumers.setdefault(producer, []).append(consumer)
+    graph = FolderGraph.of(folder)
     pending = [index for index, coder in enumerate(coders) if is_aes(coder.method)]
     seen: set[int] = set()
     while pending:
-        for index in consumers.get(pending.pop(), ()):
+        for index in graph.consumers(pending.pop()):
             if index in seen:
                 continue
             seen.add(index)
@@ -218,28 +204,24 @@ def _compression_coders(folder: SevenZipFolder) -> list[SevenZipCoder]:
     """The folder's coders from its output down each coder's first input.
 
     Listing never validates the graph (only decoding does, in ``plan_folder``), so this
-    walk tolerates any wiring: it stops at a pack stream, an unbound input or a coder
-    it has already visited. A graph with no single output falls back to the coder
-    list reversed, which is the same order for a linear chain written in list order.
+    walk tolerates any wiring: it stops at a pack stream, an unbound input, a coder
+    with no input or a coder it has already visited. A graph with no single output
+    falls back to the coder list reversed, which is the same order for a linear chain
+    written in list order.
     """
     coders = folder.coders
-    bound = dict(folder.bind_pairs)
-    consumed = set(bound.values())
-    roots = [i for i in range(len(coders)) if i not in consumed]
+    graph = FolderGraph.of(folder)
+    roots = graph.roots()
     if len(roots) != 1 or any(c.num_out_streams != 1 for c in coders):
         return list(reversed(coders))
-    in_base: list[int] = []
-    total = 0
-    for coder in coders:
-        in_base.append(total)
-        total += coder.num_in_streams
     walk: list[SevenZipCoder] = []
     seen: set[int] = set()
     index: int | None = roots[0]
-    while index is not None and index not in seen and 0 <= index < len(coders):
+    while index is not None and index not in seen:
         seen.add(index)
         walk.append(coders[index])
-        index = bound.get(in_base[index])
+        first_input = graph.inputs[index][:1]
+        index = graph.producer(first_input[0]) if first_input else None
     return walk
 
 
@@ -272,6 +254,31 @@ def _folder_position(member: ArchiveMember) -> int:
 
 def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
+
+
+class _LazyFolder:
+    """A folder's ``SolidBlockReader``, opened on the first read into it.
+
+    It holds one folder at a time: a caller moving to another folder must ``close()``.
+    """
+
+    def __init__(self, open_folder: Callable[[int, ArchiveMember], BinaryIO]) -> None:
+        self._open_folder = open_folder
+        self._solid: SolidBlockReader | None = None
+        self._index: int | None = None
+
+    def get(self, folder_index: int, member: ArchiveMember) -> SolidBlockReader:
+        assert self._index is None or self._index == folder_index
+        if self._solid is None:
+            self._solid = SolidBlockReader(self._open_folder(folder_index, member))
+            self._index = folder_index
+        return self._solid
+
+    def close(self) -> None:
+        if self._solid is not None:
+            self._solid.close()
+            self._solid = None
+            self._index = None
 
 
 class SevenZipReader(BaseArchiveReader):
@@ -316,8 +323,9 @@ class SevenZipReader(BaseArchiveReader):
         # A symlink's target is its member data, usually mid-way through a solid
         # folder, so link bytes are read ahead of resolution, a folder at a time
         # (``format-7z``, "A 7z folder is decoded at most once for its link targets"):
-        # by listing's folder sweep, or by a streaming pass as its cursor reaches the
-        # link. Keyed by member id. A value that is an exception is the failed read,
+        # by listing's folder sweep, or by a pass in either mode as its cursor reaches
+        # the link; an abandoned pass leaves its entries for a later listing or pass.
+        # Keyed by member id. A value that is an exception is the failed read,
         # raised again when the link resolves, so it gets the handling a direct read
         # would have got.
         self._link_data: dict[int, bytes | ArchiveyError] = {}
@@ -415,20 +423,20 @@ class SevenZipReader(BaseArchiveReader):
             try:
                 decoded = decode(_password_to_kdf_bytes(password))
             except CorruptionError as exc:
-                raise EncryptionError("Password(s) rejected for the 7z header") from exc
+                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
             try:
                 plain = parse_decoded_header(decoded, max_members=max_members)
             except (
                 CorruptionError,
                 UnsupportedFeatureError,
             ) as exc:
-                raise EncryptionError("Password(s) rejected for the 7z header") from exc
+                raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
             # O8: 7zAES has no password check value. Wrong-key garbage occasionally
             # LZMA-decodes into a header that parses with zero file records (py7zr
             # omits the encoded-header folder CRC). Legitimate writers never encrypt
             # an empty header — treat that as a rejected password.
             if not plain.files:
-                raise EncryptionError("Password(s) rejected for the 7z header")
+                raise EncryptionError(HEADER_PASSWORD_REJECTED)
             return plain
 
         try:
@@ -440,7 +448,7 @@ class SevenZipReader(BaseArchiveReader):
                 raise EncryptionError(
                     "Password required to decrypt the 7z header"
                 ) from exc
-            raise EncryptionError("Password(s) rejected for the 7z header") from exc
+            raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
 
     def _init_folder_caches(self, archive: SevenZipArchive) -> None:
         """Derive per-folder indexes used by listing and open.
@@ -527,29 +535,12 @@ class SevenZipReader(BaseArchiveReader):
         self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         current_folder: int | None = None
-        solid: SolidBlockReader | None = None
-
-        def _folder_reader(
-            folder_index: int, member: ArchiveMember
-        ) -> SolidBlockReader:
-            """Open the folder's decode pipeline, once, on the first read into it."""
-            nonlocal solid
-            if solid is None:
-                # Count at the folder decode layer (solid invariant); member wraps
-                # pass track_output=False so sequential reads are not double-counted.
-                solid = SolidBlockReader(
-                    self._track_decompressed(
-                        self._open_folder_stream(folder_index, member)
-                    )
-                )
-            return solid
+        folder = self._lazy_folder()
 
         def _enter_folder(folder_index: int) -> None:
-            nonlocal current_folder, solid
+            nonlocal current_folder
             if folder_index != current_folder:
-                if solid is not None:
-                    solid.close()
-                    solid = None
+                folder.close()
                 current_folder = folder_index
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
@@ -559,37 +550,43 @@ class SevenZipReader(BaseArchiveReader):
             if not member.is_file:
                 if member.type is MemberType.SYMLINK and raw.folder_index is not None:
                     _enter_folder(raw.folder_index)
-                    self._reach_pass_link(member, raw.folder_index, _folder_reader)
+                    self._reach_pass_link(member, raw.folder_index, folder.get)
                 return None
             # Registered like the base class's lazy pass streams, so the pass takes
             # the one live-stream slot and is refused beside a live ``open()``.
             if raw.folder_index is None:
-                return self._register_public_stream(
-                    self._wrap_member_stream(
-                        io.BytesIO(b""), member.name, size=member.size
-                    )
-                )
+                return self._register_public_stream(self._empty_member_stream(member))
             _enter_folder(raw.folder_index)
             folder_index = raw.folder_index
             return self._register_public_stream(
                 self._member_stream_from_solid(
-                    lambda: _folder_reader(folder_index, member), member
+                    lambda: folder.get(folder_index, member), member
                 )
             )
 
         def _cleanup() -> None:
             self._pass_link = None
-            # A finished pass has applied what it captured; an abandoned one never will,
-            # and a later read of those links opens them directly.
-            self._link_data.clear()
-            if solid is not None:
-                solid.close()
+            # Captured link bytes are kept even when the pass is abandoned: the archive's
+            # bytes are fixed, and a later listing or pass resolves from them instead of
+            # decoding the folder again. What stays is one entry per link the pass
+            # walked, each bounded by the target cap, released as each link resolves
+            # (or when the reader closes).
+            folder.close()
 
         yield from self._drive_pass_streams(
             self._listed_members(),
             open_member=_open,
             close_previous=True,
             cleanup=_cleanup,
+        )
+
+    def _lazy_folder(self) -> _LazyFolder:
+        # Count at the folder decode layer (solid invariant); member wraps pass
+        # track_output=False so sequential reads are not double-counted.
+        return _LazyFolder(
+            lambda index, member: self._track_decompressed(
+                self._open_folder_stream(index, member)
+            )
         )
 
     def _reach_pass_link(
@@ -602,11 +599,11 @@ class SevenZipReader(BaseArchiveReader):
 
         The pass yields no stream for it, and its folder decoder only moves when a later
         member is read, so without this the bytes go by unread and EOF finalization
-        would decode the folder again to get them. A streaming pass under
-        ``read_link_targets`` reads them now, through its own decoder, and keeps them
-        for finalization. Otherwise the pass only offers its decoder for this one
-        member, which is how ``extract_all`` reads an accepted link without a second
-        decode.
+        would decode the folder again to get them. A pass under ``read_link_targets``
+        (streaming or random access; both finalize links at the end) reads them now,
+        through its own decoder, and keeps them for finalization. Otherwise the pass
+        only offers its decoder for this one member, which is how ``extract_all``
+        reads an accepted link without a second decode.
         """
 
         def opener() -> ArchiveStream:
@@ -615,8 +612,7 @@ class SevenZipReader(BaseArchiveReader):
             )
 
         if (
-            self._streaming
-            and self._config.read_link_targets
+            self._config.read_link_targets
             and member.link_target is None
             and not member._link_target_resolved
         ):
@@ -679,34 +675,24 @@ class SevenZipReader(BaseArchiveReader):
     ) -> None:
         """Decode ``folder_index`` once, from its start, keeping each link's bytes."""
         links.sort(key=_folder_position)
-        solid: SolidBlockReader | None = None
-
-        def folder_reader(index: int, member: ArchiveMember) -> SolidBlockReader:
-            nonlocal solid
-            if solid is None:
-                solid = SolidBlockReader(
-                    self._track_decompressed(self._open_folder_stream(index, member))
-                )
-            return solid
-
+        folder = self._lazy_folder()
         try:
             for link in links:
                 self._capture_link_data(
                     link,
                     lambda link=link: self._member_stream_from_solid(
-                        lambda: folder_reader(folder_index, link), link
+                        lambda: folder.get(folder_index, link), link
                     ),
                 )
         finally:
-            if solid is not None:
-                solid.close()
+            folder.close()
 
     def _link_data_stream(
         self, member: ArchiveMember
     ) -> ContextManager[ReadableStream]:
         """Where ``_ensure_link_target`` reads ``member``'s bytes from.
 
-        Bytes read ahead (a listing sweep, a streaming pass) come first; then the data
+        Bytes read ahead (a listing sweep, a pass in either mode) come first; then the data
         pass sitting on this member, through its own decoder; then a direct open, which
         decodes the folder from its start (``open()`` following a link, a listing of
         one link).
@@ -732,7 +718,9 @@ class SevenZipReader(BaseArchiveReader):
             member_type,
             backslash_is_separator=True,
         )
-        raw_name = record.filename.encode("utf-16le", errors="surrogateescape")
+        # surrogatepass undoes the parser's decode, so a lone surrogate comes back
+        # as the code unit that was stored.
+        raw_name = record.filename.encode("utf-16le", errors="surrogatepass")
         folder_index = record.folder_index
         compression = (
             self._folder_compression[folder_index] if folder_index is not None else ()
@@ -741,7 +729,7 @@ class SevenZipReader(BaseArchiveReader):
         if record.crc32 is not None:
             hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         attrs = record.attributes
-        is_reparse_point = _is_windows_reparse_point(attrs)
+        reparse_fallback = self._reparse_fallback_type(record)
         unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
         # Folder/substream indices live on ``_raw``; skip the unused public extra
@@ -763,21 +751,24 @@ class SevenZipReader(BaseArchiveReader):
             )
             if issue is not None:
                 ts_issues.append(issue)
+        # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
+        # "Created" from st_ctime, which ``created`` never holds.
+        written_on_unix = _written_on_unix(attrs)
         if record.creation_time:
             created, issue = filetime_to_datetime(
-                record.creation_time, presented_name, field="created"
+                record.creation_time,
+                presented_name,
+                field="ctime" if written_on_unix else "created",
             )
             if issue is not None:
                 ts_issues.append(issue)
         extra = (
             MemberExtra({EXTRA_IS_REPARSE_POINT: True})
-            if is_reparse_point
+            if _is_windows_reparse_point(attrs)
             else MemberExtra()
         )
         ctime = None
-        if created is not None and _written_on_unix(attrs):
-            # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
-            # "Created" from st_ctime, which ``created`` never holds.
+        if created is not None and written_on_unix:
             created, ctime = None, created
         member = ArchiveMember(
             type=member_type,
@@ -809,35 +800,11 @@ class SevenZipReader(BaseArchiveReader):
             archive_name=self._archive_name,
             member_id=index,
         )
-        if is_reparse_point and member.size == 0:
-            # A writer that stores no data for a reparse point has recorded no target
-            # for it, and that is knowable from the header alone — no read, and so no
-            # dependence on this being a seekable pass. Deciding it here rather than in
-            # the link-target hook is what makes streaming agree: that hook runs at EOF,
-            # after extraction has already decided what to do with the member, which
-            # left a 7-Zip junction raising instead of taking the recorded outcome.
-            self._apply_reparse_data(
-                member,
-                b"",
-                fallback_type=self._member_type_ignoring_reparse(record),
-                member_id=index,
-            )
+        self._settle_empty_reparse_point(
+            member, reparse_fallback=reparse_fallback, member_id=index
+        )
         for issue in ts_issues:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=issue.message,
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field=issue.field,
-                    source="ntfs",
-                    value_repr=issue.value_repr,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
+            self._emit_timestamp_invalid(member, index, issue)
         # Encrypted folder with no folder digest and no per-member CRC: 7zAES has no
         # password check of its own, so a wrong password cannot be detected (matches
         # 7-Zip). Surface that as DIGEST_UNVERIFIABLE rather than silently implying
@@ -879,6 +846,18 @@ class SevenZipReader(BaseArchiveReader):
                     return MemberType.SYMLINK
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
+                if attrs & _FILE_ATTRIBUTE_UNIX_EXTENSION and is_special_file_mode(
+                    unix_mode
+                ):
+                    # A device, FIFO or socket (7-Zip and p7zip store them with no
+                    # data). Unlike the symlink and directory tests above, this one
+                    # also needs 0x8000. A Windows attribute above 0xFFFF can land on
+                    # a low file-type value: STRICTLY_SEQUENTIAL (0x20000000) reads as
+                    # S_IFCHR, while no defined attribute reaches S_IFDIR (0x4000) or
+                    # S_IFLNK (0xA000). Misreading a Windows file as a device would
+                    # make it unextractable, so a high word without the flag stays
+                    # FILE here.
+                    return MemberType.OTHER
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
                 # Provisional. The bit says the entry was a reparse point on the source
                 # filesystem, not that the tag named a link — the tag is in the member's
@@ -890,6 +869,21 @@ class SevenZipReader(BaseArchiveReader):
     def _member_type_ignoring_reparse(self, record: SevenZipFileRecord) -> MemberType:
         """What the entry is by everything except the reparse-point attribute bit."""
         return MemberType.DIRECTORY if record.is_directory else MemberType.FILE
+
+    def _reparse_fallback_type(self, record: SevenZipFileRecord) -> MemberType | None:
+        """For an entry flagged as a Windows reparse point, the type it reverts to when
+        its data is not a link buffer (the bit is set for deduplication stubs and cloud
+        placeholders too, whose content stays readable); ``None`` for any other entry.
+
+        A Unix mode of ``S_IFDIR`` in the high word types the entry a directory ahead of
+        the bit (`_member_type`), so it has no link target to settle or read.
+        """
+        attrs = record.attributes
+        if not _is_windows_reparse_point(attrs) or (
+            attrs is not None and stat.S_ISDIR(attrs >> 16)
+        ):
+            return None
+        return self._member_type_ignoring_reparse(record)
 
     def _folder_pack_views(self, folder_index: int) -> list[BinaryIO]:
         """One view per pack stream of the folder, in ``packed_indices`` order.
@@ -944,36 +938,32 @@ class SevenZipReader(BaseArchiveReader):
             return self._folder_passwords[folder_index]
 
         plan = self._folder_password_confirm_plan(folder_index)
+        # The plan that walks to the folder's end anchor whatever the codec: it settles
+        # a candidate the bounded plan could only call inconclusive, when several
+        # candidates survive the bounded one.
+        full_plan = self._folder_password_confirm_plan(folder_index, full=True)
 
-        # The two callbacks below run once per candidate password, inside
-        # ``_PasswordCandidates.attempt``: the first judges the candidate against the
-        # folder (raising the wrong-password error to move on), the second decides
-        # whether the accepted candidate joins the known-good passwords that later
-        # folders try first.
-        def confirm_candidate_password(
-            candidate: bytes,
-        ) -> tuple[bytes, PasswordConfirmVerdict]:
+        # The callbacks below run once per candidate password, inside
+        # ``attempt_with_confirm``: each judges the candidate against the folder,
+        # raising the wrong-password error to move on.
+        def probe(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
             kdf_password = _password_to_kdf_bytes(candidate)
             return kdf_password, self._confirm_folder_password(
                 folder_index, kdf_password, plan
             )
 
-        def promote_candidate_password(
-            accepted: tuple[bytes, PasswordConfirmVerdict],
-        ) -> bool:
-            # A candidate password that survived without a checksum match is accepted
-            # for this folder but kept out of known-good when another candidate could
-            # still be the right one (archive-reading, "Confirm candidates when a weak
-            # check permits retries").
-            _, verdict = accepted
-            return (
-                verdict is PasswordConfirmVerdict.CONFIRMED
-                or not self._passwords.is_ambiguous()
+        def full_check(candidate: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+            kdf_password = _password_to_kdf_bytes(candidate)
+            return kdf_password, self._confirm_folder_password(
+                folder_index, kdf_password, full_plan
             )
 
         try:
-            password, verdict = self._passwords.attempt(
-                member, confirm_candidate_password, promote=promote_candidate_password
+            password, verdict = attempt_with_confirm(
+                self._passwords,
+                member,
+                probe,
+                None if full_plan == plan else full_check,
             )
         except _PasswordCandidatesExhausted as exc:
             raise EncryptionError(raw_message_of(exc)) from exc
@@ -982,14 +972,17 @@ class SevenZipReader(BaseArchiveReader):
         self._folder_passwords[folder_index] = password
         return password
 
-    def _folder_password_confirm_plan(self, folder_index: int) -> PasswordConfirmPlan:
+    def _folder_password_confirm_plan(
+        self, folder_index: int, *, full: bool = False
+    ) -> PasswordConfirmPlan:
         """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
 
         7z AES has no password check value, so rung 1 is empty here and the ladder
         starts at the integrity anchor: member CRCs in substream order, then the folder
         digest. The earliest anchor covering at least 4 bytes wins; one past
         ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
-        random input.
+        random input, or when ``full`` asks for the walk (several candidates survived
+        the bounded plan, and only the anchor can tell them apart).
         """
         folder = self._archive.folders[folder_index]
         substreams: list[tuple[int, int | None]] = []
@@ -1022,7 +1015,7 @@ class SevenZipReader(BaseArchiveReader):
             substreams,
             tail_crc,
             budget=PASSWORD_CONFIRM_PREFIX_BYTES,
-            codec_rejects=_folder_codec_rejects(folder),
+            codec_rejects=not full and _folder_codec_rejects(folder),
         )
 
     def _confirm_folder_password(
@@ -1109,35 +1102,14 @@ class SevenZipReader(BaseArchiveReader):
         assert isinstance(raw, _MemberRaw)
         if raw.folder_index not in self._folders_unconfirmed:
             return stream
-
-        def report(reason: str) -> None:
-            missed = (
-                "gave up its checksum by seeking"
-                if reason == "seek"
-                else "was closed before its checksum was reached"
-            )
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
-                message=(
-                    f"Encrypted 7z member {quoted(member.name)} {missed}, and no "
-                    f"checksum confirmed the password: the bytes read may have been "
-                    f"decrypted with a wrong password."
-                ),
-                context=EncryptedVerificationContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    check="confirm_budget_exhausted",
-                    reason=reason,
-                ),
-                member=member,
-                logger=integrity_logger,
-            )
-
-        return UnverifiedPasswordReadWatch(
+        return self._watch_unverified_read(
             stream,
+            member,
             size=_member_stream_size(member),
-            on_unverified=report,
+            check="confirm_budget_exhausted",
+            format_label="7z",
+            digest="checksum",
+            why="no checksum confirmed the password",
         )
 
     def _member_prefix(self, member: ArchiveMember) -> int:
@@ -1149,18 +1121,28 @@ class SevenZipReader(BaseArchiveReader):
         return sum(_member_stream_size(p) for p in prior)
 
     def _wrap_folder_member(
-        self, inner: BinaryIO, member: ArchiveMember
+        self,
+        inner: BinaryIO | None,
+        member: ArchiveMember,
+        *,
+        open_fn: Callable[[], BinaryIO] | None = None,
+        seekable: bool | None = None,
     ) -> ArchiveStream:
         verify = member.size is not None or bool(member.hashes)
         return self._wrap_member_stream(
             inner,
             member.name,
+            open_fn=open_fn,
             size=member.size,
             track_output=False,
+            seekable=seekable,
             expected_hashes=member.hashes if verify else None,
             expected_size=member.size if verify else None,
             verify_member=member if verify else None,
         )
+
+    def _empty_member_stream(self, member: ArchiveMember) -> ArchiveStream:
+        return self._wrap_member_stream(io.BytesIO(b""), member.name, size=member.size)
 
     def _member_stream_from_solid(
         self, open_solid: Callable[[], SolidBlockReader], member: ArchiveMember
@@ -1178,20 +1160,13 @@ class SevenZipReader(BaseArchiveReader):
         """
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)
-        verify = member.size is not None or bool(member.hashes)
-
-        return self._wrap_member_stream(
+        return self._wrap_folder_member(
             None,
-            member.name,
+            member,
             open_fn=lambda: self._watch_unverified(
                 open_solid().open_member(prefix, size, lazy=True), member
             ),
-            size=member.size,
-            track_output=False,
             seekable=False,
-            expected_hashes=member.hashes if verify else None,
-            expected_size=member.size if verify else None,
-            verify_member=member if verify else None,
         )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
@@ -1204,58 +1179,19 @@ class SevenZipReader(BaseArchiveReader):
             return
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
-        # Two kinds of member reach this point. A Unix symlink (S_ISLNK in the high
-        # word of `attributes`) stores its target as plain bytes. A Windows reparse
-        # point stores a REPARSE_DATA_BUFFER, whose first field is the tag that
-        # separates a junction from a symlink; decoding that as UTF-8 reports the
-        # buffer itself as the target, which is what this used to do.
-        is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
-        # What the member would be if its data turns out not to be a link buffer: the
-        # attribute bit is set for deduplication stubs and cloud placeholders too, and
-        # those hold ordinary content that a caller should still be able to read.
-        fallback_type = self._member_type_ignoring_reparse(raw.record)
-        # The zero-data case does not appear here: `_to_member` settles it while the
-        # member is being typed, so this hook is never reached for one.
-        # The read is capped (`_read_link_target_data`): the data is compressed, so an
-        # uncapped read let a small archive decode to gigabytes here.
-        try:
-            data = self._read_link_target_data(
-                member,
-                lambda: self._link_data_stream(member),
-                is_reparse_point=is_reparse_point,
-            )
-        except EncryptionError:
-            # A 7z symlink's target is its file data, so without the password there is
-            # nothing to decode. Listing has to stay usable without one, so the member
-            # keeps its type and the reason travels on the diagnostics channel instead
-            # — silence here would make extraction skip the link with no explanation.
-            self._emit_link_target_unavailable(
-                member,
-                reason="password_required",
-                message=(
-                    f"Cannot read the symlink target of {quoted(member.name)} without the "
-                    f"correct password; leaving link_target unset."
-                ),
-                # The archive does carry the target; it is locked, not missing. So this
-                # member fails the way the encrypted file next to it does, rather than
-                # disappearing from the output under a status that reads as success.
-                target_in_archive=True,
-            )
-            return
-        if data is None:
-            return
-        if is_reparse_point:
-            self._apply_reparse_data(member, data, fallback_type=fallback_type)
-        else:
-            member.link_target = data.decode("utf-8", errors="surrogateescape")
+        # Two kinds of member reach this point: a Unix symlink (S_ISLNK in the high
+        # word of `attributes`) and a Windows reparse point.
+        self._link_target_from_data(
+            member,
+            lambda: self._link_data_stream(member),
+            reparse_fallback=self._reparse_fallback_type(raw.record),
+        )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
         if raw.folder_index is None:
-            return self._wrap_member_stream(
-                io.BytesIO(b""), member.name, size=member.size
-            )
+            return self._empty_member_stream(member)
         want_seekable = self._stream_config.seekable
         prefix = self._member_prefix(member)
         size = _member_stream_size(member)

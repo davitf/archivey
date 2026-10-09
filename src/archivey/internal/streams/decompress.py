@@ -20,13 +20,14 @@ from archivey.config import DecoderLimits
 from archivey.exceptions import ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.arm64 import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.bzip2_resume import Bzip2Resume, Bzip2ResumeDecoder
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     Decoder,
     DecompressorStream,
     SeekPoint,
-    gzip_corruption,
+    gzip_error,
 )
 from archivey.internal.streams.deflate_resume import (
     DeflateResume,
@@ -125,7 +126,7 @@ class GzipDecoder(BaseDecoder):
             return DeflateResumeDecoder(
                 point.state,
                 self,
-                corruption=gzip_corruption,
+                corruption=gzip_error,
                 truncated="gzip stream is truncated",
             )
         return GzipDecoder()
@@ -211,7 +212,7 @@ class GzipDecoder(BaseDecoder):
                 # with flush() and does not leak zlib.error (GzipCodec.translate maps
                 # it too, but the decoder must stand on its own).
                 # A failed CRC-32/ISIZE check is a _StreamChecksumError.
-                raise gzip_corruption(e) from e
+                raise gzip_error(e) from e
             if produced:
                 output.append(produced)
                 produced_total += len(produced)
@@ -263,7 +264,7 @@ class GzipDecoder(BaseDecoder):
                     if not self._decomp.eof:
                         out.extend(self._decomp.flush())
                 except zlib.error as e:
-                    raise gzip_corruption(e) from e
+                    raise gzip_error(e) from e
                 if not self._decomp.eof:
                     self._pending_error = TruncatedError("gzip stream is truncated")
                     return DecodeOut(bytes(out))
@@ -286,7 +287,7 @@ class GzipDecoder(BaseDecoder):
                 out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
             out.extend(self._decomp.flush())
         except zlib.error as e:
-            raise gzip_corruption(e) from e
+            raise gzip_error(e) from e
         if not self._decomp.eof:
             self._pending_error = TruncatedError("gzip stream is truncated")
         else:
@@ -376,7 +377,8 @@ class FramedDecoder(BaseDecoder):
     ``magic`` begin another stream (a concatenated file); zeros are padding; anything
     else ends the data and sets :attr:`trailing_bytes`. A codec with no magic (LZMA
     Alone) passes a :data:`StreamStart` check of the header instead, which may raise to
-    refuse the next stream.
+    refuse the next stream. ``zero_padding=False`` hands zeros to that check too (raw
+    LZMA, where 7-Zip refuses any byte after the end marker).
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
@@ -390,9 +392,11 @@ class FramedDecoder(BaseDecoder):
         new_decompressor: Callable[[], _OneStreamDecompressor],
         *,
         magic: StreamStart,
+        zero_padding: bool = True,
     ) -> None:
         self._new = new_decompressor
         self._magic = magic
+        self._zero_padding = zero_padding
         self._decomp = new_decompressor()
         self._fed = False
         # Past a stream's end, looking for the next one.
@@ -403,13 +407,18 @@ class FramedDecoder(BaseDecoder):
         self._need_more = False
         self._done = False
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> FramedDecoder:
-        del point, inner
-        return FramedDecoder(self._new, magic=self._magic)
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
+        del inner
+        if isinstance(point.state, Bzip2Resume):
+            # Only the bzip2 takeover adds such a point (``bzip2_resume``).
+            return Bzip2ResumeDecoder(point.state, self)
+        return FramedDecoder(
+            self._new, magic=self._magic, zero_padding=self._zero_padding
+        )
 
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
-        rest = data.lstrip(b"\x00")
+        rest = data.lstrip(b"\x00") if self._zero_padding else data
         if not rest:
             return b""
         state = self._magic(rest)
@@ -503,7 +512,7 @@ class BrotliDecoder(BaseDecoder):
     """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
 
     The ``brotli`` import is local because it's an optional dependency with no type stubs;
-    the codec layer's ``_open_brotli`` gates on its presence before constructing this, so
+    ``BrotliCodec.open`` in the codec layer gates on its presence before constructing this, so
     the import here always succeeds.
 
     Brotli ≥1.2.0 exposes ``process(..., output_buffer_limit=)`` and
@@ -1654,13 +1663,16 @@ def FramedDecompressorStream(
     *,
     codec_name: str,
     magic: StreamStart,
+    zero_padding: bool = True,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec (forward-only; O(n) rewind)."""
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: FramedDecoder(new_decompressor, magic=magic),
+        make_decoder=lambda _p, _i: FramedDecoder(
+            new_decompressor, magic=magic, zero_padding=zero_padding
+        ),
         collector=collector,
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,

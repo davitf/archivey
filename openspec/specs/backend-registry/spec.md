@@ -77,11 +77,16 @@ Multiple readers from the same backend class MUST be independent.
 
 The system SHALL keep format detection and backend selection separate.
 `detect_format()` is the authority for source format: it aggregates backend
-`MAGIC`, `EXTENSIONS`, and `CONTENT_PROBES`, performs special probes through
+`MAGIC`, `TRAILER`, `EXTENSIONS`, and `CONTENT_PROBES`, performs special probes through
 the detection workspace, consumes no bytes, and raises `FormatDetectionError` when no
 format matches. The registry SHALL map the resolved `ArchiveFormat` to a
 registered available backend. If a detected format has no available backend,
 lookup SHALL raise `PackageNotInstalledError` with the install hint.
+
+A backend that declares the format and sets `READ_IMPLEMENTED` false is not a missing
+dependency. `format_availability` SHALL report `NONE` with an empty `missing`, and
+`reader_for_format` SHALL raise `UnsupportedFeatureError` with that backend's message
+rather than `PackageNotInstalledError`.
 
 ```python
 class BackendRegistry:
@@ -99,6 +104,7 @@ class BackendRegistry:
 | --- | --- |
 | Detection reports `ArchiveFormat.SEVEN_Z` | `reader_for_format()` returns native `SevenZReadBackend` |
 | Detected backend's optional dependency is missing | `PackageNotInstalledError` names missing package and install hint |
+| Detected format whose backend sets `READ_IMPLEMENTED` false (`DMG`) | `UnsupportedFeatureError` naming the format; `missing` is empty |
 | No magic/probe/extension matches | `FormatDetectionError`; no backend lookup |
 
 ### Requirement: ReadBackend and WriteBackend are separate ABCs
@@ -257,8 +263,12 @@ enforces — and MUST NOT be declared separately per backend:
 
 | `SUPPORTS_STREAMING_NON_SEEKABLE` | `required_source` | Formats |
 | --- | --- | --- |
-| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, the single-file compressors |
+| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, the single-file compressors, UDIF |
 | `False` | `StreamCapability.SEEKABLE` | ZIP, ISO, 7z, RAR, directory |
+
+`DMG` sets the flag even though nothing reads it. `open_archive` raises
+`UnsupportedFeatureError` before the seekability check, and `SEEKABLE` would send
+the published spool recipe through a copy that ends in the same refusal.
 
 `required_source` SHALL be reported independently of `support`: a format whose
 optional dependency is missing still answers the source-shape question. For a format
@@ -285,6 +295,7 @@ conservative answer.
 | `format_availability(TAR).required_source` | `FORWARD_ONLY` |
 | `format_availability(TAR_GZ).required_source` | `FORWARD_ONLY` |
 | `format_availability(GZ).required_source` | `FORWARD_ONLY` |
+| `format_availability(DMG).required_source` | `FORWARD_ONLY` — open refuses before the seekability check; the field keeps the spool recipe from copying the file |
 | `format_availability(ZIP \| ISO \| SEVEN_Z \| RAR \| FOLDER).required_source` | `SEEKABLE` |
 | ISO queried without `pycdlib` | `support=NONE` **and** `required_source=SEEKABLE` — the answer does not depend on installability |
 | `required_source <= reader.cost.stream_capability` for a format opened successfully from that source | `True` for every format/source pair the library accepts |
@@ -301,7 +312,6 @@ resolving, peeking or reading the source:
 | --- | --- | --- |
 | `format_availability(format)` | `ArchiveFormat`, its spelling | `ArchiveyUsageError` |
 | `open_archive(source, format=…)` | `ArchiveFormat`, its spelling, `None` (auto-detect) | `ArchiveyUsageError` |
-| `extract(source, dest, format=…)` | `ArchiveFormat`, its spelling, `None` (auto-detect) | `ArchiveyUsageError` |
 | `open_stream(source, format=…)` | `StreamFormat`, raw-stream `ArchiveFormat`, either spelling, `None` | `ArchiveyUsageError` |
 
 `open_stream`'s wider argument is by design, not an inconsistency to remove: a raw
@@ -359,7 +369,6 @@ a separate table, so a codec added later is named here without a second edit.
 | `format_availability(None)` | `ArchiveyUsageError` — the query has no auto-detect form |
 | `open_archive("a.tar.gz", format=ContainerFormat.TAR)` | `ArchiveyUsageError` naming `ContainerFormat.TAR` and the pairs built on it, never a `TruncatedError` |
 | `open_archive(path, format=StreamFormat.ZSTD)` | `ArchiveyUsageError`, not `AttributeError: 'StreamFormat' object has no attribute 'container'` |
-| `extract(path, dest, format=StreamFormat.ZSTD)` | `ArchiveyUsageError`; nothing written to `dest`, source never read |
 | `open_stream(src, format=object())` | `ArchiveyUsageError`; the source is not read and detection does not run |
 | `open_stream(src, format=StreamFormat.GZIP \| ArchiveFormat.GZ \| None)` | Opens as before |
 | `open_archive(path, format=ArchiveFormat.ZIP \| None)` | Opens as before |
@@ -369,7 +378,7 @@ a separate table, so a codec added later is named here without a second edit.
 
 | Case | Expected |
 | --- | --- |
-| `open_archive(path, format="zip")` \| `extract(path, dest, format="zip")` | Opens as `ArchiveFormat.ZIP` |
+| `open_archive(path, format="zip")` | Opens as `ArchiveFormat.ZIP` |
 | `format_availability("zip")` | Same record as `format_availability(ArchiveFormat.ZIP)` |
 | Every format, by its name and by its file extension, in any case | Resolves to that format |
 | `open_stream(src, format="gz")` | `ArchiveFormat.GZ` — what `open_archive` would resolve it to |

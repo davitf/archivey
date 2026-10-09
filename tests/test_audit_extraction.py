@@ -25,6 +25,7 @@ from archivey.diagnostics import (
     SymlinkTargetContext,
 )
 from tests.conftest import requires_binary
+from tests.extract_util import open_and_extract
 from tests.test_link_target_cap import _sevenzip_with_link
 
 
@@ -104,7 +105,7 @@ def test_empty_symlink_target_is_not_an_untyped_os_error(tmp_path: Path) -> None
     # docs/extracting.md: "genuine I/O errors propagate unchanged". An empty target is
     # a property of the archive, not of the filesystem, so it must be reported as a
     # typed outcome (LINK_TARGET_UNAVAILABLE or an ArchiveyError), not an OSError.
-    report = archivey.extract(archive, tmp_path / "out")
+    report = open_and_extract(archive, tmp_path / "out")
 
     by_name = {r.member.name: r for r in report.results}
     link = by_name["s"]
@@ -176,14 +177,14 @@ def test_member_under_an_earlier_file_member_is_not_an_untyped_os_error(
 
     # The conflict is in the archive, not the filesystem, so it must be a typed
     # per-member outcome and not abort the run as a bare OSError.
-    report = archivey.extract(archive, tmp_path / "out", on_error="continue")
+    report = open_and_extract(archive, tmp_path / "out", on_error="continue")
     by_name = {r.member.name: r for r in report.results}
     assert by_name["d"].status is ExtractionStatus.EXTRACTED
     child = by_name["d/f"]
     assert child.error is None or isinstance(child.error, archivey.ArchiveyError)
 
     with pytest.raises(archivey.ArchiveyError):
-        archivey.extract(archive, tmp_path / "out2")
+        open_and_extract(archive, tmp_path / "out2")
 
 
 @pytest.mark.parametrize("child_kind", ["file", "dir"])
@@ -196,7 +197,7 @@ def test_member_under_an_earlier_file_member_names_the_file(
     )
     _build_tar(archive, [("d", "file", b"x"), child, ("e", "file", b"z")])
 
-    report = archivey.extract(archive, tmp_path / "out", on_error="continue")
+    report = open_and_extract(archive, tmp_path / "out", on_error="continue")
 
     by_name = {r.member.name.rstrip("/"): r for r in report.results}
     failed = by_name[child[0]]
@@ -219,7 +220,7 @@ def test_member_under_a_preexisting_file_stays_a_filesystem_error(
     (out / "d").write_bytes(b"mine")
 
     with pytest.raises(OSError) as info:
-        archivey.extract(archive, out)
+        open_and_extract(archive, out)
     assert not isinstance(info.value, archivey.ArchiveyError)
     assert (out / "d").read_bytes() == b"mine"
 
@@ -313,6 +314,6 @@ def test_byte_cap_message_counts_only_what_was_written() -> None:
     assert "written 60 bytes; the next 60-byte chunk would make 120" in str(info.value)
     assert tracker.total_bytes == 60
     with pytest.raises(archivey.ResourceLimitError, match="written 60 bytes"):
-        tracker.count_copy(41)
-    tracker.count_copy(40)
+        tracker.count_copy(41, at_link_limit=False)
+    tracker.count_copy(40, at_link_limit=False)
     assert tracker.total_bytes == 100

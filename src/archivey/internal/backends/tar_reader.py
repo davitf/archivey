@@ -18,8 +18,12 @@ After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 
 - A rejected (non-null) header where ``tarfile`` stopped → ``CorruptionError``.
 - A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING``.
-- A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a *complete* trailer →
-  ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
+- A trailer whose first block is zero and whose second is not, after at least one
+  member → ``ARCHIVE_EOF_MARKER_MISSING`` (``expected_marker="second_zero_block"``).
+  With no member before the zero block it is ``CorruptionError``, so a file that is
+  not a tar does not open as an empty one.
+- A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a complete trailer, or of a
+  damaged second trailer block → ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
 
 Both codes follow the diagnostic policy like any other: a caller who wants either to
 fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
@@ -33,7 +37,6 @@ from __future__ import annotations
 import stat
 import tarfile
 import threading
-from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import replace
 from datetime import datetime
@@ -51,7 +54,6 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
-    MemberTimestampContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -91,7 +93,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     read_within_reach,
 )
-from archivey.internal.timestamps import unix_to_datetime
+from archivey.internal.timestamps import TimestampIssue, unix_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -246,6 +248,35 @@ class _HeaderBudget:
         _HEADER_BUDGET.reset(self._token)
 
 
+# What :meth:`TarReader._verify_tar_eof` found where the end-of-archive marker belongs:
+# no block, a partial one, a non-null block after a zero block that ended at least one
+# member (the marker is damaged, the listing whole), a non-null block at or after a
+# header tarfile rejected (the listing is shortened), or a non-null block after a zero
+# block with no member before it.
+_TarEnd = Literal[
+    "absent", "short", "damaged_second_block", "rejected_header", "no_member"
+]
+
+
+# typeshed does not declare tarfile's header errors; this one is raised for a zero block.
+_EOFHeaderError: type[Exception] = tarfile.EOFHeaderError  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+
+
+class _TarFile(tarfile.TarFile):
+    """A ``TarFile`` that remembers why its walk stopped.
+
+    ``TarFile.next()`` returns ``None`` both on a zero block (the first end-of-archive
+    block) and on a header it rejects after the first member, and swallows the error
+    that told the two apart. :meth:`_TarInfo.fromtarfile` sets
+    ``stopped_on_zero_block`` on every header parse, so after the walk ends it says
+    which one the last parse hit. This works in both access modes, unlike the
+    random-access probe (:class:`_EofProbeStream`), because it does not depend on
+    seeing the read.
+    """
+
+    stopped_on_zero_block: bool = False
+
+
 class _TarInfo(tarfile.TarInfo):
     """A ``TarInfo`` that records where its member's stored data ends, and refuses an
     extended header larger than the listing's metadata budget before reading it.
@@ -263,12 +294,24 @@ class _TarInfo(tarfile.TarInfo):
 
     @classmethod
     def fromtarfile(cls, tarfile: tarfile.TarFile) -> Self:
-        info = super().fromtarfile(tarfile)
+        # ``TarFile.next()`` swallows the header error that ends the walk, so whether
+        # it stopped on a zero block or on a rejected header is recorded here, where
+        # the error passes through (see :class:`_TarFile`).
+        if isinstance(tarfile, _TarFile):
+            tarfile.stopped_on_zero_block = False
+        try:
+            info = super().fromtarfile(tarfile)
+        except _EOFHeaderError:
+            if isinstance(tarfile, _TarFile):
+                tarfile.stopped_on_zero_block = True
+            raise
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
         # the end of this member's data area. For a header preceded by GNU long-name or
         # PAX headers this runs once per header, innermost first; the outermost call
-        # runs last and sees the final offset, which a PAX ``size`` record may change.
+        # runs last and sees the final offset, which a PAX ``size`` record may change,
+        # and the final ``linkname``, which a long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
+        _drop_unweighed_link_name(info)
         return info
 
     def _proc_member(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
@@ -366,8 +409,9 @@ def _drop_unweighed_link_name(info: tarfile.TarInfo) -> None:
     """Clear ``linkname`` on a member that is not a link.
 
     A GNU long link name or PAX linkpath ahead of a header that is not a link has no
-    meaning, and no listing limit weighs it. Clearing it as the header is parsed keeps
-    it from being held for the rest of a batch, or on the retained ``TarInfo``.
+    meaning, and no listing limit weighs it. :meth:`_TarInfo.fromtarfile` clears it as
+    the header is parsed, so neither walk holds it in a batch or on the retained
+    ``TarInfo``.
     """
     if not (info.issym() or info.islnk()):
         info.linkname = ""
@@ -425,22 +469,60 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
 )
 
 
-def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
+def _pax_time(
+    info: tarfile.TarInfo, key: str
+) -> tuple[datetime | None, TimestampIssue | None]:
     """Parse a PAX time record (float Unix seconds) into a tz-aware UTC datetime.
 
     ``tarfile`` folds the PAX ``mtime`` into ``TarInfo.mtime`` itself, but leaves the
     access and inode-change times, and libarchive's ``LIBARCHIVE.creationtime``
     extension keyword (not a standard PAX record), only in ``pax_headers``; surface
-    them here.
+    them here. The ``mtime`` record is read back here too, for the one case the fold
+    hides: a record that is not a number, which ``tarfile`` turns into ``0``.
+
+    Returns ``(None, None)`` when the record is absent, and ``(None, TimestampIssue)``
+    when it is present but not a number or outside ``datetime``'s range, so a bad
+    record is reported the same way as a bad ``mtime``.
     """
     raw = info.pax_headers.get(key)
     if raw is None:
-        return None
+        return None, None
     try:
         seconds = float(raw)
     except ValueError:
-        return None
-    return unix_to_datetime(seconds)
+        value = None
+    else:
+        value = unix_to_datetime(seconds)
+    if value is not None:
+        return value, None
+    return None, _tar_time_issue(info, key, repr(raw), pax_record=True)
+
+
+# The ArchiveMember field each TAR time fills, which is what a timestamp diagnostic
+# names in every format.
+_TAR_TIME_FIELDS = {
+    "mtime": "modified",
+    "atime": "accessed",
+    "ctime": "ctime",
+    "LIBARCHIVE.creationtime": "created",
+}
+
+
+def _tar_time_issue(
+    info: tarfile.TarInfo, key: str, value_repr: str, *, pax_record: bool
+) -> TimestampIssue:
+    """The ``MEMBER_TIMESTAMP_INVALID`` finding for one TAR time field.
+
+    ``value_repr`` is the raw PAX record for a record, and ``TarInfo.mtime`` for the
+    folded ``mtime`` that ``datetime`` cannot hold.
+    """
+    label = f"PAX {key}" if pax_record else key
+    return TimestampIssue(
+        field=_TAR_TIME_FIELDS[key],
+        source="tar",
+        value_repr=value_repr,
+        message=f"Invalid TAR {label} for {quoted(info.name)}: {value_repr}",
+    )
 
 
 class _EofProbeStream(ReadOnlyIOStream):
@@ -747,7 +829,7 @@ class TarReader(BaseArchiveReader):
         # (plain tar) or our own decompressor (compressed tar), never tarfile's native
         # r:gz/r:bz2 modes.
         mode = "r|" if streaming else "r:"
-        return tarfile.open(
+        return _TarFile.open(
             name=name,
             fileobj=fileobj,
             mode=mode,
@@ -863,7 +945,6 @@ class TarReader(BaseArchiveReader):
                         _HeaderBudget(self._header_budget(text_bytes)) as budget,
                     ):
                         for info in tar_iter:
-                            _drop_unweighed_link_name(info)
                             batch.append(info)
                             text_bytes += _header_text_bytes(info)
                             budget.set(self._header_budget(text_bytes))
@@ -888,7 +969,7 @@ class TarReader(BaseArchiveReader):
                 index += 1
             if failure is not None:
                 raise failure
-        self._verify_tar_eof()
+        self._verify_tar_eof(any_members=index > 0)
 
     def _register_member(
         self,
@@ -989,16 +1070,7 @@ class TarReader(BaseArchiveReader):
         """
         if self._walk_done:
             return super()._extraction_listing()
-        return self._pass_enforces_listing_limits()
-
-    @contextmanager
-    def _pass_enforces_listing_limits(self) -> Iterator[None]:
-        previous = self._progressive_enforce_listing_limits
-        self._progressive_enforce_listing_limits = True
-        try:
-            yield
-        finally:
-            self._progressive_enforce_listing_limits = previous
+        return self._enforcing_listing_limits()
 
     def _header_batch_size(self, listed: int) -> int:
         """How many headers the random-access walk may parse next: a full batch, or
@@ -1041,7 +1113,7 @@ class TarReader(BaseArchiveReader):
                         break
                 yield self._to_member(info, index)
                 index += 1
-        self._verify_tar_eof()
+        self._verify_tar_eof(any_members=index > 0)
 
     def _read_through_member_data(self) -> None:
         """Read what is left of the last member's data area, before the next header.
@@ -1094,29 +1166,7 @@ class TarReader(BaseArchiveReader):
             def _open(member: ArchiveMember) -> ArchiveStream | None:
                 if not member.is_file:
                     return None
-                info = member._raw
-                assert isinstance(info, tarfile.TarInfo), (
-                    "TAR member is missing its TarInfo handle"
-                )
-                sparse_error = _sparse_map_error(info)
-                if sparse_error is not None:
-                    # Raised on the first read, as a random-access open raises it: a
-                    # consumer that skips this member does not read the bad map, and
-                    # tarfile moves on to the next header by the member's stored end.
-                    def _refuse(error: CorruptionError = sparse_error) -> BinaryIO:
-                        raise error
-
-                    return self._wrap_member_stream(
-                        None, member.name, open_fn=_refuse, size=member.size
-                    )
-                with self._handle_guard():
-                    raw = self._tar.extractfile(info)
-                if raw is None:
-                    raw = BytesIO(b"")
-                stream: BinaryIO = ensure_binaryio(raw)
-                if self._handle_lock is not None:
-                    stream = LockedStream(stream, self._handle_lock)
-                return self._wrap_member_stream(stream, member.name, size=member.size)
+                return self._open_member_stream(member, defer_sparse_error=True)
 
             yield from self._drive_pass_streams(
                 self._begin_forward_pass(),
@@ -1144,7 +1194,7 @@ class TarReader(BaseArchiveReader):
         if len(chunk) == 512 and chunk != b"\x00" * 512:
             self._eof_header_rejected = True
 
-    def _verify_tar_eof(self) -> None:
+    def _verify_tar_eof(self, *, any_members: bool) -> None:
         """Verify the two-block null end-of-archive marker and surface a rejected header
         as corruption.
 
@@ -1159,9 +1209,17 @@ class TarReader(BaseArchiveReader):
         trailer block (stopping on it via ``EOFHeaderError`` with ``ignore_zeros=False``),
         so we only confirm the *second*: reading two blocks here would demand a third
         block of trailing zeros and wrongly flag a minimal ``tar -b1`` trailer. Two null
-        blocks are valid; a non-null block is corruption (a rejected trailer/header); a
-        short or empty read is a truncated or absent trailer, reported as
-        ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary diagnostic policy.
+        blocks are valid. A short or empty read is a truncated or absent trailer,
+        reported as ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary diagnostic policy.
+
+        A non-null block there depends on what tarfile stopped on
+        (:class:`_TarFile`). After a zero block, with members listed, the end-of-archive
+        marker itself is damaged: every member before it is listed and whole, as GNU tar
+        and 7-Zip list them with a warning, so it is ``ARCHIVE_EOF_MARKER_MISSING`` under
+        the ordinary policy (``DiagnosticPolicy.strict()`` refuses it), and the scan
+        past the trailer runs from the block after it. After a rejected header, the
+        listing was cut short and it is ``CorruptionError``; so is a zero block and
+        then a non-null one with no member before them.
 
         Streaming cannot see a rejected *final* header (tarfile's ``_Stream`` hides the
         block and it cannot be recovered without re-reading), so that one case surfaces as
@@ -1169,9 +1227,7 @@ class TarReader(BaseArchiveReader):
         ``dev-docs/known-issues.md``.
         """
         if self._eof_header_rejected:
-            self._emit_eof_marker(
-                observed_bytes=512, observed_kind="nonzero", corrupt=True
-            )
+            self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
         fileobj = self._tar.fileobj
         if fileobj is None:
@@ -1182,17 +1238,23 @@ class TarReader(BaseArchiveReader):
             self._verify_nothing_but_zeros_to_eof()
             return
         if len(chunk) == 512:
-            # A non-null block where the second trailer block belongs: tarfile treated a
-            # bad block as a clean end (or trailing junk followed a lone zero block).
-            self._emit_eof_marker(
-                observed_bytes=512, observed_kind="nonzero", corrupt=True
-            )
+            if not any_members:
+                self._emit_eof_marker("no_member", observed_bytes=512)
+                return
+            if isinstance(self._tar, _TarFile) and self._tar.stopped_on_zero_block:
+                # One zero block, then a damaged one: the marker is damaged, not the
+                # listing. The scan past it still runs, because on a compressed tar it
+                # is where the codec's whole-stream checksum over the members just
+                # listed is usually reached.
+                self._emit_eof_marker("damaged_second_block", observed_bytes=512)
+                self._verify_nothing_but_zeros_to_eof()
+                return
+            # A non-null block where the second trailer block belongs after a rejected
+            # header: tarfile treated a bad block as a clean end.
+            self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
-        observed_kind: Literal["absent", "short"] = (
-            "absent" if len(chunk) == 0 else "short"
-        )
         self._emit_eof_marker(
-            observed_bytes=len(chunk), observed_kind=observed_kind, corrupt=False
+            "absent" if len(chunk) == 0 else "short", observed_bytes=len(chunk)
         )
 
     def _verify_nothing_but_zeros_to_eof(self) -> None:
@@ -1326,27 +1388,52 @@ class TarReader(BaseArchiveReader):
             logger=backends_logger,
         )
 
-    def _emit_eof_marker(
-        self,
-        *,
-        observed_bytes: int,
-        observed_kind: Literal["absent", "short", "nonzero"],
-        corrupt: bool,
-    ) -> None:
-        if corrupt:
+    def _emit_eof_marker(self, end: _TarEnd, *, observed_bytes: int) -> None:
+        """Report a missing or damaged two-zero-block end-of-archive marker.
+
+        ``end`` says what was found where the marker belongs (see :data:`_TarEnd`).
+        ``"rejected_header"`` and ``"no_member"`` are corruption whatever the policy:
+        the first means tarfile read a rejected header as a clean end and shortened the
+        listing, the second that a file with no member is a zero block and then junk,
+        which must not open as an empty tar. The other three follow the policy.
+        ``"damaged_second_block"`` gets its own ``expected_marker``,
+        ``"second_zero_block"``, so a caller can tell a whole listing from a
+        shortened one by the context, not the message.
+        """
+        expected_marker = "two_zero_blocks"
+        expected_bytes = 1024
+        observed_kind: Literal["absent", "short", "nonzero"] = "nonzero"
+        escalate_as: type[BaseException] | None = None
+        if end == "damaged_second_block":
+            message = (
+                "TAR archive's end-of-archive marker is damaged: a zero block ends the "
+                "members, but the block after it is not zero. Every member before it is "
+                "listed."
+            )
+            expected_marker = "second_zero_block"
+            expected_bytes = 512
+        elif end == "rejected_header":
             message = (
                 "TAR archive is corrupt: a non-null block appears where the "
                 "end-of-archive marker was expected. Stdlib tarfile treats a corrupt "
                 "member header after the first as a clean end of archive, so a silently "
                 "shortened listing surfaces here."
             )
-            escalate_as: type[BaseException] | None = CorruptionError
+            escalate_as = CorruptionError
+        elif end == "no_member":
+            message = (
+                "TAR archive is corrupt: it has no member, and the block after its "
+                "first zero block is not zero. A file that is only a zero block and "
+                "then other bytes is not shown to be a TAR archive, so it does not "
+                "open as an empty one."
+            )
+            escalate_as = CorruptionError
         else:
             message = (
                 "TAR archive may be truncated: missing or short end-of-archive marker "
                 "block(s)."
             )
-            escalate_as = None
+            observed_kind = end
         escalate_kwargs: dict[str, object] | None = None
         if escalate_as is not None:
             escalate_kwargs = {
@@ -1359,8 +1446,8 @@ class TarReader(BaseArchiveReader):
             context=ArchiveEofContext(
                 archive_name=self._archive_name,
                 format="tar",
-                expected_marker="two_zero_blocks",
-                expected_bytes=1024,
+                expected_marker=expected_marker,
+                expected_bytes=expected_bytes,
                 observed_bytes=observed_bytes,
                 observed_kind=observed_kind,
             ),
@@ -1388,10 +1475,6 @@ class TarReader(BaseArchiveReader):
             info, self._tar.encoding, self._tar.errors, self._tar.pax_headers
         )
 
-        # The random-access walk has already dropped a non-link's linkname as it
-        # parsed the header; the streaming walk parses one header at a time and
-        # drops it here.
-        _drop_unweighed_link_name(info)
         link_target = (
             info.linkname
             if member_type in (MemberType.SYMLINK, MemberType.HARDLINK)
@@ -1401,9 +1484,20 @@ class TarReader(BaseArchiveReader):
         # tarfile folds a PAX mtime (sub-second/timezone) into TarInfo.mtime already, so this
         # one field honors both the standard ustar mtime and the PAX override. A hostile
         # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
-        # sink the whole listing, so it degrades to None like _pax_time does.
+        # sink the whole listing, so it degrades to None and is reported, as _pax_time does.
         modified = unix_to_datetime(info.mtime)
-        mtime_invalid = modified is None
+        timestamp_issues: list[TimestampIssue] = []
+        if modified is None:
+            timestamp_issues.append(
+                _tar_time_issue(info, "mtime", repr(info.mtime), pax_record=False)
+            )
+        elif info.mtime == 0 and "mtime" in info.pax_headers:
+            # tarfile turns a PAX mtime that is not a number into 0 with no error, so
+            # the Unix epoch here can stand for a value that was never readable.
+            _, issue = _pax_time(info, "mtime")
+            if issue is not None:
+                modified = None
+                timestamp_issues.append(issue)
 
         compression = (
             _STORED_COMPRESSION
@@ -1435,19 +1529,26 @@ class TarReader(BaseArchiveReader):
             _raw=info,  # carry the TarInfo so _open_member needs no name/id lookup table
         )
         # Skip defaulted None/False fields on the listing hot path (perf review L2).
-        accessed = _pax_time(info, "atime")
-        if accessed is not None:
-            member.accessed = accessed
-        # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
-        # ``ctime``, never ``created``.
-        ctime = _pax_time(info, "ctime")
-        if ctime is not None:
-            member.ctime = ctime
-        # libarchive writes the source's birth time, where the OS has one, as a PAX
-        # extension keyword. It is the only TAR writer known to store a birth time.
-        birth = _pax_time(info, "LIBARCHIVE.creationtime")
-        if birth is not None:
-            member.created = birth
+        if info.pax_headers:
+            accessed, issue = _pax_time(info, "atime")
+            if accessed is not None:
+                member.accessed = accessed
+            elif issue is not None:
+                timestamp_issues.append(issue)
+            # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
+            # ``ctime``, never ``created``.
+            ctime, issue = _pax_time(info, "ctime")
+            if ctime is not None:
+                member.ctime = ctime
+            elif issue is not None:
+                timestamp_issues.append(issue)
+            # libarchive writes the source's birth time, where the OS has one, as a PAX
+            # extension keyword. It is the only TAR writer known to store a birth time.
+            birth, issue = _pax_time(info, "LIBARCHIVE.creationtime")
+            if birth is not None:
+                member.created = birth
+            elif issue is not None:
+                timestamp_issues.append(issue)
         if info.uname:
             member.uname = info.uname
         if info.gname:
@@ -1466,37 +1567,41 @@ class TarReader(BaseArchiveReader):
             archive_name=self._archive_name,
             member_id=index,
         )
-        if mtime_invalid:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=f"Invalid TAR mtime for {quoted(info.name)}: {info.mtime!r}",
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field="mtime",
-                    source="tar",
-                    value_repr=repr(info.mtime),
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=backends_logger,
-            )
+        for issue in timestamp_issues:
+            self._emit_timestamp_invalid(member, index, issue)
         return member
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
+        # The callee takes the handle guard inside this boundary.
+        with self._translated_errors(member.name):
+            return self._open_member_stream(member, defer_sparse_error=False)
+
+    def _open_member_stream(
+        self, member: ArchiveMember, *, defer_sparse_error: bool
+    ) -> ArchiveStream:
+        """Open ``member``'s data. A bad sparse map raises here, or with
+        ``defer_sparse_error`` on the first read: a forward-only consumer that skips
+        the member does not read the bad map, and tarfile moves on to the next header
+        by the member's stored end."""
         info = member._raw
         assert isinstance(info, tarfile.TarInfo), (
             "TAR member is missing its TarInfo handle"
         )
-        # Boundary outside the guard: translation/stamping never run while the
-        # shared-fileobj lock is held.
-        with self._translated_errors(member.name):
-            sparse_error = _sparse_map_error(info)
-            if sparse_error is not None:
+        sparse_error = _sparse_map_error(info)
+        if sparse_error is not None:
+            if not defer_sparse_error:
                 raise sparse_error
-            with self._handle_guard():
-                raw = self._tar.extractfile(info)
+
+            def _refuse(error: CorruptionError = sparse_error) -> BinaryIO:
+                raise error
+
+            return self._wrap_member_stream(
+                None, member.name, open_fn=_refuse, size=member.size
+            )
+        # Callers put their translation boundary outside this guard, so
+        # translation/stamping never run while the shared-fileobj lock is held.
+        with self._handle_guard():
+            raw = self._tar.extractfile(info)
         if raw is None:
             # Only FILE members reach here (the base follows links/skips non-data members),
             # so a None stream means a zero-length or special entry; present an empty stream.

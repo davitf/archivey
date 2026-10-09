@@ -35,14 +35,23 @@ from typing import (
 )
 
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, SeekIndexContext
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import (
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     nothing_held,
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, ensure_bufferedio
+from archivey.internal.streams.resume import ResumeReachedStreamEnd
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    ensure_bufferedio,
+    resolve_seek,
+)
 
 
 class _StreamChecksumError(CorruptionError):
@@ -70,6 +79,24 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
     if "incorrect data check" in text or "incorrect length check" in text:
         return _StreamChecksumError(f"Error reading {label} stream: {exc!r}")
     return CorruptionError(f"Error reading {label} stream: {exc!r}")
+
+
+# zlib's gzip-window errors for a member header that gzip(1) refuses as unsupported,
+# not as damaged: "unknown method 7 -- not supported" (CM other than 8 = deflate), and
+# "has flags 0x80 -- not supported" / "is encrypted -- not supported" (a reserved FLG
+# bit, which RFC 1952 says a decoder must refuse).
+_GZIP_UNSUPPORTED_HEADER = ("unknown compression method", "unknown header flags set")
+
+
+def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
+    """The error for a ``zlib.error`` from a gzip stream.
+
+    A member header gzip refuses as unsupported is :class:`UnsupportedFeatureError`;
+    anything else is :func:`gzip_corruption`.
+    """
+    if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
+        return UnsupportedFeatureError(f"Unsupported gzip member header: {exc!r}")
+    return gzip_corruption(exc)
 
 
 @dataclass(order=True)
@@ -546,8 +573,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._eof = False
         self._pos = 0
         self._size: int | None = None
-        # The deferred error this stream raised at its end (see _raise_deferred), until
-        # a seek restarts the decoder.
+        # The deferred error this stream raised at its end (see _raise_deferred), or the
+        # error the decoder raised (see _decoding), until a seek restarts the decoder.
         self._spent: BaseException | None = None
 
     def seekable(self) -> bool:
@@ -737,7 +764,9 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
         if not self._decoder.needs_input:
-            drained = self._ingest_decode(self._decoder.feed(b"", max_length))
+            drained = self._ingest_decode(
+                self._decoding(lambda: self._decoder.feed(b"", max_length))
+            )
             if self._decoder.trailing_bytes is not None:
                 return self._end_at_trailing_data(drained)
             if drained:
@@ -748,7 +777,7 @@ class DecompressorStream(ReadOnlyIOStream):
         chunk = self._inner.read(_compressed_feed_size(max_length))
         self._compressed_read += len(chunk)
         if not chunk:
-            leftover = self._ingest_decode(self._decoder.flush())
+            leftover = self._ingest_decode(self._decoding(self._decoder.flush))
             if self._decoder.trailing_bytes is not None:
                 return self._end_at_trailing_data(leftover)
             if leftover and getattr(self._decoder, "drains_after_flush", False):
@@ -766,10 +795,41 @@ class DecompressorStream(ReadOnlyIOStream):
                 self._size = self._pos + len(self._buffer) + len(leftover)
                 self._index_built = True  # a forward scan to EOF is a complete index
             return leftover
-        data = self._ingest_decode(self._decoder.feed(chunk, max_length))
+        data = self._ingest_decode(
+            self._decoding(lambda: self._decoder.feed(chunk, max_length))
+        )
         if self._decoder.trailing_bytes is not None:
             return self._end_at_trailing_data(data)
         return data
+
+    def _decoding(self, call: Callable[[], DecodeOut]) -> DecodeOut:
+        """Make one decoder call, keeping an error it raises as this stream's verdict.
+
+        A decoder that raised is left in a state nothing defines, and restarting it from
+        a seek point is the only defined way back. Fed again, a standard-library decoder
+        may refuse every later call or repeat its first error, and neither is a verdict
+        this stream can read: on CPython 3.11.17, ``bz2`` answers with ``ValueError(
+        "Decompressor is unusable after a previous error")``, which
+        ``BzipCodec.translate`` would report as a truncation, and ``lzma`` with
+        ``LZMAError("Internal error")``. So the error goes into ``_spent``, as a deferred
+        one does (:meth:`_raise_deferred`): a bounded read hands back what is already
+        buffered, then raises it again, and ``readall`` raises at once, as it does for a
+        deferred error. A seek restarts the decoder from a seek point, also a seek to the
+        position the stream is already at.
+
+        Every exception counts, not only a verdict on the data: an ``OSError`` from the
+        caller's source raised inside a decode (xz's resume hand-off seeks the source)
+        or a bug in the decoder leaves its state just as undefined, so it sticks until a
+        seek too. ``ResumeReachedStreamEnd`` is not an error, and its caller replaces
+        this stream.
+        """
+        try:
+            return call()
+        except ResumeReachedStreamEnd:
+            raise
+        except Exception as exc:
+            self._spent = exc
+            raise
 
     def _end_at_trailing_data(self, data: bytes) -> bytes:
         """End the stream where the decoder found bytes past the codec's end.
@@ -818,6 +878,8 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def readall(self) -> bytes:
         if self._spent is not None:
+            # The caller asked for the whole stream, which cannot be had: raise now,
+            # even with output buffered, as for a deferred error below.
             self._raise_spent()
         # Prefer join-of-chunks over staging through the shared bytearray: a whole-stream
         # read never needs the partial-read buffer, and the extend + bytes(buffer) copy
@@ -883,7 +945,9 @@ class DecompressorStream(ReadOnlyIOStream):
                 # ``_buffer`` holds it now. A raise below keeps this frame alive on
                 # its traceback, which must not pin a second copy of the bytes.
                 chunk = b""
-            while len(self._buffer) < n and not self._eof:
+            # A decoder that raised mid-read is not fed again (see _decoding): what it
+            # produced before the error is handed back, and the read after that raises.
+            while len(self._buffer) < n and not self._eof and self._spent is None:
                 need = n - len(self._buffer)
                 self._buffer.extend(self._read_decompressed_chunk(need))
             held = pending()
@@ -912,7 +976,7 @@ class DecompressorStream(ReadOnlyIOStream):
         raise err
 
     def _raise_spent(self) -> NoReturn:
-        """Raise the recorded deferred error again, with this raise's traceback only.
+        """Raise the recorded error again, with this raise's traceback only.
 
         Re-raising the stored instance as is would append each raise's frames to one
         traceback, which grows with every retry and keeps every frame on it alive.
@@ -980,66 +1044,54 @@ class DecompressorStream(ReadOnlyIOStream):
                 raise held
         return pos
 
+    def _end_offset(self) -> int:
+        """Return the decompressed size; finding it may decode the rest of the stream."""
+        self._ensure_index_built()
+        if self._size is None:
+            if self._spent is not None:
+                # This stream already raised an error (a truncation, or the decoder's
+                # own): report the same error, not the generic unknown-size one below.
+                self._raise_spent()
+            # Building the index didn't reveal the size; scan to EOF to find it
+            # without buffering all remaining data in RAM.
+            self._pos += len(self._buffer)
+            self._buffer.clear()
+            while not self._eof:
+                data = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
+                self._pos += len(data)
+            # Truncated streams must not publish a clean complete size; surface
+            # the deferred fault instead of asserting or treating the prefix as
+            # the full stream.
+            err = self._decoder.pending_error
+            if err is not None:
+                self._raise_deferred(err)
+            if self._size is None:
+                raise TruncatedError(
+                    "Cannot seek to end: decompressed size is unknown "
+                    "(stream ended incompletely)"
+                )
+        return self._size
+
     def _seek(self, offset: int, whence: int) -> int:
         if not self._inner.seekable():
             raise io.UnsupportedOperation("seek")
 
-        if whence == io.SEEK_SET:
-            new_pos = offset
-        elif whence == io.SEEK_CUR:
-            new_pos = self._pos + offset
-        elif whence == io.SEEK_END:
-            new_pos = -1  # resolved below once _size is known
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-
-        if whence == io.SEEK_END or (
-            new_pos > self._pos + len(self._buffer)
+        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._end_offset)
+        if (
+            whence != io.SEEK_END
+            and new_pos > self._pos + len(self._buffer)
             and new_pos > self._seek_points[-1].decompressed_offset
         ):
             self._ensure_index_built()
 
-        if whence == io.SEEK_END:
-            if self._size is None:
-                if self._spent is not None:
-                    # This stream already raised its truncation: report the same error,
-                    # not the generic unknown-size one below.
-                    self._raise_spent()
-                # Building the index didn't reveal the size; scan to EOF to find it
-                # without buffering all remaining data in RAM.
-                self._pos += len(self._buffer)
-                self._buffer.clear()
-                while not self._eof:
-                    data = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
-                    self._pos += len(data)
-                # Truncated streams must not publish a clean complete size; surface
-                # the deferred fault instead of asserting or treating the prefix as
-                # the full stream.
-                err = self._decoder.pending_error
-                if err is not None:
-                    self._raise_deferred(err)
-                if self._size is None:
-                    raise TruncatedError(
-                        "Cannot seek to end: decompressed size is unknown "
-                        "(stream ended incompletely)"
-                    )
-            new_pos = self._size + offset
-
-        if new_pos < 0:
-            # Match BytesIO / SlicingStream: relative underflow clamps to the
-            # origin; only an explicitly negative SEEK_SET raises.
-            if whence == io.SEEK_SET:
-                raise ValueError(f"Negative seek position {offset}")
-            new_pos = 0
-
         if self._spent is not None:
-            # The decoder is at the end of a truncated input, so no position is
-            # reachable from here: restart from the nearest seek point, and let the
-            # decode below reach new_pos, or the truncation again. The size
-            # short-circuit below cannot turn this back into a clean end: a decode
-            # that raised a truncation never publishes a size (readall and SEEK_END
-            # raise first), so a size here came from an index scan, and a seek at or
-            # past the size the index claims is at the end.
+            # The decoder raised, at the end of a truncated input or mid-stream, so no
+            # position is reachable from where it stands: restart from the nearest seek
+            # point, and let the decode below reach new_pos, or the error again. The
+            # size short-circuit below cannot turn this back into a clean end: a decode
+            # that raised never publishes a size (readall and SEEK_END raise first), so
+            # a size here came from an index scan, and a seek at or past the size the
+            # index claims is at the end.
             self._reset_to_seek_point(self._prepare_seek_point(new_pos))
 
         if self._size is not None and new_pos >= self._size:

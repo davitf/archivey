@@ -9,13 +9,18 @@ from __future__ import annotations
 
 import io
 import os
+import re
+import sys
 import tempfile
+from typing import Callable
 
 import pytest
 
 from archivey.internal.streams.streamtools import (
     BinaryIOWrapper,
     ReadableStream,
+    check_read_size,
+    check_seek_args,
     ensure_binaryio,
     ensure_bufferedio,
     is_filename,
@@ -24,6 +29,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     read_within_reach,
     readinto_via_read,
+    resolve_seek,
     source_name,
 )
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
@@ -1042,3 +1048,120 @@ class TestSourceByteSize:
         from archivey.internal.streams.streamtools import source_byte_size
 
         assert source_byte_size(NonSeekableBytesIO(b"abc")) is None
+
+
+class TestResolveSeek:
+    """``resolve_seek`` follows ``io.BytesIO`` and asks for the end only on ``SEEK_END``."""
+
+    def _end(self) -> int:
+        self.end_calls += 1
+        return 10
+
+    def setup_method(self) -> None:
+        self.end_calls = 0
+
+    @pytest.mark.parametrize(
+        ("offset", "whence", "expected"),
+        [
+            (7, io.SEEK_SET, 7),
+            (99, io.SEEK_SET, 99),
+            (3, io.SEEK_CUR, 7),
+            (-4, io.SEEK_CUR, 0),
+            (-99, io.SEEK_CUR, 0),
+        ],
+    )
+    def test_set_and_cur_never_ask_for_the_end(
+        self, offset: int, whence: int, expected: int
+    ) -> None:
+        assert resolve_seek(offset, whence, pos=4, end=self._end) == expected
+        assert self.end_calls == 0
+
+    @pytest.mark.parametrize(
+        ("offset", "expected"), [(0, 10), (-3, 7), (5, 15), (-99, 0)]
+    )
+    def test_end_is_asked_once(self, offset: int, expected: int) -> None:
+        assert resolve_seek(offset, io.SEEK_END, pos=4, end=self._end) == expected
+        assert self.end_calls == 1
+
+    def test_negative_seek_set_raises(self) -> None:
+        with pytest.raises(ValueError, match="Negative seek position -1"):
+            resolve_seek(-1, io.SEEK_SET, pos=4, end=self._end)
+        assert self.end_calls == 0
+
+    def test_invalid_whence_raises(self) -> None:
+        with pytest.raises(ValueError, match="Invalid whence: 3"):
+            resolve_seek(0, 3, pos=4, end=self._end)
+        assert self.end_calls == 0
+
+    @pytest.mark.parametrize(
+        "args", [(1.5, io.SEEK_SET), (None, io.SEEK_CUR), ("1", io.SEEK_END), (0, 1.5)]
+    )
+    def test_non_integer_raises_type_error_as_bytesio(
+        self, args: tuple[object, object]
+    ) -> None:
+        # Untyped handles: the arguments are wrong on purpose.
+        resolve: Callable[..., int] = resolve_seek
+        reference: Callable[..., int] = io.BytesIO().seek
+        with pytest.raises(TypeError) as expected:
+            reference(*args)
+        with pytest.raises(TypeError, match=re.escape(str(expected.value))):
+            resolve(*args, pos=4, end=self._end)
+        assert self.end_calls == 0
+
+    def test_int_subclass_is_its_int_value(self) -> None:
+        resolved = resolve_seek(True, io.SEEK_SET, pos=4, end=self._end)
+        assert resolved == 1
+        assert type(resolved) is int
+
+
+class TestCheckSeekArgs:
+    def test_returns_exact_ints(self) -> None:
+        assert check_seek_args(True, io.SEEK_CUR) == (1, io.SEEK_CUR)
+        offset, whence = check_seek_args(-5, True)
+        assert (offset, whence) == (-5, io.SEEK_CUR)
+        assert type(offset) is int and type(whence) is int
+
+    def test_negative_seek_set_raises(self) -> None:
+        with pytest.raises(ValueError, match="Negative seek position -1"):
+            check_seek_args(-1, io.SEEK_SET)
+
+    def test_negative_relative_offset_is_left_to_the_resolver(self) -> None:
+        assert check_seek_args(-1, io.SEEK_END) == (-1, io.SEEK_END)
+
+    def test_invalid_whence_raises(self) -> None:
+        with pytest.raises(ValueError, match="Invalid whence: 3"):
+            check_seek_args(0, 3)
+
+
+class TestCheckReadSize:
+    @pytest.mark.parametrize(("n", "expected"), [(None, -1), (-5, -5), (0, 0), (7, 7)])
+    def test_integers_and_none(self, n: int | None, expected: int) -> None:
+        assert check_read_size(n) == expected
+
+    def test_bool_is_its_int_value(self) -> None:
+        size = check_read_size(True)
+        assert size == 1 and type(size) is int
+
+    @pytest.mark.parametrize("bad", [sys.maxsize + 1, 2**70, -sys.maxsize - 2])
+    def test_int_outside_ssize_t_raises_overflow_error_as_bytesio(
+        self, bad: int
+    ) -> None:
+        with pytest.raises(OverflowError) as expected:
+            io.BytesIO(b"abc").read(bad)
+        with pytest.raises(OverflowError) as excinfo:
+            check_read_size(bad)
+        assert str(excinfo.value) == str(expected.value)
+
+    @pytest.mark.parametrize("edge", [sys.maxsize, -sys.maxsize - 1])
+    def test_ssize_t_bounds_pass(self, edge: int) -> None:
+        assert check_read_size(edge) == edge
+
+    @pytest.mark.parametrize("bad", [1.5, "3", b"3", 2.0])
+    def test_non_integer_raises_type_error_as_bytesio(self, bad: object) -> None:
+        # Untyped handles: the argument is wrong on purpose.
+        check: Callable[..., int] = check_read_size
+        with pytest.raises(TypeError) as expected:
+            io.BytesIO(b"abc").read(bad)  # type: ignore[arg-type]
+        with pytest.raises(TypeError) as excinfo:
+            check(bad)
+        assert str(excinfo.value) == str(expected.value)

@@ -24,6 +24,7 @@ from archivey.config import (
     PasswordInput,
     PasswordRequest,
 )
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -1080,6 +1081,43 @@ def test_unregistered_coder_is_listed_as_unknown_not_dropped() -> None:
     )
 
 
+def test_listing_walk_stops_at_a_coder_with_no_input() -> None:
+    """A coder with no in-stream ends the first-input walk; it does not borrow one.
+
+    The parser accepts such a coder (only decoding refuses it). Its in-stream offset is
+    the next coder's first in-stream, here the Delta coder's, which the PPMd coder
+    feeds: reading that offset as the LZMA coder's input listed PPMd in the chain.
+    """
+
+    def coder(method: bytes, num_in: int = 1) -> SevenZipCoder:
+        return SevenZipCoder(
+            method=method, num_in_streams=num_in, num_out_streams=1, properties=None
+        )
+
+    folder = SevenZipFolder(
+        # In-streams: Delta 0, LZMA2 1 and 2, PPMd 3. LZMA2 (the output) reads the
+        # LZMA coder first and the Delta coder second; PPMd feeds Delta.
+        coders=[
+            coder(b"\x03\x01\x01", num_in=0),
+            coder(b"\x03"),
+            coder(b"\x21", num_in=2),
+            coder(b"\x03\x04\x01"),
+        ],
+        bind_pairs=[(1, 0), (2, 1), (0, 3)],
+        packed_indices=[3],
+        unpack_sizes=[16, 16, 16, 16],
+        crc=None,
+        digest_defined=False,
+    )
+    (chain,) = SevenZipReader._build_folder_compression(
+        types.SimpleNamespace(folders=[folder])
+    )
+    assert tuple(m.algo for m in chain) == (
+        CompressionAlgorithm.LZMA2,
+        CompressionAlgorithm.LZMA,
+    )
+
+
 @requires_binary("7z")
 @requires("inflate64")
 def test_7z_cli_deflate64_fixture_roundtrip(tmp_path: Path) -> None:
@@ -1378,7 +1416,9 @@ def test_unknown_folder_method_is_rejected() -> None:
 
 def test_ppmd_without_pyppmd_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = _reader_for_unit_tests()
-    monkeypatch.setattr(codecs, "_pyppmd", None)
+    monkeypatch.setattr(
+        codecs, "_pyppmd", codecs._LazyOptional("pyppmd", present=False)
+    )
     properties = struct.pack("<BL", 6, 1 << 20)
 
     with pytest.raises(PackageNotInstalledError, match="pyppmd"):
@@ -2490,6 +2530,8 @@ def test_comment_terminator_is_trimmed_a_code_unit_at_a_time() -> None:
     assert _read_comment(_Cursor(b"\x00" + "hi\x00\x00".encode("utf-16le"))) == "hi"
     assert _read_comment(_Cursor(b"\x00")) is None
     assert _read_comment(_Cursor(b"\x00" + "\x00".encode("utf-16le"))) is None
+    with raises_corruption_not_truncation(match="odd byte length"):
+        _read_comment(_Cursor(b"\x00abc"))
 
 
 def _encode_7z_number(value: int) -> bytes:
@@ -2643,8 +2685,127 @@ def _created_slot_record(attributes: int | None) -> SevenZipFileRecord:
     )
 
 
+def _unix_directory_record_with_reparse_bit() -> SevenZipFileRecord:
+    return SevenZipFileRecord(
+        filename="tree",
+        emptystream=True,
+        is_anti=False,
+        is_directory=True,
+        is_empty_file=False,
+        attributes=0x8000 | 0x400 | (0o040755 << 16),
+        creation_time=None,
+        last_access_time=None,
+        last_write_time=None,
+        folder_index=None,
+        file_in_folder=None,
+        uncompressed_size=0,
+        crc32=None,
+        compressed_size=None,
+        is_encrypted=False,
+    )
+
+
+def test_a_unix_directory_with_the_reparse_bit_is_a_plain_directory() -> None:
+    """The high word's S_IFDIR types the entry, so the low word's 0x400 makes no link.
+
+    The member stays flagged as a reparse point, since the bit is in the header, but
+    with nothing typed as a link there is no link target to report missing.
+    """
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_unix_directory_record_with_reparse_bit(), 0)
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert member.type is MemberType.DIRECTORY
+    assert member.is_reparse_point
+    assert DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE not in codes
+
+
+@pytest.mark.parametrize(
+    ("attributes", "expected"),
+    [
+        (0x8000 | 0x20 | (0o020644 << 16), MemberType.OTHER),  # char device
+        (0x8000 | 0x20 | (0o060660 << 16), MemberType.OTHER),  # block device
+        (0x8000 | 0x20 | (0o010644 << 16), MemberType.OTHER),  # FIFO
+        (0x8000 | 0x20 | (0o140755 << 16), MemberType.OTHER),  # socket
+        (0x8000 | 0x20 | (0o100644 << 16), MemberType.FILE),
+        # No 0x8000: a Windows attribute word with stray bits above 0xFFFF
+        # (0x20000000 is STRICTLY_SEQUENTIAL), not a Unix mode.
+        (0x20000020, MemberType.FILE),
+        (0o020644 << 16, MemberType.FILE),
+    ],
+)
+def test_unix_special_file_is_other(attributes: int, expected: MemberType) -> None:
+    """p7zip stores a FIFO or device with its Unix mode and no data. It is OTHER, as
+    in TAR and ISO, so extraction refuses it rather than writing an empty file."""
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_created_slot_record(attributes), 0)
+    assert member.type is expected
+
+
+@requires_binary("7z")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_real_7z_cli_fifo_is_other_and_not_extracted(tmp_path: Path) -> None:
+    """7-Zip and p7zip store a FIFO with its Unix mode and no data."""
+    src = tmp_path / "src"
+    src.mkdir()
+    os.mkfifo(src / "fifo")
+    (src / "reg.txt").write_bytes(b"hi")
+    archive = tmp_path / "fifo.7z"
+    subprocess.run(
+        ["7z", "a", str(archive), "fifo", "reg.txt"],
+        cwd=src,
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(archive) as reader:
+        types = {m.name: m.type for m in reader.members()}
+        assert types == {"fifo": MemberType.OTHER, "reg.txt": MemberType.FILE}
+        reader.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "fifo").exists()
+    assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
+
+
 def _to_filetime_ticks(unix_seconds: int) -> int:
     return (unix_seconds + 11_644_473_600) * 10_000_000
+
+
+@pytest.mark.parametrize(
+    ("slot", "field", "attributes"),
+    [
+        ("last_write_time", "modified", None),
+        ("last_access_time", "accessed", None),
+        ("creation_time", "created", None),
+        ("creation_time", "created", 0x20),  # 7-Zip on Windows
+        # 7-Zip on Linux, p7zip: the slot would have filled ``ctime``.
+        ("creation_time", "ctime", 0x8000 | 0x20 | (0o100644 << 16)),
+    ],
+)
+def test_an_out_of_range_filetime_is_none_and_reported(
+    slot: str, field: str, attributes: int | None
+) -> None:
+    """Each of the three 7z time slots reports a value past datetime's range, naming
+    the member field it would have filled."""
+    from dataclasses import replace
+
+    from archivey.diagnostics import MemberTimestampContext
+
+    record = replace(_created_slot_record(attributes), creation_time=None)
+    record = replace(record, **{slot: 2**64 - 1})
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(record, 0)
+        (diagnostic,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
+    assert getattr(member, field) is None
+    context = diagnostic.context
+    assert isinstance(context, MemberTimestampContext)
+    assert (context.field, context.source) == (field, "ntfs")
+    assert context.value_repr == str(2**64 - 1)
+    assert diagnostic.message == f"Invalid NTFS timestamp for 'a.txt': {2**64 - 1}"
 
 
 @pytest.mark.parametrize(

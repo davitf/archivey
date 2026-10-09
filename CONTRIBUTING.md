@@ -6,6 +6,8 @@ the *design* lives elsewhere and is authoritative:
 - `openspec/specs/<capability>/spec.md` — the authoritative capability specs.
 - `docs/` — the published end-user guide, and nothing else (see "Where does a new doc
   go?" at the end of this file).
+- `new_docs/` — an unpublished rewrite of the user guide, page by page. It replaces
+  `docs/` once it covers it; until then `docs/` is authoritative (`new_docs/README.md`).
 - `dev-docs/` — unpublished maintainer material: `decisions/` (the ADR log),
   threat model / codec analysis / known issues, `investigations/` (finished
   evidence), `history/` (superseded SPEC/ARCHITECTURE/COMPARISON/ASYNC prose,
@@ -222,6 +224,11 @@ security fixes one line each, other bug fixes summarized in one line).
 
 ## Coding standards
 
+Design questions (what a default should be, what a damaged archive should do, whether
+two formats should agree) are settled by
+[`dev-docs/design-rules.md`](dev-docs/design-rules.md) before anyone asks the
+maintainer.
+
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
 - **Don't accumulate debt — clean as you go.** When you touch something, leave it in the
@@ -400,6 +407,13 @@ security fixes one line each, other bug fixes summarized in one line).
   leaked children via `Popen.terminate` — `os.WNOHANG` does not exist on
   Windows, and using it hid the leak report behind an `AttributeError`.
   `@pytest.mark.allow_resource_leaks` skips the fail, not the reap.
+- **Measure a memory peak with `tests/memory_util.traced_peak`.** Do not start and stop
+  `tracemalloc` by hand for a peak. On free-threaded 3.13 a garbage collection that runs
+  inside the window adds memory in proportion to every live object in the process, so a
+  peak bound fails in the full serial suite and never alone. The helper collects first
+  and keeps the collector off while it measures; its module docstring has the numbers.
+  A test that bounds retained memory (`test_audit_tar_streams.py`, `test_codecs.py`) is
+  unaffected: the collector's working memory is freed by the time the collection ends.
 - **Hit the corner cases.** Especially corrupt, truncated, and encrypted archives;
   wrong passwords; empty/zero-length members; unusual names and metadata; non-seekable
   sources. When porting or writing a reader, deliberately trigger each error path so the
@@ -494,10 +508,13 @@ On every PR that touches `openspec/specs/` or a change delta:
 Five questions, in order. The first `yes` wins.
 
 1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
-   `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
+   `mkdocs.yml`'s nav in the same commit**. If `new_docs/` already has a rewrite of that
+   page, change it there too. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision. Use `/technical-writing` for structure and craft. The standing
-   prose rules that apply to the result are [`AGENTS.md`](AGENTS.md) §Writing English.
+   page per decision. Use `/technical-writing` for structure and craft, and
+   [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) for the voice, which
+   outranks STE on user docs. The standing prose rules are [`AGENTS.md`](AGENTS.md)
+   §Writing English.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
    (rewrite in place; light decision bullets, not a new ADR). **Create the file in the

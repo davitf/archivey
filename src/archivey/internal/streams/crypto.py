@@ -38,6 +38,7 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
     read_exact,
+    resolve_seek,
     source_byte_size,
 )
 from archivey.types import MissingComponent
@@ -428,7 +429,7 @@ class AesDecryptStream(ReadOnlyIOStream):
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
 
-        new_pos = self._absolute_plaintext_pos(offset, whence)
+        new_pos = resolve_seek(offset, whence, pos=self._pos, end=self._end_offset)
         if new_pos == self._pos:
             return self._pos
 
@@ -467,30 +468,15 @@ class AesDecryptStream(ReadOnlyIOStream):
                 self._pos = new_pos
         return self._pos
 
-    def _absolute_plaintext_pos(self, offset: int, whence: int) -> int:
-        if whence == io.SEEK_SET:
-            new_pos = offset
-        elif whence == io.SEEK_CUR:
-            new_pos = self._pos + offset
-        elif whence == io.SEEK_END:
-            size = self._plaintext_size()
-            if size is None:
-                # Production sources are SharedView / SlicingStream, which
-                # expose .size, so this branch is cold. Unsized SEEK_END would
-                # read(-1) the whole plaintext into _buf and throw it away.
-                raise io.UnsupportedOperation(
-                    "SEEK_END requires a known ciphertext length"
-                )
-            new_pos = size + offset
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
-        if new_pos < 0:
-            # Match BytesIO / SlicingStream: relative underflow clamps to the
-            # origin; only an explicitly negative SEEK_SET raises.
-            if whence == io.SEEK_SET:
-                raise ValueError(f"Negative seek position {new_pos}")
-            new_pos = 0
-        return new_pos
+    def _end_offset(self) -> int:
+        """Return the plaintext size, the target of ``seek(0, SEEK_END)``."""
+        size = self._plaintext_size()
+        if size is None:
+            # Production sources are SharedView / SlicingStream, which
+            # expose .size, so this branch is cold. Unsized SEEK_END would
+            # read(-1) the whole plaintext into _buf and throw it away.
+            raise io.UnsupportedOperation("SEEK_END requires a known ciphertext length")
+        return size
 
     def _cipher_len(self) -> int | None:
         total = source_byte_size(self._source)

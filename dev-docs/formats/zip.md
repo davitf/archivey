@@ -16,7 +16,7 @@ states the behaviour and links the row.
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
+| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).
@@ -171,6 +171,15 @@ are sized with `stat()` and the joiner keeps a small cache of Path handles
 `.z01 … .zip` is a genuinely spanned set whose entries are addressed by
 `(disk, offset-within-disk)`, so it keeps refusing. §3 has the producer detail.
 
+Two files with the same part number in different padding (`x.zip.002` and a stray
+`x.zip.0002`), or in different case on a case-sensitive filesystem (`X.ZIP.002`), are one
+part, not a repeat: discovery takes the name opened, then the one padded and spelled like
+the name opened, as 7-Zip does when it predicts the next part's name, and falls back to
+the lowest name, never listing order (measured, 7-Zip 23.01 opens `x.7z.001` beside a stray
+`x.7z.0002` and reads `.002`; it refuses a set renamed to mixed widths, which archivey
+still joins). The same rule picks RAR `.partN` volumes ([`rar.md`](rar.md) §2.2). An
+explicit sequence naming both is still refused as a repeated part.
+
 A lone numbered part (`.zip.NNN` / `.exe.NNN` / `.7z.NNN` with no siblings) is
 `TruncatedError` naming the missing parts — the same incomplete-set error as a
 gap, not the ZIP "not supported" message. A part that is not on disk itself is
@@ -233,7 +242,7 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `raw_name` | The stored bytes `name` was decoded from, verbatim (no backslash rewrite) | — |
 | `extra["alternate_raw_name"]` | The CDH name bytes, when the Unicode Path field named the member | No such field, or it does not match |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
-| `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra`. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid — with `MEMBER_TIMESTAMP_INVALID` |
+| `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra`. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
 | `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory via `ZipInfo.is_dir()` otherwise | — |
 | `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
 | `compression` | `compress_type` → `CompressionMethod` | — |
@@ -256,9 +265,12 @@ marks them — `FILE_ATTRIBUTE_REPARSE_POINT`, `0x400` in the low (DOS) word of
 `0xA000000C`), and that tag is not in any header: it is the first field of the
 `REPARSE_DATA_BUFFER`, which archivers store as the member's *content*. So archivey
 reads it exactly where it already reads a symlink target, in `_ensure_link_target`,
-and `extra["is_junction"]` is a listing-time flag whose source is read-time data. The
-parsing lives in `archivey.internal.windows_reparse`, shared with the 7z backend, which
-has the same problem for the same reason.
+and `extra["is_junction"]` is a listing-time flag whose source is read-time data. The 7z
+backend has the same problem for the same reason and shares the whole path: the parsing
+in `archivey.internal.windows_reparse`, and in `BaseArchiveReader` the capped read
+(`_link_target_from_data`), the settle of a reparse point stored with no data
+(`_settle_empty_reparse_point`) and the report when encryption blocks the read. Each
+backend supplies only which members are reparse points and what type one reverts to.
 
 Two things follow, both measured against archives built on a Windows runner
 (`tests/fixtures/external/README.md` §`junction/`, and `tests/test_windows_reparse.py`):
@@ -305,6 +317,19 @@ trailing slash to name normalization (whose diagnostic the backend suppresses fo
 stored with the directory convention, §2.2.1). It keeps the `reparse_data_unrecognized`
 reason, since that is still what happened; only the outcome differs.
 
+**What the target looks like, and what extraction does with it.** The buffer holds a
+Windows path, so the parser normalizes it (`normalize_windows_link_target`, shared with
+7z and with RAR5 redirect types 2 and 3): every `\` becomes `/`, a leading `\??\` or
+`\\?\` is dropped, and `UNC\` after it becomes `//`. So `\??\C:\Windows` lists as
+`C:/Windows`, `\??\UNC\srv\share` as `//srv/share` and `..\up\x` as `../up/x`, in
+all three formats. Extraction refuses a symlink target with a drive letter or a UNC root
+at every policy and on every OS (maintainer ruling 2026-10-06, `safe-extraction`): on
+POSIX `C:/Windows` would otherwise be created as a relative link into a directory named
+`C:`, and on Windows the same archive is refused, so one archive would extract two ways.
+`STRICT` and `STANDARD` also refuse a `:` or a Windows-reserved device name in a target
+segment (`file:stream`, `sub/NUL`), as they do in a member name.
+`tests/test_link_target_portability.py` pins each case in ZIP, 7z and RAR5.
+
 The junction path in the reader is therefore correct and unreachable from any archive
 these tools produce. It is kept, and tested against an assembled buffer, because the
 format permits a writer to store one and the `archive-data-model` spec promises the
@@ -323,6 +348,24 @@ redirects with no data stream, so its CRC32 field covers zero bytes and archivey
 no digest at all rather than the constant `crc32(b"")` —
 [`formats/rar.md`](rar.md) §2.2.
 
+**The end record is checked against the directory stdlib read.** Stdlib reads
+directory entries until it has consumed the size the end record gives and ignores the
+rest of the record. After the members, the reader emits `ARCHIVE_EOF_MARKER_MISSING`
+for an entry count that differs from the entries read (the ZIP64 record's count when
+stdlib used it; a classic count modulo 65536, because old 7-Zip versions stored a
+larger count's low 16 bits without ZIP64 and current 7-Zip's `ZipIn.cpp` accepts that
+with a "16-bit overflow" note), an archive comment length past the end of the file, and
+an entry whose name, extra field or comment runs past the directory, which stdlib cuts
+at the directory's end. Info-ZIP
+unzip warns or errors on each and 7-Zip says "Headers Error", after testing every
+member, so the default policy lists and reads; `strict()` refuses.
+`_end_record_findings` takes the counts and the declared and present comment lengths
+from stdlib's own `_EndRecData` result (indices bound through `zipfile._ECD_*`), and
+reads the directory once more to find the entry that overruns it. Because the checks use
+the record stdlib chose, a decoy end-record signature inside the archive comment passes
+them: the archive lists as empty (`EMPTY_ARCHIVE`), as with Info-ZIP unzip, where 7-Zip
+searches further back and lists the real members.
+
 ### 2.3 Member data
 
 **`zipfile`'s own decoders are not used** — meaning `ZipExtFile`, not the standard library:
@@ -340,8 +383,21 @@ body raises `CorruptionError` and a cut-short one raises `TruncatedError` throug
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
 since `use_rapidgzip` covers raw deflate.
 
+**Codec settings 7-Zip names but this reader cannot decode are unsupported, not
+corrupt.** An LZMA member's properties byte with `lc + lp` over 4 (7-Zip accepts up to
+12 and writes it with `-mm=LZMA:lc=8`; liblzma stops at 4) raises
+`UnsupportedFeatureError` through `decode_lzma_filter_properties`, the check the 7z
+pipeline uses for the same byte. A PPMd member's restore method 2 is
+`UnsupportedFeatureError` and 3 to 15 `CorruptionError`, as 7-Zip reports "Unsupported
+Method" and "Data Error". Under ZipCrypto those settings are decrypted with a key one
+byte vouched for, so both stay `CorruptionError` there and count as the candidate failing.
+
 On the standard library path a bzip2 member ends at its first end-of-stream marker, as
 7-Zip, Info-ZIP and `zipfile` read it, and as a DEFLATE, LZMA or PPMd member ends at its own.
+An LZMA member ends at its end marker too (`lzma.LZMAFile` would start a second raw stream on
+the bytes after it and read that as content), and any byte of the member's compressed data
+after the marker, a zero too, is `CorruptionError`, as 7-Zip reports "Data Error" for it.
+With bit 1 clear the member ends at its declared size; a marker right there is still checked.
 The accelerators read on into a second stream, and they stay on for ZIP members: the declared
 size and CRC give the verdict (`compressed-streams`, *An accelerator preserves the error
 contract*), so output that matches both is the member's data and output that breaks either
@@ -565,6 +621,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | After a seek, no CRC checks a ZipCrypto member, and a wrong password that passed the check byte goes unnoticed on a STORED member | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order, so a seek gives it up (ADR 0014). Keeping it for a read that returns over bytes already hashed, as the AES HMAC does, is tracked internally. A compressed member's decoder usually still objects to a wrong key on the bytes a forward seek decodes; a STORED member has no decoder, so a seek then a read returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
 | Under an accelerator, a DEFLATE or bzip2 member holding two streams whose size and CRC cover both reads clean; without it, the member is truncated. A bzip2 member whose size and CRC cover only the first stream reads under the standard library and raises under the accelerator | **library** / **archivey** | zlib and `bz2` stop at the first stream's end; `rapidgzip` and its bzip2 decoder read on, and the declared size and CRC decide (§2.3). Only a crafted member does this. A DEFLATE member whose accelerated output passes the declared size finishes on zlib instead, so that case agrees |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
+| An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
 
 ## 6. Decisions
 
@@ -586,6 +643,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A WinZip AES member every candidate fails on the HMAC raises `CorruptionError`, as one password does | A wrong password passes `pw_verify` once in 65 536, so damage is far likelier, and one error type for both password paths means a symlink with a damaged target lists the same way under either (S28-K4, davi 2026-09-26) | ZipCrypto's ambiguous `EncryptionError`, which fits an 8-bit check but made the same damaged AES member raise two different types depending on how many passwords the caller passed |
 | A damaged symlink target leaves the link listed without a target | One member's damage says nothing about the others, and listing raised for the whole archive. The link is reported (`target_data_damaged`) and raises when opened or extracted; a strict policy still refuses the archive | Raising from `members()`, which took every other member with it |
 | WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
+| Leave LZMA1 `lc + lp` over 4 unsupported | 7-Zip writes it only when asked (`lc=8`). Decoding it needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; a pure-Python LZMA1 decoder (very slow); handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma |
 
 ## 7. Open questions
 
@@ -612,9 +670,10 @@ move.
 | A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set | `tests/test_volume_missing_part.py` |
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
 | `7z -v` set joined, read across a part boundary, opened from any part | `::test_sevenzip_split_zip_set_is_joined_and_read`, `::test_sevenzip_split_zip_set_opens_from_a_middle_part`, `::test_sevenzip_split_zip_set_with_missing_part_is_truncated` |
-| Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps` |
+| Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps`, `::test_discover_prefers_the_opened_names_padding_over_a_stray`, `::test_discover_prefers_the_opened_names_spelling_over_a_case_variant`, `::test_numbered_set_with_a_stray_of_another_width_opens`, `::test_join_volumes_refuses_one_part_named_in_two_paddings` |
 | Joiner caches a few Path handles, cursor on sequential read | `tests/test_volumes.py::test_concatenated_file_backwards_seek_across_volume_boundaries`, `::test_concatenated_file_alternating_seek_reuses_cached_handles`, `::test_concatenated_file_handle_cache_evicts_past_capacity`, `::test_concatenated_file_cache_miss_reopens_beyond_capacity`, `::test_concatenated_file_sequential_read_does_not_search_offsets`, `::test_concatenated_file_mixed_path_and_stream`, `::test_concatenated_file_path_open_error_surfaces_on_read`, `::test_concatenated_file_missing_path_fails_at_construction` |
 | Timestamp precedence; an out-of-range NTFS time is an issue; the extended timestamp, a signed 32-bit field, is always a valid date (pre-1970 included) | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_pre_epoch`, `::test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime`, `tests/test_timestamps.py::test_filetime_out_of_range_is_an_issue`, `::test_unix32_to_datetime_covers_every_32_bit_value` |
+| A bad timestamp's diagnostic names the member field, the creation slot by host | `tests/test_zip.py::test_bad_ntfs_times_name_the_member_field` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version, empty or local-only field is ignored | `tests/test_audit2_zip.py::test_unicode_path_extra_field_names_the_member` and the four tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |

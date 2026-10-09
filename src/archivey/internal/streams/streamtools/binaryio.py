@@ -15,13 +15,16 @@ from __future__ import annotations
 import io
 import logging
 import mmap
+import operator
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
+    Callable,
     NoReturn,
     Protocol,
     TypeGuard,
@@ -68,6 +71,70 @@ def ask_resume_offset(inner: object | None, target: int) -> int | None:
         return None
     offset = ask(target)
     return offset if isinstance(offset, int) else None
+
+
+def check_read_size(n: int | None) -> int:
+    """Return ``read``'s size argument as an ``int``, refusing what ``io`` refuses.
+
+    ``None`` means read to EOF, so it becomes ``-1``; a float or str raises
+    ``TypeError`` with the message ``io.BytesIO`` and ``io.BufferedReader`` give, and
+    an integer outside the ``Py_ssize_t`` range (``2**70``) raises their
+    ``OverflowError``. A stream calls this before it reads anything, because passed
+    inward either can fail inside a decoder after a chunk has left the source.
+    """
+    if n is None:
+        return -1
+    try:
+        size = operator.index(n)
+    except TypeError:
+        raise TypeError(
+            f"argument should be integer or None, not {type(n).__name__!r}"
+        ) from None
+    if not -sys.maxsize - 1 <= size <= sys.maxsize:
+        raise OverflowError("cannot fit 'int' into an index-sized integer")
+    return size
+
+
+def check_seek_args(offset: int, whence: int) -> tuple[int, int]:
+    """Validate seek arguments with ``io.BytesIO``'s type and value rules, without
+    resolving a target.
+
+    A non-integer ``offset`` or ``whence`` raises ``TypeError`` (via
+    ``operator.index``, the message ``io.BytesIO`` gives); an unknown ``whence`` or a
+    negative ``SEEK_SET`` offset raises ``ValueError``. Unlike ``io.BytesIO``, an offset
+    outside ``Py_ssize_t`` is not refused: a past-the-end target is already this
+    layer's documented answer, so ``seek(2**70)`` returns it. Returns both as exact
+    ``int``. For a layer that passes the caller's ``whence`` on rather than computing
+    the target itself; :func:`resolve_seek` runs the same check first.
+    """
+    offset = operator.index(offset)
+    whence = operator.index(whence)
+    if whence not in (io.SEEK_SET, io.SEEK_CUR, io.SEEK_END):
+        raise ValueError(f"Invalid whence: {whence}")
+    if whence == io.SEEK_SET and offset < 0:
+        raise ValueError(f"Negative seek position {offset}")
+    return offset, whence
+
+
+def resolve_seek(offset: int, whence: int, *, pos: int, end: Callable[[], int]) -> int:
+    """Resolve a seek target as ``io.BytesIO`` does.
+
+    ``pos`` is read only for ``SEEK_CUR`` and ``end`` is called only for ``SEEK_END``,
+    so a caller may pass anything for the one that does not apply. A relative seek
+    that underflows clamps to the origin; only an explicitly negative ``SEEK_SET``
+    raises. Callers probing backwards from the end (``ZipFile``'s
+    ``seek(-22, SEEK_END)`` EOCD probe on a short source) rely on the clamp.
+
+    The arguments go through :func:`check_seek_args` before anything else, so a
+    non-integer raises ``TypeError`` and ``end`` is never called for a refused seek;
+    a caller that resolves first and moves second never acts on a float.
+    """
+    offset, whence = check_seek_args(offset, whence)
+    if whence == io.SEEK_SET:
+        return offset
+    if whence == io.SEEK_CUR:
+        return max(0, pos + offset)
+    return max(0, end() + offset)
 
 
 def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:

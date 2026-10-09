@@ -101,20 +101,15 @@ class ListingLimitTracker:
         added = archive_comment_bytes(comment)
         if added <= 0:
             return
-        next_bytes = self.metadata_bytes + added
-        if enforce:
-            self._check_metadata(next_bytes)
-        self.metadata_bytes = next_bytes
+        self._add_bytes(added, enforce=enforce)
 
     def account_member(self, member: ArchiveMember, *, enforce: bool = True) -> None:
         next_count = self.member_count + 1
-        added = member_metadata_bytes(member)
-        next_bytes = self.metadata_bytes + added
         if enforce:
             self._check_members(next_count)
-            self._check_metadata(next_bytes)
+        # Raises before storing, so a refused member changes neither total.
+        self._add_bytes(member_metadata_bytes(member), enforce=enforce)
         self.member_count = next_count
-        self.metadata_bytes = next_bytes
 
     def account_link_target(self, target: str, *, enforce: bool = True) -> None:
         """Add a link target that was resolved after its member was registered.
@@ -124,10 +119,7 @@ class ListingLimitTracker:
         for it. Weighing it here is what makes ``max_metadata_bytes`` hold for the
         ``link_target`` field the spec names.
         """
-        next_bytes = self.metadata_bytes + _str_retained_bytes(target)
-        if enforce:
-            self._check_metadata(next_bytes)
-        self.metadata_bytes = next_bytes
+        self._add_bytes(_str_retained_bytes(target), enforce=enforce)
 
     def account_retained_bytes(self, nbytes: int, *, enforce: bool = True) -> None:
         """Add metadata a backend retains for a member outside its public fields.
@@ -135,6 +127,9 @@ class ListingLimitTracker:
         TAR keeps a sparse member's map on the ``TarInfo`` it reads the data through,
         where :func:`member_metadata_bytes` cannot see it.
         """
+        self._add_bytes(nbytes, enforce=enforce)
+
+    def _add_bytes(self, nbytes: int, *, enforce: bool) -> None:
         next_bytes = self.metadata_bytes + nbytes
         if enforce:
             self._check_metadata(next_bytes)

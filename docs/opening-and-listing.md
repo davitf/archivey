@@ -72,8 +72,8 @@ do the job.
 | Read from a pipe, a socket or an HTTP response | `streaming=True` | The same as the first row. Only TAR and the single-file compressors can be read this way; see [below](#what-you-can-open) |
 
 `seekable_members` and `concurrent_members` combine freely with each other. To extract a
-whole archive with safe defaults and no reader at all, call
-`archivey.extract(src, dest)` ([Extracting](extracting.md)).
+whole archive with safe defaults, call `reader.extract_all(dest)`
+([Extracting](extracting.md)).
 
 ### Streaming for one pass
 
@@ -165,13 +165,15 @@ beside it.
 The old RAR scheme needs a first volume either way: `<base>.rar`, or an SFX
 `<base>.exe` / `<base>.sfx` beside the later volumes. The later volumes are found by
 name from there, the way unrar finds them (`.r99` is followed by `.s00`, `.z99` by
-`.{00`), and the set ends at the first name that is missing. Names match in any
+`.{00`). Past a missing name, and when the first volume itself is missing, the other
+old-scheme names beside it that are RAR files are part of the set too, numbered by
+their names; a RAR set with a volume missing lists what the volumes present hold and
+then raises `TruncatedError`. Names match in any
 letter case, the first volume's included, so `ARCHIVE.RAR` + `ARCHIVE.R00` is a set
 on Linux too. One exception: opened from an SFX first volume, the set is found only
 when the later volumes spell the base the way the `.exe` / `.sfx` does, so
 `archive.exe` beside `ARCHIVE.R00` is found from `ARCHIVE.R00` and not from the stub.
-A later volume with no first volume beside it, or one past such a gap, is read as a
-lone file rather than as part of a set. A lone numbered part (`.7z.001` /
+For the `.partN.rar` scheme, every part present is in the set, whatever is missing. A lone numbered part (`.7z.001` /
 `.zip.001` / `.exe.001` with no siblings) is an incomplete set, not a silent
 mis-parse. A part that does not exist at all raises `FileNotFoundError`, as any
 missing path does.

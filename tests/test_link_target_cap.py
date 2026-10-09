@@ -20,10 +20,8 @@ import os
 import stat
 import struct
 import subprocess
-import tracemalloc
 import zipfile
 import zlib
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -42,6 +40,7 @@ from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.memory_util import traced_peak
 
 _MODES = [pytest.param(False, id="random-access"), pytest.param(True, id="streaming")]
 
@@ -127,16 +126,6 @@ def _sevenzip_with_link(
 _DECODED_NOTHING = 8 << 20
 
 
-def _peak_traced_bytes(action: Callable[[], object]) -> int:
-    """The tracemalloc peak while ``action`` runs, in bytes."""
-    tracemalloc.start()
-    try:
-        action()
-        return tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
-
-
 def _list(reader: ArchiveReader, streaming: bool) -> list[ArchiveMember]:
     """Every member, with link targets resolved, by each mode's own full listing."""
     if not streaming:
@@ -190,7 +179,7 @@ def test_a_compressed_zip_target_bomb_is_refused_without_decoding(
         # `bytes_decompressed` does not observe link-target reads, so the allocation
         # peak is what shows the 64 MiB was never decoded: the uncapped read peaked
         # at several times that.
-        peak = _peak_traced_bytes(lambda: listed.extend(_list(reader, streaming)))
+        peak = traced_peak(lambda: listed.extend(_list(reader, streaming)))
         assert peak < _DECODED_NOTHING
         by_name = {m.name: m for m in listed}
         assert by_name["link0"].link_target is None
@@ -213,7 +202,7 @@ def test_sevenzip_target_is_capped(
     data = _sevenzip_with_link(tmp_path, target)
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
         listed: list[ArchiveMember] = []
-        peak = _peak_traced_bytes(lambda: listed.extend(_list(reader, streaming)))
+        peak = traced_peak(lambda: listed.extend(_list(reader, streaming)))
         (link,) = listed
         assert link.type is MemberType.SYMLINK
         if kept:
@@ -232,14 +221,16 @@ def test_a_rar4_stored_target_over_the_cap_is_refused(
     same cap holds, so the three formats agree on what a too-long target is.
 
     The header is patched rather than written, as in `test_windows_reparse`: RAR 7
-    cannot write RAR4 at all, and the size is the only field the branch consults.
+    cannot write RAR4 at all, and the sizes are the only fields the branch consults.
+    Both are patched: a stored target whose two sizes disagree is damage, which is
+    reported before the cap (`test_damaged_link_target.py`).
     """
     original_init = RarMemberInfo.__init__
 
     def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)  # type: ignore[arg-type]
         if self.is_symlink:
-            self.file_size = MAX_LINK_TARGET_BYTES + 1
+            self.file_size = self.compress_size = MAX_LINK_TARGET_BYTES + 1
 
     monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
 

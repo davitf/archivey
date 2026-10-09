@@ -603,7 +603,29 @@ def test_coder_graph_cycle_is_corruption() -> None:
 
 def test_output_bound_twice_is_corruption() -> None:
     folder = _graph([_coder(_COPY), _coder(_BCJ2, 4)], [(1, 0), (2, 0), (3, 0)], [0, 4])
-    with raises_corruption_not_truncation():
+    with raises_corruption_not_truncation(match="invalid coder bind pair"):
+        plan_folder(folder)
+
+
+def test_bind_pair_to_a_missing_in_stream_is_corruption() -> None:
+    folder = _graph([_coder(_COPY), _coder(_COPY)], [(5, 0)], [1])
+    with raises_corruption_not_truncation(match="invalid coder bind pair"):
+        plan_folder(folder)
+
+
+@pytest.mark.parametrize(
+    "packed",
+    [
+        pytest.param([0, 2], id="extra-out-of-range"),
+        pytest.param([0, 0], id="duplicate"),
+    ],
+)
+def test_packed_indices_that_do_not_partition_the_inputs_are_corruption(
+    packed: list[int],
+) -> None:
+    # Coder 1 reads coder 0's output; in-stream 0 is the only packed one.
+    folder = _graph([_coder(_COPY), _coder(_COPY)], [(1, 0)], packed)
+    with raises_corruption_not_truncation(match="invalid packed-stream index"):
         plan_folder(folder)
 
 

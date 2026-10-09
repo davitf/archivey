@@ -65,7 +65,11 @@ If `TarInfo.mtime` cannot be represented as a Python `datetime`, `modified`
 SHALL be `None` and `MEMBER_TIMESTAMP_INVALID` SHALL be emitted with typed,
 JSON-safe member identity and source/value context. Under default policy it is
 collected/logged and may attach to the member; under `RAISE`, listing halts with
-`DiagnosticRaisedError`.
+`DiagnosticRaisedError`. The same SHALL hold for a PAX `mtime`, `atime`, `ctime` or
+`LIBARCHIVE.creationtime` record that is not a number or is out of range: the field it
+fills SHALL be `None` and `MEMBER_TIMESTAMP_INVALID` SHALL be emitted. Its `field`
+SHALL name the member attribute (`modified`, `accessed`, `ctime`, `created`), as
+in every format; the record name appears only in the message.
 
 #### Scenario: TAR metadata matrix
 
@@ -80,6 +84,8 @@ collected/logged and may attach to the member; under `RAISE`, listing halts with
 | PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
+| PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the member attribute it would have filled |
+| PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 
 ### Requirement: Extract TAR hardlinks with a pull-based coordinator
@@ -116,11 +122,13 @@ source's bytes to the first selected link path while they stream past, and
 not create the excluded source at its own name and SHALL not replace the core
 correctness path.
 
-For cross-device links, the coordinator SHALL try `os.link()` against every
-recorded on-disk path for the source. If all fail with `EXDEV`, it SHALL
-`shutil.copy2` from an existing copy and append the new path for reuse. Chained
-links on that device can then link to the sibling copy. Device bookkeeping MAY
-skip doomed attempts but is not required for correctness.
+For cross-device links, the coordinator SHALL try `os.link()` against the recorded
+on-disk paths for the source, newest first. If all fail with `EXDEV`, or one fails with
+`EMLINK` (Windows `winerror` 1142) because the file already has as many links as the
+filesystem allows (1024 names on NTFS, the first included), it SHALL copy from an
+existing copy and append the new path for reuse, so an archive with more links than NTFS
+allows extracts on every OS. Chained links on that device can then link to the sibling
+copy. Device bookkeeping MAY skip doomed attempts but is not required for correctness.
 
 #### Scenario: TAR hardlink extraction matrix
 
@@ -133,6 +141,7 @@ skip doomed attempts but is not required for correctness.
 | Orphaned link on forward-only source | Per-member failure follows `OnError` |
 | `B -> A` copied cross-device, then `C -> A` on B's device | `C` is created with `os.link(B, C)` rather than copying A again |
 | Every recorded path fails with `EXDEV` | Copy source content to link destination and record that path |
+| A recorded path fails with `EMLINK` (the 1025th name for one file on NTFS) | Same copy, with no path older than that one tried; later links link to the copy |
 | Hardlink before the only member it names, random access or streaming | That link fails with `LinkTargetNotFoundError`; the later member extracts normally |
 
 ### Requirement: Detect truncated TAR archives
@@ -144,7 +153,11 @@ attach to `ArchiveInfo`, `CostReceipt`, or a member. Context SHALL be
 expected_marker="two_zero_blocks", expected_bytes=1024, observed_bytes=...,
 observed_kind=...)` plus best-effort archive display name. `observed_kind` SHALL
 be `"absent"`, `"short"`, or `"nonzero"`; raw trailing bytes SHALL NOT be
-retained.
+retained. The damaged second trailer block (below) SHALL instead carry
+`expected_marker="second_zero_block"`, `expected_bytes=512`, `observed_bytes=512`,
+`observed_kind="nonzero"`, so that a whole listing is told from a shortened one by
+the context: TAR's `"two_zero_blocks"` with `observed_kind="nonzero"` is always
+escalated to `CorruptionError`.
 
 Stdlib `tarfile` does not report
 *why* it stopped iterating (a real trailer, a corrupt non-first header treated as
@@ -169,9 +182,24 @@ single monolithic flag:
     ``offset_data + roundup(size)`` (that formula is wrong for sparse). When the probe
     is unavailable it SHALL fall back to the trailing-block check.
   - In **streaming** mode (no probe) the backend SHALL detect a rejected header via the
-    block following tarfile's stop being full and non-null. A rejected **final** header
+    block following tarfile's stop being full and non-null, when tarfile did not stop
+    on a zero block (below). A rejected **final** header
     (no data after it) is NOT detectable this way and surfaces as a missing trailer
     instead — see the streaming limitation below.
+- **Damaged second trailer block → ordinary diagnostic.** When tarfile stopped on a
+  zero block (the first trailer block) after at least one member, and the block after
+  it is full and non-null, the listing is whole and only the end-of-archive marker is
+  damaged. Every member SHALL be listed and readable in both access modes, and the
+  backend SHALL emit `ARCHIVE_EOF_MARKER_MISSING` with
+  `expected_marker="second_zero_block"` and `observed_kind="nonzero"` under ordinary
+  diagnostic disposition, with no escalation of its own: a warning by default,
+  `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
+  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`. GNU tar ("A lone zero
+  block") and 7-Zip list the same archive with a warning. The backend SHALL tell this
+  case from a rejected header by the error tarfile's last header parse raised, not by
+  the bytes read, so it holds in streaming too. With no member before the zero block
+  the non-null block stays `CorruptionError`, with `expected_marker="two_zero_blocks"`
+  and a message that names that cause rather than a rejected header.
 - **Missing / short trailer → ordinary diagnostic.** A stream that ended cleanly on a member
   boundary with no valid two-block trailer (`observed_kind="absent"` for EOF,
   `"short"` for a partial block) is the irreducibly ambiguous residual: a
@@ -222,6 +250,8 @@ the gap for streaming too. The system SHALL NOT claim otherwise.
 | Partial trailing block | both | `short` | Warn as above; pass completes | `DiagnosticRaisedError` after delivery |
 | Rejected non-first header, data follows | both | `nonzero` | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Rejected **final** header, nothing after | random-access | `nonzero` (via probe) | `CorruptionError` after delivery | `CorruptionError` after delivery |
+| Zero block, then a non-null block, after at least one member | both | `nonzero` (`expected_marker="second_zero_block"`) | `ARCHIVE_EOF_MARKER_MISSING`; every member listed and read; `extract_all` writes every member; trailing scan runs past the block | `DiagnosticRaisedError` after delivery |
+| Zero block, then a non-null block, no member | both | `nonzero` | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Rejected **final** header, nothing after | streaming | `absent` (limitation) | Warn; pass completes | `DiagnosticRaisedError` after delivery |
 | Truncation inside member data / partial header | both | — | `TruncatedError` during iteration | `TruncatedError` during iteration |
 | Corruption during `extract_all` | both | `nonzero` | Salvageable members written, then `CorruptionError` | same |
@@ -266,16 +296,21 @@ does not gain random concurrent open.
 
 ### Requirement: Report non-zero bytes past the trailer
 
-After a complete two-block null end-of-archive trailer, the backend SHALL scan the bytes
-that follow, up to 1 MiB past the trailer, whatever the configuration. The first
-non-zero byte in that window SHALL emit `ARCHIVE_TRAILING_DATA` under ordinary
-diagnostic disposition, with no escalation of its own: a warning by default,
-`DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
-`DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
+After a complete two-block null end-of-archive trailer, or after a damaged second
+trailer block (a zero block, then a non-null one, after at least one member), the
+backend SHALL scan the bytes that follow, up to 1 MiB past the trailer, whatever the
+configuration. The first non-zero byte in that window SHALL emit
+`ARCHIVE_TRAILING_DATA` under ordinary diagnostic disposition, with no escalation of
+its own: a warning by default, `DiagnosticRaisedError` after delivery when the code
+resolves to `RAISE` (as under `DiagnosticPolicy.strict()`), a count alone under
+`IGNORE`.
 
-The check SHALL run only on the success path of the trailer verification — after a
-complete two-block null trailer has been confirmed — so it never competes with the
-`absent` / `short` / `nonzero` classifications of the trailer itself.
+The check SHALL run only after a complete two-block null trailer has been confirmed, or
+after the damaged-second-block diagnostic has been emitted. It SHALL NOT run after an
+`absent` or `short` trailer, or after a non-null block that is `CorruptionError`. After a
+damaged second block it runs from the block after that one, because on a compressed tar
+it is where the whole-stream checksum over the members already listed is usually
+reached.
 
 The 1 MiB bound is an effort limit, not a ceiling: past it the scan SHALL stop, SHALL
 NOT report trailing data, and SHALL NOT refuse the archive. It is a module constant, not
@@ -307,6 +342,8 @@ listing accounts for.
 | Valid tar, trailer, EOF | No diagnostic | No diagnostic |
 | Valid tar + 4 KiB of zeros (`tar` pads to 10 KiB records) | No diagnostic | No diagnostic |
 | Valid tar + 4 KiB of `b"JUNK"` | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
+| Damaged second trailer block, then junk | `ARCHIVE_EOF_MARKER_MISSING` (`"second_zero_block"`), then `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
+| `.tar.gz` with a bad CRC-32 and a damaged second trailer block | `CorruptionError` | `DiagnosticRaisedError` (the marker diagnostic is raised first) |
 | Valid tar + zeros + one non-zero byte, within 1 MiB | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 | First non-zero byte more than 1 MiB past the trailer | No diagnostic; the scan stopped (a compressed tar: `DIGEST_UNVERIFIABLE`) | No diagnostic (a compressed tar: raises on `DIGEST_UNVERIFIABLE`) |
 | Two tars concatenated | `ARCHIVE_TRAILING_DATA`; the first is listed | `DiagnosticRaisedError` |

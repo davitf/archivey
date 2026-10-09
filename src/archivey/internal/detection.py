@@ -9,26 +9,29 @@ not hand-maintained here: each registered backend declares its ``MAGIC`` / ``EXT
 as data and the detector aggregates them, so a new format becomes detectable by
 registering its backend (see ``format-detection`` and ``backend-registry``).
 
-Detection never consumes bytes from the source: paths keep one detection handle; seekable
-streams are read forward once and restored to their **starting position** (the archive is
-taken to begin wherever the stream is positioned when handed in); a non-seekable stream
+Detection never consumes bytes from the source: paths keep one detection handle; a
+seekable stream is restored to its **starting position** (the archive is taken to begin
+wherever the stream is positioned when handed in); a non-seekable stream
 is peeked through the :class:`~archivey.internal.source.ArchiveSource` the opener built,
 whose replay prefix keeps the bytes for the backend. A raw non-seekable stream handed to
 ``detect_format`` directly loses what detection read, unless the caller buffers it.
 
 Every front-of-source read goes through one detection-owned
 :class:`~archivey.internal.detection_workspace.PrefixWorkspace` that grows monotonically —
-extending the window reads only the delta; bytes already retrieved are never re-read.
+extending the window reads only the delta, and bytes already in the prefix buffer are
+not fetched again. The trailer read is outside that buffer: it seeks to its block and
+restores the handle, and a later tier that grows the prefix over those bytes fetches
+them again.
 
 Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
 at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
 header before decoding). Each probe is a function the backends declare as data — for the
 stream codecs, on the codec descriptor — so the detector stays format-agnostic.
 
-The steps run strongest-signal-first: near magic → SFX scan → **far magic** → content
-probes → extension. Both signals ahead of the probes are there for the same reason — a
-probe is the weakest evidence archivey has, and one asked to judge arbitrary bytes will
-sometimes say yes:
+The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
+magic → content probes → extension. Both signals ahead of the probes are there for the
+same reason — a probe is the weakest evidence archivey has, and one asked to judge
+arbitrary bytes will sometimes say yes:
 
 - A **self-extracting** archive has no archive magic at offset 0 at all: a prefix
   (executable stub or ``#!`` launcher) comes first. When the leading bytes look
@@ -44,6 +47,14 @@ sometimes say yes:
   bootloader code — the data class a probe accepts — and the exact magic was available at
   a known offset the whole time. The peek is size-gated: a source known to be smaller than
   the window never pays it.
+- **Trailer magic** is exact magic at the start of a fixed-length block at the end of
+  the source (today UDIF's ``koly`` block, the last 512 bytes). It runs after far magic,
+  so an ISO that already matched is not asked for a tail read, and before the probes, so
+  a zlib-first disk image is named as the image. A near-magic hit the trailer lists in
+  ``preempts`` (bzip2, xz) is the same image: the magic is one block, and the trailer
+  replaces it. The read is a cheap seek that restores the handle. A non-seekable source
+  and an ``ArchiveStream`` are not seeked to the end; a tail already inside the prefix
+  (a short pipe, which the far-magic peek reads to its end) still matches.
 """
 
 from __future__ import annotations
@@ -74,6 +85,7 @@ from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
     HitOutcome,
+    HitSelector,
     HitValidator,
     ScanNeedle,
     executable_cue,
@@ -95,6 +107,7 @@ from archivey.types import (
     ContainerFormat,
     MagicSignature,
     StreamFormat,
+    TrailerSignature,
 )
 
 if TYPE_CHECKING:
@@ -174,6 +187,31 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         chunk = self._buf[self._offset : end]
         self._offset += len(chunk)
         return chunk
+
+
+def _match_trailer(
+    workspace: PrefixWorkspace,
+    entries: list[TrailerSignature],
+) -> ArchiveFormat | None:
+    """Return the format whose trailer magic matches the end of the source.
+
+    One read per distinct trailer length. A source that cannot seek cheaply, or
+    that is shorter than the block, is a decline: the caller keeps the answer it
+    already had.
+    """
+    if not entries:
+        return None
+    by_length: dict[int, list[TrailerSignature]] = {}
+    for entry in entries:
+        by_length.setdefault(entry.length, []).append(entry)
+    for length, group in by_length.items():
+        tail = workspace.read_tail(length)
+        if tail is None:
+            continue
+        for entry in group:
+            if tail.startswith(entry.magic):
+                return entry.format
+    return None
 
 
 def _match_magic(
@@ -263,18 +301,18 @@ def _probe_inner_tar(
     limit = _INNER_TAR_MAX_PROBE_BYTES
     if workspace is not None:
         budget = workspace.budget
-        if budget.max_decode_input <= 0 or budget.max_decode_output <= 0:
-            workspace.record_skip("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY)
-            return False
-        # Output against the budget's face value: this is the only tier that charges
-        # output, and a pass that reaches it returns a format, so no earlier pass (the
-        # sibling-volume retry shares the receipt) has charged any. Input against what
-        # is left: a content probe and its completion check draw on the same allowance.
-        if (
-            budget.max_decode_output < _INNER_TAR_PROBE_BYTES
-            or workspace.decode_input_left <= 0
+        # Off when either face value is zero. Cut short: output against the budget's
+        # face value, since this is the only tier that charges output and a pass that
+        # reaches it returns a format, so no earlier pass (the sibling-volume retry
+        # shares the receipt) has charged any. Input against what is left, since a
+        # content probe and its completion check draw on the same allowance.
+        if _record_tier_limit(
+            workspace,
+            "inner_tar",
+            enabled=budget.max_decode_input > 0 and budget.max_decode_output > 0,
+            covered=budget.max_decode_output >= _INNER_TAR_PROBE_BYTES
+            and workspace.decode_input_left > 0,
         ):
-            workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
             return False
         limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
 
@@ -308,23 +346,44 @@ def _probe_inner_tar(
     return found
 
 
+def _record_tier_limit(
+    workspace: PrefixWorkspace,
+    tier: str,
+    *,
+    enabled: bool = True,
+    covered: bool = True,
+) -> bool:
+    """Record ``tier`` as not enabled when ``enabled`` is false, else as cut short when
+    ``covered`` is false; return whether a record was made.
+
+    Most callers skip the tier on a record. The far tier takes the record but not the
+    decision: it still searches the signatures its window reaches.
+    """
+    if not enabled:
+        workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
+        return True
+    if not covered:
+        workspace.record_skip(tier, TierSkipReason.BUDGET_EXHAUSTED)
+        return True
+    return False
+
+
 def _decode_allowance_covers(
     workspace: PrefixWorkspace, input_bytes: int, tier: str
 ) -> bool:
     """Whether ``input_bytes`` of decoding still fits the call's decode allowance.
 
-    Records ``tier`` as not enabled when the budget allows no decoding at all, and as
-    cut short when an earlier tier spent what it allowed. For ``probe_completion`` only
-    the second is reachable: a zero allowance stops the content probes before any hit
-    asks for completion.
+    When it does not, records ``tier`` as not enabled (the budget allows no decoding)
+    or as cut short (an earlier tier spent the allowance). For ``probe_completion``
+    only the cut-short record is reachable: a zero allowance stops the content probes
+    before any hit asks for completion.
     """
-    if workspace.budget.max_decode_input <= 0:
-        workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
-        return False
-    if workspace.decode_input_left < input_bytes:
-        workspace.record_skip(tier, TierSkipReason.BUDGET_EXHAUSTED)
-        return False
-    return True
+    return not _record_tier_limit(
+        workspace,
+        tier,
+        enabled=workspace.budget.max_decode_input > 0,
+        covered=workspace.decode_input_left >= input_bytes,
+    )
 
 
 def _probe_completes(
@@ -354,9 +413,10 @@ def _probe_completes(
         # probe already had the whole source and ran its completeness check.
         return True
     budget = workspace.budget
-    if budget.completion_window_bytes <= 0:
-        # Off by policy (``FAST``): say so, since the hit stands on the window alone.
-        workspace.record_skip("probe_completion", TierSkipReason.NOT_ENABLED_BY_POLICY)
+    # Off by policy (``FAST``): say so, since the hit stands on the window alone.
+    if _record_tier_limit(
+        workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
+    ):
         return True
     if length > min(budget.completion_window_bytes, workspace.read_ceiling):
         # A size bound, not a disabled tier: nothing is recorded.
@@ -442,7 +502,11 @@ def _extension_corroborates(
     ext_match: tuple[ArchiveFormat, str] | None,
     resolved: ArchiveFormat,
 ) -> bool:
-    """Whether the filename agrees with ``resolved`` — the same test as "no conflict"."""
+    """Whether the filename agrees with ``resolved`` — the same test as "no conflict".
+
+    No extension (``None``) is not corroboration, so a caller testing for no conflict
+    handles ``None`` itself.
+    """
     if ext_match is None:
         return False
     ext_fmt = ext_match[0]
@@ -464,11 +528,9 @@ def _warn_on_conflict(
     resolved: ArchiveFormat,
     evidence: _ConflictEvidence,
 ) -> None:
-    if ext_match is None:
+    if ext_match is None or _extension_corroborates(ext_match, resolved):
         return
     ext_fmt, extension = ext_match
-    if ext_fmt == resolved or _is_deferred_inner_tar(ext_fmt, resolved):
-        return
     message = (
         f"Format conflict for {name!r}: extension suggests {ext_fmt!r} but "
         f"{evidence.value} {resolved!r}; using that result over the extension."
@@ -500,16 +562,15 @@ def _scan_for_sfx_payload(
     ``entries`` are the backends' ``SFX_MAGIC`` declarations. Each needle carries its
     candidate-internal offset (today all zero for ZIP/RAR/7z; TAR ``ustar`` → 257 once
     that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
-    the raw needle position. A hit whose format-owned validator returns anything other
-    than :attr:`HitOutcome.VALID` is skipped and the scan continues — earliest
-    *valid* match, not earliest needle. The first :attr:`HitOutcome.VALID_SHORT` hit
-    (a 7z that declares its end before the source ends) is the answer unless a later
-    ``VALID`` hit **of the same format** follows it: a CRC-valid decoy in the stub
-    must not beat the real payload appended after it. A ``VALID`` hit of another
-    format ends the scan with the short hit, so the tie-break never reorders formats.
-    Holding a short hit, the scan keeps reading to ``scan_limit``: a decoy in the
-    stub ends before the real payload starts, so nothing about the short hit bounds
-    where that payload can be. That is the cost of a short hit with data after it
+    the raw needle position. Hits are graded by their format-owned validator (none
+    means ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback and no
+    cap: earliest *valid* match, not earliest needle. A CRC-valid decoy in the stub
+    that ends early (``VALID_SHORT``) must not beat the real payload appended after
+    it, so a later ``VALID`` hit of the *same format* displaces a held short hit; a
+    ``VALID`` hit of another format ends the scan with the short hit, so the
+    exact-end preference never reorders formats. Holding a short hit, the scan keeps
+    reading to ``scan_limit``: a decoy in the stub ends before the real payload
+    starts, so nothing about the short hit bounds where that payload can be. That is the cost of a short hit with data after it
     (an Authenticode signature, say): up to the whole window, as a miss already
     pays. ``PROBABLE`` rather than ``CERTAIN``: an exact
     magic found at a *searched-for* offset is a weaker claim than one found at the
@@ -517,6 +578,8 @@ def _scan_for_sfx_payload(
 
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
+    This is the one place that records the ``sfx_scan`` tier as cut short, or as not
+    enabled when the window is zero.
 
     ``restrict_to_validated`` is the shebang cue: a script is text, so magics appear
     as literals. Search only formats that have a hit validator — derived from
@@ -524,15 +587,22 @@ def _scan_for_sfx_payload(
     key this off :attr:`ExecutableCue.WEAK` alone: an unconfirmed ``MZ`` / ELF stub
     is the live 7z/RAR SFX path and keeps the full needle set.
     """
+    # A zero ``max_scan_bytes`` turns the tier off, as a zero field does for the others.
+    if _record_tier_limit(workspace, "sfx_scan", enabled=scan_limit > 0):
+        return None
     if restrict_to_validated:
         entries = [entry for entry in entries if entry.format in validators]
     by_needle = {entry.magic: entry for entry in entries}
     needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
-    result: FormatInfo | None = None
-    short: FormatInfo | None = None
+    # The selector holds (format, origin); the one FormatInfo is built from the winner,
+    # so a decoy-carpeted window costs no construction per candidate.
+    selector: HitSelector[tuple[ArchiveFormat, int]] = HitSelector(
+        keep_damaged=False, cap=None
+    )
     for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
         entry = by_needle[hit.needle]
         validator = validators.get(entry.format)
+        outcome = HitOutcome.VALID
         if validator is not None:
             view = workspace.candidate_view(hit.candidate_origin, limit=scan_limit)
             source_len = workspace.remaining_known()
@@ -542,35 +612,30 @@ def _scan_for_sfx_payload(
                 else max(0, source_len - hit.candidate_origin)
             )
             outcome = validator(view, remaining)
-            if outcome is HitOutcome.VALID_SHORT and short is None:
-                short = FormatInfo(
-                    entry.format,
-                    DetectionConfidence.PROBABLE,
-                    "sfx_scan",
-                    payload_offset=hit.candidate_origin,
-                )
-            if outcome is not HitOutcome.VALID:
-                continue
-        if short is not None and entry.format != short.format:
-            # The preference for a hit that ends at the end of the source is a
-            # tie-break among candidates of one format. A later hit of another
-            # format does not displace the short one: the earliest validated
-            # candidate stands, as it does everywhere else in this scan.
-            result = short
+        if selector.offer(entry.format, (entry.format, hit.candidate_origin), outcome):
             break
-        result = FormatInfo(
-            entry.format,
+    chosen, _ = selector.result()
+    result = (
+        None
+        if chosen is None
+        else FormatInfo(
+            chosen[0],
             DetectionConfidence.PROBABLE,
             "sfx_scan",
-            payload_offset=hit.candidate_origin,
+            payload_offset=chosen[1],
         )
-        break
-    if result is None:
-        result = short
-    if workspace.take_clamped_view_read():
-        workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+    )
     # Charge the window actually examined — a miss is the expensive case.
     workspace.charge_scanned(min(workspace.buffered_length, scan_limit))
+    # A miss in a window the budget made shorter than ``SFX_MAX`` is a search cut
+    # short, unless the source ends inside the window anyway. Under a budget as wide
+    # as ``SFX_MAX`` the structural bound stopped the scan, not the budget.
+    source_len = workspace.remaining_known()
+    cut_short = scan_limit < SFX_MAX and (source_len is None or source_len > scan_limit)
+    # Take the flag on its own line: the call clears it, so it must always run.
+    clamped = workspace.take_clamped_view_read()
+    if clamped or (result is None and cut_short):
+        workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     return result
 
 
@@ -704,14 +769,9 @@ def _is_directory_source(source: str | Path | BinaryIO) -> bool:
 
 
 def _first_volume_beside_stub(source: str | Path | BinaryIO) -> Path | None:
-    if isinstance(source, ArchiveSource):
-        if source.path is None:
-            return None
-        source = source.path
-    if isinstance(source, (str, Path)):
-        path = Path(source)
-        if path.is_file():
-            return first_volume_for_stub(path)
+    path = source.path if isinstance(source, ArchiveSource) else source
+    if isinstance(path, (str, Path)):
+        return first_volume_for_stub(Path(path))
     return None
 
 
@@ -731,22 +791,35 @@ def _detect_format_body(
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
+    trailers = registry.trailer_entries()
     extension_map = registry.extension_map()
     name = source_name(source)
     ext_match = _match_extension(name, extension_map)
     ext_fmt = ext_match[0] if ext_match is not None else None
 
     with PrefixWorkspace(source, budget, receipt) as workspace:
+
+        def conclude(info: FormatInfo, evidence: _ConflictEvidence) -> FormatInfo:
+            _warn_on_conflict(collector, name, ext_match, info.format, evidence)
+            return _attach_receipt(info, workspace)
+
         # Magic signals split by where they live: "near" ones fit in the default window;
         # "far" ones (ISO's CD001 at 32 769) need an extended peek taken on demand.
         near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
         far = [e for e in magic_entries if e.offset + len(e.magic) > DETECTION_LIMIT]
         near_span = max((e.offset + len(e.magic) for e in near), default=0)
-        if near and budget.max_prefix_bytes < near_span:
+        if near:
             # A "near" magic past the budgeted prefix is unsearchable — record it rather
             # than silently incomplete-searching (DETECTION_LIMIT and max_prefix_bytes
-            # are independent constants that happen both to be 4 096 today).
-            workspace.record_skip("near_magic", TierSkipReason.BUDGET_EXHAUSTED)
+            # are independent constants that happen both to be 4 096 today). A zero
+            # ``max_prefix_bytes`` turns the tier off. The record only: the match still
+            # runs on whatever the prefix holds.
+            _record_tier_limit(
+                workspace,
+                "near_magic",
+                enabled=budget.max_prefix_bytes > 0,
+                covered=budget.max_prefix_bytes >= near_span,
+            )
         near_needed = min(
             budget.max_prefix_bytes,
             max(DETECTION_LIMIT, near_span),
@@ -768,6 +841,12 @@ def _detect_format_body(
         if magic_fmt is None:
             magic_fmt = _match_magic_behind_prefix(data, registry.magic_prefix_walks())
         if magic_fmt is not None:
+            # A bzip2 or xz header can be the first block of a UDIF image. The
+            # trailer outranks that hit; the block codec is a member of the image.
+            if any(magic_fmt in entry.preempts for entry in trailers):
+                trailer_fmt = _match_trailer(workspace, trailers)
+                if trailer_fmt is not None:
+                    magic_fmt = trailer_fmt
             info = _resolve_single_file_or_tar(
                 magic_fmt,
                 DetectionConfidence.CERTAIN,
@@ -776,59 +855,44 @@ def _detect_format_body(
                 ext_match=ext_match,
                 workspace=workspace,
             )
-            _warn_on_conflict(
-                collector, name, ext_match, info.format, _ConflictEvidence.MAGIC
-            )
-            return _attach_receipt(info, workspace)
+            return conclude(info, _ConflictEvidence.MAGIC)
 
         # 2. Self-extracting archives.
         cue = executable_cue(data)
         if cue is not ExecutableCue.NONE:
-            scan_limit = min(SFX_MAX, budget.max_scan_bytes)
-            if scan_limit <= 0:
-                workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
-            else:
-                sfx_info = _scan_for_sfx_payload(
-                    registry.sfx_magic_entries(),
-                    peek_more,
-                    workspace,
-                    scan_limit=scan_limit,
-                    validators=registry.sfx_hit_validators(),
-                    # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
-                    restrict_to_validated=data.startswith(b"#!"),
-                )
-                if sfx_info is not None:
-                    _warn_on_conflict(
-                        collector,
-                        name,
-                        ext_match,
-                        sfx_info.format,
-                        _ConflictEvidence.SFX_SCAN,
-                    )
-                    return _attach_receipt(sfx_info, workspace)
-                # A miss in a window the budget made shorter than ``SFX_MAX`` is a
-                # search cut short, unless the source ends inside the window anyway.
-                # Under a budget as wide as ``SFX_MAX`` the structural bound stopped
-                # the scan, not the budget.
-                source_len = workspace.remaining_known()
-                if budget.max_scan_bytes < SFX_MAX and (
-                    source_len is None or source_len > scan_limit
-                ):
-                    workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+            sfx_info = _scan_for_sfx_payload(
+                registry.sfx_magic_entries(),
+                peek_more,
+                workspace,
+                scan_limit=min(SFX_MAX, budget.max_scan_bytes),
+                validators=registry.sfx_hit_validators(),
+                # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
+                restrict_to_validated=data.startswith(b"#!"),
+            )
+            if sfx_info is not None:
+                return conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
 
         # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the
         # tier is recorded as cut short, the same rule the near tier follows. A source
-        # provably too short to hold the signature loses nothing to the clamp.
+        # provably too short to hold the signature loses nothing to the clamp. A zero
+        # ``max_far_bytes`` turns the tier off, and it is recorded as not enabled.
         reachable_far: list[MagicSignature] = []
         unreachable_far: list[MagicSignature] = []
         for e in far:
             fits = e.offset + len(e.magic) <= budget.max_far_bytes
             (reachable_far if fits else unreachable_far).append(e)
-        if budget.max_far_bytes > 0 and any(
-            length is None or length >= e.offset + len(e.magic) for e in unreachable_far
-        ):
-            workspace.record_skip("far_magic", TierSkipReason.BUDGET_EXHAUSTED)
+        if far:
+            # The record only: the signatures the window reaches are searched anyway.
+            _record_tier_limit(
+                workspace,
+                "far_magic",
+                enabled=budget.max_far_bytes > 0,
+                covered=all(
+                    length is not None and length < e.offset + len(e.magic)
+                    for e in unreachable_far
+                ),
+            )
         if reachable_far:
             far_needed = max(e.offset + len(e.magic) for e in reachable_far)
             if length is not None and length < far_needed:
@@ -839,17 +903,24 @@ def _detect_format_body(
                 workspace.charge_far(len(far_data))
                 far_fmt = _match_magic(far_data, reachable_far)
                 if far_fmt is not None:
-                    _warn_on_conflict(
-                        collector, name, ext_match, far_fmt, _ConflictEvidence.MAGIC
-                    )
-                    return _attach_receipt(
+                    return conclude(
                         FormatInfo(far_fmt, DetectionConfidence.CERTAIN, "magic"),
-                        workspace,
+                        _ConflictEvidence.MAGIC,
                     )
-        elif far and budget.max_far_bytes <= 0:
-            workspace.record_skip("far_magic", TierSkipReason.NOT_ENABLED_BY_POLICY)
 
-        # 4. Content probes.
+        # 4. Trailer magic (UDIF's koly block). After far magic, so an ISO whose
+        # CD001 already matched is read as that ISO — an uncompressed UDIF image
+        # of an ISO 9660 disk included — and is not asked for a tail read.
+        # Before the probes, so a zlib-first image is the image and not its
+        # first block.
+        trailer_fmt = _match_trailer(workspace, trailers)
+        if trailer_fmt is not None:
+            return conclude(
+                FormatInfo(trailer_fmt, DetectionConfidence.CERTAIN, "magic"),
+                _ConflictEvidence.MAGIC,
+            )
+
+        # 5. Content probes.
         if cue is not ExecutableCue.STRONG:
 
             def read_at(offset: int, n: int) -> bytes | None:
@@ -877,16 +948,9 @@ def _detect_format_body(
                         ext_match=ext_match,
                         workspace=workspace,
                     )
-                    _warn_on_conflict(
-                        collector,
-                        name,
-                        ext_match,
-                        info.format,
-                        _ConflictEvidence.CONTENT_PROBE,
-                    )
-                    return _attach_receipt(info, workspace)
+                    return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
-        # 5. Extension-only guess.
+        # 6. Extension-only guess.
         if ext_fmt is not None:
             return _attach_receipt(
                 FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension"),

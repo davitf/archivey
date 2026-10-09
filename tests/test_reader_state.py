@@ -385,10 +385,14 @@ def test_open_long_cycle_raises_read_error(tmp_path: Path) -> None:
 
 
 def _tar(path: Path, entries: list[tuple[str, str, str | None]]) -> Path:
-    """``entries`` are ``(name, kind, target)``; kind is "file", "sym" or "hard"."""
+    """``entries`` are ``(name, kind, target)``; kind is "file", "dir", "sym" or "hard"."""
     with tarfile.open(path, "w") as tf:
         for name, kind, target in entries:
             info = tarfile.TarInfo(name)
+            if kind == "dir":
+                info.type = tarfile.DIRTYPE
+                tf.addfile(info)
+                continue
             if kind == "file":
                 data = f"payload:{name}".encode()
                 info.size = len(data)
@@ -447,6 +451,50 @@ def test_converging_chains_share_the_memo(tmp_path: Path) -> None:
         assert reader.read("b") == b"payload:end"
 
 
+@pytest.mark.parametrize(
+    ("order", "finalized", "streamed"),
+    [
+        pytest.param("x x/ s h", {"s": "x", "h": "x/"}, None, id="file-first"),
+        pytest.param("x/ x s h", {"s": "x", "h": "x"}, None, id="dir-first"),
+        pytest.param(
+            "x/ s h x", {"s": "x", "h": "x/"}, {"s": "x/", "h": "x/"}, id="file-last"
+        ),
+    ],
+)
+def test_link_target_tie_break_between_file_and_directory(
+    tmp_path: Path,
+    order: str,
+    finalized: dict[str, str],
+    streamed: dict[str, str] | None,
+) -> None:
+    """A target ``x`` names both a file ``x`` and a directory ``x/``.
+
+    A symlink prefers the bare name whatever the order; a hard link takes the later
+    of the two listed before it. A link yielded by a streaming pass sees only the
+    members before it (``streamed`` defaults to ``finalized``).
+
+    Mutant: give hard links the symlink rule (bare spelling first) and the hard link
+    in the file-first case resolves to ``x`` instead of ``x/``.
+    """
+    kinds: dict[str, tuple[str, str | None]] = {
+        "x": ("file", None),
+        "x/": ("dir", None),
+        "s": ("sym", "x"),
+        "h": ("hard", "x"),
+    }
+    entries = [(name, *kinds[name]) for name in order.split()]
+    path = _tar(tmp_path / "tie.tar", entries)
+    with open_archive(path) as reader:
+        assert _terminal_names(reader) == finalized
+    with open_archive(path, streaming=True) as reader:
+        yielded = {
+            m.name: (m.link_target_member.name if m.link_target_member else None)
+            for m, _stream in reader.stream_members()
+            if m.is_link
+        }
+        assert yielded == (streamed or finalized)
+
+
 @pytest.mark.parametrize("seed", range(20))
 def test_memoized_terminals_match_a_fresh_walk_per_member(
     tmp_path: Path, seed: int
@@ -467,9 +515,8 @@ def test_memoized_terminals_match_a_fresh_walk_per_member(
     with open_archive(_tar(tmp_path / f"g{seed}.tar", entries)) as reader:
         assert isinstance(reader, BaseArchiveReader)
         members = reader.members()
-        materialized = reader._materialized
-        assert materialized is not None
-        by_name = materialized.by_name_lists
+        # Published, so _resolve_link below reads the complete name index.
+        assert reader._materialized is not None
         for member in members:
             if not (member.is_link and member.link_target):
                 continue
@@ -478,5 +525,5 @@ def test_memoized_terminals_match_a_fresh_walk_per_member(
             )
             fresh._member_id = member._member_id
             fresh._archive_id = member._archive_id
-            reader._resolve_link(fresh, by_name, {})
+            reader._resolve_link(fresh, {})
             assert member.link_target_member is fresh.link_target_member, member.name

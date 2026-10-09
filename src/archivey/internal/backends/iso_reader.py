@@ -26,11 +26,21 @@ tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. I
 confined to pycdlib and transparent on well-formed images, but a program that also uses
 pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
 is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
-``dev-docs/formats/iso.md`` §4. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
-(:func:`_install_pycdlib_system_use_filter`) and ``pycdlib.dr.DirectoryRecord.parse``
-(:func:`_install_pycdlib_record_counter`, which weighs what pycdlib parses against
-``ListingLimits``), but both wrappers act only inside this module's own ``open_fp``
-call, so other users of pycdlib see no change.
+``dev-docs/formats/iso.md`` §4. The same import wraps four pycdlib methods:
+
+- ``pycdlib.rockridge.RockRidge.parse`` (:func:`_install_pycdlib_system_use_filter`),
+  which filters each System Use area and refuses a Rock Ridge ``CE`` area past its
+  block before pycdlib reads it;
+- ``pycdlib.dr.DirectoryRecord.parse`` (:func:`_install_pycdlib_record_counter`), which
+  weighs what pycdlib parses against ``ListingLimits``;
+- ``pycdlib.pycdlib.PyCdlib._parse_path_table`` and
+  ``pycdlib.path_table_record.PathTableRecord.parse``
+  (:func:`_install_pycdlib_path_table_bound`), which bound a path table by the image
+  and the same budget before pycdlib reads it, and count its entries as pycdlib parses
+  them.
+
+Every wrapper acts only inside this module's own ``open_fp`` call, so other users of
+pycdlib see no change.
 """
 
 from __future__ import annotations
@@ -61,8 +71,10 @@ if TYPE_CHECKING:
     from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
     from pycdlib.dr import DirectoryRecord
     from pycdlib.inode import Inode
+    from pycdlib.path_table_record import PathTableRecord
+    from pycdlib.pycdlib import PyCdlib
     from pycdlib.pycdlibio import PyCdlibIO
-    from pycdlib.rockridge import RockRidge
+    from pycdlib.rockridge import RockRidge, RockRidgeEntries, RRCERecord
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import (
@@ -74,7 +86,6 @@ from archivey.cost import (
 from archivey.diagnostics import (
     DiagnosticCode,
     MemberHeaderRecordContext,
-    MemberTimestampContext,
     NameEncodingContext,
     raw_name_to_base64,
 )
@@ -102,7 +113,9 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
+    resolve_seek,
 )
+from archivey.internal.timestamps import TimestampIssue
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -259,12 +272,40 @@ class _SystemUseNotes:
 
     Keyed by ``id`` of the ``RockRidge`` the entries belong to; the object itself is
     kept alongside, so the id cannot be reused while the reader holds the notes.
-    ``RockRidge`` has ``__slots__``, so nothing can be stored on it.
+    ``RockRidge`` has ``__slots__``, so nothing can be stored on it. ``iso`` gives the
+    logical block size a ``CE`` area must fit in.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, iso: PyCdlib) -> None:
         self.zisofs: dict[int, tuple[object, _ZisofsEntry]] = {}
         self.dropped: dict[int, tuple[object, str]] = {}
+        self._iso = iso
+
+    def check_continuation_entry(self, ce: RRCERecord | None) -> None:
+        """Refuse a Rock Ridge ``CE`` entry whose area runs past its block, before the read.
+
+        pycdlib reads the area a ``CE`` entry names right after parsing the System Use
+        area that holds it, for the length the entry declares (up to 4 GiB, clamped
+        only to the image), and only then refuses an area that does not fit in one
+        logical block (``track_rr_ce_entry``). From 1.21 it follows the chain: an area
+        may end in a ``CE`` naming a further area, read the same way. This runs on
+        every area pycdlib parses, the record's own and each continuation, so every
+        link is refused between the parse that names it and the read. The Linux kernel
+        refuses the same entry (``rock_continue``).
+
+        The block is the one pycdlib checks against: the primary volume descriptor's,
+        which pycdlib copies to ``logical_block_size`` before it parses any directory
+        record, whichever descriptor's tree it is walking.
+        """
+        if ce is None:
+            return
+        block_size = cast(int, getattr(self._iso, "logical_block_size"))
+        if ce.offset_cont_area + ce.len_cont_area > block_size:
+            raise CorruptionError(
+                "Error reading ISO image: Rock Ridge continuation area of "
+                f"{ce.len_cont_area} bytes at offset {ce.offset_cont_area} of block "
+                f"{ce.bl_cont_area} runs past the {block_size}-byte block"
+            )
 
     def filter(self, rock_ridge: object, record: bytes, skip: int) -> bytes:
         """``record`` with the entries pycdlib would refuse the whole image over removed.
@@ -357,16 +398,32 @@ class _SystemUseNotes:
 _SYSTEM_USE_NOTES: ContextVar[_SystemUseNotes | None] = ContextVar(
     "archivey_iso_system_use_notes", default=None
 )
+
+
+def _inside_our_open() -> bool:
+    """Whether this thread is inside ``IsoReader``'s own ``open_fp`` call.
+
+    The structural checks the pycdlib hooks make (a path table past the image, a
+    ``CE`` area past its block) are not limits, so they key on this rather than on
+    ``_PARSE_BUDGET``, which is ``None`` under ``ListingLimits.UNLIMITED``.
+    """
+    return _SYSTEM_USE_NOTES.get() is not None
+
+
 _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED = False
 
 
 def _install_pycdlib_system_use_filter() -> None:
-    """Route ``RockRidge.parse`` through :meth:`_SystemUseNotes.filter` during our opens.
+    """Filter ``RockRidge.parse``'s input and refuse an out-of-block ``CE``, in our opens.
 
     pycdlib parses every Rock Ridge area inside ``open_fp`` and fails the whole image on
-    the first entry it cannot parse, so one odd record costs every member. The patch is
-    installed once, on pycdlib's class, and does nothing unless ``_SYSTEM_USE_NOTES`` is
-    set, which only ``IsoReader`` does, around its own ``open_fp`` call.
+    the first entry it cannot parse, so one odd record costs every member: the area goes
+    through :meth:`_SystemUseNotes.filter` first. After each parse, the ``CE`` entry it
+    found, in the record's own area or in a continuation area, goes through
+    :meth:`_SystemUseNotes.check_continuation_entry`, which refuses an area that does
+    not fit in its logical block before pycdlib reads it. The patch is installed once,
+    on pycdlib's class, and does nothing unless ``_SYSTEM_USE_NOTES`` is set, which only
+    ``IsoReader`` does, around its own ``open_fp`` call.
     """
     global _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED
     if pycdlib is None or _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED:
@@ -389,7 +446,7 @@ def _install_pycdlib_system_use_filter() -> None:
             # area is weighed each time it is parsed, as pycdlib parses a shared one
             # again for every record that names it.
             budget.add_continuation(len(record))
-        notes = _SYSTEM_USE_NOTES.get()
+        notes = _SYSTEM_USE_NOTES.get()  # set only inside our own open_fp
         if notes is not None:
             record = notes.filter(self, record, bytes_to_skip)
         original(
@@ -400,6 +457,13 @@ def _install_pycdlib_system_use_filter() -> None:
             continuation,
             dr_name,
         )
+        if notes is not None:
+            # pycdlib keeps the CE of a continuation area in ``ce_entries`` (``None``
+            # until one is parsed, from 1.20) and the record's own in ``dr_entries``.
+            entries = self.ce_entries if continuation else self.dr_entries
+            notes.check_continuation_entry(
+                None if entries is None else entries.ce_record
+            )
 
     setattr(rr_mod.RockRidge, "parse", parse)
     _PYCDLIB_SYSTEM_USE_FILTER_INSTALLED = True
@@ -422,8 +486,9 @@ class _ParseBudget:
     record but ``.`` and ``..`` counts as a member, including the extra records of a
     multi-extent file and the ``rr_moved`` scaffolding the listing hides. The bytes are
     the directory records as stored, System Use areas included, plus each Rock Ridge
-    continuation area every time pycdlib parses it, which is more than the text a
-    listing keeps.
+    continuation area every time pycdlib parses it, plus the tree's little- and
+    big-endian path tables, which pycdlib reads whole and parses into one object per
+    record (at least 8 bytes each). That is more than the text a listing keeps.
     """
 
     def __init__(self, limits: ListingLimits) -> None:
@@ -435,6 +500,8 @@ class _ParseBudget:
         # The tree of the record parsed last: pycdlib parses a record's continuation
         # area right after the record, and ``RockRidge.parse`` is not told the tree.
         self._tree = 0
+        # Entries pycdlib has parsed from the path table it is parsing now.
+        self._path_table_entries = 0
 
     def add_record(self, vd: object, nbytes: int) -> None:
         self._tree = id(vd)
@@ -453,13 +520,42 @@ class _ParseBudget:
     def add_continuation(self, nbytes: int) -> None:
         self._add_bytes(nbytes)
 
+    def add_path_table(self, vd: object, nbytes: int) -> None:
+        # Called before pycdlib reads the table, so an over-budget size is refused
+        # before the read and the parse, not after.
+        self._tree = id(vd)
+        self._path_table_entries = 0
+        self._add_bytes(nbytes)
+
+    def add_path_table_entry(self) -> None:
+        """Count one path-table entry pycdlib parsed against ``max_members``.
+
+        Every entry names a directory, and every directory but the root is a member,
+        so a table of more than ``max_members + 1`` entries indexes a tree the
+        listing would refuse anyway; an image the listing accepts never reaches this.
+        Counting as pycdlib parses bounds what one table costs by the member cap
+        (about 230 bytes an entry) rather than by its size (29 times it for 8-byte
+        entries), since ``max_metadata_bytes`` alone let a table of the whole budget
+        through.
+        """
+        self._path_table_entries += 1
+        max_members = self._limits.max_members
+        if max_members is not None and self._path_table_entries > max_members + 1:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} "
+                f"(ISO path table holds more than {max_members + 1} directories)"
+            )
+
     def _add_bytes(self, nbytes: int) -> None:
         total = self._bytes.get(self._tree, 0) + nbytes
         self._bytes[self._tree] = total
         check_metadata_budget(
             self._limits,
             total,
-            detail=f"ISO directory tree has {total} bytes of directory records",
+            detail=(
+                f"ISO directory tree has {total} bytes of path tables and "
+                "directory records"
+            ),
         )
 
 
@@ -507,18 +603,101 @@ def _install_pycdlib_record_counter() -> None:
 
 _install_pycdlib_record_counter()
 
-# Exceptions that mean "this ISO structure is bad", translated to CorruptionError. A
-# genuine OSError from the underlying handle (file not found, permission, physical media
-# error) is unrelated to ISO decoding and MUST propagate unchanged (see error-handling:
-# "Genuine runtime and I/O errors are not reclassified"). pycdlib raises its own
+_PYCDLIB_PATH_TABLE_BOUND_INSTALLED = False
+
+
+def _install_pycdlib_path_table_bound() -> None:
+    """Bound each path table before pycdlib reads and parses it, during our opens.
+
+    pycdlib reads the size a volume descriptor declares in one read and parses it
+    into one ``PathTableRecord`` per record, at least 8 bytes each, about 29 times
+    the size in memory; it does this twice per tree (little- and big-endian), before
+    it walks any directory. The source bounds the read to the image, not the parse.
+    A table that runs past the end of the image is ``CorruptionError``, as pycdlib's
+    own parse of the short read would have it, and the size is weighed against
+    ``max_metadata_bytes`` with the tree it indexes. A second wrapper, on
+    ``PathTableRecord.parse``, counts each entry against ``max_members`` as pycdlib
+    parses it (:meth:`_ParseBudget.add_path_table_entry`). Installed once and
+    transparent outside ``IsoReader``'s ``open_fp``, like the hooks above.
+    """
+    global _PYCDLIB_PATH_TABLE_BOUND_INSTALLED
+    if pycdlib is None or _PYCDLIB_PATH_TABLE_BOUND_INSTALLED:
+        return
+    import pycdlib.pycdlib as pcd_module
+
+    original = pcd_module.PyCdlib._parse_path_table
+
+    def parse_path_table(self: PyCdlib, ptr_size: int, extent: int) -> object:
+        if _inside_our_open():  # not a limit, so it holds under UNLIMITED too
+            _check_path_table(self, ptr_size, extent)
+        return original(self, ptr_size, extent)
+
+    setattr(pcd_module.PyCdlib, "_parse_path_table", parse_path_table)
+
+    from pycdlib import path_table_record as ptr_mod
+
+    original_entry = ptr_mod.PathTableRecord.parse
+
+    def parse_entry(self: PathTableRecord, data: bytes) -> None:
+        budget = _PARSE_BUDGET.get()
+        if budget is not None:
+            budget.add_path_table_entry()
+        original_entry(self, data)
+
+    setattr(ptr_mod.PathTableRecord, "parse", parse_entry)
+    _PYCDLIB_PATH_TABLE_BOUND_INSTALLED = True
+
+
+def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
+    """Refuse a path table past the image or over the parse budget; see above."""
+    cdfp = cast("BinaryIO", getattr(iso, "_cdfp"))
+    block_size = cast(int, getattr(iso, "logical_block_size"))
+    position = cdfp.tell()
+    image_length = cdfp.seek(0, io.SEEK_END)
+    cdfp.seek(position)
+    start = extent * block_size
+    if start + ptr_size > image_length:
+        raise CorruptionError(
+            f"Error reading ISO image: the path table at block {extent} declares "
+            f"{ptr_size} bytes and the image holds {max(0, image_length - start)} "
+            "from there"
+        )
+    budget = _PARSE_BUDGET.get()
+    if budget is None:
+        return
+    # The descriptor whose table this is; pycdlib parses the PVD's, then Joliet's.
+    descriptors = [getattr(iso, "pvd"), *cast("list[object]", getattr(iso, "svds"))]
+    vd = next(
+        (
+            vd
+            for vd in descriptors
+            if extent
+            in (
+                getattr(vd, "path_table_location_le", None),
+                getattr(vd, "path_table_location_be", None),
+            )
+        ),
+        descriptors[0],
+    )
+    budget.add_path_table(vd, ptr_size)
+
+
+_install_pycdlib_path_table_bound()
+
+# Exceptions that mean "this ISO structure is bad", translated to CorruptionError.
 # pycdlib wraps *most* format errors in PyCdlibException, but it is not hardened against
 # crafted/truncated input: fuzzing surfaces bare IndexError, struct.error, UnicodeDecodeError,
 # AttributeError ("'NoneType' object has no attribute …"), KeyError, and ValueError raised deep
-# in its header/path-table/directory-record parsing. At the pycdlib call boundary (this backend
-# never does its own attribute access or indexing on pycdlib internals) every one of these means
-# "this ISO structure is corrupt", so all are translated to CorruptionError — never a raw
-# exception. A genuine OSError from the underlying handle (file not found, permission, media
-# error) is deliberately NOT in this set: it is real I/O and MUST propagate unchanged (see
+# in its header/path-table/directory-record parsing, so all are translated to CorruptionError
+# rather than leaking as raw exceptions. The cost of so broad a set: this backend also reads
+# pycdlib internals itself (`_nm_name`, `_rr_entry_groups`, `_times`, `_px`,
+# `_check_path_table`), inside the same window, so a bug in that code (an attribute pycdlib
+# no longer sets, say) is reported as a corrupt image rather than crashing. That is how an
+# unguarded `ce_entries is None` on pycdlib 1.20+ showed up. We keep the broad set because
+# telling a pycdlib frame from ours would need traceback inspection on every error; the
+# guard is to run the ISO suites against newer pycdlib releases (`uv run --with pycdlib==X`).
+# A genuine OSError from the underlying handle (file not found, permission, media error) is
+# deliberately NOT in this set: it is real I/O and MUST propagate unchanged (see
 # error-handling: "Genuine runtime and I/O errors are not reclassified"). Built defensively so
 # the module imports without pycdlib.
 _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
@@ -526,9 +705,9 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 ) + (IndexError, struct.error, UnicodeDecodeError, AttributeError, KeyError, ValueError)
 
 
-# Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
-_VERSION_SUFFIX = re.compile(r";(\d+)$")
-_VERSION_SUFFIX_BYTES = re.compile(rb";(\d+)$")
+# Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
+# not ``$``: ``$`` also matches before a final newline, which would drop it from the name.
+_VERSION_SUFFIX = re.compile(r";(\d+)\Z")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
@@ -544,25 +723,65 @@ def _nm_name(record: DirectoryRecord) -> bytes | None:
     9660 identifier, version suffix and all.
     """
     rr = record.rock_ridge
-    if rr is None or not (rr.dr_entries.nm_records or rr.ce_entries.nm_records):
+    if rr is None or not any(e.nm_records for e in _rr_entry_groups(rr)):
         return None
     return bytes(rr.name())
 
 
+def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
+    """The entry groups of a Rock Ridge record: its own area's, then its continuation's.
+
+    From pycdlib 1.20, ``ce_entries`` stays ``None`` until an entry spills into a
+    continuation area, so a record without one has only ``dr_entries``. On older
+    pycdlib both groups always exist.
+    """
+    ce: RockRidgeEntries | None = rr.ce_entries
+    return (rr.dr_entries,) if ce is None else (rr.dr_entries, ce)
+
+
+def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
+    """``name`` without its ``;N`` version, and ``N`` (``None`` without one).
+
+    With ``iso9660`` (plain ISO 9660 identifiers), an empty extension's ``.`` goes too
+    (``FOO.;1`` is ``FOO``), and a bare ``;N`` is a name, not a version: it comes back
+    unchanged with ``None``. Without it (Joliet), the suffix always goes and its version
+    is reported, so ``;1`` becomes ``""`` with version 1. Neither Joliet caller lets that
+    empty name reach a member: ``_joliet_name`` drops it in ``_ascii_runs_match``, and
+    ``_joliet_text`` only feeds extent matching.
+    """
+    match = _VERSION_SUFFIX.search(name)
+    if match is None or (iso9660 and match.start() == 0):
+        return name, None
+    stem = name[: match.start()]
+    if iso9660 and len(stem) > 1 and stem.endswith("."):
+        stem = stem[:-1]
+    return stem, int(match.group(1))
+
+
 def _iso_ident_name(record: DirectoryRecord) -> bytes:
     """A record's ISO 9660 identifier, version and empty-extension dot removed."""
-    ident = bytes(record.file_identifier())
-    match = _VERSION_SUFFIX_BYTES.search(ident)
-    if match is not None and match.start() > 0:
-        ident = ident[: match.start()]
-        if ident.endswith(b".") and len(ident) > 1:
-            ident = ident[:-1]
-    return ident
+    # Latin-1 maps each byte to one character, and none of 0x80-0xff is a digit.
+    ident = bytes(record.file_identifier()).decode("latin-1")
+    return _strip_version(ident, iso9660=True)[0].encode("latin-1")
 
 
 def _byte_ascii_runs(raw: bytes) -> tuple[str, ...]:
     """The ASCII text of a byte name, split where non-ASCII bytes are."""
     return tuple(run.decode("ascii") for run in re.split(rb"[\x80-\xff]+", raw))
+
+
+def _decode_joliet(ident: bytes) -> str:
+    """A Joliet identifier as text; never raises.
+
+    The identifier is UTF-16BE code units, and NTFS lets a name hold a surrogate
+    without its partner, so the decode uses ``surrogatepass``: the unit stays in the
+    name, as the 7z reader keeps it, and extraction decides what reaches disk. A valid
+    pair still decodes as one character. An odd trailing byte is not a unit and
+    becomes U+FFFD.
+    """
+    cut = len(ident) - len(ident) % 2
+    name = ident[:cut].decode("utf-16_be", errors="surrogatepass")
+    return name + "\ufffd" if cut < len(ident) else name
 
 
 def _text_ascii_runs(name: str) -> tuple[str, ...]:
@@ -758,10 +977,15 @@ class _Extent(NamedTuple):
     length: int
 
 
+def _is_entry(child: DirectoryRecord | None) -> TypeGuard[DirectoryRecord]:
+    """Whether a directory's child record is an entry: not ``None``, ``.`` or ``..``."""
+    return child is not None and not child.is_dot() and not child.is_dotdot()
+
+
 def _yield_children(
     record: DirectoryRecord, rock_ridge: bool
-) -> Iterator[DirectoryRecord | None]:
-    """A directory record's children, as pycdlib's own ``walk()`` enumerates them.
+) -> Iterator[DirectoryRecord]:
+    """A directory record's entries, as pycdlib's own ``walk()`` enumerates them.
 
     ``pycdlib.pycdlib._yield_children`` is private, but it is the one place pycdlib
     skips the extra records of a multi-extent file and follows Rock Ridge CL/PL
@@ -770,7 +994,7 @@ def _yield_children(
     every supported pycdlib, so a rename there fails loudly rather than silently.
     """
     assert _pycdlib_core is not None
-    return _pycdlib_core._yield_children(record, rock_ridge)
+    return filter(_is_entry, _pycdlib_core._yield_children(record, rock_ridge))
 
 
 # zisofs: the 16-byte header at the start of a compressed file's data, then one
@@ -855,18 +1079,10 @@ class _ZisofsStream(io.RawIOBase):
         # member streams do. ArchiveStream.seek rejects a negative SEEK_SET and a bad
         # whence before they reach here: the ISO translator reads ValueError as
         # corruption.
-        if whence == io.SEEK_SET:
-            if offset < 0:
-                raise ValueError(f"negative seek position {offset}")
-            target = offset
-        elif whence == io.SEEK_CUR:
-            target = max(0, self._position + offset)
-        elif whence == io.SEEK_END:
-            target = max(0, self._size + offset)
-        else:
-            raise ValueError(f"invalid whence ({whence})")
-        self._position = target
-        return target
+        self._position = resolve_seek(
+            offset, whence, pos=self._position, end=lambda: self._size
+        )
+        return self._position
 
     def readinto(self, b: WriteableBuffer, /) -> int:
         view = memoryview(b).cast("B")
@@ -957,13 +1173,12 @@ class _PyCdlibStream(DelegatingStream):
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # pycdlib raises its own PyCdlibInvalidInput on a relative seek before the start,
-        # which the translator must read as corruption. Resolve a relative seek here and
-        # clamp it to the origin, as BytesIO does.
-        if whence == io.SEEK_CUR:
-            return super().seek(max(self._raw.tell() + offset, 0), io.SEEK_SET)
-        if whence == io.SEEK_END:
-            return super().seek(max(self._raw.length() + offset, 0), io.SEEK_SET)
-        return super().seek(offset, whence)
+        # which the translator must read as corruption. Resolve every seek here and
+        # clamp a relative one to the origin, as BytesIO does.
+        target = resolve_seek(
+            offset, whence, pos=self._raw.tell(), end=lambda: self._raw.length()
+        )
+        return super().seek(target, io.SEEK_SET)
 
 
 class IsoReader(BaseArchiveReader):
@@ -1021,7 +1236,7 @@ class IsoReader(BaseArchiveReader):
         self._raw_directories: dict[int, _RawDirectory] = {}
         # What the System Use filter kept aside while ``open_fp`` parsed the Rock Ridge
         # areas: zisofs entries, and the areas it cut short.
-        self._system_use = _SystemUseNotes()
+        self._system_use = _SystemUseNotes(self._iso)
         # The Joliet tree's files by extent, and by extent and the ASCII runs of their
         # name, built the first time a Rock Ridge name is not UTF-8 and ``encoding=``
         # does not decode it; and the records whose name was taken from their Joliet
@@ -1142,28 +1357,24 @@ class IsoReader(BaseArchiveReader):
         if self._namespace != "iso9660":
             return rel, None
         parent, sep, base = rel.rpartition("/")
-        match = _VERSION_SUFFIX.search(base)
-        if match is None:
-            return rel, None
-        stem = base[: match.start()]
-        if stem.endswith(".") and len(stem) > 1:
-            stem = stem[:-1]
-        if not stem:
-            return rel, None
-        return parent + sep + stem, int(match.group(1))
+        stem, version = _strip_version(base, iso9660=True)
+        return parent + sep + stem, version
 
     def _version_order(self, item: tuple[str, bytes, object]) -> tuple[str, int]:
         """Sort key putting each plain-ISO name's versions in ascending order."""
         presented, version = self._split_version(item[0])
         return presented, version or 0
 
-    def _decode_bytes_name(self, raw: bytes) -> str:
+    def _decode_bytes_name(
+        self, raw: bytes, *, rr_record: DirectoryRecord | None = None
+    ) -> str:
         """Decode a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target.
 
         Nothing in the image says which charset these bytes are in: a Rock Ridge name
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
         valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
-        does for its names, and with UTF-8 and ``surrogateescape`` otherwise.
+        does for its names, then by the name of the Joliet counterpart of the Rock Ridge
+        record ``rr_record`` when one is given (``_joliet_name``), and with UTF-8 and ``surrogateescape`` otherwise.
 
         Decoding always returns. A codec ``open_archive`` accepted can still fail on
         these bytes (``utf-32`` on a length that is not a multiple of four, or
@@ -1171,11 +1382,14 @@ class IsoReader(BaseArchiveReader):
         with no ``encoding=``.
         """
         decoded = self._decode_known(raw)
-        return (
-            raw.decode("utf-8", errors="surrogateescape")
-            if decoded is None
-            else decoded
-        )
+        if decoded is None and rr_record is not None:
+            # Only a Rock Ridge image has Rock Ridge names and link targets to fall
+            # back from.
+            assert self._namespace == "rock_ridge"
+            decoded = self._joliet_name(rr_record, raw)
+        if decoded is None:
+            decoded = raw.decode("utf-8", errors="surrogateescape")
+        return decoded
 
     def _decode_known(self, raw: bytes) -> str | None:
         """``raw`` as UTF-8, else with ``encoding=``; ``None`` when neither applies."""
@@ -1211,13 +1425,12 @@ class IsoReader(BaseArchiveReader):
         )
         if counterpart is None:
             return None
-        try:
-            name = bytes(counterpart.file_identifier()).decode("utf-16_be")
-        except UnicodeDecodeError:
+        ident = bytes(counterpart.file_identifier())
+        if len(ident) % 2:
+            # A damaged Joliet name: the Rock Ridge record escapes its own bytes
+            # rather than borrow a name that ``_decode_joliet`` ends with U+FFFD.
             return None
-        match = _VERSION_SUFFIX.search(name)
-        if match is not None:
-            name = name[: match.start()]
+        name, _ = _strip_version(_decode_joliet(ident), iso9660=False)
         if not _ascii_runs_match(raw, name):
             return None
         self._joliet_named[id(record)] = counterpart
@@ -1237,8 +1450,6 @@ class IsoReader(BaseArchiveReader):
         stack = [root]
         while stack:
             for child in _yield_children(stack.pop(), False):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 extent = child.extent_location()
                 if not child.is_dir():
                     files.setdefault(extent, []).append(child)
@@ -1274,8 +1485,6 @@ class IsoReader(BaseArchiveReader):
         while queue and visited < _JOLIET_SEARCH_RECORDS:
             directory, depth = queue.pop(0)
             for child in _yield_children(directory, True):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 visited += 1
                 if visited > _JOLIET_SEARCH_RECORDS:
                     break
@@ -1293,33 +1502,29 @@ class IsoReader(BaseArchiveReader):
 
     @staticmethod
     def _joliet_text(record: DirectoryRecord) -> str:
-        name = bytes(record.file_identifier()).decode("utf-16_be", errors="replace")
-        match = _VERSION_SUFFIX.search(name)
-        return name if match is None else name[: match.start()]
+        name = _decode_joliet(bytes(record.file_identifier()))
+        return _strip_version(name, iso9660=False)[0]
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
 
         Decoding never raises: a name that is not valid in its namespace's encoding is
-        rendered (surrogateescape for the byte namespaces, U+FFFD for Joliet's UTF-16)
-        rather than costing the listing. The bytes are the name as stored for the byte
-        namespaces, and the UTF-8 of the decoded name for Joliet, as before.
+        rendered (surrogateescape for the byte namespaces; for Joliet's UTF-16, a lone
+        surrogate kept as that unit and an odd trailing byte as U+FFFD) rather than
+        costing the listing. The bytes are the name as stored for the byte namespaces,
+        and the UTF-8 of the decoded name for Joliet, a lone surrogate as its three
+        bytes.
         """
         if self._namespace == "rock_ridge":
             nm = _nm_name(record)
             if nm is not None:
-                name = self._decode_known(nm)
-                if name is None:
-                    name = self._joliet_name(record, nm)
-                if name is None:
-                    name = nm.decode("utf-8", errors="surrogateescape")
-                return name, nm
+                return self._decode_bytes_name(nm, rr_record=record), nm
             ident = _iso_ident_name(record)
             return self._decode_bytes_name(ident), ident
         ident = bytes(record.file_identifier())
         if self._namespace == "joliet":
-            name = ident.decode("utf-16_be", errors="replace")
-            return name, name.encode("utf-8", errors="surrogateescape")
+            name = _decode_joliet(ident)
+            return name, name.encode("utf-8", errors="surrogatepass")
         return self._decode_bytes_name(ident), ident
 
     def _is_rr_moved(self, record: DirectoryRecord) -> bool:
@@ -1332,11 +1537,7 @@ class IsoReader(BaseArchiveReader):
         ``..`` carries a PL record), which is the same test pycdlib uses to hide those
         children from their parking place.
         """
-        children = [
-            c
-            for c in record.children
-            if c is not None and not c.is_dot() and not c.is_dotdot()
-        ]
+        children = [c for c in record.children if _is_entry(c)]
         if not children:
             return False
         for child in children:
@@ -1373,8 +1574,6 @@ class IsoReader(BaseArchiveReader):
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
             for child in _yield_children(dir_record, use_rr):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 if (
                     use_rr
                     and dirpath == "/"
@@ -1440,7 +1639,7 @@ class IsoReader(BaseArchiveReader):
         superseded: bool = False,
     ) -> ArchiveMember:
         rr = getattr(record, "rock_ridge", None)
-        raw_mode = self._px_mode(rr)
+        raw_mode, uid, gid = self._px(rr)
 
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
@@ -1473,7 +1672,7 @@ class IsoReader(BaseArchiveReader):
         )
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
-        mode, uid, gid = self._posix_metadata(rr)
+        mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
         link_target = self._symlink_target(member_type, record, rr)
 
         size = self._file_size(record) if member_type == MemberType.FILE else None
@@ -1525,23 +1724,15 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        # The message names the normalized name, so it is built here, not in
+        # ``_timestamps``.
         for field, source, value_repr in invalid_dates:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
-                message=(
-                    f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
-                ),
-                context=MemberTimestampContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    field=field,
-                    source=source,
-                    value_repr=value_repr,
-                ),
-                member=member,
-                attach_to_member=True,
+            message = f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
+            issue = TimestampIssue(
+                field=field, source=source, value_repr=value_repr, message=message
             )
+            # ISO sends every diagnostic to the collector's default logger; so does this.
+            self._emit_timestamp_invalid(member, index, issue, log=None)
         if id(record) in self._joliet_named:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
@@ -1668,7 +1859,7 @@ class IsoReader(BaseArchiveReader):
             # Rock Ridge TF entries carry the POSIX times (in dr_entries, or the CE
             # overflow area). A TF modification time wins over the directory-record
             # date, which cannot hold hundredths or the long form's four-digit year.
-            for entries in (rr.dr_entries, rr.ce_entries):
+            for entries in _rr_entry_groups(rr):
                 tf = getattr(entries, "tf_record", None)
                 if tf is None:
                     continue
@@ -1689,35 +1880,24 @@ class IsoReader(BaseArchiveReader):
         )
         return modified, accessed, created, ctime, invalid
 
-    def _px_mode(self, rr: RockRidge | None) -> int | None:
-        """The full POSIX mode from a Rock Ridge PX record, file-type bits included."""
+    def _px(self, rr: RockRidge | None) -> tuple[int | None, int | None, int | None]:
+        """The full POSIX mode (file-type bits included), uid and gid of a PX record.
+
+        Only Rock Ridge carries them; Joliet and plain ISO 9660 yield ``None`` for all.
+        """
         if rr is None:
-            return None
-        for entries in (rr.dr_entries, rr.ce_entries):
+            return None, None, None
+        for entries in _rr_entry_groups(rr):
             px = getattr(entries, "px_record", None)
             if px is not None:
                 mode = getattr(px, "posix_file_mode", None)
-                return mode if isinstance(mode, int) else None
-        return None
-
-    def _posix_metadata(
-        self, rr: RockRidge | None
-    ) -> tuple[int | None, int | None, int | None]:
-        # POSIX mode/uid/gid come only from a Rock Ridge PX record; Joliet/plain carry none,
-        # so those namespaces correctly yield (None, None, None).
-        if rr is None:
-            return None, None, None
-        for entries in (rr.dr_entries, rr.ce_entries):
-            px = getattr(entries, "px_record", None)
-            if px is None:
-                continue
-            raw_mode = getattr(px, "posix_file_mode", None)
-            mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
-            return (
-                mode,
-                getattr(px, "posix_user_id", None),
-                getattr(px, "posix_group_id", None),
-            )
+                # Only the mode is type-checked: ``_make_member`` calls
+                # ``stat.S_IMODE`` on it, while uid and gid pass through untouched.
+                return (
+                    mode if isinstance(mode, int) else None,
+                    getattr(px, "posix_user_id", None),
+                    getattr(px, "posix_group_id", None),
+                )
         return None, None, None
 
     def _symlink_target(
@@ -1749,18 +1929,11 @@ class IsoReader(BaseArchiveReader):
         directory: DirectoryRecord | None = record.parent
         parts: list[str] = []
         for component in target.split(b"/"):
-            part = self._decode_known(component)
             here = self._rock_ridge_child(directory, component)
-            if part is None and here is not None:
-                # Only a Rock Ridge image reaches here (``has_joliet()`` with a Rock
-                # Ridge symlink). ``_joliet_name`` registers ``here`` for the
-                # member's diagnostic, as the walk's own ``_record_name`` does with the
-                # same record and bytes, so which of the two runs first changes nothing.
-                assert self._namespace == "rock_ridge"
-                part = self._joliet_name(here, component)
-            if part is None:
-                part = component.decode("utf-8", errors="surrogateescape")
-            parts.append(part)
+            # ``_joliet_name`` registers ``here`` for the member's diagnostic, as the
+            # walk's own ``_record_name`` does with the same record and bytes, so which
+            # of the two runs first changes nothing.
+            parts.append(self._decode_bytes_name(component, rr_record=here))
             directory = here if here is not None and here.is_dir() else None
         return "/".join(parts)
 
@@ -1777,8 +1950,6 @@ class IsoReader(BaseArchiveReader):
         if children is None:
             children = {}
             for child in _yield_children(directory, True):
-                if child is None or child.is_dot() or child.is_dotdot():
-                    continue
                 # The name the member lists under; the first of several records
                 # sharing it, as a scan finds.
                 nm = _nm_name(child)

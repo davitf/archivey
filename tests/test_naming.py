@@ -15,6 +15,7 @@ import pytest
 from archivey import ExtractionPolicy
 from archivey.internal.naming import normalize_member_name
 from archivey.types import MemberType
+from tests.extract_util import open_and_extract
 
 
 @pytest.mark.parametrize(
@@ -143,8 +144,7 @@ def test_link_target_backslash_is_literal() -> None:
 
 
 def test_infer_member_name_from_archive() -> None:
-    import re
-
+    from archivey.internal.backends.sevenzip_reader import _SEVENZIP_STEM_SUFFIX_RE
     from archivey.internal.naming import infer_member_name_from_archive
 
     assert infer_member_name_from_archive(None) == "data"
@@ -157,7 +157,7 @@ def test_infer_member_name_from_archive() -> None:
     assert (
         infer_member_name_from_archive(
             "archive.7z.001",
-            strip_suffix_re=re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE),
+            strip_suffix_re=_SEVENZIP_STEM_SUFFIX_RE,
         )
         == "archive"
     )
@@ -195,13 +195,11 @@ def test_dots_only_stem_extracts_under_every_policy(
     """
     import gzip
 
-    from archivey import extract
-
     src = tmp_path / "....gz"
     src.write_bytes(gzip.compress(b"payload"))
     dest = tmp_path / "out"
 
-    extract(src, dest, policy=policy)
+    open_and_extract(src, dest, policy=policy)
 
     assert (dest / "....gz.uncompressed").read_bytes() == b"payload"
 

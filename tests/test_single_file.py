@@ -34,12 +34,15 @@ from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
+from archivey.internal.backends.single_file_reader import SingleFileReader
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     NonSeekableBytesIO,
+    ShortReadBytesIO,
     make_lzip_member,
     make_multiblock_xz,
     make_unix_compress,
@@ -181,6 +184,39 @@ def test_gzip_without_stored_filename() -> None:
         member = ar.members()[0]
         assert "gzip.original_filename" not in member.extra
         assert member.raw_name is None
+
+
+def test_failed_header_peek_restores_the_stream_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A header peek that fails partway leaves the caller's stream where it was."""
+    armed = False
+    read_prefix = SingleFileReader._read_source_prefix
+
+    def arm(self: SingleFileReader, length: int) -> bytes:
+        nonlocal armed
+        armed = True
+        return read_prefix(self, length)
+
+    monkeypatch.setattr(SingleFileReader, "_read_source_prefix", arm)
+
+    class FailsMidPeek(ShortReadBytesIO):
+        # Once the header peek starts: one 3-byte chunk, then the source fails.
+        reads_in_peek = 0
+
+        def read(self, n: int = -1, /) -> bytes:
+            if armed:
+                self.reads_in_peek += 1
+                if self.reads_in_peek > 1:
+                    raise OSError("device went away")
+            return super().read(n)
+
+    junk = b"junk"
+    stream = FailsMidPeek(junk + gzip.compress(b"payload"), max_chunk=3)
+    stream.seek(len(junk))
+    with pytest.raises(OSError, match="device went away"):
+        open_archive(stream)
+    assert stream.tell() == len(junk)
 
 
 def test_gzip_mtime_surfaced() -> None:
@@ -360,6 +396,17 @@ def test_lzip_exposes_stored_crc32(tmp_path: Path) -> None:
         member = ar.members()[0]
         assert member.size == len(payload)
         assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
+
+
+def test_lzip_version_0_is_unsupported_at_open(tmp_path: Path) -> None:
+    """A version-0 ``.lz`` is a recognized lzip file archivey cannot read, not damage."""
+    member = bytearray(make_lzip_member(b"old format"))
+    member[4] = 0
+    path = tmp_path / "old.lz"
+    path.write_bytes(bytes(member))
+    with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
+        with open_archive(path) as ar:
+            ar.read(ar.members()[0])
 
 
 def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:

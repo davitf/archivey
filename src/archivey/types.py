@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
-from enum import Enum, Flag, auto
+from enum import Enum, Flag, StrEnum, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -66,18 +66,20 @@ class MemberStreams(Flag):
     SEEKABLE = auto()
 
 
-class ContainerFormat(str, Enum):
+class ContainerFormat(StrEnum):
     ZIP = "zip"
     TAR = "tar"
     RAR = "rar"
     SEVEN_Z = "7z"
     ISO = "iso"
+    # Recognised so an open can refuse the image by name. Nothing reads it.
+    DMG = "dmg"
     DIRECTORY = "directory"
     RAW_STREAM = "raw_stream"
     UNKNOWN = "unknown"
 
 
-class StreamFormat(str, Enum):
+class StreamFormat(StrEnum):
     UNCOMPRESSED = "uncompressed"
     GZIP = "gz"
     BZIP2 = "bz2"
@@ -111,14 +113,14 @@ class ArchiveFormat:
     stream: StreamFormat
 
     def __post_init__(self) -> None:
-        # Converted, not only checked: both enums mix in ``str``, so a string pair
-        # compares and hashes equal to the named format, while the code that decides
-        # behaviour tests ``container is ContainerFormat.RAW_STREAM`` and would take
-        # the other branch for it. Holding members makes the two agree. A member
-        # of another enum is refused as a container, but left as it is as a
-        # stream: the codec registry is keyed on these pairs, and a codec
-        # registered from outside (``tests/test_codec_descriptor.py`` does) brings
-        # its own stream enum.
+        # Converted, not only checked: both enums are ``StrEnum``, so a member is a
+        # ``str`` and a string pair compares and hashes equal to the named format,
+        # while the code that decides behaviour tests ``container is
+        # ContainerFormat.RAW_STREAM`` and would take the other branch for it.
+        # Holding members makes the two agree. A member of another enum is refused
+        # as a container, but left as it is as a stream: the codec registry is keyed
+        # on these pairs, and a codec registered from outside
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
         if not isinstance(self.container, ContainerFormat):
             object.__setattr__(
                 self,
@@ -159,6 +161,7 @@ class ArchiveFormat:
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
+    DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
 
@@ -229,6 +232,7 @@ ArchiveFormat.SEVEN_Z = ArchiveFormat(
 )
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
 )
@@ -321,6 +325,20 @@ class MagicSignature(NamedTuple):
     format: "ArchiveFormat"
 
 
+class TrailerSignature(NamedTuple):
+    """Exact magic at the start of a fixed-length block at the end of the source.
+
+    ``preempts`` lists near-magic formats this trailer outranks. A UDIF image's
+    first block is a real bzip2 or xz stream, so that hit is a block of the
+    image and the trailer is the file.
+    """
+
+    length: int
+    magic: bytes
+    format: "ArchiveFormat"
+    preempts: tuple["ArchiveFormat", ...] = ()
+
+
 class MemberType(Enum):
     """Kind of archive entry.
 
@@ -337,7 +355,11 @@ class MemberType(Enum):
     ANTI = "anti"
 
 
-class HashAlgorithm(str, Enum):
+# ``StrEnum`` because the member is a ``str``: ``str()`` and f-strings return the
+# value. A public enum that does not subclass ``str``, such as ``MemberType``
+# above, stays a plain ``Enum``, and ``str()`` of a member is ``Class.NAME``.
+# ``tests/test_str_enums.py`` lists the ``StrEnum`` classes.
+class HashAlgorithm(StrEnum):
     """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
 
     CRC32 = "crc32"
@@ -944,13 +966,19 @@ class ExtractionPolicy(Enum):
     and extract inside the destination (``/etc/x`` → ``etc/x``), as tar and unzip do.
 
     What ``TRUSTED`` does **not** relax: anything where the write itself is unsafe — a
-    name that escapes the destination, carries a NUL, or names a device node. Those are
-    universal. It *does* extract a name built to display as something else
-    (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD`` refuse with
-    ``FilterRejectionError``: such a member lands inside the destination under exactly its
-    stored bytes, so the risk is to a human reading the directory afterwards, not to the
-    filesystem. Choosing ``TRUSTED`` accepts that, which is what makes faithful
-    round-tripping possible. See
+    name that escapes the destination, carries a NUL, or names a device node — and
+    anything whose outcome would differ by OS. A symlink target with a Windows drive
+    letter or UNC root (``C:/Windows``, ``//server/share``) is refused on every OS,
+    because Windows refuses it, so a Windows symlink to a drive path does not round-trip
+    at any policy. A hardlink target names a member, and ``STANDARD`` and ``TRUSTED``
+    re-root a rooted one first (``C:/x`` → ``x``), as they do the member; what is left
+    refused at every policy is a drive-relative hardlink target (``C:x``), and under
+    ``STRICT`` any rooted one. Those are universal. It *does* extract a name built to
+    display as something else (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD``
+    refuse with ``FilterRejectionError``: such a member lands inside the destination
+    under exactly its stored bytes, so the risk is to a human reading the directory
+    afterwards, not to the filesystem. Choosing ``TRUSTED`` accepts that, which is what
+    makes faithful round-tripping possible. See
     ``dev-docs/decisions/0017-bidi-override-rejection-is-policy-keyed.md``.
     """
 
@@ -1017,10 +1045,10 @@ class OnError(Enum):
 OnErrorStr = Literal["stop", "continue"]
 
 
-class AbortOn(str, Enum):
+class AbortOn(StrEnum):
     """Events that abort the whole extraction the first time they occur.
 
-    Passed as ``abort_on=`` to ``extract()`` / ``extract_all()`` (a collection; empty by
+    Passed as ``abort_on=`` to ``extract_all()`` (a collection; empty by
     default). Independent of :class:`OnError` and of ``DiagnosticPolicy``: an event named
     here aborts whatever those are set to, and one not named here never aborts.
 
@@ -1068,7 +1096,7 @@ AbortOnStr = Literal[
 ]
 
 
-class ExtractionStatus(str, Enum):
+class ExtractionStatus(StrEnum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
     EXTRACTED = "extracted"
@@ -1119,7 +1147,7 @@ class ExtractionProgress:
 
 @dataclass(frozen=True)
 class ExtractionResult:
-    """One entry per member processed, returned from ``extract()`` / ``extract_all()``.
+    """One entry per member processed, returned from ``extract_all()``.
 
     Frozen outcome structure (``path`` / ``status`` / ``error`` cannot be replaced after
     construction). ``member`` still refers to the live mutable :class:`ArchiveMember`
@@ -1136,10 +1164,12 @@ class ExtractionResult:
     # The destination the coordinator intended before overwrite/rename resolution. For an
     # ordinary write it equals ``path``; under ``OverwritePolicy.RENAME`` a collided member
     # is written to a derived name, so ``requested_path != path and status == EXTRACTED``
-    # marks the rename; a collision resolved by SKIP/ERROR sets ``requested_path`` with
-    # ``path=None``. ``None`` for members that never reached destination resolution.
-    # On an OVERWRITTEN result it retains the destination the member did write to, so a
-    # caller can join the pair to the replacing member's ``path``.
+    # marks the rename, of the member itself or of a directory it lies inside (``dd/f``
+    # written at ``dd (1)/f``); a collision resolved by SKIP/ERROR sets
+    # ``requested_path`` with ``path=None``. ``None`` for members that never reached
+    # destination resolution. On an OVERWRITTEN result it retains the destination the
+    # member did write to, so a caller can join the pair to the replacing member's
+    # ``path``.
     requested_path: Path | None = None
     # The member's full relative name BEFORE a safety rewrite that reached disk, or
     # ``None`` when none did. The safety rewrites are the portable-name rewrite (O3

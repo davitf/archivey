@@ -46,9 +46,9 @@ the mutated bytes.
 accelerators (``rapidgzip``/``indexed_bzip2``) **off**, so it exercises archivey's own
 zero-dependency parsing and its exception-translation contract — the surface archivey
 controls. Those C++ accelerators can *busy-loop* on crafted input (a hang no Python-level
-translator can convert into an ``ArchiveyError``); fuzzing that native code needs a
-resource-limited subprocess sandbox and belongs with the Phase-6 Atheris work, tracked as
-a separate gap (``dev-docs/threat-model.md`` O5 / C-accelerators).
+timeout can interrupt), so they are fuzzed by the Atheris accelerator targets instead,
+under libFuzzer's own per-input timeout and RSS cap (``tests/atheris_fuzz/targets.py``,
+``dev-docs/threat-model.md`` O5).
 """
 
 from __future__ import annotations

@@ -92,9 +92,18 @@ The system SHALL execute format detection with this algorithm:
    are the weakest signal available. It SHALL be skipped when the source size is known to
    be smaller than the extended window, and a source too short for it SHALL fall through
    rather than be rejected.
-5. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
-6. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
-7. `FormatDetectionError` when nothing matched.
+5. **Trailer magic** — exact magic at the start of a fixed-length block at the end of the
+   source, today UDIF's `koly` block (512 bytes). Match → `CERTAIN` /
+   `detected_by="magic"`. This SHALL run after far magic and before the content probes.
+   It SHALL also outrank a near-magic hit whose format the trailer lists in `preempts`
+   (today bzip2 and xz): that hit is one block of the image, and the replacement SHALL
+   happen before an inner-TAR upgrade. The read SHALL be a cheap seek that restores the
+   handle. A source that cannot seek cheaply SHALL skip it, except that a tail already
+   held in the detection prefix still matches. A source shorter than the block SHALL NOT
+   be read for it.
+6. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
+7. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
+8. `FormatDetectionError` when nothing matched.
 
 Steps are ordered attempts, not alternatives: a step that produces no match falls through,
 and attempting one never prevents a later one from running.
@@ -121,7 +130,7 @@ to read, not that nothing matched.
 | ISO with a zeroed system area | `ISO` / `CERTAIN` / `magic`; unchanged |
 | Source smaller than the extended window, size known | Step 4 skipped without an extended peek; falls through |
 | Source too short for the window, size unknown | Short peek, no match, falls through — never an error for being short |
-| Real Brotli stream larger than the window, no extension | One bounded peek misses at step 4, then step 5 detects it |
+| Real Brotli stream larger than the window, no extension | One bounded peek misses at step 4, then step 6 detects it |
 
 ### Requirement: Conflict resolution — magic wins and warning is emitted
 
@@ -176,6 +185,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
 | ISO 9660 | `CD001` at 32769 |
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
+| UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
 | TAR | `ustar` at 257 |
 | LZ4 | `04 22 4D 18` (frame); `02 21 4C 18` (legacy stream, `lz4 -l`) |
 | lzip | `LZIP` |
@@ -199,6 +209,9 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | Magic table consulted for zlib | No zlib entry; CMF/FLG → zlib probe |
 | `ustar` at 257, ≥512 bytes | TAR, `CERTAIN`, `magic` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO`, `CERTAIN`, `magic` — far magic already matched, so the trailer is not consulted |
 | Starts `02 21 4C 18` (legacy LZ4) | LZ4, `CERTAIN`, `magic` |
 
 #### Scenario: zstd frame prefix
@@ -502,8 +515,10 @@ the underlying source.
 
 Every tier that reads from the front SHALL do so through **one detection-owned prefix
 workspace** that grows monotonically: extending the window reads only the delta, and bytes
-already retrieved are never re-read. A path keeps one detection handle; a seekable caller
-stream records its entry position, reads forward once, and restores once in an
+already in the prefix buffer SHALL NOT be fetched again. The trailer read is outside that
+buffer. It seeks to its block and restores the handle, and a later tier that grows the
+prefix over those bytes fetches them again. A path keeps one detection handle; a seekable
+caller stream records its entry position, reads forward, and restores it in an
 exception-safe exit; a non-seekable source uses the same replay buffer the backend will
 consume.
 
@@ -525,14 +540,18 @@ consume.
 
 ### Requirement: Detection's access shape is bounded, not only its byte count
 
-Detection SHALL perform at most: **one forward-only pass** from the detection origin; then
-at most **one seek towards the end**; then **one read to end**. No backward seek, and no
-re-reading of bytes already retrieved.
+Detection SHALL perform **one forward-only pass** over the prefix from the detection
+origin. Bytes already in the prefix buffer SHALL NOT be fetched again. The trailer tier,
+when it runs, SHALL add one seek towards the end, one read of its block, and one seek
+back to the end of the prefix. Those bytes are not kept, so a later tier that reads
+them as part of the prefix fetches them again. No other backward seek re-reads the
+prefix. The exit restore of a seekable caller stream is the non-consumption contract.
 
-This holds for every source kind. A network range reader pays at most two requests; a
-member stream from a solid block decodes forward once and never rewinds into a block it has
-left; a local file loses nothing. The rule is stated flatly rather than derived from a cost
-model because `StreamCapability` cannot distinguish a cheap seek from an expensive one.
+This holds for every source kind. A network range reader pays for the prefix pass and,
+when the trailer runs, one range for that block; a member stream from a solid block is
+not asked for the trailer, because a rewind would re-decode, and it decodes the prefix
+forward once. The rule is stated flatly rather than derived from a cost model because
+`StreamCapability` cannot distinguish a cheap seek from an expensive one.
 
 Resolving an exact `payload_offset` through a central-directory walk does not fit this
 shape — the directory is reached backwards from the end and points backwards again. Offset
@@ -544,8 +563,11 @@ resolution is therefore separable from identification, and no tier does it today
 | --- | --- | --- | --- |
 | gzip at offset 0, seekable stream | 1 pass | 0 | **0** |
 | ISO far magic, seekable stream | 1 pass | 0 | **0** |
-| Tail tier when enabled (not scheduled yet) | 1 pass | 1 | **0** |
+| Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
+| `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
+
+The backward-seek column does not count the exit restore of a seekable caller stream.
 
 ### Requirement: Structural checks receive a candidate-relative view
 
@@ -838,3 +860,28 @@ evidence strength only, with no error-reporting consequence attached.
 | Probe-only hit at `GUESS`, read fails | Stamped — same reason |
 | Corroborated hit at `PROBABLE`, read fails | Not stamped |
 | A future retune of Brotli's confidence split | Changes reported confidence only; no error behaviour moves |
+
+### Requirement: Refuse a UDIF disk image by name
+
+The system SHALL report a UDIF image as `ArchiveFormat.DMG` / `CERTAIN` / `magic`, and
+`open_archive` SHALL raise `UnsupportedFeatureError` naming UDIF, when the `koly` block
+is at offset 0, or at the start of the last 512 bytes and no earlier step matched.
+Far magic runs first, so an uncompressed image whose disk is an ISO 9660 filesystem
+(`CD001` at 32 769) SHALL be reported as `ISO` and read as one; the trailer is not
+consulted. `format_availability(DMG)` SHALL be `NONE` with an empty `missing`: known,
+not supported, nothing to install. The `.dmg` suffix SHALL NOT select the format.
+
+#### Scenario: UDIF matrix
+
+| Case | Expected |
+| --- | --- |
+| Seekable image, zlib, bzip2 or xz first block, `koly` trailer | `DMG` / `CERTAIN` / `magic`; `open_archive` raises `UnsupportedFeatureError` naming UDIF |
+| `koly` block at offset 0 | `DMG` / `CERTAIN` / `magic`; the same refusal |
+| `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO` / `CERTAIN` / `magic`; the image is read as an ISO |
+| Real zlib, bzip2 or xz stream, no `koly` block | Unchanged |
+| Version other than 4 | Not `DMG` |
+| ZIP whose name ends in `.dmg` | `ZIP` |
+| `format=ZLIB` on a zlib-first image | The first block is read; detection does not run |
+| `format=DMG` or `format="dmg"` | `UnsupportedFeatureError` naming UDIF |
+| Non-seekable source longer than the far-magic window, zlib first block, `koly` at the end | `ZLIB`; the trailer is not seeked to |
+| `format_availability(DMG)` | `NONE`, `missing` empty; in `list_known_formats()`, absent from `list_supported_formats()` |

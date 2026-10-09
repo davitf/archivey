@@ -531,13 +531,17 @@ source raises, with one exception. Where every byte of output is covered by chec
 data itself declares, those checks give the verdict, and an accelerator MAY differ from
 the standard-library decoder on stream-boundary malformations they cannot see:
 
-- for a container member that declares its size and CRC (ZIP), a second stream or
+- for a container member that declares its size and CRC (a ZIP member, a 7z coder
+  under a CRC-checked file), a second stream or
   trailing bytes inside the member's compressed data, which the accelerator MAY read as
   content where the standard-library decoder stops at the first stream's end; the
   declared size and CRC then decide, so output that matches both reads and output that
   breaks either raises;
 - for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
-  when every member's CRC-32 is still checked.
+  when every member's CRC-32 is still checked;
+- for a standalone gzip followed by zero padding, a wrong ISIZE on the last member when
+  the last four bytes of the file equal the length decoded and every member's CRC-32 is
+  still checked.
 
 #### Scenario: accelerator error parity
 

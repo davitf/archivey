@@ -710,7 +710,7 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 | --- | --- |
 | Native streaming ZIP | Pipes, truncated/no-EOCD, multi-volume (P2), UTF-8 flag lie (P4) |
 | Salvage / best-effort read mode | Founding use case; reads already return the recoverable prefix plus the error, but nothing resyncs past damage |
-| Accelerator hang sandbox | Threat-model O5; fuzz with accelerators off until then |
+| Accelerator time bound | Threat-model O5; the Atheris accelerator targets fuzz them, but nothing bounds a decode at run time |
 | OSS-Fuzz onboarding | After the first release; not a precondition for saying "safe" (threat-model O5) |
 | Nested-archive helper / bounded recursion | O6 recipe → maybe a small helper later |
 | Public backend API / plugins | Home for exotic formats without libarchive-in-core |

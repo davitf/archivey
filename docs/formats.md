@@ -35,8 +35,8 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 No pip extra can supply either — listing and metadata work without them, reading bytes
 does not. When no usable RARLAB program is found, archivey uses `unar` 1.10 or later,
 with the limits listed under [RAR](#rar), including a password passed on its command
-line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it. `7z` is never
-used. How to get the binary:
+line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it, or
+`rar_decompressor="none"` to run neither program. `7z` is never used. How to get the binary:
 [Install and extras](install.md#getting-rarlab-unrar-or-rar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
@@ -90,8 +90,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   entries are addressed by disk number — and is rejected with
   ``UnsupportedFeatureError``; rejoin it with the tool that made it.
 - Unsupported compression methods: listing succeeds; reading raises
-  ``UnsupportedFeatureError``.
+  ``UnsupportedFeatureError``. So does an LZMA member with ``lc + lp`` over 4, which
+  7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
+  restore method 2. Under ZipCrypto both read as the password-or-damage
+  ``EncryptionError`` instead, because those settings are encrypted.
+- An end record that disagrees with the central directory is a warning, not an error:
+  an entry count that does not match, an archive comment length past the end of the
+  file, or a directory entry whose name, extra field or comment runs past the
+  directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
+  which ``DiagnosticPolicy.strict()`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
+- An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
+  extraction skips it. The mode is read only when "version made by" says Unix.
 - **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
   Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise falls back
@@ -143,10 +153,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
   the whole archive because a member has no compressed size. A 10 MiB sparse file packs
-  into a 10 KiB tar, 1024:1, and `extract` raises `ResourceLimitError` against the
+  into a 10 KiB tar, 1024:1, and `extract_all` raises `ResourceLimitError` against the
   default `max_ratio` of 1000. `member.is_sparse` tells you which members are sparse
   before you extract. For a sparse archive you trust, raise the limit:
-  `extract(path, dest, limits=ExtractionLimits(max_ratio=...))`, or `max_ratio=None`.
+  `reader.extract_all(dest, limits=ExtractionLimits(max_ratio=...))`, or
+  `max_ratio=None`.
 - **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
   corrupt member header *after the first* as a clean end of archive — no exception is
   raised; iteration just stops early. Archivey backstops this with its end-of-archive
@@ -161,6 +172,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       not raised. When a provably complete listing matters (inventory/dedupe sweeps), set
       that code to `RAISE` in the diagnostic policy (`DiagnosticPolicy.strict()` does) to
       turn the warning into `DiagnosticRaisedError`.
+    - A trailer whose **first block is zero and whose second is not** is reported the
+      same way, `ARCHIVE_EOF_MARKER_MISSING` with
+      `context.expected_marker="second_zero_block"`. The zero block ends the members,
+      so every member is listed and reads normally, as GNU tar ("A lone zero block")
+      and 7-Zip list them; `strict()` raises it. The trailing-data check below then
+      runs from the block after the damaged one. This needs at least one member before
+      the zero block: a file that is only a zero block and then other bytes is not shown
+      to be a TAR archive, and it raises `CorruptionError`.
     - A **non-zero byte after the trailer** — trailing junk, or a second archive
       concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
       default policy and raised under `strict()`. Zero padding passes — `tar` writes
@@ -193,6 +212,25 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   runs about 15 times slower than on real code.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
+- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix lists as
+  `MemberType.OTHER`, so extraction skips it. The mode is trusted for this only when the
+  attribute's `0x8000` Unix-extension bit is set.
+- **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
+  hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
+  in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. The CLI shows
+  the name escaped, as `hi\ud800`. Under the `STRICT` and `STANDARD` policies, extraction
+  escapes the surrogate's UTF-8 bytes as it escapes any name that is not portable:
+  `hi\ud800` is written `hi%ED%A0%80` on every OS, and `presented_name` holds the
+  stored name. Under `TRUSTED` it writes what 7-Zip writes. On Linux and other POSIX
+  systems that is the three-byte UTF-8 form, `hi` followed by `ed a0 80`; a filesystem
+  that accepts only valid UTF-8, such as APFS, refuses those bytes, and the member fails
+  with `ExtractionError`. On Windows it is the exact name. One exception: a unit in
+  U+DC80 to U+DCFF looks the same as an undecodable byte (see
+  [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)), so
+  extraction writes it as that byte, where 7-Zip writes three bytes. `member.raw_name`
+  always holds the stored units. The archive comment is UTF-16 too: a lone surrogate
+  stays in `ArchiveInfo.comment`, so be ready for it if you print the comment, and only
+  a comment with an odd byte count raises `CorruptionError`.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.
@@ -218,6 +256,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   exception is a compressed RAR 1.5 / 2.x comment, which the selected program
   (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
   `comment` is `None`.
+- An entry from a Unix host whose mode is a device, FIFO or socket lists as
+  `MemberType.OTHER`, so extraction skips it. `rar` itself skips such files when
+  archiving.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
   archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
@@ -227,7 +268,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   The default, `"auto"`, uses `unrar` when a usable one is on `PATH` and `unar`
   otherwise; the choice is made once, when the archive is opened, and a read `unar`
   refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
-  so at open. `"unrar"` and `"unar"` use only that program.
+  so at open. `"unrar"` and `"unar"` use only that program. `"none"` runs no program
+  at all, for when you don't want `unrar` or `unar` run on your archives: listing still
+  works, and so does reading a stored (uncompressed) member that is not encrypted,
+  also when it is split across volumes or sits in a solid archive. A compressed or
+  encrypted member, or a split one with a volume missing, raises
+  `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so at open.
   `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
   easy to install on macOS, but it reads less than `unrar`. Archivey runs each `unar`
   once on a small RAR5 archive and does not use one that decodes it wrong, as the
@@ -283,9 +329,36 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   archive whose encryption record has no password check value. RAR 1.5-4 archives may
   legitimately lack the end block, so a cut between their blocks still lists as
   complete.
+- **A damaged end-of-archive block keeps the listing.** When the block after the last
+  member fails its header checksum (RAR 1.5-4 or RAR5), every member is listed and
+  reads normally, and archivey emits `ARCHIVE_EOF_MARKER_MISSING` with
+  `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
+  is what `unrar t` does: each member tests OK, then it reports one error. A damaged
+  header counts as the end block only if it has an end block's shape and the file ends
+  right after it; any other damaged header still raises `CorruptionError`. The damaged
+  block's next-volume flag is not trusted, so a volume set goes on to the next volume
+  only when a member's own header says its data continues there. With encrypted headers
+  this needs the password proven, as above; before that it is `EncryptionError`.
+- **A volume set with a volume missing lists what it has.** Whether the missing volume
+  is the first, one in the middle or the last, the members whose headers are in the
+  volumes present are listed, opened from any of them, and those wholly inside them read
+  normally. A member with data in the missing volume raises `TruncatedError` when read,
+  and so does every member past the gap in a solid archive. The listing then ends with
+  `TruncatedError` naming the missing volumes — the same as a cut file, and what
+  `unrar t` does. A later volume opened on its own by path is read the same way, as a
+  set missing the rest; opened as a stream, with no name to number it, it is still
+  refused with "Need first volume".
+- **A member compressed with a version RAR does not know is unsupported.** A RAR5 member
+  whose compression version is newer than RAR 7's, or a RAR 1.5-4 member whose unpack
+  version is outside 13-29, lists normally and raises `UnsupportedFeatureError` when
+  read, where `unrar` says "Unknown method". A stored member reads whatever it declares.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
-  list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
-  is given the first candidate, so put the right password first for those.
+  list is tried in order and the matching password is used. RAR3/4 records none, so with
+  more than one password archivey judges each by decoding the member: up to 64 KiB of
+  `unrar` output, which a wrong password usually fails, and, when several passwords get
+  that far, the whole member against its CRC. A stored member is checked by decrypting it
+  in archivey and comparing its CRC. The order of the list does not matter, but every
+  wrong password before the right one costs a decode, so put the likely one first.
 - **Partial reads of RAR3/4 encrypted data** emit `ENCRYPTED_MEMBER_UNVERIFIED`. With no
   password check, only the member's CRC at EOF catches a wrong password, and `unrar`
   can return the wrong key's bytes before that: a stored member always, a compressed
@@ -321,13 +394,22 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   flag, and a solid `stream_members()` pass reads everything, because it builds no mask
   at all. A glob in a *directory* component, or a backslash, is refused outright either
   way; the one exception is a backslash in a RAR5 name written on Windows, which
-  `unrar` on Linux and macOS reads as `_`.
+  `unrar` on Linux and macOS reads as `_`. Setting `ArchiveyConfig.rar_decompressor` to
+  `'unar'` reads those members by position instead.
 - **Member names.** RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16
   beside an 8-bit copy. A RAR 1.5-4 name that has only the 8-bit bytes does not say
   which code page they are in. Archivey decodes it with `encoding=` when you pass one.
   Otherwise it tries UTF-8, then cp437 for a member written on DOS or Windows (WinRAR
   writes the OEM code page) and windows-1252 for one written elsewhere. `raw_name` is
-  always the stored bytes. `encoding=` has no effect on a RAR5 name.
+  always the stored bytes. `encoding=` has no effect on a RAR5 name. A RAR 1.5-4
+  UTF-16 name can hold a surrogate without its partner, as a 7z name can: archivey
+  keeps it in `member.name` and extracts it as it does a 7z name (see 7z above).
+  `unrar` 7.00 on Linux instead extracts the name cut at that unit, so `hi\ud800.txt`
+  becomes `hi`. If you read such a member through `unrar`, archivey selects it with
+  `?` in place of each unit. When that pattern also matches an earlier member, the
+  read raises `UnsupportedFeatureError` unless you set
+  `rar_allow_glob_member_concatenation`, as it does for a member name that holds `*`
+  or `?`.
 - **Comments.** A RAR 1.5-4 comment is 8-bit text that does not say which code page
   it is in. Archivey reads it up to the first NUL, as UTF-8 if it is valid and as
   windows-1252 otherwise. The one exception is a RAR 2.9-4 comment flagged as
@@ -357,7 +439,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR
   opened from a `BytesIO` or a file object is copied whole to a temp file (a volume set,
   to a temp directory) on the first member read that needs `unrar`, and removed on close.
-  Stored members of a non-solid archive are read in place and need no copy. The copy is
+  Stored, unencrypted members are read in place and need no copy. The copy is
   bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
   over it, the read raises `ResourceLimitError` before anything is written. Open from a
   path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).
@@ -392,7 +474,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   when the image has a Joliet tree and the two line up, with a
   `member_name_encoding_inferred` diagnostic, and is escaped otherwise (see
   [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)). Joliet
-  names are UTF-16 and ignore `encoding=`.
+  names are UTF-16 and ignore `encoding=`. A Joliet name can hold a surrogate without
+  its partner, as a 7z name can: archivey keeps it in `member.name` and extracts it as
+  it does a 7z name (see 7z above).
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
@@ -415,6 +499,20 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
+
+## Disk images
+
+- A UDIF image (`.dmg`) is recognised by its `koly` block — the last 512 bytes, or
+  the first 12 when an old image puts the block at the start — and refused with
+  `UnsupportedFeatureError`. A compressed image stores its blocks as zlib, bzip2 or
+  xz, so opening one used to extract the first block and treat the rest as trailing
+  data. An uncompressed image whose disk is an ISO 9660 filesystem is reported as
+  that ISO instead: `CD001` at byte 32 769 is checked first, and the image is read
+  as an ISO. Reading a UDIF image itself is not supported. To get at the files,
+  convert or mount the image first (for example with `7z x`, `dmg2img`, or
+  `hdiutil attach` on macOS). A pipe is not rewound. A short image is still
+  refused, because detection has already read through to its end. A longer
+  zlib-first image on a pipe still opens as that stream.
 
 ## Directory
 
@@ -449,6 +547,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   bounded backward peek. Same for the `.xz` size, read from the stream index. For
   multi-member lzip the value is derived by combining per-trailer CRCs with each
   member's uncompressed size so it equals `crc32` of the concatenated payloads.
+- `.lz` is read in lzip format version 1, which every lzip since 1.0 writes. A member
+  in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
+  wherever it is in the file: a member that starts with the `LZIP` magic is never
+  skipped as trailing data.
+- A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
+  not `CorruptionError`: a gzip member with a method other than deflate or a reserved
+  flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
+  dictionary, and a `.Z` file with a code width over 16 bits.
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable
@@ -557,9 +663,12 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 - **Strongest signal first**, and the filename is the last of them; wrong extensions are
   expected. In order: exact magic in the first 4 KiB → an SFX scan behind an executable
   stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
-  a source too small for it never pays) → content probes for the formats with no magic →
-  the extension. A step that matches nothing falls through to the next; nothing is ever
-  rejected for failing an earlier one.
+  a source too small for it never pays) → the 512-byte `koly` block at the end of a
+  seekable source (a UDIF disk image; see Disk images) → content probes for the formats
+  with no magic → the extension. A bzip2 or xz header that is the first block of such
+  an image loses to that block. A step that matches nothing falls through to the next;
+  nothing is ever rejected for failing an earlier one. A pipe is not rewound to read
+  the block at the end.
 - **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
   size — may precede the first real frame, so detection walks past them by their declared
   sizes within the peeked bytes and matches the regular frame behind. Skippable frames

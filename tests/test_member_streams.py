@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-import archivey
 from archivey import (
     ArchiveyError,
     ArchiveyUsageError,
     open_archive,
 )
+from tests.extract_util import open_and_extract
 
 pytestmark = pytest.mark.concurrent_reader
 
@@ -172,7 +172,7 @@ def test_extract_needs_no_capability(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path / "src")
     dest = tmp_path / "out"
     dest.mkdir()
-    report = archivey.extract(root, dest)
+    report = open_and_extract(root, dest)
     assert (dest / "a.txt").read_bytes() == b"aaa"
     assert report.results
 

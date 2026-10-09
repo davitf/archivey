@@ -193,9 +193,10 @@ class ForwardArchiveReader(ABC):
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
         ``members`` selects which members to extract (names/``ArchiveMember``s, or a
-        predicate; ``None`` = all). ``filter`` runs after the universal safety checks and
-        the ``policy`` transform, and may rename/sanitize a member (return a
-        ``.replace()``d copy) or skip it (return ``None``). The call runs under the config
+        predicate; ``None`` = all). ``filter`` runs after the ``policy`` transform and
+        before the safety checks, so it sees unsafe members too; it may rename/sanitize a
+        member (return a ``.replace()``d copy) or skip it (return ``None``), and the
+        safety checks run on what it returns. The call runs under the config
         the reader was opened with; ``limits`` overrides its extraction limits for this
         call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
         summary is the delta for this extraction call.

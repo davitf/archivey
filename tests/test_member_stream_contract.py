@@ -26,7 +26,9 @@ from typing import Callable, Iterator
 import pytest
 
 from archivey import (
+    AcceleratorMode,
     ArchiveStream,
+    ArchiveyConfig,
     StreamNotSeekableError,
     list_known_formats,
     open_archive,
@@ -49,6 +51,9 @@ from tests.sample_archives import (
     skip_unless_runnable,
 )
 from tests.streams_util import (
+    assert_non_integer_read_is_type_error,
+    assert_non_integer_seek_is_type_error,
+    assert_oversized_read_is_overflow_error,
     assert_seek_underflow_matches_bytesio,
     assert_unknown_whence_is_value_error,
 )
@@ -620,6 +625,89 @@ def test_corpus_seek_underflow_matches_bytesio(
             assert_seek_underflow_matches_bytesio(f)
 
 
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_non_integer_seek_is_type_error(
+    spec: _SeekSpec, member_name: str, tmp_path: Path
+) -> None:
+    """``seek(1.5)`` is the caller's ``TypeError`` on every enrolled backend and codec,
+    raised before the stream moves, and the stream reads correctly afterwards."""
+    with _open_enrolled(spec, tmp_path, seekable_members=True) as ar:
+        member = _resolve_file_member(ar, member_name)
+        with ar.open(member) as f:
+            content = f.read()
+        with ar.open(member) as f:
+            assert_non_integer_seek_is_type_error(f, content)
+
+
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_non_integer_read_is_type_error(
+    spec: _SeekSpec, member_name: str, tmp_path: Path
+) -> None:
+    """``read(1.5)`` is the caller's ``TypeError`` on every enrolled backend and codec,
+    raised before anything is read, and the stream reads correctly afterwards."""
+    with _open_enrolled(spec, tmp_path, seekable_members=True) as ar:
+        member = _resolve_file_member(ar, member_name)
+        with ar.open(member) as f:
+            content = f.read()
+        with ar.open(member) as f:
+            assert_non_integer_read_is_type_error(f, content)
+
+
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_oversized_read_is_overflow_error(
+    spec: _SeekSpec, member_name: str, tmp_path: Path
+) -> None:
+    """``read(2**70)`` is the caller's ``OverflowError`` on every enrolled backend and
+    codec, raised before anything is read, and the stream reads correctly afterwards."""
+    with _open_enrolled(spec, tmp_path, seekable_members=True) as ar:
+        member = _resolve_file_member(ar, member_name)
+        with ar.open(member) as f:
+            content = f.read()
+        with ar.open(member) as f:
+            assert_oversized_read_is_overflow_error(f, content)
+
+
+@pytest.mark.parametrize("kind", ["gz", "zip-deflate"])
+def test_stream_members_non_integer_read_is_type_error(
+    kind: str, tmp_path: Path
+) -> None:
+    """A forward-only ``stream_members()`` handle refuses ``read(1.5)`` and
+    ``read(2**70)`` the same way, and the next read still returns the member: no seek
+    can recover it there."""
+    content = os.urandom(60) + b"text " * 40
+    if kind == "gz":
+        path = tmp_path / "data.bin.gz"
+        path.write_bytes(gzip.compress(content))
+    else:
+        path = tmp_path / "data.zip"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("data.bin", content)
+    # Untyped handle: the argument is wrong on purpose.
+    with open_archive(path, streaming=True) as ar:
+        for member, f in ar.stream_members():
+            assert member.is_file and f is not None
+            read: Callable[..., bytes] = f.read
+            with pytest.raises(TypeError):
+                read(1.5)
+            with pytest.raises(OverflowError):
+                f.read(2**70)
+            assert f.read() == content
+
+
+def test_rapidgzip_non_integer_seek_is_type_error(tmp_path: Path) -> None:
+    """The accelerated gzip path: a float offset reached the child and raised a raw
+    ``struct.error``, losing the child."""
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    content = os.urandom(200_000) + b"text " * 200_000
+    path = tmp_path / "data.bin.gz"
+    path.write_bytes(gzip.compress(content))
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    with open_archive(path, seekable_members=True, config=config) as ar:
+        (member,) = [m for m in ar.members() if m.is_file]
+        with ar.open(member) as f:
+            assert_non_integer_seek_is_type_error(f, content)
+
+
 def _assert_forward_only(f) -> None:
     assert f.seekable() is False
     head = f.read(1)
@@ -778,6 +866,7 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("multi-volume", "no corpus builder for split/multi-volume archives"),
     ("tar-lzma-alone", "no corpus builder for tar + LZMA Alone"),
     ("tar-unix-compress", "no corpus builder for tar + unix compress (.tar.Z)"),
+    ("udif", "UDIF is recognised and refused; there is no reader"),
 )
 
 _UNTESTED_FORMATS = {
@@ -785,6 +874,7 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.LZMA_ALONE: "lzma-alone",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE): "tar-lzma-alone",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS): "tar-unix-compress",
+    ArchiveFormat.DMG: "udif",
 }
 
 

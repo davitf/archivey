@@ -9,9 +9,9 @@ worked.
 
 **The bugs it closes.** The consuming code tests these with ``is``, so before coercion an
 unrecognised value was not refused — it silently took the other branch.
-``extract(overwrite="skip")`` fell through to REPLACE and deleted the file the caller
-asked to keep; ``extract(on_error="stop")`` behaved as CONTINUE and swallowed a
-corruption error. Both have a red-green test here.
+``extract(overwrite="skip")`` (the one-shot call, since removed) fell through to
+REPLACE and deleted the file the caller asked to keep; ``extract(on_error="stop")``
+behaved as CONTINUE and swallowed a corruption error. Both have a red-green test here.
 
 The collision guards matter more than they look: coercion is only safe while no two
 members share a normalized spelling. They fail on the day a new value introduces an
@@ -36,7 +36,6 @@ from archivey import (
     ExtractionStatus,
     OnError,
     OverwritePolicy,
-    extract,
 )
 from archivey.cli.choices import cli_choices, from_cli_choice
 from archivey.cli.errors import CliError
@@ -48,6 +47,7 @@ from archivey.internal.enum_args import (
     coerce_enum,
     coerce_enum_collection,
     normalize_spelling,
+    spelling_table,
 )
 from archivey.types import (
     AbortOnStr,
@@ -57,6 +57,7 @@ from archivey.types import (
     OverwritePolicyStr,
     StreamFormat,
 )
+from tests.extract_util import open_and_extract
 
 # Every enum reachable from a public argument.
 PUBLIC_ENUMS: tuple[type[Enum], ...] = (
@@ -103,6 +104,13 @@ def test_no_two_members_share_a_normalized_spelling(enum_cls: type[Enum]) -> Non
                 f"{member.name}"
             )
             seen[spelling] = member.name
+
+
+def test_spelling_table_prefers_preferred_then_the_first_fallback() -> None:
+    # The tie-break ``_lookup`` and the format tables rely on, pinned on the helper
+    # itself because no shipping enum or format has a tie to exercise it.
+    assert spelling_table(fallback=[("a", 1)], preferred=[("A", 2)]) == {"a": 2}
+    assert spelling_table(fallback=[("a", 1), ("A", 2)], preferred=[]) == {"a": 1}
 
 
 @pytest.mark.parametrize("enum_cls", PUBLIC_ENUMS, ids=lambda c: c.__name__)
@@ -176,10 +184,10 @@ def test_overwrite_as_a_string_skips_instead_of_replacing(
     the local file the caller had asked to keep.
     """
     dest = tmp_path / "out"
-    extract(archive, dest)
+    open_and_extract(archive, dest)
     (dest / "hello.txt").write_text("LOCAL EDIT")
 
-    report = extract(archive, dest, overwrite="skip")
+    report = open_and_extract(archive, dest, overwrite="skip")
 
     assert (dest / "hello.txt").read_text() == "LOCAL EDIT"
     assert [r.status for r in report.results] == [ExtractionStatus.NOT_OVERWRITTEN]
@@ -191,9 +199,9 @@ def test_overwrite_as_a_string_agrees_with_the_member(
     results = {}
     for label, value in (("str", "replace"), ("enum", OverwritePolicy.REPLACE)):
         dest = tmp_path / label
-        extract(archive, dest)
+        open_and_extract(archive, dest)
         (dest / "hello.txt").write_text("LOCAL EDIT")
-        report = extract(archive, dest, overwrite=value)
+        report = open_and_extract(archive, dest, overwrite=value)
         results[label] = (
             (dest / "hello.txt").read_text(),
             [r.status for r in report.results],
@@ -227,11 +235,11 @@ def test_on_error_as_a_string_stops_instead_of_continuing(tmp_path: Path) -> Non
     path.write_bytes(bytes(raw))
 
     with pytest.raises(ArchiveyError):
-        extract(path, tmp_path / "stop_str", on_error="stop")
+        open_and_extract(path, tmp_path / "stop_str", on_error="stop")
 
     # The opposite value still reports rather than raising, so the test above is not
     # just asserting that any extraction of this archive fails.
-    report = extract(path, tmp_path / "continue", on_error="continue")
+    report = open_and_extract(path, tmp_path / "continue", on_error="continue")
     assert ExtractionStatus.FAILED in [r.status for r in report.results]
 
 
@@ -248,7 +256,7 @@ def test_extract_refuses_a_bad_spelling_with_a_usage_error(
 ) -> None:
     """Not a ``KeyError`` from a transform table, and not silence."""
     with pytest.raises(ArchiveyUsageError) as exc_info:
-        extract(archive, tmp_path / "out", **{param: value})
+        open_and_extract(archive, tmp_path / "out", **{param: value})
 
     assert param in str(exc_info.value)
 
@@ -258,7 +266,7 @@ def test_extract_refuses_before_it_writes_anything(
 ) -> None:
     dest = tmp_path / "out"
     with pytest.raises(ArchiveyUsageError):
-        extract(archive, dest, overwrite="nonsense")
+        open_and_extract(archive, dest, overwrite="nonsense")
 
     assert not dest.exists() or not os.listdir(dest)
 
@@ -267,7 +275,7 @@ def test_abort_on_accepts_the_spelling_the_cli_advertises(
     archive: Path, tmp_path: Path
 ) -> None:
     """``--abort-on blocked-member`` from ``--help``, pasted into a script."""
-    extract(archive, tmp_path / "out", abort_on=["blocked-member"])
+    open_and_extract(archive, tmp_path / "out", abort_on=["blocked-member"])
 
 
 # --- the same contract on the other entry points -----------------------------------

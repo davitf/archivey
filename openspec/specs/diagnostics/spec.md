@@ -44,9 +44,9 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `PASSWORD_ARGUMENT_UNUSED` | `UnusedArgumentContext`: `kind="unused_argument"`, `archive_name`, `argument="password"`, `format`, `reason` |
 | `SCAN_DIRECTORY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="directory"` |
 | `SCAN_ENTRY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="entry"` |
-| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","end_of_archive_block"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
+| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","central_directory"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
 | `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
-| `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field`, `source`, `value_repr` |
+| `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field` ∈ `{"modified","accessed","created","ctime"}` (the `ArchiveMember` attribute the value would have filled, in every format), `source`, `value_repr` |
 | `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
 | `DIGEST_UNVERIFIABLE` | `DigestContext`: `kind="digest"`, `archive_name`, `member_name`, `member_id`, `algorithm`, `reason` |
@@ -56,9 +56,25 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 
 (`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
 exactly this union — no backend-defined variants. `observed_kind` ∈
-`{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"` for the trailer check,
+`{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"`
+for the trailer check; `"second_zero_block"` for a TAR trailer whose first block is
+zero and ends the members and whose second block is full and non-null, with
+`observed_kind="nonzero"` and both byte counts 512, where every member is listed;
 `"end_of_archive_block"` for a RAR5 archive or volume that ends without its end-of-archive
-block, with `format="rar"`, `observed_kind="absent"` and both byte counts 0;
+block, with `format="rar"`, `observed_kind="absent"` and both byte counts 0, or whose
+end-of-archive block fails its header CRC, with `observed_kind="nonzero"` (a block is
+there, but it is not a valid end block), `observed_bytes` the offset where that block
+starts in its volume (counted from that volume's first byte, unlike member offsets,
+which count across the whole set; the message names the volume), and `expected_bytes` 0;
+`"end_of_central_directory"` for a ZIP end record that does not match the archive, with
+`format="zip"`: `observed_kind="nonzero"` when its entry count differs from the central
+directory's (`observed_bytes` the record's offset, `expected_bytes` 0), or
+`observed_kind="short"` when its comment length runs past the end of the file
+(`expected_bytes` 22 plus the declared comment length, `observed_bytes` the bytes from
+the record to the end of the file); `"central_directory"` for a ZIP central-directory
+entry whose name, extra field or comment length runs past the directory size the end
+record gives, with `observed_kind="nonzero"`, `expected_bytes` that size and
+`observed_bytes` where the entry would end, both counted from the directory's start;
 `"zeros_to_eof"` for the trailing-bytes check, whose `observed_bytes` is the
 offset of the first non-zero byte past the trailer; `"end_of_stream"` for bytes after
 a compressed stream's end, whose `format` is the codec name, such as `"gzip"`, and
@@ -196,7 +212,6 @@ The system SHALL own diagnostic aggregation per lifetime as follows:
 | `open_archive` + auto-detect | Prospective-reader collector created before detection, passed in, owned by successful reader — no seed/merge/replay/copy. Same counters, retained tuple, ids, order, one-time budget charges |
 | Reader-owned stream | Operation-filtered view over the reader collector (no second aggregate retain) |
 | Standalone stream | Own stream-lifetime collector |
-| Top-level `extract()` | One collector for the whole call (see `safe-extraction`) |
 
 Attachment rules:
 
@@ -220,7 +235,7 @@ extracting.
 | Case | Expected |
 | --- | --- |
 | `open_archive` detects conflict, opens reader | One collector/budget; conflict one aggregate slot; visible on reader summary; no copy |
-| Top-level `extract()` detect→open→extract | One collector from before detection; report is watermark range; no phase-local merge |
+| `open_archive` then `extract_all()` | Report is the watermark range of that call; detection and open diagnostics stay on `reader.diagnostics` |
 | Reader-owned stream rewinds | On stream op snapshot + cumulative reader; `CostReceipt`/`ArchiveInfo` unchanged |
 | Extraction hits a member with an invalid timestamp and a blocked member | Timestamp diagnostic in the report summary; the block appears only as a `BLOCKED` result |
 

@@ -19,50 +19,6 @@ results. It is the caller-facing path for putting archive contents on disk.
 
 ## Requirements
 
-### Requirement: One-Shot Extraction API
-
-The top-level API SHALL expose one-shot extraction and return an immutable
-`ExtractionReport` on success:
-
-```python
-archivey.extract(
-    source: str | Path | BinaryIO | Sequence[str | Path | BinaryIO],
-    dest: str | Path,
-    *,
-    policy: ExtractionPolicy = ExtractionPolicy.STRICT,
-    overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-    on_error: OnError = OnError.STOP,
-    format: ArchiveFormat | None = None,
-    password: str | bytes | Sequence[str | bytes] | PasswordProvider | None = None,
-    encoding: str | None = None,
-    on_progress: Callable[[ExtractionProgress], None] | None = None,
-    config: ArchiveyConfig | None = None,
-    limits: ExtractionLimits | None = None,
-) -> ExtractionReport
-```
-
-The call SHALL extract all members, deliberately has no `members=` selector, and
-uses the same source/password/encoding/config precedence, default `STRICT`
-policy, default `ERROR` overwrite policy, and automatic streaming mode for
-non-seekable supported sources as the reader APIs. Subset extraction goes through
-`ArchiveReader.extract_all()`.
-
-The call SHALL use one diagnostic collector and one retention budget for
-detection, backend open, reading, and extraction. The final report uses the
-reader collector's cumulative snapshot/range; phases do not seed, copy, merge, or
-re-retain events. If an always-stop condition or `OnError.STOP` raises, no report
-is returned.
-
-#### Scenario: one-shot extraction matrix
-
-| Case | Expected |
-| --- | --- |
-| `archivey.extract(source, dest)` completes | Returns `ExtractionReport(results=(...), diagnostics=...)` with all detection/open/read/extraction diagnostics from that call |
-| Detection emits one retained conflict and extraction emits one retained failure | One occurrence order and one budget from before detection; no duplicated phase handoff events |
-| Non-seekable supported source | Opens in streaming mode automatically and extracts in one forward pass |
-| Caller wants only some members | Caller opens the archive and calls `reader.extract_all(dest, members=...)`; top-level `extract()` has no selection parameter |
-| `encoding="cp932"` for a TAR with CP932 names | Disk paths match `open_archive(..., encoding="cp932")` followed by `extract_all()` |
-
 ### Requirement: Per-Reader Extract-All Helper
 
 `ArchiveReader.extract_all()` SHALL expose per-reader extraction with optional
@@ -90,7 +46,9 @@ and SHALL NOT take a `config=`; `limits=` overrides only the extraction limits.
 
 Selection, filter ordering, one-pass selected extraction, reader-config
 inheritance, and per-call limits precedence retain their existing contracts.
-There is no single-member `reader.extract()` method.
+There is no single-member `reader.extract()` method, and no top-level
+`archivey.extract()`: opening the archive and calling `extract_all()` is the one way to
+extract (ADR 0019).
 
 #### Scenario: extract_all matrix
 
@@ -102,26 +60,22 @@ There is no single-member `reader.extract()` method.
 
 ### Requirement: Extraction reads limits and strictness from the configuration object
 
-`archivey.extract()` and `ArchiveReader.extract_all()` SHALL accept both
-`config: ArchiveyConfig | None` and `limits: ExtractionLimits | None`. Per-call
-`limits` takes precedence over `config.extraction_limits`, then the
-reader/library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
+`ArchiveReader.extract_all()` SHALL accept `limits: ExtractionLimits | None`. Per-call
+`limits` takes precedence over the reader's `config.extraction_limits`, then the
+library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
 archive-wide ratio/live-ratio, and entry-count guards. Policy, overwrite,
 `on_error`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
-Top-level `extract()` SHALL use the supplied config for its one collector.
-`extract_all()` uses the reader config by default; an explicit config affects
-new-event policy/callback behavior but not the existing collector or retention
-maximum. Both APIs always return `ExtractionReport` with an accumulated immutable
-result tuple on success; there is no no-tracking mode.
+`extract_all()` always returns `ExtractionReport` with an accumulated immutable result
+tuple on success; there is no no-tracking mode.
 
 #### Scenario: limits/config matrix
 
 | Case | Expected |
 | --- | --- |
 | `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; report remains a watermark range over the existing collector |
-| `extract(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` | Cumulative byte limit is 10 GiB |
+| `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` then `extract_all(dest)` | Cumulative byte limit is 10 GiB |
 | Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
 | `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |
 | Reader opened with custom config and `extract_all(dest)` | Reader config, including extraction limits, governs the run |
@@ -153,9 +107,13 @@ is reject/raise, with one rewrite:
   removes bidi override/isolate characters, appends `_` to a Windows-reserved stem
   (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`. It applies the same
   rewrites to a HARDLINK target, which keeps the target inside `dest` for the
-  containment check (the linked member was resolved at listing and does not change),
-  and leaves a SYMLINK target as stored. It returns the member unchanged when nothing
-  needs rewriting.
+  containment check (the linked member was resolved at listing and does not change).
+  A SYMLINK target gets the character and segment rewrites only (`file:stream` →
+  `file_stream`); its root and its `..` components are kept, and one with a drive or
+  UNC root stays refused. A SYMLINK target read only after the filter ran (see
+  `archive-reading`, "Link targets stored as member data are read only when
+  configured") gets the same rewrite, because `extract_all` calls the filter again once
+  the target is read. It returns the member unchanged when nothing needs rewriting.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
@@ -174,15 +132,42 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
 | Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK/HARDLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
 | Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
+| Link-target Windows root | `FilterRejectionError` | SYMLINK or HARDLINK whose `link_target` (after any re-root) starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a SYMLINK target rooted by a single `\` (`\foo`); a HARDLINK target so rooted is refused, as a member of that name is |
 | Hardlink escape | `FilterRejectionError` | HARDLINK whose target path resolves outside `dest` |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
 
+**A link target with a Windows root is refused on every OS.** Windows resolves a
+drive or UNC target outside `dest` and refuses it as an escape; POSIX would create it as
+a relative link into a directory named `C:`. The maintainer ruled on 2026-10-06 to
+refuse it on POSIX too, for the portability rule: the same archive SHALL give the same
+outcome on any OS, and Windows already refuses drive paths. The rule applies to every
+format, because it reads the target string. It covers a HARDLINK target as well:
+`STANDARD` and `TRUSTED` re-root a rooted one first, so it refuses `STRICT`'s `C:/x`
+and a drive-relative `C:x`, which is also what a member of that name gets.
+
+The rule has one named exception, for a SYMLINK target only. A SYMLINK target rooted
+by a single `\` (`\foo`) SHALL extract on POSIX, where it is a relative link to a file
+named `\foo`, although Windows resolves it to the drive root and refuses it as an
+escape. On POSIX a backslash is an ordinary filename character, so refusing the target
+would block an archive that is valid there, and ADR 0013 rules that extracting beats
+refusing. The exception holds only where the `\` stays literal: `STRICT` and `STANDARD`
+write a TAR `\` as `/` (see Portable-name enforcement), so there `\foo` is the rooted
+`/foo` and is refused as an escape, as `..\x` is; `TRUSTED` keeps it. A HARDLINK target
+names a member of the same archive, and a member named `\x` is refused under `STRICT`
+and re-rooted under `STANDARD` and `TRUSTED`. So a HARDLINK target rooted by a single
+`\` SHALL get what that member gets: `STRICT` refuses it on every OS, and the other two
+re-root it first. A Windows symlink or junction's target is normalized before this
+check in ZIP, 7z and RAR5 alike (`\` to `/`, the `\??\` prefix dropped, `UNC\` to
+`//`), so `\??\C:\Windows` is checked as `C:/Windows`.
+
 **Bidi overrides are rejected by the *policy*, not universally.** Every other
-constraint in this requirement makes the **write itself** dangerous or impossible — it
-escapes the destination, carries a NUL the OS truncates on, or names a device. A bidi
-override does neither: the member lands inside `dest` under exactly its stored bytes, and
-what is compromised is the name a person **reads back afterwards**. That is a
-presentation property, and presentation is the axis `ExtractionPolicy` owns.
+constraint in this requirement meets one of two criteria: the **write itself** is
+dangerous or impossible — it escapes the destination, carries a NUL the OS truncates on,
+or names a device — or the **outcome would differ by OS**, as for a link target with a
+Windows root. A bidi override meets neither: the member lands inside `dest` under
+exactly its stored bytes, and what is compromised is the name a person **reads back
+afterwards**. That is a presentation property, and presentation is the axis
+`ExtractionPolicy` owns.
 
 The rejection therefore lives in the portable-name policy below, which means
 `ExtractionPolicy.TRUSTED` — defined as *faithful bytes, no name rejection or rewrite* —
@@ -231,8 +216,14 @@ read back.
 | `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
 | `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
-| Name with lone surrogate unencodable by the platform filesystem encoding | `FilterRejectionError` before path resolution; never raw `UnicodeEncodeError` |
-| SYMLINK/HARDLINK `link_target` with `\x00` or unencodable surrogate | `FilterRejectionError`; never raw `ValueError`/`UnicodeEncodeError` |
+| Name with a lone surrogate outside U+DC80–U+DCFF (`hi\ud800`) | Extracts: `hi%ED%A0%80` under `STRICT`/`STANDARD`; under `TRUSTED` POSIX writes `hi` + `ed a0 80`, Windows the exact name; never raw `UnicodeEncodeError` |
+| SYMLINK/HARDLINK `link_target` with `\x00` | `FilterRejectionError`; never raw `ValueError` |
+| SYMLINK `link_target` `C:/Windows`, `C:/abs/y`, `t:stream` or `//srv/share`, any policy, any OS | `FilterRejectionError` ("Symlink target is a Windows drive or UNC path"); no link written |
+| HARDLINK `link_target` `C:/x` under `STRICT`, or `C:x` at any policy, any OS | `FilterRejectionError` ("Hardlink target is a Windows drive or UNC path"); no link written |
+| SYMLINK `link_target` `\foo`, any policy, POSIX | Extracted: a link to the file `\foo` beside it |
+| HARDLINK `hl` → `\x` beside a member `\x`, any OS | `STRICT`: both `FilterRejectionError` (`hl`: "Hardlink target is an absolute path"); `STANDARD`/`TRUSTED`: both re-rooted and extracted |
+| SYMLINK `link_target` `file:stream` or `sub/NUL` with `filter=sanitize_names`, `STANDARD` | Extracted, pointing at `file_stream` or `sub/NUL_`; `C:/x` is still refused; the same with `read_link_targets=False` on a ZIP |
+| Windows symlink or junction stored as `\??\C:\Windows`, `\??\UNC\srv\share` or `..\up\x` (ZIP, 7z, RAR5) | Lists as `C:/Windows`, `//srv/share`, `../up/x`; the first two refused as above, the third as an escape |
 | Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
 | `MemberType.OTHER` | `FilterRejectionError`; all policies |
 
@@ -264,8 +255,15 @@ per-member failure result. On filesystems that accept arbitrary bytes (typical L
 the member extracts normally; the refusal is an environment outcome, not a property of
 the archive.
 
+Windows reports the same two refusals as `winerror` 123 (`ERROR_INVALID_NAME`) and 206
+(`ERROR_FILENAME_EXCED_RANGE`); extraction SHALL type those the same way. Windows also
+refuses to create a symlink with `winerror` 1314 (`ERROR_PRIVILEGE_NOT_HELD`) when the
+process lacks the privilege; that SHALL be a typed `ExtractionError` as well, with its own
+message naming the missing privilege.
+
 `EINVAL` is deliberately not auto-translated: it is a broad errno that can arise from
-unrelated syscalls during extraction.
+unrelated syscalls during extraction. The Windows codes are matched on `winerror`, not
+on the errno CPython maps them to (`EINVAL`, `ENOENT`).
 
 Renaming the member to a representable name instead of failing is deliberately not part
 of this requirement — it belongs to the future opt-in `SANITIZE` extraction policy
@@ -283,6 +281,54 @@ of this requirement — it belongs to the future opt-in `SANITIZE` extraction po
 
 - **WHEN** the same member is extracted on a filesystem that accepts arbitrary name bytes
 - **THEN** the member extracts successfully with its bytes preserved
+
+### Requirement: Lone surrogates in a member name
+
+A member name or link target can hold a surrogate without its partner (U+D800–U+DFFF):
+7z names, RAR 1.5-4 UTF-16 names and Joliet names are UTF-16 code units, and NTFS allows
+any unit in a name. Listing and reading keep the unit in the name under every policy, and
+the rule below is the same for every format.
+
+Under `STRICT` and `STANDARD` such a name is not portable, and the portable-name rule
+(O7) SHALL escape it as it escapes undecodable bytes: each lone surrogate outside
+U+DC80–U+DCFF is taken as its three UTF-8 bytes (`surrogatepass`) and each byte is
+written `%XX`, so `hi\ud800` is written `hi%ED%A0%80` on every OS and
+`presented_name` records the stored name. Under `TRUSTED` extraction SHALL write the
+name as 7-Zip 23.01 does: on POSIX each such surrogate as its three-byte UTF-8 form
+(U+D800 becomes the bytes `ed a0 80`), on Windows the exact name. That on-disk spelling
+is not a rename, so `presented_name` stays unset for it. A link target is written the
+`TRUSTED` way under every policy, as O7 does not rewrite link targets. Under `STRICT`
+and `STANDARD` a link to a member whose name was escaped therefore points at the
+unescaped spelling and dangles, as it already does for undecodable bytes; on a
+filesystem that accepts only UTF-8, such as APFS, creating that link fails.
+
+U+DC80–U+DCFF SHALL keep its `surrogateescape` meaning, one undecodable byte, for every
+format: it is written as that byte, or percent-escaped by the portable-name rule. The
+path checks run on the name the disk spelling gives, before the portable-name rule, and
+a rejection by them names the stored member name. An error raised while writing the
+member, a deferred hardlink included, names the name from before the disk spelling:
+the stored name under `TRUSTED`, the escaped one under `STRICT` and `STANDARD`. Every
+error names a link target as stored, never in its disk spelling. The collision key and
+the overwrite policy see the spelling that reaches disk. Under every policy a lone
+U+D800 and a name whose undecodable bytes are `ed a0 80` are therefore one file: both
+are `hi%ED%A0%80` under `STRICT` and `STANDARD`, and both are the bytes under
+`TRUSTED`. A name that cannot be encoded even so is a `FilterRejectionError`, never a
+raw `UnicodeEncodeError`.
+
+#### Scenario: lone surrogate matrix
+
+`tests/test_sevenzip_surrogate_names.py` compares both policies with the `7z` tool;
+`tests/test_utf16_surrogate_names.py` checks that RAR 1.5-4 and Joliet names extract to
+the same tree.
+
+| Case | Expected |
+| --- | --- |
+| `hi\ud800.txt` under `STRICT` / `STANDARD`, any OS | Written `hi%ED%A0%80.txt`; `EXTRACTED`; `presented_name == "hi\ud800.txt"` |
+| `hi\ud800.txt` under `TRUSTED` on POSIX | Written as `hi` + `ed a0 80` + `.txt`, as 7-Zip writes it; `presented_name` unset |
+| `hi\ud800.txt` under `TRUSTED` on Windows | Written under the exact name |
+| `hi\ud800` and `hi\udced\udca0\udc80` in one archive, any policy | One file; the second goes through the `OverwritePolicy` |
+| `lo\udc80.txt` | `lo%80.txt` under `STRICT` / `STANDARD`; the byte `0x80` under `TRUSTED`, where 7-Zip writes `ed b2 80` |
+| `\ud800/../x` | `FilterRejectionError` whose `member_name` is `\ud800/../x` |
 
 ### Requirement: Skip non-current members by default
 
@@ -404,9 +450,11 @@ waiting are removed unresolved and the run stops with `ResourceLimitError`. Test
 The system SHALL support TAR-style hardlinks through the extraction coordinator as
 a pull-based sink over reader streams. Ordinary FILE/DIR/SYMLINK members are
 written as reached; each written FILE path is recorded under its source. A
-HARDLINK whose source already has recorded paths tries `os.link()` against them
-in order; if all fail with cross-device `EXDEV`, the coordinator falls back to
-`shutil.copy2()` and records the copy for later links on that device.
+HARDLINK whose source already has recorded paths tries `os.link()` against them,
+newest first. If all fail with cross-device `EXDEV`, or one fails with `EMLINK` at the
+filesystem's link-count limit, the coordinator falls back to a copy and records the copy
+for later links. The search stops at the first path at the limit, so the cost of a link
+does not grow with the number of links before it.
 
 When a selected HARDLINK's source was excluded by `members` or `filter`, the
 system MUST NOT materialize the excluded source at its own destination. It SHALL
@@ -428,7 +476,7 @@ source is written, with one read and one bomb-limit count for the source bytes.
 
 | Case | Expected |
 | --- | --- |
-| HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` |
+| HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` or all-`EMLINK` |
 | Selected hardlink source was excluded but recoverable | Source content appears at selected link path(s); excluded source path is never created |
 | First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `NOT_OVERWRITTEN`; content moves to the next allowed link; all skipped means no write |
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
@@ -502,12 +550,29 @@ moves the entry itself, so a destination symlink is replaced rather than followe
 SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fresh,
 because neither can be staged: a symlink MUST be created at its final name for the
 escape re-validation's cycle check to resolve, and a directory cannot be renamed
-over a non-directory at all. Replacing an existing directory with any member type
-removes the directory first, and only an **empty** one: a directory that holds entries
-SHALL NOT be removed, and the replacing member SHALL fail with an `ExtractionError`
-governed by `OnError` (as GNU tar does without `--recursive-unlink`). Removing a tree
-would take the members this run wrote into it, which would still report `EXTRACTED`, and
-the caller's own files when the directory was already there.
+over a non-directory at all. `RENAME` is the exception for a DIRECTORY member: when its
+destination holds a file or a symlink (a symlink to a directory included, as it is never
+written through), that entry SHALL NOT be removed, and the directory SHALL be written
+under a derived name (see the cross-platform name-safety requirement). Every later member
+whose destination lies inside the directory's requested path SHALL follow it: `dd/f` is
+written at `dd (1)/f`, and reports `requested_path` `dd/f` and `path` `dd (1)/f`. A later
+DIRECTORY member with the directory's own name merges into `dd (1)/`, as directories
+merge. A non-directory member with that name is not inside the directory: it resolves its
+own collision from the name it asked for (`dd (2)`, not `dd (1) (1)`).
+
+Replacing an existing directory with any member type removes the directory first, and
+only an **empty** one: a directory that holds entries SHALL NOT be removed, and the
+replacing member SHALL fail with an `ExtractionError` governed by `OnError` (as GNU tar
+does without `--recursive-unlink`). Removing a tree would take the members this run wrote
+into it, which would still report `EXTRACTED`, and the caller's own files when the
+directory was already there. When a member of this run wrote the removed directory, under
+any spelling that reaches it (through a directory symlink the archive created, under every
+policy, or a case variant on a case-insensitive filesystem, under `STRICT` and `STANDARD`),
+that member's result SHALL be revised to `OVERWRITTEN`. Under `TRUSTED` the coordinator keys
+on the exact path and defers to the local OS (see the O2 collision requirement), so a case
+variant there is not recognized and the earlier result is not revised. Its `collided_with` stays `None`: DIRECTORY members are not claimed in the
+collision map, so this revises a result and is not a collision event, and
+`AbortOn.NAME_COLLISION` does not fire.
 
 A DIRECTORY member whose destination is a directory that was there before the run (the
 destination root, for a `./` member, when the call did not create it, or any directory
@@ -558,15 +623,15 @@ name-safety requirement.
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
 | `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
 | `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
+| `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`, with `collided_with=None`; no collision abort |
 | Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
 
 ### Requirement: Extraction as a Composable Module
 
 The system SHALL implement safe extraction in a dedicated coordinator module
-separate from reader backends and format detection. Both `archivey.extract()` and
-`ArchiveReader.extract_all()` delegate to the same `ExtractionCoordinator`, which
-drives one unified forward pass over `(member, stream)` pairs in streaming and
-random-access modes.
+separate from reader backends and format detection. `ArchiveReader.extract_all()`
+delegates to `ExtractionCoordinator`, which drives one unified forward pass over
+`(member, stream)` pairs in streaming and random-access modes.
 
 The coordinator SHALL own member selection, transient metadata transforms, user
 filter application, `BombTracker` calls, progress callbacks, result accumulation,
@@ -584,7 +649,7 @@ not detach streamed members from backend updates.
 
 ### Requirement: Enforce Cumulative Max-Extracted-Bytes Limit
 
-The system SHALL track total bytes written across a single `extract()` or
+The system SHALL track total bytes written across a single
 `extract_all()` call and raise `ResourceLimitError` at the chunk boundary where
 the total exceeds `max_extracted_bytes`. The default is 2 GiB
 (2,147,483,648 bytes). Callers override it through `ExtractionLimits`; `None` via
@@ -593,6 +658,14 @@ the total exceeds `max_extracted_bytes`. The default is 2 GiB
 The limit SHALL be tracked by one `BombTracker` per extraction call. It is a
 global resource guard: when it trips, extraction halts and no later members are
 processed regardless of `OnError`.
+
+Bytes a hard link writes as a copy (across a device boundary, or past the filesystem's
+link-count limit) SHALL count toward the limit. A declared link count can drive real
+writes, one copy per limit's worth of links, so the bytes copied past the link-count
+limit SHALL also count toward the archive-wide `max_ratio` guard: a small archive must
+not write far more than its size by declaring many links to one member. A cross-device
+copy SHALL NOT count toward either ratio, because it depends on where the caller extracts
+to, not on the archive, and neither copy counts toward the per-member ratio.
 
 A copy that a streaming pass takes back as superseded SHALL stop counting toward the
 limit once no entry on disk holds its bytes ("Skip non-current members by default"). The
@@ -631,7 +704,7 @@ under `OnError.CONTINUE`; global guards remain always-stop.
 ### Requirement: Bomb Protection Scope Limited to Extraction Paths
 
 The system SHALL apply `ExtractionLimits` bomb guards only during
-`archivey.extract()` and `ArchiveReader.extract_all()`. `ArchiveReader.read()`
+`ArchiveReader.extract_all()`. `ArchiveReader.read()`
 and `ArchiveReader.open()` return decompressed data/streams without byte, ratio,
 or entry-count enforcement; callers are responsible for guarding direct reads.
 Listing materialization caps are separate (`ListingLimits` in `archive-reading`)
@@ -692,7 +765,7 @@ frequency is bounded by the extraction copy chunk size; when `on_progress` is
 
 | Case | Expected |
 | --- | --- |
-| `extract(..., on_progress=cb)` | `cb` called with cumulative bytes, per-member bytes, and counters |
+| `extract_all(..., on_progress=cb)` | `cb` called with cumulative bytes, per-member bytes, and counters |
 | Large FILE member streamed | `cb` invoked multiple times with non-decreasing `member_bytes_written`, ending at the member `size` |
 | FILE member smaller than one copy chunk | `cb` invoked once with `member_bytes_written == size` |
 | Directory / symlink / hardlink member | Single report with `member_bytes_written == 0` |
@@ -724,7 +797,7 @@ class ExtractionResult:
     failure_group_size: int | None = None
     collided_with: Path | None = None
 
-class ExtractionStatus(str, Enum):
+class ExtractionStatus(StrEnum):
     EXTRACTED = "extracted"
     NOT_OVERWRITTEN = "not_overwritten"
     SUPERSEDED = "superseded"
@@ -796,8 +869,11 @@ different guarantee and is not required here.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and
-`requested_path != path and status == EXTRACTED` marks an `OverwritePolicy.RENAME`
-(see the cross-platform name-safety requirement). On an `OVERWRITTEN` result it
+`requested_path != path and status == EXTRACTED` marks a member that
+`OverwritePolicy.RENAME` moved (see the cross-platform name-safety requirement): either
+the member was renamed itself, or it lies inside a DIRECTORY member that was, and kept
+its path relative to that directory. An anti-item inside a renamed directory reports the
+same pair. Its `path` is where it deleted, not a rename. On an `OVERWRITTEN` result it
 retains the destination the member did write to, so a caller can join it to the
 replacing member's `path`.
 
@@ -914,6 +990,36 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |
 
+### Requirement: A listing that ends in damage extracts its prefix, then raises
+
+When an archive's listing ends in terminal damage (`CorruptionError` / `TruncatedError`
+after a recovered prefix, per `archive-reading`), `extract_all()` SHALL
+write the members listed before the damage, in either access mode and for every format,
+and then raise the listing's own error, under either `OnError`. No report is returned, so
+the members after the damage, which were never listed, have no result. This is the order
+`stream_members()` gives (the prefix, then the error), and what unrar and 7-Zip do.
+Ruled by the maintainer (davitf, 2026-10-03); the rationale and the rejected
+alternatives are in `dev-docs/formats/rar.md` §6.
+
+The listing limits SHALL still be checked before anything is written. A hardlink in the
+prefix whose source was not selected SHALL still be completed by the second pass before
+the raise; a hardlink only points back, so its source is in the prefix. A member
+selection that the prefix satisfies SHALL NOT stop the pass before the damage, and its
+entries that match nothing in the prefix SHALL NOT be reported unmatched.
+
+#### Scenario: damaged listing matrix
+
+Pinned by `tests/test_extraction_damaged_listing.py`. A 7z or ZIP listing is one index
+read at open, so damage there fails the open.
+
+| Case | Expected |
+| --- | --- |
+| RAR4 / RAR5 / TAR listing cut or corrupt after N members, random access or streaming, listed first or not | The N members written, then the listing's error; no report |
+| Same, `members=` naming one prefix member | That member written, then the listing's error |
+| Same, `members=` naming a prefix hardlink whose source is not selected | The link written with the source's bytes, then the listing's error |
+| Same, `members=` naming a prefix member and an entry that matches nothing, `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | The prefix member written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
+| Same, prefix over a listing limit | `ResourceLimitError`; nothing written |
+
 ### Requirement: ExtractionReport is an immutable operation result
 
 The system SHALL define:
@@ -949,9 +1055,14 @@ Anything that would decompress or scan payload to answer (for example foreign
 decompressor streams) yields `None`. For compressed containers this is compressed
 size; for uncompressed containers the resulting ratio is about 1:1 and harmless.
 
-The ratio SHALL be `cumulative_bytes_written / compressed_source_size`, checked
-in `BombTracker.count()` using the same `max_ratio` and cumulative
-`ratio_activation_threshold` as other ratio guards. If `compressed_source_size`
+The ratio SHALL be `archive_output / compressed_source_size`, where
+`archive_output` is the decoded output plus the bytes a hard link writes as a
+copy past the filesystem's link-count limit ("Enforce Cumulative
+Max-Extracted-Bytes Limit"); a cross-device copy is not part of it. It is
+checked in `BombTracker.count()` and, for those copies, in
+`BombTracker.count_copy()`, using the same `max_ratio` and cumulative
+`ratio_activation_threshold` as other ratio guards. When copies are part of it,
+the error message gives the decoded and copied bytes separately. If `compressed_source_size`
 is absent, the static archive-wide check is skipped. Per-member and archive-wide
 ratios are independent; either may trip first. A tripped archive-wide ratio
 SHALL raise `ResourceLimitError`.
@@ -962,7 +1073,7 @@ SHALL raise `ResourceLimitError`.
 | --- | --- |
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
 | Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
-| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip |
+| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator |
 
@@ -1019,9 +1130,10 @@ This covers compressed archives from non-seekable pipes and seekable opaque
 streams whose size is not cheaply knowable. Backends wrap the stream source in
 the counting reader exactly when the static denominator is absent.
 
-The ratio SHALL be `cumulative_bytes_written / compressed_bytes_consumed`, checked
-after cumulative output crosses `ratio_activation_threshold` using the same
-`max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
+The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
+`archive_output` as in the static archive-wide requirement (decoded output plus
+link-count-limit copies), checked after it crosses `ratio_activation_threshold`
+using the same `max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
 under `OnError.CONTINUE` with `ResourceLimitError`. The live path complements
 static checks and is not used when member compressed sizes or a cheap outer
 source size provide a denominator; whichever available guard trips first wins.
@@ -1053,7 +1165,13 @@ directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`.
 and the location are fixed when the earlier member is written, and a collision SHALL be
 resolved at that location, so repointing `s` later does not move it. Such a collision
 SHALL apply `OverwritePolicy` deliberately and record the outcome on both members'
-`ExtractionResult`. `REPLACE`
+`ExtractionResult`. DIRECTORY members are not claimed in the map, as a directory merges
+into one already there. The coordinator looks a DIRECTORY member up in the map when its
+destination holds a non-directory entry. If a member of this run claimed that entry, the
+DIRECTORY member collides with it under every `OverwritePolicy`, as a file member
+would: `collided_with`, `AbortOn.NAME_COLLISION` and the `REPLACE` revision of the
+earlier member to `OVERWRITTEN` all apply. On a case-sensitive filesystem a file `Foo` and a
+directory `foo/` do not share an entry, so they do not collide. `REPLACE`
 SHALL NOT silently merge distinct members on case-insensitive filesystems: the earlier
 member's result SHALL be revised to `ExtractionStatus.OVERWRITTEN` so the merge is
 observable in `results`. Under `TRUSTED` the coordinator SHALL key on the exact `Path`
@@ -1070,29 +1188,56 @@ not treated as a suffix); a multi-suffix name (`archive.tar.gz`) → `archive.ta
 first name free **both on disk and in the collision map**, in member-processing order.
 
 **Portable-name enforcement (O3/O4).** Windows-reserved device names (`CON`, `PRN`, `AUX`,
-`NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`; case-insensitive, with or without extension) and `:`
-within a segment are **unsafe** (device capture / NTFS alternate data stream) and SHALL be
-rejected under `STRICT` and `STANDARD` on **every** platform. A trailing dot or space is a
-legitimate macOS/Linux name that Win32 merely trims; rejecting it would halt a legitimate
-archive, so under `STRICT` each path segment's trailing dot/space SHALL be **stripped** to
-its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on every platform,
+`NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, `COM¹`–`COM³`, `LPT¹`–`LPT³`, `CONIN$`, `CONOUT$`;
+case-insensitive, with or without extension) and `:` within a segment are **unsafe**
+(device capture / NTFS alternate data stream) and SHALL be rejected under `STRICT` and
+`STANDARD` on **every** platform, in each segment of the member name and in each segment
+of a SYMLINK's `link_target` (on Windows a link to `file:stream` names an alternate data
+stream, and one to `NUL` the device). `TRUSTED` checks neither. A trailing dot or space
+is a legitimate macOS/Linux name that Win32 merely trims; rejecting it would halt a
+legitimate archive, so under `STRICT` each path segment's trailing dot/space SHALL be
+**stripped** to its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on
+every platform,
 collision-tracked as above, and recorded as `ExtractionResult.presented_name`; a
 segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
 rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
 the OS allows).
+
+**Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
+literal character (TAR) SHALL be written as `/` on every platform, as Windows writes it, and
+recorded as `ExtractionResult.presented_name`. A link target gets the same rewrite, so a
+symlink to another member names the path that member was written at, and a target such as
+`..\x` is checked as the `../x` it becomes. A hard link still resolves to the member the
+reader matched to its stored target; the rewrite does not change which member that is. The
+path-safety checks SHALL run again on a member the policy rewrote, so a rewrite that changes
+the directories a path passes through cannot bypass them. `TRUSTED` writes the `\` as the
+local OS does. On Windows, under every policy, a symlink's target SHALL be created with
+each `/` written as `\`, so a relative target such as `sub/file` resolves there as it does
+on POSIX; errors still name the target as stored.
+
+**Read-only files.** A member whose stored mode has no write permission leaves a file
+Windows will not replace or delete, or a directory it will not remove. On Windows, when a
+later member of the run replaces or an anti-item removes a regular file or an empty
+directory this run wrote read-only, extraction SHALL clear the read-only attribute first,
+so `REPLACE` gives the result it gives on POSIX. The attribute is put back on a file's other
+hard links. A read-only entry that was in the destination before the run is not changed.
 
 **Portable-name representability (O7).** Under `STRICT` and `STANDARD`, a name carrying
 bytes that cannot be represented portably on the destination filesystem SHALL be normalized
 to a deterministic, reversible portable spelling — each non-UTF-8 byte (a surrogateescape
 char U+DC80–U+DCFF mapping to raw byte 0x80–0xFF) percent-escaped as `%XX` (uppercase hex),
 and a literal `%` escaped as `%25` — applied on **every** platform, collision-tracked as
-above, and recorded as `ExtractionResult.presented_name`. The scheme SHALL touch only
-non-decodable bytes; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
+above, and recorded as `ExtractionResult.presented_name`. The characters Win32 refuses in a
+name, `<`, `>`, `"`, `|`, `?`, `*` and the controls 0x01–0x1F, SHALL be escaped the same
+way, as `%XX` of their code point (`a?b` → `a%3Fb`), so a name POSIX could store gives the
+tree Windows gives. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
+touch nothing else; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a
 public un-escape API is out of scope. Either way the outcome SHALL be deterministic and
-typed (never a bare `OSError`); a name that cannot be `os.fsencode`d at all remains
-rejected by the universal check.
+typed (never a bare `OSError`). A lone surrogate outside U+DC80–U+DCFF is escaped as
+its three UTF-8 bytes (`hi\ud800` → `hi%ED%A0%80`); "Lone surrogates in a member name"
+has the detail and the `TRUSTED` spelling.
 
 `ExtractionResult.requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution. A rename SHALL be observable as `requested_path != path and
@@ -1107,22 +1252,27 @@ rewritten name then collides and is renamed).
 | --- | --- | --- |
 | `README` and `readme` in one archive | Second is a collision event on all platforms; `OverwritePolicy` applied; `requested_path` recorded | Local OS behavior (both extract on a case-sensitive FS) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
-| Member named `NUL` / `COM1` | Rejected on all platforms (typed error) | Written if the OS allows |
+| Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`; `STANDARD` keeps faithful | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
+| TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
+| SYMLINK whose `link_target` has a segment with `:` (`file:stream`) or a reserved name (`sub/NUL`) | Rejected on all platforms | Local OS behavior |
 | Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
+| `what?.txt`, `a*b`, a name with a control byte | Written as `what%3F.txt`, `a%2Ab`, `%XX` per control; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
+| Symlink `l -> sub/file` (on Windows) | Created with target `sub\file`; resolves as on POSIX | Same |
+| A member stored `0o444`, then a later member of the same name under `REPLACE` | Replaced on every OS | Same |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |
 | Filter rename, then a portable rewrite | `member.name`, `presented_name`, and `path.name` are all three spellings | Faithful bytes attempted |
 
 ### Requirement: Abort-on-event opt-in for extraction
 
-`extract()` and `extract_all()` SHALL accept `abort_on: Collection[AbortOn] = ()`,
+`extract_all()` SHALL accept `abort_on: Collection[AbortOn] = ()`,
 halting the whole extraction the first time a named event occurs.
 
 ```python
-class AbortOn(str, Enum):
+class AbortOn(StrEnum):
     BLOCKED_MEMBER = "blocked_member"
     NAME_COLLISION = "name_collision"
     NAME_SANITIZED = "name_sanitized"
@@ -1185,7 +1335,7 @@ expresses "raise on the first failure".
 
 ### Requirement: Dry-run extraction
 
-`extract_all()` and `extract()` SHALL accept `dry_run: bool = False`, read for its
+`extract_all()` SHALL accept `dry_run: bool = False`, read for its
 truthiness like the other boolean flags.
 
 With `dry_run=True`, the extraction SHALL run the same pass as a real extraction into

@@ -21,7 +21,7 @@ behaviour and links the row.
 | Digests | None listed. A frame's content checksum, when present, is checked on read; the legacy LZ4 stream has none |
 | Metadata | None beyond the shared fields |
 | Truncation | Raised, as `TruncatedError`, except for a legacy LZ4 stream cut exactly between blocks, which reads short with no error (§2.3) |
-| Refuses | zstd: a frame whose window is over `DecoderLimits.max_decoder_memory`, as `ResourceLimitError`, or over libzstd's 2 GiB ceiling, as `UnsupportedFeatureError` (§4). LZ4: nothing |
+| Refuses | zstd: a frame whose window is over `DecoderLimits.max_decoder_memory`, as `ResourceLimitError`, or over libzstd's 2 GiB ceiling, as `UnsupportedFeatureError` (§4); a frame that needs a dictionary ("Dictionary mismatch"), as `UnsupportedFeatureError`. LZ4: a frame whose version bits are not `01` (`ERROR_headerVersion_wrong`), as `UnsupportedFeatureError` |
 
 **Three things a reader might expect and will not find.** `member.size` is `None` for a
 frame that records its content size. A zstd or LZ4 frame written without a checksum can

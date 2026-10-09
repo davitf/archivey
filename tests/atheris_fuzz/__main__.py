@@ -87,6 +87,7 @@ def _run_worker(args: argparse.Namespace) -> int:
         seeds=list(spec["seeds"]()),
         fixup=spec.get("fixup"),
         per_input_timeout=spec.get("per_input_timeout"),
+        libfuzzer_args=spec.get("libfuzzer_args", ()),
         smoke=args.smoke,
     )
 
@@ -150,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
                         skip = " (skipped: RAR backend not registered)"
                     else:
                         skip = " (skipped: RARLAB unrar not on PATH)"
+                elif name.endswith("_accel"):
+                    skip = " (skipped: accelerator unavailable)"
                 else:
                     skip = " (skipped: codec backend unavailable)"
             print(f"{name:20s} default={DEFAULT_BUDGETS[name]}s{skip}")

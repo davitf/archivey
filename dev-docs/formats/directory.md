@@ -278,7 +278,8 @@ to:
   swapped parent, fails with `OSError(ESTALE)` ("was replaced since the directory was
   listed; not scanning it"). On a filesystem that reports no identity (`st_ino` 0), the
   subdirectory is opened one component at a time from the root, so a swapped parent
-  still fails. Either way the listing fails, as a refused read fails the read.
+  still fails. The last component is opened `O_DIRECTORY` too, and with no identity
+  that is the only refusal of a non-directory swapped in. Either way the listing fails, as a refused read fails the read.
 - **swap a file for a FIFO**, so the read blocks. The open does not block and refuses a
   handle that is not a regular file.
 - **replace or resize a file after the walk**, so a read returns data the listing never

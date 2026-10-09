@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, Literal, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, overload
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -27,7 +27,6 @@ from archivey.config import (
 from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
-    ExtractionReport,
     UnusedArgumentContext,
 )
 from archivey.exceptions import (
@@ -37,12 +36,11 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.arg_checks import (
-    check_callable,
     check_config,
     check_encoding,
-    check_extraction_limits,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
+from archivey.internal.backends.udif import UDIF_UNSUPPORTED_MESSAGE
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -55,7 +53,6 @@ from archivey.internal.detection import (
     probe_config,
 )
 from archivey.internal.diagnostics_collector import collector_from_config
-from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
@@ -88,21 +85,12 @@ from archivey.internal.volumes import (
 from archivey.reader import ArchiveReader, ForwardArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
-    AbortOn,
-    AbortOnStr,
     ArchiveFormat,
     ContainerFormat,
-    ExtractionPolicy,
-    ExtractionPolicyStr,
-    ExtractionProgress,
     FormatAvailability,
     FormatSupport,
     MemberStreams,
     MissingComponent,
-    OnError,
-    OnErrorStr,
-    OverwritePolicy,
-    OverwritePolicyStr,
     StreamFormat,
 )
 
@@ -121,7 +109,6 @@ __all__ = [
     "AcceleratorMode",
     "DEFAULT_ARCHIVEY_CONFIG",
     "detect_format",
-    "extract",
     "format_availability",
     "list_known_formats",
     "list_supported_formats",
@@ -172,7 +159,7 @@ def _raise_multi_volume_not_supported(
     )
 
 
-def _refuse_incomplete_numbered_volume(
+def _refuse_unjoined_volume_names(
     resolved: ResolvedSource,
     format: ArchiveFormat | None,
     archive_name: str | None,
@@ -182,25 +169,12 @@ def _refuse_incomplete_numbered_volume(
     # Numbered parts are joined for ZIP and 7z. An explicit other format= (P8)
     # must be honoured or refused as a format conflict, not rewritten as a
     # missing-volume error.
-    if format is not None and format not in (
-        ArchiveFormat.ZIP,
-        ArchiveFormat.SEVEN_Z,
-    ):
-        return
-    error = incomplete_lone_numbered_volume_error(archive_name)
-    if error is not None:
-        raise error
-
-
-def _refuse_lone_zip_split(
-    resolved: ResolvedSource,
-    format: ArchiveFormat | None,
-    archive_name: str | None,
-) -> None:
-    if (
-        resolved.volume_count == 1
-        and is_zip_split_segment_name(archive_name)
-        and (format is None or format == ArchiveFormat.ZIP)
+    if format is None or format in (ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z):
+        error = incomplete_lone_numbered_volume_error(archive_name)
+        if error is not None:
+            raise error
+    if is_zip_split_segment_name(archive_name) and (
+        format is None or format == ArchiveFormat.ZIP
     ):
         raise UnsupportedFeatureError(
             ZIP_MULTI_VOLUME_MSG,
@@ -209,46 +183,42 @@ def _refuse_lone_zip_split(
         )
 
 
-def _refuse_unjoined_volume_names(
-    resolved: ResolvedSource,
-    format: ArchiveFormat | None,
-    archive_name: str | None,
-) -> None:
-    _refuse_incomplete_numbered_volume(resolved, format, archive_name)
-    _refuse_lone_zip_split(resolved, format, archive_name)
-
-
-def _refuse_if_stub_format_conflict(
-    stub: Path,
-    first_volume: Path,
-    requested: ArchiveFormat,
-    config: ArchiveyConfig | None,
-) -> None:
-    try:
-        info = detect_format(
-            first_volume, config=probe_config(config), follow_stub_volumes=False
-        )
-    except FormatDetectionError:
-        return
-    if info.format.container == requested.container:
-        return
-    raise ArchiveyUsageError(
-        f"{display_path(stub)} has no archive magic; the split first volume "
-        f"beside it is {info.format.display_name}, but format={requested!r} "
-        f"was requested."
-    )
-
-
 def _follow_stub_volume(
-    stub: Path, format: ArchiveFormat | None, config: ArchiveyConfig | None
+    slot: _SourceSlot, format: ArchiveFormat | None, config: ArchiveyConfig | None
 ) -> ResolvedSource | None:
+    """Switch ``slot`` from a stub-only ``.exe`` / ``.sfx`` to the split set beside it.
+
+    Returns the resolved first volume, or ``None`` when no split volume sits beside
+    the stub (``slot`` is then unchanged). Raises :class:`ArchiveyUsageError` when
+    ``format`` names a different container than the volume's, and the volume-name
+    refusals of :func:`_refuse_unjoined_volume_names`.
+    """
+    stub = slot.current.path
+    if stub is None:
+        return None
     alt = first_volume_for_stub(stub)
     if alt is None:
         return None
     if format is not None:
-        _refuse_if_stub_format_conflict(stub, alt, format, config)
+        try:
+            info = detect_format(
+                alt, config=probe_config(config), follow_stub_volumes=False
+            )
+        except FormatDetectionError:
+            # This probe only catches a confident container mismatch. A volume it
+            # cannot identify proves no conflict; the real detection after the
+            # switch reports it, to the caller's own collector.
+            pass
+        else:
+            if info.format.container != format.container:
+                raise ArchiveyUsageError(
+                    f"{display_path(stub)} has no archive magic; "
+                    f"the split first volume beside it is {info.format.display_name}, "
+                    f"but format={format!r} was requested."
+                )
     resolved = resolve_source(alt)
     _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
+    slot.replace(resolved.source)
     return resolved
 
 
@@ -409,8 +379,7 @@ def open_archive(
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     # Collector is created before detection so open + detect share one budget /
-    # occurrence order; one-shot extract() then reads reader.diagnostics for the
-    # whole call without cross-call plumbing.
+    # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
     resolved = resolve_source(source)
     slot = _SourceSlot(resolved.source)
@@ -518,17 +487,12 @@ def _open_resolved(
                 follow_stub_volumes=False,
             )
         except FormatDetectionError:
-            stub = archive_source.path
-            followed = (
-                _follow_stub_volume(stub, format, config) if stub is not None else None
-            )
+            followed = _follow_stub_volume(slot, format, config)
             if followed is None:
                 raise
             resolved = followed
-            archive_source = slot.replace(resolved.source)
-            archive_name = resolved.archive_name
             detected = detect_format_into(
-                archive_source, config=config, collector=collector
+                slot.current, config=config, collector=collector
             )
         resolved_format = detected.format
         format_info = detected
@@ -536,15 +500,16 @@ def _open_resolved(
         # format= still follows a stub-only miss. Skipping this made
         # detect_format(p); open_archive(p, format=info.format) open the MZ
         # bytes as ZIP/7z while auto-detect joined the split set.
-        stub = archive_source.path
         try:
-            detect_format(stub, config=probe_config(config), follow_stub_volumes=False)
+            detect_format(
+                archive_source.path,
+                config=probe_config(config),
+                follow_stub_volumes=False,
+            )
         except FormatDetectionError:
-            followed = _follow_stub_volume(stub, resolved_format, config)
-            if followed is not None:
-                resolved = followed
-                archive_source = slot.replace(resolved.source)
-                archive_name = resolved.archive_name
+            resolved = _follow_stub_volume(slot, resolved_format, config) or resolved
+    archive_source = slot.current
+    archive_name = resolved.archive_name
 
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
     # Info-ZIP's spanned sets never reach this point as a joined source (they are not
@@ -562,6 +527,16 @@ def _open_resolved(
     # non-seekable source is left to the seekability refusal below.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
+
+    # Detection claims DMG so this refusal can name the image and carry
+    # ``archive_name``. ``reader_for_format`` and ``UdifBackend.open_read`` raise
+    # the same error for a caller that reaches them, and neither has the name.
+    if resolved_format == ArchiveFormat.DMG:
+        raise UnsupportedFeatureError(
+            UDIF_UNSUPPORTED_MESSAGE,
+            source_format=resolved_format,
+            archive_name=archive_name,
+        )
 
     registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)
@@ -845,91 +820,3 @@ def _resolve_stream_format(
             "stream. Use open_archive for archive containers."
         )
     return detected.format.stream
-
-
-def extract(
-    source: OpenSourceInput,
-    dest: str | Path,
-    *,
-    policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
-    overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
-    on_error: OnError | OnErrorStr = OnError.STOP,
-    abort_on: Collection[AbortOn | AbortOnStr] = (),
-    format: ArchiveFormat | str | None = None,
-    password: PasswordInput = None,
-    encoding: str | None = None,
-    on_progress: Callable[[ExtractionProgress], None] | None = None,
-    config: ArchiveyConfig | None = None,
-    limits: ExtractionLimits | None = None,
-    dry_run: bool = False,
-) -> ExtractionReport:
-    """Open ``source``, apply safety checks, and write **all** members to ``dest``.
-
-    The one-shot extraction API (see ``safe-extraction``). It deliberately has **no**
-    member-selection parameter — selecting a subset requires the member list, which
-    would force a reopen; use :meth:`ForwardArchiveReader.extract_all` with
-    ``members=`` on an already open reader instead. Extraction is safe-by-default:
-    ``ExtractionPolicy.STRICT`` and ``OverwritePolicy.ERROR``, with the
-    decompression-bomb guards active.
-
-    A **non-seekable** stream source (a pipe, a socket) is opened in streaming mode
-    automatically: extraction is a single forward pass, so it needs no random access, and
-    failing fast would reject a source it can perfectly well consume. A seekable source
-    keeps random-access mode — that preserves the re-readable second pass that recovers a
-    hardlink whose target failed or preceded it in archive order.
-
-    ``abort_on`` names events that end the whole call the first time they occur — a
-    blocked member, a name collision, a portable-name rewrite — raising instead of
-    returning a report. It is independent of ``on_error``; see
-    :class:`~archivey.AbortOn`.
-
-    ``dry_run=True`` does everything but write: see
-    :meth:`ForwardArchiveReader.extract_all`.
-
-    Returns an :class:`~archivey.ExtractionReport` whose diagnostic summary spans
-    detection, open, and extraction for this call.
-    """
-    # Checked and converted here rather than left to open_archive and extract_all
-    # below, so a wrong-typed argument is refused before the source is resolved and
-    # peeked, and the message names the call the caller actually made.
-    format = coerce_archive_format(format, call="extract(format=…)")
-    policy = coerce_enum(policy, ExtractionPolicy, call="extract()", param="policy=")
-    overwrite = coerce_enum(
-        overwrite, OverwritePolicy, call="extract()", param="overwrite="
-    )
-    on_error = coerce_enum(on_error, OnError, call="extract()", param="on_error=")
-    abort_on = coerce_enum_collection(
-        abort_on, AbortOn, call="extract()", param="abort_on="
-    )
-    check_config(config, call="extract(config=…)")
-    check_extraction_limits(limits, call="extract(limits=…)")
-    check_encoding(encoding, call="extract(encoding=…)")
-    check_callable(on_progress, call="extract(on_progress=…)")
-
-    # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap: a
-    # path source opens nothing until it is read).
-    with resolve_source(source).source as peek_target:
-        streaming = not peek_target.is_directory and not peek_target.seekable()
-
-    with open_archive(
-        source,
-        format=format,
-        streaming=streaming,
-        password=password,
-        encoding=encoding,
-        config=config,
-    ) as reader:
-        # Reader already carries ``config`` from open_archive — do not forward again.
-        report = reader.extract_all(
-            dest,
-            policy=policy,
-            overwrite=overwrite,
-            on_error=on_error,
-            abort_on=abort_on,
-            on_progress=on_progress,
-            limits=limits,
-            dry_run=dry_run,
-        )
-        # extract_all's report.diagnostics is extraction-only. This reader was opened
-        # fresh for this call, so reader.diagnostics already spans detect+open+extract.
-        return replace(report, diagnostics=reader.diagnostics)

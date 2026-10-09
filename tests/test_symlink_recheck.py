@@ -25,7 +25,12 @@ from archivey import (
     ResourceLimitError,
 )
 from archivey.internal import link_watch
-from archivey.internal.extraction import ExtractionCoordinator, _symlink_escapes
+from archivey.internal.extraction import (
+    BombTracker,
+    ExtractionCoordinator,
+    _RunState,
+    _symlink_escapes,
+)
 from archivey.types import ArchiveMember, MemberType
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
@@ -337,16 +342,14 @@ def test_a_revised_link_does_not_stop_the_run_under_on_error_stop(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize(
-    "prefix", ["", "/", "/."], ids=["plain", "double-slash", "dot"]
-)
+@pytest.mark.parametrize("prefix", ["", "/."], ids=["plain", "dot"])
 def test_an_absolute_target_inside_the_destination_is_rechecked(
     tmp_path: Path, streaming: bool, prefix: str
 ) -> None:
     # An absolute target that lands inside the destination passes when created;
     # its components are the destination's own paths, not the link directory's.
-    # POSIX leaves a leading ``//`` to the implementation, and Linux and macOS read
-    # it as ``/``.
+    # A leading ``//`` is not a case here: it is a UNC root on Windows, so it is
+    # refused before any of this on every OS (test_link_target_portability.py).
     dest_root = (tmp_path / "out").resolve()
     dest, results = _extract(
         tmp_path,
@@ -525,12 +528,19 @@ def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
     (root / "x").symlink_to("a/b")
     (root / "l").symlink_to("x/../../secret")
     coordinator = ExtractionCoordinator()
-    watch = coordinator._links = link_watch.LinkWatch(root.resolve(), budget=None)
+    watch = link_watch.LinkWatch(root.resolve(), budget=None)
+    coordinator._state = _RunState(
+        dest=root,
+        dest_root=root.resolve(),
+        tracker=BombTracker(None, None),
+        written_paths={root / "x"},
+        links=watch,
+    )
     watch.track(root / "l", "x/../../secret", result_index=0)
     watch.recheck(lambda path, target: False)  # l passed when it was created
 
     anti = ArchiveMember(type=MemberType.ANTI, name="x")
-    coordinator._apply_anti_item(anti, root / "x", {root / "x"}, {}, root)
+    coordinator._apply_anti_item(anti, root / "x")
     outcome = watch.recheck(
         lambda path, target: _symlink_escapes(path, target, root.resolve())
     )

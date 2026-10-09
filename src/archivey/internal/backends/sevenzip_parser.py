@@ -144,6 +144,95 @@ class SevenZipFolder:
     digest_defined: bool
 
 
+@dataclass(frozen=True, slots=True)
+class FolderGraph:
+    """Which coder owns each stream of a folder, and which out-stream feeds each input.
+
+    In-streams and out-streams are numbered across the folder in coder order. Building
+    one validates nothing, so listing can walk a folder that decoding would refuse;
+    :func:`check_bind_pairs` and :func:`check_packed_indices` are the validators.
+    It indexes the folder as it was when built: build one per use.
+    """
+
+    inputs: list[range]  # each coder's in-streams (empty for a coder with none)
+    in_owner: dict[int, int]
+    out_owner: dict[int, int]
+    bound: dict[int, int]  # in-stream -> the out-stream it reads
+
+    @classmethod
+    def of(cls, folder: SevenZipFolder) -> FolderGraph:
+        inputs: list[range] = []
+        in_owner: dict[int, int] = {}
+        out_owner: dict[int, int] = {}
+        for index, coder in enumerate(folder.coders):
+            inputs.append(range(len(in_owner), len(in_owner) + coder.num_in_streams))
+            for _ in range(coder.num_in_streams):
+                in_owner[len(in_owner)] = index
+            for _ in range(coder.num_out_streams):
+                out_owner[len(out_owner)] = index
+        return cls(inputs, in_owner, out_owner, dict(folder.bind_pairs))
+
+    @property
+    def total_in(self) -> int:
+        return len(self.in_owner)
+
+    @property
+    def total_out(self) -> int:
+        return len(self.out_owner)
+
+    def producer(self, in_stream: int) -> int | None:
+        """The coder whose output ``in_stream`` reads, or None when it is not bound."""
+        out_stream = self.bound.get(in_stream)
+        return None if out_stream is None else self.out_owner.get(out_stream)
+
+    def consumers(self, coder: int) -> list[int]:
+        """The coders that read one of ``coder``'s outputs."""
+        return [
+            self.in_owner[in_stream]
+            for in_stream, out_stream in self.bound.items()
+            if in_stream in self.in_owner and self.out_owner.get(out_stream) == coder
+        ]
+
+    def roots(self) -> list[int]:
+        """The coders none of whose outputs another coder reads."""
+        consumed = {
+            self.out_owner.get(out_stream) for out_stream in self.bound.values()
+        }
+        return [coder for coder in range(len(self.inputs)) if coder not in consumed]
+
+
+def check_bind_pairs(
+    bind_pairs: list[tuple[int, int]], total_in: int, total_out: int
+) -> None:
+    """Refuse bind pairs that reuse an in- or out-stream, or name one the folder lacks.
+
+    With distinct, in-range out-streams and one fewer pair than out-streams, exactly
+    one out-stream stays unbound: the folder output.
+    """
+    if (
+        len({in_stream for in_stream, _ in bind_pairs}) != len(bind_pairs)
+        or len({out_stream for _, out_stream in bind_pairs}) != len(bind_pairs)
+        or any(
+            not (0 <= in_stream < total_in and 0 <= out_stream < total_out)
+            for in_stream, out_stream in bind_pairs
+        )
+    ):
+        raise CorruptionError("7z folder has an invalid coder bind pair")
+
+
+def check_packed_indices(
+    packed_indices: list[int], bound_in_streams: set[int], total_in: int
+) -> None:
+    """Refuse packed indices unless every in-stream is exactly one of packed or bound."""
+    if (
+        len(set(packed_indices)) != len(packed_indices)
+        or any(not 0 <= index < total_in for index in packed_indices)
+        or not bound_in_streams.isdisjoint(packed_indices)
+        or len(packed_indices) + len(bound_in_streams) != total_in
+    ):
+        raise CorruptionError("7z folder has an invalid packed-stream index")
+
+
 @dataclass(slots=True)
 class SevenZipFileRecord:
     filename: str
@@ -190,6 +279,42 @@ class _StreamsInfo:
     num_unpackstreams_folders: list[int] | None = None
     unpack_sizes: list[int] | None = None
     digests: list[int | None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SignatureHeaderFields:
+    """The 32-byte 7z signature header, field by field."""
+
+    magic_ok: bool
+    major_version: int
+    minor_version: int
+    start_header_crc_ok: bool
+    next_header_offset: int
+    next_header_size: int
+    next_header_crc: int
+
+
+def unpack_signature_header(signature: bytes) -> SignatureHeaderFields:
+    """Split ``signature``, at least ``SIGNATURE_HEADER_SIZE`` bytes, into its fields.
+
+    Magic and the start-header CRC are checked here and come back as flags; the other
+    five fields pass through unjudged, so detection and the parser keep their verdicts.
+    """
+    assert len(signature) >= SIGNATURE_HEADER_SIZE
+    start_header = signature[12:32]
+    next_header_offset, next_header_size, next_header_crc = struct.unpack(
+        "<QQI", start_header
+    )
+    return SignatureHeaderFields(
+        magic_ok=signature[: len(MAGIC_7Z)] == MAGIC_7Z,
+        major_version=signature[6],
+        minor_version=signature[7],
+        start_header_crc_ok=crc32(start_header)
+        == int.from_bytes(signature[8:12], "little"),
+        next_header_offset=next_header_offset,
+        next_header_size=next_header_size,
+        next_header_crc=next_header_crc,
+    )
 
 
 @dataclass(slots=True)
@@ -445,7 +570,8 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
         if fp.read(len(MAGIC_7Z)) == MAGIC_7Z:
             return 0
         fp.seek(start)
-        # Imported here: sevenzip_detect imports this module for MAGIC_7Z / CRC.
+        # Imported here: sevenzip_detect imports this module for the signature-header
+        # constants and unpack_signature_header.
         from archivey.internal.backends.sevenzip_detect import (
             validate_sevenzip_signature_header,
         )
@@ -476,49 +602,43 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     """
     fp.seek(0)
     signature = _read_stream_exact(fp, SIGNATURE_HEADER_SIZE, "7z signature header")
-    if signature[: len(MAGIC_7Z)] != MAGIC_7Z:
+    fields = unpack_signature_header(signature)
+    if not fields.magic_ok:
         raise CorruptionError("Not a 7z archive: bad magic bytes")
 
-    major_version = signature[6]
-    minor_version = signature[7]
-    if major_version != SEVENZIP_MAJOR_VERSION:
+    if fields.major_version != SEVENZIP_MAJOR_VERSION:
         raise UnsupportedFeatureError(
-            f"7z format version {major_version}.{minor_version} is not supported"
+            f"7z format version {fields.major_version}.{fields.minor_version} is not supported"
         )
-    start_header_crc = int.from_bytes(signature[8:12], "little")
-    start_header = signature[12:32]
-    if crc32(start_header) != start_header_crc:
+    if not fields.start_header_crc_ok:
         raise CorruptionError("7z signature header CRC mismatch")
 
-    next_header_offset, next_header_size, next_header_crc = struct.unpack(
-        "<QQI", start_header
-    )
-    if next_header_offset > _MAX_SEEK_OFFSET:
+    if fields.next_header_offset > _MAX_SEEK_OFFSET:
         raise CorruptionError(
-            f"7z next-header offset {next_header_offset} exceeds the seekable range"
+            f"7z next-header offset {fields.next_header_offset} exceeds the seekable range"
         )
-    if next_header_size > MAX_NEXT_HEADER_SIZE:
+    if fields.next_header_size > MAX_NEXT_HEADER_SIZE:
         raise CorruptionError(
-            f"7z next-header size {next_header_size} exceeds the "
+            f"7z next-header size {fields.next_header_size} exceeds the "
             f"{MAX_NEXT_HEADER_SIZE}-byte parser limit"
         )
 
-    if next_header_size == 0:
+    if fields.next_header_size == 0:
         # crc32(b"") is 0, so this is the only value an empty next header can carry.
-        if next_header_crc != crc32(b""):
+        if fields.next_header_crc != crc32(b""):
             raise CorruptionError("7z empty next-header CRC mismatch")
-        return SignatureInfo(major_version, minor_version, b"")
+        return SignatureInfo(fields.major_version, fields.minor_version, b"")
 
     try:
-        fp.seek(SIGNATURE_HEADER_SIZE + next_header_offset)
+        fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
     except (OSError, OverflowError) as exc:
         raise CorruptionError(
-            f"7z next-header seek failed at offset {next_header_offset}"
+            f"7z next-header seek failed at offset {fields.next_header_offset}"
         ) from exc
-    header_data = _read_stream_exact(fp, next_header_size, "7z next header")
-    if crc32(header_data) != next_header_crc:
+    header_data = _read_stream_exact(fp, fields.next_header_size, "7z next header")
+    if crc32(header_data) != fields.next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
-    return SignatureInfo(major_version, minor_version, header_data)
+    return SignatureInfo(fields.major_version, fields.minor_version, header_data)
 
 
 def parse_header_block(
@@ -676,13 +796,17 @@ __all__ = [
     "MAX_NEXT_HEADER_SIZE",
     "SIGNATURE_HEADER_SIZE",
     "EncodedHeader",
+    "FolderGraph",
     "HeaderBlock",
     "PlainHeader",
     "SevenZipArchive",
     "SevenZipCoder",
     "SevenZipFileRecord",
     "SevenZipFolder",
+    "SignatureHeaderFields",
     "SignatureInfo",
+    "check_bind_pairs",
+    "check_packed_indices",
     "compression_method_for_coder",
     "crc32",
     "empty_archive",
@@ -693,6 +817,7 @@ __all__ = [
     "materialize_archive",
     "parse_header_block",
     "read_signature_and_next_header",
+    "unpack_signature_header",
 ]
 
 
@@ -877,28 +1002,15 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
             f"{total_in} coder in-streams"
         )
     bind_pairs = [(cur.uint64(), cur.uint64()) for _ in range(num_bind_pairs)]
+    check_bind_pairs(bind_pairs, total_in, total_out)
     bound_in_streams = {in_stream for in_stream, _ in bind_pairs}
-    bound_out_streams = {out_stream for _, out_stream in bind_pairs}
-    if (
-        len(bound_in_streams) != num_bind_pairs
-        or len(bound_out_streams) != num_bind_pairs
-        or any(index >= total_in for index in bound_in_streams)
-        or any(index >= total_out for index in bound_out_streams)
-    ):
-        # Distinct, in-range out-streams leave exactly one unbound: the folder output.
-        raise CorruptionError("7z folder has an invalid coder bind pair")
     if num_packed_streams == 1:
         packed_indices = [
             index for index in range(total_in) if index not in bound_in_streams
         ]
     else:
         packed_indices = [cur.uint64() for _ in range(num_packed_streams)]
-        if (
-            len(set(packed_indices)) != num_packed_streams
-            or any(index >= total_in for index in packed_indices)
-            or not bound_in_streams.isdisjoint(packed_indices)
-        ):
-            raise CorruptionError("7z folder has an invalid packed-stream index")
+        check_packed_indices(packed_indices, bound_in_streams, total_in)
 
     return SevenZipFolder(
         coders=coders,
@@ -1106,10 +1218,11 @@ def _decode_utf16_names(blob: bytes, *, expected_count: int) -> list[str]:
         raise CorruptionError("7z UTF-16 name payload has an odd byte length")
     if not blob.endswith(b"\x00\x00"):
         raise CorruptionError("7z UTF-16 name list is not null-terminated")
-    try:
-        text = blob.decode("utf-16le")
-    except UnicodeDecodeError as exc:
-        raise CorruptionError(f"Could not decode 7z UTF-16 names: {exc!r}") from exc
+    # surrogatepass: a name is UTF-16 code units, and NTFS lets a name hold a surrogate
+    # without its partner. 7-Zip lists and extracts such a name, so it stays in the
+    # string as that code unit. With an even length and this handler, the decode
+    # cannot fail.
+    text = blob.decode("utf-16le", errors="surrogatepass")
     # Final NUL from the last terminator → trailing empty from split; drop it.
     if not text.endswith("\x00"):
         raise CorruptionError("7z UTF-16 name list is not null-terminated")
@@ -1338,10 +1451,12 @@ def _read_comment(cur: _Cursor) -> str | None:
         data = data[:-2]
     if not data:
         return None
-    try:
-        return data.decode("utf-16le")
-    except UnicodeDecodeError as exc:
-        raise CorruptionError(f"Could not decode 7z comment: {exc!r}") from exc
+    if len(data) % 2:
+        raise CorruptionError("7z comment has an odd byte length")
+    # surrogatepass, as for the names: the comment is UTF-16 code units, and a lone
+    # surrogate in it must not refuse the archive. With an even length and this
+    # handler, the decode cannot fail.
+    return data.decode("utf-16le", errors="surrogatepass")
 
 
 def _read_digests(cur: _Cursor, count: int) -> tuple[list[bool], list[int | None]]:
@@ -1375,7 +1490,7 @@ def _read_utf16(cur: _Cursor) -> str:
     for _ in range(_MAX_UTF16_CHARS):
         unit = cur.read(2, "7z UTF-16 name")
         if unit == b"\x00\x00":
-            return bytes(chunks).decode("utf-16le")
+            return bytes(chunks).decode("utf-16le", errors="surrogatepass")
         chunks.extend(unit)
     raise CorruptionError("7z UTF-16 string is not null-terminated")
 

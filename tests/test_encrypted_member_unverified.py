@@ -47,6 +47,12 @@ def _unverified(reader: object) -> list[EncryptedVerificationContext]:
     return contexts
 
 
+def _unverified_message(reader: object) -> str:
+    diagnostics = reader.diagnostics.retained  # type: ignore[attr-defined]
+    (message,) = [d.message for d in diagnostics if d.code is _CODE]
+    return message
+
+
 def test_colliding_zipcrypto_password_partial_read_is_reported() -> None:
     with open_archive(_COLLISION, password=_STORED_COLLISION) as reader:
         member = _member(reader, "stored.txt")
@@ -60,6 +66,11 @@ def test_colliding_zipcrypto_password_partial_read_is_reported() -> None:
         assert context.reason == "partial_read"
         assert context.member_name == "stored.txt"
         assert context.to_dict()["kind"] == "encrypted_verification"
+        assert _unverified_message(reader) == (
+            "Encrypted ZIP member 'stored.txt' was closed before its integrity check "
+            "was reached, and the password was accepted on a weaker check: the bytes "
+            "read may have been decrypted with a wrong password."
+        )
 
         # Proof it was the wrong key and not a quirk of the read: to EOF, the CRC fails.
         with pytest.raises(EncryptionError):
@@ -248,6 +259,11 @@ def test_rar4_wrong_password_partial_read_is_reported() -> None:
         assert context.check == "no_password_check"
         assert context.reason == "partial_read"
         assert context.member_name == "secret.txt"
+        assert _unverified_message(reader) == (
+            "Encrypted RAR member 'secret.txt' was closed before its checksum was "
+            "reached, and it carries no password check: the bytes read may have been "
+            "decrypted with a wrong password."
+        )
 
         # Proof it was the wrong key: to EOF, the CRC fails.
         with pytest.raises((EncryptionError, CorruptionError)):
@@ -280,6 +296,11 @@ def test_rar4_seek_then_partial_read_is_reported_as_a_seek() -> None:
             assert stream.read(2) == _RAR_SECRET[8:10]
         (context,) = _unverified(reader)
         assert context.reason == "seek"
+        assert _unverified_message(reader) == (
+            "Encrypted RAR member 'secret.txt' gave up its checksum by seeking, and it "
+            "carries no password check: the bytes read may have been decrypted with a "
+            "wrong password."
+        )
 
 
 @requires_binary("unrar")

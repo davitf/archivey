@@ -11,7 +11,7 @@ v1 tree is [`davitf/archivey-old`](https://github.com/davitf/archivey-old).
 It is a **pure Python library** — no server and no web UI. It does ship a CLI
 (`archivey list|test|extract|info`, `openspec/specs/cli/spec.md`), but "running the
 application" normally means exercising the library API:
-`archivey.open_archive(path)` / `archivey.extract(path, dest)` plus the detection
+`archivey.open_archive(path)` / `reader.extract_all(dest)` plus the detection
 helpers (`detect_format`, `format_availability`, `list_supported_formats`).
 All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, directory, and
 single-file-compressed (gz/bz2/xz/lzip/LZMA Alone/zstd/lz4/zlib/Brotli/.Z).
@@ -29,6 +29,9 @@ that one is the code map.
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
   `docs/philosophy.md`.
+- `dev-docs/design-rules.md` — the maintainer's recurring rulings written as rules: his
+  principles, the factors for a clash between consistency and the official tool, and
+  what still goes to the maintainer. Read it before asking a design question.
 - Committed work is the open OpenSpec changes under `openspec/changes/`.
   `dev-docs/IDEAS.md` is the speculative backlog (not committed). The pre-0.2.0 phase
   roadmap is kept for history in `dev-docs/history/PLAN.md`.
@@ -74,12 +77,17 @@ different things, and where both apply, both run:
   prose: chat replies, decision packets, PR comments, thin briefs.
 - [`asd-ste100`](.claude/skills/asd-ste100/SKILL.md) cuts **ambiguity** — sentences a
   reader can parse two ways. It applies to every piece of English an agent writes here:
-  chat with the maintainer, user-visible text (exception messages, CLI output, `docs/`),
+  chat with the maintainer, user-visible text (exception messages, CLI output, `docs/`, where
+  [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) ranks it below being true
+  and sounding like a person),
   pull request titles and descriptions, review and inline comments, commit messages, and
   code comments in `src/` and `tests/`.
 
 `technical-writing` is separate and is still opened only for Diátaxis structure and
-sentence craft on a published docs or handbook page.
+sentence craft on a published docs or handbook page. User docs prose, a new page or a
+one-sentence fix, follows the voice in
+[`write-user-docs`](.claude/skills/write-user-docs/SKILL.md), which puts "sounds like a
+person" above STE.
 
 ### Advice, not a gate
 
@@ -532,6 +540,51 @@ Two things about this repo make the handoff sharper than it looks:
   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
   Do not dump the full finding list into chat — that stays on the PR. A batched list of
   five numbered decisions pushes the work back onto the person you are asking.
+
+## Working with the maintainer
+
+The maintainer decides; agents settle everything a rule or the code can settle. Design
+questions go through [`dev-docs/design-rules.md`](dev-docs/design-rules.md) first. This
+section is how to work and how to ask.
+
+**Before asking.**
+- Check the finding against current `main` and measure rather than assert. Several
+  questions have been withdrawn because the finding behind them was stale.
+- Search the design rules, the handbook page and the ADRs. If a rule settles it, act,
+  and name the rule in the PR.
+- Ask yourself the questions in design-rules §"Questions to ask yourself first",
+  especially "does this affect other formats?" and "what does the official tool do?".
+
+**How to ask.** Use the decision packet in
+[`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet, one at a
+time. On top of its fields:
+- For each option, say where things end up (which module, which public name).
+- When the question is about public surface, include a "remove it" option.
+- The maintainer often finds a better option than the ones offered. Present the
+  underlying problem, not only the choices.
+- A recommendation is not a ruling, and "go ahead" or "post it" does not ratify a claim
+  you made. Never attribute a ruling to the maintainer without a message that carries
+  it.
+
+**Recording a ruling.** Keep the decider and date, and add the reasons and what would
+reopen it: "just citing doesn't help us reevaluate or accept later". Put format-specific
+rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
+
+**Pull requests.**
+- Split work by context: one concern per PR, and a separate PR per fix in a batch. A
+  bundle of "simple" fixes grew a long tail of reviews once (PR 532).
+- A test harness PR waits for the fixes it needs.
+- An agent may merge a straightforward PR once its review approves and CI is green
+  (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
+  tricky one, you can ask me to take a look before merging").
+  Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
+  or renaming a public name (before 0.2.0 too, `design-rules.md` DR-12), a very large
+  diff, or anything an open decision touches.
+- The PR body is the record of a piece of work. Do not commit working plans to the repo.
+- Do not edit `CHANGELOG.md` in a PR; the release writes it.
+
+**Outside the repo.** Upstream bug reports are drafted by agents and filed by the
+maintainer. Repository settings, publishing and the PyPI name are the maintainer's.
 
 ## Conventions
 

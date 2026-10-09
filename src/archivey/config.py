@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from typing import ClassVar
 
@@ -100,6 +100,12 @@ class RarDecompressor(Enum):
       neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
       This is the default. On a machine with ``unar`` and no RARLAB program, it means
       a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
+    - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
+      run on its archives. Opening and listing work as with the others, and so does
+      reading a stored (uncompressed) member that is not encrypted, also when it is
+      split across volumes or sits in a solid archive. A compressed or encrypted
+      member, or a split one with a volume missing, raises ``UnsupportedFeatureError``
+      before anything runs, and a compressed RAR 1.5/2.x comment is ``None``.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
@@ -109,6 +115,7 @@ class RarDecompressor(Enum):
     UNRAR = "unrar"
     UNAR = "unar"
     AUTO = "auto"
+    NONE = "none"
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
@@ -208,12 +215,46 @@ def _check_limit(
         )
 
 
+# The annotations a limits field may have, as (allow_float, allow_none).
+_LIMIT_ANNOTATIONS: dict[str, tuple[bool, bool]] = {
+    "int": (False, False),
+    "int | None": (False, True),
+    "float | None": (True, True),
+}
+
+
+def _check_limit_fields(
+    limits: ExtractionLimits | ListingLimits | DecoderLimits | SpoolLimits, *, cls: str
+) -> None:
+    """Run :func:`_check_limit` on every field of a limits dataclass, in field order.
+
+    ``allow_float`` and ``allow_none`` come from the field's annotation (a string,
+    under ``from __future__ import annotations``), which must be one of
+    ``_LIMIT_ANNOTATIONS``. ``cls`` is passed in rather than read from
+    ``type(limits)``, so a user subclass still gets the documented class in the message.
+    """
+    for f in fields(limits):
+        flags = _LIMIT_ANNOTATIONS.get(str(f.type))
+        if flags is None:
+            raise AssertionError(
+                f"{cls}.{f.name} is annotated {f.type!r}, which _check_limit_fields "
+                f"does not know; spell it as one of {sorted(_LIMIT_ANNOTATIONS)}."
+            )
+        allow_float, allow_none = flags
+        _check_limit(
+            getattr(limits, f.name),
+            cls=cls,
+            field_name=f.name,
+            allow_float=allow_float,
+            allow_none=allow_none,
+        )
+
+
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
-    Applied by :func:`archivey.extract` and
-    :meth:`~archivey.ForwardArchiveReader.extract_all`.
+    Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
     ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
     guard fields to ``None``; :attr:`ratio_activation_threshold` is a parameter of the
@@ -224,7 +265,10 @@ class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
     """Most bytes one extraction may write in total, across every member. 2 GiB.
 
-    Bytes copied rather than decoded (the cross-device hardlink fallback) count too.
+    Bytes copied rather than decoded count too: a hard link written as a copy because
+    it crosses a device boundary or goes past the filesystem's link-count limit. Only
+    the link-count copies also count toward the archive-wide ``max_ratio``, so this is
+    the one guard that bounds a cross-device copy.
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 
@@ -235,7 +279,9 @@ class ExtractionLimits:
     moves on) and across the archive (which stops the extraction). The per-member check
     needs the member's compressed size; where the format or access mode does not give
     one, only the archive-wide check applies. Neither check starts before
-    :attr:`ratio_activation_threshold` bytes of output.
+    :attr:`ratio_activation_threshold` bytes of output. The archive-wide check also
+    counts the copies written when a file runs out of hard-link slots (1024 names on
+    NTFS), since the archive's declared link count drives them.
     """
 
     ratio_activation_threshold: int = 5 * 2**20
@@ -262,20 +308,8 @@ class ExtractionLimits:
     UNLIMITED: ClassVar[ExtractionLimits]
 
     def __post_init__(self) -> None:
-        cls = "ExtractionLimits"
-        _check_limit(
-            self.max_extracted_bytes, cls=cls, field_name="max_extracted_bytes"
-        )
-        _check_limit(self.max_ratio, cls=cls, field_name="max_ratio", allow_float=True)
-        # Not ``| None``: the ratio guard reads it unconditionally, so a None here
-        # does not disable anything, it fails the comparison mid-extraction.
-        _check_limit(
-            self.ratio_activation_threshold,
-            cls=cls,
-            field_name="ratio_activation_threshold",
-            allow_none=False,
-        )
-        _check_limit(self.max_entries, cls=cls, field_name="max_entries")
+        # allow_none and allow_float come from the field annotations.
+        _check_limit_fields(self, cls="ExtractionLimits")
 
 
 ExtractionLimits.UNLIMITED = ExtractionLimits(
@@ -294,8 +328,11 @@ class ListingLimits:
     ``stream_members`` / ``streaming=True`` / forward-only iteration do not
     enforce these caps. 7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its
     comments against ``max_metadata_bytes`` (the declared sizes of compressed RAR
-    1.5/2.x comments before decoding them), and ISO the directory records ``pycdlib``
-    parses, so ``open_archive`` raises and none is an escape hatch.
+    1.5/2.x comments before decoding them), and ISO the directory records and path
+    tables ``pycdlib`` parses, so ``open_archive`` raises and none is an escape hatch.
+    ISO also counts each path-table entry against ``max_members`` (a table of more than
+    ``max_members + 1`` entries is refused): every entry is a directory, which is a
+    member anyway, so real images never notice.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than the whole ``max_metadata_bytes``, before reading it.
     """
@@ -323,9 +360,7 @@ class ListingLimits:
     UNLIMITED: ClassVar[ListingLimits]
 
     def __post_init__(self) -> None:
-        cls = "ListingLimits"
-        _check_limit(self.max_members, cls=cls, field_name="max_members")
-        _check_limit(self.max_metadata_bytes, cls=cls, field_name="max_metadata_bytes")
+        _check_limit_fields(self, cls="ListingLimits")
 
 
 ListingLimits.UNLIMITED = ListingLimits(
@@ -371,7 +406,7 @@ class DecoderLimits:
     extraction produces them and stop when the total or the ratio says the
     archive is lying about its size. A decoder's working memory is neither
     output nor proportional to it, it is claimed up front, and it is claimed on
-    ``open()`` and ``read()`` as much as on ``extract()`` — paths
+    ``open()`` and ``read()`` as much as on ``extract_all()`` — paths
     ``ExtractionLimits`` does not cover at all.
 
     Applied from the reader's open :attr:`ArchiveyConfig.decoder_limits` for its
@@ -523,18 +558,7 @@ class DecoderLimits:
     UNLIMITED: ClassVar[DecoderLimits]
 
     def __post_init__(self) -> None:
-        cls = "DecoderLimits"
-        _check_limit(self.max_decoder_memory, cls=cls, field_name="max_decoder_memory")
-        _check_limit(
-            self.max_key_derivation_rounds,
-            cls=cls,
-            field_name="max_key_derivation_rounds",
-        )
-        _check_limit(
-            self.max_ppmd_in_process_input,
-            cls=cls,
-            field_name="max_ppmd_in_process_input",
-        )
+        _check_limit_fields(self, cls="DecoderLimits")
 
 
 DecoderLimits.UNLIMITED = DecoderLimits(
@@ -579,7 +603,7 @@ class SpoolLimits:
     need it are refused without copying again.
 
     ``0`` refuses every copy: a stream source then reads only the members archivey can
-    read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
+    read without ``unrar``, such as stored, unencrypted RAR members. The copy goes
     to the platform temporary directory (``tempfile.gettempdir()``); where that is
     memory-backed, such as ``tmpfs``, this limit is a memory limit.
 
@@ -597,7 +621,7 @@ class SpoolLimits:
     UNLIMITED: ClassVar[SpoolLimits]
 
     def __post_init__(self) -> None:
-        _check_limit(self.max_bytes, cls="SpoolLimits", field_name="max_bytes")
+        _check_limit_fields(self, cls="SpoolLimits")
 
 
 SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
@@ -605,7 +629,8 @@ SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
-    """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`extract`.
+    """Library tuning knobs passed as ``config=`` to :func:`open_archive`,
+    :func:`open_stream` and :func:`detect_format`.
 
     Per-call operationals (``format``, ``streaming``, ``password``, extraction's
     ``members``/``filter``/``policy``/…) stay keyword arguments — not fields here.
@@ -656,9 +681,9 @@ class ArchiveyConfig:
     rar_decompressor: RarDecompressor = RarDecompressor.AUTO
     """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
 
-    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``). The listing does not
-    depend on it, except that the selected program decodes compressed RAR 1.5/2.x
-    comments.
+    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
+    listing does not depend on it, except that the selected program decodes compressed
+    RAR 1.5/2.x comments.
     """
 
     read_link_targets: bool = True
@@ -746,36 +771,22 @@ class ArchiveyConfig:
         frozen and it *rewrites* the field rather than only inspecting it. The checks
         above reject without writing, so they need no such thing.
         """
-        check_instance(
-            self.extraction_limits,
-            ExtractionLimits,
-            call="ArchiveyConfig(extraction_limits=…)",
-            allow_none=False,
+        # The checks below run in this order, not field order: with several bad
+        # fields, the first check that fails is the error the caller sees.
+        instance_fields: tuple[tuple[str, type], ...] = (
+            ("extraction_limits", ExtractionLimits),
+            ("listing_limits", ListingLimits),
+            ("decoder_limits", DecoderLimits),
+            ("spool_limits", SpoolLimits),
+            ("diagnostic_policy", DiagnosticPolicy),
         )
-        check_instance(
-            self.listing_limits,
-            ListingLimits,
-            call="ArchiveyConfig(listing_limits=…)",
-            allow_none=False,
-        )
-        check_instance(
-            self.decoder_limits,
-            DecoderLimits,
-            call="ArchiveyConfig(decoder_limits=…)",
-            allow_none=False,
-        )
-        check_instance(
-            self.spool_limits,
-            SpoolLimits,
-            call="ArchiveyConfig(spool_limits=…)",
-            allow_none=False,
-        )
-        check_instance(
-            self.diagnostic_policy,
-            DiagnosticPolicy,
-            call="ArchiveyConfig(diagnostic_policy=…)",
-            allow_none=False,
-        )
+        for field_name, expected in instance_fields:
+            check_instance(
+                getattr(self, field_name),
+                expected,
+                call=f"ArchiveyConfig({field_name}=…)",
+                allow_none=False,
+            )
         if not isinstance(self.detection_budget, DetectionBudget):
             # A preset member, or its name, is converted here so the field always
             # holds the budget detection reads. The annotation stays the budget alone,

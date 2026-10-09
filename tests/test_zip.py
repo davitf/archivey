@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import stat
 import struct
 import subprocess
 import zipfile
@@ -336,6 +337,25 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
     with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
         with pytest.raises(IndexError, match="index out of range"):
             ar.open(next(iter(ar)))
+
+
+def test_lzma_member_with_invalid_properties_is_corrupt_at_open() -> None:
+    """Out-of-range method-14 LZMA properties raise ``lzma.LZMAError`` while the ZIP
+    reader peels the header, before the codec layer runs; it must read as corruption.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_LZMA) as zf:
+        zf.writestr("a.txt", b"hello" * 100)
+    raw = bytearray(buf.getvalue())
+    name_len, extra_len = struct.unpack("<HH", bytes(raw[26:30]))
+    # Body: version (2), properties size (2), then the lc/lp/pb properties byte.
+    props_at = 30 + name_len + extra_len + 4
+    assert raw[props_at] == 0x5D
+    raw[props_at] = 0xFF
+    with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.ZIP) as ar:
+        with pytest.raises(CorruptionError) as info:
+            ar.open(ar.get("a.txt"))
+    assert info.value.member_name == "a.txt"
 
 
 def test_unencrypted_member_read_indexerror_is_not_truncated(
@@ -1323,6 +1343,26 @@ def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None
         assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
 
 
+@pytest.mark.parametrize(
+    ("create_system", "creation_field"), [(10, "created"), (3, "ctime")]
+)
+def test_bad_ntfs_times_name_the_member_field(
+    tmp_path: Path, create_system: int, creation_field: str
+) -> None:
+    # MEMBER_TIMESTAMP_INVALID names the ArchiveMember field in every format. The
+    # creation FILETIME is `created` or `ctime` by host, as _zip_created splits it.
+    path = tmp_path / "bad_ntfs.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.create_system = create_system
+    info.extra = _ntfs_extra(2**64 - 1, 2**64 - 1, 2**64 - 1)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        fields = sorted(d.context.field for d in member.diagnostics)
+    assert fields == sorted(["modified", "accessed", creation_field])
+
+
 def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
     # Precedence: 0x5455 (Unix) > 0x000A (NTFS) > DOS date_time — regardless of the
     # fields' order in the extra blob. Here NTFS carries all three times but the UT
@@ -1784,3 +1824,37 @@ def test_zipcrypto_check_byte_fails_loud_without_raw_time(tmp_path: Path) -> Non
             ar._zipcrypto_check_byte(info)  # type: ignore[attr-defined]
         info._raw_time = 0xABCD
         assert ar._zipcrypto_check_byte(info) == 0xAB  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "file_type", [stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK]
+)
+def test_unix_special_file_is_other(tmp_path: Path, file_type: int) -> None:
+    """A device, FIFO or socket is OTHER, as in TAR and ISO. unzip would write an
+    empty regular file; extraction refuses the member instead."""
+    path = tmp_path / "special.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, mode in (("dev", file_type | 0o644), ("f.txt", 0o100644)):
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = mode << 16
+            zf.writestr(info, b"xyz" if name == "dev" else b"data")
+    with open_archive(path) as ar:
+        types = {m.name: m.type for m in ar.members()}
+        assert types == {"dev": MemberType.OTHER, "f.txt": MemberType.FILE}
+        assert ar.get("dev").size == 3  # the stored size, not zeroed
+        ar.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "dev").exists()
+    assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
+
+
+def test_device_bits_from_a_non_unix_writer_are_ignored(tmp_path: Path) -> None:
+    """The high word is a Unix mode only when "version made by" says Unix."""
+    path = tmp_path / "dos.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("f")
+        info.create_system = 0
+        info.external_attr = (stat.S_IFCHR | 0o644) << 16
+        zf.writestr(info, b"x")
+    with open_archive(path) as ar:
+        assert ar.members()[0].type is MemberType.FILE

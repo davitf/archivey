@@ -286,7 +286,9 @@ def test_brotli_probe_skipped_when_backend_missing(
 ) -> None:
     # With the Brotli backend absent, the probe is skipped and detection falls back to the
     # .br extension guess rather than failing.
-    monkeypatch.setattr(codecs_module, "_brotli", None)
+    monkeypatch.setattr(
+        codecs_module, "_brotli", codecs_module._LazyOptional("brotli", present=False)
+    )
     path = tmp_path / "thing.br"
     path.write_bytes(b"not a brotli stream, just bytes")
     info = detect_format(path)
@@ -1065,6 +1067,27 @@ def test_far_budget_skip_is_not_recorded_for_a_source_too_short_for_the_iso_span
     assert not any(s.tier == "far_magic" for s in info.unavailable_tiers)
 
 
+def test_zero_far_budget_records_the_far_tier_as_not_enabled(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+
+    image = bytearray(40_000)
+    image[32768:32774] = b"\x01CD001"
+    path = tmp_path / "disc.iso"
+    path.write_bytes(bytes(image))
+    # A zero decode allowance adds a later tier's record, which pins the order.
+    budget = replace(BALANCED_BUDGET, max_far_bytes=0, max_decode_input=0)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.detected_by == "extension"
+    assert info.unavailable_tiers == (
+        TierSkip("far_magic", TierSkipReason.NOT_ENABLED_BY_POLICY),
+        TierSkip("content_probe", TierSkipReason.NOT_ENABLED_BY_POLICY),
+    )
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.far_bytes == 0
+
+
 def test_stub_volume_fallback_keeps_the_stub_pass_cost(tmp_path: Path) -> None:
     # S19-K3: the stub pass runs the full SFX scan; its receipt and skips used to be
     # dropped in favour of the cheap second pass on the sibling volume.
@@ -1253,6 +1276,42 @@ def test_sfx_miss_in_a_source_shorter_than_the_window_is_not_cut_short(
     info = detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))
     assert info.detected_by == "extension"
     assert not any(s.tier == "sfx_scan" for s in info.unavailable_tiers)
+
+
+def test_zero_max_scan_bytes_records_sfx_scan_not_enabled(tmp_path: Path) -> None:
+    # A zero field turns its tier off, recorded as not enabled like the other tiers,
+    # not as a search the budget cut short.
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+
+    path = tmp_path / "x.zip"
+    path.write_bytes(b"MZ" + b"\x00" * 4094 + _zip_bytes())
+    # The control: under the default budget the scan finds the appended payload.
+    found = detect_format(path, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET))
+    assert found.detected_by == "sfx_scan"
+    assert not any(s.tier == "sfx_scan" for s in found.unavailable_tiers)
+    budget = replace(BALANCED_BUDGET, max_scan_bytes=0)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.detected_by == "extension"
+    sfx = [s for s in info.unavailable_tiers if s.tier == "sfx_scan"]
+    assert sfx == [TierSkip("sfx_scan", TierSkipReason.NOT_ENABLED_BY_POLICY)]
+
+
+def test_zero_max_prefix_bytes_records_near_magic_not_enabled(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
+
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_bytes())
+    found = detect_format(path, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET))
+    assert found.detected_by == "magic"
+    budget = replace(BALANCED_BUDGET, max_prefix_bytes=0)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.detected_by == "extension"
+    near = [s for s in info.unavailable_tiers if s.tier == "near_magic"]
+    assert near == [TierSkip("near_magic", TierSkipReason.NOT_ENABLED_BY_POLICY)]
 
 
 @pytest.mark.parametrize("as_str", [False, True])

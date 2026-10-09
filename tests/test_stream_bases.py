@@ -126,6 +126,34 @@ def test_replace_inner_recaches_seekable() -> None:
     assert s.seekable() is False
 
 
+def test_replace_inner_closes_the_old_inner() -> None:
+    old = io.BytesIO(b"x")
+    s = DelegatingStream(old)
+    s._replace_inner(io.BytesIO(b"y"))
+    assert old.closed
+    assert s.read() == b"y"
+
+
+def test_replace_inner_survives_an_old_inner_that_fails_to_close() -> None:
+    class _FailingClose(io.BytesIO):
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    s = DelegatingStream(_FailingClose(b"x"))
+    new = io.BytesIO(b"y")
+    s._replace_inner(new)
+    assert s._inner is new
+    assert s.read() == b"y"
+
+
+def test_replace_inner_leaves_the_old_inner_to_a_subclass_that_closes_it() -> None:
+    old = io.BytesIO(b"x")
+    s = DelegatingStream(old, subclass_closes_inner=True)
+    s._replace_inner(io.BytesIO(b"y"))
+    assert not old.closed
+    s.close()
+
+
 def test_delegating_base_close_closes_inner() -> None:
     inner = io.BytesIO(b"data")
     s = DelegatingStream(inner)
@@ -164,10 +192,16 @@ def test_delegating_base_readinto_falls_back_without_inner_readinto() -> None:
         def read(self, n: int = -1, /) -> bytes:
             return self._b.read(n)
 
+        # Without this, the wrapper's finalizer raises an unraisable AttributeError
+        # when it closes the inner stream, in whichever test runs the collection.
+        def close(self) -> None:
+            self._b.close()
+
     s = DelegatingStream(_NoReadinto(b"xyz"))  # type: ignore[arg-type]
     buf = bytearray(2)
     assert s.readinto(buf) == 2
     assert bytes(buf) == b"xy"
+    s.close()
 
 
 class _RawIOWithoutReadinto(io.RawIOBase):
@@ -390,6 +424,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs._Bzip2EmptyStreamCheck,
         codecs._StdlibOnAcceleratorError,
         codecs._StdlibSeekContract,
+        codecs._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -574,6 +609,7 @@ def test_delegating_stream_close_inventory() -> None:
         codecs._Bzip2EmptyStreamCheck,
         codecs._StdlibOnAcceleratorError,
         codecs._StdlibSeekContract,
+        codecs._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,

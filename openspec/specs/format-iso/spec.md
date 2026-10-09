@@ -188,7 +188,10 @@ symlink's directory, and each component that names a record there SHALL decode a
 record's name does. The diagnostic's `inferred_encoding` and `declared_encoding` SHALL be
 empty, since no decode of the stored bytes produced the name. Failing all of that, the
 bytes SHALL decode as UTF-8 with `errors="surrogateescape"`. Decoding MUST NOT raise.
-Joliet names SHALL decode as UTF-16BE whatever `encoding=` says. `raw_name` SHALL be the
+Joliet names SHALL decode as UTF-16BE whatever `encoding=` says, with `surrogatepass`: a
+surrogate without its partner stays in the name as that code unit, a valid pair decodes
+as one character, and only an odd trailing byte becomes U+FFFD. Extraction writes such a
+name by `safe-extraction` "Lone surrogates in a member name". `raw_name` SHALL be the
 stored bytes in the Rock Ridge and plain namespaces. `ReadBackend.USES_ENCODING` SHALL be
 `True` for ISO.
 
@@ -204,6 +207,8 @@ stored bytes in the Rock Ridge and plain namespaces. `ReadBackend.USES_ENCODING`
 | The same, where the Joliet name was cut at 64 characters | Escaped, no diagnostic |
 | A symlink in that image whose target is `caf\xe9.txt` | `link_target == "café.txt"`, the name the file lists under |
 | The Joliet image, `encoding="cp1252"` | Names decode with cp1252; no diagnostic |
+| Joliet name holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`, never U+FFFD; `raw_name == b"hi\xed\xa0\x80"`, the unit as its three `surrogatepass` bytes; a Rock Ridge name that is not UTF-8 borrows it |
+| A Rock Ridge symlink in that image whose target bytes are `hi\xed\xa0\x80.txt` | `link_target == "hi\ud800.txt"`, the name the file lists under |
 
 ### Requirement: Contain a System Use entry pycdlib cannot parse to its own record
 

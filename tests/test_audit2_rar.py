@@ -28,7 +28,6 @@ from archivey import (
     ArchiveyConfig,
     ListingLimits,
     MemberType,
-    extract,
     open_archive,
 )
 from archivey.exceptions import (
@@ -41,6 +40,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from tests.conftest import has_binary, requires_binary
+from tests.extract_util import open_and_extract
 from tests.test_audit_rar_iso_dir import (
     _fixture,
     _hostile_argv_payloads,
@@ -137,7 +137,7 @@ def test_file_copy_redirect_extracts_as_an_independent_file(tmp_path: Path) -> N
         timeout=60,
     )
     dest = tmp_path / "out"
-    extract(archive, dest)
+    open_and_extract(archive, dest)
     first, second = dest / "r1.bin", dest / "r2.bin"
     assert first.read_bytes() == second.read_bytes() == payload
     # A "file reference" is a copy: writing to one must not change the other.
@@ -207,7 +207,7 @@ def test_file_copy_extracts_as_an_independent_file_on_every_path(
     config = _copy_reader_config(decompressor)
     archive, payload = _rar_with_copies(tmp_path, *flags)
     dest = tmp_path / "out"
-    extract(archive, dest, config=config)
+    open_and_extract(archive, dest, config=config)
     first, second = dest / "r1.bin", dest / "d" / "r2.bin"
     assert first.read_bytes() == second.read_bytes() == payload
     assert (dest / "other.txt").read_bytes() == b"other"
@@ -274,7 +274,7 @@ def test_rar5_hard_link_stays_a_hardlink(tmp_path: Path) -> None:
         assert link.link_target == "a.bin"
         assert reader.read(link) == payload
     dest = tmp_path / "out"
-    extract(archive, dest)
+    open_and_extract(archive, dest)
     assert os.stat(dest / "a.bin").st_ino == os.stat(dest / "b.bin").st_ino
 
 
@@ -346,7 +346,7 @@ def _solid_encrypted_rar4(tmp_path: Path) -> Path:
 
     Neither FILE header carries the per-file solid flag, so ``unrar`` decodes
     both members exactly as before; only the archive-level flag changes, which is
-    what sends archivey's ``stream_members()`` and ``extract()`` through the
+    what sends archivey's ``stream_members()`` and ``extract_all()`` through the
     one-``unrar``-for-the-archive solid pass.
     """
     blocks = _rar3_parse(_fixture("encryption__rar4.rar").read_bytes())
@@ -381,7 +381,9 @@ def test_solid_rar4_wrong_password_is_an_encryption_error(
                     if stream is not None:
                         stream.read()
         else:
-            extract(path, tmp_path / "out", password="wrong", config=_UNRAR_ONLY)
+            open_and_extract(
+                path, tmp_path / "out", password="wrong", config=_UNRAR_ONLY
+            )
 
 
 # --- R20: a str password holding a lone surrogate escapes as UnicodeEncodeError --

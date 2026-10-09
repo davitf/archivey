@@ -95,3 +95,12 @@ refusals to process the file.
 - **A move back to `check_universal` fails a test**, not just a review:
   `test_apply_name_policy_rejects_bidi_override` asserts the check is absent from
   `check_universal` and present in `apply_name_policy`.
+- **A second criterion joined the universal layer later (PR #620).** The maintainer
+  ruled on 2026-10-06 to refuse a link target with a Windows drive letter or UNC root
+  at every policy on every OS. On POSIX such a link is a safe write into a directory
+  named `C:`; it is refused because Windows refuses it, so that one archive gives one
+  outcome everywhere. `check_universal` therefore holds two kinds of constraint: the
+  write itself is unsafe, **or the outcome would differ by OS**. A name that is only
+  deceptive to read meets neither, so this decision stands. The cost lands on
+  `TRUSTED` too: a ZIP, 7z or RAR5 Windows symlink to a drive path no longer
+  round-trips at any policy.

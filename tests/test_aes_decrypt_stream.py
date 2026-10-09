@@ -288,6 +288,19 @@ def test_seek_end_refused_when_ciphertext_length_unknown() -> None:
         stream.close()
 
 
+def test_set_and_cur_seek_work_when_ciphertext_length_unknown() -> None:
+    """Only SEEK_END needs the length; SEEK_SET and SEEK_CUR must not ask for it."""
+    cipher = _encrypt(_PLAIN[:32])
+    stream = AesDecryptStream(_UnknownSizeSeekable(cipher), AesParams(key=_KEY, iv=_IV))
+    try:
+        assert stream.seek(5) == 5
+        assert stream.read(3) == _PLAIN[5:8]
+        assert stream.seek(-99, io.SEEK_CUR) == 0
+        assert stream.read() == _PLAIN[:32]
+    finally:
+        stream.close()
+
+
 def test_read_asks_source_in_block_multiples() -> None:
     cipher = _encrypt(_PLAIN[:48])
     source = io.BytesIO(cipher)

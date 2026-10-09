@@ -11,57 +11,45 @@ import tarfile
 import time
 import zipfile
 import zlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from archivey import detect_format, extract, open_archive
+from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     FormatDetectionError,
     OpenError,
-    PackageNotInstalledError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal import volumes as volumes_mod
+from archivey.internal.backends.sevenzip_reader import _infer_nameless_member_name
+from archivey.internal.backends.zip_detect import is_zip_split_segment_name
 from archivey.internal.source import ArchiveSource
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
     first_volume_for_stub,
     join_volumes,
-    next_old_rar_volume_name,
+    next_rar_volume_name,
+    rar_volume_name,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.extract_util import open_and_extract
 from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
 _RAR_MAGIC = b"Rar!\x1a\x07\x00"
 _RAR5_ID = b"Rar!\x1a\x07\x01\x00"
 _RAR_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rar"
-
-
-def _have_rarlab_unrar() -> bool:
-    """Whether split-RAR ``archive.read()`` can call RARLAB unrar.
-
-    Listing is native and must stay green on core-only / free-threaded CI, which
-    do not install ``unrar``. ``read()`` of a split set still shells out.
-    """
-    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
-
-    try:
-        find_rarlab_unrar()
-    except PackageNotInstalledError:
-        return False
-    return True
 
 
 def test_discover_skips_stat_for_non_volume_names(tmp_path: Path) -> None:
@@ -239,8 +227,253 @@ def test_rar_sfx_duplicate_part1_opens_the_named_set(tmp_path: Path) -> None:
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if _have_rarlab_unrar():
-                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+def _force_listing_order(monkeypatch: pytest.MonkeyPatch, *, reverse: bool) -> None:
+    """Make ``Path.iterdir`` list names in sorted (or reverse) order.
+
+    A volume pick that depends on listing order then shows up in one of the two runs,
+    whatever order the filesystem happens to use.
+    """
+    listing = Path.iterdir
+    monkeypatch.setattr(
+        Path, "iterdir", lambda self: iter(sorted(listing(self), reverse=reverse))
+    )
+
+
+_RAR_PARTS_1_TO_10 = [f"q.part{part}.rar" for part in range(1, 11)]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    ("names", "opened", "expected"),
+    [
+        # unrar walks q.part1 -> q.part2 -> q.part3, keeping the padding, and
+        # never looks at q.part02.rar (checked with unrar 7.00: All OK).
+        (
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar", "q.part02.rar"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar"],
+        ),
+        (
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar", "q.part02.rar"],
+            "q.part3.rar",
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar"],
+        ),
+        # The name the caller opened still wins for its own part.
+        (
+            ["q.part1.rar", "q.part2.rar", "q.part3.rar", "q.part02.rar"],
+            "q.part02.rar",
+            ["q.part1.rar", "q.part02.rar", "q.part3.rar"],
+        ),
+        (
+            ["q.part01.rar", "q.part02.rar", "q.part03.rar", "q.part2.rar"],
+            "q.part01.rar",
+            ["q.part01.rar", "q.part02.rar", "q.part03.rar"],
+        ),
+        # A set renamed to mixed widths has one name per part; it is still a set.
+        (
+            ["q.part1.rar", "q.part02.rar", "q.part03.rar"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part02.rar", "q.part03.rar"],
+        ),
+        # 7-Zip walks x.7z.001 -> .002 -> .003 the same way (7-Zip 23.01: Ok).
+        (
+            ["x.7z.001", "x.7z.002", "x.7z.003", "x.7z.0002"],
+            "x.7z.001",
+            ["x.7z.001", "x.7z.002", "x.7z.003"],
+        ),
+        (
+            ["x.zip.0001", "x.zip.0002", "x.zip.002"],
+            "x.zip.0002",
+            ["x.zip.0001", "x.zip.0002"],
+        ),
+        (
+            ["x.7z.001", "x.7z.0002", "x.7z.0003"],
+            "x.7z.001",
+            ["x.7z.001", "x.7z.0002", "x.7z.0003"],
+        ),
+        # The padding widens once the number outgrows it: from q.part1.rar, unrar's
+        # tenth name is q.part10.rar, so a stray q.part010.rar is not read.
+        (
+            [*_RAR_PARTS_1_TO_10, "q.part010.rar"],
+            "q.part1.rar",
+            _RAR_PARTS_1_TO_10,
+        ),
+        # From q.part10.rar the padding is two digits, so going back to volume 1
+        # unrar predicts q.part01.rar, and that is the pick for part 1.
+        (
+            [*_RAR_PARTS_1_TO_10, "q.part01.rar"],
+            "q.part10.rar",
+            ["q.part01.rar", *_RAR_PARTS_1_TO_10[1:]],
+        ),
+        # Neither part-2 name is the predicted q.part2.rar and both are padded and
+        # spelled alike; unrar's names carry .rar, so the .exe is not the pick.
+        (
+            ["q.part1.rar", "q.part02.rar", "q.part02.exe"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part02.rar"],
+        ),
+    ],
+)
+def test_discover_prefers_the_opened_names_padding_over_a_stray(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    names: list[str],
+    opened: str,
+    expected: list[str],
+    reverse: bool,
+) -> None:
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    _force_listing_order(monkeypatch, reverse=reverse)
+    siblings = discover_volume_siblings(tmp_path / opened)
+    assert siblings is not None
+    assert [p.name for p in siblings] == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    ("names", "opened", "expected"),
+    [
+        (
+            ["q.part1.rar", "q.part2.rar", "Q.PART2.RAR"],
+            "q.part2.rar",
+            ["q.part1.rar", "q.part2.rar"],
+        ),
+        (
+            ["q.part1.rar", "q.part2.rar", "Q.PART2.RAR"],
+            "Q.PART2.RAR",
+            ["q.part1.rar", "Q.PART2.RAR"],
+        ),
+        # Not opened: the name unrar predicts from q.part1.rar, as spelled.
+        (
+            ["q.part1.rar", "q.part2.rar", "q.PART2.RAR"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part2.rar"],
+        ),
+        (
+            ["x.7z.001", "x.7z.002", "X.7Z.002"],
+            "x.7z.002",
+            ["x.7z.001", "x.7z.002"],
+        ),
+        (
+            ["x.7z.001", "X.7Z.001", "x.7z.002"],
+            "x.7z.002",
+            ["x.7z.001", "x.7z.002"],
+        ),
+        # An SFX first volume opened beside its case variant: only the opened name
+        # tells them apart (the predicted part-1 name is q.part1.rar).
+        (
+            ["q.part1.sfx", "q.PART1.SFX", "q.part2.rar"],
+            "q.part1.sfx",
+            ["q.part1.sfx", "q.part2.rar"],
+        ),
+        # The predicted q.part2.rar is absent: its padding outranks the base spelling.
+        (
+            ["q.part1.rar", "q.part02.rar", "Q.PART2.RAR"],
+            "q.part1.rar",
+            ["q.part1.rar", "Q.PART2.RAR"],
+        ),
+        # Same padding, neither predicted: the base spelled as opened wins.
+        (
+            ["q.part1.rar", "q.part02.rar", "Q.PART02.RAR"],
+            "q.part1.rar",
+            ["q.part1.rar", "q.part02.rar"],
+        ),
+    ],
+)
+def test_discover_prefers_the_opened_names_spelling_over_a_case_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    names: list[str],
+    opened: str,
+    expected: list[str],
+    reverse: bool,
+) -> None:
+    """A sibling that differs only in case is never picked over the name opened.
+
+    Upper case sorts first, so a plain lowest-name tiebreak used to pick it, and the
+    opened file dropped out of its own set.
+    """
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    if len(list(tmp_path.iterdir())) < len(names):
+        pytest.skip("case-insensitive filesystem: the case variants are one file")
+    _force_listing_order(monkeypatch, reverse=reverse)
+    siblings = discover_volume_siblings(tmp_path / opened)
+    assert siblings is not None
+    assert [p.name for p in siblings] == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rar_mixed_width_set_opens_and_reads_from_either_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+) -> None:
+    """A set renamed to ``m.part1.rar`` + ``m.part02.rar`` is still one set.
+
+    unrar alone stops at "Cannot find volume m.part2.rar"; the native path joins it,
+    and the unrar path gets the volumes staged under names it walks.
+    """
+    shutil.copy(_RAR_FIXTURES / "tinyvol.part1.rar", tmp_path / "m.part1.rar")
+    shutil.copy(_RAR_FIXTURES / "tinyvol.part2.rar", tmp_path / "m.part02.rar")
+    _force_listing_order(monkeypatch, reverse=reverse)
+    for anchor in ("m.part1.rar", "m.part02.rar"):
+        with open_archive(tmp_path / anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+def test_join_volumes_refuses_one_part_named_in_two_paddings(tmp_path: Path) -> None:
+    """Discovery picks one of ``x.zip.002`` / ``x.zip.0002``; an explicit list may not."""
+    paths = []
+    for name in ("x.zip.001", "x.zip.002", "x.zip.0002", "x.zip.003"):
+        path = tmp_path / name
+        path.write_bytes(b"")
+        paths.append(path)
+    with pytest.raises(
+        TruncatedError,
+        match=r"Repeated volume in multi-volume set for x\.zip: "
+        r"part 2 given more than once",
+    ):
+        join_volumes(paths)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rar_part_set_with_a_stray_of_another_width_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+) -> None:
+    """A stray ``tinyvol.part02.rar`` used to be read as volume 2 in listing order."""
+    for name in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+        shutil.copy(_RAR_FIXTURES / name, tmp_path / name)
+    (tmp_path / "tinyvol.part02.rar").write_bytes(b"not volume two" * 100)
+    _force_listing_order(monkeypatch, reverse=reverse)
+    for anchor in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+        with open_archive(tmp_path / anchor) as archive:
+            assert archive.info.is_multivolume is True
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_numbered_set_with_a_stray_of_another_width_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+) -> None:
+    """``x.zip.0002`` beside ``x.zip.001 … .003`` used to refuse as a repeated part."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("payload.bin", b"0123456789" * 30)
+    data = buffer.getvalue()
+    third = len(data) // 3 + 1
+    for index in range(3):
+        chunk = data[index * third : (index + 1) * third]
+        (tmp_path / f"x.zip.{index + 1:03d}").write_bytes(chunk)
+    (tmp_path / "x.zip.0002").write_bytes(b"\x00" * third)
+    _force_listing_order(monkeypatch, reverse=reverse)
+    with open_archive(tmp_path / "x.zip.001") as archive:
+        assert archive.read("payload.bin") == b"0123456789" * 30
 
 
 def test_discover_old_rar_rnn_volumes(tmp_path: Path) -> None:
@@ -288,14 +521,13 @@ def test_old_scheme_sfx_exe_opens_rnn_set(tmp_path: Path) -> None:
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if _have_rarlab_unrar():
-                assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+            assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
 def _old_scheme_names(first: str, count: int) -> list[str]:
     names = [first]
     while len(names) < count:
-        following = next_old_rar_volume_name(names[-1])
+        following = next_rar_volume_name(names[-1], old_numbering=True)
         assert following is not None
         names.append(following)
     return names
@@ -306,10 +538,48 @@ def test_old_scheme_volume_names_run_past_r99_and_z99() -> None:
     assert names[:3] == ["a.rar", "a.r00", "a.r01"]
     assert names[100:103] == ["a.r99", "a.s00", "a.s01"]
     assert names[900:903] == ["a.z99", "a.{00", "a.{01"]
-    assert next_old_rar_volume_name("a.exe") == "a.r00"
-    assert next_old_rar_volume_name("a.sfx") == "a.r00"
-    assert next_old_rar_volume_name("A.RAR") == "A.R00"
-    assert next_old_rar_volume_name("a.part1.rar.bak") is None
+    assert next_rar_volume_name("a.exe", old_numbering=True) == "a.r00"
+    assert next_rar_volume_name("a.sfx", old_numbering=True) == "a.r00"
+    assert next_rar_volume_name("A.RAR", old_numbering=True) == "A.R00"
+    assert next_rar_volume_name("a.part1.rar.bak", old_numbering=True) is None
+    # A name with no extension counts as ``.rar``.
+    assert next_rar_volume_name("archive", old_numbering=True) == "archive.r00"
+    assert next_rar_volume_name("archive.", old_numbering=True) == "archive.r00"
+
+
+@pytest.mark.parametrize(
+    ("index", "old_numbering", "expected"),
+    [
+        (1, False, "a.part1.rar"),
+        (12, False, "a.part12.rar"),
+        (1, True, "a.rar"),
+        (2, True, "a.r00"),
+        (101, True, "a.r99"),
+        (102, True, "a.s00"),
+        (901, True, "a.z99"),
+        (902, True, "a.{00"),
+        (1001, True, "a.{99"),
+        (1002, True, "a.|00"),
+    ],
+)
+def test_rar_volume_names_follow_the_set_scheme(
+    index: int, old_numbering: bool, expected: str
+) -> None:
+    assert rar_volume_name("a", index, old_numbering=old_numbering) == expected
+
+
+@pytest.mark.parametrize("old_numbering", [False, True])
+def test_rar_volume_names_are_the_names_unrar_walks(old_numbering: bool) -> None:
+    """Every staged name is the one unrar looks for after the one before it, so a
+    staged set of any length reads to its end (unrar stopped at 901 old-style
+    volumes when the 902nd was named ``partN``). The property test in
+    ``test_property_safety`` samples indexes; this sweep is the part it cannot
+    replace, since it is sure to cross the ``.z99`` -> ``.{00`` boundary."""
+    for index in range(1, 1500):
+        current = rar_volume_name("a", index, old_numbering=old_numbering)
+        assert next_rar_volume_name(
+            current, old_numbering=old_numbering
+        ) == rar_volume_name("a", index + 1, old_numbering=old_numbering)
 
 
 @pytest.mark.parametrize("first", ["archive.rar", "archive.exe"])
@@ -387,17 +657,36 @@ def test_discover_old_scheme_first_volume_prefers_the_opened_case(
     assert [p.name for p in lower] == ["archive.RAR", "archive.r00"]
 
 
-def test_discover_old_scheme_stops_at_the_first_missing_name(tmp_path: Path) -> None:
-    """Volumes are walked from volume 1 by name, as unrar does: a file past a gap is
-    not in the set, and opening it on its own is a lone later volume. Neither is an
-    unrelated ``archive.a01`` that merely has the shape of a continuation."""
-    for name in ("archive.rar", "archive.r00", "archive.r02", "archive.a01"):
+def test_discover_old_scheme_reaches_past_a_gap_only_for_rar_files(
+    tmp_path: Path,
+) -> None:
+    """Volumes are walked from volume 1 by name, as unrar does. Past the first missing
+    name, a file is in the set only when it starts with a RAR signature (ruled
+    2026-10-06: a set with a gap lists every volume present), because the shape alone
+    also matches files that are not volumes. An unrelated ``archive.a01`` is never one:
+    unrar's walk from ``.rar`` cannot reach the letter ``a``."""
+    for name in ("archive.rar", "archive.r00", "archive.r03", "archive.a01"):
         (tmp_path / name).write_bytes(b"")
+    (tmp_path / "archive.r02").write_bytes(_RAR_MAGIC)
     siblings = discover_volume_siblings(tmp_path / "archive.rar")
     assert siblings is not None
-    assert [p.name for p in siblings] == ["archive.rar", "archive.r00"]
-    assert discover_volume_siblings(tmp_path / "archive.r02") is None
+    expected = ["archive.rar", "archive.r00", "archive.r02"]
+    assert [p.name for p in siblings] == expected
+    from_gap = discover_volume_siblings(tmp_path / "archive.r02")
+    assert from_gap is not None and [p.name for p in from_gap] == expected
+    assert discover_volume_siblings(tmp_path / "archive.r03") is None
     assert discover_volume_siblings(tmp_path / "archive.a01") is None
+
+
+def test_discover_old_scheme_without_volume_1(tmp_path: Path) -> None:
+    """Volume 1 missing: the RAR continuations present are still one set."""
+    for name in ("archive.r00", "archive.r01"):
+        (tmp_path / name).write_bytes(_RAR_MAGIC)
+    (tmp_path / "archive.z01").write_bytes(b"PK\x07\x08")
+    siblings = discover_volume_siblings(tmp_path / "archive.r01")
+    assert siblings is not None
+    assert [p.name for p in siblings] == ["archive.r00", "archive.r01"]
+    assert discover_volume_siblings(tmp_path / "archive.z01") is None
 
 
 def _rar4_block(block_type: int, flags: int, body: bytes) -> bytes:
@@ -446,7 +735,7 @@ def _write_old_scheme_rar4_set(
         )
         (directory / name).write_bytes(volume)
         paths.append(directory / name)
-        following = next_old_rar_volume_name(name)
+        following = next_rar_volume_name(name, old_numbering=True)
         assert following is not None
         name = following
     return paths
@@ -483,12 +772,12 @@ def test_old_scheme_set_past_r99_opens_from_any_volume(
 
 
 def test_old_scheme_set_with_a_gap_is_a_truncated_set(tmp_path: Path) -> None:
-    """Discovery stops at the first missing name, and the open then reports the set
-    as truncated: the volume before the gap says another one follows. A gapped set
-    is not joined across the gap."""
+    """A gapped set is one set with a volume missing (ruled 2026-10-06; it used to end
+    at the gap): the listing ends with ``TruncatedError`` naming the missing volume.
+    Nothing is joined across the gap. ``tests/test_rar_volume_gaps.py`` has the rest."""
     paths = _write_old_scheme_rar4_set(tmp_path, "big", _OLD_SCHEME_PAYLOAD, 4)
     paths[2].unlink()
-    with pytest.raises(TruncatedError, match="expects another volume"):
+    with pytest.raises(TruncatedError, match="volume 3 is missing"):
         with open_archive(paths[0]) as archive:
             list(archive.members())
 
@@ -657,20 +946,17 @@ def _tinyvol_sfx_pair(tmp_path: Path, *, decoy: bool) -> tuple[Path, Path]:
 def test_rar_sfx_split_opens_from_stubbed_tinyvol_fixtures(tmp_path: Path) -> None:
     part1, part2 = _tinyvol_sfx_pair(tmp_path, decoy=False)
     expected = b"ABCDEFGH" * 200
-    can_read = _have_rarlab_unrar()
     for anchor in (part1, part2):
         with open_archive(anchor) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if can_read:
-                assert archive.read("payload.bin") == expected
+            assert archive.read("payload.bin") == expected
         # Explicit format= skips detection, so volume 1 is parsed from offset 0.
         # A stub with no decoy magic still works; the decoy case is the next test.
         with open_archive(anchor, format=ArchiveFormat.RAR) as archive:
             assert archive.info.is_multivolume is True
             assert [m.name for m in archive.members()] == ["payload.bin"]
-            if can_read:
-                assert archive.read("payload.bin") == expected
+            assert archive.read("payload.bin") == expected
 
 
 def test_rar_sfx_split_ignores_decoy_magic_in_stub(tmp_path: Path) -> None:
@@ -742,7 +1028,7 @@ def test_extract_non_utf8_tar_with_explicit_encoding(tmp_path: Path) -> None:
     archive.write_bytes(buf.getvalue())
 
     dest = tmp_path / "out"
-    extract(archive, dest, encoding="latin-1")
+    open_and_extract(archive, dest, encoding="latin-1")
     assert (dest / "café.txt").read_bytes() == b"tea"
 
 
@@ -1990,3 +2276,32 @@ def test_zero_padded_rar_part_names_past_six_digits_are_siblings(
         tmp_path / "x.part0000001.rar",
         tmp_path / "x.part0000002.rar",
     ]
+
+
+def _has_volume_scheme(name: str) -> bool:
+    return volumes_mod._volume_scheme_and_base(name) is not None
+
+
+def _strips_7z_suffix(name: str) -> bool:
+    return _infer_nameless_member_name(name) != f"{name}.uncompressed"
+
+
+@pytest.mark.parametrize(
+    ("accepts", "name"),
+    [
+        (_has_volume_scheme, "a.7z.001"),
+        (_has_volume_scheme, "a.part1.rar"),
+        (_has_volume_scheme, "a.r00"),
+        (is_zip_split_segment_name, "a.z01"),
+        (is_zip_split_segment_name, "a.zip.001"),
+        (_strips_7z_suffix, "a.7z"),
+    ],
+    ids=["numbered", "rar-part", "old-rar", "zip-zNN", "zip-NNN", "7z-stem"],
+)
+def test_name_patterns_do_not_accept_trailing_newline(
+    accepts: Callable[[str], bool], name: str
+) -> None:
+    # Python's ``$`` also matches before a final newline; the newline is part of
+    # the name, so the pattern must not see a part marker or suffix behind it.
+    assert accepts(name)
+    assert not accepts(name + "\n")

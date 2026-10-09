@@ -18,12 +18,14 @@ import pytest
 from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
+    EncryptionError,
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
 from archivey.internal.streams import codecs as codecs_module
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
+from tests.zipcrypto import build_zipcrypto_zip
 
 _PAYLOAD = (b"zip-native-codec-payload\n" * 80) + bytes(range(256))
 
@@ -141,7 +143,11 @@ def test_zip_deflate64_without_inflate64_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _7z_zip(tmp_path, "Deflate64", _PAYLOAD)
-    monkeypatch.setattr(codecs_module, "_inflate64", None)
+    monkeypatch.setattr(
+        codecs_module,
+        "_inflate64",
+        codecs_module._LazyOptional("inflate64", present=False),
+    )
     with open_archive(archive) as ar:
         (member,) = ar.members()
         with pytest.raises(PackageNotInstalledError, match="inflate64"):
@@ -153,7 +159,9 @@ def test_zip_ppmd_without_pyppmd_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _7z_zip(tmp_path, "PPMd", _PAYLOAD)
-    monkeypatch.setattr(codecs_module, "_pyppmd", None)
+    monkeypatch.setattr(
+        codecs_module, "_pyppmd", codecs_module._LazyOptional("pyppmd", present=False)
+    )
     with open_archive(archive) as ar:
         (member,) = ar.members()
         with pytest.raises(PackageNotInstalledError, match="pyppmd"):
@@ -231,3 +239,92 @@ def test_zip_concurrent_codec_path_interleaved(tmp_path: Path) -> None:
         assert s2.read() == b"bbbb" * 999
         s1.close()
         s2.close()
+
+
+# LZMA1 properties lc=8, lp=0, pb=2 and a 64 KiB dictionary: what ``7z a -tzip
+# -mm=LZMA:lc=8`` writes. 7-Zip reads it; liblzma decodes lc + lp up to 4 only.
+_LZMA_LC8_PROPS = bytes([8 + 9 * (0 + 5 * 2)]) + (1 << 16).to_bytes(4, "little")
+
+
+def _zip_lzma_body(props: bytes) -> bytes:
+    # ZIP method 14: version (2), properties size (2), properties, then the stream.
+    return b"\x09\x14" + struct.pack("<H", len(props)) + props + b"\x00" * 16
+
+
+def test_zip_lzma_lc_lp_over_four_is_unsupported() -> None:
+    """format-zip: an LZMA member liblzma cannot decode is unsupported, not corrupt,
+    as for a 7z LZMA coder; the same shared check decides both."""
+    data = _build_minimal_zip(
+        b"lc8.txt", _zip_lzma_body(_LZMA_LC8_PROPS), _PAYLOAD, method=14
+    )
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        with pytest.raises(UnsupportedFeatureError, match=r"lc=8, lp=0"):
+            ar.read(member)
+
+
+def test_zip_lzma_out_of_range_properties_stay_corrupt() -> None:
+    # 225 and above is not an lc/lp/pb byte at all.
+    props = bytes([225]) + (1 << 16).to_bytes(4, "little")
+    data = _build_minimal_zip(b"bad.txt", _zip_lzma_body(props), _PAYLOAD, method=14)
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        with pytest.raises(CorruptionError):
+            ar.read(member)
+
+
+@requires_binary("7z")
+def test_zip_lzma_lc8_written_by_7zip_is_unsupported(tmp_path: Path) -> None:
+    archive = _7z_zip(tmp_path, "LZMA:lc=8", _PAYLOAD)
+    with zipfile.ZipFile(archive) as zf:
+        if zf.infolist()[0].compress_type != zipfile.ZIP_LZMA:
+            pytest.skip("7z did not write an LZMA member")
+    with open_archive(archive) as ar:
+        (member,) = ar.members()
+        with pytest.raises(UnsupportedFeatureError, match=r"lc=8"):
+            ar.read(member)
+
+
+def test_zip_lzma_lc8_under_zipcrypto_is_a_candidate_failure() -> None:
+    """Under ZipCrypto the properties are decrypted with a key only one byte vouched
+    for, so lc + lp over 4 may be a wrong key's garbage: it counts as the candidate
+    failing (the password-or-damage error), not as an unsupported member."""
+    data = build_zipcrypto_zip(
+        b"pw",
+        b"lc8.txt",
+        _PAYLOAD,
+        compression=zipfile.ZIP_LZMA,
+        compressed=_zip_lzma_body(_LZMA_LC8_PROPS),
+    )
+    with open_archive(io.BytesIO(data), password="pw") as ar:
+        (member,) = ar.members()
+        with pytest.raises(EncryptionError) as excinfo:
+            ar.read(member)
+    assert "lc=8" in str(excinfo.value.__cause__)
+
+
+def _zip_ppmd_header(restore: int) -> bytes:
+    # order 6, 16 MiB, then the restore method in the top four bits.
+    return struct.pack("<H", (6 - 1) | ((16 - 1) << 4) | (restore << 12))
+
+
+def test_zip_ppmd_restore_method_2_is_unsupported() -> None:
+    """7-Zip: "Unsupported Method" for restore method 2 (PPMd8 freeze, which it
+    builds without)."""
+    body = _zip_ppmd_header(2) + b"\x00" * 16
+    data = _build_minimal_zip(b"p.txt", body, _PAYLOAD, method=98)
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        with pytest.raises(UnsupportedFeatureError, match="restore method 2"):
+            ar.read(member)
+
+
+@pytest.mark.parametrize("restore", [3, 15])
+def test_zip_ppmd_restore_method_above_2_is_corrupt(restore: int) -> None:
+    """7-Zip: "Data Error" for a restore method above 2."""
+    body = _zip_ppmd_header(restore) + b"\x00" * 16
+    data = _build_minimal_zip(b"p.txt", body, _PAYLOAD, method=98)
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        with pytest.raises(CorruptionError, match=f"restore method {restore}"):
+            ar.read(member)

@@ -1,10 +1,11 @@
 """Coercion for the public API's enum-typed arguments.
 
 Every public entry point that declares an :class:`~enum.Enum` parameter accepts the
-member's **value** spelled as a string, and converts it at the boundary. ``extract(dest,
-overwrite="skip")`` is the same call as ``extract(dest,
-overwrite=OverwritePolicy.SKIP)``, and an unrecognised spelling raises
-:class:`~archivey.ArchiveyUsageError` there and then, naming what would have worked.
+member's **value** spelled as a string, and converts it at the boundary.
+``reader.extract_all(dest, overwrite="skip")`` is the same call as
+``reader.extract_all(dest, overwrite=OverwritePolicy.SKIP)``, and an unrecognised
+spelling raises :class:`~archivey.ArchiveyUsageError` there and then, naming what would
+have worked.
 
 **Why coerce rather than refuse.** The CLI and a throwaway script both hold strings, and
 the CLI was already doing this by hand (``ExtractionPolicy(policy)`` in
@@ -49,9 +50,15 @@ from typing import TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 
-__all__ = ["coerce_enum", "coerce_enum_collection", "normalize_spelling"]
+__all__ = [
+    "coerce_enum",
+    "coerce_enum_collection",
+    "normalize_spelling",
+    "spelling_table",
+]
 
 E = TypeVar("E", bound=Enum)
+T = TypeVar("T")
 
 
 def normalize_spelling(text: str) -> str:
@@ -66,6 +73,18 @@ def normalize_spelling(text: str) -> str:
     return text.strip().lower().replace("-", "_")
 
 
+def spelling_table(
+    *, fallback: Iterable[tuple[str, T]], preferred: Iterable[tuple[str, T]]
+) -> dict[str, T]:
+    """Normalized spelling -> value; ``preferred`` wins a tie, then the first one does."""
+    table: dict[str, T] = {}
+    for spelling, value in fallback:
+        table.setdefault(normalize_spelling(spelling), value)
+    for spelling, value in preferred:
+        table[normalize_spelling(spelling)] = value
+    return table
+
+
 @functools.cache
 def _lookup(enum_cls: type[E]) -> dict[str, E]:
     """Build (once per class) the normalized-spelling -> member map.
@@ -75,14 +94,10 @@ def _lookup(enum_cls: type[E]) -> dict[str, E]:
     such a tie; ``test_enum_arguments.py`` fails if one is introduced, rather than
     leaving the precedence to be discovered.
     """
-    table: dict[str, E] = {}
-    for member in enum_cls:
-        table.setdefault(normalize_spelling(member.name), member)
-    for member in enum_cls:
-        value = member.value
-        if isinstance(value, str):
-            table[normalize_spelling(value)] = member
-    return table
+    return spelling_table(
+        fallback=((m.name, m) for m in enum_cls),
+        preferred=((m.value, m) for m in enum_cls if isinstance(m.value, str)),
+    )
 
 
 def _takes(enum_cls: type[Enum], also_accepts: str | None) -> str:
@@ -130,10 +145,10 @@ def coerce_enum(
     if isinstance(value, enum_cls):
         return value
     if isinstance(value, Enum):
-        # Checked ahead of the string branch on purpose: several of our enums mix in
-        # ``str`` (``AbortOn``, ``StreamFormat``, …), so a member of the *wrong* class
-        # is a string too, and would otherwise be reported as a bad spelling rather
-        # than as the wrong type — which is what it is.
+        # Checked ahead of the string branch on purpose: several of our enums are
+        # ``StrEnum`` (``AbortOn``, ``StreamFormat``, …), so a member of the *wrong*
+        # class is a string too, and would otherwise be reported as a bad spelling
+        # rather than as the wrong type — which is what it is.
         raise ArchiveyUsageError(
             f"{call} takes {_takes(enum_cls, also_accepts)} for {param}, but got "
             f"{type(value).__name__}.{value.name}. "

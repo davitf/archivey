@@ -63,11 +63,14 @@ from archivey.internal.backends.sevenzip_methods import (
 from archivey.internal.backends.sevenzip_parser import (
     MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
+    FolderGraph,
     HeaderBlock,
     PlainHeader,
     SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
+    check_bind_pairs,
+    check_packed_indices,
     empty_archive,
     encoded_folder_slices,
     folder_is_encrypted,
@@ -87,6 +90,8 @@ from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
     CodecParams,
+    LzmaDataAfterEndError,
+    decode_lzma_filter_properties,
     open_codec_stream,
     parse_ppmd_var_h_properties,
 )
@@ -108,20 +113,10 @@ from archivey.internal.streams.zstd_framing import (
 # Omitting max_members on the archive-level entry point means the ListingLimits
 # default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
-
-# stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
-# py7zr relies on the same private `lzma._decode_filter_properties`. Bind once at import.
-_raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
-if _raw_decode_filter_properties is None:  # pragma: no cover
-    raise ImportError(
-        "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
-        "archivey's native 7z reader needs to decode raw LZMA1/LZMA2 coder properties. "
-        "Please report this to archivey (with your Python version)."
-    )
-_decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
 
 # The most filters one liblzma chain holds (``LZMA_FILTERS_MAX`` in lzma/filter.h).
 _LIBLZMA_MAX_FILTERS = 4
@@ -169,21 +164,26 @@ class _CodecStage:
 class _LzmaChainStage:
     """One liblzma raw-filter chain (LZMA1/LZMA2 with any Delta/BCJ filters).
 
-    ``cap_size`` bounds the decoded output with a ``SlicingStream``; it is set for
-    every LZMA1 chain, because 7-Zip writes LZMA1 without an end marker and a reader
-    past the declared size (a BCJ look-ahead, BPO-21872, or a following codec) would
-    otherwise ask for input that is not there. ``None`` means no cap. The following
-    ``_FilterStage`` must close that slice (``owns_inner=True``) — DecompressorStream
-    does not close a passed-in stream by default.
+    ``cap_size`` bounds the decoded output (the codec's ``unpack_size``); it is set
+    for every LZMA1 chain, because 7-Zip writes LZMA1 without an end marker and a
+    reader past the declared size (a BCJ look-ahead, BPO-21872, or a following codec)
+    would otherwise ask for input that is not there. ``None`` means no cap. The
+    following ``_FilterStage`` must close the capped stream (``owns_inner=True``) —
+    DecompressorStream does not close a passed-in stream by default.
 
     ``end_check_size`` is set for an LZMA2 chain instead: the declared output size,
     past which a decoded byte is corruption (:class:`_DecodedPastSizeCheck`).
+
+    ``pack_size`` is the chain's input length, as for :class:`_CodecStage`: the codec
+    reads no further, so AES padding is outside the span in which input after an end
+    marker is corruption.
     """
 
     codec: Codec
     filters: list[dict]
     cap_size: int | None
     end_check_size: int | None = None
+    pack_size: int | None = None
 
 
 @dataclass
@@ -291,20 +291,13 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
                 f"7z coder {_method_hex(coder.method)} with "
                 f"{coder.num_in_streams} inputs is not supported"
             )
-    # With one output per coder, out-stream ``i`` is coder ``i``'s output.
-    in_base: list[int] = []
-    total_in = 0
-    for coder in coders:
-        in_base.append(total_in)
-        total_in += coder.num_in_streams
-    bound: dict[int, int] = {}
-    for in_index, out_index in folder.bind_pairs:
-        if in_index in bound or not 0 <= out_index < len(coders):
-            raise CorruptionError("7z folder has an invalid coder bind pair")
-        bound[in_index] = out_index
-    if len(set(bound.values())) != len(bound):
-        raise CorruptionError("7z folder binds one coder output to two inputs")
-    roots = [i for i in range(len(coders)) if i not in set(bound.values())]
+    # The two checks leave every in-stream either bound to a coder's output (so
+    # ``graph.producer`` names that coder) or packed: an in-stream with no producer
+    # is in ``packed_indices``, which the two ``.index`` calls below rely on.
+    graph = FolderGraph.of(folder)
+    check_bind_pairs(folder.bind_pairs, graph.total_in, graph.total_out)
+    check_packed_indices(folder.packed_indices, set(graph.bound), graph.total_in)
+    roots = graph.roots()
     if not roots:
         raise CorruptionError("7z folder coder graph has a cycle and no output")
     if len(roots) > 1:
@@ -317,13 +310,10 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
     visited: set[int] = set()
 
     def input_chain(in_index: int) -> _Chain:
-        if in_index in folder.packed_indices:
-            if in_index in bound:
-                raise CorruptionError("7z folder coder input is both packed and bound")
-            return _Chain(folder.packed_indices.index(in_index), [])
-        if in_index not in bound:
-            raise CorruptionError("7z folder coder input is neither packed nor bound")
-        return chain_ending_at(bound[in_index])
+        producer = graph.producer(in_index)
+        if producer is not None:
+            return chain_ending_at(producer)
+        return _Chain(folder.packed_indices.index(in_index), [])
 
     def chain_ending_at(top: int) -> _Chain:
         run: list[int] = []  # top first; reversed into decode order below
@@ -335,18 +325,18 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
             # Four inputs means BCJ2: the check at the top refused every other coder
             # with more than one input. Relaxing that check must change this test too.
             if coders[coder_index].num_in_streams == 4:
-                base = in_base[coder_index]
                 source: int | _Bcj2Stage = _Bcj2Stage(
-                    [input_chain(base + k) for k in range(4)],
+                    [input_chain(in_index) for in_index in graph.inputs[coder_index]],
                     folder.unpack_sizes[coder_index],
                 )
                 break
             run.append(coder_index)
-            in_index = in_base[coder_index]
-            if in_index in folder.packed_indices or in_index not in bound:
-                source = input_chain(in_index).source
+            (in_index,) = graph.inputs[coder_index]
+            producer = graph.producer(in_index)
+            if producer is None:
+                source = folder.packed_indices.index(in_index)
                 break
-            coder_index = bound[in_index]
+            coder_index = producer
         run.reverse()
         return _Chain(source, _plan_run(folder, run, source), folder.unpack_sizes[top])
 
@@ -406,13 +396,16 @@ def _plan_run(
             position += 1
             continue
         # LZMA_FAMILY (LZMA1/LZMA2/Delta/BCJ): batch the contiguous run, then plan it.
+        run_input_size = (
+            folder.unpack_sizes[run[position - 1]] if position > 0 else source_size
+        )
         lzma_run: list[SevenZipCoder] = []
         sizes: list[int] = []
         while position < len(run) and is_lzma_family(coders[run[position]].method):
             lzma_run.append(coders[run[position]])
             sizes.append(folder.unpack_sizes[run[position]])
             position += 1
-        stages.extend(_plan_lzma_family(lzma_run, sizes))
+        stages.extend(_plan_lzma_family(lzma_run, sizes, run_input_size))
     return stages
 
 
@@ -434,9 +427,7 @@ def _check_size_preserving_coders(
     for position, index in enumerate(run):
         coder = folder.coders[index]
         method = require(coder.method)
-        if method.kind is not MethodKind.COPY and not (
-            method is METHOD_DELTA or is_bcj(coder.method)
-        ):
+        if method.kind is not MethodKind.COPY and not method.is_filter:
             continue
         input_size = (
             folder.unpack_sizes[run[position - 1]] if position > 0 else source_size
@@ -460,7 +451,7 @@ def _in_liblzma_chain(coder: SevenZipCoder) -> bool:
 
 
 def _plan_lzma_family(
-    run: list[SevenZipCoder], unpack_sizes: list[int]
+    run: list[SevenZipCoder], unpack_sizes: list[int], input_size: int | None = None
 ) -> list[_Stage]:
     """Plan a run of LZMA1/LZMA2/Delta/BCJ coders, given in decode order.
 
@@ -471,6 +462,9 @@ def _plan_lzma_family(
     any codec of its segment (``7z a -m0=LZMA2 -m1=BCJ`` stores BCJ first in decode
     order), or past the limit, runs as its own stage. So does a filter Python's
     ``lzma`` will not build (ARM64), and every filter decoded after it in its segment.
+
+    ``input_size`` is the run's input length (``None`` over a pack stream); each
+    chain's input is the output of the coder before it.
     """
     if len(run) != len(unpack_sizes):
         raise CorruptionError("7z LZMA-family run length does not match unpack sizes")
@@ -503,7 +497,9 @@ def _plan_lzma_family(
                 chain_end += 1
             stages.append(
                 _lzma_chain_stage(
-                    run[index:chain_end], cap_size=unpack_sizes[chain_end - 1]
+                    run[index:chain_end],
+                    cap_size=unpack_sizes[chain_end - 1],
+                    pack_size=unpack_sizes[index - 1] if index > 0 else input_size,
                 )
             )
             stages.extend(
@@ -518,7 +514,10 @@ def _plan_lzma_family(
             # As above, the chain's last size is the LZMA2 coder's own.
             stages.append(
                 _lzma_chain_stage(
-                    run[index:end], cap_size=None, end_check_size=unpack_sizes[end - 1]
+                    run[index:end],
+                    cap_size=None,
+                    end_check_size=unpack_sizes[end - 1],
+                    pack_size=unpack_sizes[index - 1] if index > 0 else input_size,
                 )
             )
         index = end
@@ -529,19 +528,10 @@ def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
     if coder.properties is None:
         return {"id": filter_id}
     try:
-        return _decode_filter_properties(filter_id, coder.properties)
+        return decode_lzma_filter_properties(
+            filter_id, coder.properties, what="7z LZMA coder"
+        )
     except (lzma.LZMAError, ValueError) as exc:
-        props = coder.properties
-        if filter_id == lzma.FILTER_LZMA1 and len(props) == 5 and props[0] < 9 * 5 * 5:
-            # A well-formed lc/lp/pb byte that liblzma refuses: 7-Zip accepts
-            # lc + lp up to 12 (``7z a -m0=LZMA:lc=8``), liblzma only up to 4
-            # (``LZMA_LCLP_MAX``). The archive is valid; this reader cannot decode it.
-            lc, lp = props[0] % 9, props[0] // 9 % 5
-            if lc + lp > 4:
-                raise UnsupportedFeatureError(
-                    f"7z LZMA coder with lc={lc}, lp={lp} is not supported: "
-                    "liblzma decodes lc + lp up to 4"
-                ) from exc
         raise CorruptionError(
             f"Malformed 7z LZMA coder properties for {_method_hex(coder.method)}"
         ) from exc
@@ -558,7 +548,7 @@ def _lzma_filter(coder: SevenZipCoder) -> dict:
         if len(coder.properties) != 1:
             raise CorruptionError("Malformed 7z Delta coder properties")
         return {"id": lzma.FILTER_DELTA, "dist": coder.properties[0] + 1}
-    if method.lzma_filter_id is not None and is_bcj(coder.method):
+    if method.lzma_filter_id is not None and method.is_branch_filter:
         return _bcj_filter(coder, method.lzma_filter_id)
     raise UnsupportedFeatureError(
         f"Unsupported 7z LZMA-family coder {_method_hex(coder.method)}"
@@ -640,7 +630,7 @@ def _open_aes_stage(
 
 def _filter_stage(coder: SevenZipCoder, unpack_size: int) -> _FilterStage:
     method = require(coder.method)
-    if method is not METHOD_DELTA and not is_bcj(coder.method):
+    if not method.is_filter:
         raise UnsupportedFeatureError(
             f"Unsupported 7z filter-only coder {_method_hex(coder.method)}"
         )
@@ -652,6 +642,7 @@ def _lzma_chain_stage(
     *,
     cap_size: int | None,
     end_check_size: int | None = None,
+    pack_size: int | None = None,
 ) -> _LzmaChainStage:
     has_lzma1 = any(lookup(c.method) is METHOD_LZMA for c in run)
     has_lzma2 = any(lookup(c.method) is METHOD_LZMA2 for c in run)
@@ -666,7 +657,7 @@ def _lzma_chain_stage(
     # Decode order is outer-first; liblzma wants encode order → reversed(run).
     filters = [_lzma_filter(coder) for coder in reversed(run)]
     codec = Codec.LZMA if has_lzma1 and not has_lzma2 else Codec.LZMA2
-    return _LzmaChainStage(codec, filters, cap_size, end_check_size)
+    return _LzmaChainStage(codec, filters, cap_size, end_check_size, pack_size)
 
 
 # The codecs whose output _DecodedPastSizeCheck checks, with 7-Zip's name for each.
@@ -709,10 +700,12 @@ class _DecodedPastSizeCheck(DelegatingStream):
     Bounding it would need a counter on the codec's input, outside this wrapper.
 
     AES padding in the codec's input is not output, so it is never surplus: LZMA2
-    raises on input after its end marker, and the other decoders end the stream at it
-    (or, for the rapidgzip accelerators, never see it: their input is cut to
-    ``pack_size``). So a decoder error on the probe read is not surplus output either;
-    7-Zip also does not treat input after the end of the stream as a data error.
+    reads only its ``pack_size`` span, which excludes the pad. The other decoders end
+    the stream before the pad (or, for the rapidgzip accelerators, never see it: their
+    input is cut to ``pack_size``). So a decoder error on the probe read is not surplus
+    output either, with one exception: input left in an LZMA2 coder's span after its
+    end marker (:class:`LzmaDataAfterEndError`), which 7-Zip reports as a data error.
+    For the other codecs 7-Zip only warns about input after the end of the stream.
     Discarding that error is safe because every codec wrapped here verifies its data
     before or together with delivering it (the BZip2 block CRC, the Zstd and LZ4
     content checksums), so a failed check of the declared data raises on the read
@@ -750,6 +743,10 @@ class _DecodedPastSizeCheck(DelegatingStream):
             self._checked = True
             try:
                 surplus = self._inner.read(1)
+            except LzmaDataAfterEndError:
+                # Input after an LZMA2 end marker inside the coder's span: 7-Zip's
+                # "Data Error". The span excludes AES padding (``pack_size``).
+                raise
             except (ArchiveyError, lzma.LZMAError, EOFError):
                 surplus = b""
             if surplus:
@@ -785,7 +782,7 @@ def _execute_stage(
 
     ``owns_input`` is consumed only by ``_FilterStage`` (``owns_inner``): True when
     ``stream`` is a private earlier output rather than a borrowed pack view. Other
-    stages ignore it: stdlib ``LZMAFile`` does not close a passed-in
+    stages ignore it: the raw LZMA decoder stream does not close a passed-in
     fileobj, so ``[AES, LZMA]`` still leaves the AES decrypt stream to GC.
     ``AesDecryptStream`` borrows the pack view (``owns_inner`` default).
     """
@@ -802,6 +799,11 @@ def _execute_stage(
                 properties=stage.properties,
                 unpack_size=stage.unpack_size,
                 pack_size=stage.pack_size,
+                # A bzip2 coder's data is one stream, as 7-Zip reads it: it ends at
+                # its first end-of-stream marker. No other codec stage reads the
+                # flag, and Zstd and LZ4 keep counting concatenated frames together
+                # (format-7z), so it is set for BZip2 only.
+                single_stream=stage.codec is Codec.BZIP2,
             ),
             collector=collector,
             seekable=seekable,
@@ -819,13 +821,17 @@ def _execute_stage(
             stage.codec,
             stream,
             config=stream_config,
-            params=CodecParams(filters=stage.filters),
+            # An LZMA1 chain is capped at its size by the codec (``unpack_size``),
+            # which also looks for an end marker there.
+            params=CodecParams(
+                filters=stage.filters,
+                unpack_size=stage.cap_size,
+                pack_size=stage.pack_size,
+            ),
             collector=collector,
             seekable=seekable,
         )
-        if stage.cap_size is not None:
-            out = SlicingStream(out, length=stage.cap_size, owns_inner=True)
-        elif stage.end_check_size is not None:
+        if stage.end_check_size is not None:
             out = _DecodedPastSizeCheck(
                 out, size=stage.end_check_size, label=_CODEC_LABELS[Codec.LZMA2]
             )
@@ -859,8 +865,8 @@ def open_folder_pipeline(
     chain, so it closes the previous stage's output — the LZMA1 cap slice, or an
     ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on stages do not close
     their input: ``[AES, LZMA]`` (the common encrypted shape) still leaves the AES
-    stream unclosed, because stdlib ``LZMAFile`` does not close a passed-in fileobj.
-    The AES stream borrows the pack view (``owns_inner`` default) and holds no OS
+    stream unclosed, because the raw LZMA decoder stream does not close a passed-in
+    fileobj. The AES stream borrows the pack view (``owns_inner`` default) and holds no OS
     handle. Wiring codec stages to close it is a follow-up; seek does not depend on it.
 
     In a BCJ2 folder, ``seekable`` also applies to every branch, because the
@@ -1152,5 +1158,5 @@ def parse_sevenzip_archive(
     # O8: encrypted headers never legitimately decode to zero file records.
     # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
     if header_encrypted and not block.files:
-        raise EncryptionError("Password(s) rejected for the 7z header")
+        raise EncryptionError(HEADER_PASSWORD_REJECTED)
     return materialize_archive(signature, block, is_header_encrypted=header_encrypted)
