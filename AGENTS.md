@@ -577,8 +577,9 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
 - An agent may merge a straightforward PR once its review approves and CI is green
   (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
   tricky one, you can ask me to take a look before merging").
-  Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, a public
-  API removal, a very large diff, or anything an open decision touches.
+  Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
+  or renaming a public name (before 0.2.0 too, `design-rules.md` DR-12), a very large
+  diff, or anything an open decision touches.
 - Review rounds run one at a time across the project (maintainer, 2026-10-06, to avoid
   hitting quotas). Check that no review run is in
   progress before adding the `review` label.

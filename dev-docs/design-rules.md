@@ -452,7 +452,9 @@ whatever the setting (ADR 0002 amendment, 2026-10-01).
 **Rule.** Until 0.2.0 ships, any breaking cleanup goes in now: deleting a name, renaming
 a field, changing an exception's base class. If a public name has a single value, no
 caller, or an obvious two-line alternative, delete it. Offer "remove it" as an option on
-every API question.
+every API question. The maintainer still reviews every removal or rename of a public
+name, before 0.2.0 too: he is for the cleanup and wants to check it and know it happened
+(2026-10-09). Propose it, don't hold it back.
 
 **Why.** Removing a public name after the release breaks callers. Adding it back later
 breaks no one ("no need to delay until after release", 2026-09-27).
@@ -786,7 +788,8 @@ reaches him.
 ## What still goes to the maintainer
 
 - A **default limit value** or any number users will see as a default.
-- A **new public name**, or removing or renaming one after 0.2.0.
+- A **new public name**, or **removing or renaming** one, before 0.2.0 as well as after
+  (DR-12). Expect a yes; the point is that he checks and knows.
 - Accepting a **residual risk** in the threat model.
 - **Reversing** an earlier ruling. This needs a new argument, not a restatement (ADR 0019).
 - A **clash between consistency and the official tool** where the factors split.
