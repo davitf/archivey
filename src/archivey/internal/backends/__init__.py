@@ -8,6 +8,7 @@ Module map:
 
 - :mod:`.zip_reader` — ZIP (stdlib central directory; codecs/crypto for member data)
 - :mod:`.tar_reader` — TAR / compressed TAR (stdlib ``tarfile``)
+- :mod:`.udif` — UDIF disk images (``.dmg``); recognised and refused, not read
 - :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
@@ -41,4 +42,5 @@ from archivey.internal.backends import (
     single_file_reader as _single_file_reader,  # noqa: F401
 )
 from archivey.internal.backends import tar_reader as _tar_reader  # noqa: F401
+from archivey.internal.backends import udif as _udif  # noqa: F401
 from archivey.internal.backends import zip_reader as _zip_reader  # noqa: F401

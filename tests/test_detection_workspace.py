@@ -9,13 +9,17 @@ Measured on ``main`` before this change (seekable stream through ``detect_format
 | ZIP, TAR | 1 | 0 | 1 |
 
 The workspace makes the shape normative for the **prefix tiers**: zero backward seeks
-for growing peeks, and each source byte fetched at most once. Content-probe ``read_at``
-on cheap random-access sources may seek and restore the handle (bounded by the Brotli
-chain-walk link cap); those restores are not "re-fetch rewinds".
+for growing peeks, and each prefix byte fetched at most once. The UDIF trailer read
+sits outside that buffer. A seekable bzip2 or xz file fetches its last 512 bytes
+there, and a later tier that reads the file fetches them again.
+Content-probe ``read_at`` on cheap random-access sources may seek and restore the
+handle (bounded by the Brotli chain-walk link cap); those restores are not
+"re-fetch rewinds".
 """
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
 import os
@@ -41,7 +45,7 @@ from archivey.internal.sfx import (
 )
 from archivey.internal.source import ArchiveSource
 from archivey.types import ArchiveFormat
-from tests.detection_cost_util import within_budget
+from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -147,9 +151,11 @@ def test_seekable_detection_has_zero_backward_seeks(
     src = InstrumentedBytesIO(payload)
     info = detect_format(src)
     assert info.format == expect_format
-    # The exit path restores the caller's entry position (one seek back). That is the
-    # non-consumption contract, not a re-read rewind — the old defect was five rewinds
-    # that each re-fetched the same prefix. Unique bytes == bytes read pins "fetched once".
+    # These three return before the trailer step. The exit path restores the caller's
+    # entry position (one seek back). That is the non-consumption contract, not a
+    # re-read rewind — the old defect was five rewinds that each re-fetched the same
+    # prefix. Unique bytes == bytes read pins "fetched once" for a detection that
+    # never reads the tail. A bzip2 or xz file does, and has its own test.
     assert src.unique_bytes == src.bytes_read, (
         f"{label}: re-fetched bytes (unique={src.unique_bytes}, read={src.bytes_read})"
     )
@@ -158,9 +164,42 @@ def test_seekable_detection_has_zero_backward_seeks(
         f"(reads={src.read_calls}, forward={src.forward_seeks})"
     )
     assert src.tell() == 0  # non-consuming
-    # No tier seeks towards the end. The bound leaves room for one content-probe
-    # ``read_at``, which restores the position afterwards.
+    # No tier on this path seeks towards the end. The bound leaves room for one
+    # content-probe ``read_at``, which restores the position afterwards.
     assert src.forward_seeks <= 1
+    assert src.tell() == 0
+
+
+def test_seekable_bzip2_rereads_the_trailer_bytes() -> None:
+    """A bzip2 near-magic hit reads the koly block, then the inner-TAR probe reads the file.
+
+    The tail bytes are not kept, so the later read fetches them again. The delta is
+    512. A trailer tier that cached the bytes, or that did not run, would report 0.
+    """
+    payload = bz2.compress(os.urandom(20_000))
+    assert len(payload) > 4096
+    src = InstrumentedBytesIO(payload)
+    info = detect_format(src)
+    assert info.format == ArchiveFormat.BZ2
+    assert src.bytes_read - src.unique_bytes == 512
+    assert src.backward_seeks == 2
+    assert src.forward_seeks == 1
+    assert src.tell() == 0
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.unique_bytes_read == src.unique_bytes + 512
+
+
+def test_seekable_koly_image_reads_the_trailer_once() -> None:
+    """A koly hit returns at the trailer, before the inner-TAR probe re-reads the file."""
+    payload = bz2.compress(os.urandom(20_000))
+    trailer = bytearray(512)
+    trailer[:12] = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
+    src = InstrumentedBytesIO(payload + bytes(trailer))
+    info = detect_format(src)
+    assert info.format == ArchiveFormat.DMG
+    assert src.bytes_read == src.unique_bytes
+    assert src.backward_seeks == 2
+    assert src.forward_seeks == 1
     assert src.tell() == 0
 
 
@@ -347,7 +386,11 @@ def test_fast_sfx_scan_respects_max_scan_bytes(tmp_path: Path) -> None:
     )
     fast = detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))
     assert balanced.cost_receipt is not None and fast.cost_receipt is not None
-    assert fast.cost_receipt.unique_bytes_read <= FAST_BUDGET.max_scan_bytes
+    # The scan window is ``max_scan_bytes``. The trailer block is a separate
+    # read at the end of the file, so it is allowed on top of that window.
+    assert fast.cost_receipt.unique_bytes_read <= (
+        FAST_BUDGET.max_scan_bytes + trailer_allowance()
+    )
     assert fast.cost_receipt.unique_bytes_read < balanced.cost_receipt.unique_bytes_read
     assert fast.cost_receipt.scanned_bytes <= FAST_BUDGET.max_scan_bytes
 
@@ -380,7 +423,7 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
 
 def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
-    # is CHAIN_MAX_LINKS * CHAIN_HEADER_READ.
+    # is the Brotli walk plus one trailer block.
     from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.brotli_framing import (
         CHAIN_HEADER_READ,
@@ -388,7 +431,7 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     )
 
     scan = BALANCED_BUDGET.max_scan_bytes
-    allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ
+    allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance()
     at_cap = DetectionCostReceipt(
         unique_bytes_read=scan + allowance,
         scanned_bytes=scan,

@@ -19,7 +19,7 @@ import base64
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
@@ -53,7 +53,7 @@ class _JsonSafeContext:
         return dataclasses.asdict(self)
 
 
-class DiagnosticCode(str, Enum):
+class DiagnosticCode(StrEnum):
     """Stable machine codes for advisory events."""
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
@@ -83,7 +83,7 @@ class DiagnosticCode(str, Enum):
     # the placement clause in ``openspec/specs/diagnostics``.
 
 
-class DiagnosticDisposition(str, Enum):
+class DiagnosticDisposition(StrEnum):
     """Per-code policy disposition for an emitted diagnostic."""
 
     IGNORE = "ignore"

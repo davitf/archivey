@@ -69,15 +69,18 @@ def _archive_format_spellings() -> dict[str, ArchiveFormat]:
 def _accepted_archive_formats() -> str:
     """The spellings worth recommending, for a refusal message.
 
-    Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension and
-    are still accepted by the table, but neither opens anything — ``format="unknown"``
-    raises ``UnsupportedFeatureError`` and ``format="directory"`` an ``OSError`` — so a
-    message offering them as repairs would be sending the caller somewhere worse.
-    Lowercasing keeps the list from implying that case is significant, in a message
-    whose subject is a spelling that ignores it.
+    Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension,
+    so the check below drops them: ``format="unknown"`` raises
+    ``UnsupportedFeatureError`` and ``format="directory"`` an ``OSError``. ``DMG``
+    has an extension, and offering it would do the same — the spelling resolves,
+    then open refuses the image — so it is excluded by name. Lowercasing keeps the
+    list from implying that case is significant, in a message whose subject is a
+    spelling that ignores it.
     """
     spellings = sorted(
-        fmt.file_extension().lower() for fmt in _FORMAT_NAMES if fmt.file_extension()
+        fmt.file_extension().lower()
+        for fmt in _FORMAT_NAMES
+        if fmt.file_extension() and fmt.container is not ContainerFormat.DMG
     )
     return ", ".join(repr(s) for s in spellings)
 
@@ -124,9 +127,9 @@ def coerce_archive_format(
         return None
     if isinstance(value, ArchiveFormat):
         return value
-    # Before the string branch, and this ordering is the point: several of our enums mix
-    # in ``str``, so a member of one is *also* a ``str`` whose value is often exactly an
-    # extension spelling. Without this, ``ContainerFormat.TAR`` coerced to
+    # Before the string branch, and this ordering is the point: several of our enums
+    # are ``StrEnum``, so a member of one is *also* a ``str`` whose value is often
+    # exactly an extension spelling. Without this, ``ContainerFormat.TAR`` coerced to
     # ``ArchiveFormat.TAR`` — the caller's half-specified assertion silently completed
     # with an ``UNCOMPRESSED`` stream, so ``open_archive("a.tar.gz",
     # format=ContainerFormat.TAR)`` failed as ``TruncatedError`` on a healthy archive:
@@ -159,7 +162,7 @@ def coerce_stream_or_archive_format(
         return None
     if isinstance(value, (ArchiveFormat, StreamFormat)):
         return value
-    # As in ``coerce_archive_format``: a ``str``-mixin member of a third enum would
+    # As in ``coerce_archive_format``: a ``StrEnum`` member of a third enum would
     # otherwise be read as a spelling. ``ContainerFormat.ZIP`` survived here only
     # because ``_resolve_stream_format`` refuses container formats later, for an
     # unrelated reason and with an unrelated message.
