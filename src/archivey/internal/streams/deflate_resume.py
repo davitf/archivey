@@ -19,8 +19,13 @@ that reaches the end of its DEFLATE stream raises :class:`ResumeReachedStreamEnd
 the caller decodes from the start instead, which checks it. Reaching the end of the
 input first is a truncation, which a checksum would not change.
 
-The caller is ``_StdlibOnAcceleratorError`` in ``codecs.py``, which takes over a read
-from rapidgzip; the points come from ``RapidgzipChildStream.resume_point``.
+:class:`DeflateResumeDecoder` serves ``_StdlibOnAcceleratorError`` in ``codecs.py``,
+which takes over a read from rapidgzip. :func:`stream_end` asks only whether a raw
+DEFLATE stream reaches a final block, and where. Raw DEFLATE has no checksum, so
+there reaching the end is the answer, with no ``ResumeReachedStreamEnd`` case. Its
+caller is ``_DeflateEndCheckStream`` in ``codecs.py``, before any takeover, to decide
+whether one is needed. The points for both come from
+``RapidgzipChildStream.resume_point``.
 """
 
 from __future__ import annotations
@@ -129,6 +134,26 @@ def _prefix(bit: int) -> tuple[bytes, int]:
     return data, low
 
 
+def _resume_decompressor(resume: DeflateResume) -> "zlib._Decompress":
+    """A raw DEFLATE decompressor with ``resume``'s window, after checking the point."""
+    if not 0 <= resume.bit < 8 or len(resume.window) > WINDOW_SIZE:
+        raise ValueError(f"not a DEFLATE resume point: {resume!r}")
+    if resume.window:
+        return zlib.decompressobj(-15, zdict=resume.window)
+    return zlib.decompressobj(-15)
+
+
+def _splice(bit: int, chunk: bytes) -> bytes:
+    """The first input ``chunk`` of a decode that starts ``bit`` bits into its first
+    byte: empty blocks that end ``bit`` bits into a byte, then that byte's other bits,
+    then the rest of ``chunk`` unchanged."""
+    if not bit or not chunk:
+        return chunk
+    prefix, low = _prefix(bit)
+    high = chunk[0] & (0xFF << bit) & 0xFF
+    return prefix + bytes([low | high]) + chunk[1:]
+
+
 class DeflateResumeDecoder(BaseDecoder):
     """Inflate from a :class:`DeflateResume` point to the end of the input.
 
@@ -146,15 +171,10 @@ class DeflateResumeDecoder(BaseDecoder):
         corruption: Callable[[zlib.error], Exception] | None,
         truncated: str,
     ) -> None:
-        if not 0 <= resume.bit < 8 or len(resume.window) > WINDOW_SIZE:
-            raise ValueError(f"not a DEFLATE resume point: {resume!r}")
+        self._decomp = _resume_decompressor(resume)
         self._base = base
         self._corruption = corruption
         self._truncated = truncated
-        if resume.window:
-            self._decomp = zlib.decompressobj(-15, zdict=resume.window)
-        else:
-            self._decomp = zlib.decompressobj(-15)
         self._bit = resume.bit
         # Cleared once the first byte of input has been spliced onto the prefix.
         self._before_input = True
@@ -166,11 +186,7 @@ class DeflateResumeDecoder(BaseDecoder):
         if not self._before_input or not chunk:
             return chunk
         self._before_input = False
-        if not self._bit:
-            return chunk
-        prefix, low = _prefix(self._bit)
-        high = chunk[0] & (0xFF << self._bit) & 0xFF
-        return prefix + bytes([low | high]) + chunk[1:]
+        return _splice(self._bit, chunk)
 
     def _decompress(self, data: bytes, max_length: int) -> bytes:
         try:
@@ -223,11 +239,10 @@ def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | Non
     produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
     if point is not None:
         resume = point.state
-        if not isinstance(resume, DeflateResume) or point.decompressed_offset > cap:
-            raise ValueError(f"not a DEFLATE resume point before {cap}: {point!r}")
+        # RapidgzipChildStream.resume_point gives only such points.
+        assert isinstance(resume, DeflateResume) and point.decompressed_offset <= cap
+        decomp = _resume_decompressor(resume)
         produced, bit = point.decompressed_offset, resume.bit
-        if resume.window:
-            decomp = zlib.decompressobj(-15, zdict=resume.window)
         source.seek(point.compressed_offset)
     else:
         source.seek(0)
@@ -240,11 +255,7 @@ def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | Non
                 data = source.read(1 << 16)
                 if not data:
                     return None
-                if bit:
-                    prefix, low = _prefix(bit)
-                    high = data[0] & (0xFF << bit) & 0xFF
-                    data = prefix + bytes([low | high]) + data[1:]
-                    bit = 0
+                data, bit = _splice(bit, data), 0
             produced += len(decomp.decompress(data, 1 << 20))
             data = decomp.unconsumed_tail
     except zlib.error:

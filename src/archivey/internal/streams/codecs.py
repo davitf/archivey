@@ -2124,9 +2124,22 @@ class _DeflateEndCheckStream(DelegatingStream):
       standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
       inside), which gives the verdict it gives with the accelerator off.
 
-    The check costs a decode of the output between the resume point and the end, which
-    the point spacing in ``rapidgzip_child.py`` bounds; a stream too short for a point
-    is decoded again whole.
+    The check costs a decode of the output between the resume point and the end. The
+    child keeps its first point only once 4 MiB of output has been delivered
+    (``_MIN_QUERY_SPACING`` in ``rapidgzip_child.py``), so a stream with less output
+    than that is decoded again whole, by zlib in one thread: under ``ON`` such a member
+    pays a whole standard-library decode on top of rapidgzip's (measured on 2 MiB:
+    57 ms against 45 ms without the check, and 11 ms for zlib alone, since starting
+    the child already costs more than that). ``AUTO`` engages only from
+    16 MiB of compressed input (``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``), where the
+    decode is the stretch after the last point: measured on an 82 MiB stream, about
+    2 MiB and 10 ms. A point at the end itself cannot be had instead: its window is
+    the 32 KiB of output before the point, and the stream keeps only the 32 KiB
+    before the end.
+
+    The view is not guarded against ``OSError`` as the gzip member scan is: raw DEFLATE
+    is container-only, so the view is a sibling of the handle the decode itself reads,
+    and an error from it is the caller's source failing, which reaches the caller.
 
     The check runs once, on the read that meets the end, as in
     :class:`_GzipTruncationCheckStream` (ADR 0014: never from ``close()``); a
@@ -3326,8 +3339,10 @@ class GzipCodec(_DeflateFamilyCodec):
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
         # A declared size does not replace this check: the VerifyingStream outside
         # checks only the length, and rapidgzip ends a cut member with no error, so a
-        # size equal to the output before the cut would pass (found by the accelerator
-        # fuzz targets).
+        # size equal to the output before the cut would pass (the raw DEFLATE case the
+        # accelerator fuzz targets found). No container declares a gzip size today
+        # (gzip is never a ZIP or 7z coder), so this only keeps the check from
+        # depending on that staying true.
         # Truncation backstop for **any** seekable source (path or caller-owned stream):
         # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
         # independent view: the check stands down only for a further member zlib's gzip

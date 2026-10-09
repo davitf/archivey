@@ -24,7 +24,6 @@ import functools
 import gzip
 import io
 import random
-import struct
 import zlib
 from collections.abc import Callable
 from typing import BinaryIO
@@ -44,6 +43,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires
+from tests.test_zip_native_codecs import _build_minimal_zip
 
 _OFF = AcceleratorMode.OFF
 _ON = AcceleratorMode.ON
@@ -512,36 +512,6 @@ def test_an_intact_raw_deflate_stream_reads_whole(chunk: int) -> None:
     assert got == _payload()
 
 
-def _zip_with_member(compressed: bytes, plain: bytes) -> bytes:
-    """A one-member ZIP whose DEFLATE member declares ``plain``'s size and CRC-32."""
-    name, crc = b"a", zlib.crc32(plain)
-    sizes = (crc, len(compressed), len(plain), len(name))
-    local = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0, 8, 0, 0, *sizes, 0) + name
-    central = (
-        struct.pack(
-            "<IHHHHHHIIIHHHHHII",
-            0x02014B50,
-            20,
-            20,
-            0,
-            8,
-            0,
-            0,
-            *sizes,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        )
-        + name
-    )
-    body = local + compressed
-    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(body), 0)
-    return body + central + end
-
-
 @requires("rapidgzip")
 @pytest.mark.parametrize(
     "case", ["fuzz-input", "deflate-after-a-block", "deflate-in-the-last-block"]
@@ -550,7 +520,9 @@ def test_a_zip_member_cut_where_its_size_and_crc_end_raises(case: str) -> None:
     """The size and CRC-32 cover the output before the cut, so only the missing final
     block shows the member is cut; that is what a crafted member looks like."""
     _, blob = _cut_streams()[case]
-    archive = _zip_with_member(blob, _output_before_the_cut(Codec.DEFLATE, blob))
+    archive = _build_minimal_zip(
+        b"a", blob, _output_before_the_cut(Codec.DEFLATE, blob), method=8
+    )
     for mode in (_OFF, _ON):
         config = ArchiveyConfig(use_rapidgzip=mode)
         with open_archive(io.BytesIO(archive), config=config) as reader:
