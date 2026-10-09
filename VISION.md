@@ -176,3 +176,6 @@ no major changes are expected, and each change is listed in `CHANGELOG.md`.
 
 [How it is built](https://davitf.github.io/archivey/how-it-is-built/) tells users how
 changes are made and checked, and what that process does not promise.
+
+How these priorities have been applied, question by question, is collected as rules in
+[`dev-docs/design-rules.md`](dev-docs/design-rules.md).
