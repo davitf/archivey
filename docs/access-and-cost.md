@@ -32,7 +32,7 @@ between runners. Run the command above to get figures for your own hardware.
 Everyday listing and extract are fine for most callers at the ratios we see. The
 residual ZIP listing gap is mostly per-member derivation cost; **lazy
 `ArchiveMember` derivation (L5)** is the named follow-up, deferred past the first
-public release (see `IDEAS.md`).
+public release.
 
 ## Read `reader.cost`
 

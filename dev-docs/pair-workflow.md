@@ -12,10 +12,8 @@ thin briefs, and **decision packets**.
 Product tie-breaker remains [`VISION.md`](../VISION.md). Coding gates remain
 [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
-Adoption notes and the external-stack crib (what we borrowed from pstack / Matt)
-live in
-[`discussions/2026-09-pair-workflow-adoption.md`](discussions/2026-09-pair-workflow-adoption.md)
-— one-time setup, not living truth.
+Adoption notes and the external-stack crib are historical:
+[`history/2026-09-pair-workflow-adoption.md`](history/2026-09-pair-workflow-adoption.md).
 
 ---
 
@@ -97,8 +95,8 @@ Four rules the shape depends on:
 - **No performance numbers.** They are the most volatile thing on the page and they rot
   into a fourth disagreeing source. Verify carries the command instead.
 - **Behaviour here, status behind the link.** The page says what a caller sees and how
-  fixable it is; `known-issues.md` (live defects) and `open-issues.md` keep the rest, and
-  the format's threat surface links the `threat-model.md` design.
+  fixable it is; `known-issues.md` keeps live defects, and the format's threat surface
+  links the `threat-model.md` design.
 - **Test pointers live on the handbook page only**, in §8 — not duplicated into
   `openspec/specs/`. That is step 1 of
   [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md)

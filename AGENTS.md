@@ -33,7 +33,8 @@ that one is the code map.
   principles, the factors for a clash between consistency and the official tool, and
   what still goes to the maintainer. Read it before asking a design question.
 - Committed work is the open OpenSpec changes under `openspec/changes/`.
-  `dev-docs/IDEAS.md` is the speculative backlog (not committed). The pre-0.2.0 phase
+  `dev-docs/IDEAS.md` is the public ideas page (not commitments). Open issues and
+  deferred review findings are tracked internally, not in the repo. The pre-0.2.0 phase
   roadmap is kept for history in `dev-docs/history/PLAN.md`.
 - `docs/` — the **published** end-user guide, and nothing else: `index`, `install`,
   `opening-and-listing`, `reading-members`, `extracting`, `gotchas`, `access-and-cost`,
@@ -50,11 +51,10 @@ that one is the code map.
 - `dev-docs/threat-model.md` — the security design: who archivey defends against, where
   trust stops, what enforces each promise, and (§5) the open design gaps. It is a design
   doc, not a defect register; a bug in a mechanism goes in `known-issues.md`.
-- `review/` — the **deep-review program**: `README.md` (conventions, ranking, deliverable
-  shape), `STATUS.md` (live triage of in-flight rounds — read this before starting a
-  review), `backlog.md` (deferred topics with reasons), and `archive/<date>-<topic>/` for
-  finished rounds. Findings in an archived area are **re-reviews**: check the archive
-  tables before spending budget re-litigating settled ground.
+- `review/` — the **deep-review program**: `README.md` (lifecycle and the conventions
+  every brief inherits) and `archive/<date>-<topic>/` for finished rounds. Findings in an
+  archived area are **re-reviews**: read that review's `SUMMARY.md` before spending
+  budget re-litigating settled ground.
 - `openspec/specs/<capability>/spec.md` — the **authoritative machine-checkable
   contract** (OpenSpec requirements + scenarios) for agents and CI. **Not** the primary
   human reading surface — that is the pair workflow + handbook
@@ -505,26 +505,21 @@ in the wrong place.
    2026-09-19): Claude reviews PRs started from a Linear issue, replacing the fresh
    Cursor Grok subagent this step used to spawn.
 
-**Nothing from the internal tracker goes into PR text.** This repository is public; the
-tracker is not. Three rules, and they are about the *internal tracker* only:
+**Nothing from the internal tracker goes into PR text or repo files.** This repository is
+public; the tracker is not. Three rules, and they are about the *internal tracker* only:
 
 - **Never** an internal-tracker URL, anywhere — PR title or body, review or inline
   comment, commit message, or a file in the repo.
-- **Not** an internal-tracker key (`ARC-123`) in a PR title or body, a review or inline
-  comment, or a commit message. Write "tracked internally" instead: the reader cannot open
-  the ticket, so the key is dead weight to them and it publishes the internal layout.
+- **Not** an internal-tracker key (the `TEAM-123` shape) in a PR title or body, a review
+  or inline comment, a commit message, or a file in the repo. Write "tracked internally"
+  instead: the reader cannot open the ticket, so the key is dead weight to them and it
+  publishes the internal layout.
 - **GitHub `#nnn` is the public record and is always fine** — in PR text, commits,
   comments and repo files alike. This rule does not touch it.
 
-**Inside `dev-docs/` and `openspec/changes/`, a bare key may mark tracked work — never
-cite one as a source.** Maintainer decision (davitf, 2026-09-19): the data lives in the
-repo and the PRs, so a key says *where this work is tracked*, not *where the reason is
-written*. "The dedup is ARC-54, not this change's job" is fine. "See ARC-54 for the
-measurement" is not — put the measurement here. Test it by deleting the key: if the
-sentence still says everything a reader needs, it was a tracking tag; if the sentence
-now has a hole, the content is in the wrong place. The existing citations in
-`investigations/adr-0014-investigation.md` and three `openspec/changes/` files all pass
-that test, so this is a rule for new writing, not a sweep.
+Work is tracked internally (maintainer decision, 2026-10-09: open issues, ideas and the
+review backlog moved out of the repo). A file in the repo says "tracked internally" where
+it needs to say that work remains, and carries the reasoning itself.
 
 A finding is not parked in the repo. Fix it in the PR, or open its own PR when it is too
 big to fix in place; anything still left is tracked internally, with the reasoning in the

@@ -56,7 +56,7 @@ residual needs its own investigation instead of a guess.
 `open_archive` on a file the probe wrongly claims does not fail. It returns a
 `SingleFileReader` with one fabricated member named `<filename>.uncompressed`. That is a
 silent wrong answer on attacker-supplied bytes, which `VISION.md` ranks above almost
-everything else, and it is registered as `open-issues.md` P12 and `threat-model.md` O10.
+everything else, and it is registered as `threat-model.md` O10.
 
 ## Questions to answer
 
@@ -136,5 +136,5 @@ loop; count the results that come back `ArchiveFormat.BROTLI`.
 - `openspec/specs/format-detection/spec.md` — the normative probe requirements
 - `openspec/changes/archive/…/sfx-format-detection/design.md` — the measurements above in
   their original context, and why scan-before-probe was chosen over probe tuning
-- `dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10
+- `dev-docs/threat-model.md` O10
 - RFC 7932 §9 (stream format), and `brotli`'s `state.c` / `decode.c`

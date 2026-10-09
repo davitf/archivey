@@ -12,7 +12,7 @@ the *design* lives elsewhere and is authoritative:
   threat model / codec analysis / known issues, `investigations/` (finished
   evidence), `history/` (superseded SPEC/ARCHITECTURE/COMPARISON/ASYNC prose,
   not normative).
-- `VISION.md` (repo root), `dev-docs/IDEAS.md`: vision and backlog. The pre-0.2.0 phase
+- `VISION.md` (repo root), `dev-docs/IDEAS.md`: vision and ideas. The pre-0.2.0 phase
   roadmap is in `dev-docs/history/PLAN.md`, kept for history.
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
   edit shipped specs ad hoc). Default schema is `library` (compact library-style
@@ -247,9 +247,8 @@ maintainer.
   the mechanism under change, not the file. What does *not* land here is a
   **sweep**: the same mistake across files this change does not touch, or a rename that
   ripples through specs and archived changes. That is its own PR; anything not yet
-  picked up is tracked internally, not parked in `review/backlog.md` or
-  `dev-docs/IDEAS.md`. The line is whether you are still in the code under review, not
-  whether the bug is old.
+  picked up is tracked internally, not parked in a file in the repo. The line is whether
+  you are still in the code under review, not whether the bug is old.
 - **Leave the code self-explanatory.** The *resulting* tree — names, structure, and
   nearby comments — must make sense to a future editor who never saw the PR. They will
   read the current code, not the diff or the OpenSpec change / `design.md` / PR body

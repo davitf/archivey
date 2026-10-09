@@ -27,7 +27,7 @@ specific to Claude Code; everything else would drift if it were duplicated here.
 - **A fresh container has no memory of earlier sessions.** Transcripts do not survive; the
   durable record is the repo plus the PR history. Before re-deriving something that feels
   like it should already be settled, check `dev-docs/code-map.md` §"Where the answers
-  live" — ADRs, `dev-docs/design-rules.md`, `review/STATUS.md`, `dev-docs/discussions/`,
+  live" — ADRs, `dev-docs/design-rules.md`, `review/archive/`, `dev-docs/discussions/`,
   and the threat model exist precisely so questions get answered once.
 - **Skills for the review loop:** `/code-review-skill` produces findings,
   `/address-review-findings` dispositions them. Ask for those two by those names — a

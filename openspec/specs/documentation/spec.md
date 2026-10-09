@@ -88,7 +88,7 @@ rationale.
 
 The MkDocs site SHALL publish end-user material only. Every file under `docs/` MUST
 be an end-user page carrying a nav entry; maintainer material — decision log, threat
-model, codec analysis, known issues, open-issues triage, finished investigations,
+model, codec analysis, known issues, finished investigations,
 and superseded historical prose — SHALL live under `dev-docs/`, outside the site,
 rather than under `docs/` behind an exclusion list. The user narrative covers
 install, opening and listing, reading members, gotchas, extracting, access
@@ -233,7 +233,7 @@ End-user documentation SHALL state that:
   gap (post-v1), without promising a release.
 
 This SHALL appear in the formats guide and in the user-facing Gotchas page. Internal
-threat-model / open-issues material MUST NOT be the only place this is written.
+threat-model / known-issues material MUST NOT be the only place this is written.
 
 #### Scenario: TAR EOF documentation matrix
 

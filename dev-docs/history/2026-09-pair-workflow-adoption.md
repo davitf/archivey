@@ -6,10 +6,11 @@ RESOLVED and leave the body as historical. Living truth:
 
 Dated 2026-09-02.
 
-> **Status: RESOLVED (2026-10-09).** Historical. The pilot format pages exist and the
-> review loop now runs from the `review` label (`../review-loop.md`); the Cursor steps
-> below no longer apply. Spec thinning
-> direction (related): [`2026-09-specs-to-handbook-and-tests.md`](2026-09-specs-to-handbook-and-tests.md).
+> **Status: RESOLVED (2026-10-09).** Historical. PR #280 merged, the pilot format pages
+> exist (`formats/7z.md`, `formats/rar.md`), and the review loop now runs from the
+> `review` label (`../review-loop.md`); the Cursor steps below no longer apply. The live
+> loop is [`../pair-workflow.md`](../pair-workflow.md). Spec thinning direction
+> (related): [`2026-09-specs-to-handbook-and-tests.md`](../discussions/2026-09-specs-to-handbook-and-tests.md).
 
 ## How to start (checklist)
 

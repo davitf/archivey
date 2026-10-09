@@ -12,16 +12,15 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Usage scenarios](scenarios.md) | Who we imagine using archivey, what code they write and what would hurt them; the design rules are tested against these |
 | [Design rules](design-rules.md) | The maintainer's recurring rulings as rules: principles, how to weigh consistency against the official tool, and what still needs a decision. Read before asking a design question |
 | [Threat model](threat-model.md) | Attackers, trust boundaries, defended properties, accepted non-guarantees, open design gaps |
-| [Open issues (gotchas triage)](open-issues.md) | Fixable leftovers vs irreducible user gotchas; docs/spec drift |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |
 | [Known issues](known-issues.md) | Live archivey defects and live upstream bugs archivey works around: symptom, what archivey does, what remains, and a link to the evidence |
 | [Release checklist](release-checklist.md) | Every-release loop: CHANGELOG, perf vs prior tag, docs, tag/publish |
 | [Release-repo cutover](release-repo-cutover.md) | One-time rename / PyPI / Pages before the first public tag |
 | [Decision log](decisions/index.md) | Rare repo-wide ADRs; prefer light notes on format/topic handbook pages for new decisions |
-| [Investigations](investigations/) | Finished evidence: PPMd, pyppmd/rapidgzip/pybcj/py7zr upstream reports, parallel-reader, [`alternative RAR decompressors`](investigations/alternative-rar-decompressors.md), [`capability declaration vs behaviour`](investigations/capability-declaration-vs-behaviour.md), [`writer timestamp slots`](investigations/writer-timestamp-slots.md), [`backup-drive scan`](investigations/2026-10-backup-scan.md) |
-| [Discussions](discussions/) | Design questions written for circulation. Includes [pair-workflow adoption](discussions/2026-09-pair-workflow-adoption.md) and [specs → handbook + tests](discussions/2026-09-specs-to-handbook-and-tests.md) (thin-as-you-go) |
+| [Investigations](investigations/) | Finished evidence: PPMd, pyppmd/rapidgzip/pybcj/py7zr upstream reports, parallel-reader, [`alternative RAR decompressors`](investigations/alternative-rar-decompressors.md), [`capability declaration vs behaviour`](investigations/capability-declaration-vs-behaviour.md), [`writer timestamp slots`](investigations/writer-timestamp-slots.md), [`backup-drive scan`](investigations/2026-10-backup-scan.md), [`Linux heap-corruption soak`](investigations/linux-heap-corruption-soak.md) |
+| [Discussions](discussions/) | Design questions written for circulation. Includes [specs → handbook + tests](discussions/2026-09-specs-to-handbook-and-tests.md) (thin-as-you-go) |
+| [Ideas](IDEAS.md) | Public ideas page: what we are thinking about, with a status per idea and the ones that make a good first contribution. Committed work is the open OpenSpec changes under `openspec/changes/` |
 | [History](history/index.md) | Superseded prose (SPEC / ARCHITECTURE / COMPARISON / ASYNC / the pre-0.2.0 PLAN) |
-| [IDEAS.md](IDEAS.md) | Speculative backlog. Committed work is the open OpenSpec changes under `openspec/changes/` |
 
 **Maintainer reading surface:** pair workflow + handbook pages above.
 `openspec/specs/` remain the **authoritative contract** for agents/CI, not the primary
