@@ -160,10 +160,11 @@ parsers, archivey's and the stdlib's alike, issue one `read(n)` and raise or tre
 short as EOF. A `None` from the caller's `read` (nothing ready on a non-blocking
 stream, raw or already buffered) is not a short read and not EOF: the boundary
 raises `BlockingIOError`, including when `None` follows a short chunk. That short
-chunk has already left the source and is not returned. A read no fact length clamps
-asks again after a short return on every shape, because a non-blocking buffered
-stream returns what has arrived short and answers `None` only on the next read. The
-source kinds get that guarantee by different means, and the difference is read-ahead:
+chunk has already left the source and is not returned. A read that no fact length
+clamps asks again after a short return, whatever the source's shape, because a
+non-blocking buffered stream returns what has arrived short and answers `None` only
+on the next read. The source kinds get that guarantee by different means, and the
+difference is read-ahead:
 
 | Source | Boundary wrapper | Read-ahead |
 | --- | --- | --- |

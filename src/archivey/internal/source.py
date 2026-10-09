@@ -129,35 +129,49 @@ class _GatheringReader:
     over-read cannot be given back. This re-asks for the bytes still missing instead
     (:func:`read_exact`), so ``read(n)`` takes exactly ``n`` bytes from the source.
     Every read of a non-seekable raw source goes through one. The other shapes use one
-    for every read off :meth:`ArchiveSource.read`'s fact-length fast path: a blocking
-    buffered inner is already full-count, so there it costs one extra read at EOF, and
-    a non-blocking one returns short with what has arrived before it ever returns
-    ``None``.
+    for every read off :meth:`ArchiveSource.read`'s fact-length fast path. A blocking
+    buffered inner is already full-count, so a sized read costs one extra read at EOF
+    there, and a drain costs one Python-level read per ``drain_chunk`` plus the join.
+    A non-blocking buffered inner returns short with what has arrived before it ever
+    returns ``None``, which is why the re-ask is needed there at all.
 
     The inner is the caller's object or a path's handle, un-normalised. The one
     assumption made about it is that ``read(n)`` for ``n > 0`` returns at most ``n``
-    bytes, and ``b""`` only at EOF; more than ``n`` raises. ``None`` — nothing ready on a non-blocking raw, which is not
-    EOF — raises ``BlockingIOError``, including when it follows a short chunk.
-    The first refusal has taken nothing, so the caller can read again. A refusal
-    after a short chunk has already taken those bytes out of the source; they are
-    not returned and cannot be read again. A ``read(-1)`` drain that gathered some
-    chunks and then saw ``None`` drops those chunks the same way. Handing them back
-    would report a finished read.
+    bytes, and ``b""`` only at EOF; more than ``n`` raises. ``read(0)`` is answered
+    without asking it, since ``read(0)`` is not free on every source. ``None`` —
+    nothing ready on a non-blocking stream, which is not EOF — raises
+    ``BlockingIOError``, including when it follows a short chunk. The first refusal
+    has taken nothing, so the caller can read again. A refusal after a short chunk
+    has already taken those bytes out of the source; they are not returned and
+    cannot be read again. A ``read(-1)`` drain that gathered some chunks and then
+    saw ``None`` drops those chunks the same way. Handing them back would report a
+    finished read.
+
     ``read(-1)`` is never forwarded: an inner may have no ``readall``
-    (``io.BufferedRWPair``, ``GzipFile`` over a pipe), so a drain is served as sized
-    reads instead.
+    (``io.BufferedRWPair``, ``GzipFile`` over a pipe), and a non-blocking buffered
+    one hands back the arrived prefix rather than ``None``. A drain is served as
+    full-count reads of ``drain_chunk`` bytes instead. A raw inner drains in
+    ``io.DEFAULT_BUFFER_SIZE`` steps, because a raw ``read(n)`` allocates ``n``
+    bytes on every call whatever arrives; a buffered one takes larger steps, since
+    it fills each request itself.
     """
 
-    __slots__ = ("_inner",)
+    __slots__ = ("_drain_chunk", "_inner")
 
-    def __init__(self, inner: BinaryIO) -> None:
+    def __init__(
+        self, inner: BinaryIO, *, drain_chunk: int = io.DEFAULT_BUFFER_SIZE
+    ) -> None:
         self._inner = inner
+        self._drain_chunk = drain_chunk
 
     def read(self, n: int = -1, /) -> bytes:
-        if n < 0:
+        if n <= 0:
+            if n == 0:
+                return b""
             # Drain in sized reads rather than forward ``read(-1)``; see the docstring.
             chunks = []
-            while chunk := self.read(io.DEFAULT_BUFFER_SIZE):
+            step = self._drain_chunk
+            while chunk := self.read(step):
                 chunks.append(chunk)
             return b"".join(chunks)
         data = read_blocking(self._inner, n)
@@ -514,7 +528,11 @@ class ArchiveSource(ReadOnlyIOStream):
         if length is not None and reader is not None:
             # A fact length skips replay and gathering. It does not promise the
             # inner's ``read`` returns bytes: ``None`` is still a stall. Nothing left,
-            # or nothing asked, is answered without I/O.
+            # or nothing asked, is answered without I/O. A short return is taken as
+            # final with no re-ask: a fact length comes only from a regular file, a
+            # memory buffer or a joined set (``source_size_fact``, ``for_volumes``),
+            # each full-count by construction, so a short here is the inner breaking
+            # its own contract, not a stall.
             avail = min(n, length - self._pos)
             if avail <= 0:
                 return b""
@@ -543,7 +561,9 @@ class ArchiveSource(ReadOnlyIOStream):
         """
         reader = self._full_count
         if reader is None:
-            reader = self._full_count = _GatheringReader(self._stream())
+            reader = self._full_count = _GatheringReader(
+                self._stream(), drain_chunk=self._UNKNOWN_LENGTH_READ_STEP
+            )
         return reader
 
     def _read_source(self, n: int) -> bytes:
@@ -583,6 +603,9 @@ class ArchiveSource(ReadOnlyIOStream):
             remaining = max(self._length - self._pos, 0)
             if len(view) > remaining:
                 view = view[:remaining]
+        if not len(view):
+            # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
+            return 0
         # ``None`` from ``readinto`` is a stall. A missing or refused
         # ``readinto`` falls back to ``read``, which refuses ``None`` too.
         reader = self._reader
@@ -592,9 +615,13 @@ class ArchiveSource(ReadOnlyIOStream):
         # Full-count, as ``read`` is: a short fill is asked again, so a non-blocking
         # buffered stream's next ``None`` raises instead of the short fill passing
         # for EOF. A blocking one is short only at EOF, where this costs one call.
+        # ``try_readinto`` answers ``None`` only for an object with no usable
+        # ``readinto``, a property of its type: once the first call has filled
+        # bytes, a later ``None`` would be the object contradicting itself.
         total = got
         while 0 < got and total < len(view):
-            got = try_readinto(reader, view[total:]) or 0
+            got = try_readinto(reader, view[total:])
+            assert got is not None, f"readinto refused after serving: {reader!r}"
             total += got
         self._pos += total
         return total

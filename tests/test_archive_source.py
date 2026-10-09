@@ -544,12 +544,17 @@ def test_open_archive_refuses_a_nonblocking_pipe_with_a_partial_tar() -> None:
 
 
 class _NoneForZero(io.BytesIO):
-    """A duck-typed buffer that answers ``None`` to ``read(0)``; other sizes are real."""
+    """A duck-typed buffer that answers ``None`` to an empty request; others are real."""
 
     def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
         if size == 0:
             return None
         return super().read(size)
+
+    def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
+        if not len(b):
+            return None
+        return super().readinto(b)
 
 
 def test_fact_length_read_answers_zero_without_io() -> None:
@@ -560,6 +565,9 @@ def test_fact_length_read_answers_zero_without_io() -> None:
     assert wrapped.read(8) == b"hi"
     assert wrapped.read(8) == b""
     assert wrapped.read(0) == b""
+    assert wrapped.read(-1) == b""
+    assert wrapped.readall() == b""
+    assert wrapped.readinto(bytearray(4)) == 0
 
 
 # ---------------------------------------------------------------------------
