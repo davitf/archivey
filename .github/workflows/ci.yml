@@ -512,10 +512,16 @@ jobs:
   #                           reachable to confirm Fedora does not carry it.
   # Alpine does not package unar (no unar in aports main, community or testing), so
   # it has no row.
+  #
+  # The images come from mirror.gcr.io, Google's cache of Docker Hub's official
+  # images, not from Docker Hub. Docker Hub limits anonymous pulls per IP address,
+  # and GitHub's runners share addresses, so a pull from there sometimes fails before
+  # the job starts (toomanyrequests, PRs 650 and 651 on 2026-10-09). The image names
+  # in the matrix stay Docker Hub's, so the job names do not change.
   unar-distro-packages:
     name: unar package / ${{ matrix.image }}
     runs-on: ubuntu-latest
-    container: ${{ matrix.image }}
+    container: mirror.gcr.io/library/${{ matrix.image }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
