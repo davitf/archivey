@@ -17,9 +17,10 @@ import io
 import sys
 import threading
 import weakref
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, NoReturn
+from typing import TYPE_CHECKING, BinaryIO, NoReturn
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.diagnostics import (
@@ -511,7 +512,7 @@ class ArchiveStream(ReadOnlyIOStream):
             self._raise_verdict()
         return data
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         # Always route through read() so the one-read / stop-on-short policy above
         # (and fused verify) stay consistent — inner.readinto may be up-to-n.
         return readinto_via_read(self, b)

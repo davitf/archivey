@@ -20,8 +20,9 @@ The access-shape rule and the seeks it allows: ``dev-docs/topics/detection.md`` 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO
 
 from archivey.detection_cost import (
     DetectionBudget,

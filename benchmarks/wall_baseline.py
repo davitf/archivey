@@ -18,7 +18,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +34,7 @@ ARTIFACT_MD_NAME = "benchmark-wall-realistic.md"
 
 def utc_now_iso() -> str:
     """UTC timestamp with ``Z`` suffix, second precision."""
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_utc_iso(value: str) -> datetime | None:
@@ -54,8 +49,8 @@ def parse_utc_iso(value: str) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def measured_at_age_seconds(
@@ -68,7 +63,7 @@ def measured_at_age_seconds(
     measured = parse_utc_iso(raw)
     if measured is None:
         return None
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     return max(0.0, (current - measured).total_seconds())
 
 

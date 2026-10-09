@@ -807,7 +807,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         self._recompute_cursor()
         return self._pos
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         # RawIOBase's own readinto raises NotImplementedError; this class overrides
         # read() instead, so buffering it (io.BufferedReader) needs this bridge.
         return readinto_via_read(self, b)

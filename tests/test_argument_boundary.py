@@ -40,8 +40,9 @@ import dataclasses
 import inspect
 import io
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
 

@@ -52,15 +52,13 @@ import stat
 import struct
 import threading
 import zlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import ModuleType
 from typing import (
     TYPE_CHECKING,
     BinaryIO,
-    Iterator,
-    Mapping,
     NamedTuple,
     TypeGuard,
     cast,
@@ -858,7 +856,7 @@ def _dr_date_to_datetime(
             return None
         # 0001-01-01 at +13:00 is a valid local time whose UTC form is before year
         # 1; modified_utc() would raise OverflowError on it later. No usable date.
-        value.astimezone(timezone.utc)
+        value.astimezone(UTC)
     except (ValueError, AttributeError, TypeError, OverflowError):
         return None
     return value
@@ -1164,7 +1162,7 @@ class _PyCdlibStream(DelegatingStream):
     enter/exit lifecycle paired. Read/seek/tell/seekable are inherited delegation.
     """
 
-    def __init__(self, raw: "PyCdlibIO") -> None:
+    def __init__(self, raw: PyCdlibIO) -> None:
         # PyCdlibIO is an io.RawIOBase, which is a BinaryIO at runtime but not by typeshed's
         # nominal hierarchy, so cast at the DelegatingStream boundary.
         super().__init__(cast("BinaryIO", raw))
@@ -1961,7 +1959,7 @@ class IsoReader(BaseArchiveReader):
 
     # --- data ---------------------------------------------------------------------------
 
-    def _open_record(self, record: DirectoryRecord) -> "PyCdlibIO":
+    def _open_record(self, record: DirectoryRecord) -> PyCdlibIO:
         """Open a file's data from its directory record, with no path lookup.
 
         The same checks ``PyCdlib.open_file_from_iso`` makes once it has the record.

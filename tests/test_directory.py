@@ -10,8 +10,9 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
+from datetime import UTC
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -653,11 +654,11 @@ def test_subdirectory_vanishing_mid_walk_is_skipped(
 def test_stat_datetime_guards_out_of_range_values() -> None:
     # A network/FUSE filesystem can report garbage timestamps; one bad file must not
     # sink the whole walk (on Windows even tz-aware fromtimestamp raises OSError).
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from archivey.internal.backends.directory_reader import _stat_datetime
 
-    assert _stat_datetime(0) == datetime(1970, 1, 1, tzinfo=timezone.utc)
+    assert _stat_datetime(0) == datetime(1970, 1, 1, tzinfo=UTC)
     assert _stat_datetime(2**62) is None
 
 

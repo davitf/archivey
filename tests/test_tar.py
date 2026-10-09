@@ -7,7 +7,7 @@ from __future__ import annotations
 import io
 import logging
 import tarfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 from unittest import mock
@@ -143,7 +143,7 @@ def _tar_sparse_gnu(logical: int = 1024 * 1024) -> bytes:
     physical = b"xyz"
 
     def octal(value: int, width: int) -> bytes:
-        return ("%0*o" % (width - 1, value)).encode() + b"\x00"
+        return f"{value:0{width - 1}o}".encode() + b"\x00"
 
     h = bytearray(512)
     h[0:10] = b"sparse.bin"
@@ -159,7 +159,7 @@ def _tar_sparse_gnu(logical: int = 1024 * 1024) -> bytes:
     h[482] = 0  # isextended
     h[483:495] = octal(logical, 12)  # realsize (logical)
     h[148:156] = b" " * 8
-    h[148:156] = ("%06o" % sum(h)).encode() + b"\x00 "  # checksum
+    h[148:156] = f"{sum(h):06o}".encode() + b"\x00 "  # checksum
     full = bytes(h) + physical.ljust(512, b"\x00") + b"\x00" * 1024
 
     # Guard the fixture's premise: a real sparse member whose logical/physical ends diverge.
@@ -298,7 +298,7 @@ def test_member_metadata(plain_tar: Path) -> None:
         assert f.mode == 0o644
         assert f.uid == 1000 and f.gid == 1000
         assert f.uname == "alice" and f.gname == "staff"
-        assert f.modified == datetime.fromtimestamp(1_600_000_000, tz=timezone.utc)
+        assert f.modified == datetime.fromtimestamp(1_600_000_000, tz=UTC)
         assert f.modified.tzinfo is not None  # tz-aware UTC
         # tar stores members uncompressed; no encryption.
         assert f.compression == (CompressionMethod(algo=CompressionAlgorithm.STORED),)
@@ -369,7 +369,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         m = ar.get("café.txt")
         assert m.name == "café.txt"  # decoded name round-trips
-        assert m.raw_name == "café.txt".encode("utf-8")  # verbatim stored bytes
+        assert m.raw_name == "café.txt".encode()  # verbatim stored bytes
 
 
 def test_pax_atime_ctime(tmp_path: Path) -> None:
@@ -1940,7 +1940,7 @@ def test_caller_encoding_overrides_the_utf8_default() -> None:
     with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = ar.members()
         assert member.name == "cafÃ©.txt"
-        assert member.raw_name == "café.txt".encode("utf-8")
+        assert member.raw_name == "café.txt".encode()
 
 
 def _pax_tar_with_non_utf8_path(raw: bytes) -> bytes:
@@ -2041,13 +2041,13 @@ def _tar_with_mtime(path: Path, mtime: float, tar_format: int) -> Path:
         pytest.param(
             tarfile.PAX_FORMAT,
             -86_400.5,
-            datetime(1969, 12, 30, 23, 59, 59, 500_000, tzinfo=timezone.utc),
+            datetime(1969, 12, 30, 23, 59, 59, 500_000, tzinfo=UTC),
             id="pax",
         ),
         pytest.param(
             tarfile.GNU_FORMAT,
             -86_400,
-            datetime(1969, 12, 31, tzinfo=timezone.utc),
+            datetime(1969, 12, 31, tzinfo=UTC),
             id="gnu-base256",
         ),
     ],
@@ -2095,7 +2095,7 @@ def test_pre_1970_pax_atime_lists_its_date(tmp_path: Path) -> None:
         tf.addfile(info, io.BytesIO(b""))
     with open_archive(path) as ar:
         assert ar.get("old.txt").accessed == datetime(
-            1969, 12, 31, 23, 59, 58, 500_000, tzinfo=timezone.utc
+            1969, 12, 31, 23, 59, 58, 500_000, tzinfo=UTC
         )
 
 
@@ -2156,7 +2156,7 @@ def test_pax_mtime_zero_is_the_epoch(tmp_path: Path) -> None:
         info.pax_headers = {"mtime": "0"}
         tf.addfile(info, io.BytesIO(b""))
     with open_archive(path) as ar:
-        assert ar.get("t.txt").modified == datetime(1970, 1, 1, tzinfo=timezone.utc)
+        assert ar.get("t.txt").modified == datetime(1970, 1, 1, tzinfo=UTC)
         assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
 
 

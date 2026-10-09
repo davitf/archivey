@@ -10,6 +10,7 @@ import io
 import os
 import struct
 from collections.abc import Callable, Iterator
+from datetime import UTC
 from pathlib import Path
 from typing import IO, Any
 
@@ -962,7 +963,7 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     """Through the reader: a TF modification time that differs from the directory
     record's date is the one ``modified`` reports. The record date used to win,
     because it is always present."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     import pycdlib
     from pycdlib.dates import DirectoryRecordDate
@@ -980,7 +981,7 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
 
     with open_archive(io.BytesIO(image.getvalue())) as archive:
         (member,) = [m for m in archive.members() if m.name == "a.txt"]
-    assert member.modified == datetime(2001, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    assert member.modified == datetime(2001, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
 # --- data the directory record's own inode does not cover -----------------------------

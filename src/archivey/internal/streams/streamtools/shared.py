@@ -25,7 +25,8 @@ itself; buffering inside the primitive would double-copy for everyone else.
 from __future__ import annotations
 
 import threading
-from typing import BinaryIO, Callable
+from collections.abc import Callable
+from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,

@@ -134,7 +134,7 @@ def _prefix(bit: int) -> tuple[bytes, int]:
     return data, low
 
 
-def _resume_decompressor(resume: DeflateResume) -> "zlib._Decompress":
+def _resume_decompressor(resume: DeflateResume) -> zlib._Decompress:
     """A raw DEFLATE decompressor with ``resume``'s window, after checking the point."""
     if not 0 <= resume.bit < 8 or len(resume.window) > WINDOW_SIZE:
         raise ValueError(f"not a DEFLATE resume point: {resume!r}")
