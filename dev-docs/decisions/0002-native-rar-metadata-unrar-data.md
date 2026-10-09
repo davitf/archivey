@@ -33,8 +33,9 @@ before `0.2.0`). Keep `rarfile` as a test oracle only.
   (`internal/backends/rar_unar.py`); the process layer (`internal/external/`) is
   format-agnostic so `unar` can later serve other formats.
 - **Amended again 2026-09-26:** at the maintainer's request, `"auto"` uses RARLAB
-  `unrar` when it is installed and `unar` otherwise, decided once at open, never per
-  read. `unar` now reads encrypted RAR5 data, with the password on its command line
+  `unrar` when it is installed and `unar` otherwise. The choice is made once at open,
+  never per read; that part was an implementation choice, not the maintainer's
+  (2026-09-28), and a per-member fallback is an open question in `formats/rar.md`. `unar` now reads encrypted RAR5 data, with the password on its command line
   (visible to local users; documented in `docs/formats.md`). Encrypted RAR 2.x-4.x data
   and non-ASCII passwords stay refused under `unar`, because `unar` 1.10 returns no data
   for them.

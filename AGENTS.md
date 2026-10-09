@@ -29,6 +29,9 @@ that one is the code map.
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
   `docs/philosophy.md`.
+- `dev-docs/design-rules.md` — the maintainer's recurring rulings written as rules: the
+  principles, the factors for a clash between consistency and the official tool, and
+  what still goes to the maintainer. Read it before asking a design question.
 - Committed work is the open OpenSpec changes under `openspec/changes/`.
   `dev-docs/IDEAS.md` is the speculative backlog (not committed). The pre-0.2.0 phase
   roadmap is kept for history in `dev-docs/history/PLAN.md`.
@@ -537,6 +540,52 @@ Two things about this repo make the handoff sharper than it looks:
   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
   Do not dump the full finding list into chat — that stays on the PR. A batched list of
   five numbered decisions pushes the work back onto the person you are asking.
+
+## Working with the maintainer
+
+The maintainer decides; agents settle everything a rule or the code can settle. Design
+questions go through [`dev-docs/design-rules.md`](dev-docs/design-rules.md) first. This
+section is how to work and how to ask.
+
+**Before asking.**
+- Check the finding against current `main` and measure rather than assert. Several
+  questions have been withdrawn because the finding behind them was stale.
+- Search the design rules, the handbook page and the ADRs. If a rule settles it, act,
+  and name the rule in the PR.
+- Ask yourself the questions in design-rules §"Questions to ask yourself first",
+  especially "does this affect other formats?" and "what does the official tool do?".
+
+**How to ask.**
+- One decision at a time, with enough context to answer without scrolling back. Explain
+  it in plain terms first, then the options.
+- For each option, say what happens and where things end up (which module, which
+  public name).
+- Mark one option as recommended and give the reason. When the question is about public
+  surface, include a "remove it" option.
+- The maintainer often finds a better option than the ones offered. Present the
+  underlying problem, not only the choices.
+- A recommendation is not a ruling, and "go ahead" or "post it" does not ratify a claim
+  you made. Never attribute a ruling to the maintainer without a message that carries
+  it.
+
+**Recording a ruling.** Keep the decider and date, and add the reasons and what would
+reopen it: "just citing doesn't help us reevaluate or accept later". Put format-specific
+rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
+
+**Pull requests.**
+- Split work by context: one concern per PR, and a separate PR per fix in a batch. A
+  bundle of "simple" fixes grew a long tail of reviews once (PR 532).
+- A test harness PR waits for the fixes it needs.
+- An agent may merge a straightforward PR once its review approves and CI is green.
+  Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, a public
+  API removal, a very large diff, or anything an open decision touches.
+- Review rounds run one at a time across the project. Check that no review run is in
+  progress before adding the `review` label.
+- The PR body is the record of a piece of work. Do not commit working plans to the repo.
+- Do not edit `CHANGELOG.md` in a PR; the release writes it.
+
+**Outside the repo.** Upstream bug reports are drafted by agents and filed by the
+maintainer. Repository settings, publishing and the PyPI name are the maintainer's.
 
 ## Conventions
 

@@ -493,8 +493,9 @@ bug.
 
 **Rulings.** RAR3/4 password lists tried only the first candidate. "a would defeat the
 whole purpose of supporting multiple passwords", so every candidate is probed
-(2026-10-06, PR 627). The accelerator fuzzing gap was closed instead of keeping the
-"accelerators are not fuzzed" caveat in the docs (2026-10-08, PR 638).
+(2026-10-06, PR 627). Anything on by default is fuzzed: "if they're the default, we
+should fuzz them", so the accelerator fuzzing gap was closed instead of keeping the
+"accelerators are not fuzzed" caveat in the docs (2026-10-06, PR 638).
 
 ---
 
@@ -561,6 +562,15 @@ replacement, record the limitation where users will find it and fix it in the re
 until the post-0.2.0 zipfile replacement (2026-10-06).
 
 ---
+
+### DR-21a. Don't ship what can't be tested
+
+**Rule.** If no available tool can produce a case and archivey cannot test it, refuse it
+up front with a clear error and document it as a known limitation, rather than ship an
+untested path.
+
+**Rulings.** Encrypted comments in old RAR archives: "skip up front. note in docs as a
+known limitation due to being untestable" (2026-09-24).
 
 ## Code and tests
 
