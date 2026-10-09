@@ -21,8 +21,9 @@ caller who still owns it.
 from __future__ import annotations
 
 import io
+from collections.abc import Iterator
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO
 
 import pytest
 

@@ -16,7 +16,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -2173,9 +2173,9 @@ def test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns() -> None:
         345_678_901,
     )
     mtime, ctime, atime = _parse_rar5_xtime(blob, 0, None)
-    assert mtime == datetime(2020, 9, 13, 12, 26, 40, 123456, tzinfo=timezone.utc)
-    assert ctime == datetime(2020, 9, 13, 12, 30, 0, 234567, tzinfo=timezone.utc)
-    assert atime == datetime(2020, 9, 13, 12, 28, 20, 345678, tzinfo=timezone.utc)
+    assert mtime == datetime(2020, 9, 13, 12, 26, 40, 123456, tzinfo=UTC)
+    assert ctime == datetime(2020, 9, 13, 12, 30, 0, 234567, tzinfo=UTC)
+    assert atime == datetime(2020, 9, 13, 12, 28, 20, 345678, tzinfo=UTC)
 
 
 def test_parse_rar5_xtime_mtime_only_leaves_ctime_atime_none() -> None:
@@ -2189,7 +2189,7 @@ def test_parse_rar5_xtime_mtime_only_leaves_ctime_atime_none() -> None:
     tflags = _RAR5_XTIME_UNIXTIME | _RAR5_XTIME_HAS_MTIME | _RAR5_XTIME_UNIXTIME_NS
     blob = bytes([tflags]) + struct.pack("<II", 1_600_000_000, 500_000_000)
     mtime, ctime, atime = _parse_rar5_xtime(blob, 0, None)
-    assert mtime == datetime(2020, 9, 13, 12, 26, 40, 500000, tzinfo=timezone.utc)
+    assert mtime == datetime(2020, 9, 13, 12, 26, 40, 500000, tzinfo=UTC)
     assert ctime is None
     assert atime is None
 
@@ -2263,12 +2263,12 @@ def test_rar5_xtime_fixture_surfaces_accessed_and_ctime() -> None:
     """Listing, no unrar: RAR5 ``-tsmca`` fills accessed and ``ctime`` as aware UTC."""
     with open_archive(_fixture("xtime__.rar")) as archive:
         member = archive.get("file.txt")
-        assert member.modified == datetime(2020, 1, 15, 12, 0, tzinfo=timezone.utc)
-        assert member.accessed == datetime(2021, 6, 20, 18, 30, tzinfo=timezone.utc)
+        assert member.modified == datetime(2020, 1, 15, 12, 0, tzinfo=UTC)
+        assert member.accessed == datetime(2021, 6, 20, 18, 30, tzinfo=UTC)
         # Unix-built fixture: the creation slot is st_ctime, so it is not ``created``.
         assert member.created is None
         ctime = member.ctime
-        assert ctime.tzinfo is timezone.utc
+        assert ctime.tzinfo is UTC
         assert ctime != member.modified
         assert ctime != member.accessed
 
@@ -2307,7 +2307,7 @@ def test_xtime_absent_accessed_created_are_none(name: str) -> None:
             assert member.ctime is None
 
 
-_CTIME = datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc)
+_CTIME = datetime(2019, 6, 1, 8, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(

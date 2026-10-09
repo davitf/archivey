@@ -12,9 +12,10 @@ from __future__ import annotations
 import errno
 import os
 import stat
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Mapping, NamedTuple
+from typing import NamedTuple
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (

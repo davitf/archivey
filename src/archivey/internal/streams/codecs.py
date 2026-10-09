@@ -36,12 +36,12 @@ import struct
 import threading
 import weakref
 import zlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar, TypeVar
+from typing import TYPE_CHECKING, BinaryIO, ClassVar, TypeVar
 
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import (
@@ -297,7 +297,7 @@ class _AcceleratorStream(DelegatingStream):
 
     _SUBCLASS_CLOSES_INNER = True
 
-    def __init__(self, inner: object, *, trap: "_TrappingSource | None" = None) -> None:
+    def __init__(self, inner: object, *, trap: _TrappingSource | None = None) -> None:
         super().__init__(ensure_binaryio(inner))
         # The finalize callback must NOT reference self — a bound method would pin the wrapper
         # and defeat GC-time finalization — so it takes the raw inner and lives as a staticmethod.
@@ -312,7 +312,7 @@ class _AcceleratorStream(DelegatingStream):
         self._lost: str | None = None
 
     @staticmethod
-    def _close_inner(inner: BinaryIO, trap: "_TrappingSource | None") -> None:
+    def _close_inner(inner: BinaryIO, trap: _TrappingSource | None) -> None:
         # close() — not join_threads() — stops the C++ worker thread, and must run before the
         # interpreter finalizes or the process aborts. Best-effort; the guard runs it once.
         try:
@@ -418,7 +418,7 @@ class _AcceleratorStream(DelegatingStream):
         self._after_parked_fault()
         return data
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         # Symmetry for a direct user of this class: behind _Bzip2EmptyStreamCheck, which
         # turns off readinto passthrough, every readinto from above arrives at read().
         self._raise_if_lost()
@@ -602,7 +602,7 @@ class _TrappingSource(io.RawIOBase):
             self._store(exc)
             return b""
 
-    def readinto(self, buf: "WriteableBuffer", /) -> int:
+    def readinto(self, buf: WriteableBuffer, /) -> int:
         mv = memoryview(buf).cast("B")
         try:
             data = self._inner.read(len(mv))
@@ -1212,7 +1212,7 @@ class _SourceViews:
     path: str | None = None
 
     @classmethod
-    def of_path(cls, path: str) -> "_SourceViews":
+    def of_path(cls, path: str) -> _SourceViews:
         return cls(lambda: open(path, "rb"), path)
 
     def for_stdlib(self) -> CodecSource:
@@ -4784,7 +4784,7 @@ def open_codec_stream(
     config: StreamConfig = DEFAULT_STREAM_CONFIG,
     params: CodecParams = _DEFAULT_PARAMS,
     stamp: Callable[[ArchiveyError], None] | None = None,
-    collector: "DiagnosticCollector | None" = None,
+    collector: DiagnosticCollector | None = None,
     seekable: bool | None = None,
     on_close: Callable[[], None] | None = None,
 ) -> ArchiveStream:

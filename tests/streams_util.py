@@ -11,7 +11,8 @@ import struct
 import subprocess
 import sys
 import zlib
-from typing import BinaryIO, Callable
+from collections.abc import Callable
+from typing import BinaryIO
 
 import pytest
 

@@ -23,8 +23,8 @@ import re
 import string
 import sys
 import unicodedata
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from archivey.exceptions import ExtractionError, FilterRejectionError
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
@@ -523,9 +523,9 @@ def _sanitize_portable_name(name: str) -> str:
     out: list[str] = []
     for c in name:
         if "\udc80" <= c <= "\udcff":
-            out.append("%%%02X" % (ord(c) - 0xDC00))
+            out.append(f"%{ord(c) - 0xDC00:02X}")
         elif c in _WINDOWS_INVALID_CHARS:
-            out.append("%%%02X" % ord(c))
+            out.append(f"%{ord(c):02X}")
         elif c == "%":
             out.append("%25")
         else:

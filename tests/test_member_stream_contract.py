@@ -19,9 +19,9 @@ import os
 import tarfile
 import traceback
 import zipfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
 
 import pytest
 

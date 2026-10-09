@@ -18,9 +18,9 @@ codecs is an idea in ``dev-docs/IDEAS.md`` ("Seekable zstd through a native fram
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
-from typing import BinaryIO, Iterator, TypeVar
+from typing import BinaryIO, TypeVar
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (

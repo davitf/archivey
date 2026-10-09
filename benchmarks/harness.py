@@ -68,9 +68,10 @@ import sys
 import tarfile
 import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from archivey import open_archive
 from archivey.config import AcceleratorMode, ArchiveyConfig

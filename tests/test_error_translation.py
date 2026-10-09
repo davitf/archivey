@@ -9,7 +9,8 @@ Phase-2 task 0.1.
 from __future__ import annotations
 
 import io
-from typing import BinaryIO, Iterator
+from collections.abc import Iterator
+from typing import BinaryIO
 
 import pytest
 

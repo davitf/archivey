@@ -57,8 +57,9 @@ from __future__ import annotations
 import io
 import os
 import stat
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Protocol, Sequence, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,

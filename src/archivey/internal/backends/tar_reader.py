@@ -37,11 +37,13 @@ from __future__ import annotations
 import stat
 import tarfile
 import threading
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import replace
 from datetime import datetime
 from io import SEEK_SET, BytesIO
-from typing import BinaryIO, ContextManager, Iterator, Literal, Mapping, Self, cast
+from typing import BinaryIO, Literal, Self, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -1058,7 +1060,7 @@ class TarReader(BaseArchiveReader):
         finally:
             self._one_header_at_a_time = False
 
-    def _extraction_listing(self) -> ContextManager[None]:
+    def _extraction_listing(self) -> AbstractContextManager[None]:
         """Enforce ``ListingLimits`` as members arrive in the extraction's one pass.
 
         The base lists the whole archive before an extraction, which on a compressed
