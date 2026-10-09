@@ -24,18 +24,6 @@ A commissioned deep review inherits
 7. **Archive lifecycle** — only move a review to `review/archive/` when every
    actionable item is fixed or consciously deferred (`STATUS.md` / `backlog.md`).
 
-Review themes to know. **`review/STATUS.md` is the live index — read it rather than this
-table**, which records lenses, not state. A theme listed as archived means findings in
-that area are *re-reviews*: check the archive tables first so you do not re-litigate
-settled ground (`review/backlog.md` carries the deferred topics and their reasons).
-
-| Review | Lens | State |
-|--------|------|-------|
-| `docs/` | Documentation IA, then content accuracy/gaps (Topic 8) | **In flight** — see `STATUS.md` |
-| `api-coherence/` | Uniform interface, surface size, CLI-as-consumer gaps | Archived |
-| `performance/` | ≤1.3× budget, gate efficacy, solid/listing hotspots | Archived |
-| `debt-ledger/` | Freeze-cost debt; corpus matrix (`corpus-matrix.md`) | Archived |
-| `stream-layering/` | Wrapper correctness + collapse | Archived |
-| `cli-product/` | CLI UX / grammar / exit codes (product, not correctness) | Archived |
-| `simplicity-consistency/` | Topic 9 — duplicated concepts, inconsistent surfaces | Archived 2026-08-15 |
-| Security round | Hostile input, crypto, RAR, stream decoder | Archived |
+**Which themes exist, and their state: [`review/STATUS.md`](../../../../review/STATUS.md).**
+A theme already archived means findings in that area are *re-reviews*: check its
+archive table first (`review/backlog.md` carries the deferred topics and their reasons).

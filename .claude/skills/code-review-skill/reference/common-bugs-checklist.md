@@ -1,7 +1,7 @@
 # Common Bugs Checklist
 
 Quick-reference bug patterns for this Python archive library. See also
-[python.md](python.md) and [security-review-guide.md](security-review-guide.md).
+[security-review-guide.md](security-review-guide.md).
 
 ## Universal Issues
 
@@ -36,8 +36,6 @@ Quick-reference bug patterns for this Python archive library. See also
 - [ ] String concatenation in tight loops (prefer `bytearray` / `join`)
 - [ ] Not using `with` for files/archives
 - [ ] Missing type annotations on public APIs
-
-**Full guide:** [Python Review Guide](python.md)
 
 ## Library / Archive Specific
 

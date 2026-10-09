@@ -516,9 +516,9 @@ Five questions, in order. The first `yes` wins.
    `mkdocs.yml`'s nav in the same commit**. If `new_docs/` already has a rewrite of that
    page, change it there too. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision. Use `/technical-writing` for structure and craft, and
-   [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) for the voice, which
-   outranks STE on user docs. The standing prose rules are [`AGENTS.md`](AGENTS.md)
+   page per decision. Use
+   [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) for structure and voice,
+   which outranks STE on user docs. The standing prose rules are [`AGENTS.md`](AGENTS.md)
    §Writing English.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`

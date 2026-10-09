@@ -79,11 +79,9 @@ different things, and where both apply, both run:
   pull request titles and descriptions, review and inline comments, commit messages, and
   code comments in `src/` and `tests/`.
 
-`technical-writing` is separate and is still opened only for Diátaxis structure and
-sentence craft on a published docs or handbook page. User docs prose, a new page or a
-one-sentence fix, follows the voice in
-[`write-user-docs`](.claude/skills/write-user-docs/SKILL.md), which puts "sounds like a
-person" above STE.
+User docs prose, a new page or a one-sentence fix, follows the voice and the Diátaxis
+mode table in [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md), which puts
+"sounds like a person" above STE.
 
 **Advice, not a gate** (maintainer decision, 2026-09-22). A semicolon or a long sentence
 is not a defect, and a review must not report one as a finding. Improve the prose in a
