@@ -75,8 +75,8 @@ Pinned: `test_id3_tagged_mp3_is_not_lzma_alone`,
 
 437 files were detected as `raw_stream.br`, 429 of them at GUESS confidence. They were
 `.doc`, `.db` (`Thumbs.db`), `.msi`, `.ppt`, `.xls`, AppleDouble `._*` files and some
-images. All of them failed to decode except two. This is the residual that
-`open-issues.md` P12 tracks. The scan adds a real-world measure of it, and a
+images. All of them failed to decode except two. This is the residual
+that threat-model O10 records. The scan adds a real-world measure of it, and a
 reproducible input: the 32-byte header that every version-3 OLE file starts with,
 followed by zeros, at 256 KiB.
 

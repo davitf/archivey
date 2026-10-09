@@ -1,8 +1,8 @@
 # Scope — pass 0 of Topic 8
 
 Per-page job, explicit non-coverage, and every current block routed by
-[`../docs/outline.md` D-f](../docs/outline.md). Written before `claims.md`, because a
-claim on a block that is about to move is not worth verifying
+[`../archive/2026-10-06-docs/outline.md` D-f](../archive/2026-10-06-docs/outline.md).
+Written before `claims.md`, because a claim on a block that is about to move is not worth verifying
 ([`brief.md` §Deliverables](brief.md)).
 
 Measured against `main` @ `5d08f31` (`d4668c3` + the Topic 8/10 commission, which touched
@@ -574,7 +574,7 @@ here; threat-model depth; per-format quirks (→ `formats.md`); the problem cata
 D2's six sources do not include and which this page does **not** wait for
 ([`brief.md` §Definition of done](brief.md) row 3).
 
-**Sections** (D2, `../docs/DECISIONS.md:50-57`) — a paragraph plus a link each:
+**Sections** (D2, `../archive/2026-10-06-docs/DECISIONS.md:50-57`) — a paragraph plus a link each:
 
 | Section | Sourced from | Also receives |
 |---|---|---|
@@ -910,7 +910,7 @@ Two non-defect items, recorded here so pass 1 does not re-derive them, and neith
 
 | # | Where | Item |
 |---|---|---|
-| S-1 | `docs/access-and-cost.md:18` | The nightly-run link points at `github.com/davitf/archivey-**2**/actions/runs/29992136861`. **Already recorded — this is [O-4](../docs/observations.md), open**, from the IA audit: the repo was renamed 2026-07-25 and GitHub redirects, so it resolves but is stale. Cite O-4; do not file it again |
+| S-1 | `docs/access-and-cost.md:18` | The nightly-run link points at `github.com/davitf/archivey-**2**/actions/runs/29992136861`. **Already recorded — this is [O-4](../archive/2026-10-06-docs/observations.md), open**, from the IA audit: the repo was renamed 2026-07-25 and GitHub redirects, so it resolves but is stale. Cite O-4; do not file it again |
 | S-2 | `docs/extracting.md:145-149` | The policy table has two rows for a three-member enum: `STANDARD` is absent while the page's prose uses it four times (`51`, `71`, `173`, `175`). An accuracy row, listed here because the block was ruled Keep and the gap would otherwise be inherited silently. Independently found by the second pass (#241) |
 
 ---

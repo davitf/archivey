@@ -3581,7 +3581,7 @@ def test_rar3_unicode_name_decode_matches_reference_and_stays_bounded() -> None:
     inner()
 
 
-# Fixtures built by review/next/01-rar-reader-findings/make_hostile_fixtures.py:
+# Fixtures built by review/archive/2026-07-16-rar-reader/make_hostile_fixtures.py:
 # nonsolid, compressed members whose stored names are a bare unrar switch and an
 # ``@listfile`` argument, alongside a normal control member.
 _HOSTILE_ARGV_CONTENTS = {
@@ -3594,7 +3594,7 @@ _HOSTILE_ARGV_CONTENTS = {
 @requires_binary("unrar")
 @pytest.mark.parametrize("name", ["hostile_argv__.rar", "hostile_argv__rar4.rar"])
 def test_hostile_member_name_reads_its_own_bytes(name: str) -> None:
-    """F3 (review/next/01-rar-reader-findings/unrar-boundary.md): a member whose
+    """F3 (review/archive/2026-07-16-rar-reader/unrar-boundary.md): a member whose
     stored name is a bare ``unrar`` switch (``-inul``) or an ``@listfile`` argument
     (``@atfile``) must be addressed to exactly that member.
 

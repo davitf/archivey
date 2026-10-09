@@ -8,7 +8,7 @@ an unrecognized exception propagates unchanged, and `OSError` / `KeyboardInterru
 
 Every blind handler in `src/` fits one of the seven shapes below. A new one should too;
 if it does not, that is worth a sentence in review. The census that produced this page
-is `review/exception-catchalls/SUMMARY.md` (2026-09-25).
+is `review/archive/2026-09-25-exception-catchalls/SUMMARY.md`.
 
 ## 1. The rule
 

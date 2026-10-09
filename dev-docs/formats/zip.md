@@ -428,7 +428,7 @@ CRC is out of reach (AE-2 has none) is read to its end instead when it fits the 
 has no rejecting codec: the HMAC covers the whole member. A **STORED** ZipCrypto member
 has no decompressor, so the only discriminator is the whole-stream CRC — all surviving
 candidates are resolved in one shared ciphertext pass computing each candidate's CRC in
-constant memory, earliest match winning. That cost is irreducible for the format; see `open-issues.md` §Irreducible.
+constant memory, earliest match winning. That cost is irreducible for the format.
 
 With one ZipCrypto password, a wrong password that passes the check byte fails where the
 decrypted bytes first meet a check. `open()` parses an LZMA or PPMd member's codec
@@ -488,9 +488,9 @@ distinguish them from a backup. A census of 643 readable ZIPs on one Linux image
 JARs (`META-INF/MANIFEST.MF`), 176 ODF-family (a `mimetype` entry stored first, 176/176,
 none compressed), 11 wheels, and 91 with no marker at all — of which 85 were named `.zip`
 and none was user data. Recognising the role is post-1.0 and, if built, must report "not
-recognised" rather than "this is data"; the analysis is in
-[`IDEAS.md`](../IDEAS.md) §Archive role. For ZIP the cheap tests are nearly free, because
-the first entry's name and its `compress_type` are both already in the central directory.
+recognised" rather than "this is data"; the idea is in [`IDEAS.md`](../IDEAS.md)
+§Detection. For ZIP the cheap tests are nearly free, because the first entry's name and
+its `compress_type` are both already in the central directory.
 
 **Prefixed ZIPs are an idiom, not an abuse** — `zipapp`, pex, shiv, Spring Boot executable
 JARs, self-extracting installers, appended-ZIP polyglots. Two write conventions exist and
@@ -557,8 +557,8 @@ rather than returning plausible bytes. Refusing on the non-zero EOCD disk fields
 refuses a set that cannot be read whole, not one that happened to work.
 
 A possible later refinement for the refuse path — detect first, upgrade a failed detection
-to rejoin-first when the name looks volume-shaped — is parked in [`IDEAS.md`](../IDEAS.md)
-until someone takes it up; do not invent a ZIP-only half-step here.
+to rejoin-first when the name looks volume-shaped — is in [`IDEAS.md`](../IDEAS.md) until
+someone takes it up; do not invent a ZIP-only half-step here.
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the
@@ -612,8 +612,8 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | A ZIP on a pipe or socket cannot be opened at all, in either access mode, and is never buffered for you | **format** / **library** | The index is at the end (§1). A native forward-walking reader could stream members in order, but some metadata (the authoritative CDH run, comments, external attributes) lives only in that end directory |
-| One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. [`open-issues.md`](../open-issues.md) P4 |
-| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`open-issues.md`](../open-issues.md) P2 |
+| One member name whose UTF-8 flag lies makes the **whole archive** unlistable | **library** | Stdlib decodes flagged names strictly while parsing the central directory, so the failure is archive-wide rather than confined to the bad entry. A native reader would fix it ([`IDEAS.md`](../IDEAS.md)) |
+| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **library** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow — `zipfile` cannot, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part — stdlib refuses at open with `File is not a zip file`, and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |

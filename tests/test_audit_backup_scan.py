@@ -89,14 +89,14 @@ def test_zero_run_after_an_alone_header_decodes_without_error() -> None:
     assert out == b"\0" * (1 << 16)
 
 
-# --- Brotli: the residual false positive (open-issues P12), on OLE files. ----------
+# --- Brotli: the residual false positive (tracked internally), on OLE files. -------
 
 
 @requires("brotli")
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "open-issues P12 residual: a standard OLE header followed by zeros is "
+        "residual false positive: a standard OLE header followed by zeros is "
         "detected as BROTLI (GUESS); the scan found 437 such files, mostly OLE"
     ),
 )
