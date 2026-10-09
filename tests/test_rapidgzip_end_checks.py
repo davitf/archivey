@@ -12,11 +12,14 @@ accelerator ``ON`` (``AUTO`` engages only from 16 MiB) and compares with ``OFF``
   or damaged one-member gzip still raises;
 - a seek that meets bytes after the data (NUL padding) or damage is handed to the
   standard library, as a read is;
-- a second zlib stream is trailing data, not content.
+- a second zlib stream is trailing data, not content;
+- a raw DEFLATE or gzip stream cut where rapidgzip ends it with no error raises, also
+  when a declared size equals the output before the cut.
 """
 
 from __future__ import annotations
 
+import base64
 import functools
 import gzip
 import io
@@ -30,6 +33,7 @@ import pytest
 from archivey import open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode
+from archivey.exceptions import TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import (
@@ -39,6 +43,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires
+from tests.test_zip_native_codecs import _build_minimal_zip
 
 _OFF = AcceleratorMode.OFF
 _ON = AcceleratorMode.ON
@@ -429,3 +434,97 @@ def test_a_second_zlib_stream_is_reported_as_trailing_data(tmp_path) -> None:
         ) as reader:
             assert reader.read(reader.members()[0]) == _payload()
             assert reader.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
+
+
+# --- a cut raw DEFLATE or gzip stream with a declared size -----------------------------
+
+# The input the deflate_accel fuzz target found, without its four-byte size prefix: one
+# non-final block of 168 bytes, and no final block. rapidgzip reads it as a whole stream.
+_FUZZ_CUT_DEFLATE = base64.b64decode("4izJSE5WLMotKE1NUShIrMzJT0zhShx8ggA=")
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    return compressor.compress(data) + compressor.flush()
+
+
+@functools.cache
+def _cut_streams() -> dict[str, tuple[Codec, bytes]]:
+    deflate = _raw_deflate(_payload())
+    whole_blocks = zlib.compressobj(6, zlib.DEFLATED, -15)
+    return {
+        "fuzz-input": (Codec.DEFLATE, _FUZZ_CUT_DEFLATE),
+        "deflate-after-a-block": (
+            Codec.DEFLATE,
+            whole_blocks.compress(_payload()) + whole_blocks.flush(zlib.Z_FULL_FLUSH),
+        ),
+        "deflate-in-the-last-block": (Codec.DEFLATE, deflate[:-3]),
+        "gzip-in-the-last-block": (
+            Codec.GZIP,
+            gzip.compress(_payload(), mtime=0)[:-20],
+        ),
+    }
+
+
+def _output_before_the_cut(codec: Codec, blob: bytes) -> bytes:
+    return zlib.decompressobj(-15 if codec is Codec.DEFLATE else 31).decompress(blob)
+
+
+def _sized_outcome(
+    codec: Codec, blob: bytes, mode: AcceleratorMode, size: int
+) -> Outcome:
+    config = StreamConfig(
+        seekable=True, use_rapidgzip=mode, expected_decompressed_size=size
+    )
+    try:
+        with open_codec_stream(codec, io.BytesIO(blob), config=config) as s:
+            return s.read(), None
+    except Exception as exc:  # noqa: BLE001 - compared below
+        return b"", type(exc)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("case", sorted(_cut_streams()))
+@pytest.mark.parametrize("declared", ["output-before-the-cut", "none"])
+def test_a_cut_stream_rapidgzip_ends_quietly_raises(case: str, declared: str) -> None:
+    codec, blob = _cut_streams()[case]
+    if declared == "none":
+        off = _outcome(codec, blob, _OFF, _no_seek)
+        assert off[1] is TruncatedError
+        _assert_same(_outcome(codec, blob, _ON, _no_seek), off)
+        return
+    size = len(_output_before_the_cut(codec, blob))
+    assert _sized_outcome(codec, blob, _OFF, size)[1] is TruncatedError
+    assert _sized_outcome(codec, blob, _ON, size)[1] is TruncatedError
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("chunk", [-1, 1 << 16])
+def test_an_intact_raw_deflate_stream_reads_whole(chunk: int) -> None:
+    blob = _raw_deflate(_payload())
+    config = StreamConfig(
+        seekable=True, use_rapidgzip=_ON, expected_decompressed_size=len(_payload())
+    )
+    got = bytearray()
+    with open_codec_stream(Codec.DEFLATE, io.BytesIO(blob), config=config) as s:
+        while block := s.read(chunk):
+            got += block
+    assert got == _payload()
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    "case", ["fuzz-input", "deflate-after-a-block", "deflate-in-the-last-block"]
+)
+def test_a_zip_member_cut_where_its_size_and_crc_end_raises(case: str) -> None:
+    """The size and CRC-32 cover the output before the cut, so only the missing final
+    block shows the member is cut; that is what a crafted member looks like."""
+    _, blob = _cut_streams()[case]
+    archive = _build_minimal_zip(
+        b"a", blob, _output_before_the_cut(Codec.DEFLATE, blob), method=8
+    )
+    for mode in (_OFF, _ON):
+        config = ArchiveyConfig(use_rapidgzip=mode)
+        with open_archive(io.BytesIO(archive), config=config) as reader:
+            with pytest.raises(TruncatedError):
+                reader.read(reader.members()[0])
