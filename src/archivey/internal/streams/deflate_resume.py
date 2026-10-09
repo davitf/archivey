@@ -207,3 +207,46 @@ class DeflateResumeDecoder(BaseDecoder):
     @property
     def needs_input(self) -> bool:
         return not self._decomp.unconsumed_tail
+
+
+def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | None:
+    """The decompressed offset where the raw DEFLATE stream in ``source`` ends.
+
+    ``source`` is the compressed stream, seekable from offset 0. The decode starts at
+    ``point`` (a :class:`DeflateResume` block boundary at or before ``cap``), or at the
+    start of the stream when it is ``None``, and stops at the stream's final block.
+    ``None`` when it does not get there: the input runs out first (a cut stream), zlib
+    raises, or the output passes ``cap``. Raw DEFLATE has no checksum, so a resumed
+    decode that reaches the end is as good as a full one. Output is counted and
+    dropped, in bounded pieces.
+    """
+    produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
+    if point is not None:
+        resume = point.state
+        if not isinstance(resume, DeflateResume) or point.decompressed_offset > cap:
+            raise ValueError(f"not a DEFLATE resume point before {cap}: {point!r}")
+        produced, bit = point.decompressed_offset, resume.bit
+        if resume.window:
+            decomp = zlib.decompressobj(-15, zdict=resume.window)
+        source.seek(point.compressed_offset)
+    else:
+        source.seek(0)
+    data = b""
+    try:
+        while not decomp.eof:
+            if produced > cap:
+                return None
+            if not data:
+                data = source.read(1 << 16)
+                if not data:
+                    return None
+                if bit:
+                    prefix, low = _prefix(bit)
+                    high = data[0] & (0xFF << bit) & 0xFF
+                    data = prefix + bytes([low | high]) + data[1:]
+                    bit = 0
+            produced += len(decomp.decompress(data, 1 << 20))
+            data = decomp.unconsumed_tail
+    except zlib.error:
+        return None
+    return produced if produced <= cap else None

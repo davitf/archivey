@@ -109,7 +109,12 @@ a valid zlib header or `BZh` and a digit from 1 to 9, and a `zlib` source that d
 with a valid zlib header. A `zlib` source whose header sets a preset dictionary SHALL use the
 stdlib backend too: rapidgzip does not take that header for zlib. A raw DEFLATE stream that
 rapidgzip ends before its first byte of output SHALL be decoded by the stdlib backend, which
-gives the verdict. Once the stdlib backend has taken over from rapidgzip, its errors SHALL
+gives the verdict. rapidgzip also ends a raw DEFLATE stream cut after a whole block, or inside
+its last block, with no error. Where rapidgzip's output of a raw DEFLATE stream ends, the
+system SHALL check with zlib that the stream reaches a final block, decoding from the last
+DEFLATE block boundary the stream keeps at or before that end (or from the start where it
+keeps none). Where it does not, the read SHALL be handed to the stdlib backend, which gives
+the verdict, also when a declared size equals the output before the cut. Once the stdlib backend has taken over from rapidgzip, its errors SHALL
 leave as the codec's typed errors, so the over-run probe of a declared size never takes a
 data error for the end of the data.
 
@@ -147,6 +152,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | No child can be started, `ON` | `ResourceLimitError` at open |
 | A `deflate` source that starts like gzip, zlib or bzip2, or a `zlib` source with no valid zlib header or with a preset dictionary, `ON` | The bytes and error of `OFF` (`CorruptionError` at the header) |
 | A raw DEFLATE stream cut before any output (`03`), `ON`, with or without a declared size | `TruncatedError`, as with `OFF` |
+| A raw DEFLATE stream cut after a whole block or inside its last one, `ON`, with or without a declared size equal to the output before the cut | `TruncatedError`, as with `OFF` |
 | A `deflate` or `zlib` stream declared empty that does not decode, `ON` | `CorruptionError`, as with `OFF` |
 
 ### Requirement: Accelerator errors translate uniformly
@@ -158,7 +164,8 @@ translator SHALL account for platform-varying rapidgzip exception types/messages
 
 For gzip through rapidgzip, the system SHALL backstop truncation by comparing full-read
 decompressed length modulo 2^32 with the gzip ISIZE trailer, for **any declared-seekable
-source** — a path or a caller-owned `BinaryIO` alike — not only path sources. The ISIZE trailer
+source** — a path or a caller-owned `BinaryIO` alike — not only path sources, and also when
+a declared decompressed size is set, since the declared size checks only the length. The ISIZE trailer
 value SHALL be captured up front (when the source is first inspected for backstop eligibility),
 so no per-read reopen of a path is required and a non-path source needs no seek while the
 accelerator is live. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL

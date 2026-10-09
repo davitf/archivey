@@ -93,6 +93,7 @@ from archivey.internal.streams.decompressor_stream import (
     gzip_error,
     report_trailing_data,
 )
+from archivey.internal.streams.deflate_resume import stream_end
 from archivey.internal.streams.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.ppmd_child import PpmdChildError
@@ -2098,6 +2099,87 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             )
 
 
+class _DeflateEndCheckStream(DelegatingStream):
+    """Check that a raw DEFLATE stream rapidgzip ends without an error reached its end.
+
+    rapidgzip ends a raw DEFLATE stream cut after a whole block, or inside its last
+    one, with no error: it returns the output so far, then ``b""`` (found by the
+    accelerator fuzz targets). The standard library raises ``TruncatedError`` there,
+    since the stream never reached a final block. A declared size does not catch it:
+    when the size equals the output before the cut, the ``VerifyingStream`` outside
+    sees a complete member.
+
+    So when rapidgzip's output ends, this wrapper decodes the end of the stream again
+    with zlib, from the newest resume point at or before that offset
+    (:func:`~archivey.internal.streams.deflate_resume.stream_end`), or from the start
+    when there is none. Raw DEFLATE has no checksum, so the resumed decode is a full
+    answer:
+
+    - zlib reaches a final block: the stream is whole. That block can end before the
+      offset, when rapidgzip read on into a second stream after it, within the size the
+      container declared (past that size, ``limit`` of ``_StdlibOnAcceleratorError``
+      hands over). The ``compressed-streams`` spec accepts that difference: the
+      declared size and CRC decide.
+    - zlib does not reach a final block (a cut or damaged stream): the read goes to the
+      standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
+      inside), which gives the verdict it gives with the accelerator off.
+
+    The check costs a decode of the output between the resume point and the end, which
+    the point spacing in ``rapidgzip_child.py`` bounds; a stream too short for a point
+    is decoded again whole.
+
+    The check runs once, on the read that meets the end, as in
+    :class:`_GzipTruncationCheckStream` (ADR 0014: never from ``close()``); a
+    completing ``read()`` reaches the end itself so that it raises. A seek does not
+    disarm it. After a takeover the standard library owns the end. With a declared
+    size, the ``VerifyingStream`` probe past that size is the read that meets the end,
+    and a failed verifying event withholds its chunk (as for zlib, see
+    :class:`_ZlibAdlerCheckStream`): the error type is the same as with the
+    accelerator off, and up to one chunk fewer arrives.
+    """
+
+    readinto_passthrough = False
+
+    def __init__(
+        self, inner: _StdlibOnAcceleratorError, *, views: _SourceViews
+    ) -> None:
+        super().__init__(inner)
+        # The same object as ``_inner``, typed: the handover calls it.
+        self._takeover = inner
+        self._views = views
+        self._checked = False
+
+    def read(self, size: int = -1, /) -> bytes:
+        if size == 0:
+            return b""
+        data = self._inner.read(size)
+        if data and size >= 0:
+            return data
+        if data:
+            # A completing read: reach the end now, so the check raises from this read.
+            while more := self._inner.read(1 << 20):
+                data += more
+        return data + self._at_end(size)
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)
+
+    def _at_end(self, size: int) -> bytes:
+        """Check the end of rapidgzip's output; return what a read of ``size`` there
+        gets: nothing, or after a handover, the standard library's read."""
+        if self._checked or self._takeover.switched:
+            return b""
+        self._checked = True
+        end = self._takeover.position
+        resume_point = getattr(self._takeover.accelerator, "resume_point", None)
+        point = resume_point(end) if resume_point is not None else None
+        with self._views.view() as f:
+            if stream_end(f, point, end) is not None:
+                return b""
+        self._takeover.switch_to_stdlib()
+        return self._inner.read(size)
+
+
 class _Bzip2EmptyStreamCheck(DelegatingStream):
     """Hand a silent empty result from rapidgzip's bzip2 decoder to the stdlib engine.
 
@@ -3242,9 +3324,10 @@ class GzipCodec(_DeflateFamilyCodec):
         accel_source: CodecSource,
         views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
-        if config.expected_decompressed_size is not None:
-            # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
-            return None
+        # A declared size does not replace this check: the VerifyingStream outside
+        # checks only the length, and rapidgzip ends a cut member with no error, so a
+        # size equal to the output before the cut would pass (found by the accelerator
+        # fuzz targets).
         # Truncation backstop for **any** seekable source (path or caller-owned stream):
         # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
         # independent view: the check stands down only for a further member zlib's gzip
@@ -3944,6 +4027,15 @@ class DeflateCodec(_ZlibErrorCodec):
             # real stream that has it decodes without the accelerator.
             return None
         return super()._open_accelerated(source, params, config)
+
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        views: _SourceViews,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        return lambda stream: _DeflateEndCheckStream(stream, views=views)
 
     def _accelerated_limit(
         self, params: CodecParams, config: StreamConfig
