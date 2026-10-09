@@ -580,9 +580,6 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, removing
   or renaming a public name (before 0.2.0 too, `design-rules.md` DR-12), a very large
   diff, or anything an open decision touches.
-- Review rounds run one at a time across the project (maintainer, 2026-10-06, to avoid
-  hitting quotas). Check that no review run is in
-  progress before adding the `review` label.
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.
 - Do not edit `CHANGELOG.md` in a PR; the release writes it.
 
