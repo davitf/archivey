@@ -37,6 +37,16 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#642 K6 — a wrong gzip ISIZE hidden by four appended length bytes.** The
+  `gzip_accel` shard on #642 (run 37839602752, job 113525332796) found a one-member
+  gzip whose ISIZE is wrong and whose last four bytes equal the decoded length. The
+  accelerator returns the payload. The standard library raises `incorrect length
+  check`. The crash input is in that run's `atheris-crashes-1` artifact, kept 30
+  days. A fixture that fails on `main` is #643. Telling those bytes from the zero
+  padding `gzip-padded-isize-accepted` already accepts needs a CRC-32 of the output
+  or a second decode, the cost that change declined. The nightlies before this shard
+  were green, so the short budget is what found it.
+
 - **#607 K6 — nothing in the suite notices a leaked thread.** `tests/leak_oracle.py`
   fails a test that leaves a child process running or an owning stream unclosed, but does
   not look at threads, so a FIFO writer thread stayed blocked in `open()` from a test's
@@ -65,14 +75,6 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   file. It goes with the other workflow fixes from the 2026-09-24 loop retrospective:
   skip an empty gate comment, and delete only the outcome labels that are present.
 
-- **#430 K4 — the ZIP reader's own provider loop still stops on the first repeat.**
-  `_open_stored_confirmed` in `internal/backends/zip_reader.py` (phase 3, STORED
-  ZipCrypto) asks the provider through `ask_provider` and `break`s when an answer is in
-  its `tried` set, which is the S25-K6 defect #430 fixed in
-  `_PasswordCandidates.attempt`. Move it onto `_PasswordCandidates.iter_provider_answers`
-  (skip an answer already tried, stop when the provider repeats its own answer) and add
-  the two-unit test from `tests/test_password.py` against a STORED ZipCrypto archive.
-  Parked because open PRs were editing `zip_reader.py` when #430 was written.
 - **#389 K7 — `p7zip 16.02` is a mislabelled writer version in two active changes.**
   `scripts/setup-dev-env.sh` installs `p7zip-full`, which on a current Debian or Ubuntu
   base is `16.02+transitional.1` and ships no binary of its own: the `7z` it pulls in is
