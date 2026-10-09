@@ -769,10 +769,11 @@ def _report_extraction(
 def _escaped_where(result: ExtractionResult, target: Path) -> str:
     """The destination to report for a member that did not keep it, terminal-safe.
 
-    ``requested_path`` is built from the member's own name, so it carries whatever
-    control bytes the archive chose — the portable rewrite does not strip them under any
-    policy. Printing it raw is the line-spoofing vector ``escape_member_name`` exists to
-    close, so both the path and the name fallback go through it.
+    ``requested_path`` is built from the member's own name. STRICT and STANDARD write the
+    controls 0x01-0x1F as ``%XX``, but other non-printable characters (DEL, the C1
+    controls, U+2028) pass through, and TRUSTED writes every name as stored. Printing it
+    raw is the line-spoofing vector ``escape_member_name`` exists to close, so both the
+    path and the name fallback go through it.
 
     Rendered relative to the extraction root first, matching ``name rewritten:``. That is
     not only for brevity: ``escape_member_name`` escapes backslashes, so handing it a

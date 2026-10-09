@@ -147,7 +147,9 @@ this workflow.
 
 ## What stays manual
 
-- **Merging.** Nothing here merges, approves, or pushes to `main`.
+- **Merging.** Nothing here merges, approves, or pushes to `main`. An agent may merge a
+  straightforward PR by hand once its review approves and CI is green; tricky ones go to
+  the maintainer (`AGENTS.md` §Working with the maintainer).
 - **The review's own judgement.** `code-review-skill` runs with `Read`, `Grep`, `Glob`,
   `Bash` and `WebFetch`. It reports; it does not edit.
 - **Reaching the maintainer.** The workflow puts the question on the pull request.

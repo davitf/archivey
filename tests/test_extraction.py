@@ -1590,11 +1590,31 @@ def test_copied_bytes_count_toward_the_byte_cap_but_not_the_ratio() -> None:
     )
     t.start_member(_member("a"))
     t.count(15)  # decoded: ratio 1.5, under the limit
-    t.count_copy(4000)  # copied: would be ratio 400 if counted
+    t.count_copy(4000, at_link_limit=False)  # copied: would be ratio 400 if counted
     t.count(1)  # the next decoded chunk re-checks the ratio on decoded bytes only
     assert t.total_bytes == 4016
     with pytest.raises(_AlwaysStopResourceLimitError, match="max_extracted_bytes"):
-        t.count_copy(1000)
+        t.count_copy(1000, at_link_limit=False)
+
+
+def test_link_limit_copies_count_toward_the_archive_wide_ratio() -> None:
+    """A copy made at the filesystem's link-count limit is driven by the archive's
+    declared link count, so the archive-wide ratio counts it; the per-member ratio does
+    not, since the link member's compressed size says nothing about the copy."""
+    source = SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=10)
+    t = BombTracker(
+        max_bytes=None,
+        max_ratio=2.0,
+        ratio_activation_threshold=0,
+        source=source,  # type: ignore[arg-type]
+    )
+    t.start_member(_member("link").replace(compressed_size=1))
+    t.count_copy(15, at_link_limit=True)  # ratio 1.5 archive-wide; 15:1 per member
+    with pytest.raises(
+        _AlwaysStopResourceLimitError,
+        match=r"\(0 bytes decoded, plus 25 bytes copied for hard links",
+    ):
+        t.count_copy(10, at_link_limit=True)
 
 
 @_posix_perms
@@ -2736,17 +2756,17 @@ def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
     "name,expected",
     [
         ("foo. /bar", "foo/bar"),
-        ("foo. \\bar", "foo\\bar"),  # separator kept as stored, segment stripped
-        ("a\\b.\\c ", "a\\b\\c"),
-        ("mixed. /x \\y.", "mixed/x\\y"),
+        ("foo. \\bar", "foo/bar"),
+        ("a\\b.\\c ", "a/b/c"),
+        ("mixed. /x \\y.", "mixed/x/y"),
     ],
 )
 def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) -> None:
     """Trailing dot/space stripping splits on ``\\`` too, like the rest of the module.
 
     TAR keeps ``\\`` as a literal character and Windows writes it as a separator, so
-    ``foo. \\bar`` has to lose its trailing space as ``foo. /bar`` does. The separators
-    are put back as stored: this rewrites segments, not the path's structure.
+    ``foo. \\bar`` has to lose its trailing space as ``foo. /bar`` does. The name
+    policy then writes each ``\\`` as ``/``, so the result is the same on every OS.
     """
     out = apply_name_policy(_member(name), ExtractionPolicy.STRICT)
     assert out.name == expected

@@ -128,7 +128,7 @@ Three things about this path are worth knowing before you debug it:
 | Warnings-as-data | `diagnostics.py` (public types) + `internal/diagnostics_collector.py` (emission) |
 | Cost or IO accounting | `cost.py` · `internal/measurement.py` (not public: harness, tests, CLI `--track-io`) · `streams/counting.py` |
 | Concurrency, locking, `MemberStreams` | `internal/reader_state.py` + `streams/streamtools/locked.py`; spec `reader-concurrency` |
-| Format detection or a magic number | `internal/detection.py`, handbook [`topics/detection.md`](topics/detection.md); prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
+| Format detection or a magic number | `internal/detection.py`, handbook [`topics/detection.md`](topics/detection.md); UDIF `koly` trailer: `backends/udif.py`, handbook [`formats/dmg.md`](formats/dmg.md); prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
 | Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `terminal.py`; threat-model O9 |
@@ -146,6 +146,7 @@ often they turn out to be the right place:
 | Question | Look in |
 |---|---|
 | How should we work this change? | `dev-docs/pair-workflow.md` |
+| How would the maintainer settle this design question? | `dev-docs/design-rules.md` |
 | Why is a review round running, or not running, on this PR? | `dev-docs/review-loop.md` |
 | What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`pair-workflow.md`](pair-workflow.md)) |
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |

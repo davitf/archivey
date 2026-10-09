@@ -9,26 +9,29 @@ not hand-maintained here: each registered backend declares its ``MAGIC`` / ``EXT
 as data and the detector aggregates them, so a new format becomes detectable by
 registering its backend (see ``format-detection`` and ``backend-registry``).
 
-Detection never consumes bytes from the source: paths keep one detection handle; seekable
-streams are read forward once and restored to their **starting position** (the archive is
-taken to begin wherever the stream is positioned when handed in); a non-seekable stream
+Detection never consumes bytes from the source: paths keep one detection handle; a
+seekable stream is restored to its **starting position** (the archive is taken to begin
+wherever the stream is positioned when handed in); a non-seekable stream
 is peeked through the :class:`~archivey.internal.source.ArchiveSource` the opener built,
 whose replay prefix keeps the bytes for the backend. A raw non-seekable stream handed to
 ``detect_format`` directly loses what detection read, unless the caller buffers it.
 
 Every front-of-source read goes through one detection-owned
 :class:`~archivey.internal.detection_workspace.PrefixWorkspace` that grows monotonically —
-extending the window reads only the delta; bytes already retrieved are never re-read.
+extending the window reads only the delta, and bytes already in the prefix buffer are
+not fetched again. The trailer read is outside that buffer: it seeks to its block and
+restores the handle, and a later tier that grows the prefix over those bytes fetches
+them again.
 
 Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
 at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
 header before decoding). Each probe is a function the backends declare as data — for the
 stream codecs, on the codec descriptor — so the detector stays format-agnostic.
 
-The steps run strongest-signal-first: near magic → SFX scan → **far magic** → content
-probes → extension. Both signals ahead of the probes are there for the same reason — a
-probe is the weakest evidence archivey has, and one asked to judge arbitrary bytes will
-sometimes say yes:
+The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
+magic → content probes → extension. Both signals ahead of the probes are there for the
+same reason — a probe is the weakest evidence archivey has, and one asked to judge
+arbitrary bytes will sometimes say yes:
 
 - A **self-extracting** archive has no archive magic at offset 0 at all: a prefix
   (executable stub or ``#!`` launcher) comes first. When the leading bytes look
@@ -44,6 +47,14 @@ sometimes say yes:
   bootloader code — the data class a probe accepts — and the exact magic was available at
   a known offset the whole time. The peek is size-gated: a source known to be smaller than
   the window never pays it.
+- **Trailer magic** is exact magic at the start of a fixed-length block at the end of
+  the source (today UDIF's ``koly`` block, the last 512 bytes). It runs after far magic,
+  so an ISO that already matched is not asked for a tail read, and before the probes, so
+  a zlib-first disk image is named as the image. A near-magic hit the trailer lists in
+  ``preempts`` (bzip2, xz) is the same image: the magic is one block, and the trailer
+  replaces it. The read is a cheap seek that restores the handle. A non-seekable source
+  and an ``ArchiveStream`` are not seeked to the end; a tail already inside the prefix
+  (a short pipe, which the far-magic peek reads to its end) still matches.
 """
 
 from __future__ import annotations
@@ -96,6 +107,7 @@ from archivey.types import (
     ContainerFormat,
     MagicSignature,
     StreamFormat,
+    TrailerSignature,
 )
 
 if TYPE_CHECKING:
@@ -175,6 +187,31 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         chunk = self._buf[self._offset : end]
         self._offset += len(chunk)
         return chunk
+
+
+def _match_trailer(
+    workspace: PrefixWorkspace,
+    entries: list[TrailerSignature],
+) -> ArchiveFormat | None:
+    """Return the format whose trailer magic matches the end of the source.
+
+    One read per distinct trailer length. A source that cannot seek cheaply, or
+    that is shorter than the block, is a decline: the caller keeps the answer it
+    already had.
+    """
+    if not entries:
+        return None
+    by_length: dict[int, list[TrailerSignature]] = {}
+    for entry in entries:
+        by_length.setdefault(entry.length, []).append(entry)
+    for length, group in by_length.items():
+        tail = workspace.read_tail(length)
+        if tail is None:
+            continue
+        for entry in group:
+            if tail.startswith(entry.magic):
+                return entry.format
+    return None
 
 
 def _match_magic(
@@ -754,6 +791,7 @@ def _detect_format_body(
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
+    trailers = registry.trailer_entries()
     extension_map = registry.extension_map()
     name = source_name(source)
     ext_match = _match_extension(name, extension_map)
@@ -803,6 +841,12 @@ def _detect_format_body(
         if magic_fmt is None:
             magic_fmt = _match_magic_behind_prefix(data, registry.magic_prefix_walks())
         if magic_fmt is not None:
+            # A bzip2 or xz header can be the first block of a UDIF image. The
+            # trailer outranks that hit; the block codec is a member of the image.
+            if any(magic_fmt in entry.preempts for entry in trailers):
+                trailer_fmt = _match_trailer(workspace, trailers)
+                if trailer_fmt is not None:
+                    magic_fmt = trailer_fmt
             info = _resolve_single_file_or_tar(
                 magic_fmt,
                 DetectionConfidence.CERTAIN,
@@ -864,7 +908,19 @@ def _detect_format_body(
                         _ConflictEvidence.MAGIC,
                     )
 
-        # 4. Content probes.
+        # 4. Trailer magic (UDIF's koly block). After far magic, so an ISO whose
+        # CD001 already matched is read as that ISO — an uncompressed UDIF image
+        # of an ISO 9660 disk included — and is not asked for a tail read.
+        # Before the probes, so a zlib-first image is the image and not its
+        # first block.
+        trailer_fmt = _match_trailer(workspace, trailers)
+        if trailer_fmt is not None:
+            return conclude(
+                FormatInfo(trailer_fmt, DetectionConfidence.CERTAIN, "magic"),
+                _ConflictEvidence.MAGIC,
+            )
+
+        # 5. Content probes.
         if cue is not ExecutableCue.STRONG:
 
             def read_at(offset: int, n: int) -> bytes | None:
@@ -894,7 +950,7 @@ def _detect_format_body(
                     )
                     return conclude(info, _ConflictEvidence.CONTENT_PROBE)
 
-        # 5. Extension-only guess.
+        # 6. Extension-only guess.
         if ext_fmt is not None:
             return _attach_receipt(
                 FormatInfo(ext_fmt, DetectionConfidence.GUESS, "extension"),

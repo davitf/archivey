@@ -63,9 +63,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   error. Enforce a timeout outside archivey if you need one (a worker process you can
   kill is the reliable way).
 - **Accelerators are on by default when installed.** `AcceleratorMode.AUTO` uses them
-  when the `[seekable]` extra is present and a caller asks for seeking. They sit outside
-  the fuzzed surface (see the hardening notes below); set them to `OFF` for untrusted
-  input under a strict threat model.
+  when the `[seekable]` extra is present and a caller asks for seeking. They are
+  fuzzed, but they are native code with no time bound (see the hardening notes below);
+  set them to `OFF` for untrusted input under a strict threat model.
 - **After a seek, a crafted `.xz` or `.lz` index can serve the wrong bytes with no
   error.** The integrity guarantee covers a read from start to end with no seek
   ([Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
@@ -365,13 +365,15 @@ Archive order and identity matter more than “the” name.
 | Need to know | Detail |
 | --- | --- |
 | Safe ≠ unlimited | Traversal, symlink escapes, and bombs are blocked; huge/hostile archives can still raise `ResourceLimitError` unless you raise limits. |
-| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
+| STRICT and STANDARD rewrite some names | Both percent-encode bytes that are not valid UTF-8 and the characters Windows refuses in a name (`<`, `>`, `"`, `?`, `*`, the vertical bar and the control characters, so `what?.txt` is written `what%3F.txt`), and write a `\` in a TAR name or link target as a separator, as Windows does; `STRICT` also strips trailing dots and spaces. Only `TRUSTED` writes names as stored. Disk path may differ from `member.name` — read `ExtractionResult.presented_name` for the pre-rewrite spelling. |
 | Collisions are first-class | Under `STRICT`/`STANDARD`, `README`/`readme` (and NFC/NFD twins) collide on **all** platforms. `OverwritePolicy` applies; `REPLACE` is not a silent merge — the clobbered member's result is revised to `OVERWRITTEN`. Use `OverwritePolicy.RENAME` (`photo (1).jpg`) for intentional duplicates. |
 | Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename), for a directory member landing on a file as for a file. It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
 | `RENAME` and directories | When a file or symlink, yours or the run's, holds a directory member's name, archivey writes the directory as `name (1)/` and keeps the file. The members inside it follow it: `dd/f` lands at `dd (1)/f`, and its result reports `requested_path` `dd/f` and `path` `dd (1)/f`. The CLI reports the directory's rename once, not once per member. |
 | `REPLACE` and directories | `REPLACE` removes an existing directory only when it is empty. A non-empty one fails that member with `ExtractionError`, so a later member cannot delete files the run already wrote or files you already had. When the run wrote the empty directory it removes, that directory's result is revised to `OVERWRITTEN`, like any clobbered member. Its `collided_with` stays `None` and `AbortOn.NAME_COLLISION` does not fire, because directories are not in the collision map. |
 | Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. |
-| Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `file:ads`, …). |
+| Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `COM¹`, `CONIN$`, `file:ads`, …). |
+| Links on Windows | A symlink target's `/` is written as `\`, so `sub/file` resolves as on POSIX. Creating a symlink needs Developer Mode or an elevated process; without it each symlink member fails with an `ExtractionError` that says so. NTFS allows 1024 names for one file; a hard link past that is written as a copy, and those copied bytes count toward `max_extracted_bytes` and the archive-wide `max_ratio`. |
+| Read-only members | A file, or an empty directory, that the archive stores without write permission is still replaced by a later member of the same name under `REPLACE`, on Windows too. |
 | `OnError.CONTINUE` ≠ ignore bombs | Per-member failures can continue; global bomb and listing guards still stop. |
 | `OnError.STOP` is failures-only | Policy blocks are always recorded and continued; inspect the report (or exit `3` on the CLI) for `BLOCKED`. To raise instead, pass `abort_on={AbortOn.BLOCKED_MEMBER}`. |
 | `TRUSTED` still won’t traverse | Ownership / sticky bits only when allowed; path safety stays on. |
@@ -507,7 +509,8 @@ members as archives, bound the depth and the cumulative size yourself.
 ## Hardening notes for callers
 
 **Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2
-decoder) are a performance path, not part of the defended fuzz surface. The default is
+decoder) are a performance path. The fuzz harness decodes each input with them and
+without them, and fails when the bytes or the verdict differ. The default is
 `AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
 a caller asks for seeking, so turning them off is something you do yourself. The
 gzip, zlib and raw DEFLATE decoder runs in a child process, so a native abort there
@@ -515,8 +518,7 @@ costs only the member; a busy loop in that child is not bounded by a timeout. Th
 decoder runs in-process. Third-party C++ can busy-loop on crafted input in a way Python
 timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
 latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
-set to `AcceleratorMode.OFF`) or enforce their own resource limits. Mutation and
-Atheris harnesses run with accelerators off for this reason.
+set to `AcceleratorMode.OFF`) or enforce their own resource limits.
 
 **External tools:** RAR member *data* is decompressed by an external program: RARLAB
 `unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB

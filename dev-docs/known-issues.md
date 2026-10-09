@@ -263,7 +263,8 @@ about 1.7 kB of Python objects per open, whatever the input's size. For every so
 path included, a few kB of native memory per open. A long-running process that opens
 many `.bz2` streams through the accelerator grows by that much per open.
 
-**Upstream.** Not filed.
+**Upstream.** Not filed. The report, with a ten-line reproduction, is ready in
+[`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md) §9.
 
 **Evidence.**
 `tests/test_accelerator_corruption.py::test_indexed_bzip2_frees_a_stream_source_after_close`

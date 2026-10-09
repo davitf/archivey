@@ -538,7 +538,10 @@ the standard-library decoder on stream-boundary malformations they cannot see:
   declared size and CRC then decide, so output that matches both reads and output that
   breaks either raises;
 - for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
-  when every member's CRC-32 is still checked.
+  when every member's CRC-32 is still checked;
+- for a standalone gzip followed by zero padding, a wrong ISIZE on the last member when
+  the last four bytes of the file equal the length decoded and every member's CRC-32 is
+  still checked.
 
 #### Scenario: accelerator error parity
 

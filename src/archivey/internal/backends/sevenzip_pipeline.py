@@ -91,6 +91,7 @@ from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
     LzmaDataAfterEndError,
+    decode_lzma_filter_properties,
     open_codec_stream,
     parse_ppmd_var_h_properties,
 )
@@ -116,17 +117,6 @@ HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
-
-# stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
-# py7zr relies on the same private `lzma._decode_filter_properties`. Bind once at import.
-_raw_decode_filter_properties = getattr(lzma, "_decode_filter_properties", None)
-if _raw_decode_filter_properties is None:  # pragma: no cover
-    raise ImportError(
-        "This Python's `lzma` module no longer exposes `_decode_filter_properties`, which "
-        "archivey's native 7z reader needs to decode raw LZMA1/LZMA2 coder properties. "
-        "Please report this to archivey (with your Python version)."
-    )
-_decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_properties
 
 # The most filters one liblzma chain holds (``LZMA_FILTERS_MAX`` in lzma/filter.h).
 _LIBLZMA_MAX_FILTERS = 4
@@ -538,19 +528,10 @@ def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
     if coder.properties is None:
         return {"id": filter_id}
     try:
-        return _decode_filter_properties(filter_id, coder.properties)
+        return decode_lzma_filter_properties(
+            filter_id, coder.properties, what="7z LZMA coder"
+        )
     except (lzma.LZMAError, ValueError) as exc:
-        props = coder.properties
-        if filter_id == lzma.FILTER_LZMA1 and len(props) == 5 and props[0] < 9 * 5 * 5:
-            # A well-formed lc/lp/pb byte that liblzma refuses: 7-Zip accepts
-            # lc + lp up to 12 (``7z a -m0=LZMA:lc=8``), liblzma only up to 4
-            # (``LZMA_LCLP_MAX``). The archive is valid; this reader cannot decode it.
-            lc, lp = props[0] % 9, props[0] // 9 % 5
-            if lc + lp > 4:
-                raise UnsupportedFeatureError(
-                    f"7z LZMA coder with lc={lc}, lp={lp} is not supported: "
-                    "liblzma decodes lc + lp up to 4"
-                ) from exc
         raise CorruptionError(
             f"Malformed 7z LZMA coder properties for {_method_hex(coder.method)}"
         ) from exc

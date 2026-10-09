@@ -19,7 +19,7 @@ import base64
 import dataclasses
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
@@ -53,7 +53,7 @@ class _JsonSafeContext:
         return dataclasses.asdict(self)
 
 
-class DiagnosticCode(str, Enum):
+class DiagnosticCode(StrEnum):
     """Stable machine codes for advisory events."""
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
@@ -83,7 +83,7 @@ class DiagnosticCode(str, Enum):
     # the placement clause in ``openspec/specs/diagnostics``.
 
 
-class DiagnosticDisposition(str, Enum):
+class DiagnosticDisposition(StrEnum):
     """Per-code policy disposition for an emitted diagnostic."""
 
     IGNORE = "ignore"
@@ -221,7 +221,7 @@ class ScanRaceContext(_JsonSafeContext):
 class ArchiveEofContext(_JsonSafeContext):
     """The end of the archive did not look the way the format says it should.
 
-    Five checks share this shape, told apart by ``expected_marker``:
+    These checks share this shape, told apart by ``expected_marker``:
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing (``observed_kind="absent"``), short (``"short"``), or a non-null block
@@ -242,6 +242,19 @@ class ArchiveEofContext(_JsonSafeContext):
       block starts in its volume, and ``expected_bytes`` is 0. That offset counts
       from the volume's first byte, unlike member offsets, which count across the
       whole set; the message names the volume.
+    - ``"end_of_central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a ZIP end
+      record that does not match the archive. ``observed_kind="nonzero"``: the entry
+      count it declares (classic, or ZIP64 when stdlib used that record) is not the
+      number of entries the central directory holds; ``observed_bytes`` is the
+      record's offset and ``expected_bytes`` is 0. ``observed_kind="short"``: the
+      archive comment length runs past the end of the file; ``expected_bytes`` is
+      the record's declared size (22 plus the comment length) and ``observed_bytes``
+      the bytes from the record to the end of the file.
+    - ``"central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a ZIP central
+      directory entry's name, extra field or comment length runs past the directory
+      size the end record gives, and that field is cut short. ``expected_bytes`` is
+      that directory size and ``observed_bytes`` where the entry would end, both
+      counted from the directory's start; ``observed_kind`` is ``"nonzero"``.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the TAR
       trailer within the first MiB past it, so the file carries something the listing
       did not account for. The trailer was complete, or its second block was damaged
@@ -553,7 +566,13 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: (
                 "expected_marker",
                 frozenset(
-                    {"two_zero_blocks", "second_zero_block", "end_of_archive_block"}
+                    {
+                        "two_zero_blocks",
+                        "second_zero_block",
+                        "end_of_archive_block",
+                        "end_of_central_directory",
+                        "central_directory",
+                    }
                 ),
             ),
             DiagnosticCode.ARCHIVE_TRAILING_DATA: (

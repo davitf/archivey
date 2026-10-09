@@ -224,6 +224,11 @@ security fixes one line each, other bug fixes summarized in one line).
 
 ## Coding standards
 
+Design questions (what a default should be, what a damaged archive should do, whether
+two formats should agree) are settled by
+[`dev-docs/design-rules.md`](dev-docs/design-rules.md) before anyone asks the
+maintainer.
+
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
 - **Don't accumulate debt — clean as you go.** When you touch something, leave it in the

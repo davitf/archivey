@@ -27,7 +27,7 @@ from archivey.internal.streams.decompressor_stream import (
     Decoder,
     DecompressorStream,
     SeekPoint,
-    gzip_corruption,
+    gzip_error,
 )
 from archivey.internal.streams.deflate_resume import (
     DeflateResume,
@@ -126,7 +126,7 @@ class GzipDecoder(BaseDecoder):
             return DeflateResumeDecoder(
                 point.state,
                 self,
-                corruption=gzip_corruption,
+                corruption=gzip_error,
                 truncated="gzip stream is truncated",
             )
         return GzipDecoder()
@@ -212,7 +212,7 @@ class GzipDecoder(BaseDecoder):
                 # with flush() and does not leak zlib.error (GzipCodec.translate maps
                 # it too, but the decoder must stand on its own).
                 # A failed CRC-32/ISIZE check is a _StreamChecksumError.
-                raise gzip_corruption(e) from e
+                raise gzip_error(e) from e
             if produced:
                 output.append(produced)
                 produced_total += len(produced)
@@ -264,7 +264,7 @@ class GzipDecoder(BaseDecoder):
                     if not self._decomp.eof:
                         out.extend(self._decomp.flush())
                 except zlib.error as e:
-                    raise gzip_corruption(e) from e
+                    raise gzip_error(e) from e
                 if not self._decomp.eof:
                     self._pending_error = TruncatedError("gzip stream is truncated")
                     return DecodeOut(bytes(out))
@@ -287,7 +287,7 @@ class GzipDecoder(BaseDecoder):
                 out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
             out.extend(self._decomp.flush())
         except zlib.error as e:
-            raise gzip_corruption(e) from e
+            raise gzip_error(e) from e
         if not self._decomp.eof:
             self._pending_error = TruncatedError("gzip stream is truncated")
         else:
@@ -512,7 +512,7 @@ class BrotliDecoder(BaseDecoder):
     """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
 
     The ``brotli`` import is local because it's an optional dependency with no type stubs;
-    the codec layer's ``_open_brotli`` gates on its presence before constructing this, so
+    ``BrotliCodec.open`` in the codec layer gates on its presence before constructing this, so
     the import here always succeeds.
 
     Brotli ≥1.2.0 exposes ``process(..., output_buffer_limit=)`` and
