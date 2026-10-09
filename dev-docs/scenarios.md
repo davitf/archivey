@@ -114,7 +114,8 @@ hashes and diagnostics. Rarely extracts.
 **Needs:**
 - Terminal-safe output for hostile names.
 - Exit codes that separate "damaged" from "unsupported".
-- The same behaviour as the library, since the CLI uses only public API.
+- The same behaviour as the library, since the CLI uses public API (apart from one
+  allowlisted import).
 **Hurts:**
 - A name that rewrites the terminal.
 - A CLI-only behaviour the library can't reproduce.

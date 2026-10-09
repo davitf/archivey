@@ -555,13 +555,11 @@ section is how to work and how to ask.
 - Ask yourself the questions in design-rules §"Questions to ask yourself first",
   especially "does this affect other formats?" and "what does the official tool do?".
 
-**How to ask.**
-- One decision at a time, with enough context to answer without scrolling back. Explain
-  it in plain terms first, then the options.
-- For each option, say what happens and where things end up (which module, which
-  public name).
-- Mark one option as recommended and give the reason. When the question is about public
-  surface, include a "remove it" option.
+**How to ask.** Use the decision packet in
+[`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet, one at a
+time. On top of its fields:
+- For each option, say where things end up (which module, which public name).
+- When the question is about public surface, include a "remove it" option.
 - The maintainer often finds a better option than the ones offered. Present the
   underlying problem, not only the choices.
 - A recommendation is not a ruling, and "go ahead" or "post it" does not ratify a claim
@@ -576,10 +574,13 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
 - Split work by context: one concern per PR, and a separate PR per fix in a batch. A
   bundle of "simple" fixes grew a long tail of reviews once (PR 532).
 - A test harness PR waits for the fixes it needs.
-- An agent may merge a straightforward PR once its review approves and CI is green.
+- An agent may merge a straightforward PR once its review approves and CI is green
+  (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
+  tricky one, you can ask me to take a look before merging").
   Tricky ones go to the maintainer: a behaviour trade-off, a design reversal, a public
   API removal, a very large diff, or anything an open decision touches.
-- Review rounds run one at a time across the project. Check that no review run is in
+- Review rounds run one at a time across the project (maintainer, 2026-10-06, to avoid
+  hitting quotas). Check that no review run is in
   progress before adding the `review` label.
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.
 - Do not edit `CHANGELOG.md` in a PR; the release writes it.

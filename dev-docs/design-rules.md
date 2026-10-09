@@ -21,8 +21,12 @@ imagine using archivey and what would hurt each of them.
 
 ## The principles
 
-The maintainer's own summary (2026-10-09) of what he focuses on consistently, ordered by
-weight. Every numbered rule below is one of these applied to a kind of question.
+The maintainer's own summary of what he focuses on consistently (2026-10-09, in his
+words). He then asked for the two he weighs most to go first, and proposed principle 4 as
+a further test ("useful or redundant?"), which this page adopts. The split into "firm"
+and "strong defaults", and the order within the strong defaults, are this page's reading,
+not his ranking. Every numbered rule below is one of these applied to a kind of
+question.
 
 **Firm.** No other principle outranks these, and "only crafted archives hit it" is no
 excuse.
@@ -319,7 +323,9 @@ encrypted stored members before any byte is served.
 **Rule.**
 - Every resource bound is a field on a public limits object (`ListingLimits`,
   `ExtractionLimits`, `DecoderLimits`, `SpoolLimits`), with `None`/`UNLIMITED` as the
-  escape hatch. Never a module constant.
+  escape hatch. Not a module constant, unless the bound is structural rather than
+  policy; then the reason goes in a comment at the constant and the bound gets a spec
+  row (CONTRIBUTING §Coding standards).
 - Defaults admit the real archives real tools write. Tighter numbers belong in a preset,
   not the default.
 - Work the archive chooses counts against the limits. Work the destination causes counts
@@ -340,9 +346,12 @@ encrypted stored members before any byte is served.
 - ISO path-table entries count against `max_members` (2026-10-06, PR 612).
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
-- Default numbers (2026-10-07): `max_members` and `max_entries` 262,144;
-  `max_key_derivation_rounds` 2**25. These replace the 2026-10-01 decision to keep
-  1,048,576, after measuring per-member listing cost.
+- Default numbers (decided 2026-10-07, **not yet applied**): `max_members` and
+  `max_entries` 262,144; `max_key_derivation_rounds` 2**25. These replace the 2026-10-01
+  decision to keep 1,048,576 and 2**27, after measuring per-member listing cost. Until
+  the change lands, the shipped defaults are still 1,048,576 and 2**27. It has to land
+  in `config.py`, the archive-reading and safe-extraction specs, `docs/extracting.md`
+  and the threat model together.
 
 **Reopen if** a measured real archive class hits a default.
 
@@ -448,7 +457,8 @@ removal.
 - Niche names live in a public submodule, not at the package root (`archivey.terminal`,
   `archivey.detection_cost`).
 - `__all__` grows one export at a time, with the reason in the PR.
-- The CLI uses only public API. What the CLI needs becomes public, which is how `dry_run=`
+- The CLI uses only public API, apart from what `tests/test_cli_uses_public_api.py`
+  allowlists with a stated reason. What the CLI needs becomes public, which is how `dry_run=`
   and `archivey.terminal` were made public.
 
 **Rulings.** `detection_cost` stays in its module: "minimizes root exports, these are
@@ -650,7 +660,8 @@ known limitation due to being untestable" (2026-09-24).
   past. Code maintainers need to understand the current state and the reasons behind
   it" (PR 400). History belongs in PRs and ADRs.
 - Names are spelled out and carry their context (`detection_budget`, not `budget`).
-  No logic in `__init__.py`. Code is grouped by format, not by pipeline phase (PR 443).
+  No logic in `__init__.py` beyond the export surface's own machinery (registration,
+  module pinning, `__getattr__`). Code is grouped by format, not by pipeline phase (PR 443).
 - Raise naming questions at proposal review. A rename after implementation needs a
   reason beyond taste.
 
