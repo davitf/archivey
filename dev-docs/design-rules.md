@@ -2,13 +2,16 @@
 
 These are the rules the maintainer has applied, again and again, when settling a design
 question. They exist so that most questions get settled by a rule instead of by a new
-question to the maintainer. Each rule says what it is, why it holds, the rulings it was
-derived from, and what would reopen it.
+question to the maintainer. Each rule says what it is and the rulings it was derived
+from. Most also say why it holds and what would reopen it; a rule without a "Reopen if"
+has no known reason to reopen yet, so bring new arguments if you want to.
 
 Use this page before you ask. If a rule here settles the question, do what it says and
 name the rule in the pull request ("settled by DR-7"), so the maintainer can still object.
-If the question is a [clash between consistency and the official tool](#when-consistency-and-the-official-tool-disagree) that the factors do not settle,
-or is on the [escalation list](#what-still-goes-to-the-maintainer), ask.
+If the question is a
+[clash between consistency and the official tool](#when-consistency-and-the-official-tool-disagree)
+that the factors do not settle, or is on the
+[escalation list](#what-still-goes-to-the-maintainer), ask.
 
 Where these rules come from: maintainer rulings in pull requests, ADRs, handbook pages
 and the project's decision threads, collected in October 2026. VISION.md stays the
@@ -58,6 +61,26 @@ The numbered rules below work the same way as the strong defaults: a rule settle
 question when the case looks like the rulings it came from, and a case that differs in
 an important way goes back to the maintainer.
 
+## Generalise
+
+### DR-0. Fix the class, not the instance
+
+**Rule.** A bug found in one format is a question about every format and every shared
+path. Before fixing it, check whether the other formats have the same problem, and put
+the fix in the shared path when there is one. A ruling on one case is a prompt to sweep
+for the rest of its class.
+
+**Why.** Every time the maintainer asked "does this affect other formats?", the answer
+was yes. A cross-format check of recent format-specific bugs found 20 more
+(2026-10-06), and a cross-OS check found 13 gaps.
+
+**Rulings.** RAR password lists moved into the shared `password_confirm` logic so every
+format benefits (2026-10-06, PR 627). The Windows drive-letter link refusal covers ZIP,
+7z and RAR alike (PR 620). Junk after the archive end is reported in every container,
+not only TAR (2026-10-07).
+
+---
+
 ## When consistency and the official tool disagree
 
 Neither wins by default; it depends on the case. Weigh these factors. When they all
@@ -84,22 +107,6 @@ factor came out.
 - **Would users compare the two results directly?** Extraction output on disk is compared
   with the tool's far more often than a diagnostic's wording. Where the comparison is
   likely, the tool's behaviour weighs more.
-
-### DR-0. Fix the class, not the instance
-
-**Rule.** A bug found in one format is a question about every format and every shared
-path. Before fixing it, check whether the other formats have the same problem, and put
-the fix in the shared path when there is one. A ruling on one case is a prompt to sweep
-for the rest of its class.
-
-**Why.** Every time the maintainer asked "does this affect other formats?", the answer
-was yes. A cross-format check of recent format-specific bugs found 20 more
-(2026-10-06), and a cross-OS check found 13 gaps.
-
-**Rulings.** RAR password lists moved into the shared `password_confirm` logic so every
-format benefits (2026-10-06, PR 627). The Windows drive-letter link refusal covers ZIP,
-7z and RAR alike (PR 620). Junk after the archive end is reported in every container,
-not only TAR (2026-10-07).
 
 ---
 
@@ -561,11 +568,12 @@ to the archive's data (a full CRC scan, decoding members) waits until a read ask
 or the format says it does not. A heuristic that silently degrades the capability is a
 bug.
 
-**Rulings.** RAR3/4 password lists tried only the first candidate. "a would defeat the
-whole purpose of supporting multiple passwords", so every candidate is probed
-(2026-10-06, PR 627). Anything on by default is fuzzed: "if they're the default, we
-should fuzz them", so the accelerator fuzzing gap was closed instead of keeping the
-"accelerators are not fuzzed" caveat in the docs (2026-10-06, PR 638).
+**Rulings.** RAR3/4 password lists tried only the first candidate. Taking the first
+candidate "would defeat the whole purpose of supporting multiple passwords", so every
+candidate is probed (2026-10-06; shipped in PR 627). Anything on by default is fuzzed:
+"if they're the default, we should fuzz them", so the accelerator fuzzing gap was closed
+instead of keeping the "accelerators are not fuzzed" caveat in the docs (2026-10-06, PR
+638).
 
 ---
 
@@ -631,8 +639,6 @@ replacement, record the limitation where users will find it and fix it in the re
 **Rulings.** A ZIP name with the UTF-8 flag but invalid UTF-8 keeps refusing the archive
 until the post-0.2.0 zipfile replacement (2026-10-06).
 
----
-
 ### DR-21a. Don't ship what can't be tested
 
 **Rule.** If no available tool can produce a case and archivey cannot test it, refuse it
@@ -641,6 +647,27 @@ untested path.
 
 **Rulings.** Encrypted comments in old RAR archives: "skip up front. note in docs as a
 known limitation due to being untestable" (2026-09-24).
+
+---
+
+## Documentation
+
+### DR-22. Docs say what is true now, with reasons
+
+**Rule.**
+- VISION describes what the project wants to provide, not a claim that it is done.
+- `dev-docs/` is a clean set of developer docs, not task tracking.
+- The threat model is a model, not a list of known security issues.
+- Handbook and topic pages explain how things work today and why ("we do Y because X
+  would cause…"), not a history.
+- A recorded decision keeps its decider and date, and adds its reasons and what would
+  reopen it: "just citing doesn't help us reevaluate or accept later" (2026-10-02).
+- User-facing numbers are ballparks: higher precision gives a false sense of exactness.
+
+**Rulings.** Top-level docs review (2026-09-28). Detection topic page (2026-09-26).
+Ballpark numbers (2026-10-07). User-doc voice: see the `write-user-docs` skill.
+
+---
 
 ## Code and tests
 
@@ -665,6 +692,9 @@ known limitation due to being untestable" (2026-09-24).
 - Raise naming questions at proposal review. A rename after implementation needs a
   reason beyond taste.
 
+**Reopen if** a cleanup would change public behaviour; then it is its own PR with its own
+review, not part of the PR that found it.
+
 ### DR-24. Tests pin behaviour against real producers
 
 **Rule.** A bug fix starts with a failing test (red, then green). Tests check behaviour,
@@ -673,26 +703,12 @@ RARLAB `rar`, 7-Zip), pinned by hash where they are committed, and a matrix row 
 when no available tool writes that case. A refactor that breaks a test means the fix or
 the test is wrong: find out which and report it, never quietly edit the test.
 
+**Reopen if** a real producer cannot make a case that users do hit; then a crafted
+fixture is acceptable, with a comment saying why.
+
 **Rulings.** gzip `FNAME` is Latin-1 per RFC 1952, fixed red/green with a
 command-line fixture (PR 13). Committed RAR fixtures (ADR 0016). The corner-case
 cleanup's rule for refactors (2026-10-02).
-
-## Documentation
-
-### DR-22. Docs say what is true now, with reasons
-
-**Rule.**
-- VISION describes what the project wants to provide, not a claim that it is done.
-- `dev-docs/` is a clean set of developer docs, not task tracking.
-- The threat model is a model, not a list of known security issues.
-- Handbook and topic pages explain how things work today and why ("we do Y because X
-  would cause…"), not a history.
-- A recorded decision keeps its decider and date, and adds its reasons and what would
-  reopen it: "just citing doesn't help us reevaluate or accept later" (2026-10-02).
-- User-facing numbers are ballparks: higher precision gives a false sense of exactness.
-
-**Rulings.** Top-level docs review (2026-09-28). Detection topic page (2026-09-26).
-Ballpark numbers (2026-10-07). User-doc voice: see the `write-user-docs` skill.
 
 ---
 
