@@ -871,8 +871,10 @@ class PasswordRequest:
     Each ask follows a failure: either the previous answer failed to decrypt the unit,
     or it was a password that had already failed for this unit (a known-good password
     from an earlier unit, a listed candidate) and was skipped without a second try.
-    Asking stops when the provider returns ``None`` or gives an answer it already gave
-    for this unit.
+    A repeated answer is never decrypted twice. Asking stops when the provider returns
+    ``None``, or after three answers in a row that it had already given for this unit;
+    one repeat between new answers does not stop it, so a person at a prompt who types
+    the same password again is asked again.
     """
 
 

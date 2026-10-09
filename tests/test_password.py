@@ -132,8 +132,8 @@ def test_password_candidates_provider_repeat_terminates() -> None:
     candidates = _PasswordCandidates.from_input(provider)
     with pytest.raises(EncryptionError):
         candidates.attempt(None, decrypt)
-    # The password is tried once; the provider's second, identical answer ends the loop.
-    assert calls == 2
+    # The password is tried once; three identical answers in a row end the loop.
+    assert calls == 4
     assert decrypt_calls == 1
 
 
@@ -186,10 +186,34 @@ def test_password_candidates_provider_keyring_longer_than_known_good() -> None:
         assert candidates.attempt(None, decrypt_for(right)) == right
 
 
-def test_password_candidates_provider_repeating_its_own_answer_stops() -> None:
-    # The loop ends when the provider gives an answer it already gave for this unit,
-    # even with new answers in between: it is cycling, and "right" is never asked for.
-    script = [b"a", b"b", b"a", b"right"]
+def test_password_candidates_provider_repeating_its_own_answer_asks_again() -> None:
+    # A person at a prompt may type a password again, thinking they mistyped it or
+    # unsure whether they gave it. The repeat is not decrypted again, but it does not
+    # end the asking: their next answer is still tried.
+    script = [b"a", b"a", b"b", b"a", b"right"]
+    asks: list[int] = []
+    tried: list[bytes] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asks.append(request.attempt)
+        return script[request.attempt - 1] if request.attempt <= len(script) else None
+
+    def decrypt(password: bytes) -> bytes:
+        tried.append(password)
+        if password != b"right":
+            raise EncryptionError("bad")
+        return b"data"
+
+    candidates = _PasswordCandidates(provider=provider)
+    assert candidates.attempt(None, decrypt) == b"data"
+    assert asks == [1, 2, 3, 4, 5]
+    assert tried == [b"a", b"b", b"right"]
+
+
+def test_password_candidates_provider_cycling_stops_after_three_repeats() -> None:
+    # A provider cycling through answers it already gave stops after three in a row,
+    # even when they are not the same answer: "right" is never asked for.
+    script = [b"a", b"b", b"a", b"b", b"a", b"right"]
     asks: list[int] = []
     tried: list[bytes] = []
 
@@ -206,7 +230,7 @@ def test_password_candidates_provider_repeating_its_own_answer_stops() -> None:
     candidates = _PasswordCandidates(provider=provider)
     with pytest.raises(EncryptionError):
         candidates.attempt(None, decrypt)
-    assert asks == [1, 2, 3]
+    assert asks == [1, 2, 3, 4, 5]
     assert tried == [b"a", b"b"]
 
 
