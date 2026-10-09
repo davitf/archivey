@@ -1834,9 +1834,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # truncation. So is a decode that stopped short of the end of the source: the
         # trailer there is not this output's. Otherwise no trailer found (or, after a
         # seek, an ISIZE mismatch) is one, unless this is a concatenated multi-member
-        # gzip (then the trailer is only the last member's). A confirmed further member => do not raise (a cut whose
-        # decode still reaches the end, with zlib confirming a later member, can pass;
-        # the per-member ISIZE sum is deferred).
+        # gzip (then the trailer is only the last member's). A confirmed further member
+        # => do not raise (a cut whose decode still reaches the end, with zlib
+        # confirming a later member, can pass; the per-member ISIZE sum is deferred).
         if self._source_len >= 18 and self._decoded_to_the_end():
             if self._isize is None:
                 return b""  # length known but ISIZE unread (should not happen here)
