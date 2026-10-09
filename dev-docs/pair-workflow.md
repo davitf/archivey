@@ -6,13 +6,11 @@ implement → separate-agent review → escalate only real decisions**. It repla
 thing the maintainer is expected to read.
 
 This is **posture**, not a delete of OpenSpec or the existing review skills. Those
-remain agent/CI tools. **Your** reading surface is the living handbook (below),
-thin briefs, and **decision packets**.
+remain agent/CI tools. **Your** reading surface is the living handbook, thin briefs, and
+**decision packets**.
 
 Product tie-breaker remains [`VISION.md`](../VISION.md). Coding gates remain
-[`CONTRIBUTING.md`](../CONTRIBUTING.md).
-
-Adoption notes and the external-stack crib are historical:
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). Adoption notes are historical:
 [`history/2026-09-pair-workflow-adoption.md`](history/2026-09-pair-workflow-adoption.md).
 
 ---
@@ -26,7 +24,7 @@ Adoption notes and the external-stack crib are historical:
 4. Implement                same pair agent; update handbook/user docs when claims move
 5. Review (fresh session)   full findings → PR; YOU get decision packets only
 6. Address                  pair agent; one packet at a time until happy
-7. User docs if needed      Diátaxis mode + unslop (published `docs/` only)
+7. User docs if needed      `write-user-docs` voice (published `docs/` only)
 ```
 
 Steps 4–6 run through one label: the implementer adds `review` to the pull request, a
@@ -47,97 +45,16 @@ five rounds at most, and a decision packet stops the rounds until it is answered
 opinion is the separate session the `review` label starts. Do not require multi-model
 “interrogate” by default.
 
----
-
-## Living handbook (what you read instead of change packs / ADR spam)
-
-Organised, **no-fluff**, rewritten in place — not an append-only log.
-
-| Path | Role |
-| --- | --- |
-| `formats/<format>.md` | Per-format: behaviour here, consequences, light decisions, verify — **create with the first real change** that needs it (do not land empty trees) |
-| `topics/<topic>.md` | Cross-cutting notes; **link** registers like [`threat-model.md`](threat-model.md), do not restate them — same “create on first use” rule |
-| [`code-map.md`](code-map.md) | Where to start in the tree |
-| [`threat-model.md`](threat-model.md) | Attackers, trust boundaries, defended properties, accepted non-guarantees, open design gaps (its index maps the old `O*`/`C*` ids) |
-| [`investigations/`](investigations/) | Append-only evidence notebooks; link from handbook, don’t promote to “current truth” |
-| [`decisions/`](decisions/) | **Rare** repo-wide policy only; prefer light notes on format/topic pages once those exist |
-| `openspec/specs/` | **Authoritative** machine-checkable contract (agents/CI) — **not** the primary human reading surface |
-
-**Create a page when a change needs one**, not before: `dev-docs/formats/<format>.md` or
-`dev-docs/topics/<topic>.md`, **in that same PR**. For a format or topic that has no page
-yet, point briefs at `code-map`, the threat model, and the best ADR or investigation. The
-shape to start from is below; [`formats/zip.md`](formats/zip.md) and
-[`topics/prefixed-archives.md`](topics/prefixed-archives.md) are the worked examples.
+The living handbook — the format and topic pages, the page shapes and when to create a
+page — is described in [`formats/README.md`](formats/README.md). Where a new doc goes is
+`CONTRIBUTING.md` §"Where does a new doc go?". If the handbook and the main specs
+disagree, **pause and ask**: that usually means a decision was never recorded on the
+handbook page.
 
 ### Format page structure
 
-Settled by writing [`formats/zip.md`](formats/zip.md) first and taking the shape the
-material actually had. Sections are numbered so a brief can cite `zip.md` §2.3.
-
-| Section | Holds |
-| --- | --- |
-| **At a glance** | Support, costs, dependencies, refusals. Also **anything a reader would reasonably expect and will not find** — a capability the user docs imply, a guarantee the code does not actually enforce, an optimization the shape of the format suggests and nobody built. State it as behaviour, not as a spec delta: the specs are being phased out as a claim-bearing surface, so "the spec says X and we do Y" dates badly where "we do Y" does not |
-| **1. Shape** | The two to four structural properties that generate everything else, each with its consequences attached in the same breath. Not a spec reproduction; the altitude specs skip |
-| **2. The pipeline here** | Fixed subsections — identify · open and list · member data · extract · write. Each says *who does the work*, *what is format-specific rather than general*, and *what is refused*. "Nothing here is format-specific" is a legitimate and useful answer. Member-metadata mapping lives under *open and list*. A stage that hands work to a **separate process** answers a fourth question — *what crosses the boundary*, in both directions — because none of the first three reach it: [`formats/rar.md`](formats/rar.md) §2.3 is argv construction one way and an exit code plus a byte count the other, and that is the page |
-| **3. In the wild** | Variants, producers and what they get wrong, files that are secretly this format, corpus evidence with its provenance |
-| **4. Threat surface** | Format-specific attack surface only; link the [`threat-model.md`](threat-model.md) property or non-guarantee section |
-| **5. Sharp edges** | *Symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link. **One table, not two**: a reader arrives with a symptom and does not yet know whether it is a bug or the format, so the tag sorts each row after they have found it rather than making them pick the right list first |
-| **6. Decisions** | Choice → why → rejected alternative. Light bullets, not ADRs |
-| **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. When there is nothing honest to put in it, keep the heading with one line saying none are open, so the numbers of §8 and §9 stay what briefs cite |
-| **8. Verify** | Commands and tests that pin the claims above, plus how to build fixtures for this format |
-| **9. References** | External spec sections *with numbers*, our investigations, upstream issues |
-
-Four rules the shape depends on:
-
-- **Never separate a structural fact from its consequence.** The strongest grouping force
-  in the ZIP material was causal — one property generated eight downstream behaviours. A
-  separate "consequences" section breaks the chain and makes the reader re-derive it.
-- **No performance numbers.** They are the most volatile thing on the page and they rot
-  into a fourth disagreeing source. Verify carries the command instead.
-- **Behaviour here, status behind the link.** The page says what a caller sees and how
-  fixable it is; `known-issues.md` keeps live defects, and the format's threat surface
-  links the `threat-model.md` design.
-- **Test pointers live on the handbook page only**, in §8 — not duplicated into
-  `openspec/specs/`. That is step 1 of
-  [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md)
-  read literally, and it keeps one list to maintain rather than two that drift.
-
-Stream formats (brotli, lzma, …) get one page each and may need a different shape; take
-this as the starting point, not a template to satisfy.
-
-### Topic pages
-
-Topic pages are **not** format pages with the nouns swapped, and
-[`topics/prefixed-archives.md`](topics/prefixed-archives.md) — written alongside `zip.md`
-and shaped by it — came out looser: shapes in the wild, the mechanism and its tiers, the
-cost argument, *where the formats differ*, sharp edges, decisions, references. Take the
-conventions rather than the section list: the where-it-lives tags, no performance numbers, status
-behind the register link.
-
-The split that matters is the same one in both directions. **A format page keeps what the
-format's own structure decides; the topic page keeps the shared machinery.** For prefixed
-archives that put the cue set, the scan bound, the budget tiers and the validation argument
-on the topic page, and left ZIP with its needle, its validator and its two offset
-conventions — because those follow from ZIP locating itself from the end, and no other
-format has them.
-
-A topic page may name format behaviour freely where that is what explains the mechanism;
-what it must not do is restate a format page or a register. The reverse is also true — a
-format page links the topic and keeps the residue, which is why the pipeline subsections in
-§2 are where those links naturally sit.
-
-Optional `formats/README.md` / `topics/README.md` indexes may appear alongside the first
-page; do not add empty stubs ahead of content.
-
-**Docs with code:** if a PR makes a handbook or published-doc **claim false**, update that
-page in the **same PR**. Do not mint a new ADR or OpenSpec essay just to record the
-change of mind.
-
-**Deferred design:** migrate dense OpenSpec scenarios into tests + handbook principles
-(thin as you go on every spec-touching PR). Direction:
-[`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md).
-Specs remain the authoritative machine contract until that migration has proven out
-(DP1 = C).
+Moved to [`formats/README.md`](formats/README.md) §Format page structure, with the topic
+page conventions.
 
 ---
 
@@ -173,6 +90,18 @@ One question per turn. Decidable without opening the PR. Used by
 
 If an agent cannot fill these, it is not ready to ask — it should measure first.
 
+On top of the six fields:
+
+- For each option, say where things end up (which module, which public name).
+- When the question is about public surface, include a "remove it" option.
+- The maintainer often finds a better option than the ones offered. Present the
+  underlying problem, not only the choices.
+- A recommendation is not a ruling, and "go ahead" or "post it" does not ratify a claim
+  you made. Never attribute a ruling to the maintainer without a message that carries
+  it.
+- Escalate one packet at a time. A batched list of five numbered decisions pushes the
+  work back onto the person you are asking, and the full finding list stays on the PR.
+
 **Voice:** apply [`unslop`](../.claude/skills/unslop/SKILL.md) and
 [`asd-ste100`](../.claude/skills/asd-ste100/SKILL.md) to the packet and any chat around
 it ([`AGENTS.md`](../AGENTS.md) §Writing English). A packet is a decision the
@@ -181,40 +110,3 @@ reading.
 
 Review quality does **not** drop: the implementor still gets the full finding list on the
 PR. The maintainer is not the audience for that list unless they ask.
-
----
-
-## Relationship to OpenSpec and deep `review/`
-
-| Still use | When |
-| --- | --- |
-| `openspec/specs/` main specs | Authoritative contract stays machine-checkable; agents implement against SHALL/scenarios. Not what you read day-to-day |
-| OpenSpec **minimalist** change | Small contract delta; you still don’t want a four-file novel |
-| OpenSpec **library** change | Rare large capability redesign — treat proposal/design as agent bus; put human conclusions on handbook pages |
-| `review/` deep-review program | Commissioned thematic passes — unchanged |
-| Everyday pair loop (this doc) | Default for feature/bug/refactor work you drive |
-
-If handbook and main specs disagree, **pause and ask** (same rule as today) — that usually
-means a decision was never recorded on the handbook page.
-
----
-
-## Entry points
-
-| You want | Invoke |
-| --- | --- |
-| Pair investigation + decisions on handbook | `/grill-with-handbook` |
-| Explore without implementing | `/openspec-explore` stance; don’t open a verbose change by default |
-| Unslop chat / packets / PR comments (default) | `/unslop` — standing rule in [`AGENTS.md`](../AGENTS.md) §Writing English; thin skill, not technical-writing |
-| Remove ambiguity from any English you write (default) | `/asd-ste100` — same standing rule, advice rather than a gate. STE-flavored unless the text is short and met once out of context |
-| Write a user docs page with the maintainer, paragraph by paragraph | `/write-user-docs` (its voice also applies to any edit of user docs prose) |
-| User-facing or handbook prose craft | `/technical-writing`, then the two standing prose skills on the same prose ([`AGENTS.md`](../AGENTS.md) §Writing English). For user docs, the voice in `/write-user-docs` comes first |
-| Review (separate session) | Add the `review` label; the [review loop](review-loop.md) runs **`/code-review-skill`** in its own session — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer. Nobody spawns a reviewer by hand |
-| Address review | **`address-review-findings`** / ask for that skill by name (the Cursor command is `/address-review`) |
-| Linear issue (read → fix → `review` label → address) | **`address-linear-issue`** / ask for that skill by name (the Cursor command is `/address-linear-issue`) |
-| PR babysitting | `steward` as today |
-
-Desktop-only extras (not Cloud Agents), if Cursor comes back: install the Cursor
-**pstack** plugin from the marketplace if you want poteto playbooks; do not vendor it into
-this repo. Matt’s pack: prefer the archivey-adapted skills above over installing the full
-tree.

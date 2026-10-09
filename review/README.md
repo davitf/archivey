@@ -29,9 +29,8 @@ Briefs reference this section instead of repeating it.
 - **Baseline first.** Capture a green baseline before hunting and record it (tests
   passed/skipped, coverage, `pyrefly`, `ty`, `ruff`). Briefs are the exception to
   the review skill's no-re-run default (`SKILL.md` §6) — no CI run to inherit. The
-  `openspec` CLI comes from `scripts/setup-dev-env.sh`; to install it by hand,
-  `npm install -g --prefix "$HOME/.local" @fission-ai/openspec` (`AGENTS.md`
-  §OpenSpec CLI).
+  `openspec` CLI comes from `scripts/setup-dev-env.sh`; to install it by hand, see
+  `CONTRIBUTING.md` §OpenSpec changes.
 - **Three dependency configs.** Behaviour changes by both presence and version of
   optional libs. Exact commands in `CONTRIBUTING.md` → "Before pushing": `[all]`,
   `[all-lowest]` (`--resolution lowest-direct`), and zero-dep `[core-only]`. Say
