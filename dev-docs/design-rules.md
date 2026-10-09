@@ -35,7 +35,11 @@ question.
 excuse.
 
 1. **Never output incorrect or incomplete data without raising on a straightforward full
-   read** (DR-1, DR-2, DR-4a).
+   read** (DR-1, DR-2, DR-4a). The one exception is data that is unknowable: the format
+   carries no checksum or check value and the stream does not validate itself, so
+   nothing can tell good bytes from bad. Then archivey says so with a diagnostic
+   (`DIGEST_UNVERIFIABLE`) instead of implying the bytes were checked (maintainer,
+   2026-10-09).
 2. **Unbounded memory or crashes are never acceptable.** An attacker crafts archives at
    will and will choose the loopholes. The test: if a server lets anyone upload an
    archive to be tested, scanned or have its members hashed, could an upload bring the
@@ -120,6 +124,17 @@ than wrong data. Never truncate, clamp or guess to produce a value. Verify befor
 serving bytes whenever a stored digest makes that possible.
 
 **Why.** A caller can act on an error or a `None`. A caller cannot detect a wrong value.
+
+**Unknowable data.** When the format gives nothing to check against (no stored digest,
+no check value, a codec that does not validate its own stream), a wrong value cannot be
+detected by anyone, so it is not a breach of this rule. What would be a breach is
+staying silent where a check normally exists and was skipped. Emit
+`DIGEST_UNVERIFIABLE`, with a `reason`, whenever a member's bytes reach the caller
+unchecked although the caller would expect them checked. Example: 7z AES with stored
+data and no CRC, where a wrong password yields garbage
+(`reason="no_integrity_anchor"`). A format or codec that never carries a checksum
+(plain TAR, legacy LZ4) says so once in the user docs (`docs/opening-and-listing.md`,
+`docs/formats.md`) rather than with a diagnostic on every member.
 
 **Rulings.**
 - An over-long symlink target is left unset with `SYMLINK_TARGET_UNAVAILABLE`, never
