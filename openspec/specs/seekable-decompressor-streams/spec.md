@@ -161,7 +161,10 @@ decompressed length modulo 2^32 with the gzip ISIZE trailer, for **any declared-
 source** — a path or a caller-owned `BinaryIO` alike — not only path sources. The ISIZE trailer
 value SHALL be captured up front (when the source is first inspected for backstop eligibility),
 so no per-read reopen of a path is required and a non-path source needs no seek while the
-accelerator is live. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
+accelerator is live. Where the whole output went through the reader, in order, the trailer
+SHALL instead be found by the CRC-32 of that output and its length: the eight bytes
+that end the file but for zero padding, so that bytes appended after a wrong trailer, even
+ones equal to the length, SHALL NOT pass for it. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
 rewind the seekable source and re-decode through the stdlib gzip engine so recoverable prefixes
 stream and truncation still raises from a read (never `close()`). A seek SHALL NOT turn the
 backstop off: the length compared is that of rapidgzip's whole output, which the read that
@@ -260,7 +263,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
-| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`, except the zero-padding case `compressed-streams` accepts |
+| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek that skipped output, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
 | bzip2 through the accelerator with junk, a damaged stream header, or a stream whose block and end-of-stream magics are damaged, before or between streams | The bytes and the error of the accelerator `OFF`; no byte from after the skipped region reaches the caller, also after a seek past it |
 | bzip2 through the accelerator with a stream after zero padding, or a cut or damaged stream after the data | The bytes and the error of the accelerator `OFF`; past a bounded stretch (1 MiB) of padding and empty streams between two streams, the standard library takes over and decodes the stretch itself, with the same result |

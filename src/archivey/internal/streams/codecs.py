@@ -1648,6 +1648,28 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._replace_inner(self._open_stdlib_at())
 
 
+class _OutputChecksum:
+    """A running checksum of the output from offset 0 up to a ``frontier``.
+
+    ``feed`` folds a piece of output in only where it continues the covered prefix, so a
+    re-read behind the frontier counts nothing twice and a piece that starts past it (a
+    seek skipped bytes) leaves the frontier where it was. ``fold`` is ``zlib.adler32`` or
+    ``zlib.crc32``. Shared by the stream wrappers that check a trailer rapidgzip does not.
+    """
+
+    def __init__(self, fold: Callable[[memoryview, int], int], initial: int) -> None:
+        self._fold = fold
+        self.value = initial
+        self.frontier = 0
+
+    def feed(self, pos: int, data: bytes) -> None:
+        """Fold in ``data``, the output at ``pos``, if it reaches past the frontier."""
+        end = pos + len(data)
+        if pos <= self.frontier < end:
+            self.value = self._fold(memoryview(data)[self.frontier - pos :], self.value)
+            self.frontier = end
+
+
 class _GzipTruncationCheckStream(DelegatingStream):
     """Backstop truncation detection for the rapidgzip accelerator (any seekable source).
 
@@ -1660,8 +1682,12 @@ class _GzipTruncationCheckStream(DelegatingStream):
        succeeds with zero bytes). Switching the inner keeps ``tell``/``seek``/`seekable`
        honest (ADR 0014: content faults raise from reads, never ``close()``).
     2. On EOF after **non-empty** delivery — check that rapidgzip decoded to the end of
-       the source (its compressed position), then compare decompressed length (mod
-       2**32) to the gzip ISIZE trailer (single-member). On a mismatch, a file with a
+       the source (its compressed position), then look for the member's trailer: the CRC-32
+       of the output, kept as it goes by, and its length (mod 2**32), as the eight bytes
+       that end the file but for zero padding (single-member). Bytes appended after a
+       wrong trailer, even ones equal to the length, are not one. When a seek skipped
+       output there is no CRC-32 of it, and the length is compared to the ISIZE read at
+       open, the file's last four bytes, instead. On a mismatch, a file with a
        further member that zlib confirms (:func:`gzip_has_additional_member`) is taken
        as multi-member and nothing is raised: the trailer is only the last member's
        size (a per-member ISIZE sum is deferred). A decode that stopped short of the
@@ -1722,15 +1748,24 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # kept here because that tell() can be a round trip to the rapidgzip child
         # (``_StdlibSeekContract``). The ISIZE comparison depends on the two agreeing.
         self._pos = 0
+        # CRC-32 of the output from offset 0 up to its frontier; ``_verify_not_truncated``
+        # needs it whole to find where the member's trailer is.
+        self._crc = _OutputChecksum(zlib.crc32, 0)
         self._checked = False
         self._verify = True
+
+    def _count(self, data: bytes) -> None:
+        """Advance the position past ``data`` that rapidgzip returned."""
+        if not self._checked:
+            self._crc.feed(self._pos, data)
+        self._pos += len(data)
 
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
             return b""  # an explicit read(0) is not EOF; it must not trip the check
         data = self._inner.read(size)
         if data:
-            self._pos += len(data)
+            self._count(data)
             if size < 0 and self._verify and not self._checked:
                 # Completing read (read/-1): observe soft EOF now and run ISIZE
                 # before returning. Callers that do only ``s.read(); s.close()`` must
@@ -1740,7 +1775,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
                     if not nxt:
                         break
                     more = nxt + self._inner.read(-1)
-                    self._pos += len(more)
+                    self._count(more)
                     data += more
                 self._checked = True
                 more = self._verify_not_truncated(-1)
@@ -1803,7 +1838,14 @@ class _GzipTruncationCheckStream(DelegatingStream):
         if self._source_len >= 18 and self._decoded_to_the_end():
             if self._isize is None:
                 return b""  # length known but ISIZE unread (should not happen here)
-            if self._pos % (1 << 32) == self._isize:
+            if self._crc.frontier == self._pos:
+                # Every byte went through the CRC-32, so the trailer can be found
+                # rather than assumed to be the file's last four bytes.
+                if self._member_ends_the_file():
+                    return b""
+            elif self._pos % (1 << 32) == self._isize:
+                # Output was skipped by a seek, so there is no CRC-32 to find the
+                # trailer with; the last four bytes of the file stand in.
                 return b""
             if self._has_additional_gzip_member():
                 return b""
@@ -1813,6 +1855,43 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # reads: it carries on from here, and raises the truncation or reports the bytes.
         self._takeover.switch_to_stdlib()
         return self._inner.read(size)
+
+    def _member_ends_the_file(self) -> bool:
+        """Whether the file ends with this output's own trailer: its CRC-32 and the
+        length mod 2**32, then nothing but zero padding.
+
+        Nothing but a decode of the member tells where its trailer is, since zero padding
+        and the length's own high zero bytes look alike. The CRC-32 of the output and
+        the length together are eight bytes that can only be the trailer, so they are
+        looked for where it can be: ending within eight bytes of the last non-zero byte.
+        Bytes appended after a wrong trailer, even ones equal to the length, do not
+        make a trailer. The file is read from the end, back over the padding only.
+        """
+        length = self._source_len
+        assert length is not None
+        want = self._crc.value.to_bytes(4, "little") + (self._pos % (1 << 32)).to_bytes(
+            4, "little"
+        )
+        try:
+            with self._views.view() as f:
+                end = length
+                while end > 0:
+                    start = max(0, end - (1 << 16))
+                    f.seek(start)
+                    stripped = f.read(end - start).rstrip(b"\0")
+                    if stripped:
+                        end = start + len(stripped)
+                        break
+                    end = start
+                first = max(0, end - 8)
+                f.seek(first)
+                window = f.read(min(length, end + 8) - first)
+        except OSError:
+            return True  # cannot look -> do not invent a mismatch
+        return any(
+            window[stop - 8 - first : stop - first] == want
+            for stop in range(max(end, 8), min(length, end + 8) + 1)
+        )
 
     def _decoded_to_the_end(self) -> bool:
         """Whether rapidgzip's decode reached the end of the source; ``True`` when it
@@ -1939,9 +2018,8 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         # The end of the furthest bytes read() has returned. A seek's read-through
         # moves the frontier, not this.
         self._returned = 0
-        # Output bytes [0, _frontier) are covered by _adler.
-        self._frontier = 0
-        self._adler = 1  # Adler-32 of the empty string
+        # Output bytes [0, frontier) are covered by the Adler-32 (1 for the empty string).
+        self._sum = _OutputChecksum(zlib.adler32, 1)
         self._checked = False
         self._verdict: _StreamChecksumError | None = None
 
@@ -1977,7 +2055,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         if not self._checked:
             if whence == io.SEEK_END:
                 self._read_through(None)
-            elif offset > self._frontier:
+            elif offset > self._sum.frontier:
                 self._read_through(offset)
         self._pos = self._inner.seek(offset, whence)
         return self._pos
@@ -1990,16 +2068,13 @@ class _ZlibAdlerCheckStream(DelegatingStream):
 
     def _count(self, data: bytes) -> None:
         end = self._pos + len(data)
-        if not self._checked and self._pos <= self._frontier < end:
-            self._adler = zlib.adler32(
-                memoryview(data)[self._frontier - self._pos :], self._adler
-            )
-            self._frontier = end
+        if not self._checked:
+            self._sum.feed(self._pos, data)
         self._pos = end
 
     def _read_through(self, target: int | None) -> None:
         """Advance the frontier to ``target`` (``None``: the end) by reading."""
-        self._pos = self._inner.seek(self._frontier)
+        self._pos = self._inner.seek(self._sum.frontier)
         while target is None or self._pos < target:
             want = 1 << 20 if target is None else min(1 << 20, target - self._pos)
             data = self._inner.read(want)
@@ -2020,10 +2095,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         its bytes past that point."""
         if self._verdict is not None:
             raise self._verdict.with_traceback(None)
-        if self._checked or self._pos < self._frontier:
+        if self._checked or self._pos < self._sum.frontier:
             return b""
         self._checked = True
-        if self._trailer == self._adler:
+        if self._trailer == self._sum.value:
             return b""
         try:
             self._confirm_with_stdlib()
@@ -2063,9 +2138,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         first = True
         try:
             with self._views.view() as f:
-                while produced <= self._frontier:
+                while produced <= self._sum.frontier:
                     if decoder.eof:
-                        if produced == self._frontier:
+                        if produced == self._sum.frontier:
                             break
                         if first and self._returned <= produced:
                             # zlib checked this stream's Adler-32. Without the
@@ -2085,13 +2160,15 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     out = decoder.decompress(pending, 1 << 20)
                     pending = decoder.unconsumed_tail
                     # Only the bytes rapidgzip delivered are compared.
-                    adler = zlib.adler32(out[: self._frontier - produced], adler)
+                    adler = zlib.adler32(out[: self._sum.frontier - produced], adler)
                     produced += len(out)
         except zlib.error as exc:
             raise _StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
-        if adler == self._adler and (stopped_short or produced > self._frontier):
+        if adler == self._sum.value and (
+            stopped_short or produced > self._sum.frontier
+        ):
             raise _ZlibStoppedShort
-        if produced != self._frontier or adler != self._adler:
+        if produced != self._sum.frontier or adler != self._sum.value:
             raise _StreamChecksumError(
                 "zlib stream is damaged: the data does not match its Adler-32 "
                 "(the rapidgzip accelerator does not check it)"

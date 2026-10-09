@@ -241,7 +241,7 @@ def test_appended_length_bytes_do_not_hide_a_wrong_gzip_isize() -> None:
     The backstop compares the decoded length with the last four bytes of the file.
     Appending the real length there makes that comparison succeed, and the accelerator
     returns the payload. The standard library still raises on the real trailer. Those
-    four bytes are not the zero padding the spec accepts for a wrong last ISIZE.
+    four bytes are not a trailer: the backstop finds it by the CRC-32 of the output.
     The ``gzip_accel`` fuzz target found this shape.
     """
     payload = b"atheris seed payload\n" * 8
@@ -251,6 +251,63 @@ def test_appended_length_bytes_do_not_hide_a_wrong_gzip_isize() -> None:
     off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
     assert off[1] is not None
     _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    ("wrong_isize", "after"),
+    [
+        (False, b""),
+        (False, bytes(4)),
+        (False, bytes(100_000)),
+        (True, b""),
+        (True, bytes(4)),
+        (True, bytes(100_000)),
+        (True, bytes(5) + (168).to_bytes(4, "little")),
+        (False, b"junk"),
+    ],
+    ids=[
+        "valid",
+        "valid-padded",
+        "valid-long-padding",
+        "wrong-isize",
+        "wrong-isize-padded",
+        "wrong-isize-long-padding",
+        "wrong-isize-padding-then-length",
+        "valid-then-junk",
+    ],
+)
+def test_gzip_last_isize_is_judged_as_with_the_accelerator_off(
+    wrong_isize: bool, after: bytes
+) -> None:
+    """A wrong ISIZE on the last member raises whatever follows it; a right one reads
+    with or without zero padding. The trailer is found by its CRC-32, so neither the
+    padding nor the bytes after a wrong trailer decide."""
+    payload = b"atheris seed payload\n" * 8
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    if wrong_isize:
+        blob[-1] ^= 0x01
+    blob = bytes(blob) + after
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    if wrong_isize:
+        assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
+def test_gzip_wrong_isize_after_a_seek_that_skipped_output_is_still_caught() -> None:
+    """With bytes skipped there is no CRC-32 of the output; the last four bytes of the
+    file stand in for the ISIZE, which still catches a plain wrong ISIZE."""
+    payload = b"atheris seed payload\n" * 8
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    blob[-1] ^= 0x01
+
+    def skip(s: BinaryIO) -> None:
+        s.seek(len(payload) - 1)
+
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, skip)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, skip), off)
 
 
 @requires("rapidgzip")
