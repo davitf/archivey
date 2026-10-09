@@ -170,7 +170,7 @@ those rules PRs in this repo actually break, and how to label a break. Violating
   and a spec row, which CONTRIBUTING allows. Check for that reason before filing
 - [ ] **Clean-as-you-go, with no deferral.** A "we'll clean this later" shortcut is fixed
   in the PR, or split into its own PR when it is too big to fix in place; it is not parked
-  in `dev-docs/IDEAS.md` or `review/backlog.md`. A shortcut with no PR behind it is debt
+  in `dev-docs/IDEAS.md` or anywhere else in the repo. A shortcut with no PR behind it is debt
 - [ ] **Pause-and-ask** on a real design discrepancy that no rule in
   `dev-docs/design-rules.md` settles — neither author nor reviewer silently picks a winner
 - [ ] **Comments** explain *why*, carry no history, point at nothing the diff removed, and

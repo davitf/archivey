@@ -56,7 +56,7 @@ needs a handbook note or a thin brief. Red–green for bug fixes. Specs and
 published docs move with the contract, in the same PR.
 
 Gates **before pushing**: `./scripts/check.sh --fix` and `./scripts/test.sh`
-(`AGENTS.md` §Environment and tooling; `--all-configs` when extras or versions matter).
+(`AGENTS.md` §Every task; `--all-configs` when extras or versions matter).
 
 Then push a branch and open a PR. If the issue already names a PR or branch,
 continue there instead of opening a second one.

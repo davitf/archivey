@@ -13,7 +13,7 @@ it.
 
 | Label | Means | Defined in |
 |---|---|---|
-| **Topic 4–10** | Review *topics* — IDs, not an order. This review is Topic 8; the problem catalogue is Topic 10 | [`../backlog.md`](../backlog.md) — grep `^## Topic ` for the section of any one |
+| **Topic 4–10** | Review *topics* — IDs, not an order. This review is Topic 8; the problem catalogue is Topic 10 | The review backlog, now tracked internally; finished topics are under [`../archive/`](../archive/) |
 | **phase 1–4** | The docs IA review's process: audit → decide → execute → guardrail. All four are done | [`../docs/brief.md` §Suggested process](../archive/2026-10-06-docs/brief.md) (`:233-257`) |
 | **Phase 8, Phase 9** | *Capability implementation* phases — a different scheme entirely, about what the library builds and when, not about this review | [`openspec/project.md` §Implementation order](../../openspec/project.md) (`:83`) |
 | **D1–D11** | The IA review's maintainer decisions (unpublish `docs/internal/`, the ADR summary page, the Gotchas rule, `AGENTS`/`CLAUDE`, `dev-docs/` …) | [`../docs/DECISIONS.md`](../archive/2026-10-06-docs/DECISIONS.md) — one `## DN` section each |
@@ -67,7 +67,7 @@ first because each pass makes the next one cheaper, never what to drop.
    bounded starting point — `fe6d4a7..d4668c3` — instead of "reread everything and
    hope". The pages were kept in sync opportunistically as those PRs landed (+226/−27
    lines across 9 files), but only on the surfaces each PR happened to touch.
-3. **Ordering against the release — not a deadline.** `STATUS.md` ranks this review
+3. **Ordering against the release — not a deadline.** The review triage ranked this review
    before more releases ship more permanent URLs: renaming or merging a page is free
    today and a redirect forever after. That is an argument about *sequence*, and it is
    not a reason to hurry or to cut a pass short.
@@ -81,8 +81,8 @@ first because each pass makes the next one cheaper, never what to drop.
 |---|---|
 | Accuracy of published prose vs shipped code and specs | Where pages live / nav shape (settled: [`../docs/DECISIONS.md`](../archive/2026-10-06-docs/DECISIONS.md) D1–D11, `outline.md` D-a–D-e) |
 | Writing the prose `outline.md` specifies and no merge could supply | Library behaviour changes ([Topic 9](../archive/2026-08-15-simplicity-consistency/brief.md) closed that class; new defects → separate PR) |
-| Register and concision on migrated maintainer prose ([O-16 / O-17](../archive/2026-10-06-docs/observations.md)) | Decode-engine performance ([Topic 6](../backlog.md)) |
-| Reference completeness — what a user cannot look up | Whether the docs *persuade* ([Topic 7](../backlog.md), the capstone) |
+| Register and concision on migrated maintainer prose ([O-16 / O-17](../archive/2026-10-06-docs/observations.md)) | Decode-engine performance (Topic 6, tracked internally) |
+| Reference completeness — what a user cannot look up | Whether the docs *persuade* (Topic 7, the capstone; tracked internally) |
 | Triaging the maintainer registers the IA move left stale ([O-9, O-15](../archive/2026-10-06-docs/observations.md)) | Re-litigating settled ADRs or archived review KEEPs |
 | A guardrail that makes accuracy a CI failure rather than a review | Feature work (salvage mode, `archive-writing`, [Phase 8](../../openspec/project.md) blocked gzip) |
 
@@ -107,7 +107,7 @@ conflict, prefer the reading below.
 ### Documentation addenda (not in VISION, but decide most calls here)
 
 - **An inaccurate doc is a bug; an unpolished one is not.** That is what orders passes
-  1–4; it is not permission to stop after the first. `backlog.md`'s "if time forces a
+  1–4; it is not permission to stop after the first. The backlog's "if time forces a
   choice, do (1) alone" was written when this topic might have been squeezed against the
   release — it is not, so the fallback does not apply.
 - **Three outcomes, only one is a docs fix** ([O-26](../archive/2026-10-06-docs/observations.md)).
@@ -146,15 +146,16 @@ Denominators, not targets.
 | Behaviours not inferable from signatures | 29 | [`../docs/independent/must-explain.md`](../archive/2026-10-06-docs/independent/must-explain.md) |
 | "Why" questions the code does not answer | 32 | [`../docs/independent/rationale-gaps.md`](../archive/2026-10-06-docs/independent/rationale-gaps.md), 7 sections |
 | Content observations recorded, not acted on | 26 | [`../docs/observations.md`](../archive/2026-10-06-docs/observations.md) O-1…O-26 (many now closed — §Provenance) |
-| Maintainer registers left stale by the IA move | 2 | `dev-docs/known-issues.md` (709 lines, untriaged), `dev-docs/open-issues.md` (310) |
+| Maintainer registers left stale by the IA move | 2 | `dev-docs/known-issues.md` (709 lines, untriaged), `dev-docs/open-issues.md` (310; moved out of the repo 2026-10-09) |
 
 Baseline is green at commission: `uv run --group docs python scripts/check_docs_nav.py`
 reports *15 pages, all in nav; repo, site and anchor links all resolve*.
 
 ## The passes, ranked
 
-`backlog.md:168` ranks passes 1–4 and that ranking is the plan; **pass 0 was added
-2026-08-16** by [`../docs/outline.md` D-f](../archive/2026-10-06-docs/outline.md). All of them run
+The review backlog (now tracked internally) ranks passes 1–4 and that ranking is the
+plan; **pass 0 was added 2026-08-16** by
+[`../docs/outline.md` D-f](../archive/2026-10-06-docs/outline.md). All of them run
 (§Definition of done). Do not bundle them: each one makes the next cheaper, and running
 them together is how a rewrite ends up arguing about a paragraph's structure before
 knowing whether the paragraph is true.
@@ -243,7 +244,7 @@ that requirement.
 |---|---|---|
 | **O-17 rules + O-16 accuracy half** | The worked example and the rules are already written in `observations.md`. Expect most rewritten sections to lose 20–30% without losing substance. O-16 is the case where the *integrity guarantee* was overstated — that one is a safety claim, not a style note | Rules written; application unstarted |
 | **O-15 — `known-issues.md` triage (D9)** | 709 lines, no triage into resolved / mitigated / upstream / fixable / evidence. Recorded as a **required follow-up, not optional** | `CONFIRMED` open |
-| **O-9 — `open-issues.md` is a dated snapshot** | 310 lines that have aged; several entries were closed by `#232`–`#236` | `CONFIRMED` open |
+| **O-9 — `open-issues.md` is a dated snapshot** | 310 lines that have aged; several entries were closed by `#232`–`#236` | Closed: the page moved out of the repo (2026-10-09); open issues are tracked internally |
 | **O-12 — runtime error messages embed documentation paths** | Two messages cite maintainer documents. Whether an error message should cite a doc at all is this review's call | Open question |
 
 ### D. Reference completeness — a measured gap needing a decision
@@ -312,9 +313,10 @@ sessions and workers, and which splits are unsafe.
    last of the large rows — it is the page whose absence keeps the docs review open.
 7. **Then the register pass** (O-17 rules) across every page carrying promoted maintainer
    prose, then pass 4 across every page, load-bearing ones first.
-8. **Close the registers** — the O-15 `known-issues.md` triage and the O-9
-   `open-issues.md` refresh. They are the review's last unwritten deliverable and the
-   easiest to forget, because neither is a published page.
+8. **Close the register** — the O-15 `known-issues.md` triage. (O-9, the
+   `open-issues.md` refresh, closed when that page moved out of the repo.) It is the
+   review's last unwritten deliverable and the easiest to forget, because it is not a
+   published page.
 9. **Ship page-sized PRs throughout.** One page, or one closely-coupled pair, per PR. A
    move-plus-rewrite diff is unreviewable — that argument is why this topic exists at
    all, and it applies just as much to a rewrite-plus-rewrite diff.
@@ -454,7 +456,7 @@ pause, and the record has to say which. The review is done when **all** of these
 | 3 | **The guide is complete against `outline.md`**: 16 pages, `how-it-works.md` among them with its `documentation` spec delta, and the nav matching. **It does not wait on [Topic 10](../problem-catalogue/brief.md)** — D2 already names a source for each of its six sections (`VISION.md`, ADRs 0001/0002/0003/0006, `library-analysis.md`, the `backend-registry` spec, `dev-docs/decisions/`), and none of them is the catalogue. Cite whatever catalogue rows exist when the page is written; anything that lands later is a follow-up edit, not a blocker |
 | 4 | **Every page carrying promoted maintainer prose has had the register pass**, with the O-16 safety-claim class fixed first |
 | 5 | **Pass 4 is recorded per page** as done or deliberately skipped, with the reason. Silence about a page is not an outcome |
-| 6 | **The registers are triaged** — O-15 (`known-issues.md`) and O-9 (`open-issues.md`), both required follow-ups rather than optional ones |
+| 6 | **The register is triaged** — O-15 (`known-issues.md`), a required follow-up rather than an optional one. O-9 (`open-issues.md`) closed when the page moved out of the repo |
 | 7 | **Every open observation** in `../docs/observations.md` is closed, transferred with a pointer, or parked with a recorded justification |
 | 8 | **The guardrail is in CI** — the 35 `python` blocks execute, and the §D API-reference decision has become a test rather than a preference |
 | 9 | **`SUMMARY.md` lists every page verified clean** under "what is actually fine", so the next review skips them instead of re-deriving them |

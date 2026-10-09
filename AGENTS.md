@@ -116,8 +116,8 @@ missing; read that line.
   `CONTRIBUTING.md` §Getting started. If a gate cannot be run for environment reasons,
   say it was not run.
 - **Cross-platform traps** (encodings, Windows-illegal names, path separators, case
-  folding) are in `CONTRIBUTING.md` §Testing standards. CI runs Windows and macOS; you
-  develop on Linux.
+  folding) are in `CONTRIBUTING.md` §Cross-platform traps. CI runs Windows and macOS;
+  you develop on Linux.
 - Rare tasks have their own page: the v1 reference repo `archivey-dev`
   ([`dev-docs/archivey-dev.md`](dev-docs/archivey-dev.md)), Atheris fuzzing
   ([`dev-docs/fuzzing.md`](dev-docs/fuzzing.md)), releases

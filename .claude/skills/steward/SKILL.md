@@ -71,7 +71,7 @@ of these:
 
 Typical: a lint or type error, a test the diff broke — **including one in a file the PR
 never edited** — a genuine off-by-one a review bot found, a missing `encoding="utf-8"`, a
-docstring that no longer matches the code, a cross-platform trap (`AGENTS.md`
+docstring that no longer matches the code, a cross-platform trap (`CONTRIBUTING.md`
 §"Cross-platform traps") that would only fail on the Windows or macOS runner.
 
 **Stop and ask** — `address-review-findings` §6, one at a time — when the fix needs a

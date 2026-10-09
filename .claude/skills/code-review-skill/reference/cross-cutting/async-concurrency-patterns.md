@@ -1,6 +1,6 @@
 # Concurrency — review guide
 
-Optional. The public API is sync-only (`AGENTS.md` §Conventions); do not suggest async
+Optional. The public API is sync-only (ADR 0005); do not suggest async
 for library code. Concurrency here is threads over one archive and child processes for
 native decoders. Background: `dev-docs/investigations/parallel-reader.md`.
 

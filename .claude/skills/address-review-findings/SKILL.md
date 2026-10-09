@@ -97,7 +97,7 @@ For each one, the disposition is exactly one of:
 | **Fix** | You agree; it is in scope | Code change + a reply |
 | **Disproven** | You traced it; the code is correct | A reply with the trace — and see below |
 | **Escalate** | Needs a human call | §6, one at a time |
-| **Split** | Real, but too big to fix in place — **never available for a 🟢 nit** | Its own PR, linked from your reply. Anything still left after that is tracked internally — not parked in `review/backlog.md` or `dev-docs/IDEAS.md` |
+| **Split** | Real, but too big to fix in place — **never available for a 🟢 nit** | Its own PR, linked from your reply. Anything still left after that is tracked internally — not parked in the repo or in `dev-docs/IDEAS.md` |
 
 **A 🟢 nit has no deferred disposition.** In this repo a nit is *small*, not *optional*:
 it is fixed on this PR, or the maintainer waives it explicitly and you record that waiver
@@ -188,8 +188,8 @@ Standard repo rules apply — they are not relaxed because the change is review-
 
 Run the real gate, not a subset — `./scripts/check.sh --fix` and `./scripts/test.sh`, plus
 `--all-configs` when extras or versions matter. Pushing after `ruff` alone is this repo's
-most common self-inflicted CI failure. The gate is `AGENTS.md` §Environment and tooling
-and `CONTRIBUTING.md` §"Before pushing…"; check new tests against `AGENTS.md`
+most common self-inflicted CI failure. The gate is `AGENTS.md` §Every task and
+`CONTRIBUTING.md` §"Before pushing…"; check new tests against `CONTRIBUTING.md`
 §"Cross-platform traps" (CI runs Windows and macOS). If this PR finishes an OpenSpec
 change, archive it here (`CONTRIBUTING.md` §"Archiving an OpenSpec change"), or leave the
 trailing task unchecked while the design is still moving and say so in your reply.

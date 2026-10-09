@@ -55,8 +55,8 @@ does not restate them.
 [`dev-docs/design-rules.md`](../../../dev-docs/design-rules.md) (the maintainer's recurring
 rulings, written as rules — check one before calling something a maintainer decision),
 [`dev-docs/threat-model.md`](../../../dev-docs/threat-model.md) (the security design: trust
-boundaries and open design gaps), [`review/README.md`](../../../review/README.md) and
-[`review/STATUS.md`](../../../review/STATUS.md) (deep-review conventions and live triage).
+boundaries and open design gaps), [`review/README.md`](../../../review/README.md)
+(deep-review conventions; open reviews are the top level of `review/`).
 
 **Optional guides**, archivey-scoped — open one only when a finding needs it:
 [Architecture](reference/architecture-review-guide.md) ·

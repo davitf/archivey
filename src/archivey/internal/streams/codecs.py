@@ -1203,8 +1203,8 @@ class _SourceViews:
     """Fresh views of an accelerator's source at offset 0 that leave its cursor alone.
 
     A path's views are fresh fds (:meth:`of_path`), a stream's are lock-sharing
-    ``SharedSource`` siblings. See the IDEAS.md entry "Let an ``ArchiveSource`` over a
-    file hand out independent handles".
+    ``SharedSource`` siblings. See the ``dev-docs/IDEAS.md`` entry "Independent handles
+    for a file source".
     """
 
     view: Callable[[], BinaryIO]
