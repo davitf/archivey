@@ -7,9 +7,8 @@ derived from, and what would reopen it.
 
 Use this page before you ask. If a rule here settles the question, do what it says and
 name the rule in the pull request ("settled by DR-7"), so the maintainer can still object.
-If two rules pull different ways and [the precedence order](#when-rules-collide) does not
-settle it, or the question is on the [escalation list](#what-still-goes-to-the-maintainer),
-ask.
+If the question is one of the [conflicts that need a real decision](#conflicts-that-need-a-real-decision),
+or is on the [escalation list](#what-still-goes-to-the-maintainer), ask.
 
 Where these rules come from: maintainer rulings in pull requests, ADRs, handbook pages
 and the project's decision threads, collected in October 2026. VISION.md stays the
@@ -17,26 +16,62 @@ product tie-breaker; these rules are how its priorities have been applied in pra
 Format-specific rulings stay on their handbook pages (`dev-docs/formats/`); this page
 holds only what has generalised across formats.
 
-## When rules collide
+## The principles
 
-Apply them in this order. A higher rule wins over a lower one.
+The maintainer's own summary (2026-10-09) of what he focuses on consistently. Every
+numbered rule below is one of these applied to a kind of question.
 
-1. **Never a wrong answer, never an escape** (DR-1, DR-14). Wrong bytes, wrong metadata
-   or a write outside the destination are worse than any error.
-2. **Same input, same outcome** (DR-5). Across formats, access modes, operating systems,
-   accelerators and installed extras.
-3. **Match the format's official tool** (DR-6), for questions that rule 2 does not
-   decide.
-4. **Deliver everything recoverable** (DR-2, DR-13). Extracting beats refusing; listing
-   beats failing the open.
-5. **Smallest surface** (DR-9 to DR-12). Reuse before adding, remove before keeping, one
-   way to do a thing.
+1. **Consistent behaviour between formats and libraries** (DR-5).
+2. **Follow the official tool's behaviour** (DR-6).
+3. **When the previous two conflict, that needs a real decision.** No ranking settles
+   it; see below.
+4. **No surprises or gotchas for users** (DR-8, DR-10).
+5. **Never output incorrect or incomplete data without raising on a straightforward full
+   read** (DR-1, DR-2, DR-4a).
+6. **Consistency can be relaxed a little for malformed data**, particularly for a corner
+   case so specific that only crafted archives hit it (DR-5a).
+7. **Unbounded memory or crashes are never acceptable.** An attacker crafts archives at
+   will and will choose the loopholes. The test: if a server lets anyone upload an
+   archive to be tested, scanned or have its members hashed, could an upload bring the
+   server down? (DR-9a).
+8. **Generalise fixes and approaches across all formats** (DR-0).
 
-Two rulings show the order working. Device, FIFO and socket entries are `OTHER` in every
-format, although unzip and 7-Zip write them as empty files: consistency (2) beat the
-official tool (3). A 7z name holding a lone UTF-16 surrogate is percent-escaped under
-STRICT and STANDARD, although 7-Zip writes raw bytes: the portable-result promise (2)
-beat the official tool (3), and TRUSTED still writes 7-Zip's bytes.
+Principles 5 and 7 are absolute: no other principle outranks them. Principles 1, 2 and 4
+are weighed against each other only through principle 3.
+
+## Conflicts that need a real decision
+
+When consistency between formats (1) and the official tool (2) point different ways,
+neither wins by default. Put the question to the maintainer, with what each format's tool
+does, what the other formats do, and whether only crafted archives reach the case (6).
+
+Past decisions on such conflicts, to cite as precedent:
+- Device, FIFO and socket entries are `OTHER` in every format, although unzip and 7-Zip
+  write them as empty files. Consistency won: "they're useless as files" (2026-10-06,
+  PR 610).
+- A 7z name holding a lone UTF-16 surrogate lists the way 7-Zip does, but is
+  percent-escaped under STRICT and STANDARD like every other unrepresentable name. TRUSTED
+  writes 7-Zip's bytes (2026-10-03 and 2026-10-06, PRs 564 and 577).
+- Leftover compressed input inside a ZIP or 7z member raises, as 7-Zip and archivey's
+  other codecs already did; unzip accepts some of these (2026-10-07).
+
+A precedent settles a later case only when the reasons carry over. If they don't, ask.
+
+### DR-0. Fix the class, not the instance
+
+**Rule.** A bug found in one format is a question about every format and every shared
+path. Before fixing it, check whether the other formats have the same problem, and put
+the fix in the shared path when there is one. A ruling on one case is a prompt to sweep
+for the rest of its class.
+
+**Why.** Every time the maintainer asked "does this affect other formats?", the answer
+was yes. A cross-format check of recent format-specific bugs found 20 more
+(2026-10-06), and a cross-OS check found 13 gaps.
+
+**Rulings.** RAR password lists moved into the shared `password_confirm` logic so every
+format benefits (2026-10-06, PR 627). The Windows drive-letter link refusal covers ZIP,
+7z and RAR alike (PR 620). Junk after the archive end is reported in every container,
+not only TAR (2026-10-07).
 
 ---
 
@@ -182,6 +217,24 @@ that is right on one format and wrong on another breaks callers silently.
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
 
+### DR-5a. Malformed corner cases may differ a little
+
+**Rule.** Consistency can be relaxed for malformed input, particularly a shape so specific
+that only a crafted archive produces it. There, a format may keep its own behaviour if
+making it match would add real code or plumbing. DR-1 and DR-9a still hold in full: no
+wrong data on a full read, no unbounded resources, no crash.
+
+**Why.** Cross-format plumbing for a shape nobody writes costs more than the difference
+it removes.
+
+**Rulings.** Lone surrogates in U+DC80 to U+DCFF in 7z names keep archivey's one-byte
+meaning instead of 7-Zip's three bytes, because matching would mean carrying each name's
+origin through the filters "for a name nobody writes on purpose" (2026-10-03, PR 564).
+The quadratic crafted hard-link shape was settled by the simpler backward-only rule
+rather than more memo state (2026-10-02, PR 532).
+
+**Reopen if** a real producer writes the shape.
+
 ### DR-6. When the semantics are open, match the format's official tool
 
 **Rule.** For a format-specific behaviour question, test what the format's reference tool
@@ -198,7 +251,8 @@ Absolute member names re-root inside the destination like every mainstream extra
 (2026-09-30, PR 524). A zero-filled TAR is valid because `tar -b 64` writes one
 (ADR 0015).
 
-**Limits.** DR-5 outranks this rule (see [When rules collide](#when-rules-collide)).
+**Limits.** When this rule and DR-5 disagree, that is a
+[real decision](#conflicts-that-need-a-real-decision), not a tie this page breaks.
 ZIP and ISO have no single official tool; see [Open gaps](#open-gaps).
 
 ### DR-7. Trust self-validating data over caller hints
@@ -264,6 +318,33 @@ encrypted stored members before any byte is served.
   1,048,576, after measuring per-member listing cost.
 
 **Reopen if** a measured real archive class hits a default.
+
+### DR-9a. The upload-server test
+
+**Rule.** No archive may cause unbounded memory, unbounded disk, a hang without a
+bound, or a crash of the process. Picture a server that lets anyone upload an archive to
+be tested, scanned or have its members hashed, with default limits. If some upload could
+bring it down, that is a bug, however unlikely the archive is to occur naturally.
+Native code that can crash runs in a child process (DR-20). Every allocation an archive
+can steer is checked against a limit before it is made (DR-9).
+
+**Why.** An attacker crafts archives at will and picks whichever loophole is left
+(2026-10-09). "Only crafted archives hit it" relaxes consistency (DR-5a), never this
+rule.
+
+**Rulings.**
+- PPMd decoding past the end could corrupt memory, so it runs in a child process
+  (2026-09-26, PR 481).
+- rapidgzip killed the process on a truncated gzip, so it moved into a child process
+  (2026-09-26, PR 493).
+- `detect_format` must not allocate an LZMA dictionary at whatever size a crafted header
+  declares (2026-10-07).
+- ISO path-table entries count against `max_members` (2026-10-06, PR 612).
+- Decoder memory is capped before allocation (PR 398).
+
+**Known limits.** Limits cap bytes, entries and key-derivation rounds, not time; the
+accepted non-guarantees are in `threat-model.md` §4. Each of them must still pass this
+test at default limits, or be listed there with its reasons.
 
 ### DR-10. Costly or risky capability is declared, and a declaration is a guarantee
 
@@ -496,7 +577,8 @@ reaches him.
 - A **new public name**, or removing or renaming one after 0.2.0.
 - Accepting a **residual risk** in the threat model.
 - **Reversing** an earlier ruling. This needs a new argument, not a restatement (ADR 0019).
-- Two rules here that **conflict**, when the precedence order does not settle it.
+- A **conflict between consistency and the official tool** (principle 3), unless a past
+  decision's reasons carry over.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
 - Merging a **tricky** pull request: a behaviour trade-off, a design reversal, a public
@@ -510,9 +592,9 @@ Questions no rule here settles yet.
 
 - **The official tool for ZIP and ISO.** DR-6 names none. Asked on 2026-10-02 and not
   answered.
-- **Accelerator versus official tool for bzip2 after zero padding.** The standard library
-  reads both streams; `bzip2` 1.0.8 and the accelerator stop after the first. DR-5 says
-  the two paths must agree; DR-6 points at `bzip2`. Raised 2026-10-08.
+- **bzip2 after zero padding.** The standard library reads both streams; `bzip2` 1.0.8
+  and the accelerator stop after the first. This is a consistency-versus-official-tool
+  conflict, so it needs a real decision. Raised 2026-10-08.
 - **The stricter `DecoderLimits` preset.** The numbers are chosen (256 MiB, 2**24); the
   name, and whether it should be a mode rather than numbers, are open.
 
