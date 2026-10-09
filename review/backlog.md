@@ -1,7 +1,7 @@
 # Review backlog — deferred review ideas
 
-Non-security review topics worth doing, but *after* the remaining in-flight
-round (`debt-ledger`, `performance`). They differ in character and timing:
+Non-security review topics worth doing. The `debt-ledger` and `performance` rounds they
+once waited for were archived on 2026-07-28. They differ in character and timing:
 
 - **Topics 4 + 5** (test-strategy, structural-cleanliness) — **done**, archived as
   `archive/2026-07-28-debt-ledger/` (whole pay list paid; T7 + T4 half closed it on
@@ -36,6 +36,9 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 [`STATUS.md`](STATUS.md).
 
 ## Parked from PR reviews
+
+Nothing new is parked here. A PR-review finding is fixed in its PR or split into its own
+PR, and anything still left is tracked internally. The entries below predate that rule.
 
 - **#607 K6 — nothing in the suite notices a leaked thread.** `tests/leak_oracle.py`
   fails a test that leaves a child process running or an owning stream unclosed, but does

@@ -52,8 +52,9 @@ The implementing agent then works through it with `/address-review`
 
 ## When you approve, hand it to Claude for a pass from zero
 
-This matters when **you** are the reviewer and Claude implemented — the roles run both
-ways round. Once your verdict is ✅ Approve and you have posted the review, add the
+This applies only if a Cursor session reviews again: since 2026-09-20 Claude both
+implements and reviews, and the label starts every round. It matters when **you** are the
+reviewer and Claude implemented. Once your verdict is ✅ Approve and you have posted the review, add the
 `review` label to the pull request (`gh pr edit <number> --add-label review`), then stop.
 
 That starts a Claude round through the

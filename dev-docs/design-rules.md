@@ -795,8 +795,10 @@ reaches him.
 - A **clash between consistency and the official tool** where the factors split.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
-- Merging a **tricky** pull request: a behaviour trade-off, a design reversal, a public
-  API removal, or a very large diff.
+- Merging a **tricky** pull request: a behaviour trade-off, a design reversal, removing
+  or renaming a public name (before 0.2.0 too), a very large diff, or anything an open
+  decision touches. A straightforward one an agent may merge once its review approves and
+  CI is green.
 
 How to ask is in `AGENTS.md` §Working with the maintainer.
 

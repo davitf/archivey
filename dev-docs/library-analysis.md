@@ -79,14 +79,14 @@ When a verifying member is short *and* carries a digest, Archivey raises `Trunca
 surface as truncation and vice versa). `except ReadError` catches both.
 ---
 
-## zstd — the open question (decision: migrate off `zstandard`)
+## zstd — settled: stdlib `compression.zstd` / `backports.zstd` (ADR 0009)
 
-zstd is the one codec whose choice was actively in doubt. The current backend, `zstandard`,
-has two real warts; the question was which of several candidates to move to.
+zstd is the one codec whose choice was actively in doubt. The backend at the time,
+`zstandard`, had two real warts; the question was which of several candidates to move to.
 
 ### Candidates
 
-- **`zstandard`** (current) — Gregory Szorc's CFFI/C wrapper of libzstd. Bespoke reader API.
+- **`zstandard`** (the backend then) — Gregory Szorc's CFFI/C wrapper of libzstd. Bespoke reader API.
 - **`pyzstd`** — Ma Lin's (animalize) wrapper; its `ZstdFile` is built on the stdlib
   `_compression` machinery (same family as `gzip`/`bz2`/`lzma`). It was the basis for CPython's
   stdlib module (PEP 784) and, as of 0.19, **depends on `backports.zstd` for Python < 3.14**.

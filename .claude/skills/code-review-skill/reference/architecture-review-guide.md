@@ -282,7 +282,7 @@ class SevenZipReader(ReadBackend):
 - [ ] Limits and behavior driven by `ArchiveyConfig`, not hardcoded?
 
 **Format & codec:**
-- [ ] New codec behind `internal/streams/codecs` (or equivalent)?
+- [ ] New codec behind `internal/streams/codecs.py` (or equivalent)?
 - [ ] Optional deps reported via `FormatSupport` / `MissingComponent`?
 - [ ] Parser changes isolated to one backend module?
 

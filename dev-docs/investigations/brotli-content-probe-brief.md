@@ -1,8 +1,8 @@
 # Investigation brief — why the Brotli content probe accepts arbitrary data
 
-**Status:** open. Written 2026-08-19 while implementing `sfx-format-detection`; the
-maintainer asked for a dedicated deep dive rather than folding a guess into that change.
-Results belong next to this file as `brotli-content-probe-results.md`.
+**Status:** answered in [`brotli-content-probe-results.md`](brotli-content-probe-results.md).
+Written 2026-08-19 while implementing `sfx-format-detection`; the maintainer asked for a
+dedicated deep dive rather than folding a guess into that change.
 
 **Who this is for:** an agent or contributor with a few hours, willing to read the Brotli
 specification (RFC 7932) and the `brotli` / `brotlicffi` C sources, not just measure the

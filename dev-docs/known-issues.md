@@ -218,18 +218,6 @@ reader passed, so a cut stream delivers the same bytes as without rapidgzip
 everything it had decoded past the reader: up to the whole stream for a cut file of tens
 of MB with every core decoding.
 
-**Core dumps of the aborting child (fixed).** Each abort used to write a core dump. A crash
-handler that `core_pattern` pipes to gets the whole core whatever `RLIMIT_CORE` says,
-about 4 GB with every core decoding, and the parent waits until the handler has read it.
-That stalled the main CI step for 68 to 150 s on every run, and lost an xdist worker
-silently at the 60 s timeout five times (2026-10-02 in
-`test_accelerator_truncation_abort.py`; 2026-10-03 four times in
-`test_rapidgzip_resume.py`, py3.11 and py3.13). The child now turns off its own core
-dumps, and `test_accelerator_truncation_abort.py`, which had run in its own serial CI
-step since the first occurrence, is back in the main step. Details, measurements and the
-stress harness:
-[`investigations/rapidgzip-worker-deaths.md`](investigations/rapidgzip-worker-deaths.md).
-
 **What remains.** bzip2 still runs in-process, so an input
 that aborts the bzip2 decoder would end the caller's process; none has been found.
 

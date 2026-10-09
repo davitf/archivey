@@ -26,7 +26,7 @@ live in
 2. Grill → handbook notes   decisions land on format/topic pages (light bullets)
 3. Thin brief               ½–1 page: goal, non-goals, handbook links, verify commands
 4. Implement                same pair agent; update handbook/user docs when claims move
-5. Review (other model)     full findings → PR; YOU get decision packets only
+5. Review (fresh session)   full findings → PR; YOU get decision packets only
 6. Address                  pair agent; one packet at a time until happy
 7. User docs if needed      Diátaxis mode + unslop (published `docs/` only)
 ```
@@ -40,13 +40,14 @@ five rounds at most, and a decision packet stops the rounds until it is answered
 | Phase | Human sees | Agents may also use |
 | --- | --- | --- |
 | Investigate / grill | Conversation + handbook edits | code map, threat model, tests, old ADRs/investigations as sources |
-| Brief | One short markdown brief (PR description or `dev-docs/` scratch) | Optional OpenSpec **minimalist** change if a living main-spec contract must move |
+| Brief | One short markdown brief, as the PR description (not committed to the repo) | Optional OpenSpec **minimalist** change if a living main-spec contract must move |
 | Implement | Diff + handbook/user-doc updates in the same PR when claims change | Existing OpenSpec apply skills only when a change folder exists |
 | Review | **Decision packets only** | Full three-block / inline review on the PR for the implementor agent |
 | Address | Next packet, cold-start readable | `address-review-findings` dispositions on the PR |
 
-**Manual second agent for review is intentional** (e.g. implement in Cursor, review in
-Claude, or the reverse). Do not require multi-model “interrogate” by default.
+**Nobody spawns a reviewer by hand.** Claude both implements and reviews; the second
+opinion is the separate session the `review` label starts. Do not require multi-model
+“interrogate” by default.
 
 ---
 
@@ -96,7 +97,8 @@ Four rules the shape depends on:
 - **No performance numbers.** They are the most volatile thing on the page and they rot
   into a fourth disagreeing source. Verify carries the command instead.
 - **Behaviour here, status behind the link.** The page says what a caller sees and how
-  fixable it is; `open-issues.md`, `threat-model.md` and `known-issues.md` keep the rest.
+  fixable it is; `known-issues.md` (live defects) and `open-issues.md` keep the rest, and
+  the format's threat surface links the `threat-model.md` design.
 - **Test pointers live on the handbook page only**, in §8 — not duplicated into
   `openspec/specs/`. That is step 1 of
   [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md)
@@ -161,8 +163,8 @@ specs must change; keep scenario farms out of what you are asked to read.
 **This section is the single source of truth** for the packet shape. Review and
 address skills point here; do not restate the six fields elsewhere.
 
-One question per turn. Decidable without opening the PR. Used by address-review and by
-review block 3.
+One question per turn. Decidable without opening the PR. Used by
+`address-review-findings` and by review block 3.
 
 1. **Question** — one sentence, plain language  
 2. **Why it matters** — user / API / security consequence  
@@ -209,11 +211,12 @@ means a decision was never recorded on the handbook page.
 | Remove ambiguity from any English you write (default) | `/asd-ste100` — same standing rule, advice rather than a gate. STE-flavored unless the text is short and met once out of context |
 | Write a user docs page with the maintainer, paragraph by paragraph | `/write-user-docs` (its voice also applies to any edit of user docs prose) |
 | User-facing or handbook prose craft | `/technical-writing`, then the two standing prose skills on the same prose ([`AGENTS.md`](../AGENTS.md) §Writing English). For user docs, the voice in `/write-user-docs` comes first |
-| Review (other agent) | Cursor: `/code-review` (project command → archivey skill). Elsewhere: **`/code-review-skill`** — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer |
-| Address review | Cursor: `/address-review`. Elsewhere: **`address-review-findings`** / ask for that skill by name |
-| Linear issue (read → fix → other-agent review → address) | Cursor: `/address-linear-issue`. Elsewhere: **`address-linear-issue`** / ask for that skill by name |
+| Review (separate session) | Add the `review` label; the [review loop](review-loop.md) runs **`/code-review-skill`** in its own session — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer. Nobody spawns a reviewer by hand |
+| Address review | **`address-review-findings`** / ask for that skill by name (the Cursor command is `/address-review`) |
+| Linear issue (read → fix → `review` label → address) | **`address-linear-issue`** / ask for that skill by name (the Cursor command is `/address-linear-issue`) |
 | PR babysitting | `steward` as today |
 
-Desktop-only extras (not Cloud Agents): install the Cursor **pstack** plugin from the
-marketplace if you want poteto playbooks; do not vendor it into this repo. Matt’s pack:
-prefer the archivey-adapted skills above over installing the full tree.
+Desktop-only extras (not Cloud Agents), if Cursor comes back: install the Cursor
+**pstack** plugin from the marketplace if you want poteto playbooks; do not vendor it into
+this repo. Matt’s pack: prefer the archivey-adapted skills above over installing the full
+tree.

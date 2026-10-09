@@ -13,9 +13,9 @@ disposition. The full process lives in the skill:
    post through the maintainer's account, so a `davitf` comment *without* an agent
    attribution footer is the human.
 2. **Ledger first, edits second.** Every finding gets an ID and exactly one disposition:
-   fix / disproven / escalate / defer-with-a-written-home. Nothing is dropped silently,
-   and **defer is never available for a 🟢 nit** — a nit is fixed here or waived by the
-   maintainer.
+   fix / disproven / escalate / split into its own PR (when too big to fix in place).
+   Nothing is dropped silently or parked in the repo, and **a 🟢 nit is never split
+   off** — it is fixed here or waived by the maintainer.
 3. **Verify before acting.** Reproduce the finding. Automated reviewers here do produce
    false positives, and real findings are often narrower and sharper than described.
 4. **Fix the cause, red–green, specs and docs move with the contract.** If an ad-hoc
@@ -25,9 +25,9 @@ disposition. The full process lives in the skill:
    (AGENTS.md) since CI runs Windows and macOS and you are on Linux. Before re-adding the
    `review` label, run `uv run python scripts/review_prep.py` over the fixes
    (address-review-findings §5).
-6. **Escalate one decision packet at a time** (`AskUserQuestion`) — Question, why it
-   matters, options, evidence, recommendation, default-if-ignored. The maintainer must
-   be able to answer cold without reading the PR. Do **not** dump the full finding list
+6. **Escalate one decision packet at a time** (ask the maintainer, with a question tool
+   if your host has one) — Question, why it matters, options, evidence, recommendation,
+   default-if-ignored. The maintainer must be able to answer cold without reading the PR. Do **not** dump the full finding list
    into chat; that stays on the PR. Shape: `dev-docs/pair-workflow.md` and skill §6.
 7. **Reply in the thread the finding came from, and resolve what you resolved.** Report
    gates honestly. Attribution footer on every comment.

@@ -43,7 +43,7 @@ Two boundaries carry most of the design weight:
 
 - **`archivey/` vs `archivey/internal/`.** The former is frozen surface; the latter is
   not. **The CLI importing from `internal/` is a smell** — it usually means the public API
-  has a gap, and that is a finding, not a shortcut (`review/api-coherence/`).
+  has a gap, and that is a finding, not a shortcut (`review/archive/2026-07-19-api-coherence/`).
 - **`backends/` vs `streams/`.** A backend parses a *container* — headers, member
   metadata, layout. It does not call codec libraries; it composes the uniform pull-based
   decoder layer in `streams/`. A change that makes a backend import `lzma` directly is
@@ -154,8 +154,8 @@ often they turn out to be the right place:
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
 | Is this a known unfixed gap? | `dev-docs/known-issues.md` for defects, `dev-docs/threat-model.md` §5 for open design gaps, `dev-docs/open-issues.md` |
 | Has this already been reviewed? | `review/STATUS.md`, then the archive tables under `review/archive/` |
-| Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape |
-| Was this deliberately deferred? | `review/backlog.md`, `dev-docs/IDEAS.md` |
+| Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) (closed 2026-10-02) record the first pass — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape. The formal sweep is planned for after the release |
+| Was this deliberately deferred? | Older deferrals: `review/backlog.md`, `dev-docs/IDEAS.md`. New work left over from a PR is its own PR or tracked internally, not parked there |
 | What is open right now? | The open OpenSpec changes under `openspec/changes/` and their `tasks.md`; open pull requests; `review/STATUS.md` |
 | Was this discussed but not settled? | `dev-docs/discussions/` |
 | What does the user-facing story say? | `docs/` (published guide only) |
