@@ -16,6 +16,9 @@ product tie-breaker; these rules are how its priorities have been applied in pra
 Format-specific rulings stay on their handbook pages (`dev-docs/formats/`); this page
 holds only what has generalised across formats.
 
+To test a question against concrete callers, use [`scenarios.md`](scenarios.md): who we
+imagine using archivey and what would hurt each of them.
+
 ## The principles
 
 The maintainer's own summary (2026-10-09) of what he focuses on consistently, ordered by
