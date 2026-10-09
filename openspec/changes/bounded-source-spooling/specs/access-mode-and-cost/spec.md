@@ -160,15 +160,17 @@ parsers, archivey's and the stdlib's alike, issue one `read(n)` and raise or tre
 short as EOF. A `None` from the caller's `read` (nothing ready on a non-blocking
 stream, raw or already buffered) is not a short read and not EOF: the boundary
 raises `BlockingIOError`, including when `None` follows a short chunk. That short
-chunk has already left the source and is not returned. The source kinds get
-that guarantee by different means, and the difference is read-ahead:
+chunk has already left the source and is not returned. A read no fact length clamps
+asks again after a short return on every shape, because a non-blocking buffered
+stream returns what has arrived short and answers `None` only on the next read. The
+source kinds get that guarantee by different means, and the difference is read-ahead:
 
 | Source | Boundary wrapper | Read-ahead |
 | --- | --- | --- |
 | Seekable stream, not already buffered | Fixed-size read buffer (`io.BufferedReader`) | Bounded. Recoverable by seeking, and it collapses the parsers' many tiny reads |
 | Seekable stream that is already buffered (a `BytesIO`, an `open()` handle) | `BorrowedStream` — ownership only (see below) | **None added by the boundary.** The source is already full-count, so nothing is stacked in front of it; `fileno()` still forwards |
 | Non-seekable stream, not already a CPython buffer | `FullCountStream` — gathers by re-asking for the bytes still missing | **None at the boundary.** A `read(n)` on the returned stream takes exactly `n` from the source. Codec layers above it may still buffer |
-| Non-seekable stream that is already `io.BufferedReader` / `io.BufferedRandom` | `BorrowedStream` — ownership only (see below) | The caller's buffer already supplies full-count, and keeps reading for itself. Its read-ahead is the caller's; archivey adds no second buffer, and `fileno()` still forwards |
+| Non-seekable stream that is already `io.BufferedReader` / `io.BufferedRandom` | `BorrowedStream` — ownership only (see below) | The caller's buffer already supplies full-count when it blocks, and keeps reading for itself; a non-blocking one is asked again after a short return. Its read-ahead is the caller's; archivey adds no second buffer, and `fileno()` still forwards |
 
 Neither is the materialization discussed above. `FullCountStream` SHALL hold no
 buffered bytes and SHALL report `seekable()` as `False`, so it converts nothing: a
@@ -193,10 +195,12 @@ is outside them.
 | Non-seekable raw stream, `read` returns `None` | `ArchiveSource.read`, `read(-1)`, `readall`, `readinto` and `peek` raise `BlockingIOError` |
 | Same stream returns a short chunk, then `None` | Same error. The short chunk is not the result of the read. Those bytes have already left the source and cannot be read again |
 | Non-seekable already-buffered stream, `read` returns `None` | Same five methods raise `BlockingIOError` |
+| Non-seekable already-buffered stream returns what has arrived short, then `None` on the next read | Same five methods raise `BlockingIOError`. The short return is asked again, not taken as the end of the source |
 | `open_archive(..., streaming=True)` on a stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
 | `open_archive(..., streaming=True)` on an already-buffered stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
 | `open_archive(..., streaming=True)` on a stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
 | `open_archive(..., streaming=True)` on an already-buffered stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
+| `open_archive(..., streaming=True)` on an already-buffered stream that has delivered the first 100 bytes of a tar and then stalls | `BlockingIOError`, not a format detection error |
 
 #### Scenario: open mode matrix
 
@@ -210,7 +214,7 @@ is outside them.
 | Non-seekable source, backend needs seek, archive over the spool limit | `ResourceLimitError` |
 | Seekable stream source, either mode | Full-count `read(n)` at the source boundary, by whichever of the two the source needs: one that is not already buffered gets a fixed-size `io.BufferedReader` (bounded readahead only), and one that already is (a `BytesIO`, an `open()` handle) is borrowed as it stands, with no readahead added. Never materialized to memory or disk |
 | Non-seekable stream source, `streaming=True` | The stream the source boundary returns gives full-count `read(n)` with **zero** read-ahead of its own: `seekable()` stays `False`, and a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary may still buffer — `DecompressorStream` wraps its input in a `BufferedReader`, so an end-to-end `read(20)` on a compressed non-seekable open takes `io.DEFAULT_BUFFER_SIZE` from the source (8 KiB through 3.13, 128 KiB from 3.14) |
-| Non-seekable stream that is already `io.BufferedReader` | Nothing is stacked in front of it; the caller's buffer already supplies full-count. `fileno()` stays intact through the borrow wrapper |
+| Non-seekable stream that is already `io.BufferedReader` | Nothing is stacked in front of it; the caller's buffer already supplies full-count when it blocks. `fileno()` stays intact through the borrow wrapper |
 | Non-seekable stream source, metadata probes | The boundary wrapper forwards what the probes need: a source carrying `name` / `size` still answers `source_name` and `source_byte_size` through it, so `compressed_source_size` and `ResolvedSource.archive_name` do not degrade. It is not transparent in general — what a backend sees is the wrapper's surface, not the source's class, so `peek` / `read1` / `detach` / `BytesIO.getvalue` do not survive it. `tell()` does not become available either — it raises, as the seek-required refusals depend on |
 | Non-seekable short-returning source, any supported streaming format, with and without `format=` | Opens, lists, and reads identically to the full-count source — the guarantee does not depend on detection having run or on a third-party reader's internal buffering |
 | Any stream source, every format, measurement on or off | The reader closing does not close the caller's stream, and the caller can still read from it. Holds for a failed open too: the backend releases what it opened, which never includes the caller's object |

@@ -16,6 +16,7 @@ import io
 import os
 import subprocess
 import sys
+import tarfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -283,8 +284,6 @@ class _BufferedNothingReady(io.BufferedIOBase):
         return False
 
     def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
-        if size == 0:
-            return b""
         return None
 
     def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
@@ -305,8 +304,6 @@ class _BufferedThenNothing(io.BufferedIOBase):
         return False
 
     def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
-        if size == 0:
-            return b""
         if not self._first:
             return None
         if size is None or size < 0:
@@ -322,8 +319,6 @@ class _FactLengthStalls(io.BytesIO):
     """A seekable buffer with a fact length whose ``read`` still returns ``None``."""
 
     def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
-        if size == 0:
-            return b""
         return None
 
 
@@ -435,6 +430,136 @@ def test_blocking_reads_refuses_a_negative_count() -> None:
     adapter = _BlockingReads(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
     with pytest.raises(ValueError, match="non-negative"):
         adapter.read(-1)
+
+
+class _BufferedShortThenStall(io.BufferedIOBase):
+    """An already-buffered non-blocking stream with ``data`` arrived and nothing more yet.
+
+    Like ``BufferedReader`` over an ``O_NONBLOCK`` pipe: a read larger than what has
+    arrived returns it short, and only the read after that answers ``None``.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._data = data
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        if not self._data:
+            return None
+        take = len(self._data) if size is None or size < 0 else size
+        chunk, self._data = self._data[:take], self._data[take:]
+        return chunk
+
+    def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
+        chunk = self.read(len(b))
+        if chunk is None:
+            return None
+        b[: len(chunk)] = chunk
+        return len(chunk)
+
+
+_SHORT_THEN_STALL_READS: dict[str, Callable[[ArchiveSource], object]] = {
+    "read(n)": lambda s: s.read(10),
+    "read(-1)": lambda s: s.read(-1),
+    "readall": lambda s: s.readall(),
+    "peek": lambda s: s.peek(512),
+    "readinto": lambda s: s.readinto(bytearray(10)),
+}
+
+
+@pytest.mark.parametrize(
+    "call", _SHORT_THEN_STALL_READS.values(), ids=_SHORT_THEN_STALL_READS
+)
+def test_buffered_short_then_stall_is_not_end_of_file(
+    call: Callable[[ArchiveSource], object],
+) -> None:
+    """Bytes that have arrived, then a stall, are not a short source.
+
+    The buffered shape has no gatherer, and its first read hands back ``b"ABCDE"``
+    without ever returning ``None``. Taken as final, that is a truncated prefix
+    reported as the whole source.
+    """
+    wrapped = ArchiveSource.for_stream(_BufferedShortThenStall(b"ABCDE"))  # type: ignore[arg-type]  # BufferedIOBase double
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        call(wrapped)
+
+
+def _tar_head(n: int) -> bytes:
+    """The first ``n`` bytes of a one-member tar."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        payload = b"x" * 2000
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()[:n]
+
+
+def test_open_archive_refuses_a_buffered_partial_tar_then_stall() -> None:
+    """Part of a tar header arrived, then nothing: not an unrecognisable archive."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        _read_non_blocking(_BufferedShortThenStall(_tar_head(100)))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+@pytest.mark.parametrize(
+    "call", _SHORT_THEN_STALL_READS.values(), ids=_SHORT_THEN_STALL_READS
+)
+def test_nonblocking_pipe_partial_then_stall_is_not_end_of_file(
+    call: Callable[[ArchiveSource], object],
+) -> None:
+    """The real shape: some bytes in an ``O_NONBLOCK`` pipe, write end still open."""
+    buffered, write_fd = _nonblocking_pipe(b"ABCDE")
+    try:
+        wrapped = ArchiveSource.for_stream(buffered)
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            call(wrapped)
+    finally:
+        buffered.close()
+        os.close(write_fd)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+def test_open_archive_refuses_a_nonblocking_pipe_with_a_partial_tar() -> None:
+    """100 bytes of a tar in a non-blocking pipe, then a stall."""
+    buffered, write_fd = _nonblocking_pipe(_tar_head(100))
+    try:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            _read_non_blocking(buffered)
+    finally:
+        buffered.close()
+        os.close(write_fd)
+
+
+class _NoneForZero(io.BytesIO):
+    """A duck-typed buffer that answers ``None`` to ``read(0)``; other sizes are real."""
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        if size == 0:
+            return None
+        return super().read(size)
+
+
+def test_fact_length_read_answers_zero_without_io() -> None:
+    """Nothing asked, or nothing left, is ``b""`` without asking the inner."""
+    wrapped = ArchiveSource.for_stream(_NoneForZero(b"hi"))
+    assert wrapped._length == 2
+    assert wrapped.read(0) == b""
+    assert wrapped.read(8) == b"hi"
+    assert wrapped.read(8) == b""
+    assert wrapped.read(0) == b""
 
 
 # ---------------------------------------------------------------------------

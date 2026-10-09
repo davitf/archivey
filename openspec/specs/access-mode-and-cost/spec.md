@@ -46,7 +46,7 @@ passed — a path, a stream, or a volume list:
 
 | Guarantee | What `ArchiveSource` SHALL do |
 | --- | --- |
-| Full-count | `read(n)` returns `n` bytes unless the source is exhausted. A raw `read(n)` may legally return short, and header parsers, archivey's and the stdlib's alike, issue one `read(n)` and treat a short as EOF. A `None` from the caller's `read` (nothing ready on a non-blocking stream, raw or already buffered) is not exhaustion: `ArchiveSource` raises `BlockingIOError` instead of returning a short read or EOF, including when `None` follows a short chunk. That short chunk has already left the source and is not returned |
+| Full-count | `read(n)` returns `n` bytes unless the source is exhausted. A raw `read(n)` may legally return short, and header parsers, archivey's and the stdlib's alike, issue one `read(n)` and treat a short as EOF. A `None` from the caller's `read` (nothing ready on a non-blocking stream, raw or already buffered) is not exhaustion: `ArchiveSource` raises `BlockingIOError` instead of returning a short read or EOF, including when `None` follows a short chunk. That short chunk has already left the source and is not returned. A read no fact length clamps asks again after a short return on every shape, because a non-blocking buffered stream returns what has arrived short and answers `None` only on the next read |
 | Ownership | Close what archivey opened or built — a path's handle, a joined volume set, its own read buffer — and never the caller's object, including a caller stream inside a volume list |
 | Bounded reads | No `read(n)` asks the source for more than it can still supply: clamped when the remaining length is a fact, served in steps when it is not, so a length an archive declares cannot become an allocation at the source |
 | Cheap facts | The path when a real file exists (not a pipe or device, which is read once, through the source), the volume paths of a joined set, the size when it is a fact (so that anything built over the source, which asks `source_byte_size`, clamps on a fact or steps too), a caller's `size` hint kept apart for reporting only, and the name, each settled once at the boundary |
@@ -84,10 +84,12 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | Non-seekable raw stream, `read` returns `None` | `ArchiveSource.read`, `read(-1)`, `readall`, `readinto` and `peek` raise `BlockingIOError` |
 | Same stream returns a short chunk, then `None` | Same error. The short chunk is not the result of the read. Those bytes have already left the source and cannot be read again |
 | Non-seekable already-buffered stream, `read` returns `None` | Same five methods raise `BlockingIOError` |
+| Non-seekable already-buffered stream returns what has arrived short, then `None` on the next read | Same five methods raise `BlockingIOError`. The short return is asked again, not taken as the end of the source |
 | `open_archive(..., streaming=True)` on a stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
 | `open_archive(..., streaming=True)` on an already-buffered stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
 | `open_archive(..., streaming=True)` on a stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
 | `open_archive(..., streaming=True)` on an already-buffered stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
+| `open_archive(..., streaming=True)` on an already-buffered stream that has delivered the first 100 bytes of a tar and then stalls | `BlockingIOError`, not a format detection error |
 
 #### Scenario: open mode matrix
 
