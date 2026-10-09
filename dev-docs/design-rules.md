@@ -387,6 +387,19 @@ development, not in production on a different archive (2026-09-29).
 **Rulings.** ADR 0003, 0004, 0010. `stream_members()` is never seekable (2026-09-26). The
 gzip AUTO accelerator stays seek-only for 0.2.0 (2026-09-27).
 
+### DR-10a. Read sequentially; seek only when the format needs it
+
+**Rule.** Prefer forward reads over seeks, and few large reads over many small ones.
+Read only the parts the operation needs: the index to list, the member's bytes to read
+it. Count seeks and bytes read as costs, the same as bytes decompressed.
+
+**Why.** Sources are often remote file objects, such as an HTTP range reader or a
+storage-bucket client, where each seek can be a network request (2026-10-09,
+[scenario 9](scenarios.md#9-loading-from-a-remote-file-object)). Pipes cannot seek at all.
+
+**Rulings.** Performance claims cite bytes decompressed and seeks, not wall time
+(CONTRIBUTING). Solid blocks are decoded once per pass (VISION).
+
 ### DR-11. Environment trouble falls back; explicit requests fail loudly
 
 **Rule.** When an automatic choice (an `AUTO` setting) cannot run because of the

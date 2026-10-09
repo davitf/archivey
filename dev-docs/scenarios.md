@@ -5,9 +5,9 @@ rules ([`design-rules.md`](design-rules.md)) get tested against these. When a qu
 asks "would this surprise a caller?" or "is this easy to use?", pick the scenarios it
 touches and walk through them.
 
-This is a draft for the maintainer to correct. Scenario 1 is the founding use case
-(VISION). Scenario 2 is the maintainer's upload-server test. The rest are Claude's
-proposals, written so they can be checked, merged or dropped.
+Scenario 1 is the founding use case (VISION). Scenario 2 is the maintainer's
+upload-server test, and scenario 9 is his too. Claude proposed scenarios 3 to 8; the
+maintainer accepted them all on 2026-10-09.
 
 Each scenario lists:
 - **Caller:** who it is.
@@ -132,14 +132,37 @@ a packaging tool, a backup program or a file manager.
 - Removed or renamed names after a release.
 - Behaviour that changes with no CHANGELOG line.
 
+## 9. Loading from a remote file object
+
+**Caller:** a model server loading artifacts straight from a URL or a storage bucket. It
+passes archivey a file object that reads from the remote on demand, such as an HTTP
+range-request file or an S3 client's file. Archivey does not need to accept a URL itself
+(maintainer, 2026-10-09).
+**Code:** `open_archive(remote_file)`, then read one or a few members. Sometimes it reads
+the whole archive once.
+**Needs:**
+- Few seeks and few jumps around the file.
+- Sequential reads wherever the format allows.
+- Small reads near each other merged into one.
+- Listing that touches only the index where the format has one.
+**Hurts:**
+- A tail read larger than needed. A September 2026 study found two extra requests per
+  ZIP open.
+- One request per TAR member just to list.
+- Re-reading a solid block once per member.
+- Spooling a whole RAR to disk before extracting one member.
+The study's measurements are in the project's HTTP range-reading report (2026-09-29).
+
+## Planned after 0.2.0
+
+- **Salvage and recovery.** Resync past damage, for example by walking ZIP local headers
+  or resyncing a TAR stream, to recover members after a defect that today ends the
+  listing. Scenario 1 and 6 callers need this most.
+- **Converting between formats.** In scope once writing exists: read one format, write
+  another, keeping the metadata both formats can hold.
+
 ## Not designed for (yet)
 
 - Writing or modifying archives. Writing comes after reading is complete (VISION).
 - Async callers, which wrap archivey with `asyncio.to_thread` (ADR 0005).
-- Reading over HTTP ranges. A study exists, and this is post-0.2.0.
-
-## Open questions for the maintainer
-
-- Which of these matter most for 0.2.0? Scenarios 1 to 4 are assumed core.
-- Are scenarios 5, 6 and 8 real targets, or only plausible?
-- Is any important scenario missing?
+- Accepting a URL directly. Callers pass a file object instead (scenario 9).
