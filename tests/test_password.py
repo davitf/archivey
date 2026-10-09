@@ -234,6 +234,51 @@ def test_password_candidates_provider_cycling_stops_after_three_repeats() -> Non
     assert tried == [b"a", b"b"]
 
 
+def test_password_candidates_provider_new_answer_resets_the_repeat_count() -> None:
+    # Only repeats in a row count: a person who re-types each password once is never
+    # cut off, however many passwords they go through.
+    script = [b"a", b"a", b"b", b"b", b"c", b"c", b"right"]
+    asks: list[int] = []
+    tried: list[bytes] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asks.append(request.attempt)
+        return script[request.attempt - 1] if request.attempt <= len(script) else None
+
+    def decrypt(password: bytes) -> bytes:
+        tried.append(password)
+        if password != b"right":
+            raise EncryptionError("bad")
+        return b"data"
+
+    candidates = _PasswordCandidates(provider=provider)
+    assert candidates.attempt(None, decrypt) == b"data"
+    assert asks == [1, 2, 3, 4, 5, 6, 7]
+    assert tried == [b"a", b"b", b"c", b"right"]
+
+
+def test_password_candidates_provider_wrong_repeated_then_right() -> None:
+    # The password-matrix row: a wrong answer, the same again, then the right one.
+    script = [b"a", b"a", b"right"]
+    asks: list[int] = []
+    tried: list[bytes] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asks.append(request.attempt)
+        return script[request.attempt - 1] if request.attempt <= len(script) else None
+
+    def decrypt(password: bytes) -> bytes:
+        tried.append(password)
+        if password != b"right":
+            raise EncryptionError("bad")
+        return b"data"
+
+    candidates = _PasswordCandidates(provider=provider)
+    assert candidates.attempt(None, decrypt) == b"data"
+    assert asks == [1, 2, 3]
+    assert tried == [b"a", b"right"]
+
+
 def test_password_candidates_provider_repeat_of_candidate_terminates() -> None:
     # A provider echoing a static candidate that already failed also makes no progress.
     decrypt_calls: list[bytes] = []

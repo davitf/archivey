@@ -873,8 +873,9 @@ class PasswordRequest:
     from an earlier unit, a listed candidate) and was skipped without a second try.
     A repeated answer is never decrypted twice. Asking stops when the provider returns
     ``None``, or after three answers in a row that it had already given for this unit;
-    one repeat between new answers does not stop it, so a person at a prompt who types
-    the same password again is asked again.
+    one or two repeats in a row do not stop it, so a person at a prompt who types the
+    same password again is asked again. A provider walking a stored list should skip
+    duplicates in it: three equal entries in a row end the asking.
     """
 
 

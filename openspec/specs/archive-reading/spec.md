@@ -861,6 +861,7 @@ helper thread gets, is in `reader-concurrency`.
 | Provider password fails, consulted again | New request has incremented `attempt` |
 | Provider answers with a password that already failed for this unit (known-good from an earlier unit, or a listed candidate) | Not decrypted again; provider asked again with incremented `attempt` |
 | Provider gives a wrong answer, then the same answer again, then the right one | Second answer not decrypted; provider asked a third time; unit opens |
+| Provider re-types each wrong answer once (`a, a, b, b, c, c, right`) | Repeats never reach three in a row; each wrong answer decrypted once; unit opens |
 | Provider returns the same wrong answer on every call | Four calls, one decrypt; then treated as `None`: `EncryptionError` for that unit |
 | Provider returns `None` | `EncryptionError` for that unit |
 | Header-encrypted archive, provider only | Request with `member is None` |
