@@ -593,7 +593,7 @@ when no available tool writes that case. A refactor that breaks a test means the
 the test is wrong: find out which and report it, never quietly edit the test.
 
 **Rulings.** gzip `FNAME` is Latin-1 per RFC 1952, fixed red/green with a
-command-line fixture (PR 13 era). Committed RAR fixtures (ADR 0016). The corner-case
+command-line fixture (PR 13). Committed RAR fixtures (ADR 0016). The corner-case
 cleanup's rule for refactors (2026-10-02).
 
 ## Documentation
