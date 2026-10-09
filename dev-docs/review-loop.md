@@ -92,18 +92,11 @@ can fall out of step with what actually ran:
 
 ## Who is asking
 
-The round cap and the retry guard apply to agents only, so the workflow has to tell an
-agent from a person. `sender.type` is not enough: an agent working from a Claude Code project thread
-sometimes lands its label as `davitf`, type `User` (#384's events, 2026-09-21), and
-sometimes as `claude[bot]`. The workflow reads the `review` labeled event this run is
-for instead: the latest one by the same sender, no older than the pull request's
-`updated_at` in the webhook (which labelling bumps) less thirty seconds. The events API
-can lag the webhook, so it fetches again for a few seconds until that event is listed;
-without the date check, an agent's label could be read against the maintainer's own
-earlier click. A person is a `User` sender whose event has no
-`performed_via_github_app`, which is what a click in GitHub's own interface records. An
-event that cannot be found counts as an agent, which can only refuse a person, and a
-second click fixes that. `is_person` in the gate holds the rule.
+The round cap and the retry guard apply to agents only. A person is a `User` sender whose
+`review` labeled event has no `performed_via_github_app`; an event that cannot be found
+counts as an agent. `is_person` in
+[`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the rule and the
+evidence for it.
 
 ## Stopping it
 
@@ -135,15 +128,10 @@ second click fixes that. `is_person` in the gate holds the rule.
 
 ## Bots must be named
 
-`anthropics/claude-code-action` refuses to run a workflow a bot initiated unless that bot
-is listed in `allowed_bots`, and an agent adding the label is a bot. The list names
-`claude` and `cursor`, each with and without the `[bot]` suffix, because the action
-reports the actor both ways depending on the code path. Named rather than `*`, so an
-unexpected bot cannot spend review credits.
-
-`.github/workflows/claude.yml`, the general `@claude` assistant, answers only people, for
-the reason written next to its `if:`. It no longer needs to share a trigger phrase with
-this workflow.
+`anthropics/claude-code-action` refuses a bot-initiated run unless the bot is in
+`allowed_bots`; the workflow names `claude` and `cursor`, with and without `[bot]`, and
+says why next to the list. `.github/workflows/claude.yml`, the general `@claude`
+assistant, answers only people.
 
 ## What stays manual
 
@@ -158,15 +146,9 @@ this workflow.
 
 ## Setup
 
-The Claude GitHub App installer set this up on 2026-09-19: it installed the App, wrote
-`claude.yml`, and set the `CLAUDE_CODE_OAUTH_TOKEN` repository secret this workflow reads.
-Should it need redoing by hand: `claude setup-token`, then Settings → Secrets and
-variables → Actions. `ANTHROPIC_API_KEY` works in its place if per-token billing is
-preferred; swap the input name in the workflow.
-
-The `review` and `no-review` labels exist in the repository, and so do the four outcome
-labels. `gh pr edit` cannot create a missing one, so recreate any of them by hand if it
-is ever deleted.
+The workflow reads the `CLAUDE_CODE_OAUTH_TOKEN` repository secret (`claude setup-token`,
+then Settings → Secrets and variables → Actions). The `review` and `no-review` labels and
+the four outcome labels must exist: `gh pr edit` cannot create a missing one.
 
 ## Known rough edges
 
@@ -189,18 +171,5 @@ is ever deleted.
 
 ## What this replaced
 
-Until 2026-09-23 the loop ran without a label: a pull request enrolled through
-`loop:on` or a `cursor/*` branch, and a scheduled scan every ten minutes started a round
-once the branch had been quiet for thirty minutes, alongside an `@claude review` comment
-trigger. Round state lived in `loop:round-N` labels, parks in `loop:decision`,
-`loop:hold` and `loop:done`, and a Linear hop woke a Cursor implementer whose session had
-ended. It was built for Cursor as the implementer, which could not be relied on to ask
-for the next round.
-
-It went because Claude now both implements and reviews, and the implementing session
-already sees each review arrive, so it can ask for the next round itself. The scan it
-leaned on was also barely running: 22 scheduled runs in four days where the cron
-promised about 570, against 22 rounds threads started by hand in the same period. And
-because the round count lived in labels, a verdict step that failed before applying one
-made the scan re-review the same round every ten minutes (#392, 2026-09-21). The
-old workflow, its gate and the Linear hop are in git history if Cursor comes back.
+Until 2026-09-23 a scheduled scan started rounds and kept their state in `loop:*` labels.
+The old workflow, its gate and the Linear hop are in the repository history.

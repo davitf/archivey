@@ -1,5 +1,9 @@
 # Brief — the problem catalogue (Topic 10)
 
+> **`dev-docs/open-issues.md` left the repo on 2026-10-09**; its open items are tracked
+> internally. Citations of it here, line numbers included, refer to its last committed
+> state: `git show bd135512:dev-docs/open-issues.md`.
+
 Commissioned 2026-08-15 against `main` @ `d4668c3`. Not a review of the code: an
 **extraction and normalization pass over what the project already knows**, producing one
 entry per non-trivial problem archivey has had to solve.
@@ -34,7 +38,7 @@ the entry itself must read as a constraint, not as a justification.
    cheapest to enforce while the sources still say what the world did, rather than what
    we built.
 4. **There is already demand from the docs side.**
-   [`../docs/independent/rationale-gaps.md`](../docs/independent/rationale-gaps.md)
+   [`rationale-gaps.md`](../archive/2026-10-06-docs/independent/rationale-gaps.md)
    records **32** "why is it like this?" questions across 7 sections that the code does
    not answer. Those are catalogue entries with the answer missing.
 
@@ -55,7 +59,8 @@ the failure the docs IA review spent a whole phase undoing.
 **A problem stated in terms of its solution is not a problem.** "How do we avoid copying
 bytes twice in the decoder stack" presupposes a decoder stack. Hand that to a fresh
 designer and you have asked a leading question; agreement then proves nothing — the same
-weak-evidence trap that [`../docs/independent-brief.md`](../docs/independent-brief.md) and
+weak-evidence trap that [`independent-brief.md`](../archive/2026-10-06-docs/independent-brief.md)
+and
 Topic 9's brief both name for passes with shared priors.
 
 **The test:** if the problem cannot be stated without naming an archivey type, module or

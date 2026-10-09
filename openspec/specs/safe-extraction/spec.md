@@ -267,7 +267,7 @@ on the errno CPython maps them to (`EINVAL`, `ENOENT`).
 
 Renaming the member to a representable name instead of failing is deliberately not part
 of this requirement — it belongs to the future opt-in `SANITIZE` extraction policy
-(post-v1, see `IDEAS.md`), not to a bespoke option.
+(post-v1, see `dev-docs/IDEAS.md`), not to a bespoke option.
 
 #### Scenario: UTF-8-enforcing filesystem refuses a surrogateescape name
 

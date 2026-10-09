@@ -484,7 +484,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   restart points into the file, and BGZF names each block's size; reading them would give
   seeking without `rapidgzip`. Tracked internally.
 - **Replaying the standard library engine after a `rapidgzip` abort**, to deliver the rest
-  of a cut stream's prefix. Parked in `review/backlog.md`.
+  of a cut stream's prefix. Tracked internally.
 
 ## 8. Verify
 

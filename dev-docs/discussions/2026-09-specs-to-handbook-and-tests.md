@@ -68,6 +68,7 @@ no denser than it found it**, and preferably thinner where tests already exist.
 ## Related
 
 - Pair workflow: [`../pair-workflow.md`](../pair-workflow.md)  
-- Adoption crib: [`2026-09-pair-workflow-adoption.md`](2026-09-pair-workflow-adoption.md)  
+- Adoption crib (historical):
+  [`2026-09-pair-workflow-adoption.md`](../history/2026-09-pair-workflow-adoption.md)  
 - Spec density (schema): [`../../openspec/schemas/library/README.md`](../../openspec/schemas/library/README.md)  
 - CONTRIBUTING §Working with the specs

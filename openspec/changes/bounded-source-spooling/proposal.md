@@ -27,7 +27,7 @@ archive** to `tempfile.mkstemp(suffix=".rar")` the first time a member cannot be
 directly, and `_materialize_stream_volumes()` does the same for multi-volume stream
 sources.
 
-This was `dev-docs/open-issues.md` **P11**, filed when the copy was both unbounded and
+This was an open issue filed when the copy was both unbounded and
 unreported. **The reporting half has since shipped.** `format-rar` now requires a
 disk-copy caveat in `ar.cost.notes` at open for non-path stream sources, and
 `rar_reader.py:119` emits it. Re-measured on a `rar -m5` archive read from a `BytesIO`,
@@ -106,7 +106,7 @@ data to disk to speed seeking is a caller-side concern best served by a wrapper 
 around a member — something archivey might ship or recommend later, but not this change and
 not this layer. It is bounded by uncompressed size rather than archive size, therefore in
 decompression-bomb territory, and it overlaps Topic 6 and the parked `stream-layering`
-**Q4**. Recorded in `dev-docs/IDEAS.md` with that reasoning.
+**Q4**. Tracked internally with that reasoning.
 
 ## Specs
 

@@ -287,8 +287,8 @@ class PrefixWorkspace:
         A path's own handle and a bare seekable stream (``BytesIO``, file object)
         are treated as cheap. :class:`~archivey.ArchiveStream` is not:
         many codecs service a backward restore by re-decoding, so probes prefer the
-        capped buffer path there. Richer "is this seek cheap?" pricing (round trips /
-        ``nearest_resume_offset``) stays in ``dev-docs/IDEAS.md``.
+        capped buffer path there. Richer "is this seek cheap?" pricing is an idea in
+        ``dev-docs/IDEAS.md`` ("Price detection in round trips, not bytes").
         """
         if self._handle is None or self._seek_is_expensive(self._handle):
             return None

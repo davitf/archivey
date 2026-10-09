@@ -6,11 +6,11 @@
 > closed; S1 and S6 closed in that PR.
 
 Commissioned 2026-09-11 against `main` @ `8e88e4f`. Sibling of
-[`../exception-catchalls/brief.md`](../exception-catchalls/brief.md): that one audits
+[`../exception-catchalls/brief.md`](../2026-09-25-exception-catchalls/brief.md): that one audits
 blind `except` clauses, this one audits weakened types. The two share a method and run
 on disjoint sources, so they can go in parallel.
 
-Conventions inherited from [`../README.md`](../README.md) §Conventions every brief
+Conventions inherited from [`../README.md`](../../README.md) §Conventions every brief
 inherits — baseline first, three dependency configs, VISION as tie-breaker, deliverable
 shape. This brief does not repeat them.
 
@@ -44,7 +44,7 @@ start on it and do not edit those trees.
 | In scope | Not in scope |
 |---|---|
 | `# type: ignore` / `# pyrefly: ignore` / `# ty: ignore` in `src/` | The same comments outside `src/` (undecided; see above) |
-| `cast()`, `Any` annotations, `TypeGuard`, checker-appeasing `assert isinstance` | `# noqa: BLE001` and blind `except` ([`../exception-catchalls/`](../exception-catchalls/brief.md)) |
+| `cast()`, `Any` annotations, `TypeGuard`, checker-appeasing `assert isinstance` | `# noqa: BLE001` and blind `except` ([`../exception-catchalls/`](../2026-09-25-exception-catchalls/brief.md)) |
 | The `CONTRIBUTING.md` rule that describes the correct suppression form | `# noqa: F401` re-exports in `__init__.py` (legitimate; `__all__` already carries the contract) |
 | Fixing the type model so a hatch becomes unnecessary | Feature work, or refactors that do not remove a hatch |
 
@@ -238,7 +238,7 @@ actually complain about.
 2. Then **staged fix PRs grouped by category**, smallest and most mechanical first. Not
    one big PR.
 3. `SUMMARY.md`, `QUESTIONS.md`, and a **"what is actually fine"** section per
-   [`../README.md`](../README.md), so the next pass does not re-verify settled sites.
+   [`../README.md`](../../README.md), so the next pass does not re-verify settled sites.
 
 ## Hard constraints
 
@@ -252,7 +252,7 @@ actually complain about.
   its own finding with a repro. Never fold a bug fix silently into an annotation PR.
 - **Pause and ask** on any site whose honest fix changes a public signature or a
   documented contract. Use the decision packet in
-  [`dev-docs/pair-workflow.md`](../../dev-docs/pair-workflow.md) §Decision packet — six
+  [`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md) §Decision packet — six
   fields, one question at a time. Do not pick a winner silently.
 
 ## Definition of done

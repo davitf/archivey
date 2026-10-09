@@ -1,11 +1,11 @@
 # Brief — catch-all `except` clauses in `src/`
 
 Commissioned 2026-09-11 against `main` @ `8e88e4f`. Sibling of
-[`../typing-escape-hatches/brief.md`](../typing-escape-hatches/brief.md): that one audits
+[`../typing-escape-hatches/brief.md`](../2026-09-25-typing-escape-hatches/brief.md): that one audits
 weakened types, this one audits blind exception handlers. Same four dispositions,
 disjoint sources, so the two run in parallel.
 
-Conventions inherited from [`../README.md`](../README.md) §Conventions every brief
+Conventions inherited from [`../README.md`](../../README.md) §Conventions every brief
 inherits — including its **Error contract** bullet, which is the standard this review
 measures against. Not repeated here.
 
@@ -36,7 +36,7 @@ patterns applied consistently?" A finding here will most often be *this reason n
 matches what the handler does*, not *someone was lazy*.
 
 Do not manufacture severity to justify the review. A large "what is actually fine"
-section is the expected outcome, and per [`../README.md`](../README.md) it is a required
+section is the expected outcome, and per [`../README.md`](../../README.md) it is a required
 deliverable, not a consolation prize.
 
 ## Scope
@@ -46,7 +46,7 @@ deliverable, not a consolation prize.
 | In scope | Not in scope |
 |---|---|
 | `except Exception` / `except BaseException` in `src/`, marked or not | The same in `tests/`, `benchmarks/`, `scripts/`, `review/` |
-| Whether each handler re-raises, translates, or deliberately swallows | Type-checker suppressions ([`../typing-escape-hatches/`](../typing-escape-hatches/brief.md)) |
+| Whether each handler re-raises, translates, or deliberately swallows | Type-checker suppressions ([`../typing-escape-hatches/`](../2026-09-25-typing-escape-hatches/brief.md)) |
 | Whether `# noqa: BLE001`'s inline reason still matches the code | The `ArchiveyError` hierarchy's shape (settled: ADR 0012, `error-handling` spec) |
 | Consistency of the five patterns across backends | Adding new exception types, or re-litigating translation policy |
 
@@ -145,7 +145,7 @@ needs an explicit reason for reaching past `Exception`, not an inherited one.
 
 ## Suggested process
 
-1. **Baseline** per [`../README.md`](../README.md), then build the census table: every
+1. **Baseline** per [`../README.md`](../../README.md), then build the census table: every
    blind handler, its pattern, its stated reason, and what it does on each exit path.
 2. **Unmarked first** — the ~25 without `# noqa: BLE001`. Confirm each really re-raises.
    A false negative here is worth more than a marked handler with a good comment.
@@ -155,7 +155,7 @@ needs an explicit reason for reaching past `Exception`, not an inherited one.
    handler and what the caller sees instead of the truth. A handler that cannot be
    reached by any input is itself a finding (DELETE).
 5. Where a fix changes what escapes the public API, **pause and ask** with a decision
-   packet ([`dev-docs/pair-workflow.md`](../../dev-docs/pair-workflow.md) §Decision
+   packet ([`dev-docs/pair-workflow.md`](../../../dev-docs/pair-workflow.md) §Decision
    packet) before implementing.
 
 ## Hard constraints
