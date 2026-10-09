@@ -24,8 +24,8 @@ accelerated read on four cores; see `dev-docs/formats/gzip.md`.
 A forged copy of the eight bytes, appended after the real trailer, overlapping it or
 reaching back into the compressed data, leaves the real CRC-32 as a second occurrence in
 the range searched (72 bytes before the end of the non-zero data to 12 after it), and is
-turned down. A copy more than 56 bytes after the real trailer is not excluded; rapidgzip
-0.16 raises on the ten or more bytes between them before the backstop runs.
+turned down. A copy more than 56 bytes after the end of the real trailer is not excluded;
+rapidgzip 0.16 raises on the ten or more bytes between them before the backstop runs.
 
 When a seek skipped output, there is no CRC-32 of it and no read-through is made (a
 tar.gz listing would pay for the whole output); the old last-four-bytes comparison applies.

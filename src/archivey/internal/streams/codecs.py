@@ -1650,7 +1650,13 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
 
 # How far before the earliest place a gzip trailer could start the backstop still looks
-# for the output's CRC-32 (``_GzipTruncationCheckStream._member_ends_the_file``).
+# for the output's CRC-32 (``_GzipTruncationCheckStream._member_ends_the_file``). The
+# numbers stated for that lookup follow from it: with ``end`` the end of the non-zero data,
+# the range is ``[end - 8 - 64, end + 12)``, so "72 bytes before" the end; a copy more than
+# 64 - 8 = 56 bytes past the end of the real trailer is not excluded; and the first read is
+# the last 64 + 32 = 96 bytes, which hold the range when padding is 24 bytes or fewer. The
+# docstring, ``dev-docs/formats/gzip.md`` §2.3 and §5, and the ``compressed-streams`` and
+# ``seekable-decompressor-streams`` specs state these numbers; change them together.
 _TRAILER_LOOKBACK = 64
 
 
@@ -1894,7 +1900,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         in 2**25, or a CRC-32 of zero with zero padding after the trailer.
 
         The file is read from the end: the last 96 bytes, which hold the whole range in
-        any file with 12 bytes of padding or fewer, and more only to get back over
+        any file with 24 bytes of padding or fewer, and more only to get back over
         padding.
         """
         length = self._source_len

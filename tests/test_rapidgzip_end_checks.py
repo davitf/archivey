@@ -450,11 +450,13 @@ def _gzip_with_a_forged_trailer_after_the_real_one(shift: int) -> bytes:
 @pytest.mark.parametrize("shift", [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 70])
 def test_gzip_forged_trailer_after_the_real_one_is_not_a_trailer(shift: int) -> None:
     """The eight bytes CRC-32 + length may be built out of the real trailer's tail, its
-    ISIZE field and appended bytes, at any distance after it. The real CRC-32 is then a
-    second occurrence in the range the lookup searches, and the candidate is turned down.
-    Ten or more appended bytes (shifts past 9) never reach the lookup on rapidgzip 0.16,
-    which raises on them; the cases are here so a rapidgzip that stops raising is noticed
-    while the lookup still covers them."""
+    ISIZE field and appended bytes. Up to 56 bytes past the end of the real trailer (shift
+    64 for a length with no trailing zero byte), the real CRC-32 is a second occurrence in
+    the range the lookup searches, and the candidate is turned down. Past that the lookup
+    does not exclude the copy; only rapidgzip's own error does. Ten or more appended bytes
+    (shifts past 9) never reach the lookup on rapidgzip 0.16, which raises on them. Shift
+    12 is within the lookup's range; shift 70 is past it, a tripwire for that rapidgzip
+    error: a rapidgzip that stops raising would make it read clean, and this test fail."""
     _require_the_accelerator_in_use()
     blob = _gzip_with_a_forged_trailer_after_the_real_one(shift)
     off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)

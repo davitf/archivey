@@ -175,9 +175,9 @@ eight bytes that end the file but for zero padding, and only where that CRC-32 o
 from 72 bytes before the end of the non-zero data to 12 bytes after it. In a one-member file
 a forged copy of the eight bytes, appended after a wrong trailer, overlapping it or reaching
 back into the compressed data, SHALL NOT pass for it, since the real CRC-32 is then a second
-occurrence; a copy more than 56 bytes after the real trailer is not excluded, and needs
-rapidgzip to read past those bytes without an error, which rapidgzip 0.16 does not do for
-ten or more. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
+occurrence; a copy more than 56 bytes after the end of the real trailer is not excluded, and
+needs rapidgzip to read past those bytes without an error, which rapidgzip 0.16 does not do
+for ten or more. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
 rewind the seekable source and re-decode through the stdlib gzip engine so recoverable
 prefixes stream and truncation still raises from a read (never `close()`). A seek SHALL NOT
 turn the backstop off: the length compared is that of rapidgzip's whole output, which the

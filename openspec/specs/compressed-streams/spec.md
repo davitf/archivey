@@ -548,17 +548,17 @@ trailer only when the CRC-32 occurs there once, followed by the length and then 
 but zero padding. A forged copy of those eight bytes, whether appended after a wrong
 trailer, overlapping it or reaching back into the compressed data, leaves the real CRC-32
 as a second occurrence, so it does not stand in for the trailer. Not excluded: a copy more
-than 56 bytes after the real trailer, which needs rapidgzip to read past that many bytes
-that are not a further member without an error; rapidgzip 0.16 raises on ten or more. Two
-limitations remain, both of the further-member scan that decides a multi-member file (the
-CRC-32 of the whole output is not the last member's, so it finds no trailer there): the
-scan stands down at the first further member it confirms, so with three or more members a
-wrong ISIZE on the last one reads clean too; and a further member counts once zlib has
-decoded 64 KiB of its input without an error, so a large last member's wrong ISIZE is not
-seen either. These hold where the rapidgzip build does not compare the size itself; one
-that does (its own chunk decoder, as in the macOS wheels) raises, and the accelerator
-gives the standard library's error. When a seek has skipped output, there is no CRC-32 of
-it, and the last four bytes of the file stand in as the ISIZE.
+than 56 bytes after the end of the real trailer, which needs rapidgzip to read past that
+many bytes that are not a further member without an error; rapidgzip 0.16 raises on ten or
+more. Two limitations remain, both of the further-member scan that decides a multi-member
+file (the CRC-32 of the whole output is not the last member's, so it finds no trailer
+there): the scan stands down at the first further member it confirms, so with three or
+more members a wrong ISIZE on the last one reads clean too; and a further member counts
+once zlib has decoded 64 KiB of its input without an error, so a large last member's wrong
+ISIZE is not seen either. These hold where the rapidgzip build does not compare the size
+itself; one that does (its own chunk decoder, as in the macOS wheels) raises, and the
+accelerator gives the standard library's error. When a seek has skipped output, there is
+no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 
 #### Scenario: accelerator error parity
 

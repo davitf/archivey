@@ -198,26 +198,27 @@ source that is seekable, `_GzipTruncationCheckStream` backs it up:
    payload's own bytes), leaves the real CRC-32 as a second occurrence, and is turned
    down. The CRC-32 is no obstacle to a forger, who can set it with four chosen bytes of
    payload, so the rule does not lean on it being unlikely. Not excluded: a copy more than
-   56 bytes after the real trailer. `rapidgzip` would have to read past that many bytes
-   that are not a further member without an error, and `rapidgzip` 0.16 raises on ten or
-   more, which hands the read to the standard library engine. A real trailer turned down,
-   when its CRC-32 occurs a second time by chance (about one file in 2²⁵) or is zero with
-   padding after it, goes to the standard library engine too, which finds nothing wrong.
-   Only when a seek skipped output, so that there is no CRC-32 of it, is the ISIZE trailer
-   read at open (the file's last four bytes) compared with the length instead. A mismatch
-   hands the rest of the read to the standard library engine, which raises the truncation,
-   raises the checksum error for a wrong ISIZE, or reports bytes appended to the file. The
-   exception is a file with a further member: its trailer is only the last member's size,
-   so a mismatch is expected and nothing is raised. `gzip_has_additional_member` decides
-   that. It looks for `1f 8b 08` after offset 0, and since those three bytes turn up by
-   chance in a compressed body about once per 16 MiB, it hands each match to zlib's gzip
-   decoder. The match counts only if zlib accepts the header (method, reserved `FLG` bits,
-   `FHCRC`) and then reaches the member's end with its CRC-32 and ISIZE right, or decodes
-   64 KiB of input or 1 MiB of output with no error. Random bytes fail within a few
-   hundred DEFLATE symbols. A match the file ends inside does not count: a real member cut
-   there is a truncation. This scan was chosen over handing every mismatch to the standard
-   library, because a multi-member file (bgzip writes one member per 64 KiB) always
-   mismatches, and the handover would decode it a second time from the start.
+   56 bytes after the end of the real trailer. `rapidgzip` would have to read past that
+   many bytes that are not a further member without an error, and `rapidgzip` 0.16 raises
+   on ten or more, which hands the read to the standard library engine. A real trailer
+   turned down, when its CRC-32 occurs a second time by chance (about one file in 2²⁵) or
+   is zero with padding after it, goes to the standard library engine too, which finds
+   nothing wrong. Only when a seek skipped output, so that there is no CRC-32 of it, is
+   the ISIZE trailer read at open (the file's last four bytes) compared with the length
+   instead. A mismatch hands the rest of the read to the standard library engine, which
+   raises the truncation, raises the checksum error for a wrong ISIZE, or reports bytes
+   appended to the file. The exception is a file with a further member: its trailer is
+   only the last member's size, so a mismatch is expected and nothing is raised.
+   `gzip_has_additional_member` decides that. It looks for `1f 8b 08` after offset 0, and
+   since those three bytes turn up by chance in a compressed body about once per 16 MiB,
+   it hands each match to zlib's gzip decoder. The match counts only if zlib accepts the
+   header (method, reserved `FLG` bits, `FHCRC`) and then reaches the member's end with
+   its CRC-32 and ISIZE right, or decodes 64 KiB of input or 1 MiB of output with no
+   error. Random bytes fail within a few hundred DEFLATE symbols. A match the file ends
+   inside does not count: a real member cut there is a truncation. This scan was chosen
+   over handing every mismatch to the standard library, because a multi-member file (bgzip
+   writes one member per 64 KiB) always mismatches, and the handover would decode it a
+   second time from the start.
 3. A source shorter than 18 bytes that still yielded bytes is handed to the standard
    library engine as well, which raises the truncation. A source whose length cannot be
    read is never called truncated.
