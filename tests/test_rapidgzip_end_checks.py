@@ -382,38 +382,103 @@ def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
     _assert_error_or_the_known_clean_read(b"".join(members), b"".join(contents))
 
 
-def _gzip_with_a_trailer_overlapping_the_real_one(shift: int) -> bytes:
+def _with_crc(prefix: bytes, target: int, suffix: bytes = b"") -> bytes:
+    """``prefix``, four chosen bytes and ``suffix``, with the CRC-32 ``target``.
+
+    The CRC-32 is affine in the four bytes over GF(2) and the map is invertible, so the
+    bytes come out of a 32-by-32 elimination. A forger picks the CRC-32 this way, which is
+    why no rule here may lean on a CRC-32 being unlikely to repeat itself."""
+
+    def crc(x: int) -> int:
+        return zlib.crc32(prefix + x.to_bytes(4, "little") + suffix)
+
+    zero = crc(0)
+    basis: dict[int, tuple[int, int]] = {}  # pivot bit -> (vector, bits of x behind it)
+
+    def reduce(vector: int, combo: int) -> tuple[int, int]:
+        for pivot in sorted(basis, reverse=True):
+            if vector >> pivot & 1:
+                vector ^= basis[pivot][0]
+                combo ^= basis[pivot][1]
+        return vector, combo
+
+    for bit in range(32):
+        vector, combo = reduce(crc(1 << bit) ^ zero, 1 << bit)
+        if vector:
+            basis[vector.bit_length() - 1] = (vector, combo)
+    rest, x = reduce(target ^ zero, 0)
+    assert rest == 0
+    out = prefix + x.to_bytes(4, "little") + suffix
+    assert zlib.crc32(out) == target
+    return out
+
+
+def _gzip_with_a_forged_trailer_after_the_real_one(shift: int) -> bytes:
     """A one-member gzip whose ISIZE is wrong, and whose last eight bytes are exactly the
-    output's CRC-32 and length: the real trailer's last ``4 - shift`` CRC bytes, the forged
-    ISIZE field, and ``shift`` appended bytes. ``shift`` 4 is the ISIZE field set to the
-    CRC-32 with the length appended; fewer needs a payload whose CRC-32 repeats itself at
-    that distance, which is ground for."""
-    for i in range(1_000_000):
-        payload = (b"atheris seed payload %d\n" % i) * 8
-        crc = zlib.crc32(payload).to_bytes(4, "little")
-        if all(crc[k] == crc[k + shift] for k in range(4 - shift)):
-            break
-    else:
-        raise AssertionError(f"no payload found for shift {shift}")
+    output's CRC-32 and length, starting ``shift`` bytes after the real trailer.
+
+    Below 4 the copy overlaps the real CRC-32, which then has to repeat itself at that
+    distance, so the payload is forced to a CRC-32 that does. From 4 to 8 the copy starts
+    in the ISIZE field, and the field's leading bytes are free. Past 8 the copy is wholly
+    appended, after ``shift - 8`` other bytes. The CRC-32 and the free bytes are chosen so
+    that the CRC-32 occurs nowhere else by accident."""
+    target = {1: 0x5A5A5A5A, 2: 0x3C5A3C5A, 3: 0x5A12345A}.get(shift, 0x12345678)
+    payload = _with_crc(random.Random(shift).randbytes(2000), target)
+    crc = zlib.crc32(payload).to_bytes(4, "little")
     want = crc + len(payload).to_bytes(4, "little")
     blob = bytearray(gzip.compress(payload, mtime=0))
-    blob[-4:] = want[4 - shift : 8 - shift]
-    return bytes(blob) + want[8 - shift :]
+    if shift < 4:
+        assert crc[shift:] == want[: 4 - shift]
+        blob[-4:] = want[4 - shift : 8 - shift]
+        blob += want[8 - shift :]
+    elif shift <= 8:
+        blob[-4:] = b"\xa5" * (shift - 4) + want[: 8 - shift]
+        blob += want[8 - shift :]
+    else:
+        blob[-1] ^= 0x01
+        blob += b"\xa5" * (shift - 8) + want
+    assert blob[-8:] == want
+    return bytes(blob)
 
 
 @requires("rapidgzip")
-@pytest.mark.parametrize("shift", [4, 3, 2])
-def test_gzip_forged_trailer_overlapping_the_real_one_is_not_a_trailer(
-    shift: int,
-) -> None:
+@pytest.mark.parametrize("shift", [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 70])
+def test_gzip_forged_trailer_after_the_real_one_is_not_a_trailer(shift: int) -> None:
     """The eight bytes CRC-32 + length may be built out of the real trailer's tail, its
-    ISIZE field and a few appended bytes. The real CRC-32 then sits one to four bytes
-    before them, and a candidate with it there is turned down."""
+    ISIZE field and appended bytes, at any distance after it. The real CRC-32 is then a
+    second occurrence in the range the lookup searches, and the candidate is turned down.
+    Ten or more appended bytes (shifts past 9) never reach the lookup on rapidgzip 0.16,
+    which raises on them; the cases are here so a rapidgzip that stops raising is noticed
+    while the lookup still covers them."""
     _require_the_accelerator_in_use()
-    blob = _gzip_with_a_trailer_overlapping_the_real_one(shift)
+    blob = _gzip_with_a_forged_trailer_after_the_real_one(shift)
     off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
     assert off[1] is not None
     _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
+def test_gzip_forged_trailer_reaching_back_into_the_compressed_data_is_not_one() -> (
+    None
+):
+    """The copy may also sit before the real trailer, inside the compressed data. A
+    stored deflate block ends with the payload's own bytes, so a payload that ends with
+    CRC-32 + length, with the CRC-32 forced to zero, puts the copy there; the real
+    trailer after it then holds a zero CRC-32 and a zero ISIZE, which is wrong, and the
+    file ends in zeros. The real CRC-32 is a second occurrence, so this is turned down."""
+    _require_the_accelerator_in_use()
+    size = 40 * 21 + 12
+    payload = _with_crc(
+        b"atheris seed payload\n" * 40, 0, bytes(4) + size.to_bytes(4, "little")
+    )
+    assert len(payload) == size
+    compressor = zlib.compressobj(0, zlib.DEFLATED, 31)
+    blob = bytearray(compressor.compress(payload) + compressor.flush())
+    assert blob[-16:-8] == bytes(4) + size.to_bytes(4, "little")
+    blob[-4:] = bytes(4)  # ISIZE 0: wrong
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
 
 
 def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts_it() -> (
@@ -422,7 +487,7 @@ def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts
     """The ``gzip_accel`` fuzz target excuses a clean accelerated read of a file the
     standard library rejects for its length only as far as the spec accepts it: a member
     another member follows; the last member when the further-member scan can stand down
-    early (three or more members, or a last member that reaches its probe); never a
+    early (three or more members, or a last member longer than its probe); never a
     single member, padded or not; and not the small last member of two, which the
     backstop catches and the target should notice if it stopped."""
     from archivey.internal.streams.codecs import _MEMBER_PROBE_INPUT
@@ -447,6 +512,20 @@ def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts
     assert _gzip_ignoring_lengths(three_wrong_last + bytes(7)) == a + b + c
     large_last = member(a) + member(large, wrong_isize=True)
     assert _gzip_ignoring_lengths(large_last) == a + large
+
+    # At the probe's edge the oracle follows the scan: a last member whose span is the
+    # probe has its trailer fed, so the scan does not stand down and nothing is excused.
+    for span in (_MEMBER_PROBE_INPUT - 1, _MEMBER_PROBE_INPUT, _MEMBER_PROBE_INPUT + 1):
+        content = random.Random(span).randbytes(span - 28)
+        compressor = zlib.compressobj(0, zlib.DEFLATED, 31)
+        last = bytearray(compressor.compress(content) + compressor.flush())
+        assert len(last) == span
+        last[-1] ^= 0x01
+        blob = member(a) + bytes(last)
+        scan_stands_down = gzip_has_additional_member(io.BytesIO(blob))
+        assert scan_stands_down == (span > _MEMBER_PROBE_INPUT)
+        excused = _gzip_ignoring_lengths(blob)
+        assert excused == (a + content if scan_stands_down else None)
 
 
 @requires("rapidgzip")

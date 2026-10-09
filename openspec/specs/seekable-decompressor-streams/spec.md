@@ -158,29 +158,32 @@ translator SHALL account for platform-varying rapidgzip exception types/messages
 
 For gzip through rapidgzip, the system SHALL backstop truncation by comparing full-read
 decompressed length modulo 2^32 with the gzip ISIZE trailer, for **any declared-seekable
-source** — a path or a caller-owned `BinaryIO` alike — not only path sources. The ISIZE trailer
-value SHALL be captured up front (when the source is first inspected for backstop eligibility),
-so no per-read reopen of a path is required and a non-path source needs no seek while the
-accelerator is live. Where the whole output went through the reader, in order, the trailer
-SHALL instead be found by the CRC-32 of that output and its length: the eight bytes that end
-the file but for zero padding, so that in a one-member file bytes appended after a wrong
-trailer, even ones equal to the length or overlapping the real trailer, SHALL NOT pass for
-it (a candidate with the CRC-32 one to four bytes before it is turned down). Where rapidgzip
-reaches EOF having delivered zero bytes, the system SHALL rewind the seekable source and
-re-decode through the stdlib gzip engine so recoverable prefixes stream and truncation still
-raises from a read (never `close()`). A seek SHALL NOT turn the backstop off: the length
-compared is that of rapidgzip's whole output, which the read that meets its end gives
-whatever seeks came before. On a mismatch the read SHALL be handed to the standard library
-decoder, whose verdict it then gives (`TruncatedError` for a cut, `CorruptionError` for a
-wrong ISIZE, a trailing-data report for appended bytes), except where a further gzip member
-follows the first: then the trailer records only the last member, and the backstop SHALL
-stand down. Before it compares the length or stands down, the backstop SHALL check that
-rapidgzip's decode reached the end of the source; a decode that stopped short of it SHALL be
-handed to the standard library decoder the same way. A `1f 8b 08` in the file SHALL count as
-a further member only when zlib's gzip decoder accepts the header there and decodes from it
-without an error, to the member's verified end or through a bounded probe; three bytes that
-turn up by chance in a compressed body, or a member the source ends inside, SHALL NOT
-silence the backstop.
+source** — a path or a caller-owned `BinaryIO` alike — not only path sources. The ISIZE
+trailer value SHALL be captured up front (when the source is first inspected for backstop
+eligibility), so no per-read reopen of a path is required and a non-path source needs no
+seek while the accelerator is live. Where the whole output went through the reader, in
+order, the trailer SHALL instead be found by the CRC-32 of that output and its length: the
+eight bytes that end the file but for zero padding, and only where that CRC-32 occurs once
+from 72 bytes before the end of the non-zero data to 12 bytes after it. In a one-member file
+a forged copy of the eight bytes, appended after a wrong trailer, overlapping it or reaching
+back into the compressed data, SHALL NOT pass for it, since the real CRC-32 is then a second
+occurrence; a copy more than 56 bytes after the real trailer is not excluded, and needs
+rapidgzip to read past those bytes without an error, which rapidgzip 0.16 does not do for
+ten or more. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
+rewind the seekable source and re-decode through the stdlib gzip engine so recoverable
+prefixes stream and truncation still raises from a read (never `close()`). A seek SHALL NOT
+turn the backstop off: the length compared is that of rapidgzip's whole output, which the
+read that meets its end gives whatever seeks came before. On a mismatch the read SHALL be
+handed to the standard library decoder, whose verdict it then gives (`TruncatedError` for a
+cut, `CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except
+where a further gzip member follows the first: then the trailer records only the last
+member, and the backstop SHALL stand down. Before it compares the length or stands down, the
+backstop SHALL check that rapidgzip's decode reached the end of the source; a decode that
+stopped short of it SHALL be handed to the standard library decoder the same way. A
+`1f 8b 08` in the file SHALL count as a further member only when zlib's gzip decoder accepts
+the header there and decodes from it without an error, to the member's verified end or
+through a bounded probe; three bytes that turn up by chance in a compressed body, or a
+member the source ends inside, SHALL NOT silence the backstop.
 
 A **caller-owned** source driven through the accelerator SHALL NOT be closed by the accelerator
 or its truncation wrapper (archivey never closes a source the caller owns); the accelerator's

@@ -1648,6 +1648,11 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._replace_inner(self._open_stdlib_at())
 
 
+# How far before the earliest place a gzip trailer could start the backstop still looks
+# for the output's CRC-32 (``_GzipTruncationCheckStream._member_ends_the_file``).
+_TRAILER_LOOKBACK = 64
+
+
 class _OutputChecksum:
     """A running checksum of the output from offset 0 up to a ``frontier``.
 
@@ -1684,11 +1689,11 @@ class _GzipTruncationCheckStream(DelegatingStream):
     2. On EOF after **non-empty** delivery — check that rapidgzip decoded to the end of
        the source (its compressed position), then look for the member's trailer: the CRC-32
        of the output, kept as it goes by, and its length (mod 2**32), as the eight bytes
-       that end the file but for zero padding (single-member). Bytes appended after a
-       wrong trailer, even ones equal to the length, are not one. When a seek skipped
-       output there is no CRC-32 of it, and the length is compared to the ISIZE read at
-       open, the file's last four bytes, instead. On a mismatch, a file with a
-       further member that zlib confirms (:func:`gzip_has_additional_member`) is taken
+       that end the file but for zero padding (single-member). A forged copy of those
+       eight bytes is not one (:meth:`_member_ends_the_file` says how far that holds).
+       When a seek skipped output there is no CRC-32 of it, and the length is compared to
+       the ISIZE read at open, the file's last four bytes, instead. On a mismatch, a file
+       with a further member that zlib confirms (:func:`gzip_has_additional_member`) is taken
        as multi-member and nothing is raised: the trailer is only the last member's
        size (a per-member ISIZE sum is deferred). A decode that stopped short of the
        end, or any other mismatch, hands the read to the standard library.
@@ -1862,33 +1867,42 @@ class _GzipTruncationCheckStream(DelegatingStream):
         """Whether the file ends with this output's own trailer: its CRC-32 and the
         length mod 2**32, then nothing but zero padding.
 
-        Nothing but a decode of the member tells where its trailer is, since zero padding
-        and the length's own high zero bytes look alike. The CRC-32 of the output and
-        the length together are eight bytes that only a trailer is expected to hold, so
-        they are looked for where it can be: ending within eight bytes of the last
-        non-zero byte. Bytes appended after a wrong trailer, even ones equal to the
-        length, do not make one.
+        The trailer starts where the deflate stream ends, which rapidgzip does not
+        report, and zero padding looks like the length's own high zero bytes. What is
+        known is that the real trailer starts with the output's CRC-32, because rapidgzip
+        compares it there. A trailer that ends the non-zero data starts at most 8 bytes
+        before its end. So the CRC-32 is looked for from ``_TRAILER_LOOKBACK`` bytes
+        before that to 12 bytes past the end of the non-zero data, and the file ends with
+        the trailer only when the CRC-32 occurs there once, followed by the length and
+        then by nothing but zeros.
 
-        A forger can also let the eight bytes overlap the real trailer, by setting its
-        ISIZE field and appending the rest: the real CRC-32 then sits one to four bytes
-        before the candidate, so a candidate with the CRC-32 at any of those offsets is
-        turned down. A real trailer rejected for that, about one file in 2**24 or fewer,
-        is handed to the standard library, which finds nothing wrong. What is left is a
-        candidate that reaches back into the compressed data, which a forger would have
-        to make the last bytes of the deflate stream and the CRC-32 and length agree
-        with; that is not excluded.
+        A forged copy of the eight bytes is turned down wherever it sits, because the
+        real CRC-32 is then a second occurrence in that range. Bytes appended after the
+        real trailer, a copy that overlaps it, and a copy that reaches back into the
+        compressed data (a stored block ends with the payload's own bytes) all leave the
+        real CRC-32 within range. If the real trailer starts in the zeros after the copy,
+        its CRC-32 is zero, and the four zeros right after the copy are a second
+        occurrence. A forger sets the CRC-32 at will with four chosen payload bytes, so
+        nothing here leans on it being unlikely to repeat. Not excluded: a copy more than
+        56 bytes after the end of the real trailer. That needs rapidgzip to read past
+        those bytes, which are not a further member, without an error, and rapidgzip
+        0.16 raises on ten or more, which hands the read to the standard library.
 
-        The file is read from the end: the last 24 bytes, which hold the trailer and its
-        neighbours in any file without long padding, and more only to get back over
+        A real trailer turned down goes to the standard library, which finds nothing
+        wrong. That takes the CRC-32 occurring a second time by chance, about one file
+        in 2**25, or a CRC-32 of zero with zero padding after the trailer.
+
+        The file is read from the end: the last 96 bytes, which hold the whole range in
+        any file with 12 bytes of padding or fewer, and more only to get back over
         padding.
         """
         length = self._source_len
         assert length is not None
         crc = self._crc.value.to_bytes(4, "little")
-        want = crc + (self._pos % (1 << 32)).to_bytes(4, "little")
+        size = (self._pos % (1 << 32)).to_bytes(4, "little")
         try:
             with self._views.view() as f:
-                base = max(0, length - 24)
+                base = max(0, length - (_TRAILER_LOOKBACK + 32))
                 f.seek(base)
                 tail = f.read(length - base)
                 stripped = tail.rstrip(b"\0")
@@ -1903,7 +1917,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
                             end = start + len(stripped)
                             break
                         end = start
-                first, last = max(0, end - 12), min(length, end + 8)
+                # A trailer that ends the data starts 8 bytes before ``end`` at the
+                # earliest and at ``end`` at the latest.
+                first = max(0, end - 8 - _TRAILER_LOOKBACK)
+                last = min(length, end + 12)
                 if base <= first and last <= base + len(tail):
                     window = tail[first - base : last - base]
                 else:
@@ -1911,18 +1928,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
                     window = f.read(last - first)
         except OSError:
             return True  # cannot look -> do not invent a mismatch
-        for stop in range(max(end, 8), last + 1):
-            at = stop - 8 - first
-            if window[at : at + 8] != want:
-                continue
-            if any(
-                window[at - back : at - back + 4] == crc
-                for back in range(1, 5)
-                if at - back >= 0
-            ):
-                continue  # overlaps the real trailer: its CRC-32 sits just before
-            return True
-        return False
+        at = window.find(crc)
+        if at < 0 or window.find(crc, at + 1) >= 0:
+            return False  # absent, or a second occurrence: one of them is forged
+        return window[at + 4 : at + 8] == size and first + at + 8 >= end
 
     def _decoded_to_the_end(self) -> bool:
         """Whether rapidgzip's decode reached the end of the source; ``True`` when it

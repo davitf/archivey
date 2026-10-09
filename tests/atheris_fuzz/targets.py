@@ -345,8 +345,8 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
     the CRC-32 confirms in a file of several members: a malformed trailer, not damaged
     data. That is a member another member follows. The last member's is checked by the
     backstop, and missed only when the further-member scan stands down early: with three
-    or more members (an earlier one can confirm), or a last member whose input reaches
-    the scan's probe (``_MEMBER_PROBE_INPUT``). With two members and a small last one
+    or more members (an earlier one can confirm), or a last member whose input is longer
+    than the scan's probe (``_MEMBER_PROBE_INPUT``). With two members and a small last one
     the backstop catches it, so it is not excused here and the target keeps noticing.
     A file of one member is never excused, with or without padding or other bytes after
     it. The test for the last member is looser than the scan: it does not ask whether an
@@ -382,7 +382,7 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
     if len(members) < 2:
         return None
     last_bad, last_size = members[-1]
-    if last_bad and len(members) < 3 and last_size < _MEMBER_PROBE_INPUT:
+    if last_bad and len(members) < 3 and last_size <= _MEMBER_PROBE_INPUT:
         return None
     return bytes(out)
 
