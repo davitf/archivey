@@ -164,25 +164,34 @@ translator SHALL account for platform-varying rapidgzip exception types/messages
 
 For gzip through rapidgzip, the system SHALL backstop truncation by comparing full-read
 decompressed length modulo 2^32 with the gzip ISIZE trailer, for **any declared-seekable
-source** — a path or a caller-owned `BinaryIO` alike — not only path sources, and also
-when a declared decompressed size is set, since that checks only the length (no container
+source** — a path or a caller-owned `BinaryIO` alike — not only path sources, and also when
+a declared decompressed size is set, since that checks only the length (no container
 declares a gzip size today, so this is a guard, not a reachable case). The ISIZE trailer
-value SHALL be captured up front (when the source is first inspected for backstop eligibility),
-so no per-read reopen of a path is required and a non-path source needs no seek while the
-accelerator is live. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
-rewind the seekable source and re-decode through the stdlib gzip engine so recoverable prefixes
-stream and truncation still raises from a read (never `close()`). A seek SHALL NOT turn the
-backstop off: the length compared is that of rapidgzip's whole output, which the read that
-meets its end gives whatever seeks came before. On a mismatch the read SHALL be handed to the
-standard library decoder, whose verdict it then gives (`TruncatedError` for a cut,
-`CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except where
-a further gzip member follows the first: then the trailer records only the last member, and
-the backstop SHALL stand down. Before it compares the length or stands down, the backstop SHALL
-check that rapidgzip's decode reached the end of the source; a decode that stopped short of it
-SHALL be handed to the standard library decoder the same way. A `1f 8b 08` in the file SHALL
-count as a further member only when zlib's gzip decoder accepts the header there and decodes
-from it without an error, to the member's verified end or through a bounded probe; three bytes that turn up by chance in a
-compressed body, or a member the source ends inside, SHALL NOT silence the backstop.
+value SHALL be captured up front (when the source is first inspected for backstop
+eligibility), so no per-read reopen of a path is required and a non-path source needs no
+seek while the accelerator is live. Where the whole output went through the reader, in
+order, the trailer SHALL instead be found by the CRC-32 of that output and its length: the
+eight bytes that end the file but for zero padding, and only where that CRC-32 occurs once
+from 72 bytes before the end of the non-zero data to 12 bytes after it. In a one-member file
+a forged copy of the eight bytes, appended after a wrong trailer, overlapping it or reaching
+back into the compressed data, SHALL NOT pass for it, since the real CRC-32 is then a second
+occurrence; a copy more than 56 bytes after the end of the real trailer is not excluded, and
+needs rapidgzip to read past those bytes without an error, which rapidgzip 0.16 does not do
+for ten or more. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
+rewind the seekable source and re-decode through the stdlib gzip engine so recoverable
+prefixes stream and truncation still raises from a read (never `close()`). A seek SHALL NOT
+turn the backstop off: the length compared is that of rapidgzip's whole output, which the
+read that meets its end gives whatever seeks came before. On a mismatch the read SHALL be
+handed to the standard library decoder, whose verdict it then gives (`TruncatedError` for a
+cut, `CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except
+where a further gzip member follows the first: then the trailer records only the last
+member, and the backstop SHALL stand down. Before it compares the length or stands down, the
+backstop SHALL check that rapidgzip's decode reached the end of the source; a decode that
+stopped short of it SHALL be handed to the standard library decoder the same way. A
+`1f 8b 08` in the file SHALL count as a further member only when zlib's gzip decoder accepts
+the header there and decodes from it without an error, to the member's verified end or
+through a bounded probe; three bytes that turn up by chance in a compressed body, or a
+member the source ends inside, SHALL NOT silence the backstop.
 
 A **caller-owned** source driven through the accelerator SHALL NOT be closed by the accelerator
 or its truncation wrapper (archivey never closes a source the caller owns); the accelerator's
@@ -268,7 +277,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
-| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`, except the zero-padding case `compressed-streams` accepts |
+| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek that skipped output, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
 | bzip2 through the accelerator with junk, a damaged stream header, or a stream whose block and end-of-stream magics are damaged, before or between streams | The bytes and the error of the accelerator `OFF`; no byte from after the skipped region reaches the caller, also after a seek past it |
 | bzip2 through the accelerator with a stream after zero padding, or a cut or damaged stream after the data | The bytes and the error of the accelerator `OFF`; past a bounded stretch (1 MiB) of padding and empty streams between two streams, the standard library takes over and decodes the stretch itself, with the same result |

@@ -183,26 +183,42 @@ source that is seekable, `_GzipTruncationCheckStream` backs it up:
 
 1. If the stream ends before a single byte came out, the reader switches to the standard
    library engine over a fresh view of the source, which recovers the prefix and raises.
-2. If it ends after some bytes, the reader first asks `rapidgzip` how far into the
-   source it decoded. A decode that stopped short of the end hands the rest of the read to
-   the standard library engine. This is what tells a member cut short and followed by a
+2. If it ends after some bytes, the reader first asks `rapidgzip` how far into the source
+   it decoded. A decode that stopped short of the end hands the rest of the read to the
+   standard library engine. This is what tells a member cut short and followed by a
    complete one from a multi-member file: there the trailer and the further member are
-   both real, but `rapidgzip` stopped at the cut and never decoded the rest. Otherwise
-   the length of the output mod 2³² is compared with the ISIZE trailer, read at open. A
-   mismatch hands the rest of the read to the standard library engine, which raises the
-   truncation, raises the checksum error for a wrong ISIZE, or reports bytes appended to
-   the file. The exception is a file with a further
-   member: its trailer is only the last member's size, so a mismatch is expected and
-   nothing is raised. `gzip_has_additional_member` decides that. It looks for `1f 8b 08`
-   after offset 0, and since those three bytes turn up by chance in a compressed body
-   about once per 16 MiB, it hands each match to zlib's gzip decoder. The match counts
-   only if zlib accepts the header (method, reserved `FLG` bits, `FHCRC`) and then reaches
-   the member's end with its CRC-32 and ISIZE right, or decodes 64 KiB of input or 1 MiB
-   of output with no error. Random bytes fail within a few hundred DEFLATE symbols. A
-   match the file ends inside does not count: a real member cut there is a truncation.
-   This scan was chosen over handing every mismatch to the standard library, because a
-   multi-member file (bgzip writes one member per 64 KiB) always mismatches, and the
-   handover would decode it a second time from the start.
+   both real, but `rapidgzip` stopped at the cut and never decoded the rest. Otherwise the
+   trailer is looked for in the file: the CRC-32 of the output, which the reader keeps as
+   the output goes by, and its length mod 2³², ending the file but for zero padding. The
+   trailer is the one place near the end where that CRC-32 occurs: the reader looks from
+   72 bytes before the end of the non-zero data to 12 bytes after it, and finds the
+   trailer only when the CRC-32 occurs there once, followed by the length. A forged copy
+   of the eight bytes, appended after a wrong trailer (even bytes equal to the length),
+   overlapping it, or reaching back into the compressed data (a stored block ends with the
+   payload's own bytes), leaves the real CRC-32 as a second occurrence, and is turned
+   down. The CRC-32 is no obstacle to a forger, who can set it with four chosen bytes of
+   payload, so the rule does not lean on it being unlikely. Not excluded: a copy more than
+   56 bytes after the end of the real trailer. `rapidgzip` would have to read past that
+   many bytes that are not a further member without an error, and `rapidgzip` 0.16 raises
+   on ten or more, which hands the read to the standard library engine. A real trailer
+   turned down, when its CRC-32 occurs a second time by chance (about one file in 2²⁵) or
+   is zero with padding after it, goes to the standard library engine too, which finds
+   nothing wrong. Only when a seek skipped output, so that there is no CRC-32 of it, is
+   the ISIZE trailer read at open (the file's last four bytes) compared with the length
+   instead. A mismatch hands the rest of the read to the standard library engine, which
+   raises the truncation, raises the checksum error for a wrong ISIZE, or reports bytes
+   appended to the file. The exception is a file with a further member: its trailer is
+   only the last member's size, so a mismatch is expected and nothing is raised.
+   `gzip_has_additional_member` decides that. It looks for `1f 8b 08` after offset 0, and
+   since those three bytes turn up by chance in a compressed body about once per 16 MiB,
+   it hands each match to zlib's gzip decoder. The match counts only if zlib accepts the
+   header (method, reserved `FLG` bits, `FHCRC`) and then reaches the member's end with
+   its CRC-32 and ISIZE right, or decodes 64 KiB of input or 1 MiB of output with no
+   error. Random bytes fail within a few hundred DEFLATE symbols. A match the file ends
+   inside does not count: a real member cut there is a truncation. This scan was chosen
+   over handing every mismatch to the standard library, because a multi-member file (bgzip
+   writes one member per 64 KiB) always mismatches, and the handover would decode it a
+   second time from the start.
 3. A source shorter than 18 bytes that still yielded bytes is handed to the standard
    library engine as well, which raises the truncation. A source whose length cannot be
    read is never called truncated.
@@ -380,8 +396,26 @@ gzip-specific only; the shared items are [`single-file.md`](single-file.md) §4.
   file whose ISIZE matches the bytes `rapidgzip` delivered before a soft end used to pass;
   the compressed-position check now hands it to the standard library engine. Within a
   decode that did reach the end, a wrong ISIZE on a member before the last still passes
-  (§5), and so does one on the last member behind zero padding whose last four bytes equal
-  the length decoded, with every member's CRC-32 checked.
+  (§5), with every member's CRC-32 checked. A wrong ISIZE on the last member of a
+  one-member file does not (§2.3). In a concatenated file it can: the output's CRC-32 is
+  not the last member's, so the further-member scan decides, and it stands down at the
+  first further member it confirms. So, where the `rapidgzip` build does not compare the
+  size itself (the Linux wheels; a build that does raises), a wrong ISIZE on the last of
+  three or more members reads clean, and so does one on a last member large enough that
+  zlib has decoded 64 KiB of its input by the time the probe gives its answer. Accepted:
+  the case is too specific to be worth finding the last member's start for (§7).
+- **The trailer lookup folds a CRC-32 over the whole output.** The reader keeps it as the
+  output goes by, on the reader's thread while `rapidgzip` decodes on others, and compares
+  it at the end with the eight bytes that end the file but for zero padding (§2.3). That is
+  the option `gzip-padded-isize-accepted` declined as too costly ("the CRC-32 of the
+  output, or a second decode"); it is the cheaper of the two. `zlib.crc32` runs at about
+  3.3 GB/s on the machine measured, 0.056 s per 184 MB of output, which was 6% to 15% of
+  a full accelerated read of 184 MB from a 33 MB `.gz` with four cores (0.50-0.66 s
+  without it; the share is higher on a faster decoder or more cores, and the figures are
+  noisy). It is paid once per stream read to its end, and not after a seek that skipped
+  output. The end of the file is read in 96 bytes, and further back only over padding.
+  Nothing in the benchmark gates holds this number (`targz_read_all_accel_on` is a
+  structural case of 131072 bytes).
 - **The multi-member scan reads the whole file.** When ISIZE disagrees, the backstop scans
   forward for a member magic in 1 MiB blocks, on an independent view, and has zlib decode
   from each match, at most 64 KiB of input and 1 MiB of output. It runs once per stream,
@@ -406,7 +440,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The same truncated `.gz` raises `TruncatedError` on Linux and `CorruptionError` on Windows under `rapidgzip` | **library** | Windows loses the message detail (§2.3). Catch `ReadError` for both |
 | A truncated multi-member `.gz` read through `rapidgzip` can end short with no error | **library** / **archivey** | `rapidgzip` ends softly. The backstop raises when the decode stopped before the end of the file; a cut whose decode still reaches the end, with zlib confirming a later member, can pass. Summing each member's ISIZE is deferred (§7) |
 | A member after the first with a header CRC that does not match or reserved `FLG` bits reads clean under `rapidgzip`; the standard library raises | **library** / **archivey** | `rapidgzip` does not check these, and hides member boundaries. The first member's header is checked (§2.3); the rest is the per-member question in §7 |
-| A wrong ISIZE on any member but the last reads clean under `rapidgzip`; the standard library raises. So does one on the last member when zero padding follows and the file's last four bytes equal the length decoded | **library** / **archivey** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3). The ISIZE backstop reads the file's last four bytes, and telling padding from a trailer that ends in zero bytes would need a CRC-32 over the output, or a second decode, for every file that ends in a zero byte. Found by the `gzip_accel` fuzz target |
+| A wrong ISIZE on any member but the last reads clean under `rapidgzip` builds that do not compare the size; the standard library raises | **library** / **archivey** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3). `rapidgzip` 0.16.0 compares it only in its own chunk decoder, for a stream that lies wholly in one chunk; the inflate-wrapper decoder (ISA-L, in the Linux wheels) appends the footer without comparing. The last member's ISIZE is checked by the backstop, which finds the trailer by the CRC-32 of the output. After a seek that skipped output there is no CRC-32 and the file's last four bytes stand in for the ISIZE; in that case only, four bytes appended after a wrong ISIZE, equal to the length, pass for the trailer. Found by the `gzip_accel` fuzz target |
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this. A stream cut before its first byte of output raises, as with the accelerator off |
 | `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3). Found by `tests/test_nested_archives.py` |
 | Several zlib streams one after another, read in bounded reads to the end under `use_rapidgzip=ON`, read as one; the standard library reads the first alone and reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. A completing `read()` and a seek to the end stop at the first stream as with the accelerator off; bounded reads have the second stream's bytes before the end shows up, and the Adler-32 check accepts them when the standard library reproduces them stream by stream (§2.3), so they get those bytes as content and no `ARCHIVE_TRAILING_DATA` |
