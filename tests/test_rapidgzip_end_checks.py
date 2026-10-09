@@ -382,28 +382,50 @@ def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
     _assert_error_or_the_known_clean_read(b"".join(members), b"".join(contents))
 
 
-@requires("rapidgzip")
-def test_gzip_isize_set_to_the_crc_is_not_a_trailer_with_the_length_appended() -> None:
-    """The ISIZE field holds the output's CRC-32 and the real length follows: the last
-    eight bytes are then exactly CRC-32 + length. They are the member's own ISIZE field
-    and the appended bytes, not a trailer, and the candidate is turned down because the
-    same CRC-32 precedes it."""
-    _require_the_accelerator_in_use()
-    payload = b"atheris seed payload\n" * 8
+def _gzip_with_a_trailer_overlapping_the_real_one(shift: int) -> bytes:
+    """A one-member gzip whose ISIZE is wrong, and whose last eight bytes are exactly the
+    output's CRC-32 and length: the real trailer's last ``4 - shift`` CRC bytes, the forged
+    ISIZE field, and ``shift`` appended bytes. ``shift`` 4 is the ISIZE field set to the
+    CRC-32 with the length appended; fewer needs a payload whose CRC-32 repeats itself at
+    that distance, which is ground for."""
+    for i in range(1_000_000):
+        payload = (b"atheris seed payload %d\n" % i) * 8
+        crc = zlib.crc32(payload).to_bytes(4, "little")
+        if all(crc[k] == crc[k + shift] for k in range(4 - shift)):
+            break
+    else:
+        raise AssertionError(f"no payload found for shift {shift}")
+    want = crc + len(payload).to_bytes(4, "little")
     blob = bytearray(gzip.compress(payload, mtime=0))
-    blob[-4:] = zlib.crc32(payload).to_bytes(4, "little")
-    blob += len(payload).to_bytes(4, "little")
-    off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
+    blob[-4:] = want[4 - shift : 8 - shift]
+    return bytes(blob) + want[8 - shift :]
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("shift", [4, 3, 2])
+def test_gzip_forged_trailer_overlapping_the_real_one_is_not_a_trailer(
+    shift: int,
+) -> None:
+    """The eight bytes CRC-32 + length may be built out of the real trailer's tail, its
+    ISIZE field and a few appended bytes. The real CRC-32 then sits one to four bytes
+    before them, and a candidate with it there is turned down."""
+    _require_the_accelerator_in_use()
+    blob = _gzip_with_a_trailer_overlapping_the_real_one(shift)
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
     assert off[1] is not None
-    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
 
 
-def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_in_a_concatenated_file() -> (
+def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts_it() -> (
     None
 ):
     """The ``gzip_accel`` fuzz target excuses a clean accelerated read of a file the
-    standard library rejects for its length only as far as the spec accepts it: members
-    after the first, whichever is wrong, and never a single member, padded or not."""
+    standard library rejects for its length only as far as the spec accepts it: a member
+    another member follows; the last member when the further-member scan can stand down
+    early (three or more members, or a last member that reaches its probe); never a
+    single member, padded or not; and not the small last member of two, which the
+    backstop catches and the target should notice if it stopped."""
+    from archivey.internal.streams.codecs import _MEMBER_PROBE_INPUT
     from tests.atheris_fuzz.targets import _gzip_ignoring_lengths
 
     def member(content: bytes, *, wrong_isize: bool = False) -> bytes:
@@ -413,15 +435,18 @@ def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_in_a_concatenated_file
         return bytes(blob)
 
     a, b, c = b"a" * 50, b"b" * 70, b"c" * 30
-    wrong_first = member(a, wrong_isize=True) + member(b)
-    three_wrong_last = member(a) + member(b) + member(c, wrong_isize=True)
-    assert _gzip_ignoring_lengths(wrong_first) == a + b
-    assert _gzip_ignoring_lengths(three_wrong_last) == a + b + c
-    assert _gzip_ignoring_lengths(three_wrong_last + bytes(7)) == a + b + c
+    large = random.Random(3).randbytes(_MEMBER_PROBE_INPUT + 1000)
     one = member(a, wrong_isize=True)
     assert _gzip_ignoring_lengths(one) is None
     assert _gzip_ignoring_lengths(one + bytes(4)) is None
     assert _gzip_ignoring_lengths(one + len(a).to_bytes(4, "little")) is None
+    assert _gzip_ignoring_lengths(member(a, wrong_isize=True) + member(b)) == a + b
+    assert _gzip_ignoring_lengths(member(a) + member(b, wrong_isize=True)) is None
+    three_wrong_last = member(a) + member(b) + member(c, wrong_isize=True)
+    assert _gzip_ignoring_lengths(three_wrong_last) == a + b + c
+    assert _gzip_ignoring_lengths(three_wrong_last + bytes(7)) == a + b + c
+    large_last = member(a) + member(large, wrong_isize=True)
+    assert _gzip_ignoring_lengths(large_last) == a + large
 
 
 @requires("rapidgzip")

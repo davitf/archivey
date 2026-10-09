@@ -1867,14 +1867,20 @@ class _GzipTruncationCheckStream(DelegatingStream):
         the length together are eight bytes that only a trailer is expected to hold, so
         they are looked for where it can be: ending within eight bytes of the last
         non-zero byte. Bytes appended after a wrong trailer, even ones equal to the
-        length, do not make one. The exception would be a wrong ISIZE set to the
-        CRC-32, with the length appended: the eight bytes found then reuse the ISIZE
-        field as their CRC-32, so a candidate preceded by that same CRC-32 is turned
-        down. Turning down a real trailer for that, one file in 2**32, hands the read
-        to the standard library, which finds nothing wrong.
+        length, do not make one.
 
-        The file is read from the end: the last 16 bytes, which hold the trailer of
-        any file without long padding, and more only to get back over padding.
+        A forger can also let the eight bytes overlap the real trailer, by setting its
+        ISIZE field and appending the rest: the real CRC-32 then sits one to four bytes
+        before the candidate, so a candidate with the CRC-32 at any of those offsets is
+        turned down. A real trailer rejected for that, about one file in 2**24 or fewer,
+        is handed to the standard library, which finds nothing wrong. What is left is a
+        candidate that reaches back into the compressed data, which a forger would have
+        to make the last bytes of the deflate stream and the CRC-32 and length agree
+        with; that is not excluded.
+
+        The file is read from the end: the last 24 bytes, which hold the trailer and its
+        neighbours in any file without long padding, and more only to get back over
+        padding.
         """
         length = self._source_len
         assert length is not None
@@ -1882,26 +1888,39 @@ class _GzipTruncationCheckStream(DelegatingStream):
         want = crc + (self._pos % (1 << 32)).to_bytes(4, "little")
         try:
             with self._views.view() as f:
-                end, step = length, 16
-                while end > 0:
-                    start = max(0, end - step)
-                    f.seek(start)
-                    stripped = f.read(end - start).rstrip(b"\0")
-                    if stripped:
-                        end = start + len(stripped)
-                        break
-                    end, step = start, 1 << 16
-                first = max(0, end - 12)
-                f.seek(first)
-                window = f.read(min(length, end + 8) - first)
+                base = max(0, length - 24)
+                f.seek(base)
+                tail = f.read(length - base)
+                stripped = tail.rstrip(b"\0")
+                end = base + len(stripped)
+                if not stripped:
+                    end, step = base, 1 << 16
+                    while end > 0:
+                        start = max(0, end - step)
+                        f.seek(start)
+                        stripped = f.read(end - start).rstrip(b"\0")
+                        if stripped:
+                            end = start + len(stripped)
+                            break
+                        end = start
+                first, last = max(0, end - 12), min(length, end + 8)
+                if base <= first and last <= base + len(tail):
+                    window = tail[first - base : last - base]
+                else:
+                    f.seek(first)
+                    window = f.read(last - first)
         except OSError:
             return True  # cannot look -> do not invent a mismatch
-        for stop in range(max(end, 8), min(length, end + 8) + 1):
+        for stop in range(max(end, 8), last + 1):
             at = stop - 8 - first
             if window[at : at + 8] != want:
                 continue
-            if at >= 4 and window[at - 4 : at] == crc:
-                continue  # the ISIZE field of a trailer, taken for its CRC-32
+            if any(
+                window[at - back : at - back + 4] == crc
+                for back in range(1, 5)
+                if at - back >= 0
+            ):
+                continue  # overlaps the real trailer: its CRC-32 sits just before
             return True
         return False
 

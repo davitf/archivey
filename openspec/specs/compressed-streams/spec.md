@@ -543,9 +543,10 @@ the standard-library decoder on stream-boundary malformations they cannot see:
 A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
 the member. The accelerator reads the output through a CRC-32 and looks for that CRC-32
 and the length as the trailer, ending the file but for zero padding, so bytes after a
-wrong trailer, even ones equal to the length, do not stand in for it. A candidate
-that the same CRC-32 precedes is the member's own ISIZE field, set to the CRC-32 with the
-length appended, and is turned down. Two limitations remain, both of the further-member
+wrong trailer, even ones equal to the length, do not stand in for it, and neither do
+bytes that overlap the real trailer: a candidate with the CRC-32 one to four bytes before
+it is turned down. A candidate that reaches back into the compressed data is not excluded.
+Two limitations remain, both of the further-member
 scan that decides a multi-member file (the CRC-32 of the whole output is not the last
 member's, so it finds no trailer there): the scan stands down at the first further member
 it confirms, so with three or more members a wrong ISIZE on the last one reads clean too;
