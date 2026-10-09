@@ -104,7 +104,10 @@ one sequential pass because the source precedes the link.
 A TAR hardlink SHALL resolve only to a member before it (the last one of that name, as
 stdlib `tarfile` looks it up), in random access as in a streaming pass. A hardlink whose
 only same-named member comes after it has no `link_target_member`; opening it raises
-`LinkTargetNotFoundError`, and extraction fails it the same way.
+`LinkTargetNotFoundError`, and extraction fails it the same way. The `linkname` is
+looked up as a member name, `..` and a leading `/` included, and never checked as a
+path; a hardlink whose source extraction refuses is refused with it (`safe-extraction`,
+"Hardlink Two-Pass Extraction").
 
 The core algorithm SHALL write selected members in one forward pass, recording
 every written FILE path per source. A selected hardlink to an already-written
@@ -143,6 +146,7 @@ copy. Device bookkeeping MAY skip doomed attempts but is not required for correc
 | Every recorded path fails with `EXDEV` | Copy source content to link destination and record that path |
 | A recorded path fails with `EMLINK` (the 1025th name for one file on NTFS) | Same copy, with no path older than that one tried; later links link to the copy |
 | Hardlink before the only member it names, random access or streaming | That link fails with `LinkTargetNotFoundError`; the later member extracts normally |
+| Hardlink to `../x` (any policy) or `/x` (`STRICT`), selected or not, either mode | `BLOCKED` ("Hardlink target was refused"); never orphaned, so the second pass never writes `../x`'s bytes |
 
 ### Requirement: Detect truncated TAR archives
 

@@ -328,7 +328,7 @@ def emit_member_name_normalized(
 
 
 def resolve_link_target_name(
-    link_name: str, target: str, member_type: MemberType
+    link_name: str, target: str, member_type: MemberType, *, within_root: bool = False
 ) -> str | None:
     """The archive-namespace member name a link's stored target refers to, or ``None``
     when the target cannot name a member of this archive.
@@ -344,14 +344,18 @@ def resolve_link_target_name(
       (``dir/link -> file`` means ``dir/file``), so it is joined to that directory and
       ``..`` is collapsed, as the filesystem would resolve it.
 
-    Returns ``None`` for a target that cannot be a member: an absolute symlink target
-    (a filesystem path outside the archive namespace) or a target of either kind that
-    ``..``-escapes the archive root. A hardlink target with a leading ``/`` keeps it, as
-    :func:`normalize_member_name` does in a name: ``tar -P`` stores ``/a`` and a
-    hardlink ``/b`` naming ``/a``, and the link names that member. Extraction re-roots
-    both or refuses both, and it writes a hardlink from the member, never by following
-    the target path. The escape test runs on the collapsed form for both kinds, with a
-    hardlink's leading ``/`` set aside. The caller looks the result up against
+    Returns ``None`` for a symlink target that cannot be a member: an absolute one (a
+    filesystem path outside the archive namespace) or one that ``..``-escapes the
+    archive root. A hardlink target is a member name, not a path, so neither test
+    applies to it: ``../x`` names the member stored as ``../x``, and a leading ``/`` is
+    kept, as :func:`normalize_member_name` keeps it in a name (``tar -P`` stores ``/a``
+    and a hardlink ``/b`` naming ``/a``). Extraction never follows the target path. It
+    links to the member at the end of the hard-link chain, and refuses the link when it
+    refuses that member. ``within_root`` restores the escape test for a hardlink-kind
+    target, for a caller that has no such refusal: a RAR file copy is a FILE, and
+    extraction writes its source's bytes under the copy's own name. That test runs on
+    the collapsed form, with a leading ``/`` set aside. A hardlink target with no
+    segment left (``.``, ``/``) names nothing. The caller looks the result up against
     normalized member names with :func:`link_target_name_keys`.
 
     A backslash in ``target`` is a literal character, exactly as in member names: the
@@ -373,6 +377,9 @@ def resolve_link_target_name(
         # A hardlink's leading "/" is part of the member name it refers to.
         root = "/" if target.startswith("/") else ""
         joined = target.lstrip("/")
+        if not within_root:
+            segments = [seg for seg in joined.split("/") if seg not in ("", ".")]
+            return root + "/".join(segments) if segments else None
     resolved = posixpath.normpath(joined)
     if resolved in (".", "/") or resolved.startswith(("../", "/")) or resolved == "..":
         return None  # escapes the archive root (or names the root itself)

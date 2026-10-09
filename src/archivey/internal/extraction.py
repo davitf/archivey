@@ -630,6 +630,13 @@ class _RunState:
     # ``_hardlink_chain_end``'s memo: a hard link's ``_member_id`` -> the first
     # member on its chain that is not a HARDLINK, or ``None``.
     hardlink_ends: dict[int, ArchiveMember | None] = field(default_factory=dict)
+    # Member id -> the index of the result recorded for it, so a hard link can read
+    # what this run did with its source (``_source_refused``).
+    result_ids: dict[int, int] = field(default_factory=dict)
+    # ``_source_refused``'s memo for hard-link sources this run recorded no result
+    # for (a selector or filter excluded them): member id -> whether the policy would
+    # refuse it.
+    refusals: dict[int, bool] = field(default_factory=dict)
     # The symlinks this run created and the paths each one's resolution depends on,
     # so a later member that changes such a path gets them rechecked.
     links: LinkWatch | None = None
@@ -1476,10 +1483,22 @@ class ExtractionCoordinator:
             if transformed.name != rerooted_name:
                 rerooted_from = None  # the filter chose this name; it is not a rewrite
         transformed = self._as_written(original, transformed)
+        # Read after `_as_written`: a hard link to a symlink is now the SYMLINK it is
+        # a second name for, which copies no bytes and gets the symlink checks below.
+        kept_hardlink = (
+            original.type is MemberType.HARDLINK
+            and transformed.type is MemberType.HARDLINK
+        )
         dest_root = self._state.dest_root
         # The checks run on the name that reaches disk; the name policy below runs on
         # the stored one, so its escape of a lone surrogate is the same on every OS.
         self._check_universal(transformed, dest_root)
+        if kept_hardlink and self._source_refused(original):
+            raise FilterRejectionError(
+                "Hardlink target was refused",
+                member_name=original.name,
+                link_target=original.link_target,
+            )
         reader = self._state.reader
         if reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
@@ -1542,6 +1561,77 @@ class ExtractionCoordinator:
             )
         # After a re-root, the stored name is the one the caller will recognise.
         return on_disk, rerooted_from or transformed.name
+
+    def _source_refused(self, link: ArchiveMember) -> bool:
+        """Whether the member a HARDLINK gets its bytes from was refused, so the link
+        is refused too.
+
+        A hard link's target string is a member name and never becomes a path, so it
+        gets no path check of its own (``check_universal``). What it can do is put a
+        refused member's content on disk under the link's name: the second pass
+        writes an unwritten source's bytes at the link's path. So a link is refused
+        when its source is, in both access modes and at every policy.
+
+        The source is ``link_target_member``, the end of the link chain (symlinks
+        included), which is the member ``_write_hardlink`` links against or the second
+        pass reads. A refused link in the middle of the chain does not refuse this
+        one: its name was the unsafe part, and this link does not use that name. The
+        chain ends at a SYMLINK only when that symlink has no target, and then
+        nothing is refused: the link copies no bytes, and ``_write_hardlink`` fails it
+        as a link to a non-file whatever happened to the symlink's own name. (A
+        symlink with a target is not a source: ``_as_written`` wrote the link as that
+        symlink.) Hard links point only backward, so this run has already reached the
+        source. When it recorded a result for it, the result decides: ``BLOCKED`` is
+        a refusal, and anything else passed the checks, under the name the caller's
+        filter gave it. A filter that renames a source to an unsafe name thus refuses
+        its links too, and one that rescues an unsafe source lets them through. A
+        source with no result was excluded by the selector or the filter. The
+        caller's filter is not run on it, since a selector-excluded member was never
+        meant to reach it; instead the policy's own steps run on the source as listed
+        (``_policy_refuses``). A refused source's links are refused; any other
+        excluded source is recovered by the second pass, or fails the link on a
+        forward-only stream (``_write_hardlink``).
+        """
+        state = self._state
+        source = link.link_target_member
+        if state.reader is None or source is None or source._member_id is None:
+            # No source: `_write_hardlink` fails the link as not found.
+            return False
+        if source.type is MemberType.SYMLINK:
+            # A targetless symlink: no bytes to refuse.
+            return False
+        member_id = source._member_id
+        index = state.result_ids.get(member_id)
+        if index is not None:
+            return state.results[index].status is ExtractionStatus.BLOCKED
+        refused = state.refusals.get(member_id)
+        if refused is None:
+            # Memoized, so N links to one excluded source run its checks once.
+            refused = state.refusals[member_id] = self._policy_refuses(source)
+        return refused
+
+    def _policy_refuses(self, member: ArchiveMember) -> bool:
+        """Whether this run's policy would refuse ``member`` as listed, without the
+        caller's filter: the absolute-name re-root, the universal checks and the name
+        policy, as ``_transform`` runs them. Only a ``FilterRejectionError`` is a
+        refusal; a member whose parent cannot be resolved has failed, not been refused.
+        ``member`` is the end of a link chain and not a link itself, which
+        ``_as_written`` never rewrites, so this skips that step."""
+        candidate = member
+        if self._policy is not ExtractionPolicy.STRICT:
+            candidate = reroot_absolute(candidate)
+        try:
+            check_universal(
+                disk_spelled(candidate),
+                self._state.dest_root,
+                link_target_on_disk=self._on_disk,
+            )
+            apply_name_policy(candidate, self._policy)
+        except FilterRejectionError:
+            return True
+        except ExtractionError:
+            return False
+        return False
 
     def _check_universal(self, member: ArchiveMember, dest_root: Path) -> None:
         """``check_universal`` on the disk spelling, reporting the stored names."""
@@ -2464,7 +2554,11 @@ class ExtractionCoordinator:
         """Record ``new`` as the next result, tallied, and return its index."""
         self._tally(None, new.status)
         self._state.results.append(new)
-        return len(self._state.results) - 1
+        index = len(self._state.results) - 1
+        member_id = new.member._member_id
+        if member_id is not None:
+            self._state.result_ids[member_id] = index
+        return index
 
     def _set_result(self, index: int, new: ExtractionResult) -> None:
         """Replace recorded result ``index`` with ``new``. The progress tallies count
