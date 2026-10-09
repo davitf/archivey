@@ -309,9 +309,9 @@ def test_gzip_concatenated_members_are_judged_as_with_the_accelerator_off(
     case: str,
 ) -> None:
     """The output's CRC-32 is not the last member's, so it never finds a trailer in a
-    concatenated file; the further-member scan decides, as before, and a wrong ISIZE on
-    the last member still raises (the scan does not confirm a member whose own ISIZE is
-    wrong)."""
+    concatenated file; the further-member scan decides, as before. With two small members,
+    a wrong ISIZE on the last one raises, as the scan does not confirm a member whose own
+    ISIZE is wrong (see the limitation test below for when it does)."""
     first, second = b"first member payload\n" * 5, b"second member payload\n" * 7
     member1 = gzip.compress(first, mtime=0)
     member2 = bytearray(gzip.compress(second, mtime=0))
@@ -328,6 +328,30 @@ def test_gzip_concatenated_members_are_judged_as_with_the_accelerator_off(
     off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
     assert (off[1] is not None) == (case not in ("valid", "valid-padded"))
     _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("case", ["three-members", "large-last-member"])
+def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
+    case: str,
+) -> None:
+    """Known limitation (``compressed-streams``): the further-member scan stands down at
+    the first further member it confirms, and a candidate counts once zlib has decoded
+    64 KiB of its input, so the last member's wrong ISIZE is missed with three or more
+    members, or when the last one is large. The standard library raises; the data is
+    right, as every member's CRC-32 is checked. Not worth finding the last member's start
+    for; if this starts to raise, the limitation is gone and the spec bullet can shrink."""
+    first = gzip.compress(b"first member payload\n" * 5, mtime=0)
+    if case == "three-members":
+        middle = gzip.compress(b"middle member payload\n" * 7, mtime=0)
+        last = bytearray(gzip.compress(b"last member payload\n" * 3, mtime=0))
+    else:
+        middle = b""
+        last = bytearray(gzip.compress(random.Random(1).randbytes(300_000), mtime=0))
+    last[-1] ^= 0x01
+    blob = first + middle + bytes(last)
+    assert _outcome(Codec.GZIP, blob, _OFF, _no_seek)[1] is not None
+    assert _outcome(Codec.GZIP, blob, _ON, _no_seek)[1] is None
 
 
 @requires("rapidgzip")

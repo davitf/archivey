@@ -28,11 +28,17 @@ the standard-library decoder on stream-boundary malformations they cannot see:
 - for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
   when every member's CRC-32 is still checked.
 
-A wrong ISIZE on the last member is not among them, whatever follows the member. The
-accelerator reads the output through a CRC-32 and looks for that CRC-32 and the length as
-the trailer, ending the file but for zero padding, so bytes after a wrong trailer, even
-ones equal to the length, do not stand in for it. When a seek has skipped output, there
-is no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
+A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
+the member. The accelerator reads the output through a CRC-32 and looks for that CRC-32
+and the length as the trailer, ending the file but for zero padding, so bytes after a
+wrong trailer, even ones equal to the length, do not stand in for it. Two limitations
+remain, both of the further-member scan that decides a multi-member file (the CRC-32 of
+the whole output is not the last member's, so it finds no trailer there): the scan stands
+down at the first further member it confirms, so with three or more members a wrong ISIZE
+on the last one reads clean too; and a further member counts once zlib has decoded 64 KiB
+of its input without an error, so a large last member's wrong ISIZE is not seen either.
+When a seek has skipped output, there is no CRC-32 of it, and the last four bytes of the
+file stand in as the ISIZE.
 
 #### Scenario: accelerator error parity
 

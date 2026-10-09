@@ -384,8 +384,13 @@ gzip-specific only; the shared items are [`single-file.md`](single-file.md) §4.
   file whose ISIZE matches the bytes `rapidgzip` delivered before a soft end used to pass;
   the compressed-position check now hands it to the standard library engine. Within a
   decode that did reach the end, a wrong ISIZE on a member before the last still passes
-  (§5), with every member's CRC-32 checked. A wrong ISIZE on the last member does not,
-  also with bytes after it (§2.3).
+  (§5), with every member's CRC-32 checked. A wrong ISIZE on the last member of a
+  one-member file does not (§2.3). In a concatenated file it can: the output's CRC-32 is
+  not the last member's, so the further-member scan decides, and it stands down at the
+  first further member it confirms. So a wrong ISIZE on the last of three or more members
+  reads clean, and so does one on a last member large enough that zlib has decoded 64 KiB
+  of its input by the time the probe gives its answer. Accepted: the case is too specific
+  to be worth finding the last member's start for (§7).
 - **The multi-member scan reads the whole file.** When ISIZE disagrees, the backstop scans
   forward for a member magic in 1 MiB blocks, on an independent view, and has zlib decode
   from each match, at most 64 KiB of input and 1 MiB of output. It runs once per stream,
