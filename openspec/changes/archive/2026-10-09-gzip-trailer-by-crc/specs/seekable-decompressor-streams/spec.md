@@ -13,10 +13,12 @@ source** — a path or a caller-owned `BinaryIO` alike — not only path sources
 value SHALL be captured up front (when the source is first inspected for backstop eligibility),
 so no per-read reopen of a path is required and a non-path source needs no seek while the
 accelerator is live. Where the whole output went through the reader, in order, the trailer
-SHALL instead be found by the CRC-32 of that output and its length: the eight bytes
-that end the file but for zero padding, so that bytes appended after a wrong trailer, even
-ones equal to the length, SHALL NOT pass for it. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
-rewind the seekable source and re-decode through the stdlib gzip engine so recoverable prefixes
+SHALL instead be found by the CRC-32 of that output and its length: the eight bytes that end
+the file but for zero padding, so that in a one-member file bytes appended after a wrong
+trailer, even ones equal to the length, SHALL NOT pass for it (a candidate that the same
+CRC-32 precedes is the member's own ISIZE field, and is turned down). Where rapidgzip reaches
+EOF having delivered zero bytes, the system SHALL rewind the seekable source and re-decode
+through the stdlib gzip engine so recoverable prefixes
 stream and truncation still raises from a read (never `close()`). A seek SHALL NOT turn the
 backstop off: the length compared is that of rapidgzip's whole output, which the read that
 meets its end gives whatever seeks came before. On a mismatch the read SHALL be handed to the

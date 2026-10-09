@@ -34,8 +34,12 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import (
     Codec,
+    _deflate_family_uses_accelerator,
     gzip_has_additional_member,
     open_codec_stream,
+)
+from archivey.internal.streams.rapidgzip_child import (
+    rapidgzip_child_unavailable_reason,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires
@@ -330,6 +334,33 @@ def test_gzip_concatenated_members_are_judged_as_with_the_accelerator_off(
     _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
 
 
+def _require_the_accelerator_in_use() -> None:
+    """Skip where ``ON`` would decode with the standard library: a comparison of the two
+    modes then compares nothing."""
+    if not _deflate_family_uses_accelerator(_config(_ON)):
+        pytest.skip("the accelerator is not selected here")
+    reason = rapidgzip_child_unavailable_reason()
+    if reason is not None:
+        pytest.skip(reason)
+
+
+def _assert_error_or_the_known_clean_read(blob: bytes, content: bytes) -> None:
+    """The standard library raises. The accelerator either raises too, or reads exactly
+    ``content`` clean: the data is right, and only the verdict on a wrong length differs.
+
+    Whether it raises depends on the rapidgzip build, not on archivey. rapidgzip 0.16.0
+    has two chunk decoders: the inflate-wrapper one (ISA-L, in the Linux wheels) appends a
+    member's footer without comparing its size, and its own decoder raises "Mismatching
+    size" for a stream that lies wholly inside one chunk. CI saw the accelerator raise on
+    the macOS wheels and on a Python 3.15 build, and read clean on the Linux wheels.
+    """
+    _require_the_accelerator_in_use()
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert off[1] is not None
+    on = _outcome(Codec.GZIP, blob, _ON, _no_seek)
+    assert on == off or on == (content, None)
+
+
 @requires("rapidgzip")
 @pytest.mark.parametrize("case", ["three-members", "large-last-member"])
 def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
@@ -337,21 +368,60 @@ def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
 ) -> None:
     """Known limitation (``compressed-streams``): the further-member scan stands down at
     the first further member it confirms, and a candidate counts once zlib has decoded
-    64 KiB of its input, so the last member's wrong ISIZE is missed with three or more
-    members, or when the last one is large. The standard library raises; the data is
-    right, as every member's CRC-32 is checked. Not worth finding the last member's start
-    for; if this starts to raise, the limitation is gone and the spec bullet can shrink."""
-    first = gzip.compress(b"first member payload\n" * 5, mtime=0)
+    64 KiB of its input, so the last member's wrong ISIZE can be missed with three or
+    more members, or when the last one is large. Where the rapidgzip build does not
+    compare the size itself, the accelerator reads clean; the data is right, as every
+    member's CRC-32 is checked. Not worth finding the last member's start for."""
+    contents = [b"first member payload\n" * 5]
     if case == "three-members":
-        middle = gzip.compress(b"middle member payload\n" * 7, mtime=0)
-        last = bytearray(gzip.compress(b"last member payload\n" * 3, mtime=0))
+        contents += [b"middle member payload\n" * 7, b"last member payload\n" * 3]
     else:
-        middle = b""
-        last = bytearray(gzip.compress(random.Random(1).randbytes(300_000), mtime=0))
-    last[-1] ^= 0x01
-    blob = first + middle + bytes(last)
-    assert _outcome(Codec.GZIP, blob, _OFF, _no_seek)[1] is not None
-    assert _outcome(Codec.GZIP, blob, _ON, _no_seek)[1] is None
+        contents += [random.Random(1).randbytes(300_000)]
+    members = [gzip.compress(c, mtime=0) for c in contents]
+    members[-1] = members[-1][:-1] + bytes([members[-1][-1] ^ 0x01])
+    _assert_error_or_the_known_clean_read(b"".join(members), b"".join(contents))
+
+
+@requires("rapidgzip")
+def test_gzip_isize_set_to_the_crc_is_not_a_trailer_with_the_length_appended() -> None:
+    """The ISIZE field holds the output's CRC-32 and the real length follows: the last
+    eight bytes are then exactly CRC-32 + length. They are the member's own ISIZE field
+    and the appended bytes, not a trailer, and the candidate is turned down because the
+    same CRC-32 precedes it."""
+    _require_the_accelerator_in_use()
+    payload = b"atheris seed payload\n" * 8
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    blob[-4:] = zlib.crc32(payload).to_bytes(4, "little")
+    blob += len(payload).to_bytes(4, "little")
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
+
+
+def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_in_a_concatenated_file() -> (
+    None
+):
+    """The ``gzip_accel`` fuzz target excuses a clean accelerated read of a file the
+    standard library rejects for its length only as far as the spec accepts it: members
+    after the first, whichever is wrong, and never a single member, padded or not."""
+    from tests.atheris_fuzz.targets import _gzip_ignoring_lengths
+
+    def member(content: bytes, *, wrong_isize: bool = False) -> bytes:
+        blob = bytearray(gzip.compress(content, mtime=0))
+        if wrong_isize:
+            blob[-1] ^= 0x01
+        return bytes(blob)
+
+    a, b, c = b"a" * 50, b"b" * 70, b"c" * 30
+    wrong_first = member(a, wrong_isize=True) + member(b)
+    three_wrong_last = member(a) + member(b) + member(c, wrong_isize=True)
+    assert _gzip_ignoring_lengths(wrong_first) == a + b
+    assert _gzip_ignoring_lengths(three_wrong_last) == a + b + c
+    assert _gzip_ignoring_lengths(three_wrong_last + bytes(7)) == a + b + c
+    one = member(a, wrong_isize=True)
+    assert _gzip_ignoring_lengths(one) is None
+    assert _gzip_ignoring_lengths(one + bytes(4)) is None
+    assert _gzip_ignoring_lengths(one + len(a).to_bytes(4, "little")) is None
 
 
 @requires("rapidgzip")

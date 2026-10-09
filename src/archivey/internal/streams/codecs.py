@@ -1755,7 +1755,8 @@ class _GzipTruncationCheckStream(DelegatingStream):
         self._verify = True
 
     def _count(self, data: bytes) -> None:
-        """Advance the position past ``data`` that rapidgzip returned."""
+        """Advance the position past ``data`` that rapidgzip returned, and fold it into
+        the CRC-32 of the output while that prefix is still unbroken."""
         if not self._checked:
             self._crc.feed(self._pos, data)
         self._pos += len(data)
@@ -1817,12 +1818,13 @@ class _GzipTruncationCheckStream(DelegatingStream):
     def _verify_not_truncated(self, size: int) -> bytes:
         """Check the end of the data; return what a read of ``size`` then gets.
 
-        That is ``b""`` unless the standard-library decoder took over to decide (an
-        ISIZE mismatch, below), in which case it is that decoder's next read.
+        That is ``b""`` unless the standard-library decoder took over to decide (no
+        trailer found, or after a seek the ISIZE does not match; below), in which case
+        it is that decoder's next read.
         """
         if self._takeover.switched:
             # The standard-library decoder finished the read; it owns truncation, and
-            # the last four bytes of a file with something appended are not ISIZE.
+            # bytes appended to the file are for it to report.
             return b""
         if self._source_len is None:
             # Source length unreadable (non-seekable / I/O error at capture): cannot verify,
@@ -1830,9 +1832,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
             return b""
         # Below 18 bytes no gzip member is complete, so the delivered bytes are a
         # truncation. So is a decode that stopped short of the end of the source: the
-        # trailer there is not this output's ISIZE. Otherwise an ISIZE mismatch is one,
-        # unless this is a concatenated multi-member gzip (then the trailer is only the
-        # last member's size). A confirmed further member => do not raise (a cut whose
+        # trailer there is not this output's. Otherwise no trailer found (or, after a
+        # seek, an ISIZE mismatch) is one, unless this is a concatenated multi-member
+        # gzip (then the trailer is only the last member's). A confirmed further member => do not raise (a cut whose
         # decode still reaches the end, with zlib confirming a later member, can pass;
         # the per-member ISIZE sum is deferred).
         if self._source_len >= 18 and self._decoded_to_the_end():
@@ -1849,9 +1851,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 return b""
             if self._has_additional_gzip_member():
                 return b""
-        # The last four bytes are not ISIZE when something was appended to the file,
-        # and rapidgzip reads past such bytes without a word. The standard-library
-        # decoder tells a cut file from an appended one, and keeps its verdict on later
+        # No trailer of this output ends the file: it was cut, its ISIZE is wrong, or
+        # something was appended, and rapidgzip reads past all of these without a word.
+        # The standard-library decoder tells them apart, and keeps its verdict on later
         # reads: it carries on from here, and raises the truncation or reports the bytes.
         self._takeover.switch_to_stdlib()
         return self._inner.read(size)
@@ -1862,36 +1864,46 @@ class _GzipTruncationCheckStream(DelegatingStream):
 
         Nothing but a decode of the member tells where its trailer is, since zero padding
         and the length's own high zero bytes look alike. The CRC-32 of the output and
-        the length together are eight bytes that can only be the trailer, so they are
-        looked for where it can be: ending within eight bytes of the last non-zero byte.
-        Bytes appended after a wrong trailer, even ones equal to the length, do not
-        make a trailer. The file is read from the end, back over the padding only.
+        the length together are eight bytes that only a trailer is expected to hold, so
+        they are looked for where it can be: ending within eight bytes of the last
+        non-zero byte. Bytes appended after a wrong trailer, even ones equal to the
+        length, do not make one. The exception would be a wrong ISIZE set to the
+        CRC-32, with the length appended: the eight bytes found then reuse the ISIZE
+        field as their CRC-32, so a candidate preceded by that same CRC-32 is turned
+        down. Turning down a real trailer for that, one file in 2**32, hands the read
+        to the standard library, which finds nothing wrong.
+
+        The file is read from the end: the last 16 bytes, which hold the trailer of
+        any file without long padding, and more only to get back over padding.
         """
         length = self._source_len
         assert length is not None
-        want = self._crc.value.to_bytes(4, "little") + (self._pos % (1 << 32)).to_bytes(
-            4, "little"
-        )
+        crc = self._crc.value.to_bytes(4, "little")
+        want = crc + (self._pos % (1 << 32)).to_bytes(4, "little")
         try:
             with self._views.view() as f:
-                end = length
+                end, step = length, 16
                 while end > 0:
-                    start = max(0, end - (1 << 16))
+                    start = max(0, end - step)
                     f.seek(start)
                     stripped = f.read(end - start).rstrip(b"\0")
                     if stripped:
                         end = start + len(stripped)
                         break
-                    end = start
-                first = max(0, end - 8)
+                    end, step = start, 1 << 16
+                first = max(0, end - 12)
                 f.seek(first)
                 window = f.read(min(length, end + 8) - first)
         except OSError:
             return True  # cannot look -> do not invent a mismatch
-        return any(
-            window[stop - 8 - first : stop - first] == want
-            for stop in range(max(end, 8), min(length, end + 8) + 1)
-        )
+        for stop in range(max(end, 8), min(length, end + 8) + 1):
+            at = stop - 8 - first
+            if window[at : at + 8] != want:
+                continue
+            if at >= 4 and window[at - 4 : at] == crc:
+                continue  # the ISIZE field of a trailer, taken for its CRC-32
+            return True
+        return False
 
     def _decoded_to_the_end(self) -> bool:
         """Whether rapidgzip's decode reached the end of the source; ``True`` when it

@@ -337,13 +337,15 @@ def _check_against_reference(what: str, got: bytes, ref: bytes, *, at: int = 0) 
 
 
 def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
-    """The content of ``data`` as gzip members, all but the last with an ISIZE that may be
-    wrong, or ``None`` when it fails on anything else.
+    """The content of a concatenated gzip ``data`` whose members' ISIZE may be wrong, or
+    ``None`` when it fails on anything else, or is a single member.
 
-    rapidgzip checks each member's CRC-32 but not its ISIZE, and the spec accepts that for
-    a member another member follows: a wrong ISIZE over data the CRC-32 confirms is a
-    malformed trailer, not damaged data. The last member's ISIZE is checked by the ISIZE
-    backstop, so a wrong one there is not accepted, with or without zero padding after it.
+    rapidgzip checks each member's CRC-32, and the spec accepts a wrong ISIZE over data
+    the CRC-32 confirms in a file of several members: a malformed trailer, not damaged
+    data. The accepted wrong ISIZE is on a member another member follows, and on the last
+    one when the further-member scan stands down early (three or more members, or a last
+    member large enough to pass the probe). A file of one member is not accepted: its
+    ISIZE is checked by the backstop, with or without padding or other bytes after it.
     zlib checks the CRC-32 before the length, so a member that fails only "incorrect
     length check" has its data confirmed. Fed a byte at a time so the output before that
     error is kept and the member's end is known; only called on the rare input where the
@@ -351,10 +353,12 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
     """
     out = bytearray()
     pos = 0
+    members = 0
     while pos < len(data):
         if not any(data[pos:]):
             break  # zero padding after the last member, as GzipFile skips it
         decoder = zlib.decompressobj(31)
+        members += 1
         while True:
             if pos >= len(data):
                 return None  # cut inside a member
@@ -364,13 +368,11 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
                 if "incorrect length check" not in str(exc):
                     return None
                 pos += 1
-                if not any(data[pos:]):
-                    return None  # the last member: its ISIZE must be right
                 break
             pos += 1
             if decoder.eof:
                 break
-    return bytes(out)
+    return bytes(out) if members > 1 else None
 
 
 def make_accel_codec_one(codec: Codec, *, sized: bool) -> Callable[[bytes], None]:
