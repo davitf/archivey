@@ -30,7 +30,7 @@ that one is the code map.
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
   `docs/philosophy.md`.
 - `dev-docs/design-rules.md` — the maintainer's recurring rulings written as rules: the
-  principles, the factors for a clash between consistency and the official tool, and
+  principles in order of weight, the factors for a clash between consistency and the official tool, and
   what still goes to the maintainer. Read it before asking a design question.
 - Committed work is the open OpenSpec changes under `openspec/changes/`.
   `dev-docs/IDEAS.md` is the speculative backlog (not committed). The pre-0.2.0 phase

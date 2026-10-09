@@ -18,29 +18,38 @@ holds only what has generalised across formats.
 
 ## The principles
 
-The maintainer's own summary (2026-10-09) of what he focuses on consistently. Every
-numbered rule below is one of these applied to a kind of question.
+The maintainer's own summary (2026-10-09) of what he focuses on consistently, ordered by
+weight. Every numbered rule below is one of these applied to a kind of question.
 
-1. **Consistent behaviour between formats and libraries** (DR-5).
-2. **Follow the official tool's behaviour** (DR-6).
-3. **When the previous two conflict, that needs a real decision.** The factors below
-   settle the clear cases; the rest go to the maintainer.
-4. **No surprises or gotchas for users** (DR-8, DR-10).
-5. **Never output incorrect or incomplete data without raising on a straightforward full
+**Firm.** No other principle outranks these, and "only crafted archives hit it" is no
+excuse.
+
+1. **Never output incorrect or incomplete data without raising on a straightforward full
    read** (DR-1, DR-2, DR-4a).
-6. **Consistency can be relaxed a little for malformed data**, particularly for a corner
-   case so specific that only crafted archives hit it (DR-5a).
-7. **Unbounded memory or crashes are never acceptable.** An attacker crafts archives at
+2. **Unbounded memory or crashes are never acceptable.** An attacker crafts archives at
    will and will choose the loopholes. The test: if a server lets anyone upload an
    archive to be tested, scanned or have its members hashed, could an upload bring the
    server down? (DR-9a).
-8. **Generalise fixes and approaches across all formats** (DR-0).
 
-Principles 5 and 7 are firm: no other principle outranks them, and "only crafted archives
-hit it" is no excuse there. The others are strong defaults whose answer depends on the
-case. The numbered rules below work the same way: a rule settles a question when the case
-looks like the rulings it came from, and a case that differs in an important way goes back
-to the maintainer.
+**Strong defaults.** Whether these win depends on the case.
+
+3. **No surprises or gotchas for users** (DR-8, DR-10).
+4. **Easy to use and to explain, for people and for agents.** Archivey aims to be the
+   default library for archives in human- and agent-written code. Using it should take
+   little work, few tokens and no detours during development. The test is "don't make me
+   think": which option is easiest to explain and to use correctly the first time?
+   (DR-14a).
+5. **Consistent behaviour between formats and libraries** (DR-5). This can be relaxed a
+   little for malformed data, particularly for a corner case so specific that only
+   crafted archives hit it (DR-5a).
+6. **Follow the official tool's behaviour** (DR-6). When this and principle 5 conflict,
+   that needs a real decision. The factors below settle the clear cases; the rest go to
+   the maintainer.
+7. **Generalise fixes and approaches across all formats** (DR-0).
+
+The numbered rules below work the same way as the strong defaults: a rule settles a
+question when the case looks like the rulings it came from, and a case that differs in
+an important way goes back to the maintainer.
 
 ## When consistency and the official tool disagree
 
@@ -52,7 +61,7 @@ factor came out.
 - **Is the tool's result useful?** If it is useless to a caller, consistency wins. Device,
   FIFO and socket entries are `OTHER` in every format, although unzip and 7-Zip write
   them as empty files: "they're useless as files" (2026-10-06, PR 610).
-- **Would the tool's result break a promise archivey makes?** Principles 5 and 7, and the
+- **Would the tool's result break a promise archivey makes?** Principles 1 and 2, and the
   policy levels' promises, come first. A 7z name holding a lone UTF-16 surrogate lists
   the way 7-Zip does, but is percent-escaped under STRICT and STANDARD, which promise the
   same result on every OS. TRUSTED, the faithful level, writes 7-Zip's bytes (PRs 564 and
@@ -61,7 +70,7 @@ factor came out.
   wins. Leftover compressed input inside a ZIP or 7z member raises, as 7-Zip does, though
   unzip accepts some of it (2026-10-07).
 - **Does only a crafted archive reach the case?** Then prefer the answer that needs the
-  least code (DR-5a), within principles 5 and 7.
+  least code (DR-5a), within principles 1 and 2.
 - **Would matching need plumbing across layers?** For a rare case, that weighs against
   matching. U+DC80 to U+DCFF surrogates keep archivey's one-byte meaning instead of
   7-Zip's bytes (2026-10-03, PR 564).
@@ -454,6 +463,41 @@ an option for this?".
 - One `ArchiveSource` wraps every caller stream or path (2026-09-22, PR 419).
 - Exception refusal reasons: "I was only considering reusing if something already
   existed" (2026-09-27).
+
+### DR-14a. Easy to explain, easy to use right the first time
+
+**Rule.** Between two designs that both meet principles 1 and 2, pick the one that is
+easier to explain in a sentence and easier to use correctly on the first try, by a person
+reading the docs or an agent reading a docstring. Concretely:
+- The common path needs no options. `open_archive(path)` then iterate, read or
+  `extract_all`.
+- When a declared opt-in is required (DR-10), the error that asks for it names the
+  option to set, so the fix costs one step during development rather than a search.
+- Names say what they govern (`detection_budget`, `DecoderLimits`), so a reader does not
+  need the docs to guess.
+- Docs lead with what a caller chooses, then the consequences, and frame options by use
+  case.
+- A mechanism its own author cannot explain in one page gets simplified before it is
+  frozen.
+
+**Why.** Archivey aims to be the default library for archives, in code written by
+people and by agents. Every extra concept costs each caller time and tokens, and a
+library that makes callers stop and think becomes a bottleneck (2026-10-09).
+
+**Rulings.**
+- Top-level `extract()` was removed because a near-identical second way "causes more
+  confusion than it saves" (ADR 0019).
+- The `open_archive` options got a use-case table after the maintainer asked whether
+  the docs made them look "more annoying than they actually are" (PR 513).
+- Diagnostics were re-explained after "I still don't fully understand how it works and
+  how it should be used" (2026-09-25).
+- `budget=` became `detection_budget` on the config: "it's unclear otherwise … most
+  users won't care … let's think about what makes more sense from the user's POV"
+  (PR 275).
+
+**Tension.** Declared opt-ins (DR-10) add a thing to know. They stay, because they turn a
+production surprise on another format into an error during development. This rule asks
+that the error make the fix obvious.
 
 ### DR-15. Usage errors are for what the types cannot rule out
 
