@@ -295,6 +295,42 @@ def test_gzip_last_isize_is_judged_as_with_the_accelerator_off(
 
 
 @requires("rapidgzip")
+@pytest.mark.parametrize(
+    "case",
+    [
+        "valid",
+        "valid-padded",
+        "last-wrong-isize",
+        "last-wrong-isize-then-length",
+        "cut-last",
+    ],
+)
+def test_gzip_concatenated_members_are_judged_as_with_the_accelerator_off(
+    case: str,
+) -> None:
+    """The output's CRC-32 is not the last member's, so it never finds a trailer in a
+    concatenated file; the further-member scan decides, as before, and a wrong ISIZE on
+    the last member still raises (the scan does not confirm a member whose own ISIZE is
+    wrong)."""
+    first, second = b"first member payload\n" * 5, b"second member payload\n" * 7
+    member1 = gzip.compress(first, mtime=0)
+    member2 = bytearray(gzip.compress(second, mtime=0))
+    after = b""
+    if case == "valid-padded":
+        after = bytes(9)
+    elif case.startswith("last-wrong-isize"):
+        member2[-1] ^= 0x01
+        if case.endswith("length"):
+            after = len(second).to_bytes(4, "little")
+    elif case == "cut-last":
+        del member2[-6:]
+    blob = member1 + bytes(member2) + after
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert (off[1] is not None) == (case not in ("valid", "valid-padded"))
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
 def test_gzip_wrong_isize_after_a_seek_that_skipped_output_is_still_caught() -> None:
     """With bytes skipped there is no CRC-32 of the output; the last four bytes of the
     file stand in for the ISIZE, which still catches a plain wrong ISIZE."""
