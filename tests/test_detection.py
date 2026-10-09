@@ -286,7 +286,9 @@ def test_brotli_probe_skipped_when_backend_missing(
 ) -> None:
     # With the Brotli backend absent, the probe is skipped and detection falls back to the
     # .br extension guess rather than failing.
-    monkeypatch.setattr(codecs_module, "_brotli", None)
+    monkeypatch.setattr(
+        codecs_module, "_brotli", codecs_module._LazyOptional("brotli", present=False)
+    )
     path = tmp_path / "thing.br"
     path.write_bytes(b"not a brotli stream, just bytes")
     info = detect_format(path)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
-from enum import Enum, Flag, auto
+from enum import Enum, Flag, StrEnum, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -66,18 +66,20 @@ class MemberStreams(Flag):
     SEEKABLE = auto()
 
 
-class ContainerFormat(str, Enum):
+class ContainerFormat(StrEnum):
     ZIP = "zip"
     TAR = "tar"
     RAR = "rar"
     SEVEN_Z = "7z"
     ISO = "iso"
+    # Recognised so an open can refuse the image by name. Nothing reads it.
+    DMG = "dmg"
     DIRECTORY = "directory"
     RAW_STREAM = "raw_stream"
     UNKNOWN = "unknown"
 
 
-class StreamFormat(str, Enum):
+class StreamFormat(StrEnum):
     UNCOMPRESSED = "uncompressed"
     GZIP = "gz"
     BZIP2 = "bz2"
@@ -111,14 +113,14 @@ class ArchiveFormat:
     stream: StreamFormat
 
     def __post_init__(self) -> None:
-        # Converted, not only checked: both enums mix in ``str``, so a string pair
-        # compares and hashes equal to the named format, while the code that decides
-        # behaviour tests ``container is ContainerFormat.RAW_STREAM`` and would take
-        # the other branch for it. Holding members makes the two agree. A member
-        # of another enum is refused as a container, but left as it is as a
-        # stream: the codec registry is keyed on these pairs, and a codec
-        # registered from outside (``tests/test_codec_descriptor.py`` does) brings
-        # its own stream enum.
+        # Converted, not only checked: both enums are ``StrEnum``, so a member is a
+        # ``str`` and a string pair compares and hashes equal to the named format,
+        # while the code that decides behaviour tests ``container is
+        # ContainerFormat.RAW_STREAM`` and would take the other branch for it.
+        # Holding members makes the two agree. A member of another enum is refused
+        # as a container, but left as it is as a stream: the codec registry is keyed
+        # on these pairs, and a codec registered from outside
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
         if not isinstance(self.container, ContainerFormat):
             object.__setattr__(
                 self,
@@ -159,6 +161,7 @@ class ArchiveFormat:
     SEVEN_Z: ClassVar[ArchiveFormat]
     RAR: ClassVar[ArchiveFormat]
     ISO: ClassVar[ArchiveFormat]
+    DMG: ClassVar[ArchiveFormat]
     DIRECTORY: ClassVar[ArchiveFormat]
     UNKNOWN: ClassVar[ArchiveFormat]
 
@@ -229,6 +232,7 @@ ArchiveFormat.SEVEN_Z = ArchiveFormat(
 )
 ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DMG = ArchiveFormat(ContainerFormat.DMG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.DIRECTORY = ArchiveFormat(
     ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
 )
@@ -321,6 +325,20 @@ class MagicSignature(NamedTuple):
     format: "ArchiveFormat"
 
 
+class TrailerSignature(NamedTuple):
+    """Exact magic at the start of a fixed-length block at the end of the source.
+
+    ``preempts`` lists near-magic formats this trailer outranks. A UDIF image's
+    first block is a real bzip2 or xz stream, so that hit is a block of the
+    image and the trailer is the file.
+    """
+
+    length: int
+    magic: bytes
+    format: "ArchiveFormat"
+    preempts: tuple["ArchiveFormat", ...] = ()
+
+
 class MemberType(Enum):
     """Kind of archive entry.
 
@@ -337,7 +355,11 @@ class MemberType(Enum):
     ANTI = "anti"
 
 
-class HashAlgorithm(str, Enum):
+# ``StrEnum`` because the member is a ``str``: ``str()`` and f-strings return the
+# value. A public enum that does not subclass ``str``, such as ``MemberType``
+# above, stays a plain ``Enum``, and ``str()`` of a member is ``Class.NAME``.
+# ``tests/test_str_enums.py`` lists the ``StrEnum`` classes.
+class HashAlgorithm(StrEnum):
     """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
 
     CRC32 = "crc32"
@@ -1023,7 +1045,7 @@ class OnError(Enum):
 OnErrorStr = Literal["stop", "continue"]
 
 
-class AbortOn(str, Enum):
+class AbortOn(StrEnum):
     """Events that abort the whole extraction the first time they occur.
 
     Passed as ``abort_on=`` to ``extract_all()`` (a collection; empty by
@@ -1074,7 +1096,7 @@ AbortOnStr = Literal[
 ]
 
 
-class ExtractionStatus(str, Enum):
+class ExtractionStatus(StrEnum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
     EXTRACTED = "extracted"

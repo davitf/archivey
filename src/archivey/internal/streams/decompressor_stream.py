@@ -35,7 +35,11 @@ from typing import (
 )
 
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, SeekIndexContext
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import (
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     nothing_held,
@@ -75,6 +79,24 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
     if "incorrect data check" in text or "incorrect length check" in text:
         return _StreamChecksumError(f"Error reading {label} stream: {exc!r}")
     return CorruptionError(f"Error reading {label} stream: {exc!r}")
+
+
+# zlib's gzip-window errors for a member header that gzip(1) refuses as unsupported,
+# not as damaged: "unknown method 7 -- not supported" (CM other than 8 = deflate), and
+# "has flags 0x80 -- not supported" / "is encrypted -- not supported" (a reserved FLG
+# bit, which RFC 1952 says a decoder must refuse).
+_GZIP_UNSUPPORTED_HEADER = ("unknown compression method", "unknown header flags set")
+
+
+def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
+    """The error for a ``zlib.error`` from a gzip stream.
+
+    A member header gzip refuses as unsupported is :class:`UnsupportedFeatureError`;
+    anything else is :func:`gzip_corruption`.
+    """
+    if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
+        return UnsupportedFeatureError(f"Unsupported gzip member header: {exc!r}")
+    return gzip_corruption(exc)
 
 
 @dataclass(order=True)

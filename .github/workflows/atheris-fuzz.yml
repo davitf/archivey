@@ -126,6 +126,10 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_BROTLI=1
             export ARCHIVEY_FUZZ_BUDGET_LZ4=1
             export ARCHIVEY_FUZZ_BUDGET_DEFLATE64=1
+            export ARCHIVEY_FUZZ_BUDGET_GZIP_ACCEL=2
+            export ARCHIVEY_FUZZ_BUDGET_ZLIB_ACCEL=1
+            export ARCHIVEY_FUZZ_BUDGET_DEFLATE_ACCEL=1
+            export ARCHIVEY_FUZZ_BUDGET_BZIP2_ACCEL=2
             echo "PR short budgets (shard $ARCHIVEY_FUZZ_SHARD_INDEX/$ARCHIVEY_FUZZ_SHARD_COUNT): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP"
           else
             export ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=$((45 * scale))
@@ -147,6 +151,10 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_BROTLI=$((8 * scale))
             export ARCHIVEY_FUZZ_BUDGET_LZ4=$((8 * scale))
             export ARCHIVEY_FUZZ_BUDGET_DEFLATE64=$((8 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_GZIP_ACCEL=$((15 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_ZLIB_ACCEL=$((10 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_DEFLATE_ACCEL=$((10 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_BZIP2_ACCEL=$((15 * scale))
             echo "Full budgets (scale=$scale): sevenzip_header=$ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER zip=$ARCHIVEY_FUZZ_BUDGET_ZIP rar=$ARCHIVEY_FUZZ_BUDGET_RAR unix_compress=$ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS"
           fi
           uv run --python 3.12 --no-sync python -m tests.atheris_fuzz

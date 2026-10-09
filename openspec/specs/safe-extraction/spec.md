@@ -150,12 +150,15 @@ by a single `\` (`\foo`) SHALL extract on POSIX, where it is a relative link to 
 named `\foo`, although Windows resolves it to the drive root and refuses it as an
 escape. On POSIX a backslash is an ordinary filename character, so refusing the target
 would block an archive that is valid there, and ADR 0013 rules that extracting beats
-refusing. A HARDLINK target names a member of the same archive, and a member named `\x`
-is refused under `STRICT` and re-rooted under `STANDARD` and `TRUSTED`. So a HARDLINK
-target rooted by a single `\` SHALL get what that member gets: `STRICT` refuses it on
-every OS, and the other two re-root it first. A Windows symlink or junction's target is
-normalized before this check in ZIP, 7z and RAR5 alike (`\` to `/`, the `\??\` prefix
-dropped, `UNC\` to `//`), so `\??\C:\Windows` is checked as `C:/Windows`.
+refusing. The exception holds only where the `\` stays literal: `STRICT` and `STANDARD`
+write a TAR `\` as `/` (see Portable-name enforcement), so there `\foo` is the rooted
+`/foo` and is refused as an escape, as `..\x` is; `TRUSTED` keeps it. A HARDLINK target
+names a member of the same archive, and a member named `\x` is refused under `STRICT`
+and re-rooted under `STANDARD` and `TRUSTED`. So a HARDLINK target rooted by a single
+`\` SHALL get what that member gets: `STRICT` refuses it on every OS, and the other two
+re-root it first. A Windows symlink or junction's target is normalized before this
+check in ZIP, 7z and RAR5 alike (`\` to `/`, the `\??\` prefix dropped, `UNC\` to
+`//`), so `\??\C:\Windows` is checked as `C:/Windows`.
 
 **Bidi overrides are rejected by the *policy*, not universally.** Every other
 constraint in this requirement meets one of two criteria: the **write itself** is
@@ -252,8 +255,15 @@ per-member failure result. On filesystems that accept arbitrary bytes (typical L
 the member extracts normally; the refusal is an environment outcome, not a property of
 the archive.
 
+Windows reports the same two refusals as `winerror` 123 (`ERROR_INVALID_NAME`) and 206
+(`ERROR_FILENAME_EXCED_RANGE`); extraction SHALL type those the same way. Windows also
+refuses to create a symlink with `winerror` 1314 (`ERROR_PRIVILEGE_NOT_HELD`) when the
+process lacks the privilege; that SHALL be a typed `ExtractionError` as well, with its own
+message naming the missing privilege.
+
 `EINVAL` is deliberately not auto-translated: it is a broad errno that can arise from
-unrelated syscalls during extraction.
+unrelated syscalls during extraction. The Windows codes are matched on `winerror`, not
+on the errno CPython maps them to (`EINVAL`, `ENOENT`).
 
 Renaming the member to a representable name instead of failing is deliberately not part
 of this requirement — it belongs to the future opt-in `SANITIZE` extraction policy
@@ -440,9 +450,11 @@ waiting are removed unresolved and the run stops with `ResourceLimitError`. Test
 The system SHALL support TAR-style hardlinks through the extraction coordinator as
 a pull-based sink over reader streams. Ordinary FILE/DIR/SYMLINK members are
 written as reached; each written FILE path is recorded under its source. A
-HARDLINK whose source already has recorded paths tries `os.link()` against them
-in order; if all fail with cross-device `EXDEV`, the coordinator falls back to
-`shutil.copy2()` and records the copy for later links on that device.
+HARDLINK whose source already has recorded paths tries `os.link()` against them,
+newest first. If all fail with cross-device `EXDEV`, or one fails with `EMLINK` at the
+filesystem's link-count limit, the coordinator falls back to a copy and records the copy
+for later links. The search stops at the first path at the limit, so the cost of a link
+does not grow with the number of links before it.
 
 When a selected HARDLINK's source was excluded by `members` or `filter`, the
 system MUST NOT materialize the excluded source at its own destination. It SHALL
@@ -464,7 +476,7 @@ source is written, with one read and one bomb-limit count for the source bytes.
 
 | Case | Expected |
 | --- | --- |
-| HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` |
+| HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` or all-`EMLINK` |
 | Selected hardlink source was excluded but recoverable | Source content appears at selected link path(s); excluded source path is never created |
 | First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `NOT_OVERWRITTEN`; content moves to the next allowed link; all skipped means no write |
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
@@ -647,6 +659,14 @@ The limit SHALL be tracked by one `BombTracker` per extraction call. It is a
 global resource guard: when it trips, extraction halts and no later members are
 processed regardless of `OnError`.
 
+Bytes a hard link writes as a copy (across a device boundary, or past the filesystem's
+link-count limit) SHALL count toward the limit. A declared link count can drive real
+writes, one copy per limit's worth of links, so the bytes copied past the link-count
+limit SHALL also count toward the archive-wide `max_ratio` guard: a small archive must
+not write far more than its size by declaring many links to one member. A cross-device
+copy SHALL NOT count toward either ratio, because it depends on where the caller extracts
+to, not on the archive, and neither copy counts toward the per-member ratio.
+
 A copy that a streaming pass takes back as superseded SHALL stop counting toward the
 limit once no entry on disk holds its bytes ("Skip non-current members by default"). The
 written-byte total that progress reports still includes it.
@@ -777,7 +797,7 @@ class ExtractionResult:
     failure_group_size: int | None = None
     collided_with: Path | None = None
 
-class ExtractionStatus(str, Enum):
+class ExtractionStatus(StrEnum):
     EXTRACTED = "extracted"
     NOT_OVERWRITTEN = "not_overwritten"
     SUPERSEDED = "superseded"
@@ -1035,9 +1055,14 @@ Anything that would decompress or scan payload to answer (for example foreign
 decompressor streams) yields `None`. For compressed containers this is compressed
 size; for uncompressed containers the resulting ratio is about 1:1 and harmless.
 
-The ratio SHALL be `cumulative_bytes_written / compressed_source_size`, checked
-in `BombTracker.count()` using the same `max_ratio` and cumulative
-`ratio_activation_threshold` as other ratio guards. If `compressed_source_size`
+The ratio SHALL be `archive_output / compressed_source_size`, where
+`archive_output` is the decoded output plus the bytes a hard link writes as a
+copy past the filesystem's link-count limit ("Enforce Cumulative
+Max-Extracted-Bytes Limit"); a cross-device copy is not part of it. It is
+checked in `BombTracker.count()` and, for those copies, in
+`BombTracker.count_copy()`, using the same `max_ratio` and cumulative
+`ratio_activation_threshold` as other ratio guards. When copies are part of it,
+the error message gives the decoded and copied bytes separately. If `compressed_source_size`
 is absent, the static archive-wide check is skipped. Per-member and archive-wide
 ratios are independent; either may trip first. A tripped archive-wide ratio
 SHALL raise `ResourceLimitError`.
@@ -1048,7 +1073,7 @@ SHALL raise `ResourceLimitError`.
 | --- | --- |
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
 | Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
-| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip |
+| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator |
 
@@ -1105,9 +1130,10 @@ This covers compressed archives from non-seekable pipes and seekable opaque
 streams whose size is not cheaply knowable. Backends wrap the stream source in
 the counting reader exactly when the static denominator is absent.
 
-The ratio SHALL be `cumulative_bytes_written / compressed_bytes_consumed`, checked
-after cumulative output crosses `ratio_activation_threshold` using the same
-`max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
+The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
+`archive_output` as in the static archive-wide requirement (decoded output plus
+link-count-limit copies), checked after it crosses `ratio_activation_threshold`
+using the same `max_ratio`. It is a cumulative global guard: if it trips, extraction halts even
 under `OnError.CONTINUE` with `ResourceLimitError`. The live path complements
 static checks and is not used when member compressed sizes or a cheap outer
 source size provide a denominator; whichever available guard trips first wins.
@@ -1162,27 +1188,50 @@ not treated as a suffix); a multi-suffix name (`archive.tar.gz`) → `archive.ta
 first name free **both on disk and in the collision map**, in member-processing order.
 
 **Portable-name enforcement (O3/O4).** Windows-reserved device names (`CON`, `PRN`, `AUX`,
-`NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`; case-insensitive, with or without extension) and `:`
-within a segment are **unsafe** (device capture / NTFS alternate data stream) and SHALL be
-rejected under `STRICT` and `STANDARD` on **every** platform, in each segment of the
-member name and in each segment of a SYMLINK's `link_target` (on Windows a link to
-`file:stream` names an alternate data stream, and one to `NUL` the device). `TRUSTED`
-checks neither. A trailing dot or space is a
-legitimate macOS/Linux name that Win32 merely trims; rejecting it would halt a legitimate
-archive, so under `STRICT` each path segment's trailing dot/space SHALL be **stripped** to
-its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on every platform,
+`NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, `COM¹`–`COM³`, `LPT¹`–`LPT³`, `CONIN$`, `CONOUT$`;
+case-insensitive, with or without extension) and `:` within a segment are **unsafe**
+(device capture / NTFS alternate data stream) and SHALL be rejected under `STRICT` and
+`STANDARD` on **every** platform, in each segment of the member name and in each segment
+of a SYMLINK's `link_target` (on Windows a link to `file:stream` names an alternate data
+stream, and one to `NUL` the device). `TRUSTED` checks neither. A trailing dot or space
+is a legitimate macOS/Linux name that Win32 merely trims; rejecting it would halt a
+legitimate archive, so under `STRICT` each path segment's trailing dot/space SHALL be
+**stripped** to its portable spelling (`stuff_etc.` → `stuff_etc`) deterministically on
+every platform,
 collision-tracked as above, and recorded as `ExtractionResult.presented_name`; a
 segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
 rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
 the OS allows).
+
+**Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
+literal character (TAR) SHALL be written as `/` on every platform, as Windows writes it, and
+recorded as `ExtractionResult.presented_name`. A link target gets the same rewrite, so a
+symlink to another member names the path that member was written at, and a target such as
+`..\x` is checked as the `../x` it becomes. A hard link still resolves to the member the
+reader matched to its stored target; the rewrite does not change which member that is. The
+path-safety checks SHALL run again on a member the policy rewrote, so a rewrite that changes
+the directories a path passes through cannot bypass them. `TRUSTED` writes the `\` as the
+local OS does. On Windows, under every policy, a symlink's target SHALL be created with
+each `/` written as `\`, so a relative target such as `sub/file` resolves there as it does
+on POSIX; errors still name the target as stored.
+
+**Read-only files.** A member whose stored mode has no write permission leaves a file
+Windows will not replace or delete, or a directory it will not remove. On Windows, when a
+later member of the run replaces or an anti-item removes a regular file or an empty
+directory this run wrote read-only, extraction SHALL clear the read-only attribute first,
+so `REPLACE` gives the result it gives on POSIX. The attribute is put back on a file's other
+hard links. A read-only entry that was in the destination before the run is not changed.
 
 **Portable-name representability (O7).** Under `STRICT` and `STANDARD`, a name carrying
 bytes that cannot be represented portably on the destination filesystem SHALL be normalized
 to a deterministic, reversible portable spelling — each non-UTF-8 byte (a surrogateescape
 char U+DC80–U+DCFF mapping to raw byte 0x80–0xFF) percent-escaped as `%XX` (uppercase hex),
 and a literal `%` escaped as `%25` — applied on **every** platform, collision-tracked as
-above, and recorded as `ExtractionResult.presented_name`. The scheme SHALL touch only
-non-decodable bytes; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
+above, and recorded as `ExtractionResult.presented_name`. The characters Win32 refuses in a
+name, `<`, `>`, `"`, `|`, `?`, `*` and the controls 0x01–0x1F, SHALL be escaped the same
+way, as `%XX` of their code point (`a?b` → `a%3Fb`), so a name POSIX could store gives the
+tree Windows gives. A `%` is escaped only in a name the scheme rewrites. The scheme SHALL
+touch nothing else; valid-but-non-portable Unicode (NFC/NFD forms) SHALL NOT be rewritten
 (its cross-platform folding is the O2 collision concern). `TRUSTED` SHALL attempt the
 faithful bytes and let the OS decide. The reversibility SHALL be a documented property; a
 public un-escape API is out of scope. Either way the outcome SHALL be deterministic and
@@ -1203,12 +1252,16 @@ rewritten name then collides and is renamed).
 | --- | --- | --- |
 | `README` and `readme` in one archive | Second is a collision event on all platforms; `OverwritePolicy` applied; `requested_path` recorded | Local OS behavior (both extract on a case-sensitive FS) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
-| Member named `NUL` / `COM1` | Rejected on all platforms (typed error) | Written if the OS allows |
+| Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
 | Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`; `STANDARD` keeps faithful | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
+| TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |
 | SYMLINK whose `link_target` has a segment with `:` (`file:stream`) or a reserved name (`sub/NUL`) | Rejected on all platforms | Local OS behavior |
 | Surrogateescape `caf\udce9.txt` | Sanitized to `caf%E9.txt`; `presented_name` keeps the pre-rewrite spelling; collision-tracked | Faithful bytes attempted; OS decides |
+| `what?.txt`, `a*b`, a name with a control byte | Written as `what%3F.txt`, `a%2Ab`, `%XX` per control; `presented_name` keeps the stored name | Written if the OS allows (refused on Windows) |
+| Symlink `l -> sub/file` (on Windows) | Created with target `sub\file`; resolves as on POSIX | Same |
+| A member stored `0o444`, then a later member of the same name under `REPLACE` | Replaced on every OS | Same |
 | `REPLACE` with a casefold collision | Not a silent merge; earlier member revised to `OVERWRITTEN` | Local OS behavior |
 | `RENAME` with a collision (case/NFC or exact) | Second entry written as `name (1)` before the suffix; `requested_path` = intended name | Same |
 | Filter rename, then a portable rewrite | `member.name`, `presented_name`, and `path.name` are all three spellings | Faithful bytes attempted |
@@ -1219,7 +1272,7 @@ rewritten name then collides and is renamed).
 halting the whole extraction the first time a named event occurs.
 
 ```python
-class AbortOn(str, Enum):
+class AbortOn(StrEnum):
     BLOCKED_MEMBER = "blocked_member"
     NAME_COLLISION = "name_collision"
     NAME_SANITIZED = "name_sanitized"

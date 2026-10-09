@@ -1,11 +1,19 @@
 """Detection-owned prefix workspace: one handle, one growing buffer, range views.
 
 Every tier that reads from the front of a source does so through a
-:class:`PrefixWorkspace`. Extending the window reads only the delta; bytes already
-retrieved are never re-fetched. A seekable caller stream records its entry position,
-reads forward once, and restores once in an exception-safe exit. A non-seekable
-:class:`~archivey.internal.source.ArchiveSource` is peeked, so its replay prefix holds
-the bytes and the backend reads them from the same object.
+:class:`PrefixWorkspace`. Extending the window reads only the delta of the prefix;
+bytes already in the buffer are not fetched again. :meth:`PrefixWorkspace.read_tail`
+sits outside that buffer. It seeks to a fixed block at the end and restores the
+handle, and it does not keep the bytes. A later tier that grows the prefix over
+that range fetches them again. A seekable bzip2 or xz file larger than the prefix
+does this: the trailer check runs when the near magic matches, and the inner-TAR
+probe then reads the rest of the file. A file that already fits in the prefix has
+the block in the buffer.
+
+A seekable caller stream records its entry position and restores it on the way
+out. The tail read adds one seek out and one seek back before that restore. A
+non-seekable :class:`~archivey.internal.source.ArchiveSource` is peeked, so its
+replay prefix holds the bytes and the backend reads them from the same object.
 
 The access-shape rule and the seeks it allows: ``dev-docs/topics/detection.md`` §4.2.
 """
@@ -306,6 +314,30 @@ class PrefixWorkspace:
             handle.seek(restore)
         self._receipt.unique_bytes_read += len(data)
         return data
+
+    def read_tail(self, length: int) -> bytes | None:
+        """The last ``length`` bytes, or ``None`` when that read is not cheap.
+
+        A path or a plain seekable stream seeks to the end and restores the
+        handle, the same way :meth:`read_at` does, and does not grow the prefix
+        through the middle of the file. A non-seekable source, and an
+        ``ArchiveStream`` whose backward seek may re-decode, returns ``None``
+        rather than buffering the whole source to reach the end.
+        """
+        if length < 0:
+            return None
+        if length == 0:
+            return b""
+        total = self.remaining_known()
+        if total is None or total < length:
+            return None
+        origin = total - length
+        if origin + length <= len(self._buf):
+            return bytes(self._buf[origin : origin + length])
+        handle = self._cheap_random_access_handle()
+        if handle is None:
+            return None
+        return self._read_at_via_seek(handle, origin, length)
 
     def charge_far(self, nbytes: int) -> None:
         self._receipt.far_bytes += nbytes

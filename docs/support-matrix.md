@@ -84,8 +84,14 @@ on 3.15.0rc3t for the last column:
 | `pyppmd`, `inflate64`, `brotli` | No | **No** — import re-enables the GIL |
 
 So on a free-threaded build today you can use the core formats plus ISO, zstd and lz4 and
-stay genuinely GIL-free. Pull in the 7z codecs or the seek accelerator and you are back to
-a GIL-ed interpreter.
+stay genuinely GIL-free. Having the other packages installed does not change that:
+Archivey imports each one only when it opens a stream that needs it. The first PPMd,
+Deflate64 or Brotli stream, or the first bzip2 stream opened with seekable members
+requested (when the accelerator is on), puts you back on a GIL-ed interpreter for the
+rest of the process. Format detection counts too: when no magic number matches a file,
+detection tries to decode it as Brotli, which imports brotli. Seekable gzip, zlib and raw
+deflate are the exception, because rapidgzip runs in a child process for them and never
+loads into yours.
 
 Two consequences worth stating plainly:
 

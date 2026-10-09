@@ -633,6 +633,18 @@ jobs:
           uv run --python ${{ matrix.python }} --no-sync
           --with pytest --with pytest-timeout
           pytest tests/ -q --timeout=120 -o addopts=
+      - name: Assert the GIL-re-enabling packages stay unimported
+        # pyppmd, inflate64, brotli and rapidgzip re-enable the GIL when imported, so
+        # archivey imports each one only when a stream needs it. With all four installed,
+        # a fresh interpreter that imports archivey and lists formats must still have the
+        # GIL off. The env var makes the test fail rather than skip if they are missing.
+        # Last, and through --with, so the suite above never runs with them installed.
+        env:
+          ARCHIVEY_EXPECT_GIL_REENABLING_PACKAGES: "1"
+        run: >
+          uv run --python ${{ matrix.python }} --no-sync
+          --with pytest --with pyppmd --with inflate64 --with brotli --with rapidgzip
+          pytest tests/test_lazy_optional_imports.py -q -o addopts=
 
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,

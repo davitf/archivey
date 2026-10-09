@@ -145,10 +145,10 @@ def coerce_enum(
     if isinstance(value, enum_cls):
         return value
     if isinstance(value, Enum):
-        # Checked ahead of the string branch on purpose: several of our enums mix in
-        # ``str`` (``AbortOn``, ``StreamFormat``, …), so a member of the *wrong* class
-        # is a string too, and would otherwise be reported as a bad spelling rather
-        # than as the wrong type — which is what it is.
+        # Checked ahead of the string branch on purpose: several of our enums are
+        # ``StrEnum`` (``AbortOn``, ``StreamFormat``, …), so a member of the *wrong*
+        # class is a string too, and would otherwise be reported as a bad spelling
+        # rather than as the wrong type — which is what it is.
         raise ArchiveyUsageError(
             f"{call} takes {_takes(enum_cls, also_accepts)} for {param}, but got "
             f"{type(value).__name__}.{value.name}. "

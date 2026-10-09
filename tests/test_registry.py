@@ -160,7 +160,11 @@ def test_zip_partial_when_optional_codecs_missing(
 ) -> None:
     # ZIP can store deflate64 (inflate64) and zstd, both in [recommended]; with those absent it
     # still opens and lists common (stored/deflate) members -> PARTIAL.
-    monkeypatch.setattr(codecs_module, "_inflate64", None)
+    monkeypatch.setattr(
+        codecs_module,
+        "_inflate64",
+        codecs_module._LazyOptional("inflate64", present=False),
+    )
     monkeypatch.setattr(codecs_module, "_zstd", None)
 
     avail = format_availability(ArchiveFormat.ZIP)
@@ -174,8 +178,11 @@ def test_zip_partial_when_optional_codecs_missing(
 def test_zip_full_when_optional_codecs_present(monkeypatch: pytest.MonkeyPatch) -> None:
     # With the codec layer wired into ZIP member reads, ZIP reports FULL when every
     # optional member codec backend is installed (deflate64 / zstd / ppmd).
-    for sentinel in ("_inflate64", "_zstd", "_pyppmd"):
-        monkeypatch.setattr(codecs_module, sentinel, object())
+    monkeypatch.setattr(codecs_module, "_zstd", object())
+    for sentinel, name in (("_inflate64", "inflate64"), ("_pyppmd", "pyppmd")):
+        monkeypatch.setattr(
+            codecs_module, sentinel, codecs_module._LazyOptional(name, present=True)
+        )
     avail = format_availability(ArchiveFormat.ZIP)
     assert avail.support is FormatSupport.FULL
     assert avail.missing == ()
@@ -378,7 +385,13 @@ class _NonSeekable(io.RawIOBase):
 # The documented table, written out rather than derived, so a backend that flips
 # SUPPORTS_STREAMING_NON_SEEKABLE has to change this list too instead of silently
 # agreeing with itself.
-_FORWARD_ONLY_CONTAINERS = {ContainerFormat.TAR, ContainerFormat.RAW_STREAM}
+# TAR and the raw codecs read from a pipe. DMG reports the same shape so the
+# spool recipe does not copy a file that open refuses from either shape.
+_FORWARD_ONLY_CONTAINERS = {
+    ContainerFormat.TAR,
+    ContainerFormat.RAW_STREAM,
+    ContainerFormat.DMG,
+}
 
 
 @pytest.mark.parametrize("fmt", list_known_formats(), ids=lambda f: f.display_name)

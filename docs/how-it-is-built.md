@@ -78,7 +78,9 @@ Besides review, these checks run on the code. Each one catches things the others
 - **Fuzzing.** Every corpus archive is mutated (truncated, bit-flipped, padded with
   garbage) and must either succeed or fail with a typed error, never crash or hang.
   Property-based tests cover the path-safety logic. A coverage-guided fuzzer (Atheris)
-  runs over the 7z, RAR, ZIP, TAR and ISO parsers and every codec on each pull request.
+  runs over the 7z, RAR, ZIP, TAR and ISO parsers and every codec on each pull request,
+  and over the optional gzip and bzip2 accelerators, checking they decode exactly what
+  the standard decoders do.
 - **A threat model.** The known security gaps are written down with their status, from
   metadata bombs to a directory swapped for a symlink while it is being listed. The
   limits the maintainer accepts rather than fixes are recorded there too, in the

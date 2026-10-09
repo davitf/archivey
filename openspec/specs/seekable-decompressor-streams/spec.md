@@ -260,7 +260,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
-| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF` |
+| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`, except the zero-padding case `compressed-streams` accepts |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
 | bzip2 through the accelerator with junk, a damaged stream header, or a stream whose block and end-of-stream magics are damaged, before or between streams | The bytes and the error of the accelerator `OFF`; no byte from after the skipped region reaches the caller, also after a seek past it |
 | bzip2 through the accelerator with a stream after zero padding, or a cut or damaged stream after the data | The bytes and the error of the accelerator `OFF`; past a bounded stretch (1 MiB) of padding and empty streams between two streams, the standard library takes over and decodes the stretch itself, with the same result |

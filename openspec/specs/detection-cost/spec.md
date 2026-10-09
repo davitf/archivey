@@ -42,7 +42,7 @@ class DetectionBudget:
 @dataclass(frozen=True)
 class DetectionCostReceipt:
     prefix_bytes: int      # sum of range lengths requested from the workspace
-    unique_bytes_read: int # actually fetched from the source (each byte once)
+    unique_bytes_read: int # bytes fetched from the source. The prefix counts each byte once; a trailer read counts its block again when a later tier reads those bytes as part of the prefix
     far_bytes: int
     scanned_bytes: int
     decode_input: int
@@ -68,7 +68,9 @@ Budget fields that gate detection: `max_prefix_bytes` (near peek clamp), `max_fa
 `completion_window_bytes` (see `format-detection`: a content-probe hit on a source no
 larger than this is re-checked against the whole source). Content-probe reads at an offset
 have no budget field: the Brotli walk caps them at `CHAIN_MAX_LINKS` (8) header reads of
-24 bytes, and that is the probe-seek allowance below.
+24 bytes, and that is the probe-seek allowance below. The UDIF trailer is the same kind
+of fixed read: one 512-byte block on a cheap seek, with no budget field of its own, and
+that length is the trailer allowance below.
 
 `max_decode_input` SHALL be one allowance for the whole `detect_format` pass, not a limit
 per tier or per candidate: every tier that decodes draws on what earlier tiers left, so
@@ -102,11 +104,11 @@ SHALL be recorded as `near_magic` *budget exhausted*, and as *not enabled by pol
 A receipt is within its budget when each bounded counter is at most `passes` times its
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field
 of the same name, and `unique_bytes_read` against the largest of `max_prefix_bytes`,
-`max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance. `prefix_bytes` is not
-compared, because it bills overlapping requests in full and `unique_bytes_read` stands in
-for it. A receipt that is not within its budget SHALL carry a *budget exhausted* or
-*capability unavailable* skip naming the tier that was cut short. The library does not
-expose this check; the test suite asserts it.
+`max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance and the trailer
+allowance. `prefix_bytes` is not compared, because it bills overlapping requests in full
+and `unique_bytes_read` stands in for it. A receipt that is not within its budget SHALL
+carry a *budget exhausted* or *capability unavailable* skip naming the tier that was cut
+short. The library does not expose this check; the test suite asserts it.
 
 #### Scenario: receipt reflects the source kind
 
@@ -115,7 +117,7 @@ expose this check; the test suite asserts it.
 | Path, near magic hit at offset 0 | `unique_bytes_read` is the single prefix read |
 | Growing 4 KiB → 32 KiB → 2 MiB | `unique_bytes_read` counts each byte once; `prefix_bytes` counts requests |
 | A tier the budget turns off (`completion_window_bytes` 0 under `FAST`) | Recorded as *not enabled by policy* — a distinct reason, because it does not make the search incomplete |
-| SFX scan miss under `FAST` | `scanned_bytes` ≤ `max_scan_bytes`; `unique_bytes_read` ≤ scan ceiling + probe allowance; `sfx_scan` recorded *budget exhausted* when the source is longer than the window |
+| SFX scan miss under `FAST` | `scanned_bytes` ≤ `max_scan_bytes`; `unique_bytes_read` ≤ scan ceiling + probe allowance + the 512-byte trailer; `sfx_scan` recorded *budget exhausted* when the source is longer than the window |
 | SFX miss then extension guess (`.zip`) | Within budget under `BALANCED` and `FAST` |
 | ISO under a `max_far_bytes` smaller than the `CD001` span | Extension `GUESS`; `far_magic` recorded *budget exhausted*; `far_bytes` 0 |
 | `.tar.bz2` whose first block exceeds `FAST`'s decode input | Bare `BZ2`; `decode_input` ≤ 64 KiB; `inner_tar` recorded *budget exhausted*; within `FAST` |
@@ -181,12 +183,15 @@ behaviour below is what detection **runs today**.
 
 | preset | behaviour today |
 | --- | --- |
-| `BALANCED` | near prefix; far fixed-offset evidence; cued bounded SFX scan (`max_scan_bytes` = 2 MiB); bounded content probes; whole-source completion of a probe hit up to 64 KiB; inner TAR; no exhaustive scan; no spool |
+| `BALANCED` | near prefix; far fixed-offset evidence; cued bounded SFX scan (`max_scan_bytes` = 2 MiB); the 512-byte UDIF trailer on a cheap seek; bounded content probes; whole-source completion of a probe hit up to 64 KiB; inner TAR; no exhaustive scan; no spool |
 | `FAST` | same tiers as `BALANCED` with a smaller SFX scan (`max_scan_bytes` = 256 KiB), smaller decode ceilings, and no whole-source completion (`probe_completion` recorded *not enabled by policy* when a probe hit could have used it) |
 | `THOROUGH` | same scheduled tiers as `BALANCED` today, with whole-source completion as far as the 1 MiB decode allowance reaches (the probes' samples are charged first, so a source just under 1 MiB may not complete) |
 
-No preset reads the source's tail: a ZIP behind a prefix that does not cue the SFX scan is
-not found. Format boundedness proves the search is complete for the tiers a policy enables.
+No preset scans for a ZIP end-of-central-directory. Every preset reads one fixed
+512-byte block at the end of a cheap-seek source, looking for a UDIF `koly` signature,
+before the content probes. A ZIP behind a prefix that does not cue the SFX scan is
+still not found. Format boundedness proves the search is complete for the tiers a
+policy enables.
 
 #### Scenario: preset boundaries (shipping)
 
@@ -194,7 +199,7 @@ not found. Format boundedness proves the search is complete for the tiers a poli
 | --- | --- | --- | --- |
 | Ordinary ZIP / gzip / ISO at a known offset | Found | Found | Found (same tiers) |
 | MZ stub + junk, no archive magic, `.zip` name | Extension `GUESS`; scan charged ≤ 2 MiB | Extension `GUESS`; scan charged ≤ 256 KiB | Same as `BALANCED` |
-| ZIP behind a non-cueing prefix (JPEG + appended ZIP) | Not found | Not found | Not found — no tier reads the tail |
+| ZIP behind a non-cueing prefix (JPEG + appended ZIP) | Not found | Not found | Not found — no tier looks for a ZIP trailer |
 | `zipapp` (`#!` prefix + ZIP) | Not found — shebang is not an executable cue today | Not found | Not found |
 | Exhaustive whole-source scan | Never | Never | Never (opt-in later, not by preset alone) |
 

@@ -280,6 +280,82 @@ def bzip2_seeds() -> list[bytes]:
     return tiny + good + _adversarial_seeds(".bz2", ".bz")
 
 
+def _accel_payload() -> bytes:
+    """About 200 KiB, half text and half incompressible: several DEFLATE blocks and two
+    bzip2 blocks (``-1``), so a seek has more than one restart point to choose from."""
+    import random
+
+    noise = random.Random(0x5EED).randbytes(96 * 1024)
+    return (_SAMPLE * 600)[: 100 * 1024] + noise
+
+
+def accel_gzip_seeds() -> list[bytes]:
+    payload = _accel_payload()
+    member = gzip.compress(payload, compresslevel=6, mtime=0)
+    named = io.BytesIO()
+    with gzip.GzipFile(fileobj=named, mode="wb", filename="seed.txt", mtime=0) as gz:
+        gz.write(_SAMPLE)
+    return (
+        gzip_seeds()
+        + [
+            member,
+            member + gzip.compress(_SAMPLE, mtime=0),  # two members
+            named.getvalue(),  # FNAME header field
+            member[: len(member) // 2],  # cut mid-data
+        ]
+    )
+
+
+def accel_bzip2_seeds() -> list[bytes]:
+    import bz2
+
+    payload = _accel_payload()
+    stream = bz2.compress(payload, compresslevel=1)
+    return (
+        bzip2_seeds()
+        + [
+            stream,
+            stream + bz2.compress(_SAMPLE),  # two streams
+            stream[: len(stream) // 2],  # cut mid-block
+        ]
+    )
+
+
+def _with_declared_size(size: int, data: bytes) -> bytes:
+    """Prefix ``data`` with the declared size ``targets.split_declared_size`` reads."""
+    return size.to_bytes(4, "little") + data
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    comp = zlib.compressobj(6, zlib.DEFLATED, -15)
+    return comp.compress(data) + comp.flush()
+
+
+def accel_zlib_seeds() -> list[bytes]:
+    payload = _accel_payload()
+    full = zlib.compress(payload)
+    return [
+        _with_declared_size(0, b""),
+        _with_declared_size(len(_SAMPLE), zlib.compress(_SAMPLE)),
+        _with_declared_size(len(payload), full),
+        _with_declared_size(len(payload), full[: len(full) // 2]),
+        _with_declared_size(len(payload) // 2, full),  # size understated
+    ]
+
+
+def accel_deflate_seeds() -> list[bytes]:
+    payload = _accel_payload()
+    full = _raw_deflate(payload)
+    return [
+        _with_declared_size(0, b""),
+        _with_declared_size(0, _raw_deflate(b"")),
+        _with_declared_size(len(_SAMPLE), _raw_deflate(_SAMPLE)),
+        _with_declared_size(len(payload), full),
+        _with_declared_size(len(payload), full[: len(full) // 2]),
+        _with_declared_size(len(payload) + 1, full),  # size overstated
+    ]
+
+
 def lzma_alone_seeds() -> list[bytes]:
     tiny = [b"", b"]\x00\x00", b"not lzma"]
     good = _safe_compress(lambda: lzma.compress(_SAMPLE, format=lzma.FORMAT_ALONE))

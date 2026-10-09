@@ -90,7 +90,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   entries are addressed by disk number — and is rejected with
   ``UnsupportedFeatureError``; rejoin it with the tool that made it.
 - Unsupported compression methods: listing succeeds; reading raises
-  ``UnsupportedFeatureError``.
+  ``UnsupportedFeatureError``. So does an LZMA member with ``lc + lp`` over 4, which
+  7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
+  restore method 2. Under ZipCrypto both read as the password-or-damage
+  ``EncryptionError`` instead, because those settings are encrypted.
+- An end record that disagrees with the central directory is a warning, not an error:
+  an entry count that does not match, an archive comment length past the end of the
+  file, or a directory entry whose name, extra field or comment runs past the
+  directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
+  which ``DiagnosticPolicy.strict()`` raises.
 - Timestamps: DOS base; NTFS / Extended Timestamp extras override when present.
 - An entry whose Unix mode is a device, FIFO or socket lists as `MemberType.OTHER`, so
   extraction skips it. The mode is read only when "version made by" says Unix.
@@ -492,6 +500,20 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
 
+## Disk images
+
+- A UDIF image (`.dmg`) is recognised by its `koly` block — the last 512 bytes, or
+  the first 12 when an old image puts the block at the start — and refused with
+  `UnsupportedFeatureError`. A compressed image stores its blocks as zlib, bzip2 or
+  xz, so opening one used to extract the first block and treat the rest as trailing
+  data. An uncompressed image whose disk is an ISO 9660 filesystem is reported as
+  that ISO instead: `CD001` at byte 32 769 is checked first, and the image is read
+  as an ISO. Reading a UDIF image itself is not supported. To get at the files,
+  convert or mount the image first (for example with `7z x`, `dmg2img`, or
+  `hdiutil attach` on macOS). A pipe is not rewound. A short image is still
+  refused, because detection has already read through to its end. A longer
+  zlib-first image on a pipe still opens as that stream.
+
 ## Directory
 
 - A filesystem tree as a pseudo-archive (uniform API for tests and dir↔archive flows).
@@ -529,6 +551,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
   wherever it is in the file: a member that starts with the `LZIP` magic is never
   skipped as trailing data.
+- A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
+  not `CorruptionError`: a gzip member with a method other than deflate or a reserved
+  flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
+  dictionary, and a `.Z` file with a code width over 16 bits.
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable
@@ -637,9 +663,12 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 - **Strongest signal first**, and the filename is the last of them; wrong extensions are
   expected. In order: exact magic in the first 4 KiB → an SFX scan behind an executable
   stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
-  a source too small for it never pays) → content probes for the formats with no magic →
-  the extension. A step that matches nothing falls through to the next; nothing is ever
-  rejected for failing an earlier one.
+  a source too small for it never pays) → the 512-byte `koly` block at the end of a
+  seekable source (a UDIF disk image; see Disk images) → content probes for the formats
+  with no magic → the extension. A bzip2 or xz header that is the first block of such
+  an image loses to that block. A step that matches nothing falls through to the next;
+  nothing is ever rejected for failing an earlier one. A pipe is not rewound to read
+  the block at the end.
 - **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
   size — may precede the first real frame, so detection walks past them by their declared
   sizes within the peeked bytes and matches the regular frame behind. Skippable frames
