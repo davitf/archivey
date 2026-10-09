@@ -1,5 +1,9 @@
 # Claims — steps 2 and 3 of Topic 8
 
+> **`dev-docs/open-issues.md` left the repo on 2026-10-09**; its open items are tracked
+> internally. Citations of it here, line numbers included, refer to its last committed
+> state: `git show bd135512:dev-docs/open-issues.md`.
+
 The baseline this pass ran on, and every checkable claim the published guide makes,
 grouped by **capability** and deduplicated across pages.
 
@@ -751,7 +755,7 @@ Evidence: [`worker-inputs/verdicts-F.md`](worker-inputs/verdicts-F.md); harvest 
 - **F-35 is the row to be most careful with.** It is a *negative* containment claim
   sitting four lines after a positive one (F-33), and #223's round-2 finding 2 exists
   because a previous pass kept one and dropped the other. Verify them as a pair.
-- **F-3 (S-1) is carried, not re-filed.** It is O-4 in `review/docs/observations.md`.
+- **F-3 (S-1) is carried, not re-filed.** It is O-4 in `review/archive/2026-10-06-docs/observations.md`.
 
 ---
 

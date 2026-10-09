@@ -1,8 +1,8 @@
 # Scope — pass 0 of Topic 8
 
 Per-page job, explicit non-coverage, and every current block routed by
-[`../docs/outline.md` D-f](../archive/2026-10-06-docs/outline.md). Written before `claims.md`, because a
-claim on a block that is about to move is not worth verifying
+[`../archive/2026-10-06-docs/outline.md` D-f](../archive/2026-10-06-docs/outline.md).
+Written before `claims.md`, because a claim on a block that is about to move is not worth verifying
 ([`brief.md` §Deliverables](brief.md)).
 
 Measured against `main` @ `5d08f31` (`d4668c3` + the Topic 8/10 commission, which touched
@@ -574,7 +574,7 @@ here; threat-model depth; per-format quirks (→ `formats.md`); the problem cata
 D2's six sources do not include and which this page does **not** wait for
 ([`brief.md` §Definition of done](brief.md) row 3).
 
-**Sections** (D2, `../docs/DECISIONS.md:50-57`) — a paragraph plus a link each:
+**Sections** (D2, `../archive/2026-10-06-docs/DECISIONS.md:50-57`) — a paragraph plus a link each:
 
 | Section | Sourced from | Also receives |
 |---|---|---|

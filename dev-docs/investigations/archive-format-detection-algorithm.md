@@ -1414,8 +1414,8 @@ at all) while leaving the filename rule in place via confidence.
 
 The 98.9% figure — of 1,303 files under `/usr` carrying an extension archivey knows,
 1,289 were already answered by near magic at step 2, leaving 2 where an extension and a
-content probe agree (recorded in `dev-docs/IDEAS.md`, *Extension-first detection
-ordering*) — argues **against** an extension-agreement shortcut as a
+content probe agree (recorded in `dev-docs/IDEAS.md`, *Extension-first detection,
+and stopping early on agreement*) — argues **against** an extension-agreement shortcut as a
 default optimization: near evidence has already captured almost the entire population
 where agreement is cheap. The two residual files are too small a sample to justify a new
 control-flow rule.

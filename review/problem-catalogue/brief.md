@@ -1,5 +1,9 @@
 # Brief — the problem catalogue (Topic 10)
 
+> **`dev-docs/open-issues.md` left the repo on 2026-10-09**; its open items are tracked
+> internally. Citations of it here, line numbers included, refer to its last committed
+> state: `git show bd135512:dev-docs/open-issues.md`.
+
 Commissioned 2026-08-15 against `main` @ `d4668c3`. Not a review of the code: an
 **extraction and normalization pass over what the project already knows**, producing one
 entry per non-trivial problem archivey has had to solve.

@@ -495,9 +495,9 @@ does not cover your case, check
 [`dev-docs/design-rules.md`](dev-docs/design-rules.md) first: if a rule settles it, do
 what it says and name the rule in the PR; ask only when no rule does.
 
-**Thin as you go.** Specs stay the authoritative *machine* contract for now (pair-workflow
-DP1 = C), but we are migrating executable detail into **tests** and human truth into
-**handbook** pages — see
+**Thin as you go.** Specs stay the authoritative *machine* contract for now (DP1 = C in the
+specs-to-handbook discussion below), but we are migrating executable detail into
+**tests** and human truth into **handbook** pages — see
 [`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md).
 On every PR that touches `openspec/specs/` or a change delta:
 
