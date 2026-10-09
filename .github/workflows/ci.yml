@@ -502,22 +502,24 @@ jobs:
   # it). When a row fails, the distribution changed its package: the test's failure
   # message says what to update. Ubuntu's own package is checked in the test job.
   #
-  # Expectations, 2026-10-01 (no container runtime was available to run them, so the
-  # first run of this job confirms them):
-  #   debian:stable  patched  INFERRED: Debian 13 should ship 1.10.8+ds1-9, whose
-  #                           patch series (read from Ubuntu's copy of the source)
-  #                           has the patch; 1.10.8 built with it drops the member.
+  # Expectations, confirmed by this job's runs on 2026-10-09:
+  #   debian:stable  patched  Debian 13 ships 1.10.8+ds1-9, whose patch series has
+  #                           the patch; 1.10.8 built with it drops the member.
   #   debian:unstable clean   1.10.8+ds1-10 deleted the patch (changelog and series).
-  #   fedora:latest  clean    INFERRED: the patch is Debian's; Fedora's spec was not
-  #                           reachable to confirm Fedora does not carry it.
+  #   fedora:latest  clean    The patch is Debian's; Fedora ships 1.10.8 without it.
   # Alpine does not package unar (no unar in aports main, community or testing), so
   # it has no row.
   #
-  # The images come from mirror.gcr.io, Google's cache of Docker Hub's official
-  # images, not from Docker Hub. Docker Hub limits anonymous pulls per IP address,
-  # and GitHub's runners share addresses, so a pull from there sometimes fails before
-  # the job starts (toomanyrequests, PRs 650 and 651 on 2026-10-09). The image names
-  # in the matrix stay Docker Hub's, so the job names do not change.
+  # The images come from mirror.gcr.io, Google's no-auth cache of Docker Hub's
+  # official images, not from Docker Hub. Docker Hub pulls failed before the job
+  # started: toomanyrequests (anonymous pulls are limited per IP address and GitHub's
+  # runners share addresses) and auth.docker.io timeouts, both on 2026-10-09. Caching
+  # the image ourselves cannot help, because a `container:` job pulls before its
+  # first step. AWS's public ECR mirror (public.ecr.aws/docker/library/) is the
+  # fallback if this one fails; it has not been tried from a runner. The job
+  # prefixes mirror.gcr.io/library/, so a row's `image` must be a Docker Hub
+  # official image (a name with no slash); the names stay Docker Hub's so the job
+  # names do not change.
   unar-distro-packages:
     name: unar package / ${{ matrix.image }}
     runs-on: ubuntu-latest
