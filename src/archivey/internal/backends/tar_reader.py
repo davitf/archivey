@@ -640,12 +640,11 @@ class _BoundedTarFileobj(ReadOnlyIOStream):
 class TarReader(BaseArchiveReader):
     """Reads a TAR archive (plain or compressed) via stdlib ``tarfile``.
 
-    ``_SUPPORTS_RANDOM_ACCESS`` is True (seekable uncompressed / decompressed sources
-    can open any member), but ``_MEMBER_LIST_UPFRONT`` is False — there is no central
-    directory, so a complete list always requires a scan (or a finished stream pass).
+    A seekable source can open any member, but ``_MEMBER_LIST_UPFRONT`` is False —
+    there is no central directory, so a complete list always requires a scan (or a
+    finished stream pass).
     """
 
-    _SUPPORTS_RANDOM_ACCESS = True
     # TAR has no central directory: the member list only exists after a scan, so it is not
     # "available without scanning" (listing cost is REQUIRES_SCANNING / REQUIRES_DECOMPRESSION,
     # not INDEXED). Once iterated, the base serves the cached list anyway.

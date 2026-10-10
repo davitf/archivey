@@ -98,7 +98,6 @@ class SingleFileReader(BaseArchiveReader):
     non-seekable source is not validated until that read.
     """
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(
