@@ -173,6 +173,13 @@ def test_open_stream_peels_compressed_tar(
         with open_stream(path, format=fmt) as stream:
             assert stream.read() == expected_bytes, fmt
 
+    # A BinaryIO source takes the same peel: detection reads its prefix through the
+    # ArchiveSource replay buffer, not from a path.
+    data = path.read_bytes()
+    for fmt in (None, tar_format):
+        with open_stream(io.BytesIO(data), format=fmt) as stream:
+            assert stream.read() == expected_bytes, fmt
+
 
 def test_open_stream_path_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "data.gz"

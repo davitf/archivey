@@ -94,7 +94,9 @@ def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
     bytes, as ``gzip.open`` does for a ``.tar.gz``. One rule for an explicit
     ``format=``, a detected format and the accepted-spellings message, so the three
     cannot disagree. Every other container, an uncompressed tar included, has no
-    compression layer to remove.
+    compression layer to remove. ``(RAW_STREAM, UNCOMPRESSED)`` comes back as
+    ``UNCOMPRESSED``, which ``open_stream`` does not decode: it refuses it at the open,
+    where the message that names ``open_archive`` belongs.
     """
     if fmt.container is ContainerFormat.RAW_STREAM:
         return fmt.stream
@@ -115,7 +117,10 @@ def _accepted_stream_formats() -> str:
     later. Only the formats ``outer_stream_format`` gives a codec for open here.
     ``uncompressed`` coerces but is refused by ``open_stream``, which needs a
     compressed stream, so it is left out for the same reason ``DIRECTORY`` and
-    ``UNKNOWN`` are left out above.
+    ``UNKNOWN`` are left out above. The list is built from ``_FORMAT_NAMES``, so the
+    three compressed tars with no named constant — ``(TAR, LZIP)``, ``(TAR, ZLIB)``,
+    ``(TAR, BROTLI)`` — are not in it: they have no spelling, and ``open_stream``
+    takes them only as the ``ArchiveFormat`` object.
     """
     spellings = sorted(
         fmt.file_extension().lower()

@@ -298,7 +298,11 @@ resolving, peeking or reading the source:
 `open_stream`'s wider argument is by design, not an inconsistency to remove: a raw
 compressed stream has no container, so the codec alone identifies it. A compressed-tar
 `ArchiveFormat` (`TAR_GZ`, `(TAR, LZIP)`, …) is accepted too: `open_stream` decodes its
-outer codec and returns the tar bytes (`compressed-streams`). Any other container
+outer codec and returns the tar bytes (`compressed-streams`). Only the compressed tars
+with a named constant (`TAR_GZ`, `TAR_BZ2`, `TAR_XZ`, `TAR_ZST`, `TAR_LZ4`) have a
+string spelling; the three unnamed pairs — `(TAR, LZIP)`, `(TAR, ZLIB)`,
+`(TAR, BROTLI)` — have none, because the spellings are built from the named-format
+table, so they are passed as the `ArchiveFormat` object. Any other container
 `ArchiveFormat`, an uncompressed `TAR` included, remains a usage error, because it has
 no compression layer for `open_stream` to remove.
 

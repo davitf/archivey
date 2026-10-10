@@ -63,9 +63,11 @@ be the pair's stream half, the one the detector built the pair from, read throug
 shared rule rather than a second table. This is what `gzip.open` does for a `.tar.gz`,
 and the migration guide offers `open_stream` as its replacement.
 
-Any other container — ZIP, 7z, RAR, ISO, DMG, a directory, or an uncompressed tar —
-has no compression layer to remove. Detecting one SHALL raise `FormatDetectionError`;
-passing one as `format=` SHALL raise `ArchiveyUsageError` (`backend-registry`).
+Any other container — ZIP, 7z, RAR, ISO, DMG, or an uncompressed tar — has no
+compression layer to remove. Detecting one SHALL raise `FormatDetectionError`; passing
+one as `format=` SHALL raise `ArchiveyUsageError` (`backend-registry`). A directory path
+is refused as `ArchiveyUsageError` before detection runs, and so is
+`format=ArchiveFormat.DIRECTORY`.
 
 #### Scenario: compressed tar through open_stream
 
