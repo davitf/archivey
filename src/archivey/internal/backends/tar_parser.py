@@ -1020,14 +1020,21 @@ class TarWalker:
             sparse_format = SparseFormat.PAX_0_0
             sparse = sparse_map_0_0(own_records, charger_name, charge)
             size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif (major := merged.get(b"GNU.sparse.major")) is not None:
+        elif b"GNU.sparse.major" in merged or b"GNU.sparse.realsize" in merged:
             # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the
             # minor (measured with 1.1, 1.5, 2.0 and 9.9), and refuses a major of 0,
             # an empty one, or one that is not a number when no 0.x map came with
-            # it. Read as a plain file, the member would serve its map blocks as
-            # content.
-            if not (major.value.isdigit() and int(major.value) >= 1):
-                version = major.value[:20].decode("ascii", "replace")
+            # it. A realsize with no major is refused too: it declares a 1.0
+            # member's logical size, and GNU tar fails on it. (A minor alone is
+            # read as a plain file, as GNU tar reads it.) Read as a plain file, the
+            # member would serve its map blocks as content.
+            major = merged.get(b"GNU.sparse.major")
+            if major is None or not (major.value.isdigit() and int(major.value) >= 1):
+                version = (
+                    "(none)"
+                    if major is None
+                    else major.value[:20].decode("ascii", "replace")
+                )
                 raise CorruptionError(
                     f"TAR member {charger_name} has GNU sparse major version "
                     f"{version} and no sparse map"
