@@ -13,6 +13,7 @@ limit of 8 MiB.
 
 from __future__ import annotations
 
+import functools
 import io
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStream,
     crashed_on_data,
 )
+from archivey.internal.streams.codecs.stdlib_takeover import _StdlibOnAcceleratorError
 from tests.conftest import requires
 
 pytestmark = requires("rapidgzip")
@@ -39,6 +41,7 @@ _OUTPUT_SIZE = 64 << 20
 _SMALL_LIMIT = 8 << 20
 
 
+@functools.cache
 def _zeros(wbits: int) -> bytes:
     """``_OUTPUT_SIZE`` zero bytes, compressed at level 9 in the format ``wbits`` names."""
     compressor = zlib.compressobj(9, zlib.DEFLATED, wbits)
@@ -150,22 +153,71 @@ def test_a_child_under_its_memory_limit_reads_the_whole_stream() -> None:
         assert _read_in_chunks(child.read) == _OUTPUT_SIZE
 
 
-@pytest.mark.parametrize(
+_CODECS = pytest.mark.parametrize(
     ("codec", "wbits"),
     [(Codec.GZIP, 31), (Codec.ZLIB, 15), (Codec.DEFLATE, -15)],
     ids=["gzip", "zlib", "deflate"],
 )
+
+
+def _takeover(stream: object) -> _StdlibOnAcceleratorError:
+    """The ``_StdlibOnAcceleratorError`` under ``stream``, whose ``switched`` says
+    whether the standard library took over from the child."""
+    inner = stream
+    while inner is not None and not isinstance(inner, _StdlibOnAcceleratorError):
+        inner = getattr(inner, "_inner", None)
+    assert isinstance(inner, _StdlibOnAcceleratorError), stream
+    assert isinstance(inner._inner, RapidgzipChildStream)
+    return inner
+
+
+@_CODECS
 def test_the_standard_library_reads_on_after_the_limit(
     codec: Codec, wbits: int
 ) -> None:
-    """With the accelerator ON and a small limit, the whole output is still delivered,
-    and a seek back to the start works after the standard library has taken over."""
+    """With the accelerator ON and a small limit, the child is stopped and the
+    standard library takes over, the whole output is still delivered, and a seek back
+    to the start works after the takeover.
+
+    The child checks its memory before each read reply, so a second pass over the
+    stream trips the limit even when the first one finished before any check saw the
+    peak; the loop allows for more passes on a busy machine, up to 20 seconds.
+    """
     config = StreamConfig(
         seekable=True,
         use_rapidgzip=AcceleratorMode.ON,
         decoder_limits=DecoderLimits(max_decoder_memory=_SMALL_LIMIT),
     )
     with open_codec_stream(codec, io.BytesIO(_zeros(wbits)), config=config) as stream:
-        assert _read_in_chunks(stream.read) == _OUTPUT_SIZE
-        assert stream.seek(0) == 0
+        takeover = _takeover(stream)
+        deadline = time.monotonic() + 20
+        while True:
+            assert _read_in_chunks(stream.read) == _OUTPUT_SIZE
+            assert stream.seek(0) == 0
+            if takeover.switched or time.monotonic() > deadline:
+                break
+        assert takeover.switched, "the child was not stopped at its memory limit"
         assert stream.read(4) == bytes(4)
+        assert _read_in_chunks(stream.read) == _OUTPUT_SIZE - 4
+
+
+@_CODECS
+def test_no_limit_ignores_the_environment(
+    monkeypatch: pytest.MonkeyPatch, codec: Codec, wbits: int
+) -> None:
+    """With ``DecoderLimits.UNLIMITED`` the child decodes the whole stream, whatever
+    the caller's environment holds: the limit travels in the child's ``OPEN`` frame,
+    and no environment variable can set one. A limit of 0 read from the variable set
+    here would stop the child at once."""
+    monkeypatch.setenv("ARCHIVEY_RAPIDGZIP_MAX_MEMORY", "0")
+    config = StreamConfig(
+        seekable=True,
+        use_rapidgzip=AcceleratorMode.ON,
+        decoder_limits=DecoderLimits.UNLIMITED,
+    )
+    with open_codec_stream(codec, io.BytesIO(_zeros(wbits)), config=config) as stream:
+        takeover = _takeover(stream)
+        for _ in range(2):
+            assert _read_in_chunks(stream.read) == _OUTPUT_SIZE
+            assert stream.seek(0) == 0
+        assert not takeover.switched

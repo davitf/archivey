@@ -59,10 +59,11 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     ARG_MIN,
     ERR,
     FRAME,
-    MAX_MEMORY_ENV,
     MEMORY_LIMIT_EXIT,
+    NO_MEMORY_LIMIT,
     OK,
     OPEN,
+    OPEN_LIMIT,
     OPEN_PATH,
     OPEN_STREAM,
     POINTS,
@@ -250,13 +251,6 @@ def _reported_error(payload: bytes) -> Exception:
     return RapidgzipChildReportedError(f"{name}: {message}")
 
 
-def _child_environment(max_memory: int | None) -> dict[str, str] | None:
-    """The child's environment: this process's, with the memory limit when there is one."""
-    if max_memory is None:
-        return None
-    return {**os.environ, MAX_MEMORY_ENV: str(max_memory)}
-
-
 def _reap(
     proc: subprocess.Popen[bytes], stderr: IO[bytes], *, kill: bool = False
 ) -> None:
@@ -321,7 +315,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     ``max_memory`` is ``DecoderLimits.max_decoder_memory``: the child is ended when its
     memory grows by more than that many bytes after the open (``watch_memory`` in the
     worker), and every later call raises ``ResourceLimitError``. ``None`` sets no
-    limit.
+    limit. It has no default, so every caller decides.
     """
 
     def __init__(
@@ -329,7 +323,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         source: str | os.PathLike[str] | BinaryIO,
         *,
         label: str,
-        max_memory: int | None = None,
+        max_memory: int | None,
     ) -> None:
         # Everything close() reads is assigned before anything that can raise.
         self._label = label
@@ -372,10 +366,16 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._since_query = 0
         self._query_after = _MIN_QUERY_SPACING
         if isinstance(source, (str, os.PathLike)):
-            open_kind, open_payload = OPEN_PATH, os.fsencode(os.fspath(source))
+            open_kind, open_path = OPEN_PATH, os.fsencode(os.fspath(source))
         else:
             self._source = source
-            open_kind, open_payload = OPEN_STREAM, b""
+            open_kind, open_path = OPEN_STREAM, b""
+        # The limit goes in the OPEN frame, not the environment, so a variable the
+        # caller's process happens to hold cannot set one.
+        open_payload = (
+            OPEN_LIMIT.pack(NO_MEMORY_LIMIT if max_memory is None else max_memory)
+            + open_path
+        )
         super().__init__()
         argv = python_argv(_WORKER, _start_error)
         try:
@@ -389,7 +389,6 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 _start_error,
                 stdin=subprocess.PIPE,
                 stderr=stderr,
-                env=_child_environment(max_memory),
             )
         except RapidgzipChildStartError:
             stderr.close()

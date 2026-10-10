@@ -480,7 +480,10 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 #### Decoder memory
 
 **Property.** A codec never allocates a working set larger than
-`DecoderLimits.max_decoder_memory` (2 GiB) because the archive declared one.
+`DecoderLimits.max_decoder_memory` (2 GiB) because the archive declared one. A decoder
+whose working set is not declared, but follows what the data decodes to, is held to the
+same cap where it runs in its own process: the rapidgzip accelerator for gzip, zlib and
+raw DEFLATE.
 
 **Mechanism.** `internal/config.py` `check_decoder_memory` runs before the decoder is
 built, on `open()` and `read()` as well as extraction. A 7z folder can hold several
@@ -502,15 +505,31 @@ what the program that will run allocates, measured per program (rar.md §7): `un
 touches the whole declared dictionary; `unrar` touches at most the unpacked bytes the
 read decodes, including the earlier members a shared name mask makes it decode.
 
+rapidgzip keeps whole decoded chunks in memory, so a small file of zeros can make it hold
+gigabytes, and nothing in the stream declares that size. So the cap is enforced after the
+allocation: the child process (`internal/streams/codecs/rapidgzip_worker.py`
+`watch_memory` and `check_memory`) reads its own peak resident memory every millisecond
+and before it answers each read, and exits with `MEMORY_LIMIT_EXIT` once the peak has
+grown by more than the cap since the source was opened. The cap travels in the child's
+`OPEN` frame, not in its environment. The parent treats that exit like a crash on the
+data: the standard library reads the rest of the stream from the last index point, so
+the caller gets the same bytes and no error.
+
 **Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
 memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
 (public in extracting.md §Limits). The RAR counts rest on measurements of `unrar` 7.00
-and `unar` 1.10.1; another version that allocates differently is not measured.
+and `unar` 1.10.1; another version that allocates differently is not measured. The
+rapidgzip child's peak can pass the cap by what it allocates between two checks (about
+17 MB measured on four cores; a check delayed on a busy machine is caught by the one
+before the next read). Where the platform does not report a process's peak memory
+(`VmHWM` on Linux, `getrusage` on macOS and the BSDs, `GetProcessMemoryInfo` on
+Windows), the child is not capped.
 
 **Tests.**
 `tests/test_sevenzip_bcj2.py::test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap`;
 for RAR, the tests after "the RAR dictionary counts against
-DecoderLimits.max_decoder_memory" in `tests/test_audit_rar_iso_dir.py`.
+DecoderLimits.max_decoder_memory" in `tests/test_audit_rar_iso_dir.py`; for the rapidgzip
+child, `tests/test_accelerator_memory_limit.py`.
 
 #### Key derivation
 
@@ -686,10 +705,9 @@ decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib and raw DEFLATE (`internal/streams/codecs/rapidgzip_child.py`), and
 PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
 `internal/streams/codecs/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
-costs only the member. The rapidgzip child's memory is capped at
-`DecoderLimits.max_decoder_memory`: rapidgzip keeps decoded chunks, so a small file of
-zeros could otherwise take gigabytes, and the standard library takes over from a child
-stopped at the cap.
+costs only the member. A rapidgzip child stopped at its memory cap
+([Decoder memory](#decoder-memory)) raises no error to the caller: the standard library
+reads the rest of the stream.
 
 **Residual.** `MemoryError` passes through, and an in-process native decoder can still
 abort the process ([accepted](#a-native-decoder-crash-or-memoryerror)).

@@ -141,7 +141,8 @@ not with the size of the file. The child's memory SHALL be capped by
 whose peak resident memory grows past the cap SHALL be stopped, and the stdlib backend SHALL
 read the rest of the stream, so the bytes delivered and the errors match `OFF`. The check MAY
 run at intervals, so the peak MAY pass the cap by what the decoder allocates between two
-checks. `None` sets no cap. Where the platform does not report the child's peak memory, no cap
+checks, but it SHALL also run before the child answers each read. `None` sets no cap, and
+nothing outside the caller's configuration, such as an environment variable, SHALL set one. Where the platform does not report the child's peak memory, no cap
 applies.
 
 rapidgzip over-reads past a DEFLATE end-of-stream looking for a concatenated member, so the

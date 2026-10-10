@@ -15,9 +15,11 @@ and then the payload. All integers are little-endian.
 
 Parent to child:
 
-- ``OPEN`` once, first. Argument 0: the payload is a file-system path, which the child
-  opens itself. Argument 1: the source is the parent's stream, read through ``SRC_*``
-  frames (below).
+- ``OPEN`` once, first. The payload starts with ``OPEN_LIMIT``: the memory limit in
+  bytes, or ``NO_MEMORY_LIMIT`` (see Memory, below). Argument 0: the rest of the
+  payload is a file-system path, which the child opens itself. Argument 1: the source
+  is the parent's stream, read through ``SRC_*`` frames (below), and nothing follows
+  the limit.
 - ``READ`` (argument: at most this many bytes), ``SEEK`` (argument: offset; payload: one
   byte, ``whence``), ``RESUME`` (argument: a decompressed offset; the reply's argument is
   the largest index point at or before it, or -1), ``POINTS`` (argument: a
@@ -42,14 +44,15 @@ Child to parent:
 
 The parent closes its end of the pipes to stop the child.
 
-Memory. When the environment variable ``MAX_MEMORY_ENV`` holds a byte count, the child
-watches its own peak resident memory once the source is open (``watch_memory``). When
-the peak grows by more than that count, the child exits at once with status
-``MEMORY_LIMIT_EXIT``.
+Memory. When ``OPEN`` carries a limit, the child watches its own peak resident memory
+once the source is open (``watch_memory``), and checks it again before each ``READ``
+reply. When the peak has grown by more than the limit, the child exits at once with
+status ``MEMORY_LIMIT_EXIT``.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib
 import io
 import os
@@ -59,6 +62,7 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from typing import IO, Any
 
 FRAME = struct.Struct("<BqI")
@@ -73,9 +77,10 @@ SRC_READ, SRC_SEEK, SRC_TELL = 10, 11, 12
 
 OPEN_PATH, OPEN_STREAM = 0, 1
 
-# The environment variable that carries the memory limit, in bytes, and the exit status
-# of a child that went over it. See ``watch_memory``.
-MAX_MEMORY_ENV = "ARCHIVEY_RAPIDGZIP_MAX_MEMORY"
+# The start of the OPEN payload: the memory limit in bytes, or NO_MEMORY_LIMIT. And the
+# exit status of a child that went over it. See ``watch_memory``.
+OPEN_LIMIT = struct.Struct("<q")
+NO_MEMORY_LIMIT = -1
 MEMORY_LIMIT_EXIT = 86
 # How often the child checks its peak memory, in seconds.
 _MEMORY_POLL_INTERVAL = 0.001
@@ -216,7 +221,9 @@ def _points_around(stream: Any, offset: int) -> tuple[int, bytes]:
     return len(points), POINTS_REPLY.pack(*before, *after)
 
 
-def _serve(channel: _Channel, stream: Any) -> None:
+def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
+    """Answer the parent's requests until it goes away. ``ceiling`` is from
+    ``watch_memory``: each ``READ`` reply waits for one more check against it."""
     while True:
         tag, arg, payload = channel.requests.get()
         if tag == 0:
@@ -224,6 +231,7 @@ def _serve(channel: _Channel, stream: Any) -> None:
         try:
             if tag == READ:
                 data = stream.read(arg)
+                check_memory(ceiling)
                 ok = channel.send(OK, len(data), data)
             elif tag == SEEK:
                 ok = channel.send(OK, stream.seek(arg, payload[0] if payload else 0))
@@ -312,8 +320,13 @@ def _linux_peak_memory() -> int | None:
     return None
 
 
-def _windows_peak_memory() -> int | None:
-    """``PeakWorkingSetSize`` from ``GetProcessMemoryInfo``, or ``None`` if it fails."""
+@functools.cache
+def _windows_memory_query() -> Callable[[], int | None] | None:
+    """A function that reads ``PeakWorkingSetSize``, or ``None`` where ctypes cannot.
+
+    Built once: the watching thread calls it a thousand times a second, so loading
+    ``kernel32``, setting the prototypes and making the structure type stay out of it.
+    """
     try:
         import ctypes
         from ctypes import wintypes
@@ -334,19 +347,51 @@ def _windows_peak_memory() -> int | None:
 
         kernel32 = getattr(ctypes, "WinDLL")("kernel32")  # noqa: B009 - Windows only
         kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-        counters = Counters()
-        counters.cb = ctypes.sizeof(counters)
-        if not kernel32.K32GetProcessMemoryInfo(
-            kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
-        ):
-            return None
-        return int(counters.PeakWorkingSetSize)
+        kernel32.GetCurrentProcess.argtypes = []
+        get_memory_info = kernel32.K32GetProcessMemoryInfo
+        get_memory_info.restype = wintypes.BOOL
+        get_memory_info.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(Counters),
+            wintypes.DWORD,
+        ]
+        process = kernel32.GetCurrentProcess()
+        size = ctypes.sizeof(Counters)
     except (ImportError, OSError, AttributeError):
         return None
 
+    def query() -> int | None:
+        # A new structure per call: the watching thread and the serving thread both ask.
+        counters = Counters()
+        counters.cb = size
+        if not get_memory_info(process, ctypes.byref(counters), size):
+            return None
+        return int(counters.PeakWorkingSetSize)
 
-def watch_memory(limit: int) -> None:
-    """End this process when its peak memory grows by more than ``limit`` bytes.
+    return query
+
+
+def _windows_peak_memory() -> int | None:
+    """``PeakWorkingSetSize`` from ``GetProcessMemoryInfo``, or ``None`` if it fails."""
+    query = _windows_memory_query()
+    return None if query is None else query()
+
+
+def check_memory(ceiling: int | None) -> None:
+    """End this process with ``MEMORY_LIMIT_EXIT`` when its peak memory is past
+    ``ceiling`` bytes. ``None`` checks nothing."""
+    if ceiling is None:
+        return
+    peak = _peak_memory()
+    if peak is not None and peak > ceiling:
+        # os._exit: rapidgzip's threads are running, and a normal exit with them
+        # running aborts the process.
+        os._exit(MEMORY_LIMIT_EXIT)
+
+
+def watch_memory(limit: int) -> int | None:
+    """End this process when its peak memory grows by more than ``limit`` bytes, and
+    return the ceiling that ``check_memory`` compares with.
 
     rapidgzip keeps decoded chunks in memory, and a chunk is as large as its output:
     a gzip file of 1 MB that decodes to 1 GiB held close to 1 GiB. No rapidgzip
@@ -355,33 +400,26 @@ def watch_memory(limit: int) -> None:
     under a smaller limit ends in a segmentation fault. So a thread checks the peak
     resident memory every ``_MEMORY_POLL_INTERVAL`` and exits with
     ``MEMORY_LIMIT_EXIT`` when it has grown by more than ``limit`` since this call.
-    The parent then reads the rest of the stream with the standard library, which
-    decodes in bounded memory. The peak can pass the limit by what the decoder
-    allocates between two polls: measured on four cores, about 17 MB.
+    ``_serve`` checks again before each ``READ`` reply, so a watching thread that waits
+    for a processor delays the stop by one read request at most. The parent then reads
+    the rest of the stream with the standard library, which decodes in bounded memory.
+    The peak can pass the limit by what the decoder allocates between two checks:
+    measured on four cores, about 17 MB.
 
-    Where the peak cannot be read, nothing is watched.
+    Where the peak cannot be read, nothing is watched, and this returns ``None``.
     """
     start = _peak_memory()
     if start is None:
-        return
+        return None
     ceiling = start + limit
 
     def watch() -> None:
         while True:
-            peak = _peak_memory()
-            if peak is not None and peak > ceiling:
-                # os._exit: rapidgzip's threads are running, and a normal exit with
-                # them running aborts the process.
-                os._exit(MEMORY_LIMIT_EXIT)
+            check_memory(ceiling)
             time.sleep(_MEMORY_POLL_INTERVAL)
 
     threading.Thread(target=watch, daemon=True).start()
-
-
-def _memory_limit() -> int | None:
-    """The limit in ``MAX_MEMORY_ENV``, or ``None`` when it is not set."""
-    text = os.environ.get(MAX_MEMORY_ENV, "")
-    return int(text) if text.isdigit() else None
+    return ceiling
 
 
 def main() -> None:
@@ -395,6 +433,8 @@ def main() -> None:
     if tag != OPEN:
         return
     try:
+        (limit,) = OPEN_LIMIT.unpack_from(payload)
+        payload = payload[OPEN_LIMIT.size :]
         # import_module: rapidgzip has no type stubs, and the type checkers read this
         # file as part of the package.
         rapidgzip = importlib.import_module("rapidgzip")
@@ -411,13 +451,11 @@ def main() -> None:
         channel.send(ERR, 0, _error_payload(exc))
         return
     try:
-        limit = _memory_limit()
-        if limit is not None:
-            # Started after the open, so the limit counts what the decode holds and
-            # not the interpreter and rapidgzip's start-up.
-            watch_memory(limit)
+        # Started after the open, so the limit counts what the decode holds and not the
+        # interpreter and rapidgzip's start-up.
+        ceiling = None if limit == NO_MEMORY_LIMIT else watch_memory(limit)
         if channel.send(OK):
-            _serve(channel, stream)
+            _serve(channel, stream, ceiling)
     finally:
         # close(), not join_threads(), stops rapidgzip's threads; one still running
         # when the interpreter finalizes aborts the process.
