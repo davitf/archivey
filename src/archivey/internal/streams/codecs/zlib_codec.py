@@ -18,6 +18,7 @@ from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
     CodecSource,
+    ProbeChargeDecode,
     ProbeReadAt,
     _restoring_position,
     _source_tail,
@@ -562,6 +563,7 @@ class ZlibCodec(_ZlibErrorCodec):
         *,
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
     ) -> bool:
         """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
         return _zlib_header_plausible(prefix) and self._decodes_sample(

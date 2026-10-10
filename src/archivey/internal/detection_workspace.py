@@ -262,6 +262,8 @@ class PrefixWorkspace:
         re-decode), grow the prefix under the smaller of
         :data:`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` and :attr:`read_ceiling`, and return
         ``None`` past that cap (recorded as ``BUDGET_EXHAUSTED``). Short/empty on EOF.
+        A seek read that starts inside the prefix takes that part from the prefix, so
+        the bytes are not fetched twice.
         """
         if offset < 0 or length < 0:
             return None
@@ -274,6 +276,11 @@ class PrefixWorkspace:
 
         handle = self._cheap_random_access_handle()
         if handle is not None:
+            held = len(self._buf)
+            if offset < held:
+                self._receipt.prefix_bytes += held - offset
+                rest = self._read_at_via_seek(handle, held, end - held)
+                return bytes(self._buf[offset:held]) + rest
             return self._read_at_via_seek(handle, offset, length)
 
         if end > min(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE, self.read_ceiling):
