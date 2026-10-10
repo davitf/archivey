@@ -66,6 +66,7 @@ from archivey.internal.backends.sevenzip_parser import (
     folder_is_encrypted,
     folder_unpack_size,
     materialize_archive,
+    parse_decoded_header,
     parse_header_block,
     read_signature_and_next_header,
 )
@@ -75,7 +76,6 @@ from archivey.internal.backends.sevenzip_pipeline import (
     decode_folder_to_bytes,
     encoded_header_needs_password,
     open_folder_pipeline,
-    parse_decoded_header,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import (

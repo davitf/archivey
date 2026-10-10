@@ -664,6 +664,23 @@ def parse_header_block(
     return EncodedHeader(_read_streams_info(cur, max_members=max_members))
 
 
+def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHeader:
+    """Parse the plaintext that one encoded-header layer decoded to.
+
+    7-Zip requires ``kHeader`` here (7zIn.cpp, ReadDatabase2). Empty output or a bare
+    ``kEnd`` would otherwise parse as an archive with no members, and a second
+    ``kEncodedHeader`` is hostile (a COPY payload that is itself; O14).
+    """
+    first = decoded[:1]
+    if first == bytes([_Property.ENCODED_HEADER]):
+        raise CorruptionError("Encoded 7z header decoded to another encoded header")
+    if first != bytes([_Property.HEADER]):
+        raise CorruptionError("Encoded 7z header did not decode to a 7z HEADER")
+    block = parse_header_block(decoded, max_members=max_members)
+    assert isinstance(block, PlainHeader)
+    return block
+
+
 def materialize_archive(
     signature: SignatureInfo,
     plain: PlainHeader,
@@ -726,37 +743,33 @@ def empty_archive(signature: SignatureInfo) -> SevenZipArchive:
     )
 
 
-def encoded_folder_slices(
+def encoded_header_slice(
     encoded: EncodedHeader,
-) -> list[tuple[SevenZipFolder, int, int, int]]:
-    """Return ``(folder, absolute_offset, compressed_size, uncompressed_size)`` slices.
+) -> tuple[SevenZipFolder, int, int, int]:
+    """Return ``(folder, absolute_offset, compressed_size, uncompressed_size)``.
 
-    Offsets are absolute from the start of the archive file.
+    The offset is absolute from the start of the archive file. An encoded header has
+    exactly one folder: 7-Zip writes one and refuses any other count (7zIn.cpp,
+    ReadAndDecodePackedStreams), so zero folders or several concatenated ones are
+    corrupt, not an empty or a split header.
     """
     streams = encoded.streams
     folders = streams.folders or []
-    pack_sizes = streams.pack_sizes or []
-    pack_positions = streams.pack_positions or _pack_positions(pack_sizes)
-    pack_stream_index = 0
-    slices: list[tuple[SevenZipFolder, int, int, int]] = []
-
-    for folder in folders:
-        pack_count = len(folder.packed_indices)
-        if pack_count != 1:
-            raise UnsupportedFeatureError(
-                "Encoded 7z headers with multi-pack folders are not supported"
-            )
-        if pack_stream_index >= len(pack_sizes):
-            raise CorruptionError("Encoded 7z header references a missing pack stream")
-
-        compressed_size = pack_sizes[pack_stream_index]
-        uncompressed_size = folder_unpack_size(folder)
-        absolute_offset = (
-            SIGNATURE_HEADER_SIZE + streams.pack_pos + pack_positions[pack_stream_index]
+    if len(folders) != 1:
+        raise CorruptionError(
+            f"Encoded 7z header has {len(folders)} folders; it must have exactly one"
         )
-        slices.append((folder, absolute_offset, compressed_size, uncompressed_size))
-        pack_stream_index += pack_count
-    return slices
+    (folder,) = folders
+    if len(folder.packed_indices) != 1:
+        raise UnsupportedFeatureError(
+            "Encoded 7z headers with multi-pack folders are not supported"
+        )
+    pack_sizes = streams.pack_sizes or []
+    if not pack_sizes:
+        raise CorruptionError("Encoded 7z header references a missing pack stream")
+    pack_positions = streams.pack_positions or _pack_positions(pack_sizes)
+    absolute_offset = SIGNATURE_HEADER_SIZE + streams.pack_pos + pack_positions[0]
+    return folder, absolute_offset, pack_sizes[0], folder_unpack_size(folder)
 
 
 def folder_unpack_size(folder: SevenZipFolder) -> int:
@@ -810,11 +823,12 @@ __all__ = [
     "compression_method_for_coder",
     "crc32",
     "empty_archive",
-    "encoded_folder_slices",
+    "encoded_header_slice",
     "find_signature_offset",
     "folder_is_encrypted",
     "folder_unpack_size",
     "materialize_archive",
+    "parse_decoded_header",
     "parse_header_block",
     "read_signature_and_next_header",
     "unpack_signature_header",
@@ -1403,7 +1417,7 @@ def _folder_compressed_sizes(
     for folder in folders:
         pack_count = len(folder.packed_indices)
         if pack_index + pack_count > len(pack_sizes):
-            # Same verdict as encoded_folder_slices: a folder naming pack streams
+            # Same verdict as encoded_header_slice: a folder naming pack streams
             # the PackInfo does not hold is corrupt, not "compressed size unknown".
             raise CorruptionError("7z header references a missing pack stream")
         sizes.append(sum(pack_sizes[pack_index : pack_index + pack_count]))
@@ -1422,7 +1436,10 @@ def _pack_positions(pack_sizes: list[int]) -> list[int]:
 
 def _skip_archive_properties(cur: _Cursor) -> None:
     while True:
-        prop = _read_property(cur, "7z archive properties")
+        # A number, as in FILES_INFO: 7-Zip skips every archive property by its size
+        # (7zIn.cpp, ReadArchiveProperties), so an ID it does not know is no reason to
+        # refuse the archive.
+        prop = cur.uint64()
         if prop == _Property.END:
             return
         size = cur.uint64()

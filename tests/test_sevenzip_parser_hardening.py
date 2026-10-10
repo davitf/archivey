@@ -557,9 +557,13 @@ def test_entry_points_default_to_the_listing_limit(
     assert param.default is not None
 
 
-@pytest.mark.parametrize("helper", ["unwrap_encoded_header", "parse_decoded_header"])
-def test_pipeline_helpers_require_max_members(helper: str) -> None:
-    param = inspect.signature(getattr(sevenzip_pipeline, helper)).parameters[
-        "max_members"
-    ]
+@pytest.mark.parametrize(
+    "helper",
+    [
+        sevenzip_pipeline.unwrap_encoded_header,
+        sevenzip_parser.parse_decoded_header,
+    ],
+)
+def test_header_helpers_require_max_members(helper: Callable[..., object]) -> None:
+    param = inspect.signature(helper).parameters["max_members"]
     assert param.default is inspect.Parameter.empty

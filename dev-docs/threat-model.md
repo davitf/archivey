@@ -329,10 +329,10 @@ archive declares.
   keep the same 64. A larger cap let a small header drive the planner and the nested
   decode streams into a raw `RecursionError`.
 - 7z decodes one encoded-header layer and raises `CorruptionError` if the result is
-  another encoded header (`internal/backends/sevenzip_pipeline.py`
+  another encoded header (`internal/backends/sevenzip_parser.py`
   `parse_decoded_header`); a COPY header that decodes to itself would otherwise loop.
-  The running total of encoded-header folder unpack sizes is capped at
-  `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
+  An encoded header must have exactly one folder, as in 7-Zip, and its unpack size is
+  capped at `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
 - RAR checks `max_members` while parsing the member table at `open_archive`. It weighs
   the summed declared sizes of compressed RAR 1.5/2.x comments against
   `max_metadata_bytes` before decoding any, because the decode is the cost (one `unrar`

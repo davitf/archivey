@@ -1985,21 +1985,66 @@ def test_encoded_header_self_copy_is_typed_corruption() -> None:
             pass
 
 
-def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
-    """Per-folder unpack cap is not enough: two COPY folders can concatenate past it."""
+@pytest.mark.parametrize(
+    ("packed", "next_header"),
+    [
+        # kEncodedHeader with a PackInfo of zero streams and no folders.
+        pytest.param(b"", bytes.fromhex("170600000000"), id="zero-folders"),
+        # One COPY folder with unpack size 0: decodes to b"".
+        pytest.param(
+            b"",
+            bytes.fromhex("17060001090000070b010001000c000000"),
+            id="decodes-to-nothing",
+        ),
+        # One COPY folder that decodes to a bare kEnd.
+        pytest.param(
+            b"\x00",
+            bytes.fromhex("17060001090100070b010001000c010000"),
+            id="decodes-to-bare-end",
+        ),
+        # A valid plain header (kHeader, kEnd) split across two COPY folders.
+        pytest.param(
+            b"\x01\x00",
+            bytes.fromhex("1706000209010100070b0200010001000c01010000"),
+            id="two-folders",
+        ),
+    ],
+)
+def test_encoded_header_without_one_plain_header_is_corruption(
+    packed: bytes, next_header: bytes
+) -> None:
+    """7-Zip refuses each of these; none may open as an archive (DR-1)."""
+    blob = _sevenzip_blob(packed=packed, next_header=next_header)
+    with raises_corruption_not_truncation():
+        with open_archive(io.BytesIO(blob)):
+            pass
+
+
+@pytest.mark.parametrize(
+    "prop_id",
+    [pytest.param(b"\x30", id="one-byte"), pytest.param(b"\x80\x90", id="two-byte")],
+)
+def test_unknown_archive_property_is_skipped(prop_id: bytes) -> None:
+    """7-Zip skips an archive property it does not know by its size, as for FILES_INFO."""
+    # kHeader, kArchiveProperties, {id, size 1, payload 0x00}, kEnd, kEnd.
+    next_header = b"\x01\x02" + prop_id + b"\x01\x00\x00\x00"
+    blob = _sevenzip_blob(packed=b"", next_header=next_header)
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert archive.members() == []
+
+
+def test_encoded_header_unpack_size_is_capped() -> None:
+    """A COPY folder claiming more than the next-header cap is refused before decoding."""
     from archivey.internal.backends.sevenzip_parser import MAX_NEXT_HEADER_SIZE
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
-    # Two COPY folders, unpack 1 + MAX_NEXT_HEADER_SIZE. The running total
-    # is the bound; a per-folder check would let the first through.
     next_header = (
-        bytes.fromhex("1706000209010100070b0200010001000c")
-        + _sevenzip_uint64(1)
-        + _sevenzip_uint64(MAX_NEXT_HEADER_SIZE)
+        bytes.fromhex("17060001090100070b010001000c")
+        + _sevenzip_uint64(MAX_NEXT_HEADER_SIZE + 1)
         + bytes.fromhex("0000")
     )
-    blob = _sevenzip_blob(packed=b"\x00\x00", next_header=next_header)
-    with raises_corruption_not_truncation(match="unpack size|parser limit"):
+    blob = _sevenzip_blob(packed=b"\x00", next_header=next_header)
+    with raises_corruption_not_truncation(match="parser limit"):
         parse_sevenzip_archive(io.BytesIO(blob))
 
 

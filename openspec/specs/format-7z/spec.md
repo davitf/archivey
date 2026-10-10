@@ -78,6 +78,7 @@ stays in `ArchiveInfo.comment`, and only a comment with an odd byte count is a
 | Archive stores a comment | `ArchiveInfo.comment` contains the comment |
 | Archive contains anti-items | Member list remains correct |
 | `FILES_INFO` holds an unknown property (ID `0x1A` or higher) | Property skipped; members read |
+| `ARCHIVE_PROPERTIES` holds a property of any ID | Property skipped by its size; members read |
 | Stored name `dir\file.txt` | `name == "dir/file.txt"`; `raw_name` is the stored bytes, backslash included |
 | Stored name holds a lone surrogate (`hi` U+D800) | Every member lists; `name == "hi\ud800"`; never `CorruptionError` |
 | Comment holds a lone surrogate (`note` U+D800) | Archive opens; `ArchiveInfo.comment == "note\ud800"` |
@@ -165,18 +166,23 @@ bound only. A folder, unpack-stream, or file count over
 
 ### Requirement: Bound encoded-header decode work
 
-The system SHALL decode at most one encoded-header layer (7-Zip writes one). A
-decoded blob that is itself `kEncodedHeader` SHALL raise `CorruptionError`.
-Unpack sizes across folders of one encoded header SHALL be summed against the
-next-header size cap (`_MAX_NEXT_HEADER_SIZE`) before concatenation, not only
-per folder.
+The system SHALL decode at most one encoded-header layer (7-Zip writes one). An
+encoded header SHALL have exactly one folder, as 7-Zip requires; zero folders or more
+than one SHALL raise `CorruptionError`. The folder's unpack size SHALL be checked
+against the next-header size cap (`MAX_NEXT_HEADER_SIZE`) before decoding. The
+decoded blob SHALL start with `kHeader`: a blob that is itself `kEncodedHeader`, empty,
+or a bare `kEnd` SHALL raise `CorruptionError` and SHALL NOT open as an archive with no
+members. For a header-encrypted archive these failures count as a rejected password
+(`EncryptionError`), because a wrong key cannot be told from damaged bytes.
 
 #### Scenario: encoded-header decode bound matrix
 
 | Case | Expected |
 | --- | --- |
 | COPY encoded header whose packed bytes are that same header | `CorruptionError` at open; no hang |
-| Two encoded-header folders whose unpack sizes each fit the cap but sum past it | `CorruptionError` at decode; no concatenated buffer past the next-header cap |
+| Encoded-header folder claims an unpack size past the next-header cap | `CorruptionError` before decoding |
+| Encoded header with zero folders, or with two folders that together hold a valid plain header | `CorruptionError` at open |
+| Unencrypted encoded header that decodes to nothing, or to a bare `kEnd` | `CorruptionError` at open; never an empty archive |
 | Legitimate single-layer encoded header (including header-encrypted) | Decode once; parse the resulting plain HEADER |
 
 ### Requirement: 7z anti-items are MemberType.ANTI

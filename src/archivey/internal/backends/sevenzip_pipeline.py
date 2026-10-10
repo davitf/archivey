@@ -72,9 +72,10 @@ from archivey.internal.backends.sevenzip_parser import (
     check_bind_pairs,
     check_packed_indices,
     empty_archive,
-    encoded_folder_slices,
+    encoded_header_slice,
     folder_is_encrypted,
     materialize_archive,
+    parse_decoded_header,
     parse_header_block,
     read_signature_and_next_header,
 )
@@ -1051,41 +1052,27 @@ def decode_encoded_header(
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
 ) -> bytes:
-    """Materialize an ENCODED_HEADER's packed folders to plaintext header bytes."""
-    decoded = bytearray()
-    claimed = 0
-    for (
-        folder,
-        absolute_offset,
-        compressed_size,
-        uncompressed_size,
-    ) in encoded_folder_slices(encoded):
-        # Hostile archives can claim a multi-EiB folder unpack size. Cap the
-        # running total before ``read_exact`` / codec buffers allocate
-        # (Atheris: raw MemoryError). Per-folder is redundant: unpack sizes
-        # are non-negative, so a single folder over the cap fails the total
-        # on the same iteration. Two COPY folders at 40 MiB concatenate past
-        # the 64 MiB next-header cap (S2-F2) — that is why the total matters.
-        claimed += uncompressed_size
-        if claimed > MAX_NEXT_HEADER_SIZE:
-            raise CorruptionError(
-                f"Encoded 7z header unpack size {claimed} exceeds the "
-                f"{MAX_NEXT_HEADER_SIZE}-byte parser limit"
-            )
-        source = SlicingStream(archive_fp, absolute_offset, compressed_size)
-        decoded.extend(
-            decode_folder_to_bytes(
-                source,
-                folder,
-                compressed_size=compressed_size,
-                uncompressed_size=uncompressed_size,
-                password=password,
-                key_cache=key_cache,
-                stream_config=stream_config,
-                collector=collector,
-            )
+    """Materialize an ENCODED_HEADER's one packed folder to plaintext header bytes."""
+    folder, absolute_offset, compressed_size, uncompressed_size = encoded_header_slice(
+        encoded
+    )
+    # Hostile archives can claim a multi-EiB folder unpack size. Cap it before
+    # ``read_exact`` / codec buffers allocate (Atheris: raw MemoryError).
+    if uncompressed_size > MAX_NEXT_HEADER_SIZE:
+        raise CorruptionError(
+            f"Encoded 7z header unpack size {uncompressed_size} exceeds the "
+            f"{MAX_NEXT_HEADER_SIZE}-byte parser limit"
         )
-    return bytes(decoded)
+    return decode_folder_to_bytes(
+        SlicingStream(archive_fp, absolute_offset, compressed_size),
+        folder,
+        compressed_size=compressed_size,
+        uncompressed_size=uncompressed_size,
+        password=password,
+        key_cache=key_cache,
+        stream_config=stream_config,
+        collector=collector,
+    )
 
 
 def encoded_header_needs_password(encoded: EncodedHeader) -> bool:
@@ -1109,15 +1096,6 @@ def unwrap_encoded_header(
         block = parse_decoded_header(decode(block), max_members=max_members)
     assert isinstance(block, PlainHeader)
     return block, header_encrypted
-
-
-def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHeader:
-    """Parse the plaintext an encoded-header layer decoded to."""
-    block = parse_header_block(decoded, max_members=max_members)
-    if isinstance(block, EncodedHeader):
-        # A second EncodedHeader is hostile (COPY payload that is itself; O14).
-        raise CorruptionError("Encoded 7z header decoded to another encoded header")
-    return block
 
 
 def parse_sevenzip_archive(
