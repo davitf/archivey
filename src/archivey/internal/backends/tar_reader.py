@@ -277,10 +277,20 @@ class _TarFile(tarfile.TarFile):
 
     ``TarFile.next()`` returns ``None`` both on a zero block (the first end-of-archive
     block) and on a header it rejects after the first member, and swallows the error
-    that told the two apart. :meth:`_TarInfo.fromtarfile` sets ``stopped_on`` on every
-    header parse, so after the walk ends it says which one the last parse hit. It
-    comes from the error class, not from the bytes read, so it is the same answer in
-    both access modes, and whatever block follows the stop.
+    that told the two apart. It calls :meth:`_TarInfo.fromtarfile` once per member,
+    and that call sets ``stopped_on``, so after the walk ends it says which of the two
+    the last parse hit. It comes from the error class, not from the
+    bytes read, so it is the same answer in both access modes, and whatever block
+    follows the stop.
+
+    Only the outermost parse matters. A GNU long-name or PAX header is followed by a
+    nested parse of the member's own header; a failure there reaches ``next()`` as
+    ``SubsequentHeaderError``, which it re-raises as ``ReadError`` instead of
+    swallowing, so the walk ends with an error and ``stopped_on`` is not read. From
+    CPython 3.11.16, 3.12.14, 3.13.13 and 3.14.4 that nested parse goes through the
+    private ``_fromtarfile`` and bypasses the override; earlier patch releases run it
+    through ``fromtarfile`` and so through the override, innermost first, and the
+    outermost call still runs last.
     """
 
     stopped_on: _HeaderStop | None = None
@@ -319,10 +329,12 @@ class _TarInfo(tarfile.TarInfo):
                 tarfile.stopped_on = "rejected_header"
             raise
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
-        # the end of this member's data area. For a header preceded by GNU long-name or
-        # PAX headers this runs once per header, innermost first; the outermost call
-        # runs last and sees the final offset, which a PAX ``size`` record may change,
-        # and the final ``linkname``, which a long link name or PAX linkpath sets.
+        # the end of this member's data area. This call returns only after any GNU
+        # long-name or PAX headers before the member's header have been parsed and
+        # applied (on older CPython patch releases the nested parses also run through
+        # here, and finish first; see :class:`_TarFile`), so it sees the final offset,
+        # which a PAX ``size`` record may change, and the final ``linkname``, which a
+        # long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
         _drop_unweighed_link_name(info)
         return info
@@ -1216,8 +1228,11 @@ class TarReader(BaseArchiveReader):
                 self._emit_eof_marker("damaged_second_block", observed_bytes=512)
                 self._verify_nothing_but_zeros_to_eof()
                 return
-            # tarfile stopped on neither a zero block nor a rejected header (its data
-            # ran out), yet a whole block follows: not a trailer, so not a clean end.
+            # The walk recorded no stop reason, yet a whole block follows. Not reached
+            # today: tarfile's other stops (no data, or a partial block) leave the
+            # source at its end. Kept as a conservative fallback, so that a stop
+            # reason nobody anticipated cannot read as a clean end.
+            assert stopped_on is None
             self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
         self._emit_eof_marker(

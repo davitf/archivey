@@ -202,10 +202,10 @@ on seeing the bytes tarfile read, and SHALL NOT key the decision on
   boundary with no valid two-block trailer (`observed_kind="absent"` for EOF,
   `"short"` for a partial block) is the irreducibly ambiguous residual: a
   complete-but-trailer-less tar and a tar truncated exactly at a member boundary are
-  byte-identical and not decidable without a native TAR header walker (post-v1). It
-  SHALL follow ordinary diagnostic disposition with no escalation of its own: a warning
-  by default, `DiagnosticRaisedError` after delivery when the code resolves to `RAISE`
-  (as under `DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
+  byte-identical, so no reader can tell them apart. It SHALL follow ordinary diagnostic
+  disposition with no escalation of its own: a warning by default,
+  `DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
+  `DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
 
 The rejected-header escalation to `CorruptionError` SHALL take precedence over
 `DiagnosticRaisedError`, including when the diagnostic disposition is `IGNORE` or

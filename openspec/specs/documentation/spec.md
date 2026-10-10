@@ -240,7 +240,6 @@ threat-model / known-issues material MUST NOT be the only place this is written.
 | Inventory / dedupe guidance | Shows a `RAISE` disposition on `ARCHIVE_EOF_MARKER_MISSING` as the escalation for the ambiguous residual, not as the only corruption backstop |
 | Trailing data | Documented as reported within 1 MiB of the trailer, and not beyond |
 | Rejected final header | Documented as raising `CorruptionError` in both access modes |
-| Post-v1 native TAR | Mentioned as possible future improvement for the residual + streaming gap, not a v1 promise |
 
 ### Requirement: Docstring cross-reference roles render as links
 

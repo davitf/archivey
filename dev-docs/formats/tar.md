@@ -59,10 +59,10 @@ one, so duplicate names are ordinary and the last one is current.
 corrupt header after the first, and a source that simply ran out all end tarfile's walk
 the same way, with no exception. archivey reconstructs the reason from the error the
 last header parse raised before tarfile swallowed it (§2.2), and the result has three
-outcomes: a header tarfile rejected is corruption; a missing, short or damaged trailer is a warning, because a
-complete tar written without a trailer and a tar truncated exactly at a member boundary
-are the same bytes, and a zero block followed by a damaged one still ends a whole
-listing; bytes after a good trailer are trailing data. An empty tar is nothing but
+outcomes: a header tarfile rejected is corruption; a missing, short or damaged trailer
+is a warning, because a complete tar written without a trailer and a tar truncated
+exactly at a member boundary are the same bytes, and a zero block followed by a damaged
+one still ends a whole listing; bytes after a good trailer are trailing data. An empty tar is nothing but
 zeros, so a zero-filled file of any block-aligned length is a valid empty archive
 ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). Two tars joined
 with `cat` list as the first one plus a trailing-data diagnostic, because the first
@@ -161,12 +161,12 @@ bytes were read, so both modes run the same EOF check, in this order:
      so this is the second. A null block is a good trailer. A short or empty read emits
      `ARCHIVE_EOF_MARKER_MISSING` under the ordinary policy, a warning by default. A
      non-null block after a zero block, with at least one member listed, means the
-     listing is whole and only the end-of-archive marker is damaged, so it is `ARCHIVE_EOF_MARKER_MISSING`
-     (`expected_marker="second_zero_block"`, `observed_kind="nonzero"`) under the
-     ordinary policy, as GNU tar ("A lone zero block") and 7-Zip list it with a warning
-     (maintainer ruling, 2026-10-06), and step 3 runs from the block after it. With no
-     member before the zero block it is `CorruptionError`, with
-     `expected_marker="two_zero_blocks"`.
+     listing is whole and only the end-of-archive marker is damaged, so it is
+     `ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="second_zero_block"`,
+     `observed_kind="nonzero"`) under the ordinary policy, as GNU tar ("A lone zero
+     block") and 7-Zip list it with a warning (maintainer ruling, 2026-10-06), and step 3
+     runs from the block after it. With no member before the zero block it is
+     `CorruptionError`, with `expected_marker="two_zero_blocks"`.
   3. After a good trailer, or a damaged second block, scan up to 1 MiB for a non-zero
      byte and emit `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar`
      pads to 10 KiB records. On a compressed tar the tail is decompressed to look at
@@ -457,7 +457,8 @@ extraction checks (§2.4).
 - **Whether to replace tarfile's walk with a native one.** It would validate each header
   at its offset, which lets a listing salvage past a bad header and drops tarfile's
   duplicate member list. It would not settle the missing-trailer ambiguity, which is in
-  the bytes. What would answer it: whether either of those two matters to a real caller before 1.0. The walker is tracked internally.
+  the bytes. What would answer it: whether either of those two matters to a real caller
+  before 1.0. The walker is tracked internally.
 - **Whether to detect v7 tars by their header checksum.** A 512-byte block whose checksum
   field matches its byte sum is strong evidence, and it is what `tarfile.is_tarfile`
   checks. It would also admit random blocks that happen to match, which the current
