@@ -298,6 +298,30 @@ does not gain random concurrent open.
 | `streaming=True` TAR | Forward-only contract unchanged; no concurrent random-open behavior |
 | Contention on shared handle | Correctness guaranteed; no correctness speed threshold |
 
+### Requirement: Refuse a malformed sparse map
+
+A TAR sparse member (old GNU `S` typeflag, or PAX sparse 0.0, 0.1 or 1.0) SHALL have
+its map checked before any of its data is returned. The backend SHALL raise
+`CorruptionError` when the member is opened (streaming: on its first read, so a
+consumer that skips the member is unaffected) if the map has a negative entry, if its
+chunks add up to more bytes than the member stores, if a non-empty chunk starts before
+the previous non-empty chunk ends (out of order or overlapping), if a chunk ends past
+the member's logical size, or if the logical size is past 2**63 - 1. GNU tar refuses
+each of these maps. An empty entry is exempt from the order check, because GNU tar
+ends a map with `(realsize, 0)` when the file ends in a hole and the old GNU header
+pads its unused slots with `(0, 0)`.
+
+#### Scenario: TAR sparse map matrix
+
+| Map (every encoding, both modes) | Expected |
+| --- | --- |
+| Chunks in file order, ending at or before the logical size, optional trailing empty entries | Stream yields the logical bytes |
+| A chunk at a lower offset than the previous one | `CorruptionError` |
+| Two chunks that overlap | `CorruptionError` |
+| A chunk that ends past the logical size | `CorruptionError` |
+| Chunks that add up to more than the member stores | `CorruptionError` |
+| A negative offset or length | `CorruptionError` |
+
 ### Requirement: Report non-zero bytes past the trailer
 
 After a complete two-block null end-of-archive trailer, or after a damaged second

@@ -349,6 +349,14 @@ def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
     known only rounded up to whole blocks, so up to 511 bytes of the member's own
     zero padding can still be read as data; nothing past its data area can.
 
+    The chunks must also be in file order, must not overlap, and must end at or
+    before the logical size. ``tarfile`` serves any other map without complaint: it
+    stitches out-of-order or overlapping chunks into one output, and it drops the
+    stored bytes of a chunk past the logical size. ``tar(1)`` refuses all three. An
+    empty entry is exempt from the order check: GNU tar ends a map with
+    ``(realsize, 0)`` when the file ends in a hole, and the old GNU header pads its
+    four slots with ``(0, 0)``.
+
     The logical size (the GNU ``realsize`` field or ``GNU.sparse.realsize``) is held
     to the same bound as a plain size: past ``_MAX_SEEK_OFFSET`` it is no file's size,
     and tarfile's fill of the trailing hole would raise a raw ``OverflowError`` or
@@ -365,12 +373,27 @@ def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
         )
     stored = stored_end - info.offset_data
     total = 0
+    previous_end = 0
     for offset, numbytes in sparse:
         if offset < 0 or numbytes < 0:
             return CorruptionError(
                 f"TAR sparse map of {quoted(info.name)} has a negative entry "
                 f"(offset {offset}, {numbytes} bytes)"
             )
+        if offset + numbytes > info.size:
+            return CorruptionError(
+                f"TAR sparse map of {quoted(info.name)} has a chunk at offset "
+                f"{offset} ({numbytes} bytes) that ends past the member's size "
+                f"of {info.size} bytes"
+            )
+        if numbytes:
+            if offset < previous_end:
+                return CorruptionError(
+                    f"TAR sparse map of {quoted(info.name)} is out of order or "
+                    f"overlapping: a chunk at offset {offset} starts before the "
+                    f"previous chunk ends at {previous_end}"
+                )
+            previous_end = offset + numbytes
         total += numbytes
     if total > stored:
         return CorruptionError(
@@ -873,8 +896,10 @@ class TarReader(BaseArchiveReader):
         if isinstance(exc, tarfile.StreamError):
             # A forward-only read that would have to go backwards ("seeking backwards
             # is not allowed"). tarfile reads a member's data chunks in the order its
-            # sparse map gives them, so only a map with a negative or out-of-order
-            # entry gets here.
+            # sparse map gives them, so a map with a negative entry or with chunks
+            # out of order would get here; _sparse_map_error refuses both before the
+            # first read. This branch keeps any other backward seek tarfile makes on
+            # a forward-only stream typed as damage.
             return CorruptionError(f"Error reading TAR archive: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"TAR archive is truncated: {exc!r}")

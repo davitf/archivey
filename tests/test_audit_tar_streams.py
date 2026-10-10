@@ -273,6 +273,116 @@ def test_sparse_map_past_packed_data_is_not_served_silently() -> None:
                 stream.read()
 
 
+def _pax_sparse(
+    version: str, entries: list[tuple[int, int]], realsize: int, packed: bytes
+) -> bytes:
+    """A PAX sparse member in encoding ``version`` 0.0, 0.1 or 1.0.
+
+    0.0 repeats the ``GNU.sparse.offset`` / ``GNU.sparse.numbytes`` keys, which
+    tarfile's ``pax_headers`` dict cannot hold, so the 0.x extended headers are
+    written by hand. 1.0 stores the map as text at the head of the data."""
+    if version == "1.0":
+        body = b"%d\n" % len(entries)
+        body += b"".join(b"%d\n%d\n" % entry for entry in entries)
+        body = body.ljust(-(-len(body) // 512) * 512, b"\0") + packed
+        pax = {
+            "GNU.sparse.major": "1",
+            "GNU.sparse.minor": "0",
+            "GNU.sparse.name": "a",
+            "GNU.sparse.realsize": str(realsize),
+        }
+        return _member("GNUSparseFile.0/a", body, pax_headers=pax)
+    fields = [("GNU.sparse.size", str(realsize))]
+    fields.append(("GNU.sparse.numblocks", str(len(entries))))
+    if version == "0.0":
+        for offset, numbytes in entries:
+            fields += [
+                ("GNU.sparse.offset", str(offset)),
+                ("GNU.sparse.numbytes", str(numbytes)),
+            ]
+    else:
+        flat = ",".join(f"{offset},{numbytes}" for offset, numbytes in entries)
+        fields.append(("GNU.sparse.map", flat))
+    records = b""
+    for key, value in fields:
+        text = f" {key}={value}\n".encode()
+        length = len(text) + len(str(len(text) + 1))
+        records += str(length).encode() + text
+    xhdr = tarfile.TarInfo("./PaxHeaders/a")
+    xhdr.type = tarfile.XHDTYPE
+    xhdr.size = len(records)
+    return (
+        xhdr.tobuf(format=tarfile.USTAR_FORMAT)
+        + records
+        + b"\0" * (-len(records) % 512)
+        + _member("a", packed)
+    )
+
+
+def _sparse_member(
+    encoding: str, entries: list[tuple[int, int]], realsize: int, packed: bytes
+) -> bytes:
+    if encoding == "gnu-old":
+        return _gnu_sparse("a", entries, realsize, packed)
+    return _pax_sparse(encoding.removeprefix("pax-"), entries, realsize, packed)
+
+
+_SPARSE_ENCODINGS = ["gnu-old", "pax-0.0", "pax-0.1", "pax-1.0"]
+_PACKED = b"A" * 512 + b"B" * 512
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+@pytest.mark.parametrize(
+    ("entries", "realsize"),
+    [
+        ([(4096, 512), (0, 512)], 8192),
+        ([(0, 512), (256, 512)], 2048),
+        ([(0, 512), (4096, 512)], 1024),
+    ],
+    ids=["out-of-order", "overlapping", "past-the-end"],
+)
+def test_sparse_map_out_of_order_overlapping_or_past_end_is_corruption(
+    entries: list[tuple[int, int]], realsize: int, encoding: str, streaming: bool
+) -> None:
+    """A sparse map's chunks must be in file order, must not overlap, and must end
+    within the logical size; GNU tar 1.35 refuses each of these maps. tarfile
+    stitches the first two into one output and drops the stored bytes of the third
+    (``B`` chunk), with no error."""
+    data = (
+        _sparse_member(encoding, entries, realsize, _PACKED)
+        + _member("b", b"SECRET")
+        + _TRAILER
+    )
+    with open_archive(io.BytesIO(data), streaming=streaming) as ar:
+        with pytest.raises(CorruptionError, match="sparse map"):
+            if streaming:
+                _drain(ar)
+            else:
+                with ar.open("a") as stream:
+                    stream.read()
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_sparse_map_in_order_with_trailing_empty_entry_is_read(
+    encoding: str, streaming: bool
+) -> None:
+    """The same chunks in order are a valid map. GNU tar ends a map with an empty
+    ``(realsize, 0)`` entry when the file ends in a hole, and the old GNU header pads
+    its unused slots with ``(0, 0)``; neither is out of order."""
+    entries = [(0, 512), (4096, 512), (8192, 0)]
+    data = (
+        _sparse_member(encoding, entries, 8192, _PACKED)
+        + _member("b", b"SECRET")
+        + _TRAILER
+    )
+    expected = b"A" * 512 + bytes(3584) + b"B" * 512 + bytes(3584)
+    with open_archive(io.BytesIO(data), streaming=streaming) as ar:
+        got = {m.name: s.read() for m, s in ar.stream_members() if s is not None}
+    assert got == {"a": expected, "b": b"SECRET"}
+
+
 def _sparse_1_0_tar(entries: int) -> bytes:
     body = b"%d\n" % entries + b"0\n0\n" * entries
     pax = {

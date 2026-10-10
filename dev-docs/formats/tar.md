@@ -257,7 +257,13 @@ member's content. The reader records where each member's data area ends as tarfi
 parses the header, and refuses a map whose chunks add up to more, or that has a negative
 entry, or a logical size past 2**63 - 1 (no file's size), with `CorruptionError` when
 the member is opened (streaming: on its first read,
-so a consumer that skips it is unaffected). The end is known only in whole blocks, so up
+so a consumer that skips it is unaffected). The same check refuses a map whose chunks
+are out of order, overlap, or end past the logical size: tarfile would stitch the first
+two into one output and silently drop the stored bytes of the third, and GNU tar
+refuses all three. Empty entries are exempt from the order check, since GNU tar ends a
+map with `(realsize, 0)` and the old GNU header pads its slots with `(0, 0)`. One
+function makes this check for all four encodings (old GNU and PAX 0.0, 0.1, 1.0),
+since tarfile turns each into the same list of `(offset, numbytes)` pairs. The end is known only in whole blocks, so up
 to 511 bytes of the member's own padding can still read as data.
 
 **A plain tar reads the member's bytes from the source**, at the offset the walk found.
