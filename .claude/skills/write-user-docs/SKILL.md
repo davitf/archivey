@@ -143,9 +143,10 @@ Rulings from the maintainer in #523's thread:
 
 Mechanics:
 
-- No em dashes or en dashes. Use commas or full stops. A colon only introduces a list or
-  an example. Parentheses only as a whole grammatical unit. Hyphens in words and ranges
-  ("2-3") are fine.
+- No em dashes or en dashes. Use commas or full stops. A colon introduces a list, an
+  example, or what the claim before it means ("It's safe by default: nothing lands outside
+  `out/`"). It never joins two separate thoughts. Parentheses only as a whole grammatical
+  unit. Hyphens in words and ranges ("2-3") are fine.
 - Never put a bidi control character in a doc or a chat message. Describe it in words,
   because a real one reverses the rest of the line where it's displayed.
 - Show defaults in a code block with one short comment per argument, then explain the

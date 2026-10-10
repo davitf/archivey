@@ -10,8 +10,8 @@ about everything else, and where those guarantees stop.
 
 Archivey checks each path in the destination right before writing to it, so a folder that another
 program swaps for a link between two files is caught. A program that swaps a folder at exactly the
-right moment could still redirect a write outside the destination, so extract into a folder that
-only trusted programs can write to.
+right moment could still redirect a write outside the destination, so the guarantee holds fully only
+for a folder that untrusted programs can't write to.
 
 If the archive changes while it's open, reads may fail or return a mix of old and new data, but the
 guarantees at the top of this page still hold.
@@ -30,33 +30,48 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 ## Where the guarantees stop
 
 - **A crash in native code can take your process with it.** Decoders written in C, such as the
-  standard library's zlib, bz2 and lzma, run inside your process. Archivey runs the decoders known to
-  crash in a child process, or feeds them in a way that avoids the crash, but one nobody has found
-  yet would still abort yours. PPMd members, used by some 7z and ZIP archives, are decoded in your
-  process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB by default) and in a child
-  process above it. Under a tight memory limit, such as a container's, the in-process decoder can
-  crash instead of raising an error.
-- **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken
-  for a damaged archive. `DecoderLimits` caps the memory an archive can ask a decoder for, 2 GiB by
-  default. Lower it if your process has less.
+  standard library's zlib, bz2 and lzma, run inside your process. Archivey runs the decoders known
+  to crash in a child process, or feeds them in a way that avoids the crash, but one nobody has
+  found yet would still abort yours. Members compressed with PPMd, a method some 7z and ZIP archives
+  use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB by
+  default) and in a child process above it. Under a tight memory limit, such as a container's, the
+  in-process decoder can crash instead of raising an error.
+- **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
+  a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
+  default. Everything else needs memory on top of that: the rest of your program, archivey itself,
+  other archives open at the same time, and other members read at once, each with its own decoder.
+  If memory is tight, such as in a container or on a server that opens many archives, a lower limit
+  makes an archive that asks for too much raise `ResourceLimitError` instead.
 - **Nothing limits how long an operation takes.** The limits cap bytes, entries and
   password-hashing work, not time. Raising an exception from `on_progress` stops an extraction, but
   the callback only runs between chunks of written data, so a decompressor that's slow to produce
   the next chunk can't be interrupted. If you need a hard time limit, run archivey in a process you
   can stop.
-- **Reading a member has no size limit.** `read()` returns the whole decompressed member and
-  `open()` returns as much as you read, whatever the limits say: the extraction limits apply to
-  `extract_all` only. A streaming pass (`streaming=True` or `stream_members()`) doesn't enforce the
-  listing limits either, except that 7z, RAR and ISO archives still check the member count when
-  they open. For a member from an untrusted archive, check `member.size` first, or read it in
-  chunks and stop when you've had enough.
+- **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
+  memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
+  about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
+  of the member. `DecoderLimits` is the main limit that applies to a read. It caps the decoder's own
+  memory, so the data you read takes additional memory on top. `ExtractionLimits` doesn't apply,
+  because it covers only what `extract_all` writes to disk. A RAR archive opened from a file object
+  rather than a path is copied to a temporary file the first time a member needs `unrar` or `unar`,
+  and `spool_limits.max_bytes` caps that copy. When the archive records a member's size in
+  `member.size`, archivey never decodes more than that, and a member holding more raises
+  `CorruptionError`.
+- **A streaming pass doesn't enforce the listing limits.** With `streaming=True` or
+  `stream_members()`, `max_members` and `max_metadata_bytes` aren't checked, except that 7z, RAR and
+  ISO archives still check the member count when they open.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.
-- **Accelerators are on by default when installed.** With the `seekable` extra, archivey uses
-  rapidgzip for large gzip and DEFLATE data, and its bzip2 decoder, when you ask for seekable
-  streams. They're native code, and the bzip2 one runs in your process, so a crash in it would end
-  your program. Archivey's fuzz tests run them and compare their output with the standard decoders.
+- **Accelerators are on by default for seekable streams.** If you open an archive with
+  `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data, and
+  DEFLATE data of 16 MiB or more compressed, through rapidgzip. DEFLATE is the compression in gzip
+  files and in most ZIP members. rapidgzip marks places in the stream it can restart from as it
+  reads, so a seek jumps to the nearest one instead of decompressing from the start. rapidgzip can
+  crash on some damaged DEFLATE data, so archivey runs it in a separate process, where a crash ends
+  only that read, with an error. Its bzip2 decoder hasn't been seen to crash, but it runs there too
+  as a precaution, since it's part of the same library. Archivey's fuzz tests run them and compare
+  their output with the standard decoders.
   To avoid them, pass
   `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
   use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
@@ -72,9 +87,14 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 ## Hardening
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
-when neither is installed. Keep it up to date. `unar` receives the password on its command line,
-where other users on the same machine can see it while it runs. Set
-`rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig` to never use it.
+when neither is installed. Like the optional packages, it's [trusted not to be
+malicious](#what-archivey-relies-on), and archivey checks only that it runs and that archivey works
+with its version, which can be several years old. Older versions can have security bugs that later
+ones fixed, so an up-to-date version is safer. `unar` receives the password on its command line,
+where other users on the same machine can see it while it runs. If you set
+`rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
+`RarDecompressor.NONE` it runs no external program at all, so stored, unencrypted RAR members still
+read, and the rest raise `UnsupportedFeatureError`.
 
 Every limit has a default that lets large legitimate archives through. A higher limit lets a
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
@@ -103,10 +123,11 @@ eight such members reach the default. Each password you try costs the same work 
 
 Going over a limit raises `ResourceLimitError`.
 
-For archives from strangers, keep the default `policy="strict"`, which the
-[policy table](extracting.md#what-each-policy-does-with-unusual-members) compares with the others.
-Extract into an empty folder that nothing else uses, and check what came out before moving it
-anywhere else.
+For archives from strangers, the default `policy="strict"` refuses or rewrites every kind of unsafe
+member archivey knows of. The [policy
+table](extracting.md#what-each-policy-does-with-unusual-members) on the Extracting page shows what
+each policy does. Untrusted archives should be extracted into an empty folder that nothing else
+uses, so you can check what came out before moving it anywhere else.
 
 ## Reporting a vulnerability
 

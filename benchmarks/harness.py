@@ -21,8 +21,8 @@ Modes:
 - ``full``: also report wall-time ratios vs stdlib peers. Absolute ratios are noisy
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
   (``benchmark-wall.yml``) hard-fails on (1) the ~10× sanity ceiling and (2)
-  **wall-ratio drift** vs the previous successful nightly's JSON artifact
-  (perf-review Q2 / debt-ledger Q1 option (a)). Quiet days re-publish that
+  **wall-ratio drift** vs the JSON artifact of the last run that measured, pass or
+  fail (perf-review Q2 / debt-ledger Q1 option (a)). Quiet days re-publish that
   artifact (preserving ``measured_at``); a full re-measure is forced at least
   every ~30 days. VISION absolute bands stay informational prints.
 
@@ -113,8 +113,8 @@ SOLID_RANDOM_BYTES_FACTOR = 1.5
 # (in-ZIP accel ON 44 → OFF 28). Fixtures are deterministic; ±8 covers host jitter.
 SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
-# informational (shared-runner noise); nightly enforces *drift* vs the previous
-# successful run's JSON instead (debt-ledger Q1 / perf Q2 option (a)).
+# informational (shared-runner noise); nightly enforces *drift* vs the last measured
+# run's JSON instead (debt-ledger Q1 / perf Q2 option (a)).
 WALL_RATIO_BUDGET = 10.0
 WALL_RATIO_VISION = 1.3
 WALL_RATIO_VISION_SAFETY = 2.0
@@ -122,6 +122,13 @@ WALL_RATIO_VISION_SAFETY = 2.0
 # AND new − old ≥ min abs delta (avoids failing 1.02→1.08 noise on near-parity paths).
 WALL_RATIO_DRIFT_FACTOR = 1.25
 WALL_RATIO_DRIFT_MIN_ABS = 0.15
+# Third drift condition: the drift must also cost at least this much wall time,
+# (new − old ratio) × this run's stdlib time. A sub-millisecond listing case can move
+# its ratio by 2× on scheduler noise alone: rar_open_list went 2.60 → 5.71 (1.0 ms vs
+# a 0.2 ms peer) between the 2026-09-06 run and nightly run 34122511826 on 2026-09-07,
+# with no change to RAR listing cost that large. That one night froze the nightly
+# baseline for a month. Gross slowdowns of tiny cases still fail on the 10× ceiling.
+WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP/TAR wrap stdlib → 2–3×/member; native 7z/RAR → ≈parity with py7zr/rarfile.
 LISTING_RATIO_ZIP_TAR = 3.0
@@ -1417,12 +1424,20 @@ def _wall_drift_checks(
     *,
     factor: float = WALL_RATIO_DRIFT_FACTOR,
     min_abs: float = WALL_RATIO_DRIFT_MIN_ABS,
+    min_extra_s: float = WALL_RATIO_DRIFT_MIN_EXTRA_S,
 ) -> list[str]:
     """Fail when wall_ratio regresses vs a previous nightly JSON.
 
-    Compares peer ratios only (cases with ``wall_ratio`` on both sides). Absolute
-    wall seconds are not gated — machine skew dominates; the ratio cancels most of
-    it. Missing previous / new cases / dropped cases are skipped (seed or rename).
+    Compares peer ratios only (cases with ``wall_ratio`` on both sides). A case fails
+    only when all three hold: ``new > old × factor``, ``new − old ≥ min_abs``, and
+    ``(new − old) × stdlib_wall_s ≥ min_extra_s`` — the extra wall time the drift
+    costs at this run's machine speed. The last condition keeps sub-millisecond
+    cases from failing on timer noise. ``run_cases`` sets ``stdlib_wall_s`` whenever
+    it sets ``wall_ratio``, so the nightly always applies it; a hand-built
+    ``CaseResult`` without ``stdlib_wall_s`` is judged on the two ratio conditions
+    alone. Absolute wall seconds are not compared across runs — machine skew
+    dominates; the ratio cancels most of it. Missing previous / new cases / dropped
+    cases are skipped (seed or rename).
     Callers that *require* a baseline should fail closed when
     ``overlapping_wall_ratio_count`` is 0 — this helper alone treats empty prior
     as no failures (true seed).
@@ -1441,11 +1456,19 @@ def _wall_drift_checks(
         if old is None or old <= 0:
             continue
         new = r.wall_ratio
-        if new > old * factor and (new - old) >= min_abs:
-            failures.append(
-                f"{r.case}: wall_ratio={new:.2f} drifted from previous {old:.2f} "
-                f"(>{factor:.2f}× and +{min_abs:.2f} abs; nightly drift gate)"
-            )
+        if not (new > old * factor and (new - old) >= min_abs):
+            continue
+        if r.stdlib_wall_s is not None:
+            extra_s = (new - old) * r.stdlib_wall_s
+            if extra_s < min_extra_s:
+                continue
+            cost = f"; +{extra_s * 1e3:.1f} ms"
+        else:
+            cost = ""
+        failures.append(
+            f"{r.case}: wall_ratio={new:.2f} drifted from previous {old:.2f} "
+            f"(>{factor:.2f}× and +{min_abs:.2f} abs{cost}; nightly drift gate)"
+        )
     return failures
 
 
@@ -1632,9 +1655,11 @@ def format_text_report(payload: dict[str, Any]) -> str:
             f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
             f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly).",
             f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job.",
-            f"- Nightly also fails on wall-ratio *drift* vs the previous successful "
-            f"run's JSON (>{WALL_RATIO_DRIFT_FACTOR:.2f}× and "
-            f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs) — not on absolute VISION bands.",
+            f"- Nightly also fails on wall-ratio *drift* vs the last measured run's "
+            f"JSON, pass or fail (>{WALL_RATIO_DRIFT_FACTOR:.2f}×, "
+            f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs and "
+            f"≥{WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3:.0f} ms extra wall time) — not on "
+            "absolute VISION bands.",
             "- Quiet nights re-publish the previous artifact (preserving "
             "`measured_at`); a full re-measure is forced at least every ~30 days.",
             "- Structural seek/bytes gates live on the PR path (`ci.yml`), not here.",
@@ -1686,8 +1711,9 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Previous harness JSON (nightly artifact). When set, fail if any "
-            "case's wall_ratio regresses beyond --wall-drift-factor and "
-            "--wall-drift-min-abs (missing file / no overlapping ratios fail closed)"
+            "case's wall_ratio regresses beyond --wall-drift-factor, "
+            "--wall-drift-min-abs and --wall-drift-min-extra-ms (missing file / no "
+            "overlapping ratios fail closed)"
         ),
     )
     parser.add_argument(
@@ -1706,6 +1732,16 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Min absolute wall_ratio increase required together with "
             f"--wall-drift-factor (default {WALL_RATIO_DRIFT_MIN_ABS})"
+        ),
+    )
+    parser.add_argument(
+        "--wall-drift-min-extra-ms",
+        type=float,
+        default=WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3,
+        help=(
+            "Min extra wall time, in ms, that a drift must cost, (new - old ratio) x "
+            "this run's stdlib time, required together with the two ratio "
+            f"thresholds (default {WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3:g})"
         ),
     )
     parser.add_argument(
@@ -1825,13 +1861,15 @@ def main(argv: list[str] | None = None) -> int:
                     prev,
                     factor=args.wall_drift_factor,
                     min_abs=args.wall_drift_min_abs,
+                    min_extra_s=args.wall_drift_min_extra_ms / 1e3,
                 )
                 failures.extend(drift)
                 if not drift:
                     print(
                         f"Wall-ratio drift OK vs {args.wall_drift_baseline} "
                         f"({comparable} cases; factor={args.wall_drift_factor}, "
-                        f"min_abs={args.wall_drift_min_abs})",
+                        f"min_abs={args.wall_drift_min_abs}, "
+                        f"min_extra_ms={args.wall_drift_min_extra_ms})",
                         file=sys.stderr,
                     )
 
