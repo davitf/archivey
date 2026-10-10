@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
@@ -31,10 +31,9 @@ if TYPE_CHECKING:
     from archivey.internal.streams.archive_stream import ArchiveStream
 
 # Type alias for the member selector passed to stream_members() and extract_all().
-# Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
-MemberSelector = (
-    Collection[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
-)
+# Accepts a predicate, an iterable of names / ArchiveMember objects (read once, so a
+# generator works), or None (all).
+MemberSelector = Iterable[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
 
 
 class ForwardArchiveReader(ABC):
@@ -156,9 +155,10 @@ class ForwardArchiveReader(ABC):
         self, members: MemberSelector = None, *, file_copy_streams: bool = True
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
-        ``members`` is an optional selector (predicate, name/member collection, or
-        ``None`` for all). The yielded stream is valid only until the iterator advances;
-        it is ``None`` for non-file members.
+        ``members`` is an optional selector: a predicate, any iterable of names or
+        members (read once, so a generator works), or ``None`` for all. The yielded
+        stream is valid only until the iterator advances; it is ``None`` for non-file
+        members.
 
         ``file_copy_streams=False`` also yields ``None`` for a file that the archive
         stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file
@@ -193,13 +193,13 @@ class ForwardArchiveReader(ABC):
     ) -> ExtractionReport:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
-        ``members`` selects which members to extract (names/``ArchiveMember``s, or a
-        predicate; ``None`` = all). ``filter`` runs after the ``policy`` transform and
-        before the safety checks, so it sees unsafe members too; it may rename/sanitize a
-        member (return a ``.replace()``d copy) or skip it (return ``None``), and the
-        safety checks run on what it returns. The call runs under the config
-        the reader was opened with; ``limits`` overrides its extraction limits for this
-        call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
+        ``members`` selects which members to extract: any iterable of names or
+        ``ArchiveMember``s (read once, so a generator works), a predicate, or ``None``
+        for all. ``filter`` runs after the ``policy`` transform and before the safety
+        checks, so it sees unsafe members too; it may rename/sanitize a member (return
+        a ``.replace()``d copy) or skip it (return ``None``), and the safety checks run
+        on what it returns. The call runs under the config the reader was opened with;
+        ``limits`` overrides its extraction limits for this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
         summary is the delta for this extraction call.
 
         ``abort_on`` names events that end the whole call the first time they occur —
