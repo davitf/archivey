@@ -145,11 +145,24 @@ directory or symlink as already recognised, a regular file as `FILE`, and any
 other file type (device node, FIFO, socket) as `OTHER` with `size=None`.
 
 In the plain ISO 9660 namespace the `;N` file version SHALL be removed from the
-presented name together with the `.` of an empty extension (`FOO.;1` is `FOO`),
-and recorded as `extra["iso.version"]`. When a directory holds several versions
-of one name, the highest takes the bare name and the others SHALL be presented
-by their stored identifier (`FOO.;1`) with `is_current=False`, the RAR
-file-version history shape.
+presented name of a file together with the `.` of an empty extension (`FOO.;1`
+is `FOO`), and recorded as `extra["iso.version"]`. When a directory holds several
+versions of one name, the highest takes the bare name and the others SHALL be
+presented by their stored identifier (`FOO.;1`) with `is_current=False`, the RAR
+file-version history shape, also when the same stored identifier is repeated. In
+the plain namespace a directory's presented name keeps a `;N` at its end, as its
+children's paths do, and the directory has no `extra["iso.version"]`.
+
+Records that share an identifier in one directory SHALL be worked out from the
+directory as written, in on-disc order, and not from pycdlib's links or order. A
+file record carrying the multi-extent flag as written SHALL continue into the next
+record when that is a file record of the same kind (associated file or not), and
+the records joined this way SHALL be one file. Every other record SHALL be listed
+as its own member, including a file record that follows a directory record with
+its identifier and an associated-file record (flag bit 2) in either order. Each
+pycdlib record SHALL be matched to its record on disc by the fields pycdlib keeps
+as written, not by its extent alone. Members with one name then follow the shared
+duplicate-name rule (`archive-data-model`): the later one is current.
 
 In the Rock Ridge namespace a record whose System Use area carries no Rock Ridge
 entries SHALL still be listed, under its ISO 9660 identifier (version and
@@ -168,6 +181,14 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | Two directories with Rock Ridge name `dup` | Both list as `dup/` |
 | PX mode `0o020666` (char device) | `type=OTHER`, `size=None`; extraction skips it |
 | Plain `FOO.;1` and `FOO.;2` | `FOO` (version 2, current) and `FOO.;1` (version 1, `is_current=False`); extraction writes version 2 |
+| Plain directory identifier `DI;1` holding `X.TXT;1` | `DI;1/` and `DI;1/X.TXT` (version 1); the directory has no `iso.version` |
+| Two file records with one identifier, the first without the multi-extent flag | Two members with that name, each with its own size and data; the later one is current; no diagnostic |
+| Three records with one identifier, flagged, not flagged, not flagged | The first two are one member; the third is a second member with the same name |
+| As above, but the first two records share one extent | The same two members; the first raises `UnsupportedFeatureError` on read (extents not back to back), the second reads |
+| Plain `FOO.;1` twice, then `FOO.;2` | `FOO` (version 2, current) and two `FOO.;1` rows, both `is_current=False`; extraction writes only `FOO` |
+| An associated-file record and a two-extent file with one identifier, the associated record first or last | Two members with that name in on-disc order, each with its own data; the later one is current |
+| Directory record `DUP`, then a file record `DUP` | `DUP/` and the file `DUP` both list, as 7-Zip lists them |
+| File record `DUP` then directory `DUP`, or two directories `DUP` | `CorruptionError` at open (pycdlib refuses the duplicate name) |
 | Rock Ridge image, one record with its System Use area zeroed | Listed under its ISO 9660 name; `MEMBER_HEADER_RECORD_SKIPPED` attached |
 | Directory record pointing back at an ancestor extent | Listed once there; not descended again |
 | Rock Ridge tree 12 directories deep | Logical tree lists in full; no `rr_moved` member |
