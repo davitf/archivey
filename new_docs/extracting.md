@@ -56,7 +56,7 @@ permissions gets written as it is:
 |---|---|---|
 | `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders always `rwxr-xr-x` |
 | `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
-| `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root |
+| `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
 
 `overwrite` decides what happens when a file is already where a member would go:
 

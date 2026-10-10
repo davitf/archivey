@@ -676,18 +676,24 @@ class ArchiveMember:
     """Normalized member path, ``/``-separated, decoded for display and lookup."""
 
     raw_name: bytes | None = None
-    """The member name exactly as stored in the archive, undecoded, or ``None`` when
-    the format stores no name or the bytes cannot be recovered from the decoded one.
+    """The member name exactly as stored in the archive, undecoded. ``None`` when the
+    format has no name field for this member or the bytes cannot be recovered from the
+    decoded name; ``b""`` when the format has the field and the member left it empty
+    (7z).
 
-    ``name`` is ``raw_name`` decoded and normalized. Where the archive stores the
-    name twice, ``raw_name`` is the spelling the name was decoded from: a ZIP name
-    taken from its Info-ZIP Unicode Path extra field (0x7075) has that field's UTF-8
-    bytes here, and the header's bytes in ``extra["alternate_raw_name"]``.
+    ``name`` is ``raw_name`` decoded and normalized, then put through the format's own
+    naming rules. Where the archive stores the name twice, ``raw_name`` is the spelling
+    the name was decoded from: a ZIP name taken from its Info-ZIP Unicode Path extra
+    field (0x7075) has that field's UTF-8 bytes here, and the header's bytes in
+    ``extra["alternate_raw_name"]``.
 
-    Where ``name`` is not ``raw_name`` decoded:
+    The naming rules that make ``name`` differ from ``raw_name`` decoded:
 
-    - An ISO Rock Ridge name that is not UTF-8 and takes its Joliet name keeps the
-      Rock Ridge bytes here.
+    - ISO: in a plain ISO 9660 image, ``name`` drops the ``;N`` version suffix (and
+      the ``.`` before an empty extension) that ``raw_name`` keeps; the version is in
+      ``extra["iso.version"]``. A superseded version keeps its stored spelling. A Rock
+      Ridge name that is not UTF-8 and takes its Joliet name keeps the Rock Ridge
+      bytes here.
     - A gzip file's member is named after the archive source (``"data"`` when the
       source has no file name); ``raw_name`` holds the original file name from the
       gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those
