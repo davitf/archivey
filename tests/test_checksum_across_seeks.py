@@ -19,6 +19,9 @@ import pytest
 
 from archivey import open_archive
 from archivey.exceptions import CorruptionError
+from archivey.internal.backends.rar_reader import _RespawnStream
+from archivey.internal.streams.verify import VerifyingStream
+from archivey.types import HashAlgorithm
 
 _DATA = bytes(random.Random(7).choice(b"abcdefgh \n") for _ in range(200_000))
 
@@ -110,3 +113,34 @@ def test_seek_to_the_end_then_read_checks_the_crc(tmp_path: Path) -> None:
                 stream.seek(0, io.SEEK_END)
                 with pytest.raises(CorruptionError):
                     stream.read(1)
+
+
+def test_unrar_pipe_seek_stays_lazy() -> None:
+    """The unrar pipe's seek decodes nothing; keeping the CRC must not change that.
+
+    A forward seek then a seek back with no read between drains nothing from the pipe,
+    and the read after a forward seek drains the gap through the CRC.
+    """
+    spawned: list[io.BytesIO] = []
+
+    def spawn() -> io.BytesIO:
+        spawned.append(io.BytesIO(_DATA))
+        return spawned[-1]
+
+    wrong = ((zlib.crc32(_DATA) + 1) & 0xFFFFFFFF).to_bytes(4, "big")
+    pipe = _RespawnStream(spawn, io.BytesIO(_DATA), size=len(_DATA))
+    stream = VerifyingStream(
+        pipe, {HashAlgorithm.CRC32: wrong}, expected_size=len(_DATA)
+    )
+    assert stream.read(10) == _DATA[:10]
+    assert stream.seek(150_000) == 150_000
+    assert stream.tell() == 150_000
+    assert pipe._pipe_pos == 10
+    stream.seek(10)
+    assert pipe._pipe_pos == 10
+    stream.seek(150_000)
+    assert stream.read(10) == _DATA[150_000:150_010]
+    assert spawned == []  # one pipe, read straight through
+    with pytest.raises(CorruptionError):
+        stream.read()
+    stream.close()

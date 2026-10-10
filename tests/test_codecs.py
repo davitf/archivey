@@ -1831,10 +1831,75 @@ def test_verify_second_seek_past_a_found_end_reads_nothing_again() -> None:
 
     stream = VerifyingStream(_Counting(CONTENT), _GOOD_CRC)
     stream.seek(len(CONTENT) + 100)
+    assert stream.read() == b""
     seeks.clear()
     stream.seek(len(CONTENT) + 200)
     assert seeks == [len(CONTENT) + 200]
     assert stream.read() == b""
+    stream.close()
+
+
+class _RecordingDecodingBytesIO(_DecodingBytesIO):
+    """A ``_DecodingBytesIO`` that records every call that touches its position."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.calls: list[tuple[str, int]] = []
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        self.calls.append(("read", -1 if n is None else n))
+        return super().read(n)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self.calls.append(("seek", offset))
+        return super().seek(offset, whence)
+
+
+def test_verify_decoding_seek_is_lazy() -> None:
+    """A forward seek that keeps the checksum reads nothing until a read: a later
+    seek replaces it, and a stream closed after it decodes nothing."""
+    inner = _RecordingDecodingBytesIO(CONTENT)
+    stream = VerifyingStream(inner, _BAD_CRC, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    inner.calls.clear()
+    assert stream.seek(500) == 500
+    assert stream.tell() == 500
+    assert stream.seek(100, io.SEEK_CUR) == 600
+    assert stream.tell() == 600
+    assert inner.calls == []
+    assert stream.seek(5) == 5  # back behind the frontier: nothing was decoded
+    assert inner.calls == [("seek", 5)]
+    assert stream.read(5) == CONTENT[5:10]
+    stream.seek(700)
+    stream.close()
+    assert ("read", len(CONTENT) - 10) not in inner.calls
+
+    inner = _RecordingDecodingBytesIO(CONTENT)
+    stream = VerifyingStream(inner, _BAD_CRC, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    stream.seek(700)
+    assert stream.read(10) == CONTENT[700:710]  # the read pays for the gap
+    with pytest.raises(CorruptionError):
+        stream.read(-1)
+    stream.close()
+
+
+def test_verify_decode_error_in_a_deferred_gap_raises_from_the_read() -> None:
+    """A decode error in the skipped bytes surfaces from the read that decodes them,
+    not from the seek, and abandons the checks."""
+
+    class _Failing(_DecodingBytesIO):
+        def read(self, n: int | None = -1, /) -> bytes:
+            if self.tell() >= 100:
+                raise OSError("bad block")
+            return super().read(n)
+
+    stream = VerifyingStream(_Failing(CONTENT), _GOOD_CRC, expected_size=len(CONTENT))
+    assert stream.read(10) == CONTENT[:10]
+    assert stream.seek(500) == 500
+    with pytest.raises(OSError, match="bad block"):
+        stream.read(1)
+    assert not stream._verify_enabled
     stream.close()
 
 

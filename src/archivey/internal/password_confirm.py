@@ -401,8 +401,13 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             raise
         if data:
             self._delivered = True
-            if start > self._watch_furthest and self._seek_forfeits:
+            if (
+                start > self._watch_furthest
+                and self._seek_forfeits
+                and ask_digest_intact(self._inner) is None
+            ):
                 # This read skipped the bytes between the furthest read and ``start``.
+                # A verifier below answers for itself: it may have read them through.
                 self._forfeited = True
             self._watch_pos += len(data)
             self._watch_furthest = max(self._watch_furthest, self._watch_pos)

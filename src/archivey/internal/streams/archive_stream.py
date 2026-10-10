@@ -543,8 +543,8 @@ class ArchiveStream(ReadOnlyIOStream):
         try:
             before = inner.tell()
             if verifier is not None:
-                # The verifier may read the skipped bytes through its hashers when
-                # the inner would decode them anyway (``MemberVerifier.seek``).
+                # The verifier may defer a forward seek to the next read, which then
+                # hashes the skipped bytes (``MemberVerifier.seek``).
                 result = verifier.seek(inner, offset, whence)
             else:
                 result = inner.seek(offset, whence)
@@ -662,6 +662,8 @@ class ArchiveStream(ReadOnlyIOStream):
             raise ValueError("I/O operation on closed file.")
         if self._inner is None:
             return 0
+        if self._verifier is not None:
+            return self._verifier.tell(self._inner)
         return self._inner.tell()
 
     def _make_forward_only(self) -> None:
