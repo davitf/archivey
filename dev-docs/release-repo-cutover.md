@@ -6,12 +6,13 @@ release, while retiring the v1 repos.
 
 **Status (2026-10-10):** steps 2, 4 and 6 are done: this repo is `davitf/archivey`,
 Pages is enabled with `https://davitf.github.io/archivey/` as the repo homepage, and
-`publish.yml` no longer routes on the old name. Step 1 is half done: the prior v1
-release repo was renamed `davitf/archivey-old` (the runbook originally said
-`archivey-v1`) but is not archived yet. Still to do or confirm before the first
-release: archiving `archivey-old` (step 1), the description and topics (step 3), the
-PyPI Trusted Publisher and the `pypi` environment (step 5), and steps 7 and 8. Delete
-this page once the full cutover is complete.
+`CLAUDE.md` and `AGENTS.md` no longer name `archivey-2`. Steps 1 and 5 are half done:
+the prior v1 release repo was renamed `davitf/archivey-old` (the runbook originally
+said `archivey-v1`) but is not archived yet, and `publish.yml` no longer routes on the
+old name, while the PyPI Trusted Publisher and the `pypi` environment are unconfirmed.
+Still to do or confirm before the first release: archiving `archivey-old` (step 1), the
+description and topics (step 3), the Trusted Publisher and the `pypi` environment (step
+5), and steps 7 and 8. Delete this page once the full cutover is complete.
 
 ## Why rename rather than push-into or delete
 
