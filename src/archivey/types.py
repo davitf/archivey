@@ -936,8 +936,10 @@ class ArchiveInfo:
 # internal coordinator.
 #
 # ``MemberSelectorArg`` — which members to extract: a collection of names / ArchiveMembers,
-# a predicate, or ``None`` (= all). ``archivey.MemberSelector`` is the same alias. The collection form is normalized to a predicate by the
-# shared ``normalize_member_selector`` helper (also used by ``stream_members``).
+# a predicate, or ``None`` (= all). ``archivey.MemberSelector`` is the same alias, under
+# its public name; internal modules annotate with this one. The collection form is
+# normalized to a predicate by the shared ``normalize_member_selector`` helper (also used
+# by ``stream_members``).
 MemberSelectorArg = (
     Collection["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )

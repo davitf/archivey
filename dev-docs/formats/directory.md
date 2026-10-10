@@ -226,9 +226,9 @@ they would over a tar. The format-shaped outcomes are these.
 
 ### 2.5 Write
 
-Not shipped for any format. The `format-directory` spec states that a directory reader
-feeds `writer.add_members(reader)` in one forward pass without buffering the tree; that is
-a requirement for the future writer, and nothing tests it today.
+Not shipped for any format. Whether a writer can take a directory reader in one forward
+pass, without buffering the tree, is a question for the change that adds writing
+([writing design](../investigations/archive-writing-design.md)); no spec states it today.
 
 ## 3. In the wild
 

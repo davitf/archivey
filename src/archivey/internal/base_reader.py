@@ -109,7 +109,7 @@ from archivey.internal.windows_reparse import (
     parse_reparse_data,
     reparse_payload_length,
 )
-from archivey.reader import ArchiveReader, MemberSelector
+from archivey.reader import ArchiveReader
 from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -2693,6 +2693,9 @@ class BaseArchiveReader(ArchiveReader):
                 )
             member_id = current._member_id
             if member_id in visited:
+                # The CLI's ``_is_link_destination_error`` (``cli/test_cmd.py``)
+                # matches this exact message, since the CLI may not import a shared
+                # constant from ``internal``. Change both together.
                 raise ReadError("Link cycle detected", member_name=current.name)
             visited.add(member_id)
             if current.link_target_member is not None:
@@ -2729,7 +2732,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def stream_members(
         self,
-        members: MemberSelector = None,
+        members: MemberSelectorArg = None,
         *,
         file_copy_streams: bool = True,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
@@ -2748,7 +2751,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._stream_members(members, FileCopyPass(streams=file_copy_streams))
 
     def _stream_members(
-        self, members: MemberSelector, copies: FileCopyPass
+        self, members: MemberSelectorArg, copies: FileCopyPass
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """``stream_members()`` with the file-copy handling given whole.
 

@@ -1415,6 +1415,8 @@ def test_cli_test_ignores_a_real_link_cycle() -> None:
     with open_archive(buf) as reader:
         link = reader.get("a")
         assert link is not None
+        with pytest.raises(ReadError, match="Link cycle detected"):
+            reader.open(link)
         _verify_link(reader, link)
 
 

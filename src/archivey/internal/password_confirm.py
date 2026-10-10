@@ -50,9 +50,10 @@ from archivey.types import ArchiveMember
 # decodes the decrypted bytes settles a wrong key inside the confirm prefix: this is
 # ``codec_rejects`` for the 7z and ZIP readers (RAR sets it from its own compression
 # method field instead). One that decodes *before* the decryption (a 7z folder can
-# store that order) sees the same bytes whatever the key, so it does not count. Measured as non-rejecting and left out: Brotli (about
-# one random input in twenty decodes a full prefix) and PPMd (about one in a hundred;
-# archivey decodes it so that pyppmd's crash on random input cannot happen, see
+# store that order) sees the same bytes whatever the key, so it does not count.
+# Measured as non-rejecting and left out: Brotli (about one random input in twenty
+# decodes a full prefix) and PPMd (about one in a hundred; archivey decodes it so that
+# pyppmd's crash on random input cannot happen, see
 # ``DecoderLimits.max_ppmd_in_process_input``). Filters never reject. A codec not
 # listed is non-rejecting.
 REJECTING_CODECS = frozenset(
