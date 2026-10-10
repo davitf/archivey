@@ -19,6 +19,7 @@ import zipfile
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import BinaryIO
 
 import pytest
 
@@ -577,9 +578,22 @@ def _sevenzip_with_members(path: Path, entries: list[tuple[str, int, bytes]]) ->
     path.write_bytes(signature + start + packed + header)
 
 
-# Longer than the most a reparse buffer can declare (8 + 0xFFFF bytes), so the bytes
-# read to decide the type are only a prefix of it.
+# The pass reads 9 bytes of such a member to decide its type: the 8 header bytes, plus
+# one, because the payload length it declares counts only for a link tag. This content
+# is much longer than those 9 bytes, so the rest of the member takes many reads of the
+# folder decoder after them.
 _LONG_CONTENT = bytes(range(256)) * 300
+
+
+def _read_whole_member(member: ArchiveMember, stream: BinaryIO) -> bytes:
+    """Read ``stream`` with one ``read(member.size)``, which is full-count.
+
+    The next read must give ``b""``: a short return is terminal, never "ask again".
+    """
+    assert member.size is not None
+    data = stream.read(member.size)
+    assert stream.read(1) == b""
+    return data
 
 
 @pytest.mark.parametrize("read_link_targets", [True, False])
@@ -613,7 +627,11 @@ def test_a_7z_pass_yields_a_non_link_reparse_member_with_its_content(
     config = ArchiveyConfig(read_link_targets=read_link_targets)
     with open_archive(archive, streaming=streaming, config=config) as opened:
         yielded = [
-            (member, member.type, None if stream is None else stream.read())
+            (
+                member,
+                member.type,
+                None if stream is None else _read_whole_member(member, stream),
+            )
             for member, stream in opened.stream_members()
         ]
     seen = [(member.name, member_type, data) for member, member_type, data in yielded]
@@ -653,20 +671,26 @@ def test_a_7z_pass_verifies_the_content_it_yields_for_a_reparse_member(
     tmp_path: Path,
 ) -> None:
     """The bytes read to decide the type are given back, not read again, so the CRC
-    still has to cover them: damage in them fails the read of the yielded stream."""
+    still has to cover them: damage in them fails the read of the yielded stream.
+
+    Those bytes are the 8 header bytes plus one. The damaged byte is the ninth: the
+    tag is still not a link tag, so the member is still re-typed to a file.
+    """
     archive = tmp_path / "odd_reparse.7z"
     _sevenzip_with_members(
         archive, [("weird", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, _LONG_CONTENT)]
     )
     data = bytearray(archive.read_bytes())
-    data[32 + 10] ^= 0xFF  # inside the bytes read to decide; the folder is stored
+    # The packed data starts after the 32-byte start header; the folder is stored.
+    data[32 + 8] ^= 0xFF
     archive.write_bytes(bytes(data))
     with open_archive(archive, streaming=True) as opened:
         for member, stream in opened.stream_members():
             assert member.type is MemberType.FILE
+            assert member.size is not None
             assert stream is not None
             with pytest.raises(CorruptionError):
-                stream.read()
+                stream.read(member.size)
 
 
 def test_a_7z_pass_still_reads_a_real_link_buffer_as_a_link(tmp_path: Path) -> None:

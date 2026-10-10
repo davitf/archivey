@@ -927,8 +927,9 @@ pass would mean holding a reparse point's data until the member is written, whic
 different guarantee and is not required here. One pass does learn it at the member: a 7z
 pass under `read_link_targets=True` reads a reparse-flagged member's data as it reaches
 it, so a member whose bytes are not a link buffer is a file by the time extraction sees
-it, and is written as one (`archive-reading`, "Link targets stored as member data are
-read only when configured").
+it, and is written as one. A directory-shaped entry is the exception: it stays a link
+with no target (`archive-reading`, "Link targets stored as member data are read only
+when configured").
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and

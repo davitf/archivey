@@ -26,7 +26,7 @@ import io
 import re
 import stat
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -290,6 +290,11 @@ class _ReadAheadStream(ReadOnlyIOStream):
     Gives ``head``, then the rest of ``rest``. ``rest`` is the member's own stream,
     which verifies the member's size and CRC once it is read to its end. Owns
     ``rest``. Forward-only, like the folder decode under it.
+
+    ``read(n)`` is full-count, as ``ArchiveStream`` requires of its inner stream: it
+    returns ``n`` bytes unless the member ends (ADR 0014). A read that crosses the end
+    of ``head`` takes the remainder from ``rest`` in the same call. One call is
+    enough, because ``rest`` is full-count too.
     """
 
     def __init__(self, head: bytes, rest: BinaryIO) -> None:
@@ -307,6 +312,8 @@ class _ReadAheadStream(ReadOnlyIOStream):
             self._head = b""
             return data
         data, self._head = self._head[:n], self._head[n:]
+        if len(data) < n:
+            data += self._rest.read(n - len(data))
         return data
 
     def close(self) -> None:
@@ -693,45 +700,37 @@ class SevenZipReader(BaseArchiveReader):
         is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
         if self._link_data_refused_by_size(member, is_reparse_point=is_reparse_point):
             return None
-        stream = opener()
-        try:
-            data = self._read_bounded_link_data(
-                stream, is_reparse_point=is_reparse_point
-            )
-            content_follows = (
+        with ExitStack() as owned:
+            stream = owned.enter_context(opener())
+            try:
+                data = self._read_bounded_link_data(
+                    stream, is_reparse_point=is_reparse_point
+                )
+            except ArchiveyError as exc:
+                self._link_data[member_id] = exc
+                return None
+            self._link_data[member_id] = data
+            if not (
                 in_pass
                 and is_reparse_point
                 and bool(data)
                 and parse_reparse_data(data) is None
-            )
-            if not content_follows:
-                stream.close()
-        except ArchiveyError as exc:
-            stream.close()
-            self._link_data[member_id] = exc
-            return None
-        except BaseException:
-            stream.close()
-            raise
-        self._link_data[member_id] = data
-        if not content_follows:
-            return None
-        try:
+            ):
+                return None
             self._resolve_link_target(member)
-        except BaseException:
-            stream.close()
-            raise
-        if member.type is not MemberType.FILE:
-            # A directory-shaped entry stays a link (`_apply_reparse_data`).
-            stream.close()
-            return None
-        return self._wrap_member_stream(
-            _ReadAheadStream(data, stream),
-            member.name,
-            size=member.size,
-            track_output=False,
-            seekable=False,
-        )
+            if member.type is not MemberType.FILE:
+                # A directory-shaped entry stays a link (`_apply_reparse_data`).
+                return None
+            content = self._wrap_member_stream(
+                _ReadAheadStream(data, stream),
+                member.name,
+                size=member.size,
+                track_output=False,
+                seekable=False,
+            )
+            # The returned stream owns ``stream`` now.
+            owned.pop_all()
+            return content
 
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Sweep each folder holding one of ``members`` once, up to its last link.
