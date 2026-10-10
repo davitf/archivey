@@ -1,5 +1,9 @@
 # An opt-in mode that guarantees a verdict however the caller reads
 
+> **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). Nothing here is in
+> progress. The release does not need this change, and the drafted design stays here so a
+> later change can pick it up. It is tracked internally.
+
 ## Why
 
 Content verification is verify-as-you-go. A full read yields a verdict; a partial

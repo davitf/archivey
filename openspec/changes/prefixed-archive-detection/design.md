@@ -250,8 +250,8 @@ workload exists.
 JPEG/PNG/PDF magic list to classify prefixes. `PrefixKind` is `NONE` / `EXECUTABLE` /
 `SCRIPT` / `UNKNOWN`. A prefix that is not an executable or a shebang is `UNKNOWN`,
 whether the offset came from the tail probe, the cued scan, or the exhaustive scan —
-those are `detected_by` values, not kinds. `#274` (`archive-origin-reporting`) currently
-lists `OTHER_FORMAT` and also uses `UNKNOWN` for *origin not established*
+those are `detected_by` values, not kinds. `#274` (`archive-origin-reporting`, since
+deleted as stale) listed `OTHER_FORMAT` and also uses `UNKNOWN` for *origin not established*
 (`payload_offset is None`); the second meaning stays on the `int | None` axis, not on a
 fifth enum member. That PR rebases onto this enum.
 
@@ -436,6 +436,9 @@ set one. This change puts the spend cap on `ArchiveyConfig.detection_budget` and
 the keyword (task 3.1). There is no `exhaustive_prefix_scan` bool. Exhaustive scan and
 the ZIP tail remain budget numbers (`max_scan_bytes`, `max_tail_bytes` / `max_seeks`).
 `open_archive` already takes `config=`; detection reads the field from there.
+
+> `archive-origin-reporting` was deleted as stale on 2026-10-10. Reporting the payload
+> origin on `ArchiveInfo` would need a new change; the paragraph below is kept as history.
 
 **`archive-origin-reporting` (#274) is sequenced after this change** because it reuses
 `PrefixKind` on `ArchiveInfo`. It also unifies the RAR/7z origin resolver onto `MagicHit`
