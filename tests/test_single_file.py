@@ -327,9 +327,9 @@ class _NonSeekableWithSizeClaim(NonSeekableBytesIO):
 
 
 def test_compressed_size_on_a_non_seekable_source_ignores_its_size_claim() -> None:
-    # A ``size`` attribute is the caller's claim, not a fact, and the per-member ratio
-    # guard divides by ``compressed_size``. On a pipe it reports ``None``, the same as a
-    # pipe without the attribute.
+    # A pipe has no ``SEEK_END`` to measure its length, so it reports ``None``, the same
+    # as a pipe without the attribute. A seekable stream's ``size`` attribute is
+    # reported, so this is about seekability, not about trusting the claim.
     data = gzip.compress(b"payload" * 500)
     stream = _NonSeekableWithSizeClaim(data)
     with open_archive(stream, streaming=True) as ar:
@@ -416,7 +416,30 @@ def test_member_stream_source_is_not_seeked_to_its_end(
     assert inner.compressed_size == len(data)
     assert inner.size is None
     assert HashAlgorithm.CRC32 not in inner.hashes
+    # The whole record, so a spy that stops seeing the member fails here: .gz reads
+    # its header prefix (one seek, back to 0); .xz / .lz seek nothing at open.
+    expected = [MemberSeek(member_id, 0, 0)] if name == "m.gz" else []
+    assert seeks == expected
     assert_no_member_tail_seek(seeks, {member_id: len(data)})
+
+
+@pytest.mark.parametrize("container", ["zip_deflated", "zip_stored", "tar"])
+def test_non_seekable_member_stream_reports_its_advertised_compressed_size(
+    container: str,
+) -> None:
+    # The default nesting shape: the outer archive is opened without
+    # seekable_members, so the member stream is not seekable. Its advertised length is
+    # the one its container's header declares, not a caller's claim, so it is still the
+    # compressed size. Metadata must not depend on the outer seekable_members.
+    data = gzip.compress(b"payload" * 10)
+    with (
+        open_archive(_container_of(container, "x.gz", data)) as outer,
+        outer.open("x.gz") as member,
+    ):
+        assert not member.seekable()
+        with open_archive(member, streaming=True) as nested:
+            sizes = [m.compressed_size for m in nested]
+    assert sizes == [len(data)]
 
 
 def test_member_stream_source_without_a_length_reports_no_compressed_size(

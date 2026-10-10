@@ -145,7 +145,7 @@ What is filled in on the member, and where from:
 | --- | --- |
 | `name` | The source's filename, as in §1 |
 | `size` | xz: the stream index; lzip: the member trailers; LZMA Alone: the header, when it is not the "unknown" marker. `None` for every other codec |
-| `compressed_size` | The source's length, on a seekable source: its cheap size (a path's `stat`, a `BytesIO`, a member stream's advertised `size`), else one `seek(0, SEEK_END)`. `None` on a pipe (also one with a `size` attribute), and on a member stream that advertises no length |
+| `compressed_size` | The source's length. A member stream reports its advertised `size`, seekable or not. Any other seekable source reports its cheap size (a path's `stat`, a `BytesIO`, a `size` attribute), else one `seek(0, SEEK_END)`. `None` on a caller's pipe (also one with a `size` attribute), and on a member stream that advertises no length |
 | `modified` | gzip's `MTIME`, when non-zero. `None` for every other codec |
 | `raw_name`, `extra["gzip.original_filename"]` | gzip's `FNAME` ([`gzip.md`](gzip.md) §2.2) |
 | `hashes` | lzip only: the CRC-32 of the whole content, combined from each member's trailer ([`xz.md`](xz.md) §2.2) |
@@ -164,12 +164,23 @@ The rule covers member streams as a group, so a `.xz` in a stored ZIP entry or i
 whose seek is only a slice of the container, is not peeked either. Any such source
 reports `size=None`, no lzip `CRC32`, and a `compressed_size` only when the member stream
 advertises its length. `size` and `CRC32` are metadata: the decoder still checks the xz
-index and the lzip trailers when the member is read. `compressed_size` is more than
-that, since the per-member decompression-ratio guard divides by it, and a member
-stream's advertised length is what its archive declares. A ZIP member that holds less
-than it declares is refused with `TruncatedError` on read; a TAR member answers a
-`SEEK_END` from the same declared length. The gzip codec's own ISIZE peek at codec open
-([`gzip.md`](gzip.md) §2.3) is separate and still runs.
+index and the lzip trailers when the member is read. The gzip codec's own ISIZE peek at
+codec open ([`gzip.md`](gzip.md) §2.3) is separate and still runs.
+
+A member stream's advertised length is the length its container's header declares, not a
+caller's claim, so it is the `compressed_size` whether the member stream is seekable or
+not. The outer archive's `seekable_members` decides only that, and metadata must not
+depend on it. A caller's own non-seekable stream reports `None` even with a `size`
+attribute. The reason is seekability, not trust: a seekable caller stream's `size` is
+reported unchecked, and a pipe has no `SEEK_END` to answer instead. `compressed_size` is
+more than metadata. Extraction has two ratio guards: the per-member one divides by
+`compressed_size`, and the archive-wide one divides by
+`BaseArchiveReader.compressed_source_size`, the same size hint read with no seekability
+test, which also keeps `_wrap_compressed_input` from installing the live byte counter
+when set. That one trusts a pipe's `size` attribute (`safe-extraction`, "Archive-wide
+decompression ratio for solid containers"). A ZIP member that holds less than it declares
+is refused with `TruncatedError` on read; a TAR member answers a `SEEK_END` from the same
+declared length.
 
 `ArchiveInfo` has `member_count=1`, `format_version=None`, `comment=None` and
 `is_solid=False`.

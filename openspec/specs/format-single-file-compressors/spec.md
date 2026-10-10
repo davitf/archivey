@@ -116,16 +116,27 @@ that decompresses (a deflated ZIP entry, a `.gz`'s content) reaching them decomp
 the whole member. Member streams are treated this way as a group: a stored ZIP entry or
 a TAR member, whose seek is a slice of its container, also reports `size=None`.
 
-`member.compressed_size` SHALL be the source's length when that is cheap to learn, on a
-seekable source: the source's cheap size (a path's `stat`, a `BytesIO`'s buffer, a
-member stream's advertised `size`), else one `seek(0, SEEK_END)` when the seek is cheap.
-A pipe SHALL report `None`, also when it has a `size` attribute, and so SHALL a member
-stream that advertises no length, rather than seek to the end. An advertised `size` is a
-claim (the size the member's archive declares, or any attribute a caller's stream
-carries) and is not checked here. It is more than metadata: the per-member
-decompression-ratio guard in extraction divides by it. A ZIP member that holds fewer
-bytes than it declares is refused with `TruncatedError` when it is read; a TAR member
-stream answers `SEEK_END` from the same declared length, so no seek could learn more.
+`member.compressed_size` SHALL be the source's length when that is cheap to learn. A
+member stream from another archive (`seek_is_expensive`) SHALL report its advertised
+`size`, the length its container's header declares, whether or not the member stream is
+seekable: the value MUST NOT depend on the outer archive's `seekable_members`. Any other
+seekable source SHALL report its cheap size (a path's `stat`, a `BytesIO`'s buffer, a
+caller stream's `size` attribute), else one `seek(0, SEEK_END)` when the seek is cheap.
+A caller's non-seekable stream SHALL report `None`, also when it has a `size` attribute,
+and so SHALL a member stream that advertises no length, rather than seek to the end.
+
+The rule turns on seekability, not on trust: a seekable caller stream's `size` attribute
+is reported unchecked, and on a pipe there is no `SEEK_END` to answer instead, so `None`
+is the answer it always had. The value is more than metadata. Two extraction ratio
+guards divide by a source length: the per-member guard by `compressed_size`, and the
+archive-wide guard by `BaseArchiveReader.compressed_source_size`, which reads the same
+source size hint with no seekability test and, when it is set, keeps
+`_wrap_compressed_input` from installing the live byte counter. That guard trusts a
+caller's `size` attribute on a pipe too (`safe-extraction`, "Archive-wide decompression
+ratio for solid containers"), so the two specs differ for that shape. A ZIP member that
+holds fewer bytes than it declares is refused with `TruncatedError` when it is read; a
+TAR member stream answers `SEEK_END` from the same declared length, so no seek could
+learn more.
 
 When a decoder learns the true uncompressed size after EOF, the member MAY be
 updated to that byte count.
@@ -143,8 +154,8 @@ updated to that byte count.
 | `.xz` / `.lz` opened from another archive's member stream | Size is `None`; the member is not seeked to its end |
 | `.xz` / `.lz` opened from a stored ZIP entry or a TAR member | Size is `None`, as for any member stream, though that seek would be a slice |
 | `.gz` from a path or `BytesIO` | `compressed_size` is the source's length |
-| `.gz` from a pipe with a `size` attribute | `compressed_size` is `None` |
-| `.gz` from a member stream that advertises its length | `compressed_size` is that length; no seek to the end |
+| `.gz` from a caller's pipe with a `size` attribute | `compressed_size` is `None` |
+| `.gz` from a member stream that advertises its length, seekable or not | `compressed_size` is that length; no seek to the end |
 | `.gz` from a member stream with no advertised length | `compressed_size` is `None`; no seek to the end |
 | Alone stream with known header size | `member.size` equals that size |
 | Alone stream with unknown-size marker | Size is `None` until EOF may update it |

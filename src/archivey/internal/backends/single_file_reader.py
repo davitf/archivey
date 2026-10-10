@@ -288,25 +288,31 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_compressed_size(self) -> int | None:
         """Byte length of the compressed source, when it is cheap to learn.
 
-        On a seekable source, its cheap size comes first: a path's ``stat``, a
-        ``BytesIO``'s buffer, a member stream's advertised ``size``
-        (``ArchiveSource.size_hint``, measured once by ``source_byte_size``). Without
-        one, one ``SEEK_END`` answers, so the same bytes report the same size from a
-        path, a ``BytesIO`` or an unrecognized seekable stream. The exception is a
-        source whose seek may re-decode (``seek_is_expensive``: a member stream with no
-        advertised length): a seek to its end may decompress the whole member, so it
-        reports ``None``. A non-seekable source reports ``None`` too, even when it has a
-        ``size`` attribute. A missing path raises ``OSError`` inside
+        A member stream from another archive (``seek_is_expensive``) reports its
+        advertised ``size`` (``ArchiveSource.size_hint``), seekable or not: that is the
+        length its container's header declares, and the outer archive's
+        ``seekable_members`` must not change metadata. On any other seekable source, its
+        cheap size comes first: a path's ``stat``, a ``BytesIO``'s buffer, a ``size``
+        attribute. Without one, one ``SEEK_END`` answers, so the same bytes report the
+        same size from a path, a ``BytesIO`` or an unrecognized seekable stream. A member
+        stream with no advertised length reports ``None``: a seek to its end may
+        decompress the whole member. A caller's non-seekable stream reports ``None`` too,
+        even when it has a ``size`` attribute. A missing path raises ``OSError`` inside
         ``_on_seekable_source``, and ``_try_on_seekable_source`` turns it into ``None``.
 
-        The size hint can be a claim rather than a measurement: a member stream's
-        ``size`` is the size its archive declares, and a caller's stream can carry any
-        ``size`` attribute. The value is not only metadata, because the per-member
-        decompression-ratio guard in extraction divides by ``compressed_size``. Nothing
-        here checks the claim, and a ``SEEK_END`` could not do better: a TAR member
-        stream answers it from the same declared length. A ZIP member that holds fewer
-        bytes than it declares is refused with ``TruncatedError`` when it is read, by the
-        member stream's own checks.
+        What separates the pipe from the seekable caller stream is seekability, not
+        trust: both carry an unchecked ``size`` claim, and the seekable one's is
+        reported. On a pipe there is no ``SEEK_END`` to answer, so ``None`` is the
+        answer it always had. The value is not only metadata. Two extraction ratio
+        guards divide by a source length: the per-member guard by ``compressed_size``,
+        and the archive-wide guard by ``BaseArchiveReader.compressed_source_size``,
+        which reads the same ``size_hint`` with no seekability test; when it is set,
+        ``_wrap_compressed_input`` installs no live byte counter. So a pipe's ``size``
+        claim still reaches that guard (spec ``safe-extraction``, "Archive-wide
+        decompression ratio for solid containers"). Nothing here checks a claim, and a
+        ``SEEK_END`` could not do better: a TAR member stream answers it from the same
+        declared length. A ZIP member that holds fewer bytes than it declares is refused
+        with ``TruncatedError`` when it is read, by the member stream's own checks.
 
         The absolute ``SEEK_END`` is the member's length, not the handle's, because the
         source reaching a reader is already normalized to begin at offset 0 — a caller
@@ -318,9 +324,12 @@ class SingleFileReader(BaseArchiveReader):
         src = self._source
         assert src is not None  # always set in __init__
         if not src.seekable():
-            # A pipe reports ``None``, also when it has a ``size`` attribute: that
-            # attribute is only the caller's claim.
-            return None
+            # No ``SEEK_END`` here to measure the end, so only a declared length can
+            # answer. A member stream's is its container's header (``seek_is_expensive``
+            # is true exactly when the source borrows an ``ArchiveStream``; a joined set
+            # with one is seekable and never reaches here). A caller's pipe reports
+            # ``None`` even with a ``size`` attribute.
+            return src.size_hint if src.seek_is_expensive else None
         if src.size_hint is not None:
             return src.size_hint
         # ``_try_on_seekable_source`` gives ``None`` for an expensive seek.
