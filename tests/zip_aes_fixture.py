@@ -44,13 +44,15 @@ def build_aes_zip(
     method: int = 8,
     tamper_hmac: bool = False,
     unix_mode: int | None = None,
+    compressed_tail: bytes = b"",
 ) -> bytes:
     """Build a WinZip AES ZIP from ``(name, payload)`` members.
 
     ``tamper_hmac`` flips a byte in the first member's AES HMAC (for corruption
     tests). ``unix_mode`` records every member as written on Unix with that mode
-    (``0o120777`` makes them symlinks). AE-2 (``vendor_version=2``) stores CRC 0
-    in the headers; AE-1 stores the plaintext CRC.
+    (``0o120777`` makes them symlinks). ``compressed_tail`` is appended to each
+    member's compressed data before encryption, inside the member. AE-2
+    (``vendor_version=2``) stores CRC 0 in the headers; AE-1 stores the plaintext CRC.
     """
     if not members:
         raise ValueError("build_aes_zip requires at least one member")
@@ -66,6 +68,7 @@ def build_aes_zip(
             compressed = payload
         else:
             compressed = zlib.compress(payload)[2:-4]  # raw deflate
+        compressed += compressed_tail
         salt = os.urandom(aes.salt_len)
         enc_key, auth_key, pw_verify = derive_winzip_aes_keys(
             password, salt=salt, key_len=aes.key_len

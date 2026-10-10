@@ -401,6 +401,17 @@ class DecoderLimits:
     dictionary bounds how much of the output the decoder keeps, and the archive
     picks it.
 
+    ``max_decoder_memory`` also caps the rapidgzip accelerator for gzip, zlib and raw
+    DEFLATE, though no archive declares a size there. rapidgzip keeps whole decoded
+    chunks in memory, so a 1 MB gzip file of zeros made it hold close to 1 GiB. Its
+    child process is stopped when its memory grows past the cap, and the standard
+    library reads the rest of the stream, so the result does not change; only the
+    speed does. The child checks every millisecond and again before it answers each
+    read, so the peak can pass the cap by what the decoder allocates between two
+    checks: measured, about 17 MB on four cores. On a busy machine the timed check can
+    wait for a processor, and then the check before the next read stops it. Where the
+    platform does not report a process's peak memory, the child is not capped.
+
     The same shape holds for key derivation, which costs time rather than memory:
     RAR5 and 7z headers say how many hashing rounds turn a password into a key,
     and :attr:`max_key_derivation_rounds` caps their total over one open archive.
@@ -418,10 +429,13 @@ class DecoderLimits:
     when the reader is.
 
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
-    one. Exceeding a guard raises
+    one. Where an archive declares the size, exceeding a guard raises
     :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
-    which is the only place it can be raised: the process has no recourse once
-    the request is in the allocator's hands.
+    which is the only place it can be raised in this process: the process has no
+    recourse once the request is in the allocator's hands. The rapidgzip child is
+    the exception: nothing declares its size, so its memory is measured after the
+    allocation, in its own process, and going over the cap raises nothing to the
+    caller. The child is stopped and the standard library continues the stream.
 
     **Detection is not capped.** Formats without magic (``.lzma``, and the
     compressed tar inside ``.tar.xz`` and its siblings) are recognised by

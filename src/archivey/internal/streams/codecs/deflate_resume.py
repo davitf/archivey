@@ -48,7 +48,7 @@ from archivey.internal.streams.resume import ResumeReachedStreamEnd
 WINDOW_SIZE = 32 << 10
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DeflateResume:
     """A :class:`SeekPoint` state: a DEFLATE block boundary inside the stream.
 
@@ -225,8 +225,15 @@ class DeflateResumeDecoder(BaseDecoder):
         return not self._decomp.unconsumed_tail
 
 
-def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | None:
-    """The decompressed offset where the raw DEFLATE stream in ``source`` ends.
+def stream_end(
+    source: BinaryIO,
+    point: SeekPoint | None,
+    cap: int,
+    *,
+    check_input_after: bool = False,
+) -> tuple[int | None, bool]:
+    """The decompressed offset where the raw DEFLATE stream in ``source`` ends, and
+    whether input follows it.
 
     ``source`` is the compressed stream, seekable from offset 0. The decode starts at
     ``point`` (a :class:`DeflateResume` block boundary at or before ``cap``), or at the
@@ -235,6 +242,12 @@ def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | Non
     raises, or the output passes ``cap``. Raw DEFLATE has no checksum, so a resumed
     decode that reaches the end is as good as a full one. Output is counted and
     dropped, in bounded pieces.
+
+    The second value is False unless ``check_input_after`` is set. Then a stream that
+    ends below ``cap`` is followed by the next one, as rapidgzip reads on into it,
+    until a stream ends at ``cap``, and the second value is whether ``source`` holds
+    any byte after that stream, a zero too. The result then does not depend on where
+    ``point`` lies.
     """
     produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
     if point is not None:
@@ -248,16 +261,24 @@ def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | Non
         source.seek(0)
     data = b""
     try:
-        while not decomp.eof:
-            if produced > cap:
-                return None
-            if not data:
-                data = source.read(1 << 16)
+        while True:
+            while not decomp.eof:
+                if produced > cap:
+                    return None, False
                 if not data:
-                    return None
-                data, bit = _splice(bit, data), 0
-            produced += len(decomp.decompress(data, 1 << 20))
-            data = decomp.unconsumed_tail
+                    data = source.read(1 << 16)
+                    if not data:
+                        return None, False
+                    data, bit = _splice(bit, data), 0
+                produced += len(decomp.decompress(data, 1 << 20))
+                data = decomp.unconsumed_tail
+            if not check_input_after or produced >= cap:
+                break
+            data = decomp.unused_data
+            decomp = zlib.decompressobj(-15)
     except zlib.error:
-        return None
-    return produced if produced <= cap else None
+        return None, False
+    if produced > cap:
+        return None, False
+    after = check_input_after and (bool(decomp.unused_data) or bool(source.read(1)))
+    return produced, after

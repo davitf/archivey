@@ -23,7 +23,7 @@ from archivey.cli import test_cmd
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.info_cmd import _can_reread
-from archivey.cli.main import _inject_default_list, main
+from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveMember, MemberType
@@ -1805,6 +1805,75 @@ def test_extract_dest_before_dash_named_pattern(
     assert not (dest / "ok.txt").exists()
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [["*.py", "--", "-file.txt"], ["--", "-file.txt", "*.py"]],
+    ids=["pattern-before-separator", "pattern-after-separator"],
+)
+def test_extract_dest_then_patterns_around_double_dash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: list[str]
+) -> None:
+    """A pattern before ``--`` must not turn ``--`` and later tokens into options."""
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "dash.zip", {"-file.txt": b"x", "a.py": b"y", "ok.txt": b"z"})
+    dest = tmp_path / "out"
+    assert main(["x", str(z), "-d", str(dest), *tail]) == EXIT_OK
+    assert (dest / "-file.txt").read_bytes() == b"x"
+    assert (dest / "a.py").read_bytes() == b"y"
+    assert not (dest / "ok.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "opts", [[], ["-d", "out"]], ids=["no-flags", "dest-before-separator"]
+)
+def test_parse_double_dash_pattern_named_double_dash(opts: list[str]) -> None:
+    """The first ``--`` is the separator; a second one is a pattern on every Python."""
+    argv = _inject_default_list(["x", "a.zip", *opts, "--", "--"])
+    args = _parse_cli_args(build_parser(), argv)
+    assert args.archive == "a.zip"
+    assert args.patterns == ["--"]
+    argv = _inject_default_list(["x", "a.zip", *opts, "--", "--", "b*"])
+    assert _parse_cli_args(build_parser(), argv).patterns == ["--", "b*"]
+
+
+@pytest.mark.parametrize(
+    "opts", [[], ["-d", "{dest}"]], ids=["no-flags", "dest-before-separator"]
+)
+def test_extract_member_named_double_dash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opts: list[str]
+) -> None:
+    """``x a.zip -- --`` extracts the member named ``--`` and nothing else."""
+    z = _zip(tmp_path / "dd.zip", {"--": b"x", "other.txt": b"y"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    # Without ``-d`` the extraction lands in the working directory.
+    monkeypatch.chdir(tmp_path if opts else dest)
+    flags = [o.format(dest=dest) for o in opts]
+    assert main(["x", str(z), *flags, "--", "--"]) == EXIT_OK
+    assert (dest / "--").read_bytes() == b"x"
+    assert not (dest / "other.txt").exists()
+
+
+def test_double_dash_archive_and_pattern_after_separator() -> None:
+    """Archive and patterns may both follow ``--``; dash names stay positionals."""
+    argv = _inject_default_list(["x", "--", "-a.zip", "-f", "--"])
+    args = _parse_cli_args(build_parser(), argv)
+    assert (args.archive, args.patterns) == ("-a.zip", ["-f", "--"])
+
+
+def test_unknown_option_before_double_dash_still_rejected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only tokens after ``--`` are positionals; a typo before it stays an error."""
+    z = _zip(tmp_path / "a.zip", {"a.txt": b"x"})
+    dest = tmp_path / "out"
+    args = ["x", str(z), "-d", str(dest), "a*", "--bogus", "--", "-f"]
+    assert main(args) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: --bogus" in err
+    assert "-f" not in err.split("unrecognized arguments:")[-1]
+
+
 def test_extract_stop_on_error_reports_extracted_and_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2780,13 +2849,38 @@ def test_tar_flag_hint_matches_whole_options(
     assert "bare words" not in err
 
 
-@pytest.mark.parametrize(("bundle", "verb"), [("-xvf", "x"), ("-tzf", "t")])
+@pytest.mark.parametrize(
+    ("bundle", "verb"),
+    [
+        ("-xvf", "x"),
+        ("-tzf", "t"),
+        ("-zxvf", "x"),
+        ("-l", "l"),
+        ("-xZf", "x"),
+        ("-xmf", "x"),
+        ("-xhf", "x"),
+    ],
+)
 def test_tar_flag_hint_matches_short_option_bundles(
     bundle: str, verb: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # ``tar -xvf`` habit: the bundle's first verb letter is the verb meant.
     assert main([bundle, "a.tar"]) == EXIT_USAGE
     assert f"try 'archivey {verb} ARCHIVE'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["-exclude", "-file", "-name", "-dest", "-max", "-math", "-mix", "-all", "-tail"],
+)
+def test_tar_flag_hint_skips_single_dash_words(
+    word: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A mistyped long option is not a tar bundle: ``-exclude`` does not mean ``x``.
+    assert main(["l", "a.zip", word, "a*"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert f"unrecognized arguments: {word}" in err
+    assert "bare words" not in err
 
 
 def test_double_dash_lists_dash_named_archive(
