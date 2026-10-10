@@ -164,10 +164,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   corrupt member header *after the first* as a clean end of archive — no exception is
   raised; iteration just stops early. Archivey backstops this with its end-of-archive
   marker check:
-    - When the shortened scan stops on a **rejected (non-null) header block**, archivey
-      raises `CorruptionError` **by default** — a well-formed tar never ends that way. In
-      random-access reads this holds even when the bad header is the archive's *final*
-      block.
+    - When the shortened scan stops on a **header `tarfile` rejected**, archivey raises
+      `CorruptionError` **by default** — a well-formed tar never ends that way. This
+      holds in random-access and streaming reads alike, whatever follows the bad header:
+      more members, nothing (it is the archive's *final* block), or a block of zeros.
     - A tar that merely **ends cleanly on a member boundary without the two-block null
       trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
@@ -195,9 +195,6 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       listing.
     - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
       whatever the policy.
-  - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access
-    reads but not in forward-only streaming, where it surfaces as the missing-trailer
-    warning instead. A future native TAR reader may close this gap.
 
 ## 7z
 
@@ -603,10 +600,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `UnsupportedFeatureError`. Detection reads a sample of the stream with no cap, so
   a frame declaring 2 GiB has that much address space reserved while `open_archive`
   detects it, whatever the cap.
+- A `.zst` frame carries a content checksum only when its writer adds one, as a modern
+  `.lz4` frame does. Archivey checks it when it is there; a frame without one can decode
+  damaged data to wrong bytes with no error.
 - The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) reads as `.lz4`. It has
   no checksum, so damaged data can decode to wrong bytes with no error, as a modern
   frame written without one can. It has no end mark either, so a file cut exactly
   between two of its blocks reads short with no error.
+- Brotli (`.br`), unix-compress (`.Z`) and LZMA Alone (`.lzma`) have no checksum
+  either, so damaged data can decode to wrong bytes with no error. Archivey does not
+  report this with a diagnostic on each file, because there is no check to skip. A
+  `.Z` file has no end mark, so a cut can also read short with no error (see the `.Z`
+  bullet above).
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 

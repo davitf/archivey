@@ -111,7 +111,12 @@ Everything about that boundary is a consequence:
   alternating two `PATH`s does not re-probe. The lookup does not key cwd or `PATHEXT`.
 
 **Blocks chain forward and each header states its own size.** Without a usable RAR5 `QO`
-the walk reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
+the walk reads a header, uses its declared size to find the next, and stops at `ENDARC`.
+In RAR 1.5-4 a FILE or SUB header's data size is its PACK_SIZE (plus HIGH_PACK_SIZE),
+whether or not the header sets LONG_BLOCK (0x8000), as `unrar` reads it; other blocks
+have data only with LONG_BLOCK. Skipping nothing when a FILE header cleared the flag
+parsed the member's data as headers, so a crafted member could carry extra members that
+`unrar` does not list (measured, `unrar` 7.00). So:
 reading the structure needs seek, and a non-seekable source is refused in both access modes
 (§2.1); the whole member table is built at open — walking every header, or reading `QO`
 and skipping the FILE headers it already holds (§1.1) — which is why
@@ -286,6 +291,11 @@ included — it does not leave FILE after the old QO.
 **Listing:**
 
 1. Follow the locator and parse QO into FILE copies keyed by `header_offset`.
+   Only the first MAIN of a volume is asked. `unrar` 7.00 accepts a repeated MAIN
+   (`unrar lb` lists past it), and each try reads a QO payload of up to 16 MiB, so
+   following every MAIN's locator let a crafted archive buy that read again with
+   each 17-byte MAIN (13 bytes at the format minimum): measured at about 50 ms of
+   parse per extra MAIN (DR-9a).
 2. Seek back to after MAIN and walk. `CMT` is a normal SERVICE. When `tell()`
    is a FILE in the map, emit those copies in order and seek to the end of
    the consecutive run (the chain is in memory; one seek). AUTO holes — small
@@ -656,7 +666,12 @@ comment records its code page no more than a name does; only the last fallback d
 UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to list as
 CJK. A compressed `CMT` SERVICE header is not
 decoded: the parser reads only a stored one, so such an archive lists with no comment
-and no diagnostic.
+and no diagnostic. A stored `CMT` is read from the span the walk skips after its
+header, which is its PACK_SIZE whether or not LONG_BLOCK is set, as `unrar` reads it.
+So no byte is read both as comment data and as a later header; a read that could
+overlap the next headers would let a stack of 35-byte `CMT` headers each re-read the
+rest of the archive (DR-9a). A stored `CMT` whose PACK_SIZE runs past the end of the
+file is a `CorruptionError`, with LONG_BLOCK set or clear.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.

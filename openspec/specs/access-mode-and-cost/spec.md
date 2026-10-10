@@ -210,8 +210,6 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | at `open_archive()` | fail fast if source not RA-capable | any source |
 
 In streaming mode, `__iter__` / `stream_members` / `extract_all` share one pass.
-Backend `_SUPPORTS_RANDOM_ACCESS` may also force `open`/`read` to raise; it
-composes with — does not replace — these rules.
 
 #### Scenario: summary checks
 

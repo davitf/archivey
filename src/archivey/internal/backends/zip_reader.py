@@ -693,7 +693,6 @@ def _reparse_fallback_type(
 class ZipReader(BaseArchiveReader):
     """Reads a ZIP archive via stdlib ``zipfile``."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(
@@ -1117,7 +1116,7 @@ class ZipReader(BaseArchiveReader):
             member.ctime = ctime
         if mode is not None:
             member.mode = mode
-        if info.flag_bits & _ZIP_MASK_ENCRYPTED:
+        if _is_encrypted_entry(info):
             member.is_encrypted = True
         if info.comment:
             # APPNOTE puts the member comment under the name's UTF-8 flag.
@@ -1194,12 +1193,26 @@ class ZipReader(BaseArchiveReader):
         # stdlib ZipFile serializes fp access via a private lock; typeshed omits it.
         return getattr(self._archive, "_lock")
 
-    def _read_zipcrypto_header(self, raw: BinaryIO, member_name: str) -> bytes:
+    def _read_zipcrypto_header(
+        self, raw: BinaryIO, info: zipfile.ZipInfo, member_name: str
+    ) -> bytes:
         """Read the 12-byte ZipCrypto header from the start of ``raw``, the payload.
 
-        A payload the file cuts short is ``TruncatedError`` on every password path.
-        ``raw`` is left open, positioned at the ciphertext body.
+        A declared size too small for the header is an impossible header,
+        ``CorruptionError``, as for WinZip AES. The STORED confirm pass is gated above
+        this size, so only the decrypt stage reaches that check. A payload the file cuts short is
+        ``TruncatedError`` on every password path. ``raw`` is left open, positioned at
+        the ciphertext body.
         """
+        if info.compress_size < ZIPCRYPTO_HEADER_LEN:
+            impossible = CorruptionError(
+                "ZipCrypto member too short for its encryption header "
+                f"({info.compress_size} < {ZIPCRYPTO_HEADER_LEN})",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+            self._stamp_error_context(impossible, member_name)
+            raise impossible
         try:
             header = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
         except _ZIP_MEMBER_READ_ERRORS as exc:
@@ -1545,7 +1558,7 @@ class ZipReader(BaseArchiveReader):
         def stage(password: bytes) -> BinaryIO:
             raw = self._open_raw_payload(info, member_name)
             try:
-                header = self._read_zipcrypto_header(raw, member_name)
+                header = self._read_zipcrypto_header(raw, info, member_name)
             except BaseException:
                 raw.close()
                 raise
@@ -1577,6 +1590,10 @@ class ZipReader(BaseArchiveReader):
                     password=password,
                     compress_size=info.compress_size,
                 )
+            except ArchiveyError as exc:
+                raw.close()
+                self._stamp_error_context(exc, member_name)
+                raise
             except BaseException:
                 raw.close()
                 raise
@@ -1950,7 +1967,7 @@ class ZipReader(BaseArchiveReader):
         # One view serves the header read and every CRC pass; each pass rewinds it.
         raw = self._open_raw_payload(info, member.name)
         try:
-            header = self._read_zipcrypto_header(raw, member.name)
+            header = self._read_zipcrypto_header(raw, info, member.name)
 
             def weak_ok(password: bytes) -> bool:
                 return password_matches_check_byte(password, header, check_byte)
@@ -2213,8 +2230,8 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
         # Every member reads as raw payload -> decrypt stage (if encrypted) -> codec
-        # layer -> fused CRC/size verify. Bit 0 is set on WinZip AES members too.
-        if info.compress_type == 99 or info.flag_bits & _ZIP_MASK_ENCRYPTED:
+        # layer -> fused CRC/size verify.
+        if _is_encrypted_entry(info):
             return self._open_encrypted_member(info, member)
         return self._open_codec_member(info, member)
 
@@ -2466,6 +2483,15 @@ def _unicode_path_name(extra: bytes, stored_name: bytes) -> bytes | None:
             return None
         return name
     return None
+
+
+def _is_encrypted_entry(info: zipfile.ZipInfo) -> bool:
+    """True when ``info``'s data is encrypted: bit 0, or method 99 (WinZip AES).
+
+    Writers set bit 0 on WinZip AES members too, but method 99 alone means the data
+    is encrypted, so listing and opening both ask this one predicate.
+    """
+    return bool(info.flag_bits & _ZIP_MASK_ENCRYPTED) or info.compress_type == 99
 
 
 def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:

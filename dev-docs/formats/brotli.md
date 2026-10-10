@@ -74,12 +74,21 @@ when `brotli` is not installed.
 2. **The chain walk**, when the source length is known: byte-aligned self-describing
    meta-blocks after the first are followed, up to eight links, stopping at the first
    compressed block. A link that overruns the source, or bytes left over after a declared
-   last block, reject the match (`chain_proves_invalid`). On a non-seekable source the walk
+   last block, reject the match (`walk_chain`). On a non-seekable source the walk
    reads at most 1 MiB ahead.
 3. **The decode**: the whole 4 KiB detection window is decoded and must succeed. A shorter
    sample let text through: 7 of 800 Perl modules decoded as Brotli for 256 bytes, none for
    4 096.
-4. **Completeness**: when the whole source is visible, it must decode to its end. A source
+4. **The chain decode**, when the walk stopped at a compressed block the window decode did
+   not reach: the source is decoded from offset 0 to 4 KiB past that block's header
+   (`CHAIN_DECODE_MARGIN`), and an error there rejects the match. This turns away data
+   whose first bytes declare a long uncompressed or metadata block: CPython 3.11 and 3.14
+   `.pyc` files over about 269 KiB, Type 1 fonts, 1.2 % of random data over 64 KiB. Each
+   fails within 256 bytes of the compressed header. The decode is a sequential read, mostly
+   a copy. It does not run when its end would pass 1 MiB or the budget's read ceiling, or
+   when what is left of `max_decode_input` cannot cover it (most of these cases under
+   `FAST`); the walk's verdict then stands and `content_probe_decode` is recorded.
+5. **Completeness**: when the whole source is visible, it must decode to its end. A source
    no larger than `completion_window_bytes` (64 KiB under `BALANCED`, off under `FAST`) is
    decoded whole to check that.
 
@@ -157,6 +166,8 @@ detection census in the investigation linked in §9.
 | OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5). `FormatDetectionError`, or the extension guess |
 | COFF object files | Can be claimed by a probe, LZMA Alone or Brotli ([`xz.md`](xz.md) §3) |
 | A 7z, ZIP or RAR behind a low-entropy stub | Found by the SFX scan, not claimed as Brotli |
+| CPython 3.11 / 3.14 `.pyc` over ~269 KiB, a Type 1 font (`.pfb`), random data over 64 KiB | Not claimed under `BALANCED`: the chain decode rejects them (§2.1). Before it, these were the 5 non-OLE false claims in 148 255 local files, and 1.2 % of random blobs |
+| Data whose compressed block sits past 1 MiB, or whose chain is longer than eight links | Can still be claimed at `GUESS`: nothing past the walk is checked there |
 
 ## 4. Threat surface
 
@@ -168,8 +179,9 @@ Brotli-specific only; the shared items are [`single-file.md`](single-file.md) §
   delivered fabricated bytes before the raise (65 536 measured). The `GUESS` confidence and
   the `format_unconfirmed` stamp are how a caller finds out.
 - **Detection decodes.** The probe decodes 4 KiB, the chain walk reads up to eight headers,
-  and the completeness check can decode a whole source of up to 64 KiB. All of it is inside
-  the detection budget (threat-model O11).
+  the chain decode can decode up to 1 MiB from the start, and the completeness check can
+  decode a whole source of up to 64 KiB. All of it is inside the detection budget
+  (threat-model O11).
 - **One call's output is bounded by the library** from `brotli` 1.2.0 (§2.3). A single
   meta-block can declare 16 MiB; without the bound, `read(1)` produced all of it.
 - **No checksum.** Damaged data that still parses gives wrong bytes. That is the format.
@@ -201,6 +213,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Stamp by provenance, not confidence (PR #267) | Any probe-only claim can be wrong; the caller needs the signal whatever the grade | Stamping `GUESS` only |
 | Decode the whole 4 KiB window, and a small source whole (PR #466) | The 256-byte sample let text through | 256 bytes |
 | Far magic before content probes (PR #270) | A bootable ISO's system area decoded as Brotli | Probes first |
+| Decode to the compressed block the walk stops at | Every measured false claim over 64 KiB failed within 256 bytes of it; the read is sequential and mostly a copy | Stopping signatures for `.pyc` and PFB (the pyc magic changes per CPython version); parsing the block's Huffman tables without decoding |
 | Require `brotli` 1.2.0 | `output_buffer_limit` bounds one call's output (CVE-2025-6176) | Older versions, which decoded a whole meta-block per call |
 | Replay from the start to tell bytes after the end from damage | The library gives the same error for both and loses the call's output; a replay costs nothing on a clean file | Feeding one byte at a time always, which is slow on every file; refusing bytes after the end, unlike every other codec |
 | `brotli`, not `brotlicffi` | `brotli` is the reference binding; `brotlicffi` helps only on PyPy | Supporting both |
@@ -228,6 +241,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The first-block gate | `tests/test_brotli_framing_gate.py::test_framing_gate_rejects_mz_stub_and_doxygen_opener`, `::test_framing_gate_rejects_random_overrunning_blobs`, `::test_unknown_length_skips_framing_gate` |
 | The chain walk and completeness | `tests/test_probe_completeness_gate.py::test_chain_walk_rejects_second_link_overrun`, `::test_chain_walk_rejects_trailing_bytes_after_declared_end`, `::test_sixteen_mib_vacuous_first_block_caught_by_walk`, `::test_completeness_rejects_tiny_nonterminating_file`, `::test_probe_hit_under_the_completion_window_is_checked_whole` |
 | The 4 KiB sample | `::test_text_that_decodes_for_256_bytes_is_not_brotli` |
+| The chain decode | `tests/test_brotli_chain_decode.py::test_data_that_fails_past_the_window_is_not_brotli`, `::test_real_stream_with_a_long_uncompressed_first_block_is_kept`, `::test_real_stream_with_a_long_metadata_first_block_is_kept`, `::test_fast_budget_cannot_cover_the_decode_and_says_so` |
 | `PROBABLE` and `GUESS` | `tests/test_brotli_framing_gate.py::test_real_brotli_compressed_first_is_probable_without_extension`, `::test_real_brotli_with_br_extension_is_probable`, `::test_brotli_residual_that_fits_framing_detects_as_guess` |
 | `format_unconfirmed` on a probe-only failure | `::test_guess_decode_failure_sets_format_unconfirmed`, `::test_probe_unconfirmed_diagnostic_emitted_once_across_retries` |
 | Archives behind a stub are not Brotli | `tests/test_sfx.py::test_sfx_7z_behind_a_low_entropy_stub_is_not_brotli`, `::test_a_real_brotli_stream_is_unaffected` |

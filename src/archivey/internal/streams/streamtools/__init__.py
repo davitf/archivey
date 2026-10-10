@@ -52,6 +52,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     check_seek_args,
     ensure_binaryio,
     ensure_bufferedio,
+    is_closed_file_error,
     is_filename,
     is_seekable,
     is_stream,
@@ -66,6 +67,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_byte_size,
     source_name,
     source_size_fact,
+    underlying_stream,
 )
 from archivey.internal.streams.streamtools.locked import LockedStream
 from archivey.internal.streams.streamtools.shared import SharedSource
@@ -92,6 +94,7 @@ __all__ = [
     "ensure_binaryio",
     "ensure_bufferedio",
     "fix_stream_start_position",
+    "is_closed_file_error",
     "is_filename",
     "is_seekable",
     "is_stream",
@@ -110,4 +113,5 @@ __all__ = [
     "source_byte_size",
     "source_size_fact",
     "source_name",
+    "underlying_stream",
 ]
