@@ -33,7 +33,9 @@ class EndRecord:
     comment: bytes            # cut at end of file
     comment_declared: int     # the stored length, for the "comment cut short" finding
 
-def find_end_record(handle: BinaryIO, *, file_size: int) -> EndRecord: ...
+ReadAt = Callable[[int, int], bytes]   # read_at(offset, n); the caller owns handle and lock
+
+def find_end_record(read_at: ReadAt, file_size: int) -> EndRecord: ...
 
 @dataclass(frozen=True, slots=True)
 class CentralEntry:
@@ -56,7 +58,7 @@ class CentralEntry:
     comment: bytes
 
 class CentralDirectoryWalk:
-    def __init__(self, handle: BinaryIO, end: EndRecord, *, lock: Lock) -> None: ...
+    def __init__(self, read_at: ReadAt, end: EndRecord) -> None: ...
     def __iter__(self) -> Iterator[CentralEntry]: ...
     findings: list[EndRecordFinding]   # complete once iteration ends
 
@@ -70,7 +72,7 @@ class LocalHeader:
     extra: bytes
     data_start: int           # absolute
 
-def read_local_header(handle: BinaryIO, entry: CentralEntry) -> LocalHeader: ...
+def read_local_header(read_at: ReadAt, header_offset: int) -> LocalHeader: ...
 ```
 
 `find_end_record` does what four helpers in `zip_reader.py` and stdlib's `_EndRecData`
@@ -92,7 +94,8 @@ do today, in one place:
   computed inside the slice as today.
 
 `CentralDirectoryWalk` reads the directory forward in 64 KiB chunks (DR-10a), one entry
-at a time, under the reader's lock with the handle position saved and restored. Each entry
+at a time. Every read goes through `read_at`, which the reader implements under its lock
+with the handle position saved and restored, so the parser knows nothing of locking. Each entry
 resolves its ZIP64 extra field (`0x0001`) in the order APPNOTE gives, reading only the
 fields whose 32-bit value is `0xFFFFFFFF`. It stops at `cd_size` bytes, as stdlib does,
 and cuts a name, extra or comment that runs past that point, which is one of the findings.
