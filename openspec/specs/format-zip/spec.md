@@ -442,7 +442,8 @@ is emitted, since the field declares the encoding. A field whose CRC does not ma
 whose version is not 1 SHALL be ignored, and the name decoded as above. A malformed field
 SHALL be dropped, the name decoded as above, and `MEMBER_HEADER_RECORD_SKIPPED` emitted on
 the member with `record="unicode_path"` and `record_id=0x7075`: a field shorter than its
-version byte and CRC (5 bytes), or a version-1 field with a matching CRC whose name is
+version byte and CRC (5 bytes), whatever its first byte, since neither its version nor
+its CRC can be read; or a version-1 field with a matching CRC whose name is
 empty or not valid UTF-8. The outcome SHALL be the same on every supported Python version:
 the archive SHALL open, and no Python `warnings` warning SHALL be raised for the field. A
 field in the local header only SHALL be ignored, and so SHALL the field of a name whose
@@ -475,5 +476,5 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 | The same, `encoding="latin-1"` | The same: the field outranks `encoding=` |
 | The field's CRC does not match the stored bytes, or its version is not 1 | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
 | The field in the local header only | Field ignored |
-| The field is 0 to 4 bytes long, or the CRC matches and the name is empty or not valid UTF-8 | The archive opens on every Python version; field dropped: the name decoded as above, no `alternate_raw_name`, `MEMBER_HEADER_RECORD_SKIPPED` attached to that member only, no Python warning; `DiagnosticPolicy.strict()` refuses |
+| The field is 0 to 4 bytes long, whatever its first byte, or the CRC matches and the name is empty or not valid UTF-8 | The archive opens on every Python version; field dropped: the name decoded as above, no `alternate_raw_name`, `MEMBER_HEADER_RECORD_SKIPPED` attached to that member only, no Python warning; `DiagnosticPolicy.strict()` refuses |
 | The same malformed field on a name with the UTF-8 flag set | Field not consulted: no diagnostic |

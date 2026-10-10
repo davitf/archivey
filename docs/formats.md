@@ -114,8 +114,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
   the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A
   malformed field (too short, or matching with an empty or non-UTF-8 name) is dropped
-  with a `member_header_record_skipped` diagnostic, and the archive opens on every Python
-  version, where Python 3.12+ `zipfile` alone refuses it.
+  with a `member_header_record_skipped` diagnostic. The archive opens on every Python
+  version; `zipfile` on its own refuses it from Python 3.12.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
   bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
   parsing the central directory, so the failure is archive-wide rather than confined to

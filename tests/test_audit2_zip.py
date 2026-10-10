@@ -53,6 +53,7 @@ class _Entry:
     extract_version: int = 20
     external_attr: int = 0o100644 << 16
     flags: int = 0  # general-purpose bit flags, both headers
+    comment: bytes = b""  # central-directory per-member comment
 
 
 def _build_zip(entries: list[_Entry]) -> bytes:
@@ -101,13 +102,13 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             min(usize, 0xFFFFFFFF),
             len(e.name),
             len(e.extra),
-            0,  # comment length
+            len(e.comment),
             0,  # disk number start
             0,  # internal attributes
             e.external_attr,
             min(header_offset, 0xFFFFFFFF),
         )
-        cd += e.name + e.extra
+        cd += e.name + e.extra + e.comment
     out += cd
     out += struct.pack(
         "<4sHHHHIIH",
@@ -359,6 +360,71 @@ def test_malformed_unicode_path_field_from_a_file_path(tmp_path: Path) -> None:
             DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         ]
         assert ar.read(member) == b"hi"
+
+
+def _central_entry_lookalike() -> bytes:
+    """A member comment shaped like a central directory entry carrying a 0x7075 field.
+
+    A walk of the central directory that skips the comment's length takes it for the
+    next entry, which shifts every later entry's index by one.
+    """
+    field = _unicode_path_field(b"z", name=b"z")
+    header = bytearray(46)
+    header[0:4] = b"PK\x01\x02"
+    struct.pack_into("<HHH", header, 28, 0, len(field), 0)
+    return bytes(header) + field
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    "comment",
+    [
+        pytest.param(b"a member note", id="text"),
+        pytest.param(_central_entry_lookalike(), id="entry_lookalike"),
+    ],
+)
+def test_unicode_path_fields_after_a_member_comment(comment: bytes) -> None:
+    # The reader keys each entry's hidden 0x7075 field by its position in the central
+    # directory, which steps over each entry's comment. A comment before the entries
+    # that carry the field must not move those keys onto another member.
+    blob = _build_zip(
+        [
+            _Entry(b"a.txt", b"hi", comment=comment),
+            _Entry(_UNICODE_PATH_STORED, b"yo", extra=_unicode_path_field()),
+            _Entry(_OTHER_STORED, b"zz", extra=_short_unicode_path_field(2)),
+        ]
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        first, second, third = ar.members()
+        assert first.comment == comment.decode("cp437")
+        assert first.diagnostics == ()
+        assert second.name == _UNICODE_PATH_REAL
+        assert second.diagnostics == ()
+        assert third.name == _OTHER_STORED.decode("cp437")
+        assert [d.code for d in third.diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+        assert ar.read(second) == b"yo"
+
+
+def test_zipfile_that_reads_the_directory_another_way_fails_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The reader hides 0x7075 from stdlib in the one read stdlib makes of the central
+    # directory. A Python that reads it some other way would let stdlib act on the
+    # field again unseen, so the open fails and asks for a report instead.
+    from archivey.internal.backends import zip_reader
+
+    # A filter that never sees a read at the directory's offset.
+    monkeypatch.setattr(
+        zip_reader._DirectoryReadFilter,
+        "read",
+        lambda self, size=-1: self._fp.read(size),
+    )
+    blob, _ = _unicode_path_zip()
+    with pytest.raises(RuntimeError, match="report this to archivey"):
+        with archivey.open_archive(io.BytesIO(blob)) as ar:
+            ar.members()
 
 
 def test_unicode_path_extra_field_is_read_from_the_central_directory() -> None:

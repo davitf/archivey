@@ -545,7 +545,7 @@ def _zip_timestamps(
                     source="dos",
                     value_repr=repr(info.date_time),
                     message=(
-                        f"Invalid ZIP date_time for {quoted(info.filename)}: "
+                        f"Invalid ZIP date_time for {quoted(info.orig_filename)}: "
                         f"{info.date_time!r}"
                     ),
                 )
@@ -590,7 +590,7 @@ def _zip_timestamps(
                     (ctime, "ctime"),
                 ):
                     dt, issue = filetime_to_datetime(
-                        value, info.filename, field=field_name
+                        value, info.orig_filename, field=field_name
                     )
                     if issue is not None:
                         issues.append(issue)
@@ -2383,7 +2383,7 @@ def _end_record_findings(
         )
         if overrun is not None:
             index, field, entry_end = overrun
-            name = infos[index].filename if index < len(infos) else f"#{index}"
+            name = infos[index].orig_filename if index < len(infos) else f"#{index}"
             article = "an" if field.startswith("extra") else "a"
             findings.append(
                 (
@@ -2515,7 +2515,9 @@ _UNICODE_PATH_TAG = struct.pack("<H", _ZIP_EXTRA_UNICODE_PATH)
 _CD_SIGNATURE = b"PK\x01\x02"
 
 
-def _hide_unicode_path_fields(directory: bytes) -> tuple[bytes, dict[int, bytes]]:
+def _hide_unicode_path_fields(
+    directory: bytes,
+) -> tuple[bytes | bytearray, dict[int, bytes]]:
     """Retag every Unicode Path field in ``directory`` so stdlib skips it.
 
     ``directory`` is the central directory as stdlib is about to parse it. Returns the
@@ -2551,7 +2553,7 @@ def _hide_unicode_path_fields(directory: bytes) -> tuple[bytes, dict[int, bytes]
             field_pos += 4 + len(extra_field.data)
         pos = extra_start + extra_len + comment_len
         index += 1
-    return (directory if patched is None else bytes(patched)), originals
+    return (directory if patched is None else patched), originals
 
 
 class _DirectoryReadFilter:
@@ -2570,6 +2572,10 @@ class _DirectoryReadFilter:
         self._fp = fp
         self._owner = owner
         self.originals: dict[int, bytes] = {}
+        # Whether stdlib read the directory where the filter expects it to. When it did
+        # not, nothing was hidden, and the caller fails loud rather than letting stdlib
+        # act on 0x7075 unseen.
+        self.saw_directory = False
 
     def seek(self, offset: int, whence: int = 0) -> int:
         return self._fp.seek(offset, whence)
@@ -2577,12 +2583,13 @@ class _DirectoryReadFilter:
     def tell(self) -> int:
         return self._fp.tell()
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int = -1) -> bytes | bytearray:
         # stdlib sets ``start_dir`` just before it seeks there to read the directory;
         # the end-record reads before that leave it unset.
         at_directory = self._fp.tell() == getattr(self._owner, "start_dir", None)
         data = self._fp.read(size)
         if at_directory:
+            self.saw_directory = True
             data, self.originals = _hide_unicode_path_fields(data)
         return data
 
@@ -2602,6 +2609,13 @@ class _ZipFile(zipfile.ZipFile):
             _real_get_contents(self)
         finally:
             self.fp = fp
+        if not read_filter.saw_directory:
+            raise RuntimeError(
+                "This Python's `zipfile` no longer reads the central directory the "
+                "way archivey expects, so archivey cannot read the Info-ZIP Unicode "
+                "Path field itself. Please report this to archivey (with your Python "
+                "version)."
+            )
         for index, extra in read_filter.originals.items():
             self.filelist[index].extra = extra
 

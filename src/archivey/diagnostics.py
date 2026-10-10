@@ -306,15 +306,18 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     The record was dropped and the member listed without whatever it carried, so
     the field it would have populated is absent rather than wrong. ``record`` names
     the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
-    ``redir``, ``version``; ZIP's Unicode Path extra field is ``unicode_path``, with
-    ``record_id`` 0x7075); ``record_id`` is its numeric type where the format has
-    one, so an unnamed record is still identifiable.
+    ``redir``, ``version``; ZIP's Unicode Path extra field, ``unicode_path``; ISO's
+    Rock Ridge records, ``rock_ridge``); ``record_id`` is its numeric type where the
+    format has one (0x7075 for ``unicode_path``), so an unnamed record is still
+    identifiable.
 
-    A member header is attacker-sized, so how many records one member may drop is
-    capped and reaching the cap stops the header being read. ``list_truncated`` is
-    true on exactly one diagnostic per header, the one reporting that — it is the
-    *record* list that was cut short, not the archive's listing; ``record`` names
-    nothing on that one. Everywhere else it is false.
+    A RAR5 member header is attacker-sized, so how many records one member may drop
+    is capped and reaching the cap stops the header being read; an ISO Rock Ridge
+    entry list stops at its first malformed entry. ``list_truncated`` is true on the
+    one diagnostic reporting either cut — it is the *record* list that was cut
+    short, not the archive's listing; ``record`` names nothing on that one.
+    Everywhere else it is false. ZIP consults one ``unicode_path`` field per member
+    and never sets it.
 
     A RAR5 archive's own ``CMT`` and ``QO`` service headers carry the same records
     and are reported the same way, and they are not members: those diagnostics
