@@ -362,6 +362,8 @@ a separate table, so a codec added later is named here without a second edit.
 | `open_stream(src, format=ArchiveFormat.TAR_GZ)` | Opens the gzip layer; returns the tar bytes |
 | `open_stream(src, format=ArchiveFormat.TAR \| ArchiveFormat.ZIP)` | `ArchiveyUsageError` |
 | `open_archive(path, format=ArchiveFormat.ZIP \| None)` | Opens as before |
+| `open_archive(src, format=…)` with an `UNKNOWN` container (`ArchiveFormat.UNKNOWN`, `"unknown"`, or an unnamed pair such as `(UNKNOWN, GZIP)`) | `ArchiveyUsageError` before the source is read; `format_availability(ArchiveFormat.UNKNOWN)` still answers `NONE` |
+| `open_stream(src, format=…)` with an `UNKNOWN` container (`ArchiveFormat.UNKNOWN`, `"unknown"`, or an unnamed pair such as `(UNKNOWN, GZIP)`) | `ArchiveyUsageError` before the source is read, also for a missing path or a directory; it does not call it a container format or point to `open_archive`, which refuses it too |
 | `except ArchiveyError` around any of the refusals | Does not catch it |
 
 #### Scenario: format spelled as a string
