@@ -35,27 +35,28 @@ Non-goals (each is a separate, later change):
 
 | Module | Contents | Size |
 | --- | --- | --- |
-| `internal/backends/tar_parser.py` (new) | Pure functions and frozen dataclasses. No I/O, no archivey reader types. Header block decode, number fields, checksum, PAX records, GNU sparse maps (all four encodings), the old-style directory rule | ~550 |
+| `internal/backends/tar_parser.py` (new) | Header block decode, number fields, checksum, PAX records, GNU sparse maps (all four encodings), the old-style directory rule, and `TarWalker`, the loop over one byte stream. No archivey reader types | ~750 |
 | `internal/streams/streamtools/sparse.py` (new) | `SparseStream`: a member's logical bytes over its stored bytes, holes as zeros | ~180 |
-| `internal/backends/tar_reader.py` (rewritten) | `_TarWalker` (the I/O loop over one byte stream), `TarReader` (the `BaseArchiveReader` hooks), EOF and trailing-data policy, metadata mapping | ~1 100, from 1 810 |
+| `internal/backends/tar_reader.py` (rewritten) | `TarReader` (the `BaseArchiveReader` hooks), EOF and trailing-data policy, metadata mapping | ~950, from 1 810 |
 
 The split follows `rar_parser.py` / `rar_reader.py` and `sevenzip_parser.py` /
-`sevenzip_reader.py`: the parser module is what the fuzz target drives, and has no
-reason to import the reader. `SparseStream` goes in `streamtools/` because it knows
+`sevenzip_reader.py`: the parser module is what the fuzz target and the differential
+test drive, and has no reason to import the reader. The walker lives there too, so the
+whole header path can be tested against `tarfile` before the reader switches to it. `SparseStream` goes in `streamtools/` because it knows
 nothing about TAR: it maps logical ranges to stored ranges over any byte stream.
 
 ## The parser (`tar_parser.py`)
 
 ### Header block
 
-`parse_header_block(block: bytes, offset: int) -> HeaderBlock | ZeroBlock | Rejected`.
+`parse_header_block(block: bytes, offset: int) -> HeaderBlock | ZeroBlock | RejectedBlock`.
 One 512-byte block in, one of three results out. No exception for an expected outcome:
 the walker decides what a rejected block means at its position.
 
 - **Zero block:** all 512 bytes are NUL.
 - **Checksum:** the sum of the block with the checksum field read as eight spaces. Both
   the unsigned and the signed sum are accepted, as GNU tar and tarfile accept both. A
-  mismatch is `Rejected(reason="checksum")`.
+  mismatch is a `RejectedBlock` whose `reason` says so.
 - **Magic:** `ustar\0` + `00` is POSIX ustar (the `prefix` field joins the name).
   `ustar  \0` is old GNU (no prefix; the slots at 345 to 494 are `atime`, `ctime`,
   `offset`, `longnames`, four sparse entries, `isextended` and `realsize`). Anything
@@ -63,7 +64,7 @@ the walker decides what a rejected block means at its position.
 - **Numbers:** octal, NUL- or space-terminated, leading spaces allowed, an all-NUL or
   all-space field is 0 (tarfile and GNU tar agree). GNU base-256: first byte `0x80` is
   positive, `0xFF` negative, two's complement over the rest of the field. A field that
-  is neither is `Rejected(reason="number", field=...)`. A negative `size` is rejected.
+  is neither, and a negative `size`, is a `RejectedBlock` naming the field.
 - **Strings** stay `bytes`, cut at the first NUL. Decoding happens in the reader, once,
   with the name's source known (§"Names and encodings").
 
@@ -76,14 +77,19 @@ Typeflags `x` and `X` (Solaris) carry per-member PAX records, `g` global ones, `
 long name and `K` a GNU long link name. The walker reads their data (§"The walker") and
 hands it to:
 
-- `parse_pax_records(data: bytes) -> list[tuple[bytes, bytes]]`. Records are
-  `"<len> <key>=<value>\n"`. The length is decimal, covers the whole record including
-  itself, and must land on the `\n`; anything else is `Rejected(reason="pax")`. Keys and
-  values stay bytes. An empty value is kept: in a `g` header it deletes the key, in an
-  `x` header it overrides a global with nothing (POSIX). Duplicate keys: the last one
-  wins, except the `GNU.sparse.offset` / `GNU.sparse.numbytes` pairs of sparse 0.0,
-  which are kept in order.
-- `parse_gnu_long(data: bytes) -> bytes`: the name up to the first NUL.
+- `parse_pax_records(data, *, binary_default) -> list[tuple[bytes, PaxValue]]`. Records
+  are `"<len> <key>=<value>\n"`. The length is decimal, covers the whole record
+  including itself, and must land on the `\n`; anything else is `CorruptionError`,
+  which ends the listing as a rejected header does today. Keys and values stay bytes.
+  Each value carries whether its block (or the global records before it) declared
+  `hdrcharset=BINARY`, as POSIX scopes it. An empty value in a `g` header deletes the
+  key; in an `x` header it cancels the keyword for that member. Duplicate keys: the
+  last one wins, except the `GNU.sparse.offset` / `GNU.sparse.numbytes` pairs of
+  sparse 0.0, which are kept in order.
+- A GNU long name is the data up to the first NUL.
+- A PAX `size` that is not a number is `CorruptionError`: the walk cannot find the next
+  header without it (`tarfile` reads it as 0). A PAX `uid` or `gid` that is not a
+  number is ignored and the header's value kept.
 
 ### GNU sparse
 
@@ -109,11 +115,14 @@ overlapping (an out-of-order or overlapping map stays `UnsupportedFeatureError`:
 maps are crafted only, and tarfile's reading of them is wrong bytes), every chunk inside
 `realsize`, and the chunks summing to exactly the stored size (minus the 1.0 map's own
 blocks). The last check is what closes the 511-byte padding gap: tarfile overwrites
-`size` and leaves only the block-rounded end.
+`size` and leaves only the block-rounded end, so PR 716 can refuse only a shortfall of
+512 bytes or more. GNU tar 1.35 writes the exact sum in all four encodings (checked
+with a file whose last chunk is 997 bytes: size field 5093, or 5605 in 1.0 with its
+512-byte map), so a shortfall of 1 to 511 bytes is now refused too (DR-3).
 
 ### Final member decisions
 
-`resolve_member(block, pending) -> TarEntry` applies, in this order, what the chain
+`TarWalker._resolve` applies, in this order, what the chain
 collected: GNU `L`/`K`, then PAX `path`/`linkpath`/`size`/`uid`/`gid`/`uname`/`gname`/
 `mtime`, then the sparse keywords (`GNU.sparse.name`, `GNU.sparse.realsize`,
 `GNU.sparse.size`). Then the type rules that depend on the final name: an `AREGTYPE`
@@ -130,7 +139,7 @@ link bytes with their source (`ustar`, `gnu_long`, `pax`) and that block's
 `hdrcharset`, the member's own PAX records, a reference to the global records in force,
 and the sparse map or the 1.0 marker.
 
-## The walker (`_TarWalker` in `tar_reader.py`)
+## The walker (`TarWalker` in `tar_parser.py`)
 
 One loop, no recursion. `next_entry(budget) -> TarEntry | TarEnd`.
 
@@ -150,6 +159,17 @@ One loop, no recursion. `next_entry(budget) -> TarEntry | TarEnd`.
    global records with a new immutable snapshot; members built after it share that
    snapshot (PR 704's sharing, without the `_proc_builtin` override). Loop to 2.
 4. A member header: resolve it, return the `TarEntry`.
+
+Which types have a data area follows `tarfile`, so no listing changes: links, devices,
+FIFOs and directories (`1` to `6`) have none, and data declared on them is read as the
+next header. GNU tar does the same for a directory and fails with "Skipping to next
+header" on the others, which is the `CorruptionError` archivey gives today. Every other
+typeflag, known or not, has its data skipped by size.
+
+On a seekable stream the walker checks that the last byte of the previous member's data
+area exists before reading the next header, as `tarfile` does, so a member cut short
+reads as `TruncatedError` and not as a clean end. A forward-only walk gets the same
+answer from its read-through.
 
 The walker reads the header stream through `ensure_bufferedio` so that a block is one
 `read(512)` against a buffer, not a syscall or a decompressor call. Header text is
@@ -258,7 +278,7 @@ Numbers are the rows of the workaround inventory.
 | 9 | `_read_through_member_data` | Becomes the walker's normal skip |
 | 10 | Frame inspection, message matching | Deleted: typed errors at the source |
 | 11 | `RecursionError` from header chains | Deleted: the loop is iterative |
-| 12 | `_drop_unweighed_link_name` | Deleted: structural in `resolve_member` |
+| 12 | `_drop_unweighed_link_name` | Deleted: structural in the walker's member resolution |
 | 13 | Passing `encoding="utf-8"` to tarfile | Becomes the reader's decoding default |
 | 14 | `_recover_raw_name`, `_pax_field_is_utf8`, name inference | Deleted: names keep their bytes and source |
 | 15 | Re-parsing a PAX `mtime` tarfile turned into 0 | Deleted: PAX times are parsed once, here |
@@ -268,7 +288,7 @@ Numbers are the rows of the workaround inventory.
 | 19 | Member `seek` clamped to the size | Fixed: `SlicingStream` seeks |
 | 20 | `TarFile.members` duplicate list | Fixed: the walker keeps nothing behind the listing |
 | PR 704 | Copied `_proc_sparse` / `_proc_gnusparse_10`, SHA-256 pins of stdlib source, `_GlobalPaxRecords` | Deleted; the read-only `extra["tar.pax_headers"]` value stays |
-| PR 706 | `frombuf` and `_frombuf(dircheck=)` overrides, `header_depth` | Deleted: the rule is one branch in `resolve_member` |
+| PR 706 | `frombuf` and `_frombuf(dircheck=)` overrides, `header_depth` | Deleted: the rule is one line in the walker's member resolution |
 | PR 716 | Map ordering and overlap checks | Moved into `validate_sparse_map` |
 
 ## Behaviour that changes
@@ -278,7 +298,7 @@ All of these are fixes; none changes a public name or signature.
 | Change | Rule |
 | --- | --- |
 | A member `seek` past the end returns the target; the next read returns `b""` | DR-5: same as every other format. Removes a `known-issues.md` entry |
-| A sparse member never serves its own padding as data | DR-1 |
+| A sparse member never serves its own padding as data, and a map that leaves 1 to 511 stored bytes unnamed is refused | DR-1, DR-3 |
 | `raw_name` is the stored bytes in every case, including a block that repeats a global `hdrcharset=BINARY` | DR-1; removes a test-pinned exception |
 | The member list is the same on every Python 3.11 to 3.15 patch release | DR-5 |
 | A streaming pass holds one list of members, not two | DR-9a; removes a sharp-edges row and threat-model O1's TAR note |

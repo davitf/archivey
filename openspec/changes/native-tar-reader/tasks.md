@@ -9,14 +9,16 @@ One PR per section. `design.md` §"PR plan" says why the split falls where it do
 ## 2. Parser (`internal/backends/tar_parser.py`)
 
 - [ ] 2.1 `parse_header_block`: zero block, signed and unsigned checksum, v7 / ustar /
-      old GNU layouts, octal and base-256 numbers, `Rejected` with a reason.
-- [ ] 2.2 `parse_pax_records` with strict length validation; `parse_gnu_long`.
+      old GNU layouts, octal and base-256 numbers, `RejectedBlock` with a reason.
+- [ ] 2.2 `parse_pax_records` with strict length validation and `hdrcharset` scope.
 - [ ] 2.3 Sparse parsers for old GNU (slots and extension blocks), PAX 0.0, 0.1 and 1.0,
       each weighing entries before allocating; `validate_sparse_map` with PR 716's
       rules and the exact stored size.
-- [ ] 2.4 `resolve_member`: override order, the old-style directory rule on the final
-      name, link names only on link types, the `REGTYPE d/` rule as `main` has it.
-- [ ] 2.5 Unit tests per encoding and per `Rejected` reason, from GNU tar / bsdtar
+- [ ] 2.4 `TarWalker`: skip, read, extended headers through `read_within_reach` under
+      one per-member budget, global-record snapshots, `TarEnd`; member resolution
+      (override order, the old-style directory rule on the final name, link names only
+      on link types). The `REGTYPE d/` rule moves in with the switch, as `main` has it.
+- [ ] 2.5 Unit tests per encoding and per rejection reason, from GNU tar / bsdtar
       fixtures where a tool writes the shape.
 - [ ] 2.6 Differential listing test against `tarfile` over the TAR corpus (oracle in
       tests only), with the `design.md` §"Behaviour that changes" differences named.
@@ -33,8 +35,8 @@ One PR per section. `design.md` §"PR plan" says why the split falls where it do
 
 Starts once PRs 704, 706 and 716 are on `main`.
 
-- [ ] 4.1 `_TarWalker`: skip, read, extended headers through `read_within_reach` under
-      one per-member budget, global-record snapshots, `TarEnd`.
+- [ ] 4.1 Build the reader's byte stream (source or codec stream) and hand it to
+      `TarWalker`; member streams as `SharedView` / `open_data` slices.
 - [ ] 4.2 Rewire `__init__`, `_iter_members`, `_iter_members_progressive`,
       `_iter_with_data`, `_open_member`, `_verify_tar_eof`, `_close_archive`.
 - [ ] 4.3 `_to_member` from `TarEntry`: names from bytes and source; PAX times parsed
