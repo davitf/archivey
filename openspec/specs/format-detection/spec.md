@@ -59,6 +59,11 @@ format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt 
 bytes read). It SHALL NOT raise `IsADirectoryError` or any
 other `OSError`.
 
+A **path to a volume of a set** SHALL be detected on the source `open_archive` resolves
+for it: any part of a numbered split set (`set.7z.002`, `set.zip.003`, `set.exe.002`) on
+the parts joined in order, and a RAR continuation on volume 1. A middle part has no magic
+at offset 0, so detecting the named file alone would refuse a path `open_archive` opens.
+
 **Collectors:**
 
 | Path | Behavior |

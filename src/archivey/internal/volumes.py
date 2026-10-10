@@ -459,14 +459,18 @@ def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
 def _siblings_with_base(
     parent: Path, pattern: re.Pattern[str], base: str
 ) -> list[Path]:
-    """The files in ``parent`` that ``pattern`` reads with ``base``, case-folded."""
+    """The files in ``parent`` that ``pattern`` reads with ``base``, case-folded.
+
+    The name tests run before ``is_file``, so a large directory costs a ``stat`` per
+    matching name, not one per entry.
+    """
     folded = base.lower()
     return [
         candidate
         for candidate in parent.iterdir()
-        if candidate.is_file()
-        and (match := pattern.match(candidate.name)) is not None
+        if (match := pattern.match(candidate.name)) is not None
         and match.group("base").lower() == folded
+        and candidate.is_file()
     ]
 
 

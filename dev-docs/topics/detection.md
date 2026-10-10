@@ -245,6 +245,10 @@ general message would tell the caller that some magic byte was wrong.
   `open_archive` probes with the flag off and then replaces the source itself, because it
   must hand the backend the volume's bytes and not the stub's. The receipt covers both
   passes (§4.1).
+- **A path to a volume of a set** goes through `resolve_source` first, as in
+  `open_archive`. Any part of a numbered split set (`set.zip.002`) is detected on the
+  joined parts, and a RAR continuation on volume 1. A middle part has no magic at offset
+  0, so detecting that one file alone refused a path that `open_archive` opens.
 
 ## 3. What the answer claims
 
