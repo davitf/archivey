@@ -23,18 +23,18 @@ from archivey.internal.streams.codecs.base import (
     _source_tail,
     _stream_prefix,
 )
+from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
+from archivey.internal.streams.codecs.deflate_resume import stream_end
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _OutputChecksum,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
-from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     gzip_corruption,
 )
-from archivey.internal.streams.deflate_resume import stream_end
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import StreamFormat
@@ -354,7 +354,7 @@ class _DeflateEndCheckStream(DelegatingStream):
 
     So when rapidgzip's output ends, this wrapper decodes the end of the stream again
     with zlib, from the newest resume point at or before that offset
-    (:func:`~archivey.internal.streams.deflate_resume.stream_end`), or from the start
+    (:func:`~archivey.internal.streams.codecs.deflate_resume.stream_end`), or from the start
     when there is none. Raw DEFLATE has no checksum, so the resumed decode is a full
     answer:
 
