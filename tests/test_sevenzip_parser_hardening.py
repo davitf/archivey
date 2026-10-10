@@ -567,3 +567,35 @@ def test_entry_points_default_to_the_listing_limit(
 def test_header_helpers_require_max_members(helper: Callable[..., object]) -> None:
     param = inspect.signature(helper).parameters["max_members"]
     assert param.default is inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# Unknown property IDs inside streams info
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("context", ["pack", "unpack", "substreams"])
+def test_unknown_streams_info_property_is_skipped(context: str) -> None:
+    """7-Zip skips an unknown ID by its size in PackInfo, UnpackInfo and SubStreamsInfo.
+
+    The unknown property (ID 0x30, size 1) sits before a property archivey must still
+    read, so a skip of the wrong length corrupts the header.
+    """
+    payload = b"hello"
+    crc = struct.pack("<I", zlib.crc32(payload) & 0xFFFFFFFF)
+    unknown = b"\x30\x01\xff"
+
+    def extra(name: str) -> bytes:
+        return unknown if name == context else b""
+
+    pack_info = b"\x06" + _num(0) + _num(1) + b"\x09" + _num(len(payload))
+    pack_info += extra("pack") + b"\x00"
+    unpack_info = b"\x07\x0b" + _num(1) + b"\x00" + _linear([_coder(_COPY)])
+    unpack_info += b"\x0c" + _num(len(payload)) + extra("unpack") + b"\x00"
+    substreams = b"\x08" + extra("substreams") + b"\x0a\x01" + crc + b"\x00"
+    streams = b"\x04" + pack_info + unpack_info + substreams + b"\x00"
+    names_blob = b"\x00" + "a".encode("utf-16le") + b"\x00\x00"
+    files = b"\x05" + _num(1) + b"\x11" + _num(len(names_blob)) + names_blob + b"\x00"
+    header = b"\x01" + streams + files + b"\x00"
+
+    assert _read_only_member(_archive(payload, header)) == payload

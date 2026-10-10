@@ -1809,12 +1809,16 @@ def test_member_scaled_counts_respect_max_members() -> None:
     with pytest.raises(ResourceLimitError, match="max_members"):
         parse_header_block(header, max_members=100)
 
-    pack = bytes.fromhex("01040600") + _sevenzip_uint64(200) + (b"\x00" * 200)
+    # An unknown archive property pads the header ahead of the count, so the count
+    # passes the header-size bound and nothing follows the final END.
+    pad = b"\x02\x30" + _sevenzip_uint64(200) + (b"\x00" * 200) + b"\x00"
+    pack = b"\x01" + pad + bytes.fromhex("040600") + _sevenzip_uint64(200)
+    pack += bytes.fromhex("000000")  # END pack info, END streams, END header
     # Pack streams are a coder-graph quantity (BCJ2 has four per folder), not a
     # member count — header-size bound only.
     parse_header_block(pack, max_members=100)
 
-    folders = bytes.fromhex("0104070b") + _sevenzip_uint64(200) + (b"\x00" * 200)
+    folders = b"\x01" + pad + bytes.fromhex("04070b") + _sevenzip_uint64(200)
     with pytest.raises(ResourceLimitError, match="max_members"):
         parse_header_block(folders, max_members=100)
 
@@ -1985,37 +1989,61 @@ def test_encoded_header_self_copy_is_typed_corruption() -> None:
             pass
 
 
+_NOT_ONE_FOLDER = "must have exactly one"
+_NOT_A_HEADER = "did not decode to a 7z HEADER"
+_TRAILING = "bytes after its END"
+
+
 @pytest.mark.parametrize(
-    ("packed", "next_header"),
+    ("packed", "next_header", "match"),
     [
         # kEncodedHeader with a PackInfo of zero streams and no folders.
-        pytest.param(b"", bytes.fromhex("170600000000"), id="zero-folders"),
+        pytest.param(
+            b"", bytes.fromhex("170600000000"), _NOT_ONE_FOLDER, id="zero-folders"
+        ),
         # One COPY folder with unpack size 0: decodes to b"".
         pytest.param(
             b"",
             bytes.fromhex("17060001090000070b010001000c000000"),
+            _NOT_A_HEADER,
             id="decodes-to-nothing",
         ),
         # One COPY folder that decodes to a bare kEnd.
         pytest.param(
             b"\x00",
             bytes.fromhex("17060001090100070b010001000c010000"),
+            _NOT_A_HEADER,
             id="decodes-to-bare-end",
         ),
         # A valid plain header (kHeader, kEnd) split across two COPY folders.
         pytest.param(
             b"\x01\x00",
             bytes.fromhex("1706000209010100070b0200010001000c01010000"),
+            _NOT_ONE_FOLDER,
             id="two-folders",
+        ),
+        # One COPY folder that decodes to kHeader kEnd plus two more bytes.
+        pytest.param(
+            bytes.fromhex("0100ffee"),
+            bytes.fromhex("17060001090400070b01000101000c040000"),
+            _TRAILING,
+            id="decodes-to-header-with-trailing-bytes",
+        ),
+        # The same header stored plain: 7-Zip reports a headers error for it too.
+        pytest.param(
+            b"",
+            bytes.fromhex("0100ffee"),
+            _TRAILING,
+            id="plain-header-with-trailing-bytes",
         ),
     ],
 )
-def test_encoded_header_without_one_plain_header_is_corruption(
-    packed: bytes, next_header: bytes
+def test_header_that_is_not_one_plain_header_is_corruption(
+    packed: bytes, next_header: bytes, match: str
 ) -> None:
     """7-Zip refuses each of these; none may open as an archive (DR-1)."""
     blob = _sevenzip_blob(packed=packed, next_header=next_header)
-    with raises_corruption_not_truncation():
+    with raises_corruption_not_truncation(match=match):
         with open_archive(io.BytesIO(blob)):
             pass
 
@@ -2026,11 +2054,21 @@ def test_encoded_header_without_one_plain_header_is_corruption(
 )
 def test_unknown_archive_property_is_skipped(prop_id: bytes) -> None:
     """7-Zip skips an archive property it does not know by its size, as for FILES_INFO."""
-    # kHeader, kArchiveProperties, {id, size 1, payload 0x00}, kEnd, kEnd.
-    next_header = b"\x01\x02" + prop_id + b"\x01\x00\x00\x00"
+    # kHeader, kArchiveProperties {id, size 2, payload}, kEnd, then a FILES_INFO with
+    # one empty file "a": a skip of the wrong length lands inside the FILES_INFO.
+    name = b"\x00" + "a".encode("utf-16le") + b"\x00\x00"
+    files_info = (
+        b"\x05\x01"  # FILES_INFO, one file
+        b"\x0e\x01\x80"  # EMPTY_STREAM: file 0 has no stream
+        b"\x0f\x01\x80"  # EMPTY_FILE: file 0 is an empty file
+        b"\x11" + bytes([len(name)]) + name + b"\x00"
+    )
+    next_header = (
+        b"\x01\x02" + prop_id + b"\x02\xff\xff" + b"\x00" + files_info + b"\x00"
+    )
     blob = _sevenzip_blob(packed=b"", next_header=next_header)
     with open_archive(io.BytesIO(blob)) as archive:
-        assert archive.members() == []
+        assert [(m.name, m.type) for m in archive.members()] == [("a", MemberType.FILE)]
 
 
 def test_encoded_header_unpack_size_is_capped() -> None:

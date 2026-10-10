@@ -79,6 +79,8 @@ stays in `ArchiveInfo.comment`, and only a comment with an odd byte count is a
 | Archive contains anti-items | Member list remains correct |
 | `FILES_INFO` holds an unknown property (ID `0x1A` or higher) | Property skipped; members read |
 | `ARCHIVE_PROPERTIES` holds a property of any ID | Property skipped by its size; members read |
+| `PACK_INFO`, `UNPACK_INFO` or `SUBSTREAMS_INFO` holds a property ID that 7z does not define | Property skipped by its size, as 7-Zip does; members read |
+| Bytes follow the header's final `kEnd` | `CorruptionError`, as 7-Zip reports a headers error; never an empty archive |
 | Stored name `dir\file.txt` | `name == "dir/file.txt"`; `raw_name` is the stored bytes, backslash included |
 | Stored name holds a lone surrogate (`hi` U+D800) | Every member lists; `name == "hi\ud800"`; never `CorruptionError` |
 | Comment holds a lone surrogate (`note` U+D800) | Archive opens; `ArchiveInfo.comment == "note\ud800"` |
