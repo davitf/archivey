@@ -12,8 +12,12 @@ run fires it:
 - records results (JSON + markdown report artifacts, job summary table) with
   `measured_at` / source provenance;
 - hard-fails on the ~10× sanity ceiling **or** on **wall-ratio drift** vs the
-  previous successful nightly's JSON (relative regression gate — debt-ledger Q1 /
-  perf Q2 option (a));
+  JSON of the last run that measured, pass or fail (relative regression gate —
+  debt-ledger Q1 / perf Q2 option (a)). A case drifts when its ratio rises by more
+  than 1.25× **and** by +0.15 **and** the rise costs ≥1 ms of wall time at this
+  run's stdlib speed, so sub-millisecond listing cases do not fail on timer noise.
+  Because a failed run's JSON becomes the next baseline, a real regression fails
+  the first night that measures it and not every night after;
 - prints absolute VISION / Q1 listing bands as informational only.
 
 `workflow_dispatch` can pass `skip_drift=true` to accept the current ratios as a
@@ -179,7 +183,8 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
   `measured_at` is older than ~30 days; skips re-publish the previous artifact.
   `workflow_dispatch` forces a run (`skip_drift` re-seeds after intentional regressions).
 - Wall timing: unmeasured archivey vs stdlib; absolute VISION bands informational;
-  nightly hard-fails on wall-ratio *drift* vs the previous successful artifact.
+  nightly hard-fails on wall-ratio *drift* vs the last measured artifact, pass or
+  fail.
 
 ## Why the published guide no longer quotes numbers
 

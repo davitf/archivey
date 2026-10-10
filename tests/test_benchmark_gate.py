@@ -447,6 +447,52 @@ def test_wall_drift_checks_regressions_and_noise() -> None:
     assert _wall_drift_checks([_case("brand_new_case", 5.0)], previous) == []
 
 
+def test_wall_drift_checks_ignore_drift_that_costs_under_a_millisecond() -> None:
+    """A ratio jump on a sub-millisecond case does not fail the drift gate.
+
+    Numbers from nightly run 37935834666 against the 2026-09-06 baseline: the RAR
+    listing ratio doubled on a 0.13 ms peer (+0.33 ms of wall time), while the
+    accelerated tar.gz read and the plain TAR read cost whole milliseconds more.
+    """
+    from benchmarks.harness import CaseResult, _wall_drift_checks
+
+    def _case(name: str, ratio: float, stdlib_s: float) -> CaseResult:
+        return CaseResult(
+            case=name,
+            format="x",
+            operation="read_all",
+            wall_s=ratio * stdlib_s,
+            bytes_decompressed=0,
+            source_seek_count=0,
+            stdlib_wall_s=stdlib_s,
+            wall_ratio=ratio,
+        )
+
+    previous = {
+        "results": [
+            {"case": "rar_open_list", "wall_ratio": 2.60},
+            {"case": "targz_read_all_accel_on", "wall_ratio": 0.43},
+            {"case": "tar_read_all", "wall_ratio": 1.75},
+        ]
+    }
+    current = [
+        _case("rar_open_list", 5.12, 0.000_13),
+        _case("targz_read_all_accel_on", 1.98, 0.023_3),
+        _case("tar_read_all", 2.36, 0.002_3),
+    ]
+
+    failures = _wall_drift_checks(current, previous)
+    assert [f.split(":")[0] for f in failures] == [
+        "targz_read_all_accel_on",
+        "tar_read_all",
+    ]
+    assert "+36.1 ms" in failures[0]
+
+    # With no time floor, the sub-millisecond case fails as it did before.
+    no_floor = _wall_drift_checks(current, previous, min_extra_s=0.0)
+    assert "rar_open_list" in no_floor[0]
+
+
 def test_wall_baseline_provenance_and_republish(tmp_path: Path) -> None:
     """measured_at age drives the 30d force-run; re-publish preserves it."""
     from datetime import UTC, datetime, timedelta
