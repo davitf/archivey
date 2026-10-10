@@ -879,6 +879,9 @@ def test_unrar_skips_a_rar4_file_headers_pack_size_without_long_block(
     listed = subprocess.run(
         ["unrar", "lb", str(path)], capture_output=True, text=True, check=True
     )
-    assert listed.stdout.split() == ["carrier.bin"]
+    # Names are matched inside the output rather than split out of it: unrar on the
+    # Windows runner ends a bare listing line with a literal ``\x0d``.
+    assert "carrier.bin" in listed.stdout
+    assert "hidden.txt" not in listed.stdout
     with open_archive(path) as archive:
         assert [m.name for m in archive.members_report().members] == ["carrier.bin"]
