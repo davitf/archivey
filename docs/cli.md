@@ -38,7 +38,7 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 # Dry run: every check and every read, nothing written. Same report lines
 # and exit code as a real extraction into an empty directory. Without -d, a
 # single top-level folder is named where it would be moved to; what is
-# already there is not checked for collisions.
+# already there is not checked for collisions, nor whether it can be written to.
 archivey extract photos.zip --dry-run
 ```
 
