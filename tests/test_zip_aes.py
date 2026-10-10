@@ -317,7 +317,9 @@ def test_aes_hmac_survives_a_seekable_accelerator(
 
     monkeypatch.setattr(WinZipAesDecryptStream, "seek", spy_seek)
     # The shipped AUTO threshold is 16 MiB; lowered so AUTO reaches rapidgzip here.
-    monkeypatch.setattr(codecs, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(
+        codecs.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     config = ArchiveyConfig(use_rapidgzip=mode)
     # Incompressible and over the lowered AUTO threshold, which sees the stage's size.
     payload = random.Random(480).randbytes(1_200_000)

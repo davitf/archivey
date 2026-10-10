@@ -7,16 +7,14 @@ Package map:
 
 - :mod:`.streamtools` — codec-/format-agnostic ``BinaryIO`` plumbing (slice, lock,
   shared views, solid demux). Must not import the rest of archivey.
-- :mod:`.codecs` — ``Codec`` / ``StreamCodec`` / ``open_codec_stream`` (the uniform
-  pull-based codec table + detection signals).
+- :mod:`.codecs` — everything specific to one codec: ``Codec`` / ``StreamCodec`` /
+  ``open_codec_stream`` (the uniform pull-based codec table + detection signals), each
+  codec's ``<name>_codec`` descriptor, and its engine beside it (``<name>_decoder``,
+  framing and resume helpers, the 7z branch filters, the PPMd and rapidgzip child
+  processes).
 - :mod:`.decompressor_stream` — seekable decode *engine* (``DecompressorStream`` +
-  ``Decoder`` protocol).
-- :mod:`.decompress` — thin ``BaseDecoder`` adapters (zlib, Brotli, PPMd, BCJ,
-  Deflate64) that plug into that engine.
-- :mod:`.xz` / :mod:`.lzip` / :mod:`.unix_compress` — larger codec-specific decoders
-  (index scan / LZW) that also plug into ``DecompressorStream``.
-- :mod:`.brotli_framing` / :mod:`.zstd_framing` — header-only framing parsers for
-  detection (Brotli meta-blocks, zstd skippable frames); classify without decoding.
+  ``Decoder`` protocol) that the codec decoders plug into.
+- :mod:`.child_process` — spawning and reaping the codec child processes.
 - :mod:`.archive_stream` — public member/codec handle: exception translate+stamp,
   lazy open, nested collapse, fused digest verify, lease/finalizer.
 - :mod:`.resume` — re-exports ``ask_resume_offset`` (rewind-cost query; the

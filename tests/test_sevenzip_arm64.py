@@ -23,8 +23,11 @@ from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from archivey.internal.backends import sevenzip_parser, sevenzip_pipeline
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder
 from archivey.internal.backends.sevenzip_pipeline import plan_folder
-from archivey.internal.streams.arm64 import FILTER_ARM64, arm64_decode
-from archivey.internal.streams.decompress import Arm64FilterDecoder, FilterStream
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.codecs.lzma_filter_decoder import (
+    Arm64FilterDecoder,
+    FilterStream,
+)
 from tests.conftest import requires_binary
 
 _ARM64 = b"\x0a"

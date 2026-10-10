@@ -205,7 +205,9 @@ def measure_throughput(path: str, data_len: int, repeats: int) -> None:
     rows.append(("stdlib zlib (1 MiB chunks)", _best(stdlib, repeats)))
 
     def gzip_stream() -> None:
-        from archivey.internal.streams.decompress import GzipDecompressorStream
+        from archivey.internal.streams.codecs.deflate_decoder import (
+            GzipDecompressorStream,
+        )
 
         with GzipDecompressorStream(path) as s:
             while s.read(1 << 20):
