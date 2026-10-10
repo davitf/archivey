@@ -1398,7 +1398,8 @@ class ZipReader(BaseArchiveReader):
         codec = _ZIP_METHOD_CODECS.get(method)
         if codec is None:
             raise UnsupportedFeatureError(
-                f"Unsupported ZIP compression method {method}{suffix}",
+                f"Unsupported ZIP compression method {method}{suffix}"
+                "; a damaged header reads the same way",
                 archive_name=self._archive_name,
                 member_name=member_name,
                 source_format=ArchiveFormat.ZIP,

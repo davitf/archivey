@@ -553,7 +553,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
   not `CorruptionError`: a gzip member with a method other than deflate or a reserved
   flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
-  dictionary, and a `.Z` file with a code width over 16 bits.
+  dictionary, and a `.Z` file with a code width over 16 bits. A damaged byte in one of
+  those same fields raises the same error, because nothing tells the two apart; the
+  message says a damaged header reads the same way (see
+  [Errors and diagnostics](errors-and-diagnostics.md)).
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable

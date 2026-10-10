@@ -201,8 +201,10 @@ def test_zip_unknown_method_raises_unsupported() -> None:
     data = _build_minimal_zip(b"x.bin", b"raw", b"raw", method=97)
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
-        with pytest.raises(UnsupportedFeatureError, match="compression method 97"):
+        with pytest.raises(UnsupportedFeatureError, match="compression method 97") as e:
             ar.read(member)
+    # Nothing checksums the method field, so the message names the other cause.
+    assert "a damaged header reads the same way" in str(e.value)
 
 
 def test_zip_method_99_without_aes_extra_raises() -> None:
