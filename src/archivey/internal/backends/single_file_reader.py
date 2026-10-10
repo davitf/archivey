@@ -305,14 +305,15 @@ class SingleFileReader(BaseArchiveReader):
         reported. On a pipe there is no ``SEEK_END`` to answer, so ``None`` is the
         answer it always had. The value is not only metadata. Two extraction ratio
         guards divide by a source length: the per-member guard by ``compressed_size``,
-        and the archive-wide guard by ``BaseArchiveReader.compressed_source_size``,
-        which reads the same ``size_hint`` with no seekability test; when it is set,
-        ``_wrap_compressed_input`` installs no live byte counter. So a pipe's ``size``
-        claim still reaches that guard (spec ``safe-extraction``, "Archive-wide
-        decompression ratio for solid containers"). Nothing here checks a claim, and a
-        ``SEEK_END`` could not do better: a TAR member stream answers it from the same
-        declared length. A ZIP member that holds fewer bytes than it declares is refused
-        with ``TruncatedError`` when it is read, by the member stream's own checks.
+        and the archive-wide guard by ``BaseArchiveReader.compressed_source_size``
+        (``_trusted_source_size``). Both follow this rule, so a pipe's ``size`` claim
+        reaches neither, and the live byte counter stays. Nothing here checks a
+        member stream's declared length, and a ``SEEK_END`` could not do better: a TAR
+        member stream answers it from the same declared length. A ZIP member that holds
+        fewer bytes than it declares is refused with ``TruncatedError`` only after its
+        payload is decoded, so for a nested archive ``max_extracted_bytes`` is the bound
+        that holds (spec ``safe-extraction``, "Archive-wide decompression ratio for
+        solid containers").
 
         The absolute ``SEEK_END`` is the member's length, not the handle's, because the
         source reaching a reader is already normalized to begin at offset 0 — a caller

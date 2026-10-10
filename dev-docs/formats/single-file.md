@@ -179,12 +179,13 @@ attribute. The reason is seekability, not trust: a seekable caller stream's `siz
 reported unchecked, and a pipe has no `SEEK_END` to answer instead. `compressed_size` is
 more than metadata. Extraction has two ratio guards: the per-member one divides by
 `compressed_size`, and the archive-wide one divides by
-`BaseArchiveReader.compressed_source_size`, the same size hint read with no seekability
-test, which also keeps `_wrap_compressed_input` from installing the live byte counter
-when set. That one trusts a pipe's `size` attribute (`safe-extraction`, "Archive-wide
-decompression ratio for solid containers"). A ZIP member that holds less than it declares
-is refused with `TruncatedError` on read; a TAR member answers a `SEEK_END` from the same
-declared length.
+`BaseArchiveReader.compressed_source_size`. Both follow this rule (`safe-extraction`,
+"Archive-wide decompression ratio for solid containers"), so a pipe's `size` attribute
+reaches neither, and the live ratio applies. A member stream's declared length is
+unchecked too: a ZIP member that holds less than it declares is refused with
+`TruncatedError` only after its payload is decoded, and a TAR member answers a
+`SEEK_END` from the same declared length. For a nested archive, `max_extracted_bytes` is
+the bound that holds.
 
 `ArchiveInfo` has `member_count=1`, `format_version=None`, `comment=None` and
 `is_solid=False`.

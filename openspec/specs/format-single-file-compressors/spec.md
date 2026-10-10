@@ -129,14 +129,13 @@ The rule turns on seekability, not on trust: a seekable caller stream's `size` a
 is reported unchecked, and on a pipe there is no `SEEK_END` to answer instead, so `None`
 is the answer it always had. The value is more than metadata. Two extraction ratio
 guards divide by a source length: the per-member guard by `compressed_size`, and the
-archive-wide guard by `BaseArchiveReader.compressed_source_size`, which reads the same
-source size hint with no seekability test and, when it is set, keeps
-`_wrap_compressed_input` from installing the live byte counter. That guard trusts a
-caller's `size` attribute on a pipe too (`safe-extraction`, "Archive-wide decompression
-ratio for solid containers"), so the two specs differ for that shape. A ZIP member that
-holds fewer bytes than it declares is refused with `TruncatedError` when it is read; a
-TAR member stream answers `SEEK_END` from the same declared length, so no seek could
-learn more.
+archive-wide guard by `BaseArchiveReader.compressed_source_size`. Both follow this rule
+(`safe-extraction`, "Archive-wide decompression ratio for solid containers"), so a
+caller's `size` attribute on a pipe reaches neither, and the live ratio applies. A
+member stream's declared length is unchecked too: a ZIP member that holds fewer bytes
+than it declares is refused with `TruncatedError` only after its payload is decoded,
+and a TAR member stream answers `SEEK_END` from the same declared length, so no seek
+could learn more. For a nested archive, `max_extracted_bytes` is the bound that holds.
 
 When a decoder learns the true uncompressed size after EOF, the member MAY be
 updated to that byte count.

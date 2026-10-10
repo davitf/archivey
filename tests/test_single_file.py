@@ -46,6 +46,7 @@ from tests.streams_util import (
     MemberSeek,
     NonSeekableBytesIO,
     ShortReadBytesIO,
+    SizedNonSeekable,
     assert_no_member_tail_seek,
     make_lzip_member,
     make_multiblock_xz,
@@ -326,18 +327,12 @@ def test_cheap_size_still_needs_seekability(suffix: str = ".lz") -> None:
         assert next(iter(ar)).size is None
 
 
-class _NonSeekableWithSizeClaim(NonSeekableBytesIO):
-    """A pipe-shaped stream with an fsspec-style ``size`` attribute that is wrong."""
-
-    size = 123_456_789
-
-
 def test_compressed_size_on_a_non_seekable_source_ignores_its_size_claim() -> None:
     # A pipe has no ``SEEK_END`` to measure its length, so it reports ``None``, the same
     # as a pipe without the attribute. A seekable stream's ``size`` attribute is
     # reported, so this is about seekability, not about trusting the claim.
     data = gzip.compress(b"payload" * 500)
-    stream = _NonSeekableWithSizeClaim(data)
+    stream = SizedNonSeekable(data, size=123_456_789)
     with open_archive(stream, streaming=True) as ar:
         assert next(iter(ar)).compressed_size is None
 
