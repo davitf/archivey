@@ -1329,18 +1329,22 @@ def test_old_style_directory_data_cut_off_is_truncation(streaming: bool) -> None
         _stream_all(data, streaming)
 
 
+@pytest.mark.parametrize("from_file", [True, False], ids=["file", "bytesio"])
 @pytest.mark.parametrize("typeflag", [tarfile.AREGTYPE, tarfile.REGTYPE])
-def test_size_past_filesystem_limit_is_corruption(
-    tmp_path: Path, typeflag: bytes
+def test_size_past_filesystem_limit_is_truncation(
+    tmp_path: Path, typeflag: bytes, from_file: bool
 ) -> None:
-    # A GNU base-256 size of 2**62 is under the largest seek offset but past what a
-    # filesystem accepts: the seek to the next header fails with OSError(EINVAL),
-    # which must not leave the ArchiveyError tree.
+    # A GNU base-256 size of 2**62 is under the largest seek offset. ext4 refuses a
+    # seek that far with OSError(EINVAL); APFS and a BytesIO accept it, and the next
+    # read finds the end of the data. The same archive must give the same error from
+    # every source on every OS.
     size_field = b"\x80" + (2**62).to_bytes(11, "big")
+    data = _tar_slash_entry_with_data(typeflag, size_field=size_field)
     path = tmp_path / "big.tar"
-    path.write_bytes(_tar_slash_entry_with_data(typeflag, size_field=size_field))
-    with raises_corruption_not_truncation(match="size field"):
-        with open_archive(path, format=ArchiveFormat.TAR) as ar:
+    path.write_bytes(data)
+    source = path if from_file else io.BytesIO(data)
+    with pytest.raises(TruncatedError):
+        with open_archive(source, format=ArchiveFormat.TAR) as ar:
             ar.members()
 
 

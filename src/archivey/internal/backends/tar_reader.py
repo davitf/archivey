@@ -43,7 +43,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import replace
 from datetime import datetime
-from io import SEEK_SET, BytesIO
+from io import SEEK_END, SEEK_SET, BytesIO
 from typing import BinaryIO, Literal, Self, cast
 
 from archivey.config import ArchiveyConfig
@@ -681,20 +681,24 @@ class _EofProbeStream(ReadOnlyIOStream):
         # base-256 size can put that past what a seek can take, and the stream under
         # would raise OverflowError, ValueError or OSError(EINVAL) depending on its
         # type. Refused here, so none of those is taken for a fault of the stream.
-        # A filesystem refuses a smaller offset too, past its largest file size (about
-        # 16 TiB on ext4), with EINVAL or EOVERFLOW.
-        too_far = CorruptionError(
-            f"TAR archive is corrupt: a size field puts data at byte {offset}, "
-            "past the largest offset any file can have"
-        )
         if whence == SEEK_SET and offset > _MAX_SEEK_OFFSET:
-            raise too_far
+            raise CorruptionError(
+                f"TAR archive is corrupt: a size field puts data at byte {offset}, "
+                "past the largest offset any file can have"
+            )
         try:
             self._inner.seek(offset, whence)
         except OSError as e:
-            if whence == SEEK_SET and e.errno in (errno.EINVAL, errno.EOVERFLOW):
-                raise too_far from e
-            raise
+            # A filesystem refuses a smaller offset too, past its largest file size:
+            # ext4 (about 16 TiB) with EINVAL or EOVERFLOW, while APFS and a BytesIO
+            # take it. That offset is past the end of this archive on every
+            # filesystem, so it reads as the end of the data here too, and the same
+            # archive is a TruncatedError from any source on any OS (DR-5).
+            if whence != SEEK_SET or e.errno not in (errno.EINVAL, errno.EOVERFLOW):
+                raise
+            self._inner.seek(0, SEEK_END)
+            self._pos = offset
+            return self._pos
         self._pos = self._inner.tell()
         return self._pos
 
