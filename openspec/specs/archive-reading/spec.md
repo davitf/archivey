@@ -500,7 +500,7 @@ escape hatch there.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records and path tables it parses against `max_metadata_bytes` and its count of path-table entries against `max_members` (more than `max_members + 1` entries; each is a directory, a member anyway), which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -1190,8 +1190,9 @@ Value shape, retention budget, watermarks, and attachment rules: `diagnostics`.
 
 ### Requirement: Collection form of MemberSelector
 
-`MemberSelector` SHALL accept a predicate or `Collection[str | ArchiveMember]`,
-normalized to a predicate at the API boundary:
+`MemberSelector` SHALL accept a predicate or any `Iterable[str | ArchiveMember]`,
+normalized to a predicate at the API boundary. The boundary SHALL read the iterable
+exactly once, so a generator selects the same members as the equivalent list:
 
 - `str` matches **every** member with that normalized name (duplicates all match;
   extraction keeps sequential last-wins-on-disk)
