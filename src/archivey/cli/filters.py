@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from typing import TextIO
 
 from archivey.cli.format import escape_path
+from archivey.diagnostics import MemberListReport
 from archivey.types import ArchiveMember
 
 
@@ -91,6 +92,7 @@ class MemberSelection:
         self._include_hit = [False] * len(self._includes)
         self._included_any = False
         self._selected_any = False
+        self._settled = False
 
     @property
     def predicate(self) -> Callable[[ArchiveMember], bool] | None:
@@ -137,6 +139,29 @@ class MemberSelection:
         if self._selected_any:
             return False
         return bool(self._includes) or self._included_any
+
+    def settle_from(
+        self, listing: MemberListReport, *, err: TextIO, dest_hint: bool = False
+    ) -> list[ArchiveMember]:
+        """Offer every member of ``listing``; return the members it selects.
+
+        A complete listing settles the patterns: this prints the warnings
+        (:meth:`report`) and sets :attr:`settled`. A listing that ends in damage
+        holds only the members before the damage, so it cannot say that a pattern
+        matches nothing. It settles nothing and prints nothing. A verb with a pass of
+        its own judges the patterns after that pass; ``list`` has no other pass and
+        prints the listing error instead.
+        """
+        selected = [member for member in listing if self(member)]
+        if listing.error is None:
+            self._settled = True
+            self.report(err=err, dest_hint=dest_hint)
+        return selected
+
+    @property
+    def settled(self) -> bool:
+        """Whether a complete listing judged the patterns (:meth:`settle_from`)."""
+        return self._settled
 
     def report(self, *, err: TextIO, dest_hint: bool = False) -> bool:
         """Warn about what the members offered so far say of the patterns; return

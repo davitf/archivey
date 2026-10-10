@@ -923,19 +923,14 @@ def run_extract(
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
-        # A free index settles the patterns before anything is written. Without one,
-        # the extraction's own pass offers each member to them, and they are judged
-        # after it: a separate pass would decompress the archive a second time.
+        # A complete free index settles the patterns before anything is written.
+        # Without one, or with one that ends in damage, the extraction's own pass
+        # offers each member to them, and they are judged after it: a separate pass
+        # would decompress the archive a second time.
         indexed = reader.members_report_if_available() if pred is not None else None
-        if indexed is not None and indexed.error is not None:
-            # A free list that ends in damage holds only the members before it, so
-            # it cannot say a pattern matches nothing. The extraction's own pass
-            # judges the patterns instead, and reaches the damage itself.
-            indexed = None
         if indexed is not None:
-            for member in indexed:
-                selection(member)
-            if selection.report(err=err, dest_hint=True):
+            selection.settle_from(indexed, err=err, dest_hint=True)
+            if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
 
         may_hoist = False
@@ -1008,7 +1003,7 @@ def run_extract(
                 if dry_run:
                     print("dry run: nothing was written", file=err)
                 return EXIT_FAIL
-            if pred is not None and indexed is None:
+            if pred is not None and not selection.settled:
                 if len(report) == 0 and selection.selects_nothing:
                     # Removed before the warning, whose -d hint looks for a directory
                     # named like the pattern.

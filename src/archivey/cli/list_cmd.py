@@ -35,9 +35,9 @@ def run_list(
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         report = reader.members_report()
         # Select before printing, so the pattern warnings come first. ``list`` exits 0
-        # when the patterns select nothing: the listing itself succeeded.
-        selected = [member for member in report if selection(member)]
-        selection.report(err=err)
+        # when the patterns select nothing: the listing itself succeeded. A listing
+        # that ends in damage gives no pattern warning; its error is printed below.
+        selected = selection.settle_from(report, err=err)
         for member in selected:
             print(
                 format_member_line(member, digests=digests, verbose=verbose),

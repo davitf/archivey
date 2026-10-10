@@ -79,8 +79,14 @@ after that pass, and SHALL NOT cost a separate pass: on a compressed TAR such a
 pass decompresses the whole archive. An index that ends in damage holds only the
 members before the damage, so it is not complete; and a pass that ends early SHALL
 NOT report its patterns, while a pass that reaches its end SHALL, whatever members
-failed in it. On `list`, the patterns SHALL be checked against the member listing
-the command reads anyway, with the warnings before the member lines. On `extract`,
+failed in it. A pass that ends early SHALL exit `1` and SHALL NOT claim that the
+patterns matched nothing. The "write nothing" rule above does not apply to it: an
+`extract` that aborts this way MAY leave the destination directory it created, as
+an aborted `extract` with no patterns does. On `list`, the patterns SHALL be
+checked against the member listing the command reads anyway, with the warnings
+before the member lines. A listing that ends in damage SHALL produce no pattern
+warning on `list`, because the members after the damage are unknown; `list` SHALL
+print the listing error and exit `1` instead. On `extract`,
 when there is exactly one unmatched include that names an existing directory or
 ends with `/`, the warning SHALL include a hint `(did you mean -d PATTERN?)`. Each
 invocation SHALL accept exactly **one** archive positional (multi-archive is out

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import tarfile
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,10 @@ from archivey import open_archive
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
 from archivey.cli.main import main
+from archivey.exceptions import ReadError
+from archivey.internal.base_reader import BaseArchiveReader
 from archivey.types import ArchiveMember
+from tests.test_extraction_damaged_listing import _rar_cut
 
 
 def _tar(path: Path, entries: list[tuple[str, bytes | None]]) -> Path:
@@ -376,3 +380,70 @@ def test_the_dash_d_hint_skips_a_directory_the_run_created(
     (work / "out").mkdir()
     assert main(args) == EXIT_FAIL
     assert "(did you mean -d out?)" in capsys.readouterr().err
+
+
+def _cut_rar(tmp_path: Path, *, file_index: int) -> Path:
+    """``basic_nonsolid__.rar`` cut inside the header of its ``file_index``-th FILE
+    block: the listing is the files before the cut, then a truncation error."""
+    archive = tmp_path / "cut.rar"
+    archive.write_bytes(
+        _rar_cut("basic_nonsolid__.rar", rar4=False, file_index=file_index)
+    )
+    return archive
+
+
+def test_a_damaged_index_still_counts_the_untested_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A listing that ends in damage does not settle the patterns, but its members
+    are still the totals. When the pass dies after the first of the three listed
+    files, the summary reports the one it never reached."""
+    archive = _cut_rar(tmp_path, file_index=3)
+    original = BaseArchiveReader.stream_members
+
+    def _dies_after_first(
+        self: BaseArchiveReader, *args: object, **kwargs: object
+    ) -> Iterator[object]:
+        members = original(self, *args, **kwargs)  # type: ignore[arg-type]
+        yield next(members)
+        raise ReadError("simulated stream failure")
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _dies_after_first)
+    assert main(["t", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "1 OK, 1 failed, 1 not tested" in err
+
+
+def test_extract_aborted_on_a_damaged_index_claims_no_unmatched_pattern(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The pass reaches the damage and aborts, so the patterns are never judged: the
+    command exits 1 with the listing error and no "matched no members" claim. The
+    spec lets the aborted run leave the ``-d`` directory it created; nothing is
+    written into it."""
+    archive = _cut_rar(tmp_path, file_index=2)
+    monkeypatch.chdir(tmp_path)
+    assert main(["x", archive.name, "nosuch", "-d", "out"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "pattern matched no members" not in err
+    assert "truncated" in err
+    assert "extraction stopped" in err
+    out = tmp_path / "out"
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_list_on_a_damaged_index_claims_no_unmatched_pattern(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``list`` has no pass after its listing. A pattern may name a member after the
+    damage, so ``list`` gives no pattern warning and prints the listing error."""
+    archive = _cut_rar(tmp_path, file_index=2)
+    assert main(["list", str(archive), "nosuch"]) == EXIT_FAIL
+    captured = capsys.readouterr()
+    assert "pattern matched no members" not in captured.err
+    assert "truncated" in captured.err
+    assert captured.out == ""

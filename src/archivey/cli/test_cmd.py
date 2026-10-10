@@ -58,17 +58,14 @@ def run_test(
     members_total: int | None = None
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         indexed = reader.members_report_if_available()
-        if indexed is not None and indexed.error is not None:
-            # A free list that ends in damage holds only the members before it, so
-            # it cannot say a pattern matches nothing. The run's own pass judges the
-            # patterns instead, and reaches the damage itself.
-            indexed = None
         total_bytes: int | None = None
         if indexed is not None:
-            # A free index settles the patterns before the run. Without one, the run's
-            # own pass offers each member to them (see the end of the pass).
-            selected = [m for m in indexed if selection(m)]
-            if selection.report(err=err):
+            # A complete free index settles the patterns before the run. One that ends
+            # in damage settles nothing, but its members still give the totals. When
+            # the patterns are not settled, the run's own pass offers each member to
+            # them (see the end of the pass).
+            selected = selection.settle_from(indexed, err=err)
+            if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
             file_members = [m for m in selected if m.is_file]
             members_total = len(file_members)
@@ -193,11 +190,11 @@ def run_test(
                 if verbose:
                     print(f"OK   {escape_member_name(link.name)}", file=err)
 
-        # Without an index, the pass that just ran offered every member to the
+        # Without a complete index, the pass that just ran offered every member to the
         # patterns. Only the generator raising ends that pass early and leaves later
         # members unseen; a failure inside one member's read does not. So the
         # patterns are judged after any pass that reached its end.
-        if indexed is None and not pass_ended_early and selection.report(err=err):
+        if not selection.settled and not pass_ended_early and selection.report(err=err):
             return EXIT_FAIL
 
         # Read before the reader closes; each such diagnostic was already logged with
