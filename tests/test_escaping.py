@@ -504,9 +504,10 @@ _CLI_RENDERERS = {
 }
 
 # Functions that write their arguments to a terminal stream. ``_field`` is ``info``'s
-# line printer, which takes text it is told is already safe; checking its call sites
-# here is what makes that true.
-_CLI_PRINTERS = {"print", "_field"}
+# line printer and ``_report_quietly`` is ``main``'s last-resort error printer; both
+# take text they are told is already safe, and checking their call sites here is what
+# makes that true.
+_CLI_PRINTERS = {"print", "_field", "_report_quietly"}
 
 # What a print site may still interpolate raw once the sweep has traced it as far as it
 # can, keyed ``module: expression``: attributes, calls into other modules, and ``str``
@@ -528,6 +529,7 @@ _CLI_PRINT_ALLOWED = {
         "_not_tested's return: arithmetic on int counts"
     ),
     "list_cmd.py: report.error": "an ArchiveyError, which escapes itself",
+    "main.py: message": "_report_quietly's message; its call sites are checked here",
     "main.py: archivey.__version__": "archivey's own version",
     "main.py: format_format_label(fmt)": "format label from the format registry",
     "main.py: avail.support.value": "enum value",
@@ -668,8 +670,10 @@ def _cli_print_sites() -> list[tuple[str, int, str]]:
                     or _call_name(node) not in _CLI_PRINTERS
                 ):
                     continue
-                # ``_field``'s last argument is the stream, not text.
-                args = node.args[:2] if _call_name(node) == "_field" else node.args
+                # The last argument of ``_field`` and ``_report_quietly`` is the
+                # stream, not text.
+                text_args = {"_field": 2, "_report_quietly": 1}.get(_call_name(node))
+                args = node.args[:text_args] if text_args else node.args
                 for arg in args:
                     for leaf in tracer.leaves(arg, scope):
                         sites.add((module, node.lineno, ast.unparse(leaf)))

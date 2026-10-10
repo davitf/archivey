@@ -87,9 +87,9 @@ Each idea carries a status:
 ## Detection
 
 - **Extension-first detection, and stopping early on agreement.** *Needs design.* Try the
-  formats a filename suggests first, then fall back to the full sweep. A `.br` file would
-  stop being claimed by whichever content probe runs first, and a misnamed file is still
-  found. A second step is to stop as soon as the extension and the content agree, which
+  formats a filename suggests first, then fall back to the full sweep, so a misnamed file
+  is still found. Content probes already follow the name: by default only the probe the
+  extension names runs ([`topics/detection.md`](topics/detection.md) §2.5). A second step is to stop as soon as the extension and the content agree, which
   saves the later scan tiers; the sound version may skip the expensive tiers but never a
   cheap exact-magic check. On `/usr`, near magic already settles almost every file, so the
   saving needs a Brotli-heavy corpus to show (the detection-algorithm
@@ -232,7 +232,9 @@ Each idea carries a status:
 
 ## CLI
 
-- **Read the archive from stdin.** *Open idea.* `-` is reserved as the archive argument.
+- **Read the archive from stdin.** *Open idea.* A piped archive is already read through
+  `/dev/stdin` on Linux and macOS. What is still open is wiring the reserved `-` archive
+  argument to it.
 - **`--json` output.** *Needs design.* Waits for a designed member schema. The flag name
   is `--json`.
 - **`--raw` names.** *Open idea.* An escape hatch that prints exact names, for scripts that

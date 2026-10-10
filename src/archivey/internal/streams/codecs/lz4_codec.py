@@ -78,7 +78,8 @@ class Lz4Codec(StreamCodec):
                 # The frame's version bits are not 01, the only version the LZ4 frame
                 # format defines; the lz4 CLI's decoder refuses it the same way.
                 return UnsupportedFeatureError(
-                    f"Unsupported lz4 frame version: {exc!r}"
+                    f"Unsupported lz4 frame version: {exc!r}; a damaged header reads "
+                    "the same way"
                 )
             if "contentChecksum" in str(exc):
                 # The frame's content checksum, over everything the frame decoded; a

@@ -48,11 +48,14 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
 )
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _accelerator_backstop_source,
+    _seek_reached_end,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
+    input_after_end_error,
+    near_stream_magic,
     report_trailing_data,
 )
 from archivey.internal.streams.resume import ask_resume_offset
@@ -83,7 +86,8 @@ def _bzip2_uses_accelerator(config: StreamConfig) -> bool:
 
 # What may start a further stream after one ends, so a concatenated file reads whole.
 # _BZIP2_HEADER must accept the same bytes.
-_BZIP2_STREAMS = stream_magic((b"B", b"Z", b"h", b"123456789"))
+_BZIP2_MAGIC = (b"B", b"Z", b"h", b"123456789")
+_BZIP2_STREAMS = stream_magic(_BZIP2_MAGIC)
 
 
 # Nothing starts a further stream: what follows the first one is past the data.
@@ -91,8 +95,10 @@ _NO_FURTHER_STREAM = stream_magic()
 
 
 def _stdlib_bzip2(
-    source: CodecSource, config: StreamConfig, *, single_stream: bool = False
+    source: CodecSource, config: StreamConfig, *, single_stream: bool
 ) -> BinaryIO:
+    # ``single_stream`` has no default: every engine that decodes a coder's data,
+    # the accelerator's fallbacks too, must agree on what follows its stream (DR-5).
     return FramedDecompressorStream(
         source,
         bz2.BZ2Decompressor,
@@ -100,6 +106,7 @@ def _stdlib_bzip2(
         magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
+        refuse_input_after_end=config.refuse_input_after_end,
     )
 
 
@@ -170,7 +177,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         *,
         views: _SourceViews,
         config: StreamConfig,
-        single_stream: bool = False,
+        single_stream: bool,
     ) -> None:
         super().__init__(inner)
         self._views = views
@@ -275,10 +282,31 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         """Check the combined CRCs, then what follows the last stream. Return whether
         the standard library took over at the end to decode a further stream."""
         self._end_unchecked = False
-        self._check_combined_crcs()
+        first_end = self._check_combined_crcs()
+        if self._config.refuse_input_after_end:
+            self._refuse_input_after_end(first_end)
         return self._check_trailing_data()
 
-    def _check_combined_crcs(self) -> None:
+    def _refuse_input_after_end(self, first_end: int | None) -> None:
+        """Raise when any byte, a zero too, follows the first stream.
+
+        ``StreamConfig.refuse_input_after_end`` (a ZIP member), as the standard library
+        path refuses it. ``first_end`` is where the first end-of-stream marker ends,
+        from :meth:`_check_combined_crcs`; without an index, the decoder's compressed
+        position. The accelerator reads a second stream as data, so the check is from
+        the first stream's end, not the last one's.
+        """
+        if first_end is None:
+            position = getattr(self._accelerator(), "compressed_position", None)
+            first_end = position() if position is not None else None
+        if first_end is None:
+            return
+        with self._views.view() as view:
+            view.seek(first_end)
+            if view.read(1):
+                raise input_after_end_error("bzip2")
+
+    def _check_combined_crcs(self) -> int | None:
         """Check each stream's combined CRC, which the accelerator does not.
 
         rapidgzip's bzip2 decoder checks every block's CRC against its data, but not the
@@ -288,11 +316,15 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         in its block's header, so the decoder's index (where every block and every
         end-of-stream marker starts) and 80 bits of the source at each of those places
         are enough to check it, without decoding anything again.
+
+        Returns the byte offset where the first stream's end-of-stream marker ends, or
+        ``None`` when there is no index or no marker in it.
         """
         offsets_fn = getattr(self._accelerator(), "block_offsets", None)
         offsets = offsets_fn() if offsets_fn is not None else None
         if not offsets:
-            return
+            return None
+        first_end: int | None = None
         with self._views.view() as view:
             combined = 0
             stream_end = -1
@@ -318,6 +350,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                         )
                     combined = 0
                     stream_end = -(-(bit + 80) // 8) * 8
+                    if first_end is None:
+                        first_end = stream_end // 8
+        return first_end
 
     def _check_trailing_data(self) -> bool:
         """Find the first byte after the last stream that is neither part of an empty
@@ -332,8 +367,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         stderr and no exception. The bytes from there to the end of the source are read
         (a fresh view, so the decoder's cursor does not move) by
         :meth:`_first_trailing_byte`, which accepts what the standard-library path
-        accepts. Where a stream header follows with no zeros before it, the standard
-        library decodes that stream, or raises on it, and the decoder here stopped
+        accepts. Where a stream header or a damaged one follows with no zeros before
+        it, or a run of zeros shorter than the magic starts a damaged one, the standard
+        library decodes that stream or raises on it, and the decoder here stopped
         before it, so the standard library takes over at the end and decides (class
         docstring). For a container coder's single stream the standard library would not
         read a further stream either, so that stream is reported as trailing bytes
@@ -356,49 +392,71 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
 
     def _first_trailing_byte(self, end: int) -> tuple[int, bool] | None:
         """The offset of the first byte from ``end`` that is not part of a run of empty
-        streams right after ``end`` and not a zero, and whether the stream header of a
-        further stream (``BZh`` and a block-size digit) starts there with no zero
-        before it; ``None`` when there is no such byte.
+        streams right after ``end`` and not a zero, and whether the standard library
+        decodes or refuses what starts there; ``None`` when there is no such byte.
 
         The standard-library path accepts the same: empty streams, as part of the
-        data, then zeros, as padding only when nothing follows them. After a zero, the
-        first non-zero byte is reported, as for any bytes after zero padding."""
+        data, then zeros, as padding only when nothing follows them. With no zero
+        before it, a stream header (``BZh`` and a block-size digit) or a damaged one
+        (:func:`near_stream_magic`) goes to the standard library. After zeros, the
+        first non-zero byte is reported, as for any bytes after zero padding, unless
+        the zeros are fewer than the magic and start a damaged one with the bytes after
+        them: the standard library refuses that too (``FramedDecoder``)."""
         with self._views.view() as view:
             view.seek(end)
-            # ``held`` is the start of an empty stream that the previous chunk cut, or
-            # nothing. ``offset`` is the source offset of ``data[0]``.
+            # ``held`` is what the previous chunk left undecided: at most a magic's
+            # length of zeros, then the start of an empty stream or a header that the
+            # chunk cut. ``offset`` is the source offset of ``data[0]``.
             offset = end
             held = b""
             padded = False
             while True:
                 chunk = view.read(_TRAILING_SCAN_CHUNK)
                 data = held + chunk
-                skipped = 0 if padded else _run_end(_EMPTY_BZIP2_STREAM_RUN, data, 0)
-                rest = data[skipped:]
-                # A short ``rest`` that could begin an empty stream waits for the next
-                # chunk. An empty ``chunk`` means the end of the source: ``rest`` cannot
-                # become a whole stream, so it is reported.
-                if chunk and not padded and _starts_empty_bzip2_stream(rest):
-                    held = rest
+                if not padded:
+                    skipped = _run_end(_EMPTY_BZIP2_STREAM_RUN, data, 0)
+                    rest = data[skipped:]
+                    if rest[:1] != b"\x00":
+                        # A short ``rest`` that could begin an empty stream, or is
+                        # shorter than a stream header, waits for the next chunk. An
+                        # empty ``chunk`` means the end of the source: ``rest`` cannot
+                        # become a whole stream, so it is reported.
+                        short = len(rest) < _BZIP2_HEADER_LEN
+                        if chunk and (short or _starts_empty_bzip2_stream(rest)):
+                            held = rest
+                            offset += skipped
+                            continue
+                        if not rest:
+                            return None
+                        header = _BZIP2_HEADER.match(rest) is not None
+                        damaged = near_stream_magic(rest, _BZIP2_MAGIC)
+                        return offset + skipped, header or damaged
+                    padded = True
                     offset += skipped
-                    continue
-                zeros = _run_end(_ZERO_RUN, data, skipped)
-                padded = padded or zeros > skipped
+                    data = rest
+                # ``data`` starts with the zeros after the last stream, or with no more
+                # than a magic's length of them kept from the chunk before.
+                zeros = _run_end(_ZERO_RUN, data, 0)
+                width = len(_BZIP2_MAGIC)
                 if zeros < len(data):
-                    header = _BZIP2_HEADER.match(data, zeros) is not None
-                    return offset + zeros, header and not padded
+                    # A run shorter than the magic can hold a damaged magic's first
+                    # bytes, as in ``FramedDecoder``: it waits for a magic's length.
+                    if chunk and zeros < width and len(data) < width:
+                        held = data
+                        continue
+                    damaged = zeros < width and near_stream_magic(data, _BZIP2_MAGIC)
+                    return offset + zeros, damaged
                 if not chunk:
                     return None
-                held = b""
-                offset += len(data)
+                keep = min(zeros, width)
+                held = data[zeros - keep :]
+                offset += zeros - keep
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # The one caller, _StdlibSeekContract, resolves a relative seek itself and
-        # passes SEEK_SET or SEEK_END only.
         result = super().seek(offset, whence)
         if result != 0:
             self._armed = False
-        if whence == io.SEEK_END or result < offset:
+        if _seek_reached_end(offset, whence, result):
             # The seek reached the decoder's end, which can be short or wrong: settle
             # it before a position is handed out, as a read at the end would.
             if self._settle_end_for_seek(result):
@@ -451,7 +509,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         read only."""
         self._armed = False
         self._end_unchecked = False  # the stdlib engine reports its own end
-        self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
+        self._replace_inner(
+            _stdlib_bzip2(
+                self._views.for_stdlib(),
+                self._config,
+                single_stream=self._single_stream,
+            )
+        )
 
 
 # The 48-bit magic numbers that start a bzip2 block and an end-of-stream marker. Each
@@ -641,7 +705,8 @@ _TRAILING_SCAN_CHUNK = 1 << 16
 # skipped, and so are still reported. The CRC must be zero, because the combined CRC of
 # no blocks is zero; the standard-library engine refuses any other value as corrupt.
 # The digit must be 1 to 9: with any other, the standard-library engine does not start
-# a stream there either (``_BZIP2_STREAMS``), and reports the bytes as trailing data.
+# a stream there either (``_BZIP2_STREAMS``); it refuses the bytes as a damaged stream
+# header (``near_stream_magic``), and the end check hands over to it there.
 _EMPTY_BZIP2_TEMPLATE = b"BZh9\x17\x72\x45\x38\x50\x90\x00\x00\x00\x00"
 _EMPTY_BZIP2_STREAM_LEN = len(_EMPTY_BZIP2_TEMPLATE)
 _EMPTY_BZIP2_STREAM_BYTES = (
@@ -704,7 +769,9 @@ class Bzip2Codec(StreamCodec):
             takeover = _StdlibOnAcceleratorError(
                 stream,
                 views=views,
-                open_stdlib=lambda fallback: _stdlib_bzip2(fallback, config),
+                open_stdlib=lambda fallback: _stdlib_bzip2(
+                    fallback, config, single_stream=params.single_stream
+                ),
                 label="bzip2",
                 takes_over=self._accelerator_data_error,
                 resume_points=_bzip2_resume_points,

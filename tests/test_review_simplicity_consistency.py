@@ -528,6 +528,8 @@ def test_reader_surface_is_uniform_across_formats(key: str, tmp_path: Path) -> N
 
     with pytest.raises(ArchiveyUsageError):
         reader.format  # noqa: B018 - property access after close must raise
+    with pytest.raises(ArchiveyUsageError):
+        member in reader  # noqa: B015 - membership test after close must raise
 
 
 @pytest.mark.parametrize("key", _UNIFORM_KEYS)
@@ -634,6 +636,9 @@ def test_zip_corrupt_member_offset_is_still_corruption(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _SINGLE_FILE_KEYS = ["gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"]
+# zlib and Brotli have no magic: the nameless stream reaches them only with every content
+# probe on. Both shapes get the same config so only the shape differs.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 @pytest.mark.parametrize("key", _SINGLE_FILE_KEYS)
@@ -649,9 +654,9 @@ def test_single_file_compressed_size_is_not_path_gated(
     because the bug was in the shared shell, not in any one codec.
     """
     path = _archive("single-file", key, tmp_path)
-    with open_archive(path) as reader:
+    with open_archive(path, config=_ALWAYS_PROBE) as reader:
         from_path = reader.members()[0].compressed_size
-    with open_archive(io.BytesIO(path.read_bytes())) as reader:
+    with open_archive(io.BytesIO(path.read_bytes()), config=_ALWAYS_PROBE) as reader:
         from_stream = reader.members()[0].compressed_size
 
     assert from_path == from_stream == path.stat().st_size

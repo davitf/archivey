@@ -98,7 +98,6 @@ class SingleFileReader(BaseArchiveReader):
     non-seekable source is not validated until that read.
     """
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(
@@ -388,7 +387,8 @@ class SingleFileReader(BaseArchiveReader):
         assert src is not None  # always set in __init__
         codec_source: str | BinaryIO
         # _wrap_compressed_input counts the compressed bytes the codec pulls whenever the
-        # source has no size hint, so the live ratio guard has a denominator. A path
+        # source has no trusted size (``_trusted_source_size``), so the live ratio guard
+        # has a denominator. A path
         # source always has a cheap ``stat`` size, so the path branch needs none.
         if self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
