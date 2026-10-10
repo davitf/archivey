@@ -64,7 +64,10 @@ appear in `QO` SHALL be emitted from the copies and skipped; FILE headers
 normal SERVICE on that walk. Extract SHALL use the same table. Otherwise the
 parser SHALL walk FILE headers. A `QO` that is missing, packed, split,
 encrypted, CRC-invalid, or behind header encryption SHALL fall back to the
-walk.
+walk. Only the first MAIN header of a volume SHALL have its locator followed: a
+repeated MAIN SHALL still be parsed for its flags, but SHALL NOT read the `QO`
+payload again, so the payload is read at most once per volume however many MAIN
+headers point at it.
 
 #### Scenario: native header matrix
 
@@ -76,6 +79,7 @@ walk.
 | Open RAR5 archive | Members, flags, hashes, and redirect metadata come from native headers |
 | Open RAR5 with a stored unencrypted `QO` reachable from MAIN's locator | FILE headers in `QO` are emitted from the copies and skipped on the walk; omitted FILE headers and `CMT` after MAIN are parsed |
 | Open RAR5 with no `QO`, locator offset 0, packed/encrypted/`QO` CRC failure, or header encryption | Member table is filled by the FILE-header walk |
+| Open RAR5 whose MAIN header is repeated, each copy's locator pointing at one `QO` | The `QO` payload is read once; later MAIN headers are parsed for their flags only |
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 

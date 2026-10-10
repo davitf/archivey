@@ -660,3 +660,120 @@ def test_volume_set_packed_data_past_end_names_the_volume() -> None:
     assert "(volume 2 of the set; the offset is within that volume)" in (
         archive.truncated
     )
+
+
+class _CountingReader(io.BytesIO):
+    """A ``BytesIO`` that adds up the bytes each ``read`` returns."""
+
+    bytes_read = 0
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        data = super().read(size)
+        self.bytes_read += len(data)
+        return data
+
+
+def _rar5_block(
+    block_type: int, body: bytes, *, extra: bytes = b"", data_size: int | None = None
+) -> bytes:
+    """One plain RAR5 header with a correct CRC, optional extra area and data size."""
+    flags = 0
+    fields = b""
+    if extra:
+        flags |= 0x0001
+        fields += _vint(len(extra))
+    if data_size is not None:
+        flags |= 0x0002
+        fields += _vint(data_size)
+    inner = _vint(block_type) + _vint(flags) + fields + body + extra
+    sized = _vint(len(inner)) + inner
+    return struct.pack("<I", zlib.crc32(sized) & 0xFFFFFFFF) + sized
+
+
+def _vint(value: int, width: int = 0) -> bytes:
+    """A RAR5 variable-length integer, padded with continuation bytes to ``width``."""
+    out = bytearray()
+    while True:
+        out.append((value & 0x7F) | (0x80 if value > 0x7F else 0))
+        value >>= 7
+        if not value:
+            break
+    while len(out) < width:
+        out[-1] |= 0x80
+        out.append(0)
+    return bytes(out)
+
+
+def test_repeated_rar5_main_headers_read_the_quick_open_payload_once() -> None:
+    """A second MAIN header must not buy another read of the quick-open payload.
+
+    ``unrar`` accepts more than one MAIN header, and the walk parses each one. Each
+    MAIN here is 20 bytes and its locator points at the same 1 MiB QO payload, so a
+    walk that tries the locator on every MAIN reads that payload once per header:
+    300 MiB from a 1 MiB archive, and up to 16 MiB per header at the payload limit.
+    Only the first MAIN of a volume is asked for the quick-open table.
+    """
+    count, qo_size = 300, 2**20
+
+    def main(distance: int) -> bytes:
+        locator = _vint(1) + _vint(0x01) + _vint(distance, width=5)
+        return _rar5_block(1, _vint(0), extra=_vint(len(locator)) + locator)
+
+    main_size = len(main(0))
+    qo_body = (
+        _vint(0)  # file flags
+        + _vint(qo_size)  # unpacked size
+        + _vint(0)  # attributes
+        + _vint(0)  # compression info: stored
+        + _vint(1)  # host OS
+        + _vint(2)
+        + b"QO"
+    )
+    data = bytearray(b"Rar!\x1a\x07\x01\x00")
+    qo_at = len(data) + count * main_size
+    for _ in range(count):
+        data += main(qo_at - len(data))
+    data += _rar5_block(3, qo_body, data_size=qo_size) + bytes(qo_size)
+    data += _rar5_block(5, _vint(0))
+
+    source = _CountingReader(bytes(data))
+    archive = parse_rar_archive(source)
+    assert archive.members == []
+    assert source.bytes_read < 2 * len(data)
+
+
+def test_a_rar3_comment_is_read_only_from_the_bytes_the_walk_skips() -> None:
+    """A RAR 1.5-4 ``CMT`` header must not read bytes the walk then parses again.
+
+    Without the LONG_BLOCK flag the walk skips no data after a SUB header, but the
+    comment read used the header's PACK_SIZE. Each of these 37-byte ``CMT`` headers
+    claims everything after it as its comment, so every one of them re-read the
+    rest of the archive: 300 headers read 300 copies of a 256 KiB tail. A byte is
+    either comment data or the next header, so the comment read takes the span the
+    walk skips.
+    """
+    count, tail = 300, 256 * 1024
+
+    def cmt(pack_size: int) -> bytes:
+        name = b"CMT"
+        fixed = struct.pack(
+            "<LLBLLBBHL", pack_size, pack_size, 3, 0, 0, 29, 0x30, len(name), 0
+        )
+        body = struct.pack("<BHH", 0x7A, 0, 7 + len(fixed) + len(name)) + fixed + name
+        return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body
+
+    main_body = struct.pack("<BHH", 0x73, 0, 13) + bytes(6)
+    end_body = struct.pack("<BHH", 0x7B, 0x4000, 7)
+    end = struct.pack("<H", zlib.crc32(end_body) & 0xFFFF) + end_body
+    header_size = len(cmt(0))
+    rest = count * header_size + len(end) + tail
+    data = bytearray(b"Rar!\x1a\x07\x00")
+    data += struct.pack("<H", zlib.crc32(main_body) & 0xFFFF) + main_body
+    for index in range(count):
+        data += cmt(rest - (index + 1) * header_size)
+    data += end + bytes(tail)
+
+    source = _CountingReader(bytes(data))
+    archive = parse_rar_archive(source)
+    assert archive.members == []
+    assert source.bytes_read < 2 * len(data)
