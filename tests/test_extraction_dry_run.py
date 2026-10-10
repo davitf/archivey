@@ -602,9 +602,8 @@ def _files(*names: str) -> list[tuple[str, str, object]]:
         (_files(f"{_TOO_LONG}/f"), None, None),
         # ...so the one root a real run moves is the other one.
         (_files("good/f", f"{_TOO_LONG}/f"), None, "would move to good/\n"),
-        # A link to itself. Before Python 3.13 the loop is refused as an escape and the
-        # directory made for it is left, which is moved. From 3.13 the link is
-        # created, and the hoist keeps the entry: its walk of a loop runs out of hops.
+        # A link to itself. The loop is refused as an escape and the directory made
+        # for it is left, which is moved.
         # Not skipped on Windows on purpose: without the symlink privilege the link
         # fails to be created instead. Whichever happens, the dry run has to say what
         # the real one did.
