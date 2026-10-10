@@ -18,6 +18,12 @@ from archivey import open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import DiagnosticRaisedError
+from archivey.internal.backends.sevenzip_parser import (
+    PlainHeader,
+    materialize_archive,
+    parse_header_block,
+    read_signature_and_next_header,
+)
 from archivey.internal.trailing_scan import MAX_TRAILING_SCAN
 
 _PAYLOAD = b"hello, trailing data\n"
@@ -188,3 +194,16 @@ def test_empty_archive_ends_at_its_next_header_offset() -> None:
     data = _empty_7z(next_header_offset=4) + b"SKIP"
     assert _empty_trailing(data) == []
     assert _empty_trailing(data + b"JUNK") == [0]
+
+
+def test_encoded_header_streams_count_toward_the_end() -> None:
+    # 7-Zip writes an encoded header's packed stream just before the next header, so
+    # no real file puts it last; the end still takes it into account.
+    data = _stored_7z()
+    signature = read_signature_and_next_header(io.BytesIO(data))
+    block = parse_header_block(signature.header_data)
+    assert isinstance(block, PlainHeader)
+    plain_end = materialize_archive(signature, block).end_offset
+    assert plain_end == signature.end_offset
+    widened = materialize_archive(signature, block, encoded_streams_end=plain_end + 9)
+    assert widened.end_offset == plain_end + 9
