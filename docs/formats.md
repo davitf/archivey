@@ -525,6 +525,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
+- **Bytes after the image's end** are reported as `ARCHIVE_TRAILING_DATA` with
+  `format="iso"`: a warning under the default policy, raised under `strict()`. Zero
+  padding passes, and the check looks at most 1 MiB past the end. The end counts the
+  partitions the image's MBR or GPT lists, so a hybrid installer image, whose EFI
+  partition and GPT backup header sit after the ISO 9660 volume space, opens clean.
+  7-Zip warns "There are data after the end of archive" on those images.
 
 ## Disk images
 

@@ -87,6 +87,7 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     MemberHeaderRecordContext,
     NameEncodingContext,
@@ -119,6 +120,7 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
 )
 from archivey.internal.timestamps import TimestampIssue
+from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -704,6 +706,61 @@ def _install_pycdlib_path_table_bound() -> None:
 
     setattr(ptr_mod.PathTableRecord, "parse", parse_entry)
     _PYCDLIB_PATH_TABLE_BOUND_INSTALLED = True
+
+
+# MBR and GPT count in 512-byte sectors, whatever the ISO's logical block size. A GPT
+# lists 128 entries in the usual layout; the walk reads at most this many, so a header
+# cannot make the trailing-data check read much.
+_PARTITION_SECTOR = 512
+_MAX_GPT_ENTRIES = 1024
+_MIN_GPT_ENTRY_SIZE = 128
+_MAX_GPT_ENTRY_SIZE = 4096
+
+
+def _image_end(fp: BinaryIO, *, volume_end: int, image_length: int) -> int:
+    """Where an ISO image ends: its volume space or its last listed partition.
+
+    A hybrid image (``xorriso -append_partition``, isohybrid) is a disk image as well
+    as an ISO: its MBR, and often a GPT, sit in the system area and list partitions
+    that can lie past the ISO 9660 volume space, such as an EFI system partition, with
+    the GPT's backup header at the very end. Those bytes are the disk's, not
+    something appended to it, so the end is the furthest of the volume space, every
+    MBR partition, every GPT partition, and the GPT backup header. A table that does
+    not parse adds nothing. The result can pass the image's length; the caller
+    compares it with ``image_length``. ``fp``'s position is not kept.
+    """
+    end = volume_end
+    fp.seek(0)
+    head = fp.read(2 * _PARTITION_SECTOR)
+    if len(head) >= _PARTITION_SECTOR and head[510:512] == b"\x55\xaa":
+        for slot in range(4):
+            entry = head[446 + 16 * slot : 446 + 16 * (slot + 1)]
+            if entry[4] == 0:
+                continue
+            first, count = struct.unpack_from("<II", entry, 8)
+            end = max(end, (first + count) * _PARTITION_SECTOR)
+    gpt = head[_PARTITION_SECTOR:]
+    if len(gpt) < 92 or gpt[:8] != b"EFI PART":
+        return end
+    (backup_lba,) = struct.unpack_from("<Q", gpt, 32)
+    (entries_lba,) = struct.unpack_from("<Q", gpt, 72)
+    entry_count, entry_size = struct.unpack_from("<II", gpt, 80)
+    end = max(end, (backup_lba + 1) * _PARTITION_SECTOR)
+    if not (
+        _MIN_GPT_ENTRY_SIZE <= entry_size <= _MAX_GPT_ENTRY_SIZE
+        and entry_size % 8 == 0
+        and entries_lba * _PARTITION_SECTOR < image_length
+    ):
+        return end
+    count = min(entry_count, _MAX_GPT_ENTRIES)
+    fp.seek(entries_lba * _PARTITION_SECTOR)
+    table = fp.read(count * entry_size)
+    for at in range(0, len(table) - entry_size + 1, entry_size):
+        if table[at : at + 16] == bytes(16):
+            continue  # unused entry
+        _first, last = struct.unpack_from("<QQ", table, at + 32)
+        end = max(end, (last + 1) * _PARTITION_SECTOR)
+    return end
 
 
 def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
@@ -1485,6 +1542,7 @@ class IsoReader(BaseArchiveReader):
                     else:
                         self._namespace = "iso9660"
                         self._path_kw = "iso_path"
+                    self._report_trailing_data()
         except BaseException:
             # No reader is returned for anyone to close, and the exception's traceback
             # keeps this frame alive for as long as the caller holds it (inventory/fuzz
@@ -1494,6 +1552,46 @@ class IsoReader(BaseArchiveReader):
             # ``open_fp``.
             self._release_archive_handles()
             raise
+
+    def _report_trailing_data(self) -> None:
+        """Report a non-zero byte after the end of the image, as DR-3 asks.
+
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``.
+        Zero padding is silent. The image ends at the furthest of its volume space and
+        the partitions its MBR or GPT lists (:func:`_image_end`): a hybrid ISO, the
+        layout Linux installer images use, appends an EFI partition and a GPT backup
+        after the volume space, and those bytes belong to the disk image. 7-Zip warns
+        on them; archivey does not. Called inside the handle guard.
+        """
+        end = _image_end(
+            self._iso_fp,
+            volume_end=self._iso.pvd.space_size * self._iso.logical_block_size,
+            image_length=self._image_length,
+        )
+        if end >= self._image_length:
+            return
+        self._iso_fp.seek(end)
+        found = first_nonzero_offset(self._iso_fp)
+        if found is None:
+            return
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            message=(
+                "ISO image continues past its end: a non-zero byte appears "
+                f"{found} bytes after the volume space and any partitions its "
+                "partition table lists. The listing does not account for it (this "
+                "file may hold something appended to the image)."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="iso",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found,
+                observed_kind="nonzero",
+            ),
+        )
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
         # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
