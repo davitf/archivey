@@ -47,22 +47,43 @@ def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
     """Stem used for the smart enclosing directory.
 
     Prefer the format's canonical extension (covers ``.tar.Z``, ``.tzst``, …); fall
-    back to stripping a final suffix and a remaining ``.tar``. Never return empty
-    (a file named exactly ``.tar.gz`` would otherwise become cwd and splatter).
+    back to stripping a final suffix and a remaining ``.tar``. Never return empty,
+    ``.`` or ``..``: the result becomes a destination path, so an empty stem (a file
+    named exactly ``.tar.gz``) or ``.`` (``..zip``) would splatter into the cwd, and
+    ``..`` (``...zip``, ``...tar.gz``) would write into the parent directory. Those
+    names give ``"archive"`` instead.
     """
     name = path.name
     ext = format.file_extension()
     if ext:
         suffix = f".{ext}"
         if name.lower().endswith(suffix.lower()):
-            stem = name[: -len(suffix)]
-            return stem or "archive"
-    stem_path = path
-    if stem_path.suffix:
-        stem_path = stem_path.with_suffix("")
-        if stem_path.suffix.lower() == ".tar":
-            stem_path = stem_path.with_suffix("")
-    return stem_path.name or "archive"
+            return _safe_stem(name[: -len(suffix)])
+    stem, suffix = _split_suffix(name)
+    if suffix:
+        stem, suffix = _split_suffix(stem)
+        if suffix.lower() != ".tar":
+            stem += suffix
+    return _safe_stem(stem)
+
+
+def _split_suffix(name: str) -> tuple[str, str]:
+    """Split ``name`` into stem and final suffix, the same on every Python version.
+
+    ``pathlib`` changed in 3.14 to skip all leading dots before looking for a suffix
+    (``Path("...bin").suffix`` is ``".bin"`` up to 3.13 and ``""`` from 3.14), so it
+    would name the wrapper folder differently by interpreter. This keeps the 3.11-3.13
+    rule: a suffix starts at the last dot, which is not the first or last character.
+    """
+    i = name.rfind(".")
+    if 0 < i < len(name) - 1:
+        return name[:i], name[i:]
+    return name, ""
+
+
+def _safe_stem(stem: str) -> str:
+    """``stem``, or ``"archive"`` when it is not a usable single-segment name."""
+    return "archive" if stem in ("", ".", "..") else stem
 
 
 def _top_level_names(members: list[ArchiveMember]) -> set[str]:
@@ -75,27 +96,20 @@ def _top_level_names(members: list[ArchiveMember]) -> set[str]:
     return tops
 
 
-def _enclosing_dir(
-    archive: Path,
-    *,
-    format: ArchiveFormat,
-    overwrite: OverwritePolicy,
-) -> Path:
-    """Always-wrap destination used when no cheap member index is available (D1).
+def _enclosing_dir(archive: Path, *, format: ArchiveFormat) -> Path:
+    """The wrapper folder named after the archive: a name nothing has yet (D1).
 
-    The CLI picks this directory on the user's behalf, so it never picks a symlink:
-    a link named like the stem, dangling or live, is treated as taken under every
-    overwrite policy and the next free ``stem (N)`` is used. A user who wants to
-    extract through the link names it with ``-d``. Probes use ``lexists`` so a
+    The CLI picks this folder on the user's behalf, so it is always one this run
+    creates. Anything already at the stem name (a directory, a file, a symlink,
+    dangling or live) makes the name taken under every overwrite policy, and the
+    next free ``stem (N)`` is used. A user who wants to extract into an existing
+    directory, or through a link, names it with ``-d``. Probes use ``lexists`` so a
     dangling link counts as present, matching :func:`_free_name`.
     """
-    stem = _archive_stem(archive, format=format)
-    dest = Path(stem)
+    dest = Path(_archive_stem(archive, format=format))
     if not os.path.lexists(dest):
         return dest
-    if overwrite is OverwritePolicy.RENAME or dest.is_symlink():
-        return _free_name(dest, is_dir=True)
-    return dest
+    return _free_name(dest, is_dir=True)
 
 
 def smart_dest(
@@ -103,7 +117,6 @@ def smart_dest(
     *,
     format: ArchiveFormat,
     members: list[ArchiveMember],
-    overwrite: OverwritePolicy,
 ) -> Path:
     """Anti-tarbomb dest from an indexed member list (tops may already be filtered)."""
     if format.container == ContainerFormat.RAW_STREAM:
@@ -111,19 +124,15 @@ def smart_dest(
     tops = _top_level_names(members)
     if len(tops) <= 1:
         return Path(".")
-    return _enclosing_dir(archive, format=format, overwrite=overwrite)
+    return _enclosing_dir(archive, format=format)
 
 
 @dataclass(frozen=True)
 class _SmartDestPlan:
-    """Where to extract, and whether a post-extract single-root hoist may run.
-
-    ``wrapper_existed`` is set when ``target`` is a wrapper that was already there: the
-    hoist then keeps its content in place and says so."""
+    """Where to extract, and whether a post-extract single-root hoist may run."""
 
     target: Path
     may_hoist: bool
-    wrapper_existed: bool = False
 
 
 def resolve_smart_dest(
@@ -131,15 +140,14 @@ def resolve_smart_dest(
     archive: Path,
     *,
     pred: Callable[[ArchiveMember], bool] | None,
-    overwrite: OverwritePolicy,
 ) -> _SmartDestPlan:
     """Choose the default dest without forcing a streaming metadata pass (D1).
 
     - Single-file / raw-stream → cwd.
-    - Indexed archive → tops on the **filtered** member set (wrap / reuse / cwd).
-    - No cheap index (tar, an archive read from a pipe, …) → always ``./<stem>/``,
-      then :func:`maybe_hoist_single_root` may lift a single extracted top entry to
-      cwd.
+    - Indexed archive → tops on the **filtered** member set (wrap / cwd).
+    - No cheap index (tar, an archive read from a pipe, …) → always a new
+      ``./<stem>/``, then :func:`maybe_hoist_single_root` may lift a single
+      extracted top entry to cwd.
     """
     fmt = reader.format
     if fmt.container == ContainerFormat.RAW_STREAM:
@@ -147,16 +155,12 @@ def resolve_smart_dest(
 
     indexed = reader.members_report_if_available()
     if indexed is None:
-        wrapper = _enclosing_dir(archive, format=fmt, overwrite=overwrite)
-        # Only a wrapper this run creates may be hoisted out of: a directory that was
-        # already there is the operator's, and its only child may be their own file.
-        return _SmartDestPlan(
-            wrapper, may_hoist=True, wrapper_existed=os.path.lexists(wrapper)
-        )
+        # The wrapper is always new, so its content is all this run's.
+        return _SmartDestPlan(_enclosing_dir(archive, format=fmt), may_hoist=True)
 
     members = [m for m in indexed if pred is None or pred(m)]
     return _SmartDestPlan(
-        smart_dest(archive, format=fmt, members=members, overwrite=overwrite),
+        smart_dest(archive, format=fmt, members=members),
         may_hoist=False,
     )
 
@@ -410,18 +414,13 @@ def _recorded_links_stay_inside(top: str, links: tuple[tuple[str, str], ...]) ->
     return _links_stay_inside(root, under, targets.get)
 
 
-def _keep_reason(
-    wrapper_existed: bool, is_symlink: bool, links_leave: Callable[[], bool]
-) -> str | None:
+def _keep_reason(is_symlink: bool, links_leave: Callable[[], bool]) -> str | None:
     """Why the hoist leaves the wrapper's single entry in place, or ``None`` to move it.
 
     ``links_leave`` says whether a symlink in the entry may leave it on the way to its
     target, which includes a tree that could not be fully walked
     (:func:`_links_stay_inside`); it runs only when nothing earlier settled it.
     """
-    if wrapper_existed:
-        # The directory is the operator's, and its only entry may be their own file.
-        return "the folder was already there, so its content may be your own"
     if is_symlink:
         # A link's relative target is read from its own directory, which the move
         # changes from the wrapper to the working directory: `b -> passwd` would then
@@ -439,7 +438,6 @@ def maybe_hoist_single_root(
     *,
     overwrite: OverwritePolicy,
     err: TextIO,
-    wrapper_existed: bool = False,
 ) -> _HoistResult:
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
@@ -464,7 +462,6 @@ def maybe_hoist_single_root(
         return _HoistResult(wrapper)
     child = children[0]
     reason = _keep_reason(
-        wrapper_existed,
         child.is_symlink(),
         lambda: child.is_dir() and not _disk_links_stay_inside(child),
     )
@@ -544,7 +541,6 @@ def predict_hoist(
     report: ExtractionReport,
     *,
     err: TextIO,
-    wrapper_existed: bool = False,
 ) -> _HoistResult:
     """What :func:`maybe_hoist_single_root` would do after a real run, for a dry run.
 
@@ -564,7 +560,6 @@ def predict_hoist(
     # ``links`` is ``None`` when part of the scratch tree could not be read, and the
     # hoist keeps a tree it cannot fully walk.
     reason = _keep_reason(
-        wrapper_existed,
         links is not None and any(path == name for path, _ in links),
         lambda: (
             links is None or (is_dir and not _recorded_links_stay_inside(name, links))
@@ -944,7 +939,6 @@ def run_extract(
                 return EXIT_FAIL
 
         may_hoist = False
-        wrapper_existed = False
         if dest is not None:
             target = Path(dest)
         else:
@@ -952,11 +946,9 @@ def run_extract(
                 reader,
                 archive_path,
                 pred=pred,
-                overwrite=overwrite_enum,
             )
             target = plan.target
             may_hoist = plan.may_hoist
-            wrapper_existed = plan.wrapper_existed
             if target != Path("."):
                 verb = "would extract" if dry_run else "extracting"
                 print(f"{verb} into {escape_path(target)}/", file=err)
@@ -1024,15 +1016,10 @@ def run_extract(
             hoist = _HoistResult(target)
             if may_hoist and dry_run:
                 # The hoist moves what the extraction wrote; a dry run wrote nothing.
-                hoist = predict_hoist(
-                    target, report, err=err, wrapper_existed=wrapper_existed
-                )
+                hoist = predict_hoist(target, report, err=err)
             elif may_hoist:
                 hoist = maybe_hoist_single_root(
-                    target,
-                    overwrite=overwrite_enum,
-                    err=err,
-                    wrapper_existed=wrapper_existed,
+                    target, overwrite=overwrite_enum, err=err
                 )
             blocked, failed = _report_extraction(
                 report,

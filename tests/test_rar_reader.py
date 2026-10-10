@@ -1622,7 +1622,7 @@ def test_rar3_parser_drops_encrypted_old_style_comment(
         )
         + body
     )
-    assert rp._parse_rar3_old_comment_subblocks(block, 0) is None
+    assert rp._parse_rar3_old_comment_subblocks(block, 0, encoding=None) is None
 
 
 def test_rar3_service_comment_maps_to_member_comment() -> None:
@@ -1659,7 +1659,8 @@ def test_rar3_service_comment_maps_to_member_comment() -> None:
         # An even length used to decode as UTF-16LE: '\u6163\u6166\u20e9\u6b6f'.
         pytest.param(b"caf\xe9 ok!", 0, "caf\xe9 ok!", id="ansi-even-length"),
         pytest.param("caf\xe9 ok!".encode(), 0, "caf\xe9 ok!", id="utf8"),
-        pytest.param(b"\x81\x81\x81", 0, "\ufffd" * 3, id="undefined-cp1252"),
+        # A byte windows-1252 leaves undefined survives, as it does in a name.
+        pytest.param(b"\x81\x81\x81", 0, "\udc81" * 3, id="undefined-cp1252"),
         pytest.param(
             "caf\xe9 ok!".encode("utf-16le"), 1, "caf\xe9 ok!", id="unicode-flag"
         ),
@@ -1701,7 +1702,7 @@ def test_rar3_old_style_comment_is_not_guessed_as_utf16() -> None:
 
     text = b"caf\xe9 ok!"
     block = _rar3_old_comment_subblock(text)
-    assert _parse_rar3_old_comment_subblocks(block, 0) == "caf\xe9 ok!"
+    assert _parse_rar3_old_comment_subblocks(block, 0, encoding=None) == "caf\xe9 ok!"
 
 
 def test_rar3_old_style_comment_is_cut_at_the_first_nul() -> None:
@@ -1716,8 +1717,170 @@ def test_rar3_old_style_comment_is_cut_at_the_first_nul() -> None:
     )
 
     block = _rar3_old_comment_subblock(b"hi\0rest")
-    assert _parse_rar3_old_comment_subblocks(block, 0) == "hi"
-    assert _decode_comment_text(b"caf\xe9\0\xff") == "caf\xe9"
+    assert _parse_rar3_old_comment_subblocks(block, 0, encoding=None) == "hi"
+    assert _decode_comment_text(b"caf\xe9\0\xff", encoding=None) == "caf\xe9"
+
+
+# A RAR 1.5-4 comment, like a RAR 1.5-4 8-bit name, does not record its code page, so
+# ``encoding=`` decodes the bytes that are not valid UTF-8 in place of windows-1252.
+# These archives are built by hand: RAR 7, the available writer, no longer writes the
+# RAR 1.5-4 format.
+_CP1251_COMMENT = "Привет мир"
+
+
+@pytest.mark.parametrize(
+    ("stored", "encoding", "expected"),
+    [
+        pytest.param(
+            _CP1251_COMMENT.encode("cp1251"), "cp1251", _CP1251_COMMENT, id="cp1251"
+        ),
+        pytest.param(
+            _CP1251_COMMENT.encode("cp866"), "cp866", _CP1251_COMMENT, id="cp866"
+        ),
+        pytest.param(
+            "日本語".encode("shift_jis"), "shift_jis", "日本語", id="shift-jis"
+        ),
+        # Valid UTF-8 wins over encoding=, as it does for a name.
+        pytest.param(
+            _CP1251_COMMENT.encode(), "cp1251", _CP1251_COMMENT, id="utf8-wins"
+        ),
+        # Without encoding=, the windows-1252 fallback stays.
+        pytest.param(
+            _CP1251_COMMENT.encode("cp1251"),
+            None,
+            _CP1251_COMMENT.encode("cp1251").decode("windows-1252"),
+            id="no-encoding",
+        ),
+    ],
+)
+@pytest.mark.parametrize("archive_comment_form", ["main-subblock", "cmt-service"])
+def test_rar3_comments_decode_with_explicit_encoding(
+    stored: bytes, encoding: str | None, expected: str, archive_comment_form: str
+) -> None:
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_FILE_COMMENT,
+        _RAR3_FILE_SOLID,
+    )
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    if archive_comment_form == "main-subblock":
+        # The archive comment of a RAR 1.5-2.x archive: a subblock in the MAIN header.
+        main_hdr = _rar3_main_with_comment(_rar3_old_comment_subblock(stored))
+        archive_cmt = b""
+    else:
+        # The archive comment of a RAR 2.9-4 archive: a stored CMT SERVICE header.
+        archive_cmt = (
+            _rar3_file_block(
+                b"CMT",
+                flags=0,
+                pack_lo=len(stored),
+                unp_lo=len(stored),
+                block_type=0x7A,
+            )
+            + stored
+        )
+    # One member comment as an old-style COMMENT subblock (RAR 1.5-2.x) ...
+    old_style = _rar3_file_block(
+        b"old.txt",
+        flags=_RAR3_FILE_COMMENT,
+        pack_lo=0,
+        unp_lo=0,
+        trailing_subblock=_rar3_old_comment_subblock(stored),
+    )
+    # ... and one as a solid CMT SERVICE header after its member (RAR 2.9-4).
+    service = _rar3_file_block(b"svc.txt", flags=0, pack_lo=0, unp_lo=0)
+    service_cmt = _rar3_file_block(
+        b"CMT",
+        flags=_RAR3_FILE_SOLID,
+        pack_lo=len(stored),
+        unp_lo=len(stored),
+        block_type=0x7A,
+    )
+    data = (
+        RAR_ID
+        + main_hdr
+        + archive_cmt
+        + old_style
+        + service
+        + service_cmt
+        + stored
+        + end_hdr
+    )
+    with open_archive(io.BytesIO(data), encoding=encoding) as archive:
+        assert archive.info.comment == expected
+        old_member = archive.get("old.txt")
+        service_member = archive.get("svc.txt")
+        assert old_member is not None and service_member is not None
+        assert old_member.comment == expected
+        assert service_member.comment == expected
+        # A comment is not a name: no name diagnostic is reported for it.
+        counts = archive.diagnostics.counts
+        assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_rar3_compressed_comments_take_explicit_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compressed old-style comment, once unpacked, goes through the same decode.
+
+    The decompressor is replaced by one that returns the comment text, so the test
+    walks ``_resolve_rar3_comment`` for the MAIN and the member comment without a
+    RAR 1.5-4 writer.
+    """
+    from archivey.internal.backends import rar_parser as rp
+
+    unpacked = _CP1251_COMMENT.encode("cp1251") + b"\0rest"
+    crc16 = zlib.crc32(unpacked) & 0xFFFF
+    body = rp._S_COMMENT_HDR.pack(len(unpacked), 29, 0x33, crc16) + b"\x00" * 16
+    subblock = (
+        rp._S_BLK_HDR.pack(0, rp._RAR3_OLD_COMMENT, 0, rp._S_BLK_HDR.size + len(body))
+        + body
+    )
+    member = _rar3_file_block(
+        b"m.txt",
+        flags=rp._RAR3_FILE_COMMENT,
+        pack_lo=0,
+        unp_lo=0,
+        trailing_subblock=subblock,
+    )
+    _, end_hdr = _rar3_main_and_end()
+    data = RAR_ID + _rar3_main_with_comment(subblock) + member + end_hdr
+
+    def _fake_decode(**kwargs: object) -> bytes:
+        return unpacked
+
+    monkeypatch.setattr(rar_reader, "decompress_rar3_blob", _fake_decode)
+    for encoding, expected in [
+        ("cp1251", _CP1251_COMMENT),
+        (None, _CP1251_COMMENT.encode("cp1251").decode("windows-1252")),
+    ]:
+        with open_archive(io.BytesIO(data), encoding=encoding) as archive:
+            assert archive.info.comment == expected
+            got = archive.get("m.txt")
+            assert got is not None
+            assert got.comment == expected
+
+
+def test_rar3_and_zip_comments_agree_on_an_undecodable_byte() -> None:
+    """0x98 is undefined in cp1251: both formats keep it as a lone surrogate."""
+    import zipfile
+
+    stored = b"a\x98b"
+    main_hdr, end_hdr = _rar3_main_and_end()
+    archive_cmt = _rar3_file_block(
+        b"CMT", flags=0, pack_lo=len(stored), unp_lo=len(stored), block_type=0x7A
+    )
+    rar_data = RAR_ID + main_hdr + archive_cmt + stored + end_hdr
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as z:
+        z.writestr("a.txt", b"x")
+        z.comment = stored
+
+    with open_archive(io.BytesIO(rar_data), encoding="cp1251") as archive:
+        rar_comment = archive.info.comment
+    with open_archive(io.BytesIO(zip_buf.getvalue()), encoding="cp1251") as archive:
+        zip_comment = archive.info.comment
+    assert rar_comment == zip_comment == "a\udc98b"
 
 
 def test_rar5_comment_service_stays_archive_only() -> None:
@@ -1860,6 +2023,24 @@ def _rar3_compressed_comment_subblock(unpacked_size: int) -> bytes:
     )
 
 
+def _rar3_main_with_comment(subblock: bytes) -> bytes:
+    """A RAR3 MAIN header carrying an old-style COMMENT subblock (RAR 1.5-2.x)."""
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_MAIN_COMMENT,
+        _crc32,
+        rar3_main_crc_end,
+    )
+
+    main_body = b"\0" * 6 + subblock
+    main_without_crc = (
+        struct.pack("<BHH", 0x73, _RAR3_MAIN_COMMENT, 7 + len(main_body)) + main_body
+    )
+    # Old COMMENT subblocks are inside header_size but outside the MAIN CRC.
+    crc_end = rar3_main_crc_end(_RAR3_MAIN_COMMENT) - 2
+    main_crc = _crc32(main_without_crc[:crc_end]) & 0xFFFF
+    return struct.pack("<H", main_crc) + main_without_crc
+
+
 def _rar3_commented_archive(
     count: int, unpacked_size: int, *, archive_comment_size: int | None = None
 ) -> bytes:
@@ -1867,25 +2048,13 @@ def _rar3_commented_archive(
 
     ``archive_comment_size`` also gives the MAIN header a compressed comment.
     """
-    from archivey.internal.backends.rar_parser import (
-        _RAR3_FILE_COMMENT,
-        _RAR3_MAIN_COMMENT,
-        _crc32,
-        rar3_main_crc_end,
-    )
+    from archivey.internal.backends.rar_parser import _RAR3_FILE_COMMENT
 
     main_hdr, end_hdr = _rar3_main_and_end()
     if archive_comment_size is not None:
-        subblock = _rar3_compressed_comment_subblock(archive_comment_size)
-        main_body = b"\0" * 6 + subblock
-        main_without_crc = (
-            struct.pack("<BHH", 0x73, _RAR3_MAIN_COMMENT, 7 + len(main_body))
-            + main_body
+        main_hdr = _rar3_main_with_comment(
+            _rar3_compressed_comment_subblock(archive_comment_size)
         )
-        # Old COMMENT subblocks are inside header_size but outside the MAIN CRC.
-        crc_end = rar3_main_crc_end(_RAR3_MAIN_COMMENT) - 2
-        main_crc = _crc32(main_without_crc[:crc_end]) & 0xFFFF
-        main_hdr = struct.pack("<H", main_crc) + main_without_crc
     members = b"".join(
         _rar3_file_block(
             f"m{i}.txt".encode(),
