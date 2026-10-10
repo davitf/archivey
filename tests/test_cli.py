@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import stat
@@ -23,7 +24,13 @@ from archivey import (
     open_archive,
 )
 from archivey.cli import test_cmd
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import (
+    EXIT_BROKEN_PIPE,
+    EXIT_FAIL,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    EXIT_USAGE,
+)
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
@@ -1315,22 +1322,497 @@ def test_extract_ctrl_c_mid_pass_exits_interrupted(
     assert "interrupted" in capsys.readouterr().err
 
 
-def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
-    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+def test_test_closed_stderr_pipe_mid_pass_exits_broken_pipe(
+    sample_zip: Path,
 ) -> None:
     """A stderr pipe closed during the pass gets the broken-pipe exit, not a usage
-    error about closing the reader while its member pass is active.
+    error about closing the reader while its member pass is active, and not 0: the
+    archive was only partly verified.
     """
-    from archivey.cli import main as main_mod
-
-    # The real one closes sys.stdout / sys.stderr, which pytest's capture owns.
-    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
     err = _StderrFailingAtFirstOk(
         BrokenPipeError(32, "Broken pipe"), every_later_write=True
     )
-    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_BROKEN_PIPE
     # The pipe did close mid-pass: without this, a clean run passes the test too.
     assert err.failed
+
+
+class _ProgressPipeClosed:
+    """A progress bar whose stream lost its reader: its first update raises."""
+
+    calls = 0
+
+    def __call__(self, progress: object) -> None:
+        self.calls += 1
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("verb", ["test", "extract"])
+def test_progress_pipe_closed_mid_pass_exits_141(
+    sample_zip: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    """A broken pipe raised inside the member pass is not a member failure.
+
+    ``test`` and ``extract`` each catch ``OSError`` around the pass to report a
+    failed member; a ``BrokenPipeError`` must pass through that to ``main()``. The
+    report stream here stays open, so a handler that swallowed it would print a
+    failure and exit 1 rather than fail again on the closed pipe.
+    """
+    from archivey.cli import extract_cmd
+
+    module = test_cmd if verb == "test" else extract_cmd
+    progress = _ProgressPipeClosed()
+    monkeypatch.setattr(module, "make_progress_callback", lambda **_: progress)
+    argv = [verb, str(sample_zip)]
+    if verb == "extract":
+        argv += ["-d", str(tmp_path / "out")]
+    err = io.StringIO()
+    assert main(argv, out=io.StringIO(), err=err) == EXIT_BROKEN_PIPE
+    assert progress.calls == 1
+    assert err.getvalue() == ""
+
+
+class _ClosedPipeStdout(io.StringIO):
+    """A stdout whose every write raises ``BrokenPipeError``, as a closed pipe does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes = 0
+
+    def write(self, s: str) -> int:
+        self.writes += 1
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize("verb", ["list", "info"])
+def test_closed_stdout_pipe_exits_broken_pipe(sample_zip: Path, verb: str) -> None:
+    """A verb whose stdout pipe closes exits 141 (128 + SIGPIPE), quietly."""
+    out = _ClosedPipeStdout()
+    err = io.StringIO()
+    assert main([verb, str(sample_zip)], out=out, err=err) == EXIT_BROKEN_PIPE
+    assert out.writes >= 1
+    assert err.getvalue() == ""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX only: test_reader_leaving_mid_output_exits_141 is the Windows check",
+)
+@pytest.mark.parametrize(
+    ("closed", "argv"),
+    [
+        ("stdout", ["list"]),
+        ("stderr", ["test", "-v"]),
+        ("stderr", ["test"]),
+        ("stderr", ["extract", "-v", "-d", "out"]),
+    ],
+)
+@pytest.mark.parametrize("members", [1, 2000])
+def test_closed_pipe_subprocess_exits_141_without_traceback(
+    tmp_path: Path, closed: str, argv: list[str], members: int
+) -> None:
+    """``archivey list x | head`` and ``archivey test x 2>&1 | head`` exit 141.
+
+    The pipe's read end is closed before the process starts, so the first write that
+    reaches it fails, deterministically. With 2000 members that is a write in the
+    middle of the pass; with one member it is the flush as the process ends. The
+    other stream is captured: it must hold no traceback and no "Exception ignored".
+    """
+    import subprocess
+
+    archive = _zip(
+        tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(members)}
+    )
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        if closed == "stdout":
+            streams = {"stdout": write_end, "stderr": subprocess.PIPE}
+        else:
+            streams = {"stdout": subprocess.PIPE, "stderr": write_end}
+        proc = subprocess.run(
+            [sys.executable, "-m", "archivey", *argv, str(archive)],
+            check=False,
+            cwd=tmp_path,
+            **streams,
+        )
+    finally:
+        os.close(write_end)
+    other = proc.stderr if closed == "stdout" else proc.stdout
+    assert proc.returncode == EXIT_BROKEN_PIPE, other
+    _assert_no_pipe_noise(other)
+
+
+def _assert_no_pipe_noise(output: bytes) -> None:
+    assert b"Traceback" not in output
+    assert b"Exception ignored" not in output
+    assert b"Broken pipe" not in output
+
+
+@pytest.mark.parametrize(
+    ("closed", "argv"),
+    [
+        ("stdout", ["list"]),
+        ("stderr", ["test", "-v"]),
+        ("stderr", ["extract", "-v", "-d", "out"]),
+    ],
+)
+def test_reader_leaving_mid_output_exits_141(
+    tmp_path: Path, closed: str, argv: list[str]
+) -> None:
+    """``archivey list x | head -1``: the reader takes one line, then closes its end.
+
+    Nothing is closed before the child starts, so this runs on Windows too, where a
+    write to a pipe whose reader has gone fails with ERROR_NO_DATA and CPython raises
+    ``OSError(EINVAL)`` for it, not ``BrokenPipeError``. The child has more to write
+    than a pipe holds, so it is blocked on a write, not finished, when the reader
+    leaves. On failure the message also shows what a plain write to such a pipe
+    raises on this platform.
+    """
+    import subprocess
+
+    archive = _zip(tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(10000)})
+    other_path = tmp_path / "other.txt"
+    with other_path.open("wb") as other_file:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "archivey", *argv, str(archive)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if closed == "stdout" else other_file,
+            stderr=subprocess.PIPE if closed == "stderr" else other_file,
+            cwd=tmp_path,
+        )
+        reader = proc.stdout if closed == "stdout" else proc.stderr
+        assert reader is not None
+        first = reader.readline()
+        reader.close()
+        returncode = proc.wait(timeout=120)
+    other = other_path.read_bytes()
+    assert first, other
+    if returncode != EXIT_BROKEN_PIPE:
+        pytest.fail(
+            f"exit {returncode}, other stream {other!r}; "
+            f"a plain write to a pipe whose reader left raises {_dead_pipe_probe()}"
+        )
+    _assert_no_pipe_noise(other)
+
+
+_DEAD_PIPE_PROBE = """
+import sys
+try:
+    while True:
+        sys.stdout.write("x" * 4096 + "\\n")
+        sys.stdout.flush()
+except OSError as exc:
+    sys.stderr.write(
+        f"{type(exc).__name__} errno={exc.errno} "
+        f"winerror={getattr(exc, 'winerror', None)} {exc.strerror!r}"
+    )
+"""
+
+
+def _dead_pipe_probe() -> str:
+    """What this platform raises when a pipe's reader leaves mid-write (diagnostic)."""
+    import subprocess
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _DEAD_PIPE_PROBE],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    proc.stdout.readline()
+    proc.stdout.close()
+    _, probe_err = proc.communicate(timeout=60)
+    return probe_err.decode(errors="replace")
+
+
+@pytest.mark.parametrize(
+    ("exc", "on_windows", "off_windows"),
+    [
+        (BrokenPipeError(errno.EPIPE, "Broken pipe"), True, True),
+        # What CPython raises on Windows for ERROR_NO_DATA: EINVAL, no winerror.
+        (OSError(errno.EINVAL, "Invalid argument"), True, False),
+        (OSError(errno.ENOSPC, "No space left on device"), False, False),
+    ],
+)
+def test_is_dead_pipe_reads_windows_einval_as_a_closed_pipe(
+    monkeypatch: pytest.MonkeyPatch, exc: OSError, on_windows: bool, off_windows: bool
+) -> None:
+    from archivey.cli.main import _is_dead_pipe
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _is_dead_pipe(exc) is off_windows
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _is_dead_pipe(exc) is on_windows
+
+
+@pytest.mark.parametrize("winerror", [109, 232])
+def test_is_dead_pipe_matches_windows_pipe_winerrors(
+    monkeypatch: pytest.MonkeyPatch, winerror: int
+) -> None:
+    from archivey.cli.main import _is_dead_pipe
+
+    # On POSIX the constructor ignores a fourth (winerror) argument, so set it.
+    exc = OSError(errno.EIO, "I/O error")
+    exc.winerror = winerror  # type: ignore[attr-defined]
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not _is_dead_pipe(exc)
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _is_dead_pipe(exc)
+
+
+class _EinvalStream(io.StringIO):
+    """A stream that fails as a Windows pipe does once its reader has gone."""
+
+    def __init__(self, *, at_flush: bool) -> None:
+        super().__init__()
+        self.at_flush = at_flush
+
+    def write(self, s: str) -> int:
+        if not self.at_flush:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        return super().write(s)
+
+    def flush(self) -> None:
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+
+@pytest.mark.parametrize("closed", ["out", "err"])
+@pytest.mark.parametrize("at_flush", [False, True])
+def test_windows_einval_on_output_exits_141(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    closed: str,
+    at_flush: bool,
+) -> None:
+    """On Windows, ``EINVAL`` from the CLI's own output stream is a closed pipe."""
+    from archivey.cli import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_silence_dead_streams", lambda: None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    dead = _EinvalStream(at_flush=at_flush)
+    streams = {"out": io.StringIO(), "err": io.StringIO(), closed: dead}
+    # A missing archive writes to err; list of a real one writes to out.
+    archive = tmp_path / ("a.zip" if closed == "out" else "missing.zip")
+    if closed == "out":
+        _zip(archive, {"a.txt": b"a"})
+    assert main(["list", str(archive)], **streams) == EXIT_BROKEN_PIPE
+
+
+def test_einval_on_output_is_not_a_closed_pipe_off_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    out = _EinvalStream(at_flush=False)
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_FAIL
+    assert "Invalid argument" in err.getvalue()
+
+
+class _FullDiskAtFlush(io.StringIO):
+    """A stream redirected to a full disk: writes are buffered, the flush fails."""
+
+    def flush(self) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def test_final_flush_os_error_prints_message_and_exits_1(tmp_path: Path) -> None:
+    """A full disk at the final flush: ``main`` prints one line and returns 1.
+
+    This checks the return value only. The real process, where the exit flush
+    could fail again, is ``test_full_disk_on_stdout_exits_1_with_one_line``.
+    """
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    assert main(["list", str(archive)], out=_FullDiskAtFlush(), err=err) == EXIT_FAIL
+    assert err.getvalue() == "archivey: No space left on device\n"
+
+
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_full_disk_on_stdout_exits_1_with_one_line(tmp_path: Path) -> None:
+    """``archivey list x > /dev/full`` as a real process: one line, exit 1.
+
+    Output still buffered for stdout when ``main`` returns would fail again in the
+    interpreter's exit flush, which prints "Exception ignored" and exits 120, so
+    ``main`` points a stream that cannot flush at the null device first.
+
+    One member and a buffered stdout keep all the output in the buffer until
+    ``main``'s final flush, so the error reaches ``main``'s ``except OSError`` arm.
+    A larger archive or ``PYTHONUNBUFFERED`` fails inside the verb instead, and
+    then nothing is left for the exit flush to fail on.
+    """
+    import subprocess
+
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    with open("/dev/full", "wb") as full:
+        proc = subprocess.run(
+            [sys.executable, "-m", "archivey", "list", str(archive)],
+            stdin=subprocess.DEVNULL,
+            stdout=full,
+            stderr=subprocess.PIPE,
+            cwd=tmp_path,
+            env=env,
+            timeout=120,
+            check=False,
+        )
+    stderr = proc.stderr.decode(errors="replace")
+    assert proc.returncode == EXIT_FAIL, stderr
+    assert "Exception ignored" not in stderr
+    assert stderr.splitlines() == ["archivey: No space left on device"]
+
+
+def test_final_flush_interrupted_exits_130(tmp_path: Path) -> None:
+    """Ctrl-C during the final flush: ``main`` returns 130 and prints "interrupted".
+
+    This checks the return value only. A real stream that was interrupted still
+    works, so the interpreter's exit flush writes what is left and the process
+    exits with that code.
+    """
+
+    class _InterruptedAtFlush(io.StringIO):
+        def flush(self) -> None:
+            raise KeyboardInterrupt
+
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    out = _InterruptedAtFlush()
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_INTERRUPTED
+    assert err.getvalue() == "interrupted\n"
+
+
+def test_lost_log_record_exits_141(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A warning logged to a closed stderr still exits 141.
+
+    logging's StreamHandler swallows the write error itself, so only main()'s final
+    flush sees the closed pipe. The zip's end record declares more entries than its
+    central directory holds, which ``list`` reports as a warning.
+    """
+    import logging
+
+    from archivey.cli import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_silence_dead_streams", lambda: None)
+    # Off, as for a process whose stderr is gone: handleError writes nowhere.
+    monkeypatch.setattr(logging, "raiseExceptions", False)
+    archive = _zip(tmp_path / "a.zip", {f"m{i}.txt": b"x" for i in range(3)})
+    data = bytearray(archive.read_bytes())
+    eocd = data.rindex(b"PK\x05\x06")
+    data[eocd + 8 : eocd + 12] = (7).to_bytes(2, "little") * 2
+    archive.write_bytes(bytes(data))
+    err = _PipeClosedAtFlush()
+    out = io.StringIO()
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_BROKEN_PIPE
+    # The record did reach the stream: the flush, not a print, raised.
+    assert err.getvalue()
+
+
+class _PipeClosedAtFlush(io.StringIO):
+    """A block-buffered pipe whose reader left: writes land, the flush fails."""
+
+    def flush(self) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize("stream_cls", [_ClosedPipeStdout, _PipeClosedAtFlush])
+@pytest.mark.parametrize(
+    ("argv", "closed"),
+    [
+        (["--help"], "stdout"),
+        (["--version"], "stdout"),
+        (["list", "--help"], "stdout"),
+        (["extract", "-o", "x", "a.zip"], "stderr"),
+        (["list"], "stderr"),
+    ],
+)
+def test_help_and_usage_to_closed_pipe_exit_141(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    closed: str,
+    stream_cls: type[io.StringIO],
+) -> None:
+    """argparse writes help and usage to the process streams and drops an OSError
+    from that write. A closed pipe there is still 141, so a usage error whose message
+    was lost is not reported as 2.
+    """
+    dead = stream_cls()
+    monkeypatch.setattr(sys, closed, dead)
+    assert main(argv) == EXIT_BROKEN_PIPE
+
+
+@pytest.mark.parametrize("stream_cls", [_ClosedPipeStdout, _PipeClosedAtFlush])
+def test_no_arguments_help_to_closed_stderr_exits_141(
+    stream_cls: type[io.StringIO],
+) -> None:
+    assert main([], err=stream_cls()) == EXIT_BROKEN_PIPE
+
+
+def test_error_message_to_closed_stderr_exits_141(tmp_path: Path) -> None:
+    """main()'s own error report (here a missing archive) to a closed pipe: 141."""
+    assert (
+        main(["list", str(tmp_path / "missing.zip")], err=_ClosedPipeStdout())
+        == EXIT_BROKEN_PIPE
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX only: the in-process tests above cover the same paths everywhere",
+)
+@pytest.mark.parametrize("unbuffered", ["", "1"])
+@pytest.mark.parametrize(
+    ("closed", "argv", "code_if_open"),
+    [
+        ("stdout", ["--help"], EXIT_OK),
+        ("stderr", ["extract", "-o", "x", "a.zip"], EXIT_USAGE),
+        ("stderr", [], EXIT_USAGE),
+        ("stderr", ["list", "missing.zip"], EXIT_FAIL),
+    ],
+)
+def test_help_and_usage_subprocess_closed_pipe_exits_141(
+    tmp_path: Path,
+    closed: str,
+    argv: list[str],
+    code_if_open: int,
+    unbuffered: str,
+) -> None:
+    """``archivey --help | true`` exits 141, buffered or not (``PYTHONUNBUFFERED``).
+
+    Buffered, the write that fails is the flush; unbuffered, it is argparse's own
+    write. The control run with the pipe open pins that each case does write.
+    """
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    if unbuffered:
+        env["PYTHONUNBUFFERED"] = unbuffered
+    cmd = [sys.executable, "-m", "archivey", *argv]
+    control = subprocess.run(
+        cmd, check=False, cwd=tmp_path, env=env, capture_output=True
+    )
+    assert control.returncode == code_if_open
+    assert getattr(control, closed)
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        streams = (
+            {"stdout": write_end, "stderr": subprocess.PIPE}
+            if closed == "stdout"
+            else {"stdout": subprocess.PIPE, "stderr": write_end}
+        )
+        proc = subprocess.run(cmd, check=False, cwd=tmp_path, env=env, **streams)
+    finally:
+        os.close(write_end)
+    other = proc.stderr if closed == "stdout" else proc.stdout
+    assert proc.returncode == EXIT_BROKEN_PIPE, other
+    _assert_no_pipe_noise(other)
 
 
 def test_test_summary_helper() -> None:

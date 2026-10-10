@@ -377,7 +377,8 @@ member-to-stdout verb does not silently change the meaning of
 ### Requirement: exit codes are argparse-aligned with a policy-refusal code
 
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
-verb/flag or bad arguments — the argparse default). Operational failures
+verb/flag or bad arguments — the argparse default), unless the output or message
+could not be delivered (see the codes `128` and above below). Operational failures
 (unreadable, unsupported, or corrupt archive; read/integrity failure; member
 extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
 an early abort under `--stop-on-error` on a member **failure**, or any
@@ -390,7 +391,12 @@ be used for an aborted STOP-path failure. Exit codes `4` to `127` SHALL remain
 reserved.
 Codes `128` and above follow the shell's `128 + N` convention for signal `N`
 and are not in the reserved range: a command interrupted by Ctrl-C (SIGINT)
-SHALL print `interrupted` and exit `130`.
+SHALL print `interrupted` and exit `130`. A command whose stdout or stderr pipe
+is closed by its reader SHALL stop without a message or traceback and exit `141`
+(128 + SIGPIPE), on every platform, Windows included. That holds for help and
+usage text and for error messages as well as for a verb's output: a usage error
+whose message cannot be delivered SHALL exit `141`, not `2`, because the output
+was lost.
 Documentation SHALL direct callers to treat any nonzero code other than `2` as
 a failure and MUST NOT assume `1` is the only failure code.
 
@@ -411,7 +417,8 @@ a failure and MUST NOT assume `1` is the only failure code.
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
 | Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
-| Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `0`, even when `test` had not finished verifying |
+| Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `141`, so a `test` that had not finished verifying does not report success |
+| `archivey --help \| true`, or a usage error whose stderr pipe is closed | No message or traceback; exit `141` (not `0` or `2`) |
 
 ### Requirement: read-once paths open in streaming mode
 

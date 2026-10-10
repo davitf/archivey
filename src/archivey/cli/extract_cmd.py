@@ -984,6 +984,11 @@ def run_extract(
                     on_progress=on_progress,
                     dry_run=dry_run,
                 )
+            except BrokenPipeError:
+                # The progress bar's stream lost its reader. That must reach
+                # main(), which exits 141 with no message; the handler below would
+                # report it as a failed extraction and exit 1.
+                raise
             except (ArchiveyError, OSError) as exc:
                 # STOP-path member failure / always-stop (bomb guards,
                 # DiagnosticRaisedError): report what was already written, then
