@@ -340,8 +340,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before that it is `EncryptionError`.
 - **A damaged member header lists the members before it.** When a header after the main
   header fails its checksum, the members before it are listed and read normally, and
-  the listing then ends with `CorruptionError`. The members after the damaged header
-  are not listed: its size field cannot be trusted, so archivey does not know where the
+  the listing then ends with `CorruptionError`. No later member of the damaged header's
+  volume is listed: its size field cannot be trusted, so archivey does not know where the
   next header starts. `unrar` searches on and lists them too. In a volume set, a member
   before the damage whose data continues is still followed into the next volume, whose
   members are listed before the error. A damaged main header still raises

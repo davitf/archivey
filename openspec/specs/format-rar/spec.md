@@ -1253,7 +1253,7 @@ record has no check value.
 When a header after the main header fails its CRC, and it is not taken as a damaged end
 block (previous requirement), the archive SHALL open and list the members whose headers
 precede it. The damage SHALL then be reported as `CorruptionError`, not
-`TruncatedError`: as `members_report().error`, and raised by `members()` and
+`TruncatedError` unless the set is also incomplete (below): as `members_report().error`, and raised by `members()` and
 `stream_members()` after the listed members. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes (DR-2: TAR lists the members before a damaged header and then raises).
 In a multi-volume set the message SHALL name the first damaged volume. The walk SHALL

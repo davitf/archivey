@@ -556,8 +556,8 @@ class RarArchive:
     #: too when the cut is before the header that sets it: those values are not data.
     truncated: str | None = None
     #: Set when the walk ended at a member header whose CRC failed, after the main
-    #: header. The members listed are the ones before it. The reader lists them and
-    #: then reports this as ``CorruptionError`` (DR-2), as TAR does for a damaged
+    #: header. The members of that volume listed are the ones before it; no later
+    #: member of that volume is listed. The reader lists them and then reports this as ``CorruptionError`` (DR-2), as TAR does for a damaged
     #: header after its first member. The walk does not go past the damaged header:
     #: its size is not data, so the next header's position is unknown. ``unrar``
     #: searches for it; archivey does not. Not set for a damaged main header, which
@@ -1126,7 +1126,10 @@ class _RarHeaderCrcError(CorruptionError):
 
 def _damaged_header(exc: CorruptionError, start: int) -> str:
     """The ``RarArchive.damaged`` text for a member header that failed its CRC."""
-    return f"{exc}; the header starts at byte {start}, and no member after it is listed"
+    return (
+        f"{exc}; the header starts at byte {start}, "
+        "and no later member of that volume is listed"
+    )
 
 
 class _RarEndBlockCrcError(CorruptionError):

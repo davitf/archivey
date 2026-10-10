@@ -73,19 +73,25 @@ def _vint(buf: bytes, pos: int) -> tuple[int, int]:
 
 
 def _rar5_blocks(data: bytes) -> list[tuple[int, int, int, int]]:
-    """``(block_pos, block_type, header_end, data_size)`` for every RAR5 block."""
+    """``(block_pos, block_type, header_end, data_size)`` for every RAR5 block.
+
+    Volume padding after the end block (``-v`` sets) walks as zero-typed blocks, and
+    a tail too short to hold a header ends the walk."""
     pos = 8
     blocks = []
     while pos < len(data):
-        header_size, start = _vint(data, pos + 4)
-        p = start
-        block_type, p = _vint(data, p)
-        flags, p = _vint(data, p)
-        data_size = 0
-        if flags & 0x01:
-            _, p = _vint(data, p)
-        if flags & 0x02:
-            data_size, p = _vint(data, p)
+        try:
+            header_size, start = _vint(data, pos + 4)
+            p = start
+            block_type, p = _vint(data, p)
+            flags, p = _vint(data, p)
+            data_size = 0
+            if flags & 0x01:
+                _, p = _vint(data, p)
+            if flags & 0x02:
+                data_size, p = _vint(data, p)
+        except IndexError:
+            break
         blocks.append((pos, block_type, start + header_size, data_size))
         pos = start + header_size + data_size
     return blocks
@@ -658,13 +664,16 @@ _RAR5_ENDARC = 5
 
 
 def _endarc_block(data: bytes, version: int) -> tuple[int, int]:
-    """``(block_pos, header_end)`` of the end-of-archive block, the writer's last."""
+    """``(block_pos, header_end)`` of the end-of-archive block: the last block of
+    that type. A RAR5 ``-v`` volume can be padded after it, and the padding walks
+    as further blocks, so the last block is not always the end block."""
     if version == 4:
         block_pos, block_type, header_end, _size = _rar4_blocks(data)[-1]
         assert block_type == _RAR4_ENDARC  # precondition
     else:
-        block_pos, block_type, header_end, _size = _rar5_blocks(data)[-1]
-        assert block_type == _RAR5_ENDARC  # precondition
+        ends = [b for b in _rar5_blocks(data) if b[1] == _RAR5_ENDARC]
+        assert ends  # precondition
+        block_pos, _type, header_end, _size = ends[-1]
     return block_pos, header_end
 
 
@@ -891,10 +900,12 @@ def test_rar_volume_set_damaged_header_follows_a_split_member(
     middle volume (DR-2): the next volume's first header is at its own offset 0,
     so the damaged header's size is not needed to find it. The whole set lists and
     reads, then CorruptionError names volume 1. Fails if the walk drops the
-    next-volume signal of a volume that ended at a damaged header."""
+    next-volume signal of a volume that ended at a damaged header. The member is
+    stored, so the read joins the volumes natively and needs no unrar."""
     for name in names:
         (tmp_path / name).write_bytes((_RAR_FIXTURES / name).read_bytes())
     with open_archive(tmp_path / names[0]) as reader:
+        listed = [m.name for m in reader.members()]
         expected = {m.name: reader.read(m) for m in reader.members() if m.is_file}
     first = tmp_path / names[0]
     first.write_bytes(_flip_endarc_type(first.read_bytes(), version))
@@ -909,10 +920,46 @@ def test_rar_volume_set_damaged_header_follows_a_split_member(
     (tmp_path / names[1]).unlink()
     with open_archive(first) as reader:
         report = reader.members_report()
-    assert [m.name for m in report] == list(expected)
+    assert [m.name for m in report] == listed
     assert isinstance(report.error, TruncatedError)
     assert "volume 2 is missing" in str(report.error)
     assert "header CRC mismatch" in str(report.error)
+
+
+def test_rar_volume_set_damaged_header_lists_the_next_volumes_members(
+    tmp_path: Path,
+) -> None:
+    """Volume 1 of ``tinyvol_cut`` holds ``a.txt`` whole and the start of ``b.txt``,
+    so ``c.txt``'s header is in volume 2. With volume 1's last header damaged (and
+    not recognised as an end block: the volume is padded after it), the walk still
+    follows ``b.txt`` into volume 2 and lists that volume's own members, in order,
+    before the error. Only part1 and part2 are present, so ``c.txt`` runs into the
+    absent part3 and the error is the incomplete-set ``TruncatedError``, naming
+    both faults. Every member is stored, so the reads need no unrar."""
+    names = ("tinyvol_cut.part1.rar", "tinyvol_cut.part2.rar")
+    for name in names:
+        (tmp_path / name).write_bytes((_RAR_FIXTURES / name).read_bytes())
+    first = tmp_path / names[0]
+    data = first.read_bytes()
+    block_pos, header_end = _endarc_block(data, 5)
+    assert header_end < len(data)  # precondition: padding follows the end block
+    with open_archive(first) as reader:
+        # c.txt continues into the absent part3 even before the damage.
+        expected = {m.name: reader.read(m) for m in list(reader.members_report())[:2]}
+    first.write_bytes(_flip_endarc_type(data, 5))
+    with open_archive(first) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report] == ["a.txt", "b.txt", "c.txt"]
+        for member in report:
+            if member.name != "c.txt":
+                assert reader.read(member) == expected[member.name]
+    assert isinstance(report.error, TruncatedError)
+    message = str(report.error)
+    assert "volume 3 is missing" in message
+    assert "header CRC mismatch" in message
+    assert f"the header starts at byte {block_pos}" in message
+    assert "no later member of that volume is listed" in message
+    assert "(volume 1 of the set" in message
 
 
 def _rar3_hp_damaged_endarc(data: bytes) -> bytes:
