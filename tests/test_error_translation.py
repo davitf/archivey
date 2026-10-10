@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import re
 import subprocess
 import tarfile
 import zipfile
@@ -169,6 +170,32 @@ def test_archive_stream_translates_closed_source_before_backend_translator() -> 
         stream.read()
 
 
+def test_reader_boundary_translates_closed_source_before_backend_translator() -> None:
+    """The reader-side boundary checks for a closed source before the translator too.
+
+    The member open fails outside any member stream, and the translator maps every
+    ``ValueError`` to corruption. The closed source must still be a usage error that
+    names the member.
+    """
+
+    class _ClosedOnOpen(_TranslatingReader):
+        def _open_member(self, member: ArchiveMember) -> BinaryIO:
+            with self._translated_errors(member.name):
+                raise ValueError("I/O operation on closed file.")
+
+        def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
+            if isinstance(exc, ValueError):
+                return CorruptionError(f"mislabeled: {exc}")
+            return None
+
+    reader = _ClosedOnOpen(ArchiveFormat.ZIP, False, "archive.zip")
+    with pytest.raises(
+        ArchiveyUsageError,
+        match=r"^Cannot read member 'member\.bin': the archive source has been closed\.$",
+    ):
+        reader.read("member.bin")
+
+
 # ---------------------------------------------------------------------------
 # Every format: a caller-closed source is a usage error, also when a member opens
 # ---------------------------------------------------------------------------
@@ -228,6 +255,10 @@ def _solid_rar(_tmp_path: Path) -> bytes:
     return (_RAR_FIXTURES / "basic_solid__.rar").read_bytes()
 
 
+def _nonsolid_rar(_tmp_path: Path) -> bytes:
+    return (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes()
+
+
 _CLOSED_SOURCE_BUILDERS = [
     pytest.param(_zip(zipfile.ZIP_STORED), id="zip-stored"),
     pytest.param(_zip(zipfile.ZIP_DEFLATED), id="zip-deflated"),
@@ -237,6 +268,7 @@ _CLOSED_SOURCE_BUILDERS = [
     pytest.param(_sevenzip, id="7z", marks=requires_binary("7z")),
     pytest.param(_iso, id="iso", marks=requires("pycdlib")),
     pytest.param(_solid_rar, id="rar-solid", marks=requires_binary("unrar")),
+    pytest.param(_nonsolid_rar, id="rar-nonsolid", marks=requires_binary("unrar")),
 ]
 
 
@@ -256,10 +288,33 @@ def test_source_closed_before_a_member_opens_is_a_usage_error(
     with open_archive(source) as reader:
         member = next(m for m in reader.members() if m.is_file)
         source.close()
-        with pytest.raises(ArchiveyUsageError, match="source has been closed"):
+        expected = (
+            rf"^Cannot read member '{re.escape(member.name)}': "
+            r"the archive source has been closed\.$"
+        )
+        with pytest.raises(ArchiveyUsageError, match=expected):
             if access == "open":
                 reader.read(member)
             else:
                 for _member, stream in reader.stream_members():
                     if stream is not None:
                         stream.read()
+
+
+def test_source_closed_before_listing_is_a_usage_error_naming_no_member(
+    tmp_path: Path,
+) -> None:
+    """The caller closes the source before a TAR is listed; no member is involved.
+
+    TAR lists lazily, so listing reads the closed source. The listing runs through the
+    same reader boundary as a member open, with no member name, and the message must
+    not name or imply one.
+    """
+    source = io.BytesIO(_tar("w")(tmp_path))
+    with open_archive(source) as reader:
+        source.close()
+        with pytest.raises(
+            ArchiveyUsageError,
+            match=r"^Cannot read the archive: its source has been closed\.$",
+        ):
+            list(reader.members())
