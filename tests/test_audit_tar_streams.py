@@ -443,6 +443,16 @@ def test_extended_header_chain_does_not_raise_recursion_error(
 # ---------------------------------------------------------------------------
 
 
+def _one_member_tar(payload: bytes) -> bytes:
+    """An uncompressed tar holding one member ``a`` with ``payload`` as its body."""
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as t:
+        info = tarfile.TarInfo("a")
+        info.size = len(payload)
+        t.addfile(info, io.BytesIO(payload))
+    return tar.getvalue()
+
+
 def _stored_codec(codec: str, raw: bytes) -> bytes:
     """``raw`` compressed so that incompressible bytes are stored verbatim, with the
     codec's whole-stream checksum on."""
@@ -490,12 +500,7 @@ def test_compressed_tar_stream_checksum_after_trailer_is_not_dropped(
     import random
 
     payload = random.Random(1).randbytes(20_000)
-    tar = io.BytesIO()
-    with tarfile.open(fileobj=tar, mode="w") as t:
-        info = tarfile.TarInfo("a")
-        info.size = len(payload)
-        t.addfile(info, io.BytesIO(payload))
-    clean = _stored_codec(codec, tar.getvalue() + b"\0" * padding)
+    clean = _stored_codec(codec, _one_member_tar(payload) + b"\0" * padding)
     compressed = bytearray(clean)
     at = compressed.find(payload[1000:1100])
     assert at >= 0, "fixture premise: the member body is stored verbatim"
@@ -555,12 +560,9 @@ def test_untyped_block_check_after_trailer_is_reported(
     import random
 
     payload = random.Random(1).randbytes(200_000)
-    tar = io.BytesIO()
-    with tarfile.open(fileobj=tar, mode="w") as t:
-        info = tarfile.TarInfo("a")
-        info.size = len(payload)
-        t.addfile(info, io.BytesIO(payload))
-    clean, damaged = _bad_last_block_check(codec, tar.getvalue() + b"\0" * 64 * 1024)
+    clean, damaged = _bad_last_block_check(
+        codec, _one_member_tar(payload) + b"\0" * 64 * 1024
+    )
     fmt = ArchiveFormat.TAR_BZ2 if codec == "bz2" else ArchiveFormat.TAR_XZ
 
     def _drained(data: bytes) -> dict[DiagnosticCode, int]:
@@ -591,12 +593,7 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
     outcomes: set[str] = set()
     for size in range(1000, 25_000, 1000):
         payload = random.Random(7).randbytes(size)
-        tar = io.BytesIO()
-        with tarfile.open(fileobj=tar, mode="w") as t:
-            info = tarfile.TarInfo("a")
-            info.size = size
-            t.addfile(info, io.BytesIO(payload))
-        _clean, damaged = _bad_last_block_check(codec, tar.getvalue())
+        _clean, damaged = _bad_last_block_check(codec, _one_member_tar(payload))
         try:
             with open_archive(
                 io.BytesIO(damaged), format=fmt, streaming=streaming
@@ -640,7 +637,8 @@ def _checksumless_codec(codec: str, raw: bytes) -> bytes:
 def test_checksumless_stream_past_scan_bound_is_not_unverifiable(
     codec: str, streaming: bool
 ) -> None:
-    """DR-1: Brotli, ``.Z`` and LZMA Alone carry no checksum, so no check is skipped.
+    """format-tar: the trailing-scan bound reports only for a codec that can carry a
+    whole-stream checksum (DR-1). Brotli, ``.Z`` and LZMA Alone carry none.
 
     The same 2 MiB of padding that makes a ``.tar.gz`` report DIGEST_UNVERIFIABLE (the
     scan stops before the stream's checksum) reports nothing here: the docs say once
@@ -648,12 +646,7 @@ def test_checksumless_stream_past_scan_bound_is_not_unverifiable(
     nothing.
     """
     payload = random.Random(1).randbytes(20_000)
-    tar = io.BytesIO()
-    with tarfile.open(fileobj=tar, mode="w") as t:
-        info = tarfile.TarInfo("a")
-        info.size = len(payload)
-        t.addfile(info, io.BytesIO(payload))
-    data = _checksumless_codec(codec, tar.getvalue() + b"\0" * 2 * 2**20)
+    data = _checksumless_codec(codec, _one_member_tar(payload) + b"\0" * 2 * 2**20)
     fmt = ArchiveFormat(ContainerFormat.TAR, StreamFormat(codec))
     with open_archive(io.BytesIO(data), format=fmt, streaming=streaming) as ar:
         read = [

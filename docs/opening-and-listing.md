@@ -84,8 +84,9 @@ out-of-order read on a solid archive cannot slip in and decode a block again. An
 member stream can seek, so every member you read to its end gets its stored checksum
 checked, where the format stores one (ZIP, 7z, RAR). A TAR member has no checksum of its
 own. A compressed TAR, or a single-file stream such as a `.gz` or `.xz`, has its codec's
-trailer checked when the pass reaches the end. Brotli, `.Z` and `.lzma` carry no check, so
-nothing is checked for them ([details](formats.md)).
+checksum checked when the pass reaches the end, where the codec carries one. For `.lz4`
+and `.zst` the checksum is the writer's choice, and legacy LZ4, Brotli, `.Z` and `.lzma`
+carry none ([details](formats.md#single-file-compressors)).
 [Details](access-and-cost.md#streaming-mode-is-one-pass)
 
 Its other limitations:
