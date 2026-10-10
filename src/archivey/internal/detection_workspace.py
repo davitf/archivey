@@ -147,17 +147,6 @@ class PrefixWorkspace:
         return tuple(self._receipt.skips)
 
     @property
-    def buffer(self) -> memoryview:
-        """Live view of the prefix buffer — no copy.
-
-        The view is valid only until the next ``ensure`` / ``peek_range`` that grows the
-        buffer: a ``memoryview`` over a ``bytearray`` freezes resize, and holding it
-        across growth raises ``BufferError``. Callers that need ownership (or that will
-        keep the view past the next growth) must slice or ``.tobytes()`` first.
-        """
-        return memoryview(self._buf)
-
-    @property
     def buffered_length(self) -> int:
         return len(self._buf)
 
@@ -180,7 +169,7 @@ class PrefixWorkspace:
         """Grow the prefix buffer to at least ``end`` bytes (or EOF).
 
         Does not materialise a ``bytes`` copy of the whole buffer — callers slice
-        ``self._buf`` (or :attr:`buffer`) for the span they need.
+        ``self._buf`` for the span they need.
         """
         if end < 0:
             raise ValueError("end must be non-negative")
@@ -406,7 +395,3 @@ class PrefixWorkspace:
         if self._raw_forward is not None:
             return read_exact(self._raw_forward, nbytes)
         return b""
-
-
-# candidate_origin_for_hit lives in archivey.internal.sfx (F13) — backends import sfx,
-# not this module.

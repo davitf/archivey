@@ -274,15 +274,16 @@ def _match_magic_behind_prefix(
 
 
 def _match_extension(
-    name: str | None, extension_map: dict[str, ArchiveFormat]
+    name: str | None,
+    extensions_longest_first: tuple[tuple[str, str, ArchiveFormat], ...],
 ) -> tuple[ArchiveFormat, str] | None:
     if name is None:
         return None
     lowered = name.lower()
     # Longest extension wins so ".tar.gz" beats ".gz".
-    for ext in sorted(extension_map, key=len, reverse=True):
-        if lowered.endswith(ext.lower()):
-            return extension_map[ext], ext
+    for ext_lower, ext, fmt in extensions_longest_first:
+        if lowered.endswith(ext_lower):
+            return fmt, ext
     return None
 
 
@@ -827,9 +828,8 @@ def _detect_format_body(
     registry = get_registry()
     magic_entries = registry.magic_entries()
     trailers = registry.trailer_entries()
-    extension_map = registry.extension_map()
     name = source_name(source)
-    ext_match = _match_extension(name, extension_map)
+    ext_match = _match_extension(name, registry.extensions_longest_first())
     ext_fmt = ext_match[0] if ext_match is not None else None
 
     with PrefixWorkspace(source, budget, receipt) as workspace:

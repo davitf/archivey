@@ -40,7 +40,6 @@ from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
     ScanNeedle,
     candidate_origin_for_hit,
-    find_magic_in_prefix,
     iter_magic_in_prefix,
 )
 from archivey.internal.source import ArchiveSource
@@ -318,14 +317,19 @@ def test_negative_candidate_origin_is_discarded() -> None:
     def peek_more_decoy(n: int) -> bytes:
         return (b"\x00" * 100 + b"ustar" + b"\x00" * 400)[:n]
 
-    hit = find_magic_in_prefix(peek_more_decoy, (ScanNeedle(b"ustar", 257),), limit=512)
-    assert hit is None
+    hits = iter_magic_in_prefix(
+        peek_more_decoy, (ScanNeedle(b"ustar", 257),), limit=512
+    )
+    assert next(hits, None) is None
 
     # ustar at absolute 257 → candidate origin 0.
     def peek_more_tar(n: int) -> bytes:
         return (b"\x00" * 257 + b"ustar" + b"\x00" * 400)[:n]
 
-    hit = find_magic_in_prefix(peek_more_tar, (ScanNeedle(b"ustar", 257),), limit=1024)
+    hit = next(
+        iter_magic_in_prefix(peek_more_tar, (ScanNeedle(b"ustar", 257),), limit=1024),
+        None,
+    )
     assert hit is not None
     assert hit.candidate_origin == 0
     assert hit.needle == b"ustar"
