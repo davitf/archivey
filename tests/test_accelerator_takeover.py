@@ -1,4 +1,5 @@
-"""A cut bzip2 or zlib stream reads the same with the accelerator on as with it off.
+"""A cut bzip2, zlib, gzip or raw DEFLATE stream reads and seeks the same with the
+accelerator on as with it off.
 
 Maintainer ruling: a truncated stream read under ``AUTO`` or ``ON`` raises the error the
 standard library raises with the accelerator ``OFF``, after the same bytes. rapidgzip's
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import bz2
 import functools
+import gzip
 import io
 import random
 import zlib
@@ -27,7 +29,7 @@ import pytest
 from archivey.config import AcceleratorMode
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import StreamConfig
-from archivey.internal.streams.codecs import Codec, open_codec_stream
+from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from tests.conftest import requires
 
@@ -271,3 +273,61 @@ def test_a_read_after_a_seek_past_the_cut_raises_as_with_the_accelerator_off() -
             assert s.seek(target) == target
             with pytest.raises(TruncatedError):
                 s.read(100)
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    c = zlib.compressobj(6, zlib.DEFLATED, -15)
+    return c.compress(data) + c.flush()
+
+
+# A stream cut where rapidgzip delivers nothing ("early": a compressible payload) or
+# part of the data ("partial": random bytes, in stored blocks). A whole and an empty
+# stream check that a seek to the end of a valid stream still works.
+_PATTERN = bytes(range(256)) * 2000
+_NOISE = random.Random(11).randbytes(1 << 20)
+_SEEK_END_CASES = {
+    "gzip-cut-early": (Codec.GZIP, gzip.compress(_PATTERN, mtime=0)[:2000], None),
+    "gzip-cut-partial": (Codec.GZIP, gzip.compress(_NOISE, 1, mtime=0)[:600_000], None),
+    "gzip-whole": (Codec.GZIP, gzip.compress(_PATTERN, mtime=0), None),
+    "gzip-empty": (Codec.GZIP, gzip.compress(b"", mtime=0), None),
+    "deflate-cut-early": (Codec.DEFLATE, _raw_deflate(_PATTERN)[:1000], None),
+    "deflate-cut-early-sized": (
+        Codec.DEFLATE,
+        _raw_deflate(_PATTERN)[:1000],
+        len(_PATTERN),
+    ),
+    "deflate-cut-partial": (Codec.DEFLATE, _raw_deflate(_NOISE)[:600_000], None),
+    "deflate-whole": (Codec.DEFLATE, _raw_deflate(_PATTERN), None),
+    "deflate-empty": (Codec.DEFLATE, _raw_deflate(b""), None),
+}
+
+
+@pytest.mark.parametrize(
+    ("target", "whence"),
+    [(0, io.SEEK_END), (-10, io.SEEK_END), (4_000_000, io.SEEK_SET)],
+)
+@pytest.mark.parametrize("case", sorted(_SEEK_END_CASES))
+def test_a_seek_to_the_end_of_a_gzip_or_deflate_stream_gives_what_it_does_off(
+    case: str, target: int, whence: int
+) -> None:
+    """rapidgzip ends a cut gzip or raw DEFLATE stream softly, and clamps a seek to
+    the end of what it decoded. A seek that reaches that end must run the end checks
+    that a read there runs: it raises where the accelerator off raises, and does not
+    return a short size. A read after a seek past the end must not return bytes from
+    offset 0."""
+    codec, blob, unpack_size = _SEEK_END_CASES[case]
+    params = CodecParams(unpack_size=unpack_size)
+    outcomes = []
+    for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
+        config = StreamConfig(seekable=True, use_rapidgzip=mode)
+        outcome: list[object] = []
+        try:
+            with open_codec_stream(
+                codec, io.BytesIO(blob), config=config, params=params
+            ) as s:
+                outcome.append(s.seek(target, whence))
+                outcome += [s.read(16), s.tell()]
+        except (CorruptionError, TruncatedError) as exc:
+            outcome.append(type(exc))
+        outcomes.append(outcome)
+    assert outcomes[1] == outcomes[0]

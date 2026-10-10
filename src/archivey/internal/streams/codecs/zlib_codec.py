@@ -28,6 +28,7 @@ from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamily
 from archivey.internal.streams.codecs.deflate_resume import stream_end
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _OutputChecksum,
+    _seek_reached_end,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
@@ -387,7 +388,11 @@ class _DeflateEndCheckStream(DelegatingStream):
     The check runs once, on the read that meets the end, as in
     :class:`_GzipTruncationCheckStream` (ADR 0014: never from ``close()``); a
     completing ``read()`` reaches the end itself so that it raises. A seek does not
-    disarm it. After a takeover the standard library owns the end. With a declared
+    disarm it, and a seek that stops at the end of rapidgzip's output (a seek to the
+    end, or one rapidgzip clamped) runs it there, as a read does; when the standard
+    library takes over, it seeks to the caller's target, and raises or holds that
+    position, as with the accelerator off. After a takeover the standard library owns
+    the end. With a declared
     size, the ``VerifyingStream`` probe past that size is the read that meets the end,
     and a failed verifying event withholds its chunk (as for zlib, see
     :class:`_ZlibAdlerCheckStream`): the error type is the same as with the
@@ -415,25 +420,35 @@ class _DeflateEndCheckStream(DelegatingStream):
             # A completing read: reach the end now, so the check raises from this read.
             while more := self._inner.read(1 << 20):
                 data += more
-        return data + self._at_end(size)
+        if self._hands_over_at_end():
+            data += self._inner.read(size)
+        return data
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        result = super().seek(offset, whence)
+        if _seek_reached_end(offset, whence, result) and self._hands_over_at_end():
+            # The standard library decodes now: it seeks to the caller's place, or
+            # raises as it does with the accelerator off.
+            return super().seek(offset, whence)
+        return result
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
 
-    def _at_end(self, size: int) -> bytes:
-        """Check the end of rapidgzip's output; return what a read of ``size`` there
-        gets: nothing, or after a handover, the standard library's read."""
+    def _hands_over_at_end(self) -> bool:
+        """Check the end of rapidgzip's output, once; return whether the standard
+        library took over there, so that the caller's read or seek goes to it."""
         if self._checked or self._takeover.switched:
-            return b""
+            return False
         self._checked = True
         end = self._takeover.position
         resume_point = getattr(self._takeover.accelerator, "resume_point", None)
         point = resume_point(end) if resume_point is not None else None
         with self._views.view() as f:
             if stream_end(f, point, end) is not None:
-                return b""
+                return False
         self._takeover.switch_to_stdlib()
-        return self._inner.read(size)
+        return True
 
 
 class _ZlibErrorCodec(_DeflateFamilyCodec):

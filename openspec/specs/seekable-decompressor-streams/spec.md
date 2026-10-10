@@ -114,7 +114,11 @@ its last block, with no error. Where rapidgzip's output of a raw DEFLATE stream 
 system SHALL check with zlib that the stream reaches a final block, decoding from the last
 DEFLATE block boundary the stream keeps at or before that end (or from the start where it
 keeps none). Where it does not, the read SHALL be handed to the stdlib backend, which gives
-the verdict, also when a declared size equals the output before the cut. Once the stdlib
+the verdict, also when a declared size equals the output before the cut. A seek that stops at
+the end of rapidgzip's output (a seek to the end, or one rapidgzip clamped short of its
+target) SHALL run this check there as a read does; after a handover the stdlib backend SHALL
+seek to the caller's target, so the seek raises or returns what it does with the accelerator
+off. Once the stdlib
 backend has taken over from rapidgzip, its errors SHALL leave as the codec's typed errors, so
 the over-run probe of a declared size never takes a data error for the end of the data.
 
@@ -181,7 +185,12 @@ for ten or more. Where rapidgzip reaches EOF having delivered zero bytes, the sy
 rewind the seekable source and re-decode through the stdlib gzip engine so recoverable
 prefixes stream and truncation still raises from a read (never `close()`). A seek SHALL NOT
 turn the backstop off: the length compared is that of rapidgzip's whole output, which the
-read that meets its end gives whatever seeks came before. On a mismatch the read SHALL be
+read that meets its end gives whatever seeks came before. A seek that stops at the end of
+rapidgzip's output (a seek to the end, or one rapidgzip clamped short of its target) SHALL run
+the backstop there, the empty-EOF arm included, as a read does; after a handover the stdlib
+engine SHALL seek to the caller's target. So `seek(0, SEEK_END)` on a cut file raises as with
+the accelerator off and never returns a short size, and a read after a seek past the end never
+returns bytes from offset 0. On a mismatch the read SHALL be
 handed to the standard library decoder, whose verdict it then gives (`TruncatedError` for a
 cut, `CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except
 where a further gzip member follows the first: then the trailer records only the last
@@ -264,6 +273,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Corrupt gzip/bzip2/deflate/zlib through rapidgzip | `CorruptionError`; raw accelerator exception never escapes |
 | Truncated gzip through rapidgzip from a seekable **path** | `TruncatedError` via ISIZE backstop / empty→stdlib, or `CorruptionError` from accelerator; never silent short read |
 | Truncated gzip through rapidgzip from a seekable **non-path** `BinaryIO` | Same as the path case — backstop active; caller source left open afterward |
+| Cut gzip or raw DEFLATE through rapidgzip: `seek(0, SEEK_END)`, or a seek past the end then a read | What the accelerator off gives (`TruncatedError`); never a short size, never bytes from offset 0 at the caller's position |
 | Truncated gzip/zlib/deflate that aborts rapidgzip, any source, any access pattern | The process survives; the bytes and the error of the standard library decoder (`TruncatedError`) |
 | A fault signal ends the child on a valid stream | The standard library reads on from the delivered position; the caller loses nothing |
 | A resumed standard-library decode reaches the end of a DEFLATE stream (a later member, bytes after the data) | It starts over from the start of the stream; the stream's checksum is checked |

@@ -227,7 +227,13 @@ A seek does not turn the check off. The read that meets the end of `rapidgzip`'s
 is at that output's length whatever seeks came before, so the check compares the position
 of that read, not a count of the bytes delivered (`rapidgzip` clamps a seek past the end
 to the end, and `_StdlibSeekContract` keeps the caller's position). A seek
-back to the start, or a forward seek that skips data, leaves the check armed. Once the
+back to the start, or a forward seek that skips data, leaves the check armed. A seek that
+stops at the end of `rapidgzip`'s output (a seek to the end, or one `rapidgzip` clamped)
+runs the check there, as a read at the end does, so `seek(0, SEEK_END)` on a cut file
+raises as it does with the accelerator off rather than return `rapidgzip`'s short length.
+When the standard library engine takes over there, it seeks to the caller's target, so a
+read after a seek past the end never returns bytes from another offset. The raw DEFLATE
+end check (§2.3, *Other `rapidgzip` workarounds*) and bzip2 do the same. Once the
 standard library engine has raised, it raises again at every later end of data. A container member does
 not need it: the container declared the size, and `VerifyingStream` checks length and
 CRC. A bare zlib or raw DEFLATE stream has neither, which is why `AUTO` never gives one to
@@ -325,7 +331,9 @@ padding bits. `BZh` and a digit is a possible start, so a real raw DEFLATE strea
 has it decodes without the accelerator. `rapidgzip` also ends a raw DEFLATE stream cut
 before any output (`03`, a final block with no end code) softly, as if it were empty, so
 a raw DEFLATE stream that ends before its first byte goes to the standard library too,
-which reads a valid empty stream as empty and raises on a cut one. Once the standard
+which reads a valid empty stream as empty and raises on a cut one. Where `rapidgzip`'s
+output of a raw DEFLATE stream ends, zlib checks that the stream reaches a final block
+(`_DeflateEndCheckStream`), on the read or the seek that reaches that end. Once the standard
 library has taken over, its errors leave as archivey's typed errors, so the over-run
 probe of a declared size does not take a raw `zlib.error` for the end of the data. Before
 that, a ZIP member declared empty with a body that is not DEFLATE read as empty. The
@@ -513,6 +521,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The caller's source exception reaches the caller | `::test_an_exception_from_the_callers_source_reaches_the_caller_unchanged` |
 | The ISIZE backstop and the empty-end fallback | `tests/test_accelerator_corruption.py::test_rapidgzip_truncation_is_reported`, `::test_rapidgzip_silent_empty_fallback_recovers_prefix`, `::test_rapidgzip_isize_soft_short_raises_on_readall`, `::test_rapidgzip_multimember_not_flagged`, `::test_gzip_backstop_keeps_raising_after_its_own_truncation`, `::test_gzip_cut_member_before_a_complete_one_raises`, `::test_gzip_cut_member_with_a_forged_isize_raises` |
 | A cut zlib stream delivers the bytes and error of `OFF` under `ON` and `AUTO`, cut in the first block, a later block or the trailer; the declared-size exception | `tests/test_accelerator_takeover.py::test_a_cut_zlib_reads_as_it_does_with_the_accelerator_off` |
+| A seek to or past the end of a cut gzip or raw DEFLATE stream gives what `OFF` gives under `ON`, whether `rapidgzip` delivered nothing or part of the data | `tests/test_accelerator_takeover.py::test_a_seek_to_the_end_of_a_gzip_or_deflate_stream_gives_what_it_does_off` |
 | Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data | `tests/test_rapidgzip_end_checks.py` |
 | A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source whose header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary), a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` | `tests/test_rapidgzip_deflate_zlib.py::test_a_stream_of_another_format_raises_as_with_the_accelerator_off`, `::test_raw_deflate_cut_before_any_output_raises_truncated`, `::test_a_declared_empty_stream_that_does_not_decode_raises` |
 | A cut bare zlib stream under `ON` without a size raises | `tests/test_rapidgzip_deflate_zlib.py::test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size` |
