@@ -242,6 +242,15 @@ you add the label again, and equally before you stop after an approving verdict,
 `review_prep.py --base <the sha the round reviewed>`, re-read that fix-diff the way a
 reviewer would, and update the PR body in the same push so it no longer describes round 1.
 
+### Before the `review` label: write down what the round taught
+
+Run each 📚 `[learning]` note and each disproven finding whose answer took real
+tracing through the lessons test in `CONTRIBUTING.md` §"Where does a new doc go?".
+A lesson that passes goes into its home in this PR, before you run `review_prep.py`
+above, so its sweep covers the new text. Record the outcome in the round's reply (§7),
+one line per note or finding: `Lesson: <path §section>` or `Lesson: none (<reason>)`.
+A 📚 note that stays only in a PR comment is not read again.
+
 ---
 
 ## 6. Surface disagreements and decisions — one at a time
