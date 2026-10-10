@@ -346,7 +346,7 @@ Numbers are the rows of the workaround inventory.
 | 15 | Re-parsing a PAX `mtime` tarfile turned into 0 | Deleted: PAX times are parsed once, here |
 | 16 | Masking a base-256 mode | Kept (one line) |
 | 17 | `ensure_bufferedio` for short reads | Kept, for speed, not as a workaround |
-| 18 | `is_seekable` catching tarfile's `AttributeError` | Deleted from `binaryio.py` once nothing passes an `ExFileObject` |
+| 18 | `is_seekable` catching tarfile's `AttributeError` | Kept: a caller can still pass a `tarfile` member stream from `r|` mode as a source |
 | 19 | Member `seek` clamped to the size | Fixed: `SlicingStream` seeks |
 | 20 | `TarFile.members` duplicate list | Fixed: the walker keeps nothing behind the listing |
 | PR 704 | Copied `_proc_sparse` / `_proc_gnusparse_10`, SHA-256 pins of stdlib source, `_GlobalPaxRecords` | Deleted; the read-only `extra["tar.pax_headers"]` value stays |
@@ -366,6 +366,10 @@ All of these are fixes; none changes a public name or signature.
 | A v7 or old GNU header with bytes at 345 to 500 no longer joins them to the name as a `prefix`: a GNU incremental archive (`tar -G`) lists `d/f.txt`, not `15262452373/d/f.txt` | DR-6: GNU tar reads `prefix` only in ustar headers |
 | The stream ending right after an extended header (PAX `x` or `g`, GNU `L` or `K`) raises `TruncatedError`; today it is `CorruptionError` ("empty header", from tarfile parsing the next header inside the extended one) | DR-5: the same error every other mid-walk stream end gives |
 | An `x` or `L` header right before the end-of-archive marker ends the listing cleanly after the members before it, with no diagnostic; today it is `CorruptionError` | DR-6: GNU tar 1.35 lists these archives with exit 0. A new diagnostic code would be a public change, so none is added |
+| A global PAX `path` wins over a GNU long name on the member after it; today the long name wins | DR-6: GNU tar 1.35 lists the PAX name |
+| A PAX `uid` or `gid` that is not a number is ignored and the header's value kept; today it is 0 | DR-6: GNU tar reports the record and keeps the header's value |
+| A GNU dumpdir entry (typeflag `D`, from `tar -G`) lists as `DIRECTORY` and extracts as a directory, its contents list skipped; today it is `OTHER` | DR-6: GNU tar extracts it as a directory |
+| A PAX `mtime` outside `datetime`'s range is reported as `Invalid TAR PAX mtime`, with the stored record as `value_repr`, as a bad PAX `atime` or `ctime` already is; today the message says `mtime` and `value_repr` is tarfile's float | DR-7: one report for every PAX time record |
 | The member list is the same on every Python 3.11 to 3.15 patch release | DR-5 |
 | A streaming pass holds one list of members, not two | DR-9a; removes a sharp-edges row and threat-model O1's TAR note |
 | Error messages name offsets and fields, not tarfile's wording | Message text is not contract |
