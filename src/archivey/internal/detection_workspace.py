@@ -30,7 +30,7 @@ from archivey.detection_cost import (
     TierSkipReason,
 )
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
-from archivey.internal.source import ArchiveSource
+from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_seekable,
     read_exact,
@@ -285,21 +285,16 @@ class PrefixWorkspace:
         """Handle for O(1) probe seeks, or ``None`` to fall back to capped buffering.
 
         A path's own handle and a bare seekable stream (``BytesIO``, file object)
-        are treated as cheap. :class:`~archivey.ArchiveStream` is not:
-        many codecs service a backward restore by re-decoding, so probes prefer the
-        capped buffer path there. Richer "is this seek cheap?" pricing is an idea in
-        ``dev-docs/IDEAS.md`` ("Price detection in round trips, not bytes").
+        are treated as cheap. :class:`~archivey.ArchiveStream` is not, and neither is
+        the :class:`~archivey.internal.source.ArchiveSource` that ``open_archive``
+        wraps it in: many codecs service a backward restore by re-decoding, so probes
+        prefer the capped buffer path there. Richer "is this seek cheap?" pricing is
+        an idea in ``dev-docs/IDEAS.md`` ("Price detection in round trips, not
+        bytes").
         """
-        if self._handle is None or self._seek_is_expensive(self._handle):
+        if self._handle is None or seek_is_expensive(self._handle):
             return None
         return self._handle
-
-    @staticmethod
-    def _seek_is_expensive(stream: BinaryIO) -> bool:
-        # Lazy import: archive_stream must not import the detection workspace.
-        from archivey.internal.streams.archive_stream import ArchiveStream
-
-        return isinstance(stream, ArchiveStream)
 
     def _read_at_via_seek(self, handle: BinaryIO, offset: int, length: int) -> bytes:
         assert self._entry_pos is not None

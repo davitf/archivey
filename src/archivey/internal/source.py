@@ -28,8 +28,8 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
   ``read``, not a separate one. The bound runs over the full-count strategy, never over
   the raw inner: ``read_within_reach`` takes one ``read`` as final.
 - **Cheap facts.** ``path`` when a real file exists, ``volume_paths`` for a joined set of
-  files, ``size`` when it is a fact, ``size_hint``, ``name``, all settled at
-  construction.
+  files, ``size`` when it is a fact, ``size_hint``, ``name``, ``seek_is_expensive``,
+  all settled at construction.
 
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
@@ -61,6 +61,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ReadOnlyIOStream,
@@ -234,6 +235,7 @@ class ArchiveSource(ReadOnlyIOStream):
         is_directory: bool = False,
         position: int = 0,
         open_path: Path | None = None,
+        seek_is_expensive: bool = False,
     ) -> None:
         super().__init__()
         self._path = path
@@ -250,6 +252,7 @@ class ArchiveSource(ReadOnlyIOStream):
         self._length = length
         self._name = name
         self._caller_stream = caller_stream
+        self._seek_is_expensive = seek_is_expensive
         self._owned = owned
         self._buffer = buffer
         self._volume_paths = list(volume_paths)
@@ -339,6 +342,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # Where the caller left it: the archive starts there (see
         # :meth:`rebase_to_current_position`), and the clamp counts from it.
         position = stream.tell() if seekable else 0
+        expensive = seek_is_expensive(stream)
         if isinstance(stream, io.BufferedIOBase):
             # Already full-count when the stream blocks: ``BufferedIOBase.read(n)``
             # keeps asking its raw until it has ``n`` or reaches EOF. No second
@@ -355,6 +359,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 name=name,
                 caller_stream=stream,
                 position=position,
+                seek_is_expensive=expensive,
             )
         if not seekable:
             return cls(
@@ -366,6 +371,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 length=None,
                 name=name,
                 caller_stream=stream,
+                seek_is_expensive=expensive,
             )
         # A seekable raw source: a fixed-size buffer is full-count and its read-ahead is
         # recoverable by seeking. It is archivey's, so it closes with this object — by
@@ -382,6 +388,7 @@ class ArchiveSource(ReadOnlyIOStream):
             caller_stream=stream,
             buffer=buffer,
             position=position,
+            seek_is_expensive=expensive,
         )
 
     @classmethod
@@ -461,6 +468,16 @@ class ArchiveSource(ReadOnlyIOStream):
         it, and by detection's total size; never for bounding a read.
         """
         return self._size
+
+    @property
+    def seek_is_expensive(self) -> bool:
+        """Whether a seek on the borrowed caller stream may re-decode what it skips.
+
+        True when the caller's stream is an :class:`~archivey.ArchiveStream`: see
+        :func:`seek_is_expensive`. A path, a joined set and any other caller stream
+        answer ``False``.
+        """
+        return self._seek_is_expensive
 
     @property
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a source has a path when the caller gave one
@@ -746,4 +763,18 @@ class ArchiveSource(ReadOnlyIOStream):
         return f"ArchiveSource({self._caller_stream!r})"
 
 
-__all__ = ["ArchiveSource", "JoinedVolumes"]
+def seek_is_expensive(stream: BinaryIO) -> bool:
+    """Whether repositioning ``stream`` may cost a re-decode rather than a pointer move.
+
+    True for an :class:`~archivey.ArchiveStream`: many codecs serve a backward seek by
+    decoding again from the start, and a seek to the end decodes everything before it.
+    True as well for an :class:`ArchiveSource` that borrows one, which is how
+    ``open_archive`` hands a member stream to detection. Detection reads this to keep
+    its trailer and probe reads off such a stream (``dev-docs/topics/detection.md`` §4.2).
+    """
+    if isinstance(stream, ArchiveSource):
+        return stream.seek_is_expensive
+    return isinstance(stream, ArchiveStream)
+
+
+__all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]

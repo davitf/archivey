@@ -401,6 +401,7 @@ A backward seek puts the handle back. It does not re-read the prefix:
 | Seekable stream | Reads forward from the caller's position, restores it; the archive is taken to start where the caller positioned it | Nothing missing |
 | Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block. Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
 | Non-seekable, raw, to `detect_format` | Reads what it peeks | The caller loses those bytes unless it buffers the stream itself |
+| Member stream (`ArchiveStream`), bare or through `open_archive` | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block, and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `open_archive` wraps the stream in an `ArchiveSource`, and the source keeps the fact (`seek_is_expensive`) |
 | Directory | Nothing | Nothing to do |
 
 Detection never spools a pipe to a temporary file. The one temporary copy the library makes

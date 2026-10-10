@@ -552,9 +552,10 @@ them as part of the prefix fetches them again. No other backward seek re-reads t
 prefix. The exit restore of a seekable caller stream is the non-consumption contract.
 
 This holds for every source kind. A network range reader pays for the prefix pass and,
-when the trailer runs, one range for that block; a member stream from a solid block is
+when the trailer runs, one range for that block; a member stream (`ArchiveStream`) is
 not asked for the trailer, because a rewind would re-decode, and it decodes the prefix
-forward once. The rule is stated flatly rather than derived from a cost model because
+forward once. That holds whether the member stream reaches detection bare or wrapped in
+the `ArchiveSource` that `open_archive` builds. The rule is stated flatly rather than derived from a cost model because
 `StreamCapability` cannot distinguish a cheap seek from an expensive one.
 
 Resolving an exact `payload_offset` through a central-directory walk does not fit this
@@ -570,6 +571,7 @@ resolution is therefore separable from identification, and no tier does it today
 | Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
 | `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
+| Member stream (`ArchiveStream`), bare or through `open_archive`, any tier | 1 pass | 0 | **0** |
 
 The backward-seek column does not count the exit restore of a seekable caller stream.
 

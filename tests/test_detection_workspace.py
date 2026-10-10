@@ -24,11 +24,13 @@ import gzip
 import io
 import os
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
-from archivey import detect_format
+from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig
 from archivey.detection_cost import (
     BALANCED_BUDGET,
@@ -36,6 +38,8 @@ from archivey.detection_cost import (
     DetectionBudget,
     TierSkipReason,
 )
+from archivey.exceptions import FormatDetectionError
+from archivey.internal import detection_workspace
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
     ScanNeedle,
@@ -44,6 +48,7 @@ from archivey.internal.sfx import (
     iter_magic_in_prefix,
 )
 from archivey.internal.source import ArchiveSource
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat
 from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import NonSeekableBytesIO
@@ -201,6 +206,58 @@ def test_seekable_koly_image_reads_the_trailer_once() -> None:
     assert src.backward_seeks == 2
     assert src.forward_seeks == 1
     assert src.tell() == 0
+
+
+def _member_seeks(
+    monkeypatch: pytest.MonkeyPatch, detect: Callable[[BinaryIO], object]
+) -> list[int]:
+    """Targets of every seek ``detect`` makes on a deflated ZIP member stream.
+
+    The member has no magic, so detection reaches the UDIF trailer step and fails.
+    It is opened with ``seekable_members=True``: a seek to its end decodes the whole
+    member, and the seek back re-decodes it from the start.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("m.bin", bytes(range(256)) * 4096)
+    targets: list[int] = []
+    real_seek = ArchiveStream.seek
+
+    def spy(self: ArchiveStream, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        pos = real_seek(self, offset, whence)
+        targets.append(pos)
+        return pos
+
+    buf.seek(0)
+    with (
+        monkeypatch.context() as patch,
+        open_archive(buf, seekable_members=True) as reader,
+        reader.open("m.bin") as member,
+    ):
+        patch.setattr(ArchiveStream, "seek", spy)
+        with pytest.raises(FormatDetectionError):
+            detect(member)
+    return targets
+
+
+@pytest.mark.parametrize(
+    "detect",
+    [
+        lambda m: detect_format(ArchiveSource.for_stream(m)),
+        lambda m: open_archive(m),
+    ],
+    ids=["archive_source", "open_archive"],
+)
+def test_wrapped_member_stream_is_not_seeked_to_its_end(
+    monkeypatch: pytest.MonkeyPatch, detect: Callable[[BinaryIO], object]
+) -> None:
+    # ``open_archive`` wraps a member stream in an ``ArchiveSource`` before detection
+    # sees it. The workspace must still treat it as the ``ArchiveStream`` it is: no
+    # trailer or probe seek towards the end, only the exit restore, the same as for the
+    # bare stream.
+    bare = _member_seeks(monkeypatch, detect_format)
+    assert bare == [0]
+    assert _member_seeks(monkeypatch, detect) == bare
 
 
 def test_path_detection_access_shape(tmp_path: Path) -> None:
@@ -502,15 +559,13 @@ def test_read_at_buffered_fallback_stays_inside_the_budget(
 ) -> None:
     # S19-K2: the buffered fallback used to grow the prefix to the 1 MiB constant
     # whatever the budget said, so FAST (256 KiB scan ceiling) went over budget with no
-    # skip. ``_seek_is_expensive`` stands in for an ``ArchiveStream``.
+    # skip. Patching ``seek_is_expensive`` stands in for an ``ArchiveStream``.
     from archivey.detection_cost import FAST_BUDGET
     from archivey.internal.detection_workspace import (
         PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
     )
 
-    monkeypatch.setattr(
-        PrefixWorkspace, "_seek_is_expensive", staticmethod(lambda stream: True)
-    )
+    monkeypatch.setattr(detection_workspace, "seek_is_expensive", lambda stream: True)
     payload = io.BytesIO(b"\x00" * (PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE + 100))
     with PrefixWorkspace(payload, FAST_BUDGET) as ws:
         assert ws.read_at(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE - 24, 24) is None
