@@ -1,9 +1,11 @@
 # Design — 7z AES tail key check
 
 Measured 2026-09-09 in the Claude Code web container (`cryptography` 49.0.0,
-7-Zip 23.01, py7zr 1.1.3, Python 3.11). The `7z` binary is upstream 7-Zip 23.01 from
-the `7zip` package, which `p7zip-full` 16.02+transitional installs; it is not the p7zip
-fork.
+`7z` from the `p7zip-full` package, py7zr 1.1.3, Python 3.11). The writer version was
+first recorded as "p7zip 16.02", the package version. On the container checked
+2026-10-10 (Ubuntu 24.04), `p7zip-full` is 16.02+transitional and installs upstream
+7-Zip 23.01 from the `7zip` package, not the p7zip fork. That the 2026-09-09 image was
+the same is inferred, not recorded.
 
 ## The structure being exploited
 
@@ -126,10 +128,11 @@ is needed (#344 F5, waived there on this reasoning).
 
 ## Open
 
-The premise rests on 7-Zip 23.01 and py7zr 1.1.3. Windows 7-Zip ≥ 21 builds from the same
-upstream source, so it is probably covered already (inferred, not checked with a Windows
-fixture). Fixtures from a Windows build, WinRAR or Bandizip would strengthen it. Not blocking — confirm-only means an unverified writer
-costs a fallback — but it is what §"What is actually in those bytes" can claim.
+The premise rests on 7-Zip 23.01 (see the provenance note at the top) and py7zr 1.1.3.
+Windows 7-Zip ≥ 21 builds from the same upstream source, so it is probably covered
+already (inferred, not checked with a Windows fixture). Fixtures from a Windows build,
+WinRAR or Bandizip would strengthen it. Not blocking — confirm-only means an unverified
+writer costs a fallback — but it is what §"What is actually in those bytes" can claim.
 
 Nothing validates `pack_pos + sum(pack_sizes)` against the file size at parse time; only
 the next-header offset and size are range-checked (`sevenzip_parser.py:409-413`). The
