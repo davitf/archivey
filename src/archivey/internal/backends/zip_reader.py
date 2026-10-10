@@ -940,39 +940,57 @@ class ZipReader(BaseArchiveReader):
         try:
             utf8_decoded = raw_name.decode("utf-8")
         except UnicodeDecodeError:
-            if self._encoding is not None:
-                try:
-                    return raw_name.decode(
-                        self._encoding, errors="surrogateescape"
-                    ), None
-                except UnicodeError:
-                    # A codec that refuses the surrogateescape handler outright
-                    # (``idna``): fall through to the configured fallback.
-                    pass
-            fallback = self._config.zip_unflagged_fallback_encoding
-            if fallback.lower().replace("-", "").replace("_", "") in {
-                "cp437",
-                "437",
-                "ibm437",
-            }:
-                return cp437_decoded, None
-            try:
-                return raw_name.decode(fallback, errors="surrogateescape"), fallback
-            except (LookupError, UnicodeError):
-                # An unknown fallback encoding name, or a codec that refuses the
-                # surrogateescape handler outright (``idna``): keep the cp437 decode
-                # rather than fail.
-                return cp437_decoded, None
+            return self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
         if utf8_decoded == cp437_decoded:
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
+
+    def _decode_unflagged_legacy(
+        self, raw: bytes, cp437_decoded: Callable[[], str]
+    ) -> tuple[str, str | None]:
+        """Decode unflagged bytes that are not valid UTF-8: the caller's ``encoding=``,
+        else the configured legacy fallback (default cp437).
+
+        ``cp437_decoded`` is called only when the cp437 reading is the answer. Returns
+        ``(text, fallback)`` where ``fallback`` is a configured fallback other than
+        cp437 that was used, else ``None``. A byte the chosen codec does not define
+        survives as a lone surrogate.
+        """
+        if self._encoding is not None:
+            try:
+                return raw.decode(self._encoding, errors="surrogateescape"), None
+            except UnicodeError:
+                # A codec that refuses the surrogateescape handler outright
+                # (``idna``): fall through to the configured fallback.
+                pass
+        fallback = self._config.zip_unflagged_fallback_encoding
+        if fallback.lower().replace("-", "").replace("_", "") in {
+            "cp437",
+            "437",
+            "ibm437",
+        }:
+            return cp437_decoded(), None
+        try:
+            return raw.decode(fallback, errors="surrogateescape"), fallback
+        except (LookupError, UnicodeError):
+            # An unknown fallback encoding name, or a codec that refuses the
+            # surrogateescape handler outright (``idna``): keep the cp437 decode
+            # rather than fail.
+            return cp437_decoded(), None
 
     def _decode_unflagged_comment(self, raw: bytes) -> str:
         """Decode a comment with no UTF-8 flag the way an unflagged name is decoded.
 
         A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
+        As for a name, ASCII skips the sniff (UTF-8 and cp437 agree on it), and the
+        cp437 decode runs only when it is the answer.
         """
-        return self._sniff_unflagged_name(raw, raw.decode("cp437"))[0]
+        if raw.isascii():
+            return raw.decode("ascii")
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return self._decode_unflagged_legacy(raw, lambda: raw.decode("cp437"))[0]
 
     def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
         full_mode = info.external_attr >> 16

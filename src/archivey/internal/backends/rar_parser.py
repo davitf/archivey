@@ -1369,10 +1369,12 @@ def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
 
     The text ends at the first NUL, because ``unrar`` hands the bytes to a C-string
     conversion (``DoGetComment``, ``Archive::ReadCommentData``). What is left is
-    UTF-8 if it is valid, else the caller's ``encoding=``, else windows-1252. Bytes
-    the code page cannot decode (five are undefined in windows-1252) become U+FFFD.
-    The order is the one ``_decode_rar3_8bit_name`` uses for a name; keep the two in
-    step.
+    UTF-8 if it is valid, else the caller's ``encoding=``, else windows-1252. A byte
+    the code page cannot decode (five are undefined in windows-1252) survives as a lone
+    surrogate, as it does in a name. The order and the error handler are the ones
+    ``_decode_rar3_8bit_name`` uses for a name, and the ones a ZIP comment uses; keep
+    them in step. Only the last fallback differs from a name's: ``unrar`` reads a
+    comment as windows-1252 whatever the host OS.
 
     A RAR 1.5-4 comment is 8-bit text whose code page is not recorded. It is never
     guessed as UTF-16LE: almost any even-length byte string decodes that way, so
@@ -1386,12 +1388,13 @@ def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
         pass
     if encoding is not None:
         try:
-            return text.decode(encoding, "replace")
+            return text.decode(encoding, "surrogateescape")
         except UnicodeError:
-            # A codec that refuses the bytes outright (``utf-32`` on a length that is
-            # not a multiple of four): decode as without ``encoding=``.
+            # A codec that refuses the bytes or the handler outright (``utf-32`` on a
+            # length that is not a multiple of four, ``idna``): decode as without
+            # ``encoding=``.
             pass
-    return text.decode("windows-1252", "replace")
+    return text.decode("windows-1252", "surrogateescape")
 
 
 def _decode_rar3_8bit_name(raw: bytes, *, host_os: int, encoding: str | None) -> str:

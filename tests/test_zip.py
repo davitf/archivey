@@ -1946,14 +1946,20 @@ def test_unflagged_utf8_comments_win_over_explicit_encoding() -> None:
 
 def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> None:
     # stdlib sets the UTF-8 flag for a non-ASCII name; the flag covers the comment too.
+    # The comment bytes are not valid UTF-8, so the flagged reading (UTF-8, else cp437)
+    # and the unflagged one (UTF-8, else encoding=) differ.
+    stored = _CP1251_MEMBER_COMMENT.encode("cp1251")
     path = tmp_path / "flagged.zip"
     with zipfile.ZipFile(path, "w") as z:
         info = zipfile.ZipInfo("café.txt")
-        info.comment = _CP1251_MEMBER_COMMENT.encode()
+        info.comment = stored
         z.writestr(info, b"x")
+    with zipfile.ZipFile(path) as z:
+        assert z.infolist()[0].flag_bits & 0x800
     with open_archive(path, encoding="cp1251") as ar:
         (member,) = ar.members()
-    assert member.comment == _CP1251_MEMBER_COMMENT
+    assert member.comment == stored.decode("cp437")
+    assert member.comment != _CP1251_MEMBER_COMMENT
 
 
 def test_encoding_inference_is_escalatable() -> None:

@@ -485,16 +485,13 @@ APPNOTE puts a member comment under the same bit 11 as its name, and gives the a
 comment no flag. A member comment whose bit 11 is clear, and the archive comment, SHALL
 decode as an unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
 `encoding=`, else `zip_unflagged_fallback_encoding` (default cp437), through the same
-code path. A member comment whose bit 11 is set SHALL decode as UTF-8, with cp437 for
-bytes that are not valid UTF-8. A comment is not a name, so decoding it SHALL NOT emit
-`MEMBER_NAME_ENCODING_INFERRED`.
+code path. A byte the chosen codec leaves undefined SHALL survive as a lone surrogate, as
+it does in a name. A member comment whose bit 11 is set SHALL decode as UTF-8, with cp437
+for bytes that are not valid UTF-8, and SHALL ignore `encoding=`. A comment is not a name,
+so decoding it SHALL NOT emit `MEMBER_NAME_ENCODING_INFERRED`.
 
-#### Scenario: ZIP comment decoding matrix
+#### Scenario: A flagged member comment ignores `encoding=`
 
-| Case | Expected |
-| --- | --- |
-| Info-ZIP `zip -z` / `zip -c` comments in cp1251, no flag, `encoding="cp1251"` | `info.comment` and `member.comment` are the cp1251 text |
-| The same bytes, `zip_unflagged_fallback_encoding="cp1251"` | The cp1251 text |
-| The same bytes, no `encoding=` and the default config | The bytes decoded as cp437 |
-| UTF-8 comments, no flag, `encoding="cp1251"` | The UTF-8 text; no `MEMBER_NAME_ENCODING_INFERRED` |
-| UTF-8 member comment with bit 11 set, `encoding="cp1251"` | The UTF-8 text |
+- **WHEN** a member with bit 11 set has a comment whose bytes are not valid UTF-8, and
+  the archive is opened with `encoding="cp1251"`
+- **THEN** the comment is the cp437 reading of the bytes, not the cp1251 one

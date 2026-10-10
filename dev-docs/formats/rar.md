@@ -659,10 +659,11 @@ is UTF-16LE, read in whole 2-byte units (an odd trailing byte is dropped, as `un
 reads `CmtSize / 2` units) and cut at the first U+0000. Every other RAR 1.5-4 comment
 (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or compressed) is
 8-bit text cut at the first NUL, decoded as strict UTF-8, then with the caller's
-`encoding=` when one was passed, then windows-1252, with U+FFFD for bytes the code page
-leaves undefined (five in windows-1252). That is the order an 8-bit name uses, because a
-comment records its code page no more than a name does; only the last fallback differs
-(`unrar`'s windows-1252 rather than the host's OEM code page). It is never guessed as
+`encoding=` when one was passed, then windows-1252. A byte the code page leaves undefined
+(five in windows-1252) survives as a lone surrogate (`surrogateescape`). That is the
+order and the error handler an 8-bit name uses, and the ones a ZIP comment uses, because
+a comment records its code page no more than a name does; only the last fallback differs
+from a name's (`unrar`'s windows-1252 rather than the host's OEM code page). It is never guessed as
 UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to list as
 CJK. A compressed `CMT` SERVICE header is not
 decoded: the parser reads only a stored one, so such an archive lists with no comment

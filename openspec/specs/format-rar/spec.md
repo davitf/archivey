@@ -136,17 +136,16 @@ SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Ev
 RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or
 compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
 and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
-`encoding=` when one was passed, else as windows-1252. Bytes the chosen code page leaves
-undefined SHALL become U+FFFD. The system MUST NOT decode an 8-bit comment as UTF-16LE.
+`encoding=` when one was passed, else as windows-1252. A byte the chosen code page
+leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system MUST
+NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it SHALL NOT
+emit `MEMBER_NAME_ENCODING_INFERRED`.
 
-#### Scenario: RAR comment decoding matrix
+#### Scenario: An undecodable comment byte survives
 
-| Case | Expected |
-| --- | --- |
-| Archive comment and member comments (`CMT` and old-style subblock) in cp1251, `encoding="cp1251"` | The cp1251 text |
-| The same in cp866 or Shift-JIS, with that `encoding=` | The text |
-| The same comments in UTF-8, `encoding="cp1251"` | The UTF-8 text |
-| cp1251 comments, no `encoding=` | Decoded as windows-1252 |
+- **WHEN** an 8-bit comment holds `b"a\x98b"` and the archive is opened with
+  `encoding="cp1251"`, which leaves 0x98 undefined
+- **THEN** the comment is `"a\udc98b"`, the same string a ZIP comment with those bytes gives
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
