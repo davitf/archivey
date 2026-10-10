@@ -7,6 +7,7 @@ from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
 from archivey.exceptions import ResourceLimitError, TruncatedError
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
     PpmdChildDecoder,
@@ -664,6 +665,7 @@ def PpmdDecompressorStream(
     pack_size: int | None = None,
     in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
     refuse_input_after_end: bool = False,
+    collector: DiagnosticCollector | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
@@ -685,6 +687,7 @@ def PpmdDecompressorStream(
             pack_size=pack_size,
             in_process_max_input=in_process_max_input,
         ),
+        collector=collector,
         codec_name="ppmd",
         refuse_input_after_end=refuse_input_after_end,
     )

@@ -71,12 +71,15 @@ def _rapidgzip_reads_as_zlib(source: CodecSource) -> bool:
     return _zlib_header_plausible(prefix) and not prefix[1] & 0x20
 
 
-def _stdlib_zlib(source: CodecSource, config: StreamConfig) -> BinaryIO:
+def _stdlib_zlib(
+    source: CodecSource, config: StreamConfig, *, wbits: int = zlib.MAX_WBITS
+) -> BinaryIO:
     return ZlibDecompressorStream(
         source,
-        wbits=zlib.MAX_WBITS,
+        wbits=wbits,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
+        refuse_input_after_end=config.refuse_input_after_end,
     )
 
 
@@ -476,11 +479,7 @@ class DeflateCodec(_ZlibErrorCodec):
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         # Under rapidgzip it is also the takeover's decoder, so bytes after the stream
         # that rapidgzip fails on are refused there too (refuse_input_after_end).
-        return ZlibDecompressorStream(
-            source,
-            wbits=-15,
-            refuse_input_after_end=config.refuse_input_after_end,
-        )
+        return _stdlib_zlib(source, config, wbits=-15)
 
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig

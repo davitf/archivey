@@ -39,7 +39,9 @@ class Deflate64Codec(StreamCodec):
         if deps.inflate64.load() is None:
             raise self._missing("Deflate64 streams")
         return Deflate64DecompressorStream(
-            source, refuse_input_after_end=config.refuse_input_after_end
+            source,
+            collector=config.collector,
+            refuse_input_after_end=config.refuse_input_after_end,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

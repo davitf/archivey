@@ -6,6 +6,7 @@ import os
 from typing import BinaryIO, Protocol
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -137,11 +138,13 @@ def Deflate64DecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
     *,
     refuse_input_after_end: bool = False,
+    collector: DiagnosticCollector | None = None,
 ) -> DecompressorStream:
     """Decode a Deflate64 stream (forward-only)."""
     return DecompressorStream(
         path,
         make_decoder=lambda _p, _i: Deflate64Decoder(),
         codec_name="deflate64",
+        collector=collector,
         refuse_input_after_end=refuse_input_after_end,
     )
