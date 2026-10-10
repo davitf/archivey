@@ -511,8 +511,9 @@ class _ParseBudget:
     multi-extent file and the ``rr_moved`` scaffolding the listing hides.
 
     Bytes are one sum for the whole image, every tree together, held to
-    ``max_metadata_bytes`` (maintainer ruling, 2026-10-10): pycdlib keeps every tree it
-    parses, so a budget per tree let one image retain it once per tree. The bytes are
+    ``max_metadata_bytes`` (ruled by davi, 2026-10-10; ``dev-docs/formats/iso.md``
+    records the reasons and what would reopen it): pycdlib keeps every tree it parses,
+    so a budget per tree let one image retain it once per tree. The bytes are
     the directory records as stored, System Use areas included, plus each Rock Ridge
     continuation area every time pycdlib parses it, plus each tree's little- and
     big-endian path tables, which pycdlib reads whole and parses into one object per
@@ -533,36 +534,36 @@ class _ParseBudget:
         self._members: dict[int, int] = {}
         # Bytes of every tree together: one image-wide budget (see above).
         self._bytes = 0
-        # The ISO 9660 or Joliet tree of the record parsed last: pycdlib parses a
-        # record's continuation area right after the record, and ``RockRidge.parse``
-        # is not told the tree. Only ``add_continuation`` reads it; the UDF hooks name
-        # their tree and leave it alone.
+        # The ISO 9660 or Joliet tree of the record parsed last, the key its member is
+        # counted under. ``add_member`` and ``add_continuation`` read it: pycdlib calls
+        # them from inside ``DirectoryRecord.parse``, after ``add_record``, and neither
+        # hook is told the descriptor. Bytes do not need it, being one sum for the
+        # image; the UDF hooks name their tree and leave it alone.
         self._tree = 0
         # Entries pycdlib has parsed from the path table it is parsing now.
         self._path_table_entries = 0
 
     def add_record(self, vd: object, nbytes: int) -> None:
         self._tree = id(vd)
-        self._add_bytes(self._tree, nbytes)
+        self._add_bytes(nbytes, f"its {_ISO_TREE_NAME}")
 
     def add_member(self) -> None:
         self._add_member(self._tree)
 
     def add_udf_bytes(self, nbytes: int) -> None:
-        self._add_bytes(_UDF_TREE, nbytes)
+        self._add_bytes(nbytes, f"its {_UDF_TREE_NAME}")
 
     def add_udf_member(self) -> None:
         self._add_member(_UDF_TREE)
 
     def add_continuation(self, nbytes: int) -> None:
-        self._add_bytes(self._tree, nbytes)
+        self._add_bytes(nbytes, f"its {_ISO_TREE_NAME}")
 
-    def add_path_table(self, vd: object, nbytes: int) -> None:
+    def add_path_table(self, nbytes: int) -> None:
         # Called before pycdlib reads the table, so an over-budget size is refused
         # before the read and the parse, not after.
-        self._tree = id(vd)
         self._path_table_entries = 0
-        self._add_bytes(self._tree, nbytes)
+        self._add_bytes(nbytes, f"a path table of its {_ISO_TREE_NAME}")
 
     def add_path_table_entry(self) -> None:
         """Count one path-table entry pycdlib parsed against ``max_members``.
@@ -588,22 +589,21 @@ class _ParseBudget:
         self._members[tree] = count
         max_members = self._limits.max_members
         if max_members is not None and count > max_members:
-            name = "UDF directory tree" if tree == _UDF_TREE else "ISO directory tree"
+            name = _UDF_TREE_NAME if tree == _UDF_TREE else _ISO_TREE_NAME
             raise ResourceLimitError(
                 f"Listing limit reached: max_members={max_members} "
                 f"({name} holds more than {max_members} records)"
             )
 
-    def _add_bytes(self, tree: int, nbytes: int) -> None:
+    def _add_bytes(self, nbytes: int, source: str) -> None:
+        """Add ``nbytes`` to the image-wide sum; ``source`` says where they came from."""
         self._bytes += nbytes
-        name = "UDF directory tree" if tree == _UDF_TREE else "ISO directory tree"
         check_metadata_budget(
             self._limits,
             self._bytes,
             detail=(
-                f"ISO image has {self._bytes} bytes of path tables, directory "
-                f"records and UDF descriptors across its trees; its {name} added "
-                "the last"
+                f"ISO image has {self._bytes} bytes of parsed directory metadata; "
+                f"the last came from {source}"
             ),
         )
 
@@ -611,6 +611,10 @@ class _ParseBudget:
 # The key the UDF tree is counted under in ``_ParseBudget``: pycdlib walks one UDF file
 # set per image, and no ``id()`` is negative.
 _UDF_TREE = -1
+# How a refusal names the tree a member or the last bytes came from: an ISO 9660 or
+# Joliet tree, or the UDF tree.
+_ISO_TREE_NAME = "ISO directory tree"
+_UDF_TREE_NAME = "UDF directory tree"
 
 
 # Set only while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``; ``None``
@@ -717,23 +721,8 @@ def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
             "from there"
         )
     budget = _PARSE_BUDGET.get()
-    if budget is None:
-        return
-    # The descriptor whose table this is; pycdlib parses the PVD's, then Joliet's.
-    descriptors = [getattr(iso, "pvd"), *cast("list[object]", getattr(iso, "svds"))]
-    vd = next(
-        (
-            vd
-            for vd in descriptors
-            if extent
-            in (
-                getattr(vd, "path_table_location_le", None),
-                getattr(vd, "path_table_location_be", None),
-            )
-        ),
-        descriptors[0],
-    )
-    budget.add_path_table(vd, ptr_size)
+    if budget is not None:
+        budget.add_path_table(ptr_size)
 
 
 _install_pycdlib_path_table_bound()

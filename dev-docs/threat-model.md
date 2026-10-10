@@ -422,17 +422,18 @@ namespace: each File Identifier but the parent entry is a member, and each File
 Identifier and each File Entry, with the extended attributes and allocation descriptors
 it declares, is weighed against `max_metadata_bytes`, the File Entry before `pycdlib`
 parses it. `pycdlib` keeps every tree it walked, so `max_metadata_bytes` is one sum for
-the whole image, every tree together (maintainer ruling, 2026-10-10). A budget per tree
-let an image carrying all three trees peak near 2.6 GiB at the default limits: a PVD
-tree and a Joliet tree at about 1 GiB each, plus a UDF tree, where a name weighs at
-least about 220 bytes and was measured at about 2.1 KB retained, stopped by 64 MiB near
-300,000 names and 0.6 GiB. `max_members` stays per tree, because a Joliet tree repeats
-every file and one count would halve the cap for such an image. The ceiling is now the
-member cap per tree together with the byte sum: a record is at least 34 bytes, so 64 MiB
-holds about 2 million records across the PVD and Joliet trees, which is about 1.5 GiB at
-0.8 KB each (an estimate from the per-record figure, not measured at this scale). Any
-UDF bytes come out of the same 64 MiB, and they cost less per stored byte than a
-minimal ISO 9660 record.
+the whole image, every tree together (ruled by davi, 2026-10-10; reasons and the reopen
+condition in `dev-docs/formats/iso.md` §2.2). A budget per tree let an image carrying
+all three trees peak near 2.6 GiB at the default limits: a PVD tree and a Joliet tree
+at about 1 GiB each, plus a UDF tree, where a name weighs at least about 220 bytes and
+was measured at about 2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB.
+`max_members` stays per tree, because a Joliet tree repeats every file and one count
+would halve the cap for such an image. The ceiling is now the member cap per tree
+together with the byte sum: a record is at least 34 bytes, so 64 MiB holds about 2
+million records across the PVD and Joliet trees, which is about 1.5 GiB at 0.8 KB each
+(an estimate from the per-record figure, not measured at this scale). Any UDF bytes
+come out of the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660
+record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,

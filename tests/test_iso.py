@@ -540,25 +540,29 @@ def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
     """
     image = _udf_image_with_links(20)
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2000))
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=2000.*UDF"):
+    with pytest.raises(
+        ResourceLimitError, match="max_metadata_bytes=2000.*UDF directory tree"
+    ):
         open_archive(io.BytesIO(image), config=tight)
     with open_archive(io.BytesIO(_udf_image_with_links(1)), config=tight) as reader:
         assert [m.name for m in reader.members()] == ["F.TXT"]
 
 
-def _three_tree_image(count: int) -> bytes:
-    """An image holding ``count`` files in each of its PVD, Joliet and UDF trees."""
+def _image_with_trees(count: int, *, joliet: bool = True, udf: bool = True) -> bytes:
+    """An image holding ``count`` files in its PVD tree and in each tree it asks for."""
     import pycdlib
 
     iso = pycdlib.PyCdlib()
-    iso.new(interchange_level=3, joliet=3, udf="2.60")
+    iso.new(
+        interchange_level=3, joliet=3 if joliet else None, udf="2.60" if udf else None
+    )
     for index in range(count):
         iso.add_fp(
             io.BytesIO(b"x"),
             1,
             f"/F{index}.TXT;1",
-            joliet_path=f"/f{index}.txt",
-            udf_path=f"/f{index}.txt",
+            joliet_path=f"/f{index}.txt" if joliet else None,
+            udf_path=f"/f{index}.txt" if udf else None,
         )
     out = io.BytesIO()
     iso.write_fp(out)
@@ -575,8 +579,25 @@ def test_max_metadata_bytes_is_one_budget_for_the_whole_image() -> None:
     UDF tree: each tree is under 3,000 bytes, and the three together are about 3,670.
     ``max_members`` stays per tree
     (``test_listing_limits_count_udf_entries_as_pycdlib_parses_them``).
+
+    The first leg does not depend on UDF sizes: the same ten files weigh 542 bytes in a
+    PVD-only image and 1,124 with a Joliet tree (542 + 582), so a cap of 800 opens the
+    first and refuses the second, whose trees are each under it.
     """
-    image = _three_tree_image(10)
+    iso_trees_only = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=800)
+    )
+    with open_archive(
+        io.BytesIO(_image_with_trees(10, joliet=False, udf=False)),
+        config=iso_trees_only,
+    ) as reader:
+        assert len(reader.members()) == 10
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=800"):
+        open_archive(
+            io.BytesIO(_image_with_trees(10, udf=False)), config=iso_trees_only
+        )
+
+    image = _image_with_trees(10)
     under_total = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=3000))
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes=3000"):
         open_archive(io.BytesIO(image), config=under_total)
