@@ -38,8 +38,8 @@ class _SourceViews:
     """Fresh views of an accelerator's source at offset 0 that leave its cursor alone.
 
     A path's views are fresh fds (:meth:`of_path`), a stream's are lock-sharing
-    ``SharedSource`` siblings. See the IDEAS.md entry "Let an ``ArchiveSource`` over a
-    file hand out independent handles".
+    ``SharedSource`` siblings. See the ``dev-docs/IDEAS.md`` entry "Independent handles
+    for a file source".
     """
 
     view: Callable[[], BinaryIO]
@@ -353,3 +353,25 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """
         assert self.switched, "only a standard-library decoder resumes"
         self._replace_inner(self._open_stdlib_at())
+
+
+class _OutputChecksum:
+    """A running checksum of the output from offset 0 up to a ``frontier``.
+
+    ``feed`` folds a piece of output in only where it continues the covered prefix, so a
+    re-read behind the frontier counts nothing twice and a piece that starts past it (a
+    seek skipped bytes) leaves the frontier where it was. ``fold`` is ``zlib.adler32`` or
+    ``zlib.crc32``. Shared by the stream wrappers that check a trailer rapidgzip does not.
+    """
+
+    def __init__(self, fold: Callable[[memoryview, int], int], initial: int) -> None:
+        self._fold = fold
+        self.value = initial
+        self.frontier = 0
+
+    def feed(self, pos: int, data: bytes) -> None:
+        """Fold in ``data``, the output at ``pos``, if it reaches past the frontier."""
+        end = pos + len(data)
+        if pos <= self.frontier < end:
+            self.value = self._fold(memoryview(data)[self.frontier - pos :], self.value)
+            self.frontier = end

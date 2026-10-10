@@ -183,20 +183,6 @@ class _PasswordCandidates:
             distinct = set(self._known_good) | set(self._candidates)
             return len(distinct) > 1 or self._provider is not None
 
-    def has_provider(self) -> bool:
-        return self._provider is not None
-
-    def ask_provider(self, member: ArchiveMember | None, attempt: int) -> bytes | None:
-        """Return the provider's next answer, or ``None`` to stop.
-
-        Invokes the provider with no Archivey lock held; calls from other threads wait
-        their turn. Reentry from inside the provider raises ``ArchiveyUsageError`` (see
-        the class docstring for which reentry can be recognized).
-        """
-        if self._provider is None:
-            return None
-        return self._call_provider(member, attempt)
-
     def iter_provider_answers(
         self, member: ArchiveMember | None, tried: Container[bytes]
     ) -> Iterator[bytes]:
@@ -230,6 +216,11 @@ class _PasswordCandidates:
     def _call_provider(
         self, member: ArchiveMember | None, attempt: int
     ) -> bytes | None:
+        """One provider call, with the turn-taking and reentry guard.
+
+        A password loop belongs in ``iter_provider_answers``, which skips an
+        answer already tried and stops when the provider repeats itself.
+        """
         assert self._provider is not None
         me = threading.get_ident()
         token = object()

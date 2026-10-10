@@ -32,9 +32,10 @@ import tempfile
 import warnings
 import zipfile
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO
 
 import pytest
 

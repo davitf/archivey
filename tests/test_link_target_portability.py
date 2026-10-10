@@ -8,11 +8,16 @@ lists as ``C:/Windows`` and ``..\\up\\x`` as ``../up/x`` in every format, as unr
 
 Extraction then applies the maintainer's ruling of 2026-10-06 (portability: one archive
 gives one outcome on every OS, and Windows already refuses drive paths): a symlink
-or hardlink target with a drive letter or a UNC root is refused at every policy on
-every OS, except a symlink target rooted by a single ``\\``, which POSIX reads as a
-filename. A ``:`` or a Windows-reserved device name in a target segment is refused
-under ``STRICT`` and ``STANDARD``, as it is in a member name; ``TRUSTED`` keeps
-deferring to the OS.
+target with a drive letter or a UNC root is refused at every policy on every OS,
+except one rooted by a single ``\\``, which POSIX reads as a filename. A ``:`` or a
+Windows-reserved device name in a target segment is refused under ``STRICT`` and
+``STANDARD``, as it is in a member name; ``TRUSTED`` keeps deferring to the OS.
+
+A hardlink target is not a path. It names an earlier member (maintainer decision,
+2026-10-07), and the link gets what its source gets: the member at the end of its
+chain (``link_target_member``), which here is always the member the target names. The
+link is refused where the source is refused and linked where it is written.
+``tests/test_hardlink_target_rule.py`` has the full matrix, chains included.
 """
 
 from __future__ import annotations
@@ -23,8 +28,8 @@ import struct
 import tarfile
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -335,23 +340,14 @@ def _tar(path: Path, entries: list[tuple[str, bytes, str | None]]) -> Path:
     return path
 
 
-@pytest.mark.parametrize(
-    ("policy", "target"),
-    [
-        # STANDARD and TRUSTED re-root a rooted hardlink target, so only STRICT
-        # keeps one; a drive-relative target has no root to drop at any policy.
-        (ExtractionPolicy.STRICT, "C:/x"),
-        (ExtractionPolicy.STRICT, "//host/share/x"),
-        (ExtractionPolicy.STRICT, "c:x"),
-        (ExtractionPolicy.STANDARD, "c:x"),
-        (ExtractionPolicy.TRUSTED, "c:x"),
-    ],
-    ids=lambda v: v.name if isinstance(v, ExtractionPolicy) else v,
-)
-def test_a_hardlink_with_a_windows_root_is_refused(
+@pytest.mark.parametrize("policy", list(ExtractionPolicy), ids=lambda p: p.name)
+@pytest.mark.parametrize("target", ["C:/x", "//host/share/x", "c:x"])
+def test_a_hardlink_to_a_member_with_a_windows_root_gets_what_the_member_gets(
     tmp_path: Path, policy: ExtractionPolicy, target: str
 ) -> None:
-    """Windows resolves ``dest / "C:/x"`` off the drive, so POSIX refuses it too."""
+    """The link follows the member its target names, never the target as a path:
+    ``STANDARD`` and ``TRUSTED`` re-root ``C:/x`` and ``//host/share/x`` and link to
+    the result, and every policy refuses ``c:x`` (no root to drop), and its link."""
     path = _tar(
         tmp_path / "a.tar",
         [(target, tarfile.REGTYPE, None), ("hl", tarfile.LNKTYPE, target)],
@@ -359,11 +355,17 @@ def test_a_hardlink_with_a_windows_root_is_refused(
     dest = tmp_path / "out"
     with open_archive(path) as archive:
         report = archive.extract_all(dest, policy=policy, on_error=OnError.CONTINUE)
-    link = next(r for r in report.results if r.member.name == "hl")
-    assert link.status is ExtractionStatus.BLOCKED
-    assert isinstance(link.error, FilterRejectionError)
-    assert link.error.message == "Hardlink target is a Windows drive or UNC path"
-    assert not os.path.lexists(dest / "hl")
+    member, link = report.results
+    if policy is ExtractionPolicy.STRICT or target == "c:x":
+        assert member.status is ExtractionStatus.BLOCKED
+        assert link.status is ExtractionStatus.BLOCKED
+        assert isinstance(link.error, FilterRejectionError)
+        assert link.error.message == "Hardlink target was refused"
+        assert not os.path.lexists(dest / "hl")
+    else:
+        assert member.status is ExtractionStatus.EXTRACTED, member.error
+        assert link.status is ExtractionStatus.EXTRACTED, link.error
+        assert (dest / "hl").read_bytes() == b"data"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="a backslash is a separator on Windows")
@@ -394,9 +396,10 @@ def test_a_backslash_rooted_symlink_target_extracts_on_posix(
 def test_a_backslash_rooted_hardlink_target_gets_what_its_member_gets(
     tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
-    """The ``\\foo`` exception is for symlinks only. A hardlink target names a member,
-    so ``STRICT`` refuses ``\\x`` as it refuses the member ``\\x``, on every OS (Windows
-    would resolve it off the drive root), and the other policies re-root both."""
+    """The ``\\foo`` exception is for symlinks only, and a hardlink needs none: its
+    target names the member ``\\x``. ``STRICT`` refuses that member, on every OS
+    (Windows would resolve it off the drive root), so it refuses the link; the other
+    policies re-root the member and link to it."""
     path = _tar(
         tmp_path / "a.tar",
         [("\\x", tarfile.REGTYPE, None), ("hl", tarfile.LNKTYPE, "\\x")],
@@ -409,7 +412,7 @@ def test_a_backslash_rooted_hardlink_target_gets_what_its_member_gets(
         assert member.status is ExtractionStatus.BLOCKED
         assert link.status is ExtractionStatus.BLOCKED
         assert isinstance(link.error, FilterRejectionError)
-        assert link.error.message == "Hardlink target is an absolute path"
+        assert link.error.message == "Hardlink target was refused"
         assert not os.path.lexists(dest / "hl")
     else:
         assert member.status is ExtractionStatus.EXTRACTED, member.error

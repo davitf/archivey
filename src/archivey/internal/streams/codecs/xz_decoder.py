@@ -26,9 +26,9 @@ import lzma
 import os
 import struct
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import BinaryIO, Callable
+from typing import BinaryIO
 
 from archivey.diagnostics import DiagnosticCode, DigestContext, SeekIndexContext
 from archivey.exceptions import (

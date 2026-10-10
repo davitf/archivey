@@ -429,7 +429,7 @@ def test_ppmd7_close_skips_at_native_eof() -> None:
 class _SpyDecoder:
     """Minimal :class:`Decoder` that records ``close()`` and re-registers on recreate."""
 
-    def __init__(self, log: list["_SpyDecoder"]) -> None:
+    def __init__(self, log: list[_SpyDecoder]) -> None:
         self._log = log
         self.closed = 0
         log.append(self)

@@ -51,7 +51,7 @@ count, and wrong as a budget, because it is the numerator only.
 - **Numerator:** 79 lines (`rar_parser.py:697-775`), of which roughly 40 are the docstring
   recording the five answers above — a docstring that does not disappear, it moves.
 - **Denominator:** roughly 60 lines of test rework (below), plus nine `src/` sites, four of
-  them docstrings, plus six doc sites across two handbook pages and `review/backlog.md`.
+  them docstrings, plus six doc sites across two handbook pages.
 
 **`tests/test_rar_parser.py` binds the class by name six times, in three tests:**
 
@@ -85,7 +85,6 @@ divergence 1" that draft claimed was missing.
 | `tests/test_rar_parser.py` | 6 |
 | `dev-docs/formats/rar.md` | 4 (`:286`, `:308`, `:709`, `:710`) |
 | `dev-docs/topics/stream-ownership.md` | 2 (`:19`, `:35`) |
-| `review/backlog.md` | 1 (`:65`) |
 
 Nine in `src/`, four of them docstrings — `rar_parser.py:67` (`_Readable`'s) and `:1992`
 (`_read_rar5_block`'s), plus both in `crypto.py`. `rar_parser.py:67` is the one the

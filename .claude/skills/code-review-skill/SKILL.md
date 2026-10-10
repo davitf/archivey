@@ -3,11 +3,10 @@ name: code-review-skill
 description: |
   Archivey's review skill: how to review a pull request, a fix round, an OpenSpec
   proposal, a whole-file sweep or a commissioned deep review, and how to post the result.
-  Also reachable from Cursor via the project command in `.cursor/commands/code-review.md`.
-  Use when: reviewing pull requests, conducting PR reviews, code review, reviewing code changes,
-    re-reviewing fixes, reviewing proposals or design docs, sweeping files, security or
-    architecture reviews, finding bugs, giving feedback on code,
-    or when the user invokes /code-review-skill.
+  Use when: reviewing an archivey pull request or its fixes, reviewing an OpenSpec
+    proposal or design doc, sweeping files, a commissioned `review/` brief, a review-loop
+    round, or when the user invokes /code-review-skill. Not the builtin /code-review or
+    /security-review; this skill reports findings and edits nothing.
 allowed-tools:
   - Read
   - Grep
@@ -28,24 +27,22 @@ are reviewing, plus `CONTRIBUTING.md` on a first look. Nothing else is required 
 > (MIT). The repo's own rules outgrew it and now live here; the upstream-derived guides
 > remain as optional reference (§1), under the original `LICENSE`.
 
-**Invoke it by name: `/code-review-skill`.** A bare `/code-review` is a *builtin* skill in
-both Claude Code and Cursor — different output shape, and it will edit code. Cursor's
+**Invoke it by name: `/code-review-skill`.** A bare `/code-review` is a *builtin* skill —
+different output shape, and it will edit code. (Cursor's
 [`.cursor/commands/code-review.md`](../../../.cursor/commands/code-review.md) routes
-`/code-review` here; everywhere else ask for `/code-review-skill` explicitly.
+`/code-review` here.)
 
 **Repo default — report findings, edit nothing** unless the user asks. Output is markdown
-prose in the three-block shape (§3), never a host-specific findings tool. The review is
-the handoff: do not also produce a prompt or brief for whoever fixes the PR — they run
-`address-review-findings` off the PR threads.
+prose in the three-block shape (§3), never a host-specific findings tool.
 
 ## 1. What are you reviewing?
 
 | Reviewing | Read | Why it is separate |
 |---|---|---|
 | A code PR, first look (round 1, or a reviewer new to the PR) | [`reference/code-pr.md`](reference/code-pr.md) | Two passes — code cold, then context — and the archivey checklists |
-| A code PR again, after fixes (round 2 on) | [`reference/fix-round.md`](reference/fix-round.md) | Scope is the fix-diff, not the PR; 67 of the 70 findings raised after round 1 in 2026-09-23/24 came from the previous round's fix |
+| A code PR again, after fixes (round 2 on) | [`reference/fix-round.md`](reference/fix-round.md) | Scope is the fix-diff, not the PR: almost every finding after round 1 comes from the previous round's fix |
 | An OpenSpec proposal, delta spec or `design.md` | [`reference/reviewing-proposals.md`](reference/reviewing-proposals.md) | No code tree to read cold, so values first |
-| Whole files rather than a diff (a sweep batch on #315) | [`reference/whole-file-sweep.md`](reference/whole-file-sweep.md) | One `SWEPT` marker per file, findings or not |
+| Whole files rather than a diff (a sweep batch) | [`reference/whole-file-sweep.md`](reference/whole-file-sweep.md) | One `SWEPT` marker per file, findings or not |
 | A commissioned `review/` brief | [`reference/deep-reviews.md`](reference/deep-reviews.md) | A different deliverable and a baseline you record yourself |
 
 **Also read [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) at the start of a first look.**
@@ -55,24 +52,20 @@ does not restate them.
 **Authoritative sources — open when a finding touches them:**
 [`VISION.md`](../../../VISION.md) (product tie-breaker),
 [`openspec/specs/`](../../../openspec/specs/) (capability contracts, revisable when wrong),
-[`dev-docs/threat-model.md`](../../../dev-docs/threat-model.md) (trust boundaries and open
-gaps), [`review/README.md`](../../../review/README.md) and
-[`review/STATUS.md`](../../../review/STATUS.md) (deep-review conventions and live triage).
+[`dev-docs/design-rules.md`](../../../dev-docs/design-rules.md) (the maintainer's recurring
+rulings, written as rules — check one before calling something a maintainer decision),
+[`dev-docs/threat-model.md`](../../../dev-docs/threat-model.md) (the security design: trust
+boundaries and open design gaps), [`review/README.md`](../../../review/README.md)
+(deep-review conventions; open reviews are the top level of `review/`).
 
-**Optional guides**, upstream-derived and generic — open one only when a finding needs it:
-[Python](reference/python.md) ·
+**Optional guides**, archivey-scoped — open one only when a finding needs it:
 [Architecture](reference/architecture-review-guide.md) ·
 [Performance](reference/performance-review-guide.md) ·
 [Security](reference/security-review-guide.md) ·
-[Universal quality](reference/code-quality-universal.md) ·
 [Common bugs](reference/common-bugs-checklist.md) ·
 [Error handling](reference/cross-cutting/error-handling-principles.md) ·
-[Concurrency](reference/cross-cutting/async-concurrency-patterns.md) ·
-[Best practices](reference/code-review-best-practices.md).
+[Concurrency](reference/cross-cutting/async-concurrency-patterns.md).
 The fill-in report form is [`assets/pr-review-template.md`](assets/pr-review-template.md).
-
-> Large diff? `git diff main...HEAD | python scripts/pr-analyzer.py` triages complexity
-> before you read.
 
 ## 2. Finding discipline
 
@@ -138,12 +131,8 @@ suppression:
 
 Three blocks, and **they do not all go in the same place.** Blocks 1 and 3 are the review
 body; block 2 is the inline threads, one per finding (§6). The body is therefore a
-summary with an index, and the detail sits on the line it concerns.
-
-That split is a maintainer decision (davitf, 2026-09-21): *"I'm finding PR review comments
-too long and hard to find the relevant info."* A body that also carries every finding in
-full is the thing being fixed here — the detail is not deleted, it moves to the thread
-where it can be replied to and resolved.
+summary with an index, and the detail sits on the line it concerns, where it can be
+replied to and resolved (maintainer decision, davitf, 2026-09-21).
 
 The maintainer often has **not** read the diff: design the body for that reader, and the
 thread for the implementor. [`assets/pr-review-template.md`](assets/pr-review-template.md)
@@ -171,15 +160,10 @@ For the maintainer skimming without the code open. Half a screen unless the chan
 - **What this change is** — 2–4 sentences: intent, main files/areas touched, behaviour
   delta, in plain language. Assume no familiarity with the PR or the OpenSpec change name.
   **Once per PR, not once per reviewer.** Write it only if no review on this PR carries one
-  yet. The maintainer has already read it otherwise, and that is true whether the previous
-  review was yours or the other reviewer's — a second reviewer's first look is not a
-  re-review under `fix-round.md`, but the description is just as redundant. Any later
-  review opens with the status bullets over whatever IDs already exist (`fix-round.md`)
-  instead. The one exception is a rework that made the earlier description wrong: then give
-  one line on what changed, not a fresh description.
-
-  (Fix-diff scope, `fix-round.md`, stays per *reviewer* — a second reviewer has not read
-  the tree and reads `main...HEAD`. It is only the description that is per PR.)
+  yet, whoever wrote that one; any later review opens with the status bullets over the
+  existing IDs (`fix-round.md`) instead. The one exception is a rework that made the
+  earlier description wrong: then give one line on what changed. (Fix-diff scope stays
+  per *reviewer*: a reviewer new to the PR reads `main...HEAD`.)
 - **Findings** — the index, and the only list of findings in the body. One bullet each,
   ranked by severity then confidence, including 🟢 and 💡: ID, severity, confidence, the
   gist in one sentence, the location, and a link to the thread. Nothing else. The full
@@ -265,11 +249,9 @@ recommendation the maintainer has **not** ruled on stays yours, however confiden
 promote your own preference to "decided" because nobody objected.
 
 **Do not hold the review waiting on a decision that has already been made.** Once every
-block 3 packet is settled, the review goes on the PR. The counterpart rule for the
-responding agent is in
-[`address-review-findings`](../address-review-findings/SKILL.md) §6; both exist because
-a settled decision that lives only in a chat transcript is lost — a fresh container has no
-memory of earlier sessions (`CLAUDE.md`).
+block 3 packet is settled, the review goes on the PR: a settled decision that lives only
+in a chat transcript is lost. The responder's counterpart is
+[`address-review-findings`](../address-review-findings/SKILL.md) §6.
 
 Reviewing an OpenSpec proposal (`reviewing-proposals.md`) uses the same three blocks: "what
 this change is" summarizes the proposal's intent, and block 2 is the handoff for whoever
@@ -308,16 +290,14 @@ ask for a change, and they never hold a merge.
 
 **From the third round on, if only 🟢 nits remain open, the verdict is
 "✅ Approve, conditional on the listed fixes" and you stop reviewing.** Do not open a
-fourth round to confirm wording changes you already described. Whether it then merges is
-the maintainer's call, as always — this bounds re-reading, not merging.
+fourth round to confirm wording changes you already described. Whether it then merges
+follows `AGENTS.md` §Working with the maintainer: an agent may merge a straightforward PR
+once the review approves and CI is green, and a tricky one goes to the maintainer. This
+bounds re-reading, not merging.
 
 This is not a relaxation of the nit rule — the conditioned findings are still posted in
-full and still fixed. It is a bound on *re-reading*. In the two weeks to 2026-09-19, every
-🔴 in the repo was raised in round 1 or 2; rounds 3 to 6 produced almost only 🟢 wording
-findings, and #326 reached six rounds. Late rounds also manufacture their own work: seven
-findings in that window existed only because an earlier fix on the same PR created them
-(a fix that deleted the rationale the finding asked for, a fix that broke `__del__`, a
-correction to wording a previous fix introduced).
+full and still fixed. It is a bound on *re-reading*: late rounds find almost only 🟢
+wording, and part of that is churn an earlier fix on the same PR created.
 
 A round 3+ that finds a 🔴 or a 🟡 is a normal round — say so and keep going. The budget
 binds only the case where the remainder is nits.
@@ -361,11 +341,9 @@ cannot be dispositioned finding-by-finding costs the next round more than it sav
 - **Give every block-2 finding a stable ID and keep it across re-reviews** — a re-review
   of `F3` says `F3`, not `2`. The responder's status list and the maintainer's memory
   both key on them; renumbering between rounds silently breaks both.
-- **Prefix the ID with your own initial** (`C1`, `C2`, … from Cursor; `K1`, `K2`, … from
-  Claude Code) rather than a bare `F`. Two reviewers work the same PR here, and a bare
-  `F` collides: #353 carried two different `F16`s, from two reviewers, at the same time,
-  and the responder had to disambiguate them by hand. Keep counting up across your own
-  rounds on that PR — `K7` follows `K6` even in a later round.
+- **Prefix the ID with your own initial** (`K1`, `K2`, … from Claude Code) rather than a
+  bare `F`, so IDs from different reviewers on one PR never collide. Keep counting up
+  across your own rounds on that PR — `K7` follows `K6` even in a later round.
 - **Post each block-2 finding that has a `file:line` as an inline review comment** anchored
   there, not buried in one long top-level wall. Inline findings can be replied to and
   resolved individually, which is what makes the state of a round visible later.
@@ -420,9 +398,8 @@ Conditional approval names what it is conditioned on in the heading itself:
 Use `## ` in a review body and `### ` in an inline comment or reply. The level is what
 keeps the raw markdown readable, and it nests a finding's heading under the body's.
 
-On a PR whose threads mix maintainer questions, `cursor[bot]` dispositions, and a reviewer
-posting through the maintainer's account, this is what makes a thread scannable — the
-author avatar says `davitf` for two of those three. Keep the attribution to one line; the
+Agents post through the maintainer's account, so the avatar says `davitf` on most
+threads; the header is what makes them scannable. Keep the attribution to one line; the
 detail belongs under it.
 
 ### Do not re-run the gates — or re-measure what a previous round recorded
@@ -439,9 +416,7 @@ no command is still a copied claim.
 
 **The same rule applies to your own earlier rounds.** Rebuilding a fixture, re-timing a
 bomb, re-running a mutant, or re-deriving an offset that a previous round already
-established is the single largest measured waste in this loop — on #342 the same
-arithmetic was re-derived from scratch in three consecutive rounds (twice wrongly), and
-#349 and #353 rebuilt 70,000-file fixtures and re-timed both bombs in rounds 2, 3 and 4.
+established is the largest measured waste in this loop.
 
 So **close every review body with a `Measured this round` list** — one line per command,
 with its result. **It is written for the next round, not for the maintainer, so collapse
@@ -475,8 +450,8 @@ holds. No CI run to inherit, and the skip count is itself evidence.
 
 ### You cannot post a GitHub approval — expected, not news
 
-Agents here post through the maintainer's own account (the same fact "Attribution" below is
-about), and GitHub refuses `event: APPROVE` on your own pull request:
+Agents here post through the maintainer's own account, and GitHub refuses
+`event: APPROVE` on your own pull request:
 
 ```
 422 Unprocessable Entity — Can not approve your own pull request
@@ -497,50 +472,13 @@ So:
 - A human approval, where the repo's checks require one, is still the maintainer's to give.
   Nothing you post substitutes for it.
 
-Hosts that post as their own bot identity (`cursor[bot]`, …) are not their own PR author
-and are not covered by this — they may post the real event.
+### Attribution footer
 
-### Attribution — make it obvious an agent wrote this
-
-Agents usually post through the maintainer's own GitHub account, so **every posted comment
-must be identifiable as agent-authored**. Without that, a review is indistinguishable from
-the maintainer's own comment, and the next agent cannot tell which feedback is the human's
-— a distinction that changes how the feedback is weighted (see the responder skill's "Who
-actually said this").
-
-Two mechanisms satisfy this; use whichever your environment gives you:
-
-- **A distinct bot account.** If your host posts as its own identity (`cursor[bot]`,
-  `qodo-code-review[bot]`, …), attribution is already unambiguous and no footer is needed.
-- **An attribution footer**, when posting through a human account. End the comment with a
-  rule and one italic line naming the tool that wrote it. In Claude Code sessions that is:
-
-  ```
-  ---
-  _Generated by [Claude Code](https://claude.ai/code)_
-  ```
-
-  Other hosts use their own equivalent — the requirement is the *identifiability*, not that
-  specific string. Do not sign a comment with a tool that did not write it.
-
-**Claude Code: whether to write the footer yourself depends on the posting path, so check
-before you post a batch.** On #326, against review bodies, inline review comments and thread
-replies, each came back carrying exactly one server-added footer when the posted text had
-none; a footer added as well is deduplicated on inline comments and replies but **not** on a
-review body, which then shows it twice
-([review 5178024776](https://github.com/davitf/archivey/pull/326#pullrequestreview-5178024776)).
-
-**On #315 through the GitHub MCP tools, nothing is appended.** Five sweep batches verified it
-independently on 2026-09-20 by reading their own stored bodies back, and two of them lost the
-footer on their first review body before noticing. Write it explicitly there and confirm
-exactly one per comment. A review body cannot be edited through the MCP tools, only patched
-with a direct API call, so a body posted without one is expensive to fix — which is the
-argument for running the one-comment check first, as the paragraph below already says.
-
-This is host-specific. **Cursor and any other host whose posting path does not append a
-footer must still add its own** — the requirement is identifiability, and a comment posted
-through the maintainer's account with no marker fails it. If you do not know whether your
-host appends one, post one comment without it and read the stored body back before assuming.
+Every review body, inline comment and reply ends with the attribution footer, written by
+you — `\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_` in Claude Code. Do not
+count on the posting path to add it: the current paths append nothing, and a review body
+posted without it cannot be edited afterwards through the MCP tools. The rule and why:
+`AGENTS.md` §Review workflow.
 
 ### The `review` label is a command
 
@@ -556,12 +494,8 @@ End block 3 with a one-line pointer to the responder skill:
 Addressing these: `.claude/skills/address-review-findings/SKILL.md`.
 ```
 
-The findings are not always picked up by an agent that was asked to address them. A
-session subscribed to PR activity reacts to the review as an *event*, from its own
-generic posture, and never invokes a skill nobody named — so the pointer is the only
-thing in the PR that says which process applies. Claude Code watchers also read
-`.claude/skills/steward/SKILL.md` before acting; the line in the body is what covers
-everyone else.
+A session reacting to the review as a PR *event* never invokes a skill nobody named, so
+this line is the only thing in the PR that says which process applies.
 
 ### Do not fix while reviewing
 

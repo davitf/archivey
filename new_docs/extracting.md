@@ -7,14 +7,15 @@ with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/")
 ```
 
-`extract_all` writes every member under the destination folder. It's safe by default: nothing lands outside `out/`, and an archive that expands far beyond
-its size is stopped. [What each policy does with unusual members](#what-each-policy-does-with-unusual-members) has the details.
+`extract_all` writes every member under the destination folder. It's safe by default: nothing lands
+outside `out/`, and an archive that expands far beyond its size is stopped. [What each policy does
+with unusual members](#what-each-policy-does-with-unusual-members) has the details.
 
-To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in
-order, so it needs nothing more.
+To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in order,
+so it needs no other option.
 
-Its `members` argument picks what to extract. It takes names, [`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing,
-or a mix of both:
+Its `members` argument picks what to extract. It takes names,
+[`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing, or a mix of both:
 
 ```python
 with archivey.open_archive("download.zip") as archive:
@@ -28,8 +29,8 @@ with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=lambda member: member.name.endswith(".txt"))
 ```
 
-A second argument, `filter`, sees each member before it's checked and written. It can change the member
-by returning a changed copy, with a new name or new permissions, for example, or skip it by
+Another argument, `filter`, sees each member before it's checked and written. It can change the
+member by returning a changed copy, with a new name or new permissions, for example, or skip it by
 returning `None`.
 
 ## Options
@@ -44,6 +45,7 @@ with archivey.open_archive("download.zip") as archive:
         abort_on=[],         # events that stop the whole extraction at once
         on_progress=None,    # called as files are written
         limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
+        dry_run=False,       # run it without keeping anything
     )
 ```
 
@@ -94,6 +96,12 @@ well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, 
 the bytes and members done so far, and the expected totals when the archive records them. It's
 meant for progress bars.
 
+`dry_run=True` runs the same extraction into an empty temporary folder, which is deleted before the
+call returns. Every member is decompressed and checked, but the files it creates stay empty, and
+nothing is written to `out/`. The report shows what extracting into an empty `out/` would do, with
+the path each member would be written to. Files already in `out/` aren't taken into account, so a
+member that would clash with one of them still shows as extracted.
+
 ## What each policy does with unusual members
 
 Some members are refused under every policy, and others depend on it:
@@ -103,7 +111,7 @@ Some members are refused under every policy, and others depend on it:
 | `../evil.txt` or `a/../../evil.txt` | Refused | Refused | Refused |
 | `/etc/evil.txt` or `C:/evil.txt` | Refused | Written as `etc/evil.txt` or `evil.txt` | Written as `etc/evil.txt` or `evil.txt` |
 | A link to `../../outside` or `/etc/passwd` | Refused | Refused | Refused |
-| A device file or a FIFO | Refused | Refused | Refused |
+| A device file or a named pipe | Refused | Refused | Refused |
 | `CON`, `aux.txt` or `file:ads`, which Windows can't create | Refused | Refused | Written as is |
 | A name with hidden characters that make an `.exe` look like a `.png` | Refused | Refused | Written as is |
 | `notes. `, with a trailing dot and space | Written as `notes` | Written as is | Written as is |
@@ -112,16 +120,19 @@ Some members are refused under every policy, and others depend on it:
 | A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
 
 `"strict"` and `"standard"` treat `README` and `readme` as the same file on every system, since
-they are the same file on macOS and Windows. An archive that writes more in total than `limits`
-allows stops the whole extraction, whatever the policy.
+macOS and Windows can't tell them apart by default. An archive that writes more in total than
+`limits` allows stops the whole extraction, whatever the policy.
 
 A `filter` sees each member before these checks run, so it can rename one they would refuse,
 such as `../evil.txt`, and that member is then written under its new name. Device files are
 refused whatever the filter does, and a link pointing outside is refused unless the filter also
 changes its target. `archivey.sanitize_names` is a ready-made filter for this, passed as
 `filter=` to `extract_all`. It drops a leading `/` or drive letter, resolves or drops `..`,
-removes the hidden characters, and adds `_` to names Windows reserves, such as `CON`. It gives
-a hardlink's target the same rewrite, but leaves a symlink's target as stored.
+removes the hidden characters, and adds `_` to names Windows reserves, such as `CON`. In a
+symlink's target it makes only the character and reserved-name fixes, and it leaves a
+hard link's target as stored. A hard link is a second name for the file at the end of its chain
+of links, so it is written when that file is written and refused when that file is refused,
+and changing its target in a filter does nothing.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, with the path it was written to in `result.path` and the
@@ -153,7 +164,7 @@ expands more than 1000 times. The expansion check starts after the first 5 MiB. 
 something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
 
 Some limits apply before extraction starts, such as the number of members or how much memory a
-decompressor may use. Those are set when you open the archive, through
+decoder may use. Those are set when you open the archive, through
 `config=archivey.ArchiveyConfig(...)`, and the [reference](api.md#archivey.ArchiveyConfig) lists
 them.
 

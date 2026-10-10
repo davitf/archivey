@@ -15,9 +15,10 @@ import tarfile
 import unicodedata
 import warnings
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterator, cast
+from typing import cast
 
 import pytest
 
@@ -213,17 +214,18 @@ def test_check_universal_rejects_symlink_escape(tmp_path: Path) -> None:
         check_universal(m, tmp_path)
 
 
-def test_check_universal_names_the_escaping_link_type(tmp_path: Path) -> None:
+def test_check_universal_names_a_symlink_escape_not_a_hardlink_target(
+    tmp_path: Path,
+) -> None:
     sym = _member("link", type=MemberType.SYMLINK, link_target="../outside.txt")
     with pytest.raises(
         FilterRejectionError, match="Symlink target escapes destination"
     ):
         check_universal(sym, tmp_path)
+    # A hardlink target names a member and never becomes a path, so it is not
+    # checked here; the coordinator refuses a link whose source was refused instead.
     hard = _member("h", type=MemberType.HARDLINK, link_target="../outside.txt")
-    with pytest.raises(
-        FilterRejectionError, match="Hardlink target escapes destination"
-    ):
-        check_universal(hard, tmp_path)
+    check_universal(hard, tmp_path)
 
 
 def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> None:

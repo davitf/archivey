@@ -26,8 +26,9 @@ import io
 import re
 import stat
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import BinaryIO, ContextManager
+from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -689,7 +690,7 @@ class SevenZipReader(BaseArchiveReader):
 
     def _link_data_stream(
         self, member: ArchiveMember
-    ) -> ContextManager[ReadableStream]:
+    ) -> AbstractContextManager[ReadableStream]:
         """Where ``_ensure_link_target`` reads ``member``'s bytes from.
 
         Bytes read ahead (a listing sweep, a pass in either mode) come first; then the data

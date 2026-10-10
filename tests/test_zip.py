@@ -10,7 +10,7 @@ import struct
 import subprocess
 import zipfile
 import zlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -487,7 +487,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
         z.writestr("café.txt", b"x")  # forces the UTF-8 flag
     with open_archive(path) as ar:
         member = ar.get("café.txt")
-        assert member.raw_name == "café.txt".encode("utf-8")
+        assert member.raw_name == b"caf\xc3\xa9.txt"
 
 
 def test_extended_timestamp_precedence(tmp_path: Path) -> None:
@@ -504,7 +504,7 @@ def test_extended_timestamp_precedence(tmp_path: Path) -> None:
         member = ar.get("t.txt")
         assert member.modified is not None
         assert member.modified.tzinfo is not None
-        assert member.modified == datetime.fromtimestamp(unix_time, tz=timezone.utc)
+        assert member.modified == datetime.fromtimestamp(unix_time, tz=UTC)
 
 
 def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
@@ -521,9 +521,7 @@ def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
-        assert ar.get("file.txt").modified == datetime.fromtimestamp(
-            unix_time, tz=timezone.utc
-        )
+        assert ar.get("file.txt").modified == datetime.fromtimestamp(unix_time, tz=UTC)
 
 
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
@@ -540,10 +538,10 @@ def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
         member = ar.get("t.txt")
-        assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
-        assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
+        assert member.modified == datetime.fromtimestamp(mtime, tz=UTC)
+        assert member.accessed == datetime.fromtimestamp(atime, tz=UTC)
         assert member.created is None
-        assert member.ctime == datetime.fromtimestamp(ctime, tz=timezone.utc)
+        assert member.ctime == datetime.fromtimestamp(ctime, tz=UTC)
 
 
 def test_duplicate_member_names_read_independently(tmp_path: Path) -> None:
@@ -1338,9 +1336,9 @@ def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None
         z.writestr(info, b"data")
     with open_archive(path) as ar:
         member = ar.get("t.txt")
-        assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
-        assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
-        assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
+        assert member.modified == datetime.fromtimestamp(mtime, tz=UTC)
+        assert member.accessed == datetime.fromtimestamp(atime, tz=UTC)
+        assert member.created == datetime.fromtimestamp(ctime, tz=UTC)
 
 
 @pytest.mark.parametrize(
@@ -1378,8 +1376,8 @@ def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
         z.writestr(info, b"data")
     with open_archive(path) as ar:
         member = ar.get("t.txt")
-        assert member.modified == datetime.fromtimestamp(ut_mtime, tz=timezone.utc)
-        assert member.accessed == datetime.fromtimestamp(nt_atime, tz=timezone.utc)
+        assert member.modified == datetime.fromtimestamp(ut_mtime, tz=UTC)
+        assert member.accessed == datetime.fromtimestamp(nt_atime, tz=UTC)
         assert member.created is None  # NTFS ctime was 0 = "not set"
         assert member.ctime is None
 
@@ -1427,7 +1425,7 @@ def test_writer_host_decides_whether_creation_time_is_created(
     info.extra = extra
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
-    expected = datetime.fromtimestamp(stored, tz=timezone.utc)
+    expected = datetime.fromtimestamp(stored, tz=UTC)
     with open_archive(path) as ar:
         member = ar.get("t.txt")
         if birth_time:
@@ -1764,9 +1762,7 @@ def test_extended_timestamp_pre_epoch(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         member = ar.get("t.txt")
         assert member is not None
-        assert member.modified == datetime(
-            1969, 12, 31, 23, 59, 59, tzinfo=timezone.utc
-        )
+        assert member.modified == datetime(1969, 12, 31, 23, 59, 59, tzinfo=UTC)
 
 
 def test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime(
@@ -1799,9 +1795,7 @@ def test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime(
     with open_archive(path) as ar:
         member = ar.get("t.txt")
         assert member is not None
-        assert member.modified == datetime(
-            1901, 12, 13, 20, 45, 52, tzinfo=timezone.utc
-        )
+        assert member.modified == datetime(1901, 12, 13, 20, 45, 52, tzinfo=UTC)
         assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
 
 

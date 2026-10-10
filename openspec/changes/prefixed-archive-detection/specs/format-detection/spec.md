@@ -194,7 +194,7 @@ real streams — see *A content probe SHALL NOT accept framing the source cannot
 
 The residual — arbitrary non-archive data that the Brotli probe claims, which is a far
 wider problem than executable prefixes — remains out of scope *here* and stays tracked
-separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The
+separately (`dev-docs/topics/detection.md`, `dev-docs/threat-model.md` O10). The
 **first-block** framing check narrows it from 3.5% of a real `/usr` tree to ~0.15%
 (61/39 859 measured); the deferred chain walk would cut further to ~0.035%. It does not
 close the residual, and the registered wording needs three clauses, not one: the listing

@@ -2,7 +2,7 @@
 
 > **Specs-first proposal. Nothing here is implemented, and it is deliberately not
 > scheduled.** `design.md` §Design constraint says why: `STRICT` and the
-> `stream.verified` / `verify()` idea in `dev-docs/IDEAS.md` are one design question,
+> *Verification state as data* idea in `dev-docs/IDEAS.md` are one design question,
 > and both thread through `MemberVerifier`. Settle that before task 1, along with the
 > two remaining open questions (naming, and seek behaviour under `STRICT`).
 >

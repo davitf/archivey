@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Collection, Iterator, Self
+from typing import TYPE_CHECKING, Self
 
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt

@@ -55,8 +55,8 @@ $PSNativeCommandUseErrorActionPreference = $false
 # CI exists to test archivey against the binary Windows users actually run,
 # which is rarlab's own build — a self-compiled one diverges in toolchain (this
 # library parses unrar's output and pipes `unrar p`) and in version. Maintainer
-# decision on #320; review/backlog.md ("#320 F2") has the reasoning and the
-# integrity options that remain open.
+# decision on #320 (F2); the integrity options that remain open are tracked
+# internally.
 $Url = 'https://www.rarlab.com/rar/unrarw64.exe'
 
 function Find-UnRARExe {

@@ -58,7 +58,7 @@ in `extraction.py` were reviewed once the streaming-extraction PR merged, and th
 `sevenzip_reader.py` once the password-confirmation PR merged (`c599fc5`). That PR also
 added two handlers in `password_confirm.py`, reviewed with them on `c599fc5`, which makes
 69; the type breakdown above is as of `5bbbfdc`. Pattern names are the ones in
-[`dev-docs/topics/exception-handlers.md`](../../dev-docs/topics/exception-handlers.md).
+[`dev-docs/topics/exception-handlers.md`](../../../dev-docs/topics/exception-handlers.md).
 
 Locations are by function, because line numbers drift.
 

@@ -5,9 +5,9 @@ The stdlib :mod:`zipfile` can *read* ZipCrypto but cannot *write* encryption, an
 (notably the multi-password disambiguation, where a wrong candidate password can pass
 the cipher's single verification byte) build their archives here instead.
 
-This deliberately implements only what those tests need: one STORED, DEFLATE, BZIP2, or
-LZMA member encrypted with the classic PKWARE stream cipher in a single-entry ZIP. It is
-test scaffolding, not a general-purpose ZIP writer.
+``build_zipcrypto_zip`` writes one member in STORED, DEFLATE, BZIP2 or LZMA.
+``build_stored_zipcrypto_zip`` writes several STORED members, each with its own
+password. Both are test scaffolding, not a general-purpose ZIP writer.
 
 The cipher (APPNOTE.txt §6.1): a 96-bit key state seeded from the password, a 12-byte
 random encryption header whose final byte is a verification value (the high byte of the
@@ -23,6 +23,7 @@ import lzma
 import struct
 import zipfile
 import zlib
+from collections.abc import Sequence
 
 
 def _make_crc_table() -> list[int]:
@@ -73,6 +74,71 @@ def _encrypt(password: bytes, check_byte: int, payload: bytes) -> bytes:
     return bytes(out)
 
 
+def _member_bytes(
+    name: bytes,
+    data: bytes,
+    enc: bytes,
+    *,
+    compression: int,
+    version_needed: int,
+    made_by: int,
+    flags: int,
+    extra: bytes,
+    offset: int,
+    external_attr: int,
+) -> tuple[bytes, bytes]:
+    """Local record and central entry for one ZipCrypto member.
+
+    Shared so the single-member and multi-member writers pack the same headers
+    for the same STORED entry.
+    """
+    crc = zlib.crc32(data) & 0xFFFFFFFF
+    local = (
+        struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50,
+            version_needed,
+            flags,
+            compression,
+            0,
+            0,
+            crc,
+            len(enc),
+            len(data),
+            len(name),
+            len(extra),
+        )
+        + name
+        + extra
+        + enc
+    )
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            made_by,
+            version_needed,
+            flags,
+            compression,
+            0,
+            0,
+            crc,
+            len(enc),
+            len(data),
+            len(name),
+            len(extra),
+            0,
+            0,
+            0,
+            external_attr,
+            offset,
+        )
+        + name
+        + extra
+    )
+    return local, central
+
+
 def build_zipcrypto_zip(
     password: bytes,
     name: bytes,
@@ -120,53 +186,64 @@ def build_zipcrypto_zip(
     else:
         raise ValueError(f"unsupported test compression method: {compression}")
     enc = _encrypt(password, (crc >> 24) & 0xFF, stored)
-    comp_size = len(enc)  # encryption header is part of the stored/compressed size
-    lfh = (
-        struct.pack(
-            "<IHHHHHIIIHH",
-            0x04034B50,
-            version_needed,
-            flags,
-            compression,
-            0,
-            0,
-            crc,
-            comp_size,
-            len(data),
-            len(name),
-            len(extra),
-        )
-        + name
-        + extra
+    # The encryption header is part of the compressed size, inside ``enc``.
+    local, central = _member_bytes(
+        name,
+        data,
+        enc,
+        compression=compression,
+        version_needed=version_needed,
+        made_by=made_by,
+        flags=flags,
+        extra=extra,
+        offset=0,
+        external_attr=external_attr,
     )
-    data_start = len(lfh)
-    cdh = (
-        struct.pack(
-            "<IHHHHHHIIIHHHHHII",
-            0x02014B50,
-            made_by,
-            version_needed,
-            flags,
-            compression,
-            0,
-            0,
-            crc,
-            comp_size,
-            len(data),
-            len(name),
-            len(extra),
-            0,
-            0,
-            0,
-            external_attr,
-            0,
+    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(local), 0)
+    return local + central + eocd
+
+
+def build_stored_zipcrypto_zip(
+    members: Sequence[tuple[bytes, bytes, bytes]],
+) -> bytes:
+    """A STORED ZipCrypto ZIP with one member per ``(password, name, data)``.
+
+    Same headers as :func:`build_zipcrypto_zip` for a single STORED member: no data
+    descriptor, so the verification byte is the high byte of the CRC-32, and one
+    central directory covers every member.
+    """
+    if not members:
+        raise ValueError("need at least one member")
+    locals_ = bytearray()
+    centrals = bytearray()
+    for password, name, data in members:
+        enc = _encrypt(password, (zlib.crc32(data) >> 24) & 0xFF, data)
+        local, central = _member_bytes(
+            name,
+            data,
+            enc,
+            compression=zipfile.ZIP_STORED,
+            version_needed=20,
+            made_by=20,
+            flags=0x1,
+            extra=b"",
+            offset=len(locals_),
+            external_attr=0,
         )
-        + name
-        + extra
+        locals_ += local
+        centrals += central
+    eocd = struct.pack(
+        "<IHHHHIIH",
+        0x06054B50,
+        0,
+        0,
+        len(members),
+        len(members),
+        len(centrals),
+        len(locals_),
+        0,
     )
-    cd_off = data_start + len(enc)
-    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cdh), cd_off, 0)
-    return lfh + enc + cdh + eocd
+    return bytes(locals_ + centrals + eocd)
 
 
 def zip_with_truncated_zipcrypto_header(

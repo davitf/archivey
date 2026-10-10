@@ -1,8 +1,8 @@
 """Pins from the review of blind ``except`` handlers in ``src/``.
 
 Each test names the handler it pins and the exception a caller now sees. The review
-record is ``review/exception-catchalls/``; the house rules it produced are
-``dev-docs/topics/exception-handlers.md``.
+record is ``review/archive/2026-09-25-exception-catchalls/``; the house rules it produced
+are ``dev-docs/topics/exception-handlers.md``.
 """
 
 from __future__ import annotations

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import gzip
 import io
 import lzma
@@ -353,6 +354,9 @@ def accel_deflate_seeds() -> list[bytes]:
         _with_declared_size(len(payload), full),
         _with_declared_size(len(payload), full[: len(full) // 2]),
         _with_declared_size(len(payload) + 1, full),  # size overstated
+        # The input this target found: one non-final block of 168 bytes, no final
+        # block, and a declared size of 168. rapidgzip ends it with no error.
+        base64.b64decode("qAAAAOIsyUhOVizKLShNTVEoSKzMyU9M4UocfIIA"),
     ]
 
 

@@ -1,5 +1,9 @@
 # Claims — steps 2 and 3 of Topic 8
 
+> **`dev-docs/open-issues.md` left the repo on 2026-10-09**; its open items are tracked
+> internally. Citations of it here, line numbers included, refer to its last committed
+> state: `git show bd135512:dev-docs/open-issues.md`.
+
 The baseline this pass ran on, and every checkable claim the published guide makes,
 grouped by **capability** and deduplicated across pages.
 
@@ -702,7 +706,7 @@ Evidence: [`worker-inputs/verdicts-F.md`](worker-inputs/verdicts-F.md); harvest 
 |---|---|---|---|---|---|
 | F-1 | The wall-time bands are **targets, not CI hard-fails**; the PR gate enforces structural invariants (bytes decompressed, seeks, solid decode-once) instead | `access-and-cost.md:8-9`, `philosophy.md:70-72` | `testing-contract`, `benchmarks/harness` | Keep | verified |
 | F-2 | `[code]` the harness command runs as written: `uv run --extra all python -m benchmarks.harness --mode full --scale realistic` | `access-and-cost.md:12-14` | `benchmarks/harness.py` | Keep | verified |
-| F-3 | **S-1 (pre-seeded, = [O-4](../docs/observations.md), already open — do not re-file).** The nightly-run link points at `github.com/davitf/archivey-**2**/actions/runs/29992136861`; the repo was renamed 2026-07-25 and GitHub redirects, so it resolves but is stale | `access-and-cost.md:17-18` | [O-4](../docs/observations.md) | `Trim to ~6` | verified |
+| F-3 | **S-1 (pre-seeded, = [O-4](../archive/2026-10-06-docs/observations.md), already open — do not re-file).** The nightly-run link points at `github.com/davitf/archivey-**2**/actions/runs/29992136861`; the repo was renamed 2026-07-25 and GitHub redirects, so it resolves but is stale | `access-and-cost.md:17-18` | [O-4](../archive/2026-10-06-docs/observations.md) | `Trim to ~6` | verified |
 | F-4 | The four aspirational bands are the stated ones (≤1.3× read, ≤~2× extract, ≤2–3× open+list, ≈1.25× 7z/RAR open+list) | `access-and-cost.md:21-26` | `benchmarks/harness.py`, `dev-docs/IDEAS.md` | `Trim to ~6` — the band table is the half that stays | verified |
 | F-5 | The measured column, the corpus description, the above-band ZIP-extract admission and the **L5** lazy-derivation follow-up are accurate as of run 29992136861 | `access-and-cost.md:16-33` | `dev-docs/IDEAS.md`, the nightly run | `Trim to ~6` — this is the maintainer-evidence half being removed | verified |
 | F-6 | `reader.cost` is a machine-readable receipt whose fields are `listing_cost`, `access_cost`, `stream_capability`, `solid_block_count` | `access-and-cost.md:37-44` | `src/archivey/cost.py:86-108`, `access-mode-and-cost:151` | `→ DS` — a field table is D-f's own example of a lookup; `CostReceipt` has an `api.md` entry | verified |
@@ -751,7 +755,7 @@ Evidence: [`worker-inputs/verdicts-F.md`](worker-inputs/verdicts-F.md); harvest 
 - **F-35 is the row to be most careful with.** It is a *negative* containment claim
   sitting four lines after a positive one (F-33), and #223's round-2 finding 2 exists
   because a previous pass kept one and dropped the other. Verify them as a pair.
-- **F-3 (S-1) is carried, not re-filed.** It is O-4 in `review/docs/observations.md`.
+- **F-3 (S-1) is carried, not re-filed.** It is O-4 in `review/archive/2026-10-06-docs/observations.md`.
 
 ---
 

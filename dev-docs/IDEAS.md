@@ -1,997 +1,269 @@
-# Archivey — Future Ideas / Backlog
-
-> **Status: speculative.** Nothing here is committed or scheduled. These are
-> "might do later, worth remembering" notes, not committed work (that lives in the open
-> OpenSpec changes under `openspec/changes/`). Firm, decided v1 deferrals (async, in-place modify, sparse-file
-> extraction, etc.) live in `openspec/project.md`
-> ("Deferred / out of scope (v1)") and `dev-docs/history/SPEC.md` Appendix A — this file is the
-> looser idea pile. Promote an item by writing a real spec/`openspec` change for it.
->
-> **Active direction (not speculative):** thinning OpenSpec scenario farms into tests +
-> handbook pages — tracked in
-> [`discussions/2026-09-specs-to-handbook-and-tests.md`](discussions/2026-09-specs-to-handbook-and-tests.md);
-> do it incrementally when touching specs (CONTRIBUTING §Working with the specs).
-
-## Backends & format coverage
-
-- **Let the source boundary join a RAR set, as it joins numbered parts** — today a RAR set
-  arrives at `RarReader` as volume 1's path, and the reader re-discovers the siblings and
-  builds its own `ConcatenatedFile` (`_owned_concat`); an explicit path list is joined by
-  `resolve_source`, detected through, then thrown away and reopened by name. Joining
-  RAR-named siblings in `resolve_source` would keep `.volume_paths` for `unrar` and let the
-  in-process header walk read the joined source, as 7z does. That deletes the RAR branch
-  in `core.py`, `_owned_concat`, the double discovery, the `volume_count` constructor
-  argument, and one of `_SourceSlot`'s two callers (after which it can become a local
-  `try`/`finally`). Two things to check first: the SFX-stub follower reads `.path`, which a
-  joined set does not have, so a `.exe` stub beside `.part1.rar` needs the stub path kept;
-  and an explicit list that omits parts is today overridden by discovery, which this
-  would change to honouring the list for the header walk while `unrar` still walks by
-  name. Raised by the design review of the single-archive-source change (PR 419).
-  Once it lands, every reader-level `SharedSource` sits over an `ArchiveSource`, and a
-  `.shared()` factory on the source becomes possible (the class itself stays: the
-  seek-index accelerators build one over an arbitrary stream).
-
-- **Let an `ArchiveSource` over a file hand out independent handles** — raised by
-  davitf on PR 419. Today a path source reaches the codecs by being unwrapped back to
-  `str(path)` in three places (`open_stream`, the single-file reader, compressed TAR),
-  because a path is what buys a fresh descriptor: rapidgzip opens its own fd (so a
-  source-side fault cannot abort the process), the gzip truncation backstop reopens the
-  file for its scan, and concurrent single-file opens each get their own handle. That
-  is why `CodecSource` still includes `str | os.PathLike` and the codec modules carry eight
-  path branches. An `ArchiveSource.open_independent()` (a fresh handle for a path
-  source, a lock-sharing view otherwise) would let codecs take the source itself and
-  ask it, and would let `SharedSource` give each view its own descriptor instead of one
-  shared locked handle. Measure first: the win is contention between concurrent views
-  on one lock, which may be small next to decompression; the cost is a descriptor per
-  live view.
-
-- **Read raw CD sector images (`.bin`) by stripping sectors** — 0.2.0 recognises a raw
-  image and refuses it by name (`iso_reader.refuse_raw_sector_image`); davitf deferred
-  reading one past the release (#315, S22-K6 thread, 2026-09-21). The layout was
-  prototyped on that thread and is all in the file: byte 15 is the mode, the submode's
-  `0x20` bit splits Mode 2 Form 1 from Form 2, and the sector size is where the second
-  sync lands (2352, or 2448 with subchannel data). Mode 1 and Mode 2 Form 1 strip to a
-  byte-identical `.iso` (payload at 16 and 24), as a slicing stream rather than a copy;
-  the sector walk also yields the image's valid length, which is the bound the
-  reader's `ArchiveSource` reads within. Two non-goals recorded there: multi-track
-  images that need the `.cue` (track 1 audio has no sync at offset 0), and EDC/ECC
-  verification — the trailing 288 bytes would be dropped unchecked, which the docs must
-  then say.
-- **Lift the directory-glob and backslash refusals on the `unrar` path** — a RAR member's
-  stored name is handed to `unrar` as an include mask (`-n./<name>`), so archivey has to
-  predict which *other* members that mask will also match in order to skip their bytes back
-  out of the pipe. That prediction is now a port of `unrar` 7's own name reading and
-  `CmpName` (`rar_unrar.py`), checked against `unrar` 7.00 on Linux by
-  `tests/test_rar_unrar_names.py`. A glob in a directory component, and a literal
-  backslash in a stored name, are still refused rather than demuxed (`formats/rar.md`
-  §2.3, §5): the first has not been measured, and the second differs by host (Windows
-  `unrar` treats `\` as a separator). Closing it means adding those shapes to the
-  differential test, on Windows too. **Very low priority:** the names this would unlock
-  are adversarial ones, and a wrong model is worse than a refusal, because it silently
-  returns the wrong member's bytes.
-
-- **Native streaming ZIP reader** — a native parser that does what stdlib `zipfile`
-  can't: read from **non-seekable** streams (pipes/sockets) and **truncated / no-EOCD**
-  archives by walking local file headers forward, plus better coverage of data
-  descriptors, ZIP64 edge cases, extra fields, and **AES/WinZip encryption** (zipfile
-  only does legacy ZipCrypto). Fits the native-first direction (cf. 7z/RAR). Streaming
-  mode is forward-only and sizes/CRC arrive in trailing data descriptors — i.e. the
-  **late-bound `ArchiveMember` fields** + `FORWARD_ONLY`/`is_solid=False` cost model we
-  already designed for. Lands as a native variant of `internal/backends/zip_reader.py`.
-  This is also the natural home for **spanned ZIP** — the `.z01`…`.zip` sets that
-  `zipfile` cannot read (it rejects multi-disk archives; see `format-zip`). A native
-  parser can read the central directory disk-aware and resolve each *(disk-number,
-  offset)* against a concatenation stream over the ordered segments. That per-disk
-  addressing is the whole difference from the dumb byte-split, which is exactly why
-  7-Zip's `.zip.NNN` sets could be joined without any of this and already are. (For v1
-  the spanned family stays an `UnsupportedFeatureError`.)
-  Also the home for **graceful UTF-8-flag-lie handling**: stdlib `zipfile` strictly
-  decodes a name whose general-purpose bit 11 claims UTF-8, so one hostile/broken name
-  makes the *whole archive* unlistable (`UnicodeDecodeError` → `CorruptionError`; the
-  adversarial string corpus pins that behavior). A native parser can decode such names
-  with the same cp437/`surrogateescape` fallback used for unflagged names and keep the
-  archive readable, with a diagnostic.
-
-- **libarchive backend** — `python-libarchive-c` as an **alternative / additional**
-  backend for several formats (zip/tar/7z/iso/cpio/…), in the `[all]`/alternative tier
-  behind a `[libarchive]` extra. Caveats: native C dependency (the packaging-finicky
-  axis `[recommended]` deliberately keeps out — see `[seekable]`), stream-oriented (weak random access,
-  historically no solid-RAR support).
-
-- **Synthetic single-stream RAR → libarchive** — generalize rarfile's "hack": build a
-  minimal artificial RAR stream containing a single file (or one solid block) and feed
-  it to libarchive's RAR decompressor, as an alternative to shelling out to the external
-  `unrar` binary. Could remove the `unrar` runtime requirement for common cases.
-  **Higher-risk / research spike** — RAR decode correctness is hard and libarchive's
-  RAR5 coverage is partial; `unrar` remains the reference.
-- **`unar` for formats or codecs archivey does not decode** — XADMaster reads many
-  legacy formats (StuffIt, LHA/LZH, ARJ, ACE, CAB, Compact Pro, old Mac archives) and
-  codecs 7z/ZIP members may use that archivey has no Python library for. The process
-  layer is already format-agnostic (`internal/external/unar.py`: identification,
-  argv by entry index, the stdout wrapper), so a backend would add only its own
-  refusals and entry mapping, the way `rar_unar.py` does for RAR. What is missing for a
-  listing-side use is a native parser or a bounded `lsar -j` reader; for a codec-side
-  use, a way to hand `unar` one member's raw bytes (a synthetic one-member archive, as
-  `decompress_rar3_blob` does for RAR3 comments). Not started; requested as a direction
-  by the maintainer on 2026-09-26.
-- **Move the RARLAB `unrar` finder onto `CliToolFinder`** — `find_rarlab_unrar`
-  (`internal/backends/rar_unrar.py`) runs the same policy as
-  `internal/external/cli.py`'s `CliToolFinder`: `which` over two names, a banner probe
-  with a timeout, a version floor, a stat-keyed cache that remembers a hung probe. The
-  finder already uses the shared `stat_identity` (and the `unrar` read paths the
-  shared `terminate_process`); the loop, the cache and the refusal wording are still
-  two copies, so a probe or cache fix has to land twice. What stops a mechanical move:
-  about sixty test sites in `test_rar_reader.py`, `test_rar_unrar_argv.py` and
-  `test_rar_header_record_leniency.py` monkeypatch `_cached_unrar` and
-  `_is_rarlab_unrar` or read the cache entries directly, and the `unrar` refusal
-  messages differ in wording from the generic ones. Do it as its own change with those
-  tests rewritten against the finder object. Raised in review of the `unar` backend,
-  2026-09-26.
-- **Subprocess decompressor streams** — a single reusable `SubprocessDecompressorStream`
-  that pipes compressed/uncompressed data through a system binary (`zstd`, `xz`,
-  `brotli`, `lz4`, …) as an alternative to installing the Python codec libs. Same pattern
-  we already use for `unrar`; valuable in locked-down environments where C-extension
-  wheels won't install but CLI tools are on PATH. Forward-only; needs availability
-  detection and careful subprocess/error handling. Low-priority backend tier.
-
-- **UU / Base64 transport encodings as single-file wrappers** — classic `uuencode`
-  (`.uu` / `.uue`, including `begin-base64`) shows up in old mail/Usenet drops and some
-  vendor corpora; libarchive treats it as a filter and stores many of its own test
-  fixtures uu-encoded (authoring hygiene, not end-user demand). Fits the existing
-  one-member `SingleFileBackend` shape: peel one wrapper, yield opaque payload bytes
-  (same pattern as `.iso.xz` — no general filter stacking). Decoder is trivial pure
-  Python / zero-dep; the non-trivial bits are weak line-oriented detection (`begin `),
-  trusting the embedded name/mode like gzip `FNAME`, and ratio-guard assumptions that
-  expect compression to *shrink*. Scope as bare single-file only — not transparent
-  `uu → gz → tar`. Same “legacy wrapper / open anything in old backups” niche as `.Z`;
-  lower priority than anything on the native 7z/RAR / CLI path. Sibling encodings
-  (xxencode, BinHex, yEnc) only if a real corpus itch appears. Promote when a backup
-  corpus actually wants `detect_format` / `open_archive` to Just Work on `.uu`.
-
-- **Opt-in legacy name-encoding detection (+ undecodable-name reporting)** — *explicitly
-  post-1.0; not needed for release.* Member names that carry **no Unicode marker and are not
-  valid UTF-8** currently decode via `surrogateescape` → honest but garbled (`U+DCxx`)
-  spellings. Affected: **TAR** (ustar/pax has no charset field at all, so `tarfile` defaults
-  to UTF-8 and everything else becomes surrogateescape), **RAR3** non-Unicode names (already
-  fall back to cp437 or windows-1252 by host OS, and honour `encoding=`), and **ZIP** unflagged names that aren't
-  valid UTF-8 (falls back to `zip_unflagged_fallback_encoding`, default cp437). The common
-  *UTF-8-without-marker* case is already handled everywhere (that was the
-  `zip-name-encoding-sniffing` change); this item is only about the genuinely-legacy tail.
-
-  **Why this is NOT the default (the danger).** The shipped UTF-8 sniff is *validation*, not
-  guessing — UTF-8 is self-checking, so a clean decode is near-conclusive. Legacy detection
-  has **no oracle**: latin-1 / cp1252 / cp437 / cp850 / ISO-8859-x are all total functions
-  over bytes (each decodes *any* input, just to different characters), and filenames are far
-  too short for statistical detectors (chardet / charset-normalizer) to be reliable — often
-  1–2 non-ASCII bytes. A wrong guess is strictly worse than the status quo: today's
-  surrogateescape is **honest** (visibly signals "not decodable") and **lossless**
-  (round-trips to the original bytes); a wrong codepage yields a **plausible-but-silently-wrong**
-  name that may also be **lossy**. So surrogateescape stays the default; detection is opt-in.
-
-  **Shape if built.** A config flag (off by default), behind a `[charset-detect]` extra
-  (keeps the zero-dep core clean). Detect **archive-wide** over the concatenation of *all*
-  non-UTF-8 names at once — kilobytes of same-encoding text, not one 8-byte name — and apply
-  a single codepage; emit a diagnostic recording the guessed encoding + confidence. Backstop:
-  `ArchiveMember.raw_name` already retains the true bytes, so even a wrong guess loses nothing.
-  Naturally unifies TAR + RAR3's legacy fallback with ZIP's `zip_unflagged_fallback_encoding`
-  under one "legacy name-encoding policy".
-
-  **Corpus-gathering (the de-risking bridge — worth doing *earlier*, around release).** We
-  can't tune or even justify a detector without real-world samples, and a fresh library has
-  none — so surface the cases and let willing users report them. The surrogate case is already
-  machine-detectable (`U+DCxx` in a decoded name) and the raw bytes are already captured in the
-  diagnostic context (base64). **Never phone home** — filenames are sensitive. Instead, a
-  passive affordance: a docs "how to report a name we couldn't decode" note, a one-line CLI hint
-  (with an issue link) when `list`/`extract` encounters surrogate names, and/or a small helper
-  that dumps the undecodable raw-name samples for a user to paste into an issue. This reporting
-  affordance is cheap and safe (no guessing), should ship *before* the detector, and is exactly
-  what turns "release → real cases" into the evidence for whether/how to build detection at all.
-
-## API & ergonomics
-
-- **Verification state as data: `stream.verified` plus an on-demand `verify()`** — a member
-  stream today tells the caller nothing about whether its declared digest was actually
-  checked. Verification runs at EOF and an abandoned partial read silently skips it, so a
-  caller who read a prefix cannot distinguish "checked and good" from "never checked".
-
-  **The password case is why this is more than tidiness.** For ciphers whose only real
-  verifier is the trailing CRC — ZipCrypto (one header check byte) and 7z AES (no check
-  value at all) — an unverified partial read does not merely lack a checksum, it can be
-  *garbage that decrypted under the wrong key*. Reproduced on both: a wrong ZipCrypto
-  password that passes the one-byte check, and a wrong 7z password on a store+AES folder,
-  each return data from `read(1)` with no error and fail only on a full read.
-
-  **Two axes, one public scale.** What can be established splits into *the password is
-  right* and *the payload is intact*, and each member offers a different combination:
-  ZipCrypto's check byte and WinZip AES's `pw_verify` attest the password from the header;
-  the 7z AES tail padding attests it from the content; a decoder accepting the bytes
-  attests structure; a stored CRC or hash attests content. Those are two axes, not one —
-  but they are ordered by an implication that collapses them for the only question callers
-  ask. A matching content digest proves the password (2⁻³²); a confirmed password proves
-  nothing about the payload. So model both axes where they are computed — the confirm
-  ladder produces the password signal, `MemberVerifier` produces the content one, in
-  different code — and expose one ordered scale:
-
-  | level | established by | note |
-  | --- | --- | --- |
-  | `NONE` | nothing | |
-  | `KEY` | a cheap key check: 7z tail padding, WinZip `pw_verify`, ZipCrypto check byte | encrypted members only; spans 2⁻⁸ to 2⁻³², so it means "not obviously wrong", not "right" |
-  | `STRUCTURE` | a decoder accepted the bytes | |
-  | `CONTENT` | this member's stored digest matched over the bytes delivered | |
-
-  An unencrypted member runs `NONE → STRUCTURE → CONTENT` and never occupies `KEY`; that
-  is a level not reached, not a claim that no password was needed. The per-axis detail is
-  worth keeping for diagnosis rather than for decisions, so it belongs on the diagnostic
-  context (`ENCRYPTED_MEMBER_UNVERIFIED` already carries a `check` field naming which
-  password signal fired), not on the primary attribute.
-
-  **A ceiling as well as a level.** "Cannot be verified" is not a lower rung — a stored 7z
-  member with no CRC can never reach `CONTENT`, so `while stream.verified < CONTENT:
-  stream.verify()` would spin. Pair the level with the most it could ever reach. The
-  ceiling is not static, which is why it is worth exposing rather than deriving: it drops
-  when no digest exists, when a decode error abandons verification, and — per ADR 0014 —
-  when a seek off the frontier forfeits the checksum while keeping the length check
-  (until a seek to 0 re-arms it).
-  `CostReceipt`-reports-capability / diagnostics-report-events is the existing shape to
-  copy.
-
-  **`verify(at_least=…)`, one method with an argument.** Not two methods: they would
-  duplicate both the no-op-if-already-there logic and the could-not-get-there error
-  contract, and become four the day a level is added (a signed manifest, per-block hashes).
-  Default to the ceiling. Raise when the requested level is out of reach, since the caller
-  asked for a guarantee; `stream.verified` is the non-raising way to look.
-
-  **The promise is bounded, and saying so up front avoids a broken one.** Reaching
-  `CONTENT` means the digest over all the member's bytes. Mid-read that is a drain — cheap,
-  but it discards bytes the caller may have wanted. After close it is a re-open, which on a
-  solid 7z folder re-decodes the whole folder and on a forward-only source may be
-  impossible. So a stream-level `verify()` upgrades only while the stream is alive;
-  anything beyond that is `reader.verify(member)`, a different capability with a different
-  cost. Do not write "callable at any time" into the contract.
-
-  `bounded-password-confirmation` covers the hole with the `ENCRYPTED_MEMBER_UNVERIFIED`
-  diagnostic (extended by `sevenzip-aes-tail-key-check`), which was the cheaper of the two
-  answers; this is the better one. With the scale above the diagnostic becomes exactly
-  derivable — level below `CONTENT` at close, with the password attested no better than
-  `KEY` — so retiring it is mechanical rather than a judgement call. Placement gives a fact
-  exactly one authoritative channel, so the two are alternatives, not additions. Wants a
-  `testing-contract` delta.
-
-- **Confirm a stored encrypted folder from its smallest anchored member** — 7z
-  confirmation walks to the *earliest* member CRC in a solid folder. For a `Copy` chain the
-  plaintext offset equals the ciphertext offset, so any member's byte range is directly
-  addressable and the cheapest anchor is the **smallest member of at least 4 bytes that
-  carries a CRC** — on a `[200 MiB, 4 KiB]` stored solid folder, 4 KiB instead of 200 MiB.
-  Four bytes is where a CRC-32 carries its full 2⁻³²; below that the match is only as
-  strong as the member is long.
-
-  Deliberately *not* "the smallest set of members summing to 4 bytes". Folders whose every
-  anchored member is under 4 bytes are rare enough not to pay for the extra rule, and
-  combining non-contiguous members trades one seek for several.
-
-  Needs the seekable AES-CBC stream (`AesDecryptStream`, `crypto.py` — now seeks)
-  and applies to `Copy` chains only — with anything compressing between the cipher and the
-  payload, a plaintext offset is not a ciphertext offset. Narrower than it first looks:
-  once `sevenzip-aes-tail-key-check` lands, the `Copy` case is O(1) for the ~75% of
-  archives with at least 4 padding bytes, leaving `Copy` + short-or-nonstandard padding +
-  a multi-member solid folder. Promote with the seekable-stream change rather than alone.
-  A multi-member COPY folder is not constructible with the 7z CLI (every COPY member
-  gets its own folder regardless of `-ms`), so a prefix-over-AES path is uncovered by
-  construction.
-
-- **Generalize "a refused `open()` leaves nothing behind" into a lifecycle rule** —
-  #293 made the single-live-stream gate fire before the member is opened and specified
-  that one case (`archive-reading` gate matrix, `testing-contract`). The broader rule —
-  *any* refused or failed `open()` leaves no resources behind — was deliberately not
-  written, because it would also make the backend spawn-to-ownership windows contractual,
-  and those are audited for RAR only: `rar_reader._open_member` / `_pipe` guard the
-  `unrar` process, while the equivalent windows in ZIP / 7z / TAR (construct a
-  decompressor, then hand it to the wrapper that owns it) have not been looked at.
-  Promote after a pass over those windows: audit each backend for the gap between
-  constructing a resource and the object that owns it, close what it finds, then write
-  the general requirement. Origin: PR #293 review, F1 option (c), with F2 as the RAR-side
-  example of the same shape.
-
-- **Makeself-aware payload location** — parked from `prefixed-archive-detection`. That
-  change's Block 4 finds script-wrapped tar.gz/bz2/xz by a shebang cue plus compressor
-  needles (gzip `1f 8b 08`, bzip2 `BZh[1-9]` plus first-block marker, etc.) inside a 2 MiB
-  window. Makeself itself already *knows* where the payload is: the stub is a shell script
-  that exports `SKIP` (header line count) and `COMPRESS` (`gzip` / `bzip2` / `pbzip2` /
-  `xz` / `zstd` / `lz4` / `compress` / `none`), and `--dumpconf` prints both. Offset is
-  `head -n $SKIP | wc -c`. A detector that recognised that header could seek once to the
-  payload instead of scanning two megabytes of script for magic — cheaper, no false
-  `1f 8b 08` in the stub text, and it would also name `bzip3` / `lzo` which archivey does
-  not read rather than claiming a needle miss. Not a general prefix-scan improvement;
-  promote only with a corpus of current and old `.run` installers (NVIDIA, Anaconda,
-  Makeself `--bzip2` / `--xz` / `--zstd`) and a spec for "looks like Makeself" that does
-  not become a second scripting-language parser. The generic shebang+needle path stays
-  the fallback for ad-hoc `cat stub.tar.gz` wrappers.
-
-- **Bound the SFX search at the PE overlay while holding a short 7z hit** — when a 7z
-  signature validates but its declared end falls short of the end of the file, the scan
-  keeps looking for a later 7z that ends there, through the whole scan window (2 MiB under
-  `BALANCED`). The maintainer chose to ship that cost in 2026-09 rather than bound it.
-  The short hit's own end is not a safe bound, because a decoy inside the stub ends before
-  the real payload starts. The end of a PE stub's last section (the overlay offset) is
-  safe, because a decoy inside the stub cannot pass it. PE stubs only: ELF and Mach-O
-  stubs would still pay the window. The cost is pinned by
-  `test_short_7z_hit_scan_cost_is_bounded_by_the_window`.
-
-- **Exhaustive ambiguity fallback for `open_archive()` / `open_stream()`** — when
-  evidence-based detection yields two or more tied maximal candidates, the near-term
-  contract should raise a dedicated ambiguity error rather than choose by registry order.
-  Much later, opening could deliberately try every tied candidate and return the first
-  one that validates deeply enough. This is not merely a loop: define what counts as
-  success for synthetic single-file readers versus indexed containers, preserve/replay
-  caller-owned and non-seekable sources, cap cumulative seeks/bytes/decode work, retain
-  every failed candidate's typed error, and decide what happens when multiple candidates
-  open successfully. An all-candidates inspection API likely belongs beside it, but its
-  name is deliberately unsettled. Promote only with an OpenSpec change covering both
-  archive and stream opening plus the cost/error model.
-- **Extension-first detection ordering** — try the formats a filename's extension
-  suggests before the rest, falling back to the full sweep on a miss or when there is no
-  filename. Strictly better than today's fixed order *and* than a hard extension gate: a
-  `.br` file stops being identified by whichever content probe happens to run first, while
-  a wrongly-named file is still found — which matters, because `VISION.md`'s founding use
-  case is a backup corpus where wrong extensions are normal. It is also where a magic
-  *denylist* would become reasonable (compound-document files falling out of
-  `detect_format` is a feature once the extension has had first refusal), which
-  `brotli-probe-framing-gate` declined precisely because a sound rule should not be mixed
-  with a heuristic. Not small: it restructures `_detect_format_body` for every format, so
-  it wants its own proposal. Parked from that change's task 5.1.
-
-  **Variant worth separating: an agreement short-circuit.** The entry above reorders *which
-  format's checks run first*. A distinct idea is to *stop early*: when the extension's
-  suggested format is confirmed by the content, return immediately and never run the
-  remaining tiers. That is the one with the cost payoff, because `prefixed-archive-detection`
-  makes the later tiers expensive — an always-on ZIP tail probe (seek + ≤64 KiB) and a
-  hoisted far-magic peek (≤32 KiB, ahead of the content probes). A magic-less file pays both
-  before a probe ever answers, so a short-circuit saves ~96 KiB per file.
-
-  Measured on 71 983 files under `/usr`, and the numbers point in an unexpected direction:
-
-  | | files |
-  | --- | --- |
-  | with an extension archivey knows | 1 303 |
-  | **already answered by near magic — free, at step 2** | **1 289 (98.9%)** |
-  | extension + content **probe** agree ← the short-circuit's real population | **2** |
-  | no agreement | 10 |
-  | of those 2, how many would skip a *different* format's exact far magic | **0** |
-
-  So near magic already handles almost everything an extension could confirm, and the
-  short-circuit only helps where near magic misses — the magic-less formats (Brotli, zlib,
-  LZMA Alone). `/usr` has essentially none, so **this corpus bounds the risk well and the
-  benefit badly.** A `.br`-heavy corpus (web assets) is where it would pay, and measuring one
-  is the precondition for proposing this. That survey pairs naturally with
-  `prefixed-archive-detection` task 5.2, which already needs corpus legwork.
-
-  **The naive form is unsound, and the fix is cheap.** "Agree → return" lets two weakish
-  signals short-circuit a stronger one never consulted — exactly the bootable-ISO defect
-  `prefixed-archive-detection` fixes, where an ISO's boot-code system area is claimed by the
-  Brotli probe. An ISO *misnamed* `.br` would satisfy agreement and skip the far magic that
-  identifies it. Zero instances measured, so this is a bounded risk rather than an unmeasured
-  one — but the sound version costs nothing to state: **agreement may skip the expensive
-  structural tiers (tail probe, cued scan, exhaustive scan) but never the cheap exact-magic
-  ones.** Far magic is one bounded, size-gated peek and is *exact* evidence; the tiers worth
-  skipping are the ones that are both costly and no stronger than the corroboration itself.
-  That keeps the ISO fix intact while capturing most of the saving.
-
-  Stated as a rule: agreement between two independent signals outranks an unconsulted
-  *expensive* alternative, never an unconsulted *cheap and stronger* one.
-
-- **`FormatInfo.corroborated` is interim** (the evidence ledger that was to replace it was
-  decided against on 2026-09-25) — `probe-provenance-unconfirmed` added an internal
-  `corroborated: bool` to `FormatInfo` to key the `format_unconfirmed` channel. It cannot
-  become public as a bool: `False` means both "a probe with nothing corroborating it" and
-  "not a probe at all", so a ZIP named `a.zip` (extension agrees) and one named `b.tar`
-  (extension contradicts) produce identical output — `magic` / `certain` / `False` — as do
-  an extensionless Brotli probe hit and one whose `.zip` name contradicts it. The
-  replacement is **not** a wider public field here: PR #263's analysis §1 already specifies
-  the evidence ledger (typed `DetectionEvidence` on an internal `FormatCandidate`, totally
-  ranked classes, ordered tie-breakers) and explicitly rejects additive scoring over
-  correlated signals, so a counted bit-set would be wrong too. Recorded here only so the
-  interim field is not mistaken for a settled design; it stays internal, and any public
-  provenance signal needs a design of its own now that the ledger is not coming. Full truth
-  table in `probe-provenance-unconfirmed` task 5.1.
-
-- **Volume-shaped names: detect first, then upgrade `FormatDetectionError`** — parked from
-  PR #285 (ZIP split refuse). Today `open_archive` early-refuses Info-ZIP `.zNN` — and a
-  7-Zip `.zip.NNN` part whose siblings are absent, a complete set being joined instead — by
-  filename before detection, on the auto-detect path and when `format=ZIP`, so magic-less
-  middle parts get `UnsupportedFeatureError` instead of `FormatDetectionError`. An explicit
-  non-ZIP `format=` is already honoured (the name refuse does not run) — that is separate
-  from this parking (H1 / P8). A later shape worth trying: run detection as usual; if it
-  fails *and* the name looks like a multi-volume segment, raise `UnsupportedFeatureError`
-  (rejoin-first) rather than `FormatDetectionError`. Keeps odd-but-valid archives that
-  happen to end in `.z02` openable via magic; shrinks false positives vs early-refuse;
-  extends naturally to a shared volume-name table across formats (ZIP today; careful
-  messages for RAR/7z sets we *do* join). Because detection is skipped when the caller
-  supplies a format, that shape also preserves explicit-`format=` precedence without a
-  special case. Do **not** layer this on top of early-refuse — replace that control flow if
-  this is ever taken up. Nameless streams stay out of scope. Refs: #285 D1/H1 discussion;
-  the archived `openspec/changes/archive/2026-09-25-detection-evidence-ledger/`;
-  `formats/zip.md` §3 split naming.
-
-- **Archive *role*: tell the caller whether to care what is inside** — `open_archive()`
-  reads a photo backup, a `.docx`, a `.jar`, a LibreOffice icon bundle and a JPEG with an
-  appended ZIP identically, and says nothing to distinguish them. For the founding
-  backup-indexing use case only the first is worth recursing into; being able to open the
-  rest is a feature, being *told* they differ is the missing part. **Post-1.0: complicated,
-  and it does not affect extraction — a caller can already open and extract any of them.**
-
-  **Measured 2026-08-26** (`main` @ `a3dc408`), opening every file starting `PK` under
-  `/usr/share`, `/usr/lib`, `/usr/local`, `/opt` and the repo — **643 readable ZIPs**:
-
-  | recognized by | count | extensions |
-  | --- | --- | --- |
-  | `META-INF/MANIFEST.MF` (JAR) | 363 | `.jar` |
-  | `mimetype` stored first (ODF family) | 176 | `.ott`, `.otp`, `.ots`, `.odt`, `.ods`, `.odb`, `.otg`, `.stw`, `.dat`, `.bau` |
-  | `*.dist-info/WHEEL` | 11 | `.whl` |
-  | no marker | 91 | **85 × `.zip`**, 2 × `.jar`, `.sym`, `.sop`, `.sob`, `.stw` |
-
-  The unmarked bucket is not user data — LibreOffice icon themes (4 520 members each), a
-  JDK symbol file, StarOffice palettes. **Zero of the 643 are a user-data archive**, so this
-  class is large and currently invisible. *(One Linux container, heavy on LibreOffice and
-  the JDK; a `~/Downloads` would invert the ratio. It does not support a general frequency
-  claim.)*
-
-  Three findings that shape any future design:
-
-  - **`UNKNOWN` must be the default and must not mean "data".** A caller reading it as
-    "index this" would ingest 4 520 icon PNGs per file. Archivey cannot tell a resource
-    bundle from a backup — both are "a ZIP with no marker" — so this is a *recognizer*, not
-    a classifier, and must say "not recognized" rather than "this is data".
-  - **Content decides, extension corroborates** — load-bearing, not theoretical: `.zip` is
-    the commonest extension among the packaging files here, and two `.jar` files carry no
-    manifest.
-  - **Presence and value are different questions.** The `mimetype` rule (first entry, named
-    `mimetype`, stored) held **176/176** with zero compressed. But 53 of those have an
-    *empty* mimetype — LibreOffice autocorrect `.dat` and autotext `.bau` — so presence
-    reliably says "ODF-family package" while the value refines it to a subtype only 123
-    times. A design keyed on the value alone would report `UNKNOWN` for LibreOffice's own
-    data files.
-
-  **Marker shapes** are three, not one: positional + storage-constrained + self-describing
-  (the `mimetype` rule, mandated by ODF 1.2 §3.3 / EPUB OCF rather than merely conventional);
-  exact path present (`META-INF/MANIFEST.MF`, `[Content_Types].xml`, `AndroidManifest.xml`,
-  `manifest.json`, `__main__.py`); and suffix/pattern (`*.dist-info/WHEEL`).
-
-  **Cost tiers naturally.** For ZIP the central directory is parsed at open, so exact-path
-  and pattern tests are free, and the `mimetype` *presence* test is free too — both the
-  first entry's name and its `compress_type` live in the CD. Only the subtype needs one
-  small stored read. For TAR there is no index, so any marker means reading forward and
-  possibly decompressing; role recognition would be opt-in or ZIP-only to start. It needs
-  the member list either way, so it is an `ArchiveInfo` fact, never a `FormatInfo` one.
-
-  **Three open problems**, none blocking but all real:
-  1. *Precedence, not a set.* No overlap was observed on this corpus, but an APK carries
-     both `META-INF/MANIFEST.MF` and `AndroidManifest.xml`, and a signed wheel can carry
-     `META-INF/`. The rules need an ordered first-match list, and the order is a decision
-     (more specific wins) rather than a derivation.
-  2. *False positives are unavoidable.* A zip of an **extracted** JAR contains
-     `META-INF/MANIFEST.MF` and is user data. So the signal says "recognized as", never
-     "is" — and it invites the same locate-versus-validate refinement the ZIP tail probe
-     needs (does the manifest parse; does it carry `Manifest-Version`).
-  3. *Where the table lives.* `MAGIC` / `EXTENSIONS` / `CONTENT_PROBES` sit on `ReadBackend`
-     because each backend reads one format — but JAR, OOXML, ODF, APK, wheel and zipapp are
-     *all ZIP*. Per-backend keeps "new format = one subclass, no edits elsewhere" at the
-     cost of the ZIP backend accumulating a table of things that are not ZIP; a separate
-     registry keyed by container keeps that clean and is the natural place to let a caller
-     register their own marker, at the cost of a second registration mechanism.
-
-  Advisory only, never a refusal — opening a `.docx` to look inside stays legitimate, in
-  the spirit of `format=` being an override that is reported rather than overridden. Note
-  the scope line it must respect: PR #263 §12 rules that archivey "should not become a
-  general file-type detector"; this stays inside it by classifying only archives archivey
-  has already opened, by their own member structure.
-
-- **`SANITIZE` extraction policy: name rewriting** — the post-v1 opt-in `SANITIZE`
-  policy already sketched in `safe-extraction` (re-root/collapse unsafe paths instead of
-  rejecting) is also the right home for **renaming members the destination cannot
-  represent**: undecodable-byte (`surrogateescape`) names that UTF-8-enforcing
-  filesystems (APFS, some network mounts) refuse with `EILSEQ`/`EINVAL`, and other
-  representability failures. One policy knob covering all "make it extractable by
-  rewriting the name" behavior — not a bespoke argument per case. Default behavior
-  stays reject-with-typed-error (see the adversarial-string-corpus-contract
-  safe-extraction delta).
-
-- **Pathlib-like navigation** — an `ArchivePath` supporting `/` joining, `iterdir()`,
-  `glob()`, `read_bytes()`, `is_dir()`, … over the member tree (precedent: `zipfile.Path`).
-  Read-only wrapper; needs random access, so a `DIRECT`/indexed-archive convenience.
-
-- **fsspec integration** — three distinct directions:
-  (1) **expose** an opened archive as an `fsspec` filesystem so pandas/dask/pyarrow/etc.
-  read members by path (pairs with the pathlib navigation layer) — the substantial one;
-  (2) **open** archives *from* an `fsspec` URL (`s3://…/a.zip`, `http(s)://`, …) as the
-  `source`; (3) **extract** *to* an `fsspec` location as the `dest`.
-  For (2), passing an fsspec-opened file object **already works** (the stream-input
-  tests exercise fsspec objects), so the remaining value is *URL-level* opening —
-  archivey calling `fsspec.open()` itself, behind an optional `[fsspec]` extra. What
-  that buys beyond "hand me a stream": archivey can pick sensible fsspec caching for
-  the access mode (`streaming=True` → plain forward read; random access → block/file
-  cache so ZIP central-directory + member seeks don't re-fetch), and — the real
-  unlock — it has **filesystem context**, which a bare stream can never provide:
-  multi-volume sets (`name.7z.001`…) need `fs.ls()` to discover sibling volumes, which
-  the Phase 6 volume-joining path requires. Shape TBD: a URL-string branch inside
-  `open_archive()` (gated on `"://" in source` + fsspec installed) vs. a separate
-  `open_archive_url()`; the separate function keeps typing/behavior of the core
-  entry point simple and the dependency boundary explicit.
-
-- **Configurable symlink-extraction behavior** — a policy knob (in the spirit of `OnError`
-  / `ExtractionPolicy`) for what happens when a SYMLINK member cannot be created as a real
-  symlink — most notably on filesystems/platforms without symlink support (FAT, Windows
-  without the privilege). Phase 4 fixes this at "per-member `OnError` failure, never copy"
-  (deliberately *deviating* from `tarfile`, which silently copies the in-archive target's
-  data). A future option could offer e.g. `symlink=error|copy|skip` (copy = `tarfile`-style
-  materialize-the-target, guarded so it can't reintroduce a path escape). Its own change +
-  exploration — the safe default lands first.
-
-- **Resource usage against the limits, as data** — a caller cannot ask how close an
-  archive came to any configurable limit (bytes, entries, ratio, members, metadata,
-  decoder memory, key-derivation rounds, spool). `scripts/scan_archives.py` reads most of
-  it from public results, but decoder memory, KDF rounds, spool bytes and listing
-  metadata only by wrapping internals. A design (a usage record on the reader and the
-  `ExtractionReport`, peaks recorded beside the existing checks, roughly 150 to 250 lines
-  plus tests) was explored on 2026-10-02 for tuning the defaults against a real corpus.
-  The open question is whether the record is public; xz and zstd decoder memory are
-  decided inside liblzma / libzstd and would need their headers read to be counted.
-
-## Performance & robustness
-
-- **Keep the member checksum running through seeks that decode the bytes anyway** —
-  today any seek other than one to position 0 turns the digest off until the next seek
-  to 0 (`MemberVerifier.note_seek`; a rewind to 0 re-arms it, decided 2026-10-01, audit
-  finding C4). In davitf's words: forward seeks in most formats consume the bytes in
-  between, and backward seeks restart the decode from 0, so the CRC could keep being
-  computed through those seeks. Verification is only really lost on formats with true
-  random access (index-based seeks, e.g. xz blocks, lzip members, seekable zstd, 7z/ZIP
-  direct slices) or under an accelerator's index. Investigate when the digest does not
-  actually need to be disabled: the verifier would need to see the bytes a forward seek
-  skips (or the inner to report that its seek decoded them), and a backward seek that
-  restarts from 0 is a rewind to 0 followed by a forward seek. Raised by davitf,
-  2026-10-01.
-
-- **bzip2 accelerator and the standard library disagree past the end of a stream** —
-  two cases, found 2026-09-29 while fixing the empty-trailing-stream report.
-  - **A stream after zero padding.** For `bzip2 -c a; head -c 100 /dev/zero; bzip2 -c b`,
-    the standard library engine skips the zeros and reads both payloads. The accelerator
-    (`use_indexed_bzip2=ON`, or `AUTO` with `seekable_members=True`) reads the first
-    payload only and reports `ARCHIVE_TRAILING_DATA` at the start of the second stream.
-    Under the default policy that is a short read with a warning and no error;
-    `DiagnosticPolicy.strict()` raises `DiagnosticRaisedError`. `bzip2` 1.0.8 does what
-    the accelerator does (`bzip2 -d` writes the first payload only and warns "trailing
-    garbage after EOF ignored"), so which answer is right is a decision, not only a bug.
-    Options: have the accelerator's end scan find a `BZh` stream after the padding and
-    decode the rest with the standard library; or stop the standard library engine at
-    zeros, as `bzip2` does.
-  - **A broken empty stream at the end.** A cut empty stream (`BZh9` and fewer than 10
-    more bytes) or one with a non-zero CRC is reported as `ARCHIVE_TRAILING_DATA` by the
-    accelerator, because its end scan skips only a whole, valid empty stream. The
-    standard library engine raises `TruncatedError` or `CorruptionError` for the same
-    bytes. An accelerator should not change whether a source raises (the rule behind
-    `_Bzip2EmptyStreamCheck`), so the scan could hand a `BZh` tail to `bz2` to decide.
-
-- **Tell a real LZMA dictionary size from decrypted garbage** — under ZipCrypto, a wrong
-  password that passes the one-byte check decrypts a ZIP LZMA or PPMd member's codec
-  properties to garbage, and about one such garbage properties blob in five declares a
-  dictionary over the 2 GiB `max_decoder_memory` default. Since the 2026-09 audit
-  (decision A on PR #512), that `ResourceLimitError` counts as a failed candidate while
-  others remain, and the one that surfaces carries a "password may be wrong" note. Real
-  encoders write only a few dictionary sizes: liblzma and 7-Zip round up to `2**n` or
-  `3 * 2**(n-1)`. A size off that grid is almost certainly garbage, so it could be
-  reported as a wrong password instead of a limit. Measure what real writers emit first,
-  including PPMd memory sizes. Raised by davitf, 2026-09-28.
-
-- **Keep a member's checksum across seeks with a hashed frontier** — `MemberVerifier`
-  (`internal/streams/verify.py`, `note_seek`) drops the checksum for the rest of the
-  handle after the first seek that moves. Instead it could keep the length of the
-  prefix the hasher has taken in: a read that starts at or behind that frontier and
-  ends past it hashes only the bytes past it, a read that starts past it hashes
-  nothing, and a read reaching the declared end with the frontier at the size gets the
-  digest verdict. So seek, return, read on keeps the CRC. This touches every format's
-  digest and the ADR 0014 seek rule, and `UnverifiedPasswordReadWatch` would then
-  report `"seek"` only when the frontier fell short. The WinZip AES stage already does
-  this for its HMAC, plus a catch-up re-read that a plaintext CRC cannot afford.
-  Asked for by davitf, 2026-09-26.
-
-- **Say when a WinZip AES seek makes the last read re-read the ciphertext** — to keep
-  the HMAC across seeks, the read that returns an AES member's last byte first reads,
-  without decrypting, the ciphertext the seeks skipped. Measured 2026-09-26 on a 4 MiB
-  STORED AE-2 member: `seek(size - 5); read(5)` read 4 194 372 source bytes, while
-  `read(4)` from the same place read 58. It is paid at most once per handle and
-  decompresses nothing, and `docs/gotchas.md` states it, but it is silent at run time.
-  `STREAM_REWIND_REDECOMPRESSES` fires at about a megabyte of discarded decode progress;
-  a megabyte of re-read ciphertext is the same family of cost. Candidate: a code (or a
-  context on the forfeited-checksum diagnostic above) when the catch-up pass exceeds
-  that threshold. Raised in review of the WinZip AES seek change, 2026-09-26.
-
-- **Batch small members into one `unrar` call on a nonsolid archive** — a nonsolid
-  `stream_members()` pass spawns one `unrar p -n./<member>` **per member**; only the
-  *solid* path uses a single unnamed ALL-pipe demuxed by `SolidBlockReader`
-  (`_iter_with_data` falls through to per-member named opens when `is_solid` is false).
-  Measured 2026-09-19 on a 20-member `-m3` archive, 20 KB per member, streaming the
-  whole thing: **nonsolid 20 spawns / 0.108 s, solid 1 spawn / 0.007 s** — same bytes
-  out, ~15x, so roughly 5 ms of process overhead per member, which dominates entirely at
-  this member size. Worth measuring the spawn cost properly and then deciding
-  *intelligently* whether to batch: `unrar` accepts several member paths in one call, so
-  a run of small adjacent members could share a process and be demuxed by size the way
-  the solid path already is. The decision wants a real threshold from measurement, not a
-  guessed constant, and it has to stay honest about what a batch costs when the caller
-  abandons the iterator early. Note `format-rar`'s "Constrain unrar argv by call site"
-  requirement currently forbids passing multiple member paths, so this needs a spec
-  change and not just an optimization. Raised by davitf, 2026-09-19.
-
-- **A second prebuilt `DecoderLimits` with smaller caps** — asked for by davitf,
-  2026-09-23, in the same comment that settled the 2 GiB default: a preset "tuned for
-  server safety, that would allow common real life archives but reject ones that are too
-  expensive to open". The numbers are known — 256 MiB covers everything 7-Zip's own
-  presets write (16 MiB plain, 256 MiB at `-mx9`, both input-independent), so it admits
-  ordinary archives and refuses a deliberate `mem=2g`. **Recommended for a later change,
-  not the one that added the type**: with a single field on `DecoderLimits` the preset is
-  an alias for `DecoderLimits(max_decoder_memory=256 * 2**20)`, which a caller can already
-  write, and a name that promises a tuned bundle should arrive with a bundle — the total
-  KDF budget is heading for this type. **The bundle now exists**: the KDF budget landed as
-  `max_key_derivation_rounds` (default `2**27`), and davitf set the preset's value on
-  2026-09-23 at `2**24`, one maximum-cost derivation. So the preset's numbers are
-  256 MiB and `2**24`; only the name is left. (The LZMA dictionary cap landed on the same field
-  rather than a new one, and 256 MiB also covers it: xz `-9` and 7-Zip's presets declare
-  64 MiB at most.) Adding a class attribute later is purely additive.
-  **It may also lower `ListingLimits.max_members`** (davitf, 2026-10-01): a 315-byte 7z
-  declaring a million entries costs about 858 MB at open under the 1 048 576 default.
-  262 144 would cost about 220 MB and still covers a Linux kernel tree (~90 000 files)
-  about three times; Android source trees and dataset archives can exceed it.
-  `max_metadata_bytes` cannot stand in: it counts text, and the cost is a fixed
-  per-member object; charging that cost against 64 MiB would cap at about 78 000 members.
-  **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on
-  the table: `STRICT` is taken in spirit by `DiagnosticPolicy.strict()` and by
-  archivey's use of "strict" for how harshly corruption is treated, while `UNTRUSTED`
-  names what the caller knows — the provenance of the input — rather than how tight the
-  numbers are, and reads correctly beside `UNLIMITED`. It also happens to be the answer
-  for a host whose headroom is below the default cap, which the `DecoderLimits` docstring
-  currently covers in prose only.
-  **It may want to be a mode, not only numbers** (davitf, 2026-09-26, on the PPMd crash
-  fix): a safety-first setting that gives up some decodes (smaller thresholds, refusing a
-  decode that could take the process down) beside a permissive one. The first concrete
-  knob is PPMd's: `DecoderLimits.max_ppmd_in_process_input` (16 MiB held in-process,
-  larger members in a child process), and what to do when no child process can be
-  started. Today that case raises `ResourceLimitError` past the limit, and `None` holds
-  any member in-process (crash-safe, but memory grows with the member's compressed
-  size); a mode would pick between those without the caller naming the knob.
-  "Maybe for later", in his words.
-
-- **Threat-model row for archive-declared decoder memory** — a codec that sizes its
-  working set from a number in the archive's own header (7z PPMd var.H's 32-bit window,
-  ZIP method 98's megabyte count, the LZMA dictionary size) has no row of its own in
-  `dev-docs/threat-model.md`; O11 is the nearest and is about detection-time decode work,
-  which is a different mechanism. `DecoderLimits` now covers the open of both (PPMd, then
-  the LZMA dictionary on every container that declares one), so the row should read
-  "mitigated on open, **open on detection**": the `.lzma` content probe and the inner-TAR
-  probe decode uncapped, so liblzma reserves whatever the header declares — a
-  `MemoryError` under `RLIMIT_AS` or a strict commit limit, before the cap is consulted.
-  That also makes O11's "memory is not the problem (each candidate's output is
-  discarded)" untrue for the LZMA probes, which the row should correct. A likely fix for
-  the `.lzma` probe: rewrite the header's dictionary down to the probe's output budget
-  before decoding, which decodes a bounded sample identically, since no match can reach
-  further back than the output produced so far. Not written with either guard because
-  `threat-model.md` was owned by another open pull request each time, and an `O`-numbered
-  row cannot be appended without knowing what numbers that one takes. Write it once that
-  lands; the measurements are in the `DecoderLimits` docstring and
-  `tests/test_decoder_limits.py`. The row's unit for LZMA is the 7z folder, not the
-  decoder: a BCJ2 folder's branch dictionaries (and PPMd sizes) are checked together (O20).
-
-- **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
-  Decision 3A. Types live in `archivey.detection_cost` but are omitted from
-  `archivey.__all__`. When `detection-result-surface` lands, decide: root re-exports vs
-  documented subpackage vs internal-only. Prefer not freezing a 12-field budget into the
-  root by inertia.
-
-- **Detection budget scope: aggregate vs per-candidate** — left open by
-  `detection-prefix-workspace`. A fuzz assertion pins that *aggregate* detection cost stays
-  inside the declared budget either way; the deciding measurement (209 715 decoy gzip
-  headers → 683-fold decode amplification) is a scan-tier property. **Settled 2026-09-25:**
-  the decode limits are one allowance for the whole call, shared by every tier that
-  decodes (`detection-cost` spec).
-
-- **Pricing a detection source in round trips rather than bytes** — `StreamCapability` is
-  only `FORWARD_ONLY < SEEKABLE`, so an HTTP range reader and a local file are
-  indistinguishable. The flat access-shape rule (one forward pass, at most one tail seek)
-  sidesteps seek *permission*, but `BALANCED`'s 32 775 far bytes and the ZIP tail's 65 557
-  are still priced in the wrong currency on a range-request source. Needs a measurement on
-  a real range-request source.
-
-  **Partial progress (`detection-prefix-workspace` Decision 2):** probe `read_at` seeks on
-  paths / full spools / cheap seekable streams, and falls back to a 1 MiB capped buffer for
-  non-seekable sources and for :class:`~archivey.ArchiveStream` (whose seek often
-  re-decodes). Finer "is this seek cheap?" using `nearest_resume_offset` / AccessCost /
-  round-trip pricing is still open — detection should eventually ask the source rather
-  than keying on `ArchiveStream` identity.
-
-
-- **RAR5 QO leftover-copy report.** Skip-walk listing emits a QO FILE only when
-  `tell()` lands on its `header_offset`. Copies the walk never hits are dropped.
-  After the walk, leftover keys in the map could be reported — diagnostic vs
-  `CostReceipt.notes` vs log is undecided. Not a hostile-QO defense: planting extra
-  QO rows is no worse than planting FILE headers. Origin: #311.
-
-- **Compressed-passthrough transcoding (no recompress)** — when writing a member from a source
-  that is itself an archive/compressed stream, and the destination format can carry the source's
-  *compressed* representation as-is (e.g. a deflate member from a ZIP/gzip → a ZIP entry, both raw
-  deflate), copy the already-compressed bytes straight through instead of decompress→recompress.
-  Skips the most expensive part of a format conversion entirely. Needs internal coordination
-  between the read and write paths: the reader must be able to hand out the *raw compressed* block
-  (codec + parameters + the bytes) rather than only a decompressed stream, and the writer must
-  accept a pre-compressed payload and emit the right container framing/headers (and decide what to
-  do about checksums — reuse the stored CRC vs. recompute). Only valid when codecs + parameters
-  match (e.g. deflate↔deflate; not deflate→zstd), so it's an opportunistic fast path with a
-  decompress-recompress fallback. Pairs with the native ZIP parser (raw-deflate access) above.
-
-- **Parallel extraction / concurrent member streams** — the declared worker seam
-  (`MemberStreams.CONCURRENT`) is committed and supported (post-materialization
-  fan-out; free-threaded coverage via the Linux `3.13t` CI job). Scheduling/throughput
-  for extract-independent-members remains future; any speed claim needs targeted
-  measurements. Also applies to **solid archives with multiple independent blocks** —
-  e.g. a 7z with several solid folders can decompress folders in parallel (py7zr does
-  this); members *within* one solid block stay sequential. No benefit for a single-block
-  solid archive. Misuse fails loudly (`ArchiveyUsageError`).
-
-- **Hold the solid-block decoder open across `open()` calls — and decide what that means
-  under `concurrent_members`.** *(Status: **deferred on purpose**; direction agreed, the
-  concurrency half is unbrainstormed. From the 2026-08-07 simplicity & consistency review —
-  see `review/archive/2026-08-15-simplicity-consistency/open-questions-for-discussion.md` §O2b/§O2c for the
-  full argument and `QUESTIONS.md` pay-list rows 17–18.)*
-
-  **The cost, measured.** `SevenZipReader._open_member` calls `_open_folder_stream` →
-  `open_folder_pipeline` **every time**, so each random `open()` builds a fresh folder
-  decode pipeline and skips forward from the folder's start (`sevenzip_reader.py:535` and
-  the comment at `:554` already says so: *"each from-start folder decode counts"*). On a
-  single-folder solid 7z, walking every member via `open()` costs **4.5× one pass** —
-  and, because the underlying stream is not held, **in-order and reverse order cost the
-  same**; this is not a backward-seek problem, it is a no-reuse problem. `.tar.gz`, which
-  *does* hold its stream, costs 1.0× in order. So the gap is a cross-backend
-  inconsistency, not a property of solid formats.
-
-  **The shape everyone agreed on:** keep at most **one** decoder, positioned at or before
-  the requested member, and reuse it only when the target is at or ahead of the current
-  position; otherwise discard and restart. Forward reuse captures the entire 4.5× → 1.0×
-  win without a cache, an eviction policy, or a memory budget. Backward access stays as
-  expensive as today, which is honest. Not a public-API change, so not tag-gated.
-
-  **Why it is parked: the concurrency half.** With one member open at a time this is
-  simple — one stream, one position, one decision point. Under
-  `open_archive(concurrent_members=True)` it is not, and the "is it already a non-issue?"
-  hope is **disproved**: the CONCURRENT fan-out is over the *listing* snapshot, not member
-  data, so member reads are **not** materialized. Measured on a 6-member, single-folder
-  solid 7z (200 KB per member, 1.2 MB payload): opening members 1 and 4 *simultaneously*
-  succeeds, and `IoStats.bytes_decompressed` is **1 400 000** — 400 KB + 1 000 KB, i.e.
-  **two independent decodes, each from the folder's start, live at the same time.**
-  (Without `concurrent_members` the second `open()` raises `ArchiveyUsageError`.)
-
-  So N concurrent opens on one solid folder means N live LZMA states, each with its own
-  dictionary. The unanswered questions, and they need a real brainstorm rather than a
-  patch: when those N streams close, do we keep all of them so the next `open()` can pick
-  the closest preceding one (that is a cache, with an eviction rule and a memory budget),
-  or only one — and if one, the furthest-advanced or the most-recently-used? Does
-  "closest preceding" beat "restart" often enough to pay for the bookkeeping? Does a
-  reused decoder outlive the member stream that created it, and if so what owns it and
-  what must `close()` tear down? How does that interact with the single-live-stream gate
-  on non-CONCURRENT readers? Same question applies to RAR solid blocks (unmeasured — the
-  corpus cannot build RAR here, see `known-issues`/F16).
-
-  Promote by writing an `openspec` change; the review's pay list keeps rows 17 (the
-  optimization) and 18 (this brainstorm) with row 17 blocked on row 18.
-
-- **Efficient seekable zstd — probably a *native* frame-index reader, not `indexed_zstd`.**
-  zstd currently has *no* fast random access: a backward seek re-decompresses from the start
-  (rewind + warning), like brotli/lz4/zlib. The obvious candidate,
-  [`indexed_zstd`](https://github.com/martinellimarco/indexed_zstd) (martinellimarco; the zstd
-  backend ratarmount uses, wrapping `libzstd-seek`), is a heavy Cython/C++17 extension that
-  statically bundles a C++ core "based on `indexed_bzip2`" — so it carries the *same class* of
-  macOS dual-load symbol-collision risk that forced archivey onto a single accelerator library
-  (`dev-docs/investigations/rapidgzip-upstream-report.md` §7) and would need its own
-  coexistence canary.
-
-  **But first check whether it actually buys us anything our own infrastructure can't.**
-  `libzstd-seek`'s jump table maps **frame boundaries only** — its own header says records map a
-  compressed to an uncompressed position where "both positions refer to frame boundaries", giving
-  "constant-time random access **at zstd frame granularity**". A seek into the middle of a frame
-  jumps to that frame's start and decodes forward; there is **no** intra-frame state
-  checkpointing (unlike `rapidgzip`, which snapshots the inflate window mid-stream). That is
-  *exactly* the granularity our `DecompressorStream` seek points already deliver for **xz** (block
-  index) and **lzip** (member/trailer scan): seek = jump to the segment containing the offset,
-  decode forward within it. So the likely-better path is a **small native zstd reader** that
-  reuses that infrastructure — build a frame index by scanning frame headers (compressed size
-  per frame from its header; decompressed size from the frame's optional `Frame_Content_Size`
-  field or, when present, the *Seekable Zstd* skippable-frame seek table) — getting the same
-  frame-granularity seeking **for free**, with zero new heavy dependency and no macOS risk. This
-  is the zstd analogue of why we wrote `xz_decoder.py`/`lzip_decoder.py` instead of depending on `python-xz`.
-
-  Things to confirm before committing to the native route:
-  - **Does `indexed_zstd` do anything a frame-index reader wouldn't?** From the docs, no — it is
-    frame-granularity only (no intra-frame seeking). If that holds, the native reader loses
-    nothing. (`rapidgzip`-style intra-member seeking would be the only reason to prefer a heavy
-    lib, and `libzstd-seek` does not do it.)
-  - **Benchmark the candidates — "same granularity" doesn't mean "same speed".** Even at equal
-    seek granularity, the C++ lib might still win on raw throughput (e.g. faster libzstd decode
-    of the forward run within a frame, cheaper jump-table construction, less Python-level
-    overhead) enough to justify adding it as an *accelerator* (the way `rapidgzip` is, behind an
-    extra) rather than rejecting it. Decide with numbers, not just the feature comparison: build a
-    representative large `.zst` (and a multi-frame / *Seekable Zstd* variant), then time several
-    access patterns — cold full sequential read, `SEEK_END` + tail read, a scattered set of random
-    seeks-then-reads, and a backward rewind — across the **stdlib `compression.zstd` reader**, the
-    **native frame-index wrapper**, and **`indexed_zstd`**, measuring wall time, peak memory, and
-    index-build cost. If the native wrapper is within a small constant of `indexed_zstd`, prefer it
-    (no heavy dep, no macOS risk); if `indexed_zstd` is dramatically faster on a real workload,
-    weigh it as an optional accelerator. A `benchmarks/`-style script (cf. DEV's `bench_xz.py`) is
-    the natural home.
-  - **The benefit only exists for multi-frame `.zst`.** A single-frame stream — the common
-    default from the `zstd` CLI and most writers — has exactly one frame, so frame-granularity
-    seeking yields a single seek point (offset 0) and helps neither approach; the win is real
-    only for *Seekable Zstd* files or anything compressed with frame splitting (e.g. `.tar.zst`
-    written that way). Worth measuring how often multi-frame `.zst` actually occurs before
-    investing in either.
-  - **Frames without `Frame_Content_Size`** can't be indexed without decoding them (this is also
-    `libzstd-seek`'s slow fallback). The native reader can simply build the index only when sizes
-    are available (header field or seek table) and otherwise fall back to the rewind path.
-
-  Note `pyzstd.SeekableZstdFile` is **not** a substitute either: it reads only the *Seekable
-  Zstd* container, not plain `.zst`. See `dev-docs/library-analysis.md` (zstd).
-
-- **Opt-in free-space pre-flight for extraction** — before extracting, sum the *declared*
-  uncompressed sizes of the **selected** members and compare against
-  `shutil.disk_usage(dest).free`; if short, fail fast with a typed error *before writing
-  anything*, instead of dying partway and leaving a half-written mess (the current
-  behavior). Cheap where it matters: ZIP central directory, 7z/RAR headers, and TAR
-  per-member headers all carry uncompressed sizes, so the estimate needs no decompression.
-  **Deliberately opt-in and best-effort**, for real reasons — not laziness:
-  - It is **not** a zip-bomb defense and must not be sold as one. Declared sizes can be
-    absent, wrong, or adversarial; the ratio-guard / `ExtractionPolicy` already own the
-    hostile-archive axis. This knob is a *convenience* against honest "disk too small"
-    mistakes, so it trusts the metadata by design.
-  - Free space is **approximate and racy**: transparent FS compression (btrfs/zfs), sparse
-    files, reflink/dedupe, quotas, and other writers all move the target (TOCTOU). Advisory
-    only; never a hard guarantee.
-  - **Skip gracefully when the total is unknowable** — single-file `gz`/`bz2` (no reliable
-    stored size) or a streamed/piped TAR — rather than blocking extraction.
-  - Interacts with overwrite policy: replacing existing files changes the *net* delta, which
-    a naive sum ignores; best-effort accepts that imprecision.
-  Home: a library extract option / `ExtractionPolicy`-adjacent knob (the library has the
-  sizes), surfaced by the CLI as a flag (opt-in first; could default-on for the CLI later if
-  it proves low-friction). Small change of its own — not part of `cli-v1`. Verdict: a nice,
-  cheap UX win worth doing, provided it ships clearly labeled as advisory so nobody mistakes
-  it for a safety control.
-
-## CLI (post-`cli-v1` follow-ups)
-
-> Parked from PR #131 review decisions (Brief 4) so they survive merge of #120.
-> The `cli-v1` change itself is implemented; these are the consciously deferred
-> pieces — promote each with its own OpenSpec change when scheduled.
-
-- **Stdin archive sources** — Decision 15 of the CLI design reserved `-` as the
-  archive argument; nothing reads from stdin yet.
-
-- **Skip-damaged-member iteration for `test` / salvage-adjacent reads** — CLI
-  `test` now counts open-time failures and still prints the summary, but once
-  `stream_members` raises the generator is dead and later members are lost
-  (solid / poisoned streams). Library-side: surface per-member open errors
-  without terminating iteration (e.g. yield `(member, error)` or a documented
-  "skip damaged unit" mode) so `test` can continue where the format allows.
-  Overlaps salvage (above) but is narrower — integrity reporting, not
-  best-effort recovery of truncated archives.
-- **Library `verify` / `VerifyReport` primitive** (api-coherence E2 / **Q5**) —
-  **deferred past 0.2.0** when archiving the api-coherence deep review.
-  CLI `test` hand-rolls the loop today; unclear whether callers verify without
-  extracting often enough to justify a first-class API. Adjacent to
-  skip-damaged-member iteration above.
-- **`--json` machine output** (cli-product **P4** / Q2) — **wait for the `hash`
-  verb / a designed member schema**; do not ship a provisional JSON-lines surface
-  in 0.2.0. Flag name when it lands: `--json` (not `--porcelain`). Parked when
-  archiving `cli-product/` (2026-07-20); also debt-ledger DD7.
-- **`--raw` / TTY-only control-byte quoting** (cli-product **Q4** remainder) —
-  recommended style (escape everywhere, backslash) already applied; optional
-  `--raw` hatch for scripts that need exact names before `--json` exists is
-  additive. Parked as debt-ledger DD8.
-- **Lazy `ArchiveMember` derivation (perf L5)** — only named lever to bring
-  ZIP open+list into the aspirational 2–3× peer band (measured figures:
-  `benchmarks/RESULTS.md`) (`review/archive/2026-07-28-performance/listing-attribution.md`). Touches equality
-  / accounting / listing contract → needs its own OpenSpec. **Deferred past
-  0.2.0** when deciding debt-ledger Q2 (2026-07-20): bands are aspirational;
-  measured ratios are good enough for everyday use. Same story for 7z and RAR
-  listing against their ~1.25× band.
-  **It is also the memory lever** (davitf, 2026-10-01, parked): a 7z member costs
-  about 1.0 KB at open and 1.2 KB after `members()` (tracemalloc, 100 000 entries) —
-  `ArchiveMember` 280 B, the retained `SevenZipFileRecord` 150 B, the by-name index
-  125 B, two near-always-empty dicts (`extra`, `hashes`) 130 B, `_MemberRaw` 100 B,
-  the rest names, a datetime and boxed ints. Sharing the empty dicts, a by-name list
-  only on repeats and dropping the duplicate record gets to ~600 B; only lazy members
-  would change what `max_members` costs (858 MB for a 315-byte million-entry 7z).
-
-## Strategy & adoption (2026-07 review backlog)
-
-> Parked here from the 2026-07 architecture-review discussion so nothing is lost.
-> Security/compat items with a threat angle live in `dev-docs/threat-model.md` (the gap
-> register); the product framing lives in `VISION.md`. These are the rest.
-
-- **Salvage / best-effort read mode** — the founding use case (indexing decades of
-  messy backups) is full of truncated and corrupt archives. Reads already return the
-  recoverable prefix plus the terminal error (`members_report()`, yield-then-raise
-  iteration), but nothing resyncs past damage. A `salvage=True`-style read mode would
-  yield every recoverable member plus per-member/status errors instead of stopping at
-  the first terminal error: for ZIP, walk local
-  headers when the central directory is gone; for TAR, resync on the next valid header;
-  for single-file streams, return the decodable prefix with a truncation flag. Nobody
-  does this well; it is both a founding need and a differentiator. Needs its own spec
-  (interacts with error-handling and the equivalence matrix).
-- **Hashes without decompression** — dedupe workflows can often use the digests the
-  archive already stores (`member.hashes`: CRC32, RAR5 BLAKE2sp, …) instead of reading
-  data. The recipe is published in `docs/formats.md` (stored digests); what is left is
-  a helper that returns "best available digest +
-  provenance (stored vs computed)" so an indexer can choose cheap-but-weak vs
-  costly-but-strong uniformly.
-- **Public backend API** — stabilize/export the `ReadBackend` ABC + registry so rare
-  formats (CAB, CPIO, SquashFS, WIM, XAR, DMG…) can be third-party plugins instead of
-  a solo compatibility treadmill. Decide pre-1.0 (it constrains how freely the backend
-  contract can change afterwards).
-- **fsspec adapter** — expose an opened archive as an fsspec filesystem
-  (`ArchiveFileSystem`); big adoption channel (pandas/dask/HF datasets ecosystems) and
-  a good stress test of the reader contract. Also the natural place for
-  `open_archive("https://…")` stories rather than teaching core about URLs.
-- **Writing, done properly, later** — writing is deliberately post-reading (possibly
-  post-1.0). When specced, design in from the start: **reproducible output**
-  (`SOURCE_DATE_EPOCH`, stable member ordering, normalized metadata — the build-tool
-  adoption wedge) and the **metadata-fidelity boundary** (xattrs/ACLs — threat-model
-  C3; read-side is additive later, but write-side fidelity must be a day-one decision
-  of the writing spec, since it shapes `add_member` and the round-trip contract).
-- **SharedSource per-view handles** — a constructor flag `independent_handles` used
-  to promise a fresh `open(path)` per `view()` for parallel I/O, but it had no
-  caller and silently did nothing. Removed in the #315 Parcel B pass so the
-  documented API cannot lie. Re-add when parallel extraction actually opens
-  per-view FDs; until then every view shares one handle + lock. See
-  `dev-docs/investigations/parallel-reader.md`.
-- **Free-threading position** (threat-model C4) — parallel extraction / parallel
-  decode under 3.13t; interacts with the existing parallel-extraction idea above.
-
-## Testing
-
-- **Commit the leftover live-`rar a` fixtures.** ADR 0016 committed the corpus RAR
-  column and `tests/fixtures/rar/`, so CI installs unrar only. Four tests still
-  shell out to the trialware writer at runtime (SFX stub, real `rar a -sfx`, live
-  multi-volume roundtrip) and skip on every CI leg. Same move as 0016: generate
-  once, commit, drop the live `rar a`. Inventory in
-  `tests/fixtures/rar/README.md`. Linux `setup-dev-env.sh` still apt-installs
-  `rar`, so these are not dark on a provisioned Linux laptop — only on CI /
-  macOS.
-- **Native-codec stress harnesses: decided 2026-09-17 (davi).** *A native stress harness
-  is built when an upstream defect is observed, not before.* Of the eight native
-  dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled `indexed_bzip2`, `brotli`,
-  `lz4`, `cryptography`, `pycdlib`), only `pyppmd` meets that bar, and its harness stays:
-  the abort it guards (`known-issues.md` §Intermittent `pyppmd` native aborts) is unfixed
-  upstream and only avoided here by bounding every PPMd decode (`max_length` from
-  `unpack_size`). The harness is what catches a later change that loosens that bound.
-  The criterion also records why
-  [PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
-  was closed on 2026-09-11: no defect had been observed in either library. A proposed
-  harness for another library is measured against it.
-
-  Fuzzing is separate and hunts a different failure: `tests/atheris_fuzz/targets.py`
-  mutates malformed input for 7 required stream codecs plus 4 optional ones, while the
-  PPMd harness repeats *valid* decodes across threads and interpreter teardown. PPMd is
-  not a stream codec, so the fuzzer reaches it only through 7z or ZIP members; adding a
-  PPMd 7z archive to the fuzz corpus is tracked internally and does not replace the
-  harness.
-
-  Coverage of the eight today: `pyppmd` has the stress harness
-  (`scripts/ppmd_native_stress.py`, run by `ppmd-native-stress.yml`). `inflate64`,
-  `brotli` and `lz4` have fuzz targets and no stress harness. `rapidgzip` has
-  `rapidgzip-truncation-sweep.yml`, which checks one behaviour (truncation detection) and
-  is not a stress harness. `cryptography` and `pycdlib` have neither.
-- **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg
-  `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` and runs the SFX; the
-  only integrity checks are a PE sniff and the UNRAR banner. **A pinned SHA-256 is
-  rejected** and copying the macOS pinned-commit pattern is rejected with it — #320's
-  criterion is that CI installs unrar the way users on that platform actually get it, and
-  the URL is unversioned so a digest goes stale on every upstream release. **Staleness is
-  already handled**: the cache key carries a rotating window, so the tested binary is
-  never more than 7 days old. What remains is *authenticity, not freshness* — the leading
-  candidate is an Authenticode check that the SFX is signed by win.rar GmbH, unverified
-  because the agent proxy blocks rarlab.com. Live discussion and the full reasoning:
-  [`review/backlog.md`](../review/backlog.md) §Parked from PR reviews, #320 F2.
+# Ideas
+
+This page lists what we are thinking about for archivey beyond the work already in
+progress. It is here so that users can see where the library may go, and so that
+contributors can find something to work on.
+
+**An idea is not a commitment.** Nothing here is scheduled unless its status says so.
+Work that is committed has an OpenSpec change under `openspec/changes/`. Decided
+out-of-scope items for v1 (async, in-place modification, and others) are in
+`openspec/project.md` §"Deferred / out of scope (v1)".
+
+**To pick one up**, open a GitHub issue that names the idea and says how you would
+approach it, before you write code. Most ideas here touch a contract, so the shape is
+worth agreeing first. **To propose a new idea**, open an issue too. If it is accepted, it
+is added here.
+
+Each idea carries a status:
+
+- *Planned after 0.2.0* — we intend to do it, after the first public release.
+- *Needs design* — we want it, but the shape is not settled. Start with a proposal.
+- *Open idea* — worth doing if someone needs it. Not planned.
+
+**Good first contribution** marks an idea that is small and self-contained.
+
+## Formats
+
+- **Read ZIPs over 4 GiB that macOS wrote without ZIP64.** *Planned after 0.2.0.*
+  Finder's Compress writes a classic ZIP past 4 GiB and stores every offset mod 2³², so
+  archivey and 7-Zip fail on it while Finder reads it back. One rule recovers a real
+  4.9 GB archive ([`investigations/2026-10-backup-scan.md`](investigations/2026-10-backup-scan.md)
+  §4): offsets must increase, so add 2³² until each one passes the previous member's end,
+  then confirm a local header with the right name sits there and keep the CRC check. A
+  single member over 4 GiB is still open, because its sizes wrap too. A test needs no
+  large file: reduce the stored offsets of a small archive, as
+  `tests/test_audit_backup_scan.py` does.
+- **Native streaming ZIP reader.** *Needs design.* A native parser that walks local
+  headers forward could read ZIPs from pipes and sockets, list a ZIP whose central
+  directory is lost, read spanned `.z01`…`.zip` sets (by resolving each (disk, offset)
+  pair), and keep an archive readable when one name's UTF-8 flag is wrong (stdlib
+  `zipfile` makes the whole archive unlistable). See
+  [`formats/zip.md`](formats/zip.md) §5.
+- **Read raw CD sector images (`.bin`).** *Open idea.* 0.2.0 recognizes a raw image and
+  refuses it (`iso_reader.refuse_raw_sector_image`). Mode 1 and Mode 2 Form 1 images
+  strip to a byte-identical `.iso`, so a slicing stream that skips the sector headers
+  would let the ISO reader read them. Out of scope: multi-track images that need the
+  `.cue`, and EDC/ECC verification (which the docs must then say is skipped).
+- **UU and Base64 wrappers as single-file formats.** *Open idea.* **Good first
+  contribution.** `uuencode` files (`.uu`, `.uue`, including `begin-base64`) turn up in
+  old mail and Usenet drops. They fit the one-member single-file backend: peel one
+  wrapper and yield the payload. The decoder is trivial; the work is in weak detection
+  (`begin `), in trusting the embedded name and mode, and in a ratio guard that expects
+  data to shrink. Bare single-file only, not transparent `uu → gz → tar`.
+- **Opt-in legacy name-encoding detection.** *Needs design (post-1.0).* Names with no
+  Unicode marker that are not valid UTF-8 decode via `surrogateescape` today: honest and
+  lossless, but garbled. Codepages have no oracle and filenames are too short for a
+  statistical detector, so a wrong guess would be plausible and silently wrong. If built:
+  off by default, behind an extra, one guess per archive over all such names, with a
+  diagnostic. **The first step is a good first contribution**: a way for users to report
+  names archivey could not decode (a docs note, a one-line CLI hint, or a helper that
+  prints the raw-name samples), with no guessing. That is how we would collect the corpus
+  a detector needs.
+- **`unar` for formats archivey does not decode.** *Open idea.* `unar` reads StuffIt,
+  LHA, ARJ, ACE, CAB, old Mac archives and codecs that have no Python library. The process
+  layer (`internal/external/unar.py`) is already format-agnostic, so a backend would add
+  its own refusals and entry mapping, as `rar_unar.py` does for RAR.
+- **libarchive backend.** *Open idea.* `python-libarchive-c` as an additional backend for
+  several formats, behind its own extra. It brings a native C dependency and weak random
+  access.
+- **Decode RAR without `unrar`.** *Open idea (research).* Build a minimal synthetic
+  one-file RAR stream and feed it to libarchive's RAR decoder, as `rarfile` does. It could
+  drop the `unrar` requirement for common cases, but RAR decode correctness is hard, and
+  `unrar` stays the reference.
+- **Subprocess decompressor streams.** *Open idea.* One reusable stream that pipes data
+  through a system binary (`zstd`, `xz`, `brotli`, `lz4`), for environments where C
+  extensions will not install but the CLI tools are on `PATH`. Forward-only, the same
+  pattern archivey already uses for `unrar`.
+- **Lift the directory-glob and backslash refusals on the `unrar` path.** *Open idea (low
+  priority).* A RAR member name is passed to `unrar` as a mask, so archivey predicts which
+  other members it matches. A glob in a directory component and a literal backslash are
+  still refused ([`formats/rar.md`](formats/rar.md) §2.3). Lifting them means measuring
+  those shapes in `tests/test_rar_unrar_names.py`, on Windows too. The names involved are
+  adversarial, and a wrong model returns the wrong member's bytes.
+- **Report RAR5 quick-open copies the listing never reached.** *Needs design.* The quick-
+  open listing drops copies whose `header_offset` the walk does not land on. They could be
+  reported; whether as a diagnostic, a cost note or a log line is undecided.
+
+## Detection
+
+- **Extension-first detection, and stopping early on agreement.** *Needs design.* Try the
+  formats a filename suggests first, then fall back to the full sweep. A `.br` file would
+  stop being claimed by whichever content probe runs first, and a misnamed file is still
+  found. A second step is to stop as soon as the extension and the content agree, which
+  saves the later scan tiers; the sound version may skip the expensive tiers but never a
+  cheap exact-magic check. On `/usr`, near magic already settles almost every file, so the
+  saving needs a Brotli-heavy corpus to show (the detection-algorithm
+  [investigation](investigations/archive-format-detection-algorithm.md)).
+- **Archive role: tell the caller whether to look inside.** *Needs design (post-1.0).*
+  `open_archive()` reads a photo backup, a `.docx`, a `.jar` and a wheel the same way.
+  A recognizer for container markers (`META-INF/MANIFEST.MF`, a stored `mimetype` first
+  entry, `*.dist-info/WHEEL`) would let a backup indexer skip packaging files. It must
+  say "not recognized" rather than "this is data", and rules need an order (an APK is
+  also a JAR). See [`formats/zip.md`](formats/zip.md) §3.
+- **Volume-shaped names: detect first, then explain.** *Open idea.* Today a `.zNN` name is
+  refused before detection runs. Running detection first, and only turning a failure into
+  "rejoin first" when the name looks like a volume, would keep odd but valid archives
+  openable. It should replace the early refusal, not sit on top of it
+  ([`formats/zip.md`](formats/zip.md) §3).
+- **Raise on a tie instead of choosing by registry order.** *Needs design.* When two
+  formats are equally well supported by the evidence, detection should raise a dedicated
+  error. Later, opening could try each tied candidate; that needs limits on cumulative
+  work and a rule for when several succeed.
+- **Makeself-aware payload location.** *Open idea.* A makeself `.run` stub states where
+  its payload starts (`SKIP`) and how it is compressed (`COMPRESS`). Reading that would
+  replace a 2 MiB scan with one seek and would name compressors archivey does not read.
+  It needs a corpus of current and old installers first
+  ([`topics/prefixed-archives.md`](topics/prefixed-archives.md)).
+- **Bound the SFX search at the PE overlay.** *Open idea.* **Good first contribution.**
+  A 7z SFX with data after the archive reads the whole scan window today. For a PE stub,
+  the end of its last section is a safe bound, because a decoy inside the stub cannot pass
+  it. The current cost is pinned by
+  `test_short_7z_hit_scan_cost_is_bounded_by_the_window`
+  ([`topics/detection.md`](topics/detection.md) §2.2).
+- **Price detection in round trips, not bytes.** *Needs design.* A range-request source
+  and a local file look the same to detection, so its byte budgets are in the wrong
+  currency for remote sources. Needs a measurement on a real range-request source.
+
+## Reading and verification
+
+- **Verification state as data.** *Needs design.* A member stream does not say whether
+  its stored digest was checked. For ZipCrypto and 7z AES, an unchecked partial read can
+  be garbage decrypted with the wrong key. The proposed shape is an ordered level on the
+  stream (`NONE`, `KEY`, `STRUCTURE`, `CONTENT`), paired with the highest level that
+  member can reach, and a `verify(at_least=…)` method. It would replace the
+  `ENCRYPTED_MEMBER_UNVERIFIED` diagnostic. The `verification-integrity-mode` change under
+  `openspec/changes/` depends on this design.
+- **Keep the checksum across seeks.** *Open idea.* Any seek other than one to 0 turns the
+  member digest off today (`MemberVerifier.note_seek`, ADR 0014). Most formats decode the
+  bytes a forward seek skips anyway, so the digest could keep running; more generally,
+  the verifier could remember how far it has hashed and resume from there. The WinZip AES
+  stage already does this for its HMAC.
+- **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
+  contribution.** To keep the HMAC across seeks, the read that returns an AES member's last
+  byte first reads the ciphertext the seeks skipped. `docs/gotchas.md` states this, but
+  nothing reports it at run time. A diagnostic past about a megabyte would match
+  `STREAM_REWIND_REDECOMPRESSES`.
+- **Confirm a stored encrypted 7z folder from its smallest member.** *Open idea.* For a
+  `Copy` chain, any member's bytes are addressable, so the cheapest member of at least 4
+  bytes with a CRC could confirm a password instead of the earliest one.
+- **Tell a real LZMA dictionary size from decrypted garbage.** *Open idea.* A wrong
+  ZipCrypto password that passes the check byte can decrypt LZMA properties to a huge
+  dictionary, which surfaces as a resource limit. Real encoders write only a few sizes, so
+  an off-grid size could be reported as a wrong password. Measure what real writers emit
+  first.
+- **Salvage mode.** *Needs design.* Backups are full of truncated and corrupt archives.
+  Reads already return the readable prefix and then raise, but nothing resyncs past
+  damage. A salvage mode would walk ZIP local headers when the central directory is gone,
+  resync a TAR stream on the next valid header, and return every recoverable member with
+  its error.
+- **Keep iterating past a damaged member.** *Needs design.* Once `stream_members()` raises,
+  the generator is finished. Yielding per-member errors where the format allows would let
+  `archivey test` report every bad member. Narrower than salvage.
+
+## Performance
+
+- **Hold the solid-block decoder across `open()` calls.** *Needs design.* Each random
+  `open()` on a solid 7z rebuilds the folder decoder from the start, so opening every
+  member costs about 4.5× one pass. Keeping one decoder and reusing it when the next target
+  is ahead would remove that. The open question is what to keep under
+  `concurrent_members=True`, where several decoders can be live at once.
+- **Batch small members into one `unrar` call.** *Open idea.* A non-solid
+  `stream_members()` pass spawns one `unrar` per member, about 5 ms each. Small adjacent
+  members could share a process and be split by size, as the solid path already does.
+  This needs a measured threshold and a spec change, because `format-rar` forbids
+  multiple member paths per call today.
+- **Seekable zstd through a native frame index.** *Open idea.* zstd has no random access
+  today. A frame index built from frame headers would give frame-granularity seeks with
+  the infrastructure that already serves xz and lzip, and with no new dependency.
+  `indexed_zstd` gives the same granularity with a heavy C++ dependency. It helps only
+  multi-frame files, so measure how common they are first
+  ([`library-analysis.md`](library-analysis.md) §zstd).
+- **Lazy `ArchiveMember` derivation.** *Needs design.* The one known lever for faster ZIP
+  open-and-list (`benchmarks/RESULTS.md`), and for the per-member memory that
+  `max_members` has to account for (about 1 KB per 7z member).
+- **Parallel extraction.** *Open idea.* Extract independent members, or independent
+  solid blocks of a 7z, in parallel. The concurrent member stream seam exists; any speed
+  claim needs measurement. Pairs with independent file handles per view (below) and with
+  a position on free-threaded Python.
+- **Independent handles for a file source.** *Open idea.* A path source reaches the codecs
+  by being turned back into a path in three places, because a path is what gives a fresh
+  descriptor. `ArchiveSource.open_independent()` would remove those branches and let
+  concurrent views avoid sharing one locked handle. Measure the lock contention first.
+
+## API and usability
+
+- **A stricter `DecoderLimits` preset for untrusted input.** *Needs design.* A preset for
+  servers: 256 MiB decoder memory (enough for every 7-Zip preset), `2**24` key-derivation
+  rounds, and possibly a lower `max_members`. The name is open (`UNTRUSTED` is the
+  suggestion). It may also want to be a mode, for example refusing a decode that could
+  take the process down.
+- **Resource usage against the limits, as data.** *Open idea.* A caller cannot ask how
+  close an archive came to each limit. A usage record on the reader and on the extraction
+  report would help tune limits against a real corpus. `scripts/scan_archives.py` shows
+  what can be read from public results today.
+- **Opt-in free-space check before extraction.** *Open idea.* **Good first contribution.**
+  Sum the declared sizes of the selected members and compare against
+  `shutil.disk_usage(dest).free`, failing before anything is written. Advisory only: it
+  trusts declared sizes, so it is a convenience against honest mistakes, not a bomb
+  defense. Skip it when the total cannot be known.
+- **`SANITIZE` extraction policy.** *Needs design (post-v1).* An opt-in policy that rewrites
+  names instead of refusing them: unsafe paths, and names the destination file system
+  cannot represent.
+- **Configurable symlink extraction.** *Open idea.* What to do when a symlink member cannot
+  be created as a symlink (FAT, Windows without the privilege). Today it fails that member.
+  An option such as `copy` must not reintroduce a path escape.
+- **Pathlib-like navigation.** *Open idea.* An `ArchivePath` with `/`, `iterdir()`,
+  `glob()` and `read_bytes()`, as `zipfile.Path` does.
+- **fsspec integration.** *Open idea.* Expose an opened archive as an fsspec file system,
+  so pandas, dask and pyarrow read members by path. Opening from a URL could follow, with
+  fsspec's listing used to find sibling volumes.
+- **Best available digest without decompression.** *Open idea.* **Good first
+  contribution.** A helper that returns the strongest digest an archive already stores
+  for a member, and says whether it was stored or computed. The recipe is in
+  `docs/formats.md`.
+- **A library `verify()` primitive.** *Open idea.* `archivey test` writes its own loop
+  today. Decide whether callers verify without extracting often enough for a public API.
+- **Public backend API.** *Needs design.* Export the backend base class and registry so
+  rare formats (CAB, CPIO, SquashFS, WIM, XAR) can be third-party plugins. It constrains
+  how freely the backend contract can change, so decide before 1.0.
+- **A lifecycle rule: a refused `open()` leaves nothing behind.** *Open idea.* Today this
+  is specified for one case only. Before writing the general rule, audit each backend for
+  the gap between creating a resource and the object that owns it.
+
+## CLI
+
+- **Read the archive from stdin.** *Open idea.* `-` is reserved as the archive argument.
+- **`--json` output.** *Needs design.* Waits for a designed member schema. The flag name
+  is `--json`.
+- **`--raw` names.** *Open idea.* An escape hatch that prints exact names, for scripts that
+  need them before `--json` exists.
+
+## Writing
+
+- **Writing, designed in from the start.** *Open idea (possibly post-1.0).* Writing comes
+  after reading. When it is specified, two things belong in the first version:
+  reproducible output (`SOURCE_DATE_EPOCH`, stable ordering, normalized metadata) and the
+  metadata-fidelity boundary (xattrs, ACLs, owners), because both shape the writer API
+  ([`investigations/archive-writing-design.md`](investigations/archive-writing-design.md)).
+- **Copy compressed data through without recompressing.** *Open idea.* When the source
+  and destination use the same codec and parameters (deflate to deflate), copy the
+  compressed bytes instead of decoding and encoding again.
+
+## Tooling and CI
+
+- **Commit the remaining live `rar a` fixtures.** *Open idea.* Four tests still run the
+  `rar` writer at test time and skip on every CI leg. Generate their archives once and
+  commit them, as ADR 0016 did for the corpus. Inventory: `tests/fixtures/rar/README.md`
+  §"Tests that still need the `rar` writer at runtime".
+- **Check that the Windows `unrar` download is rarlab's.** *Open idea.* The Windows CI leg
+  downloads `unrarw64.exe` from an unversioned URL, so a pinned digest would go stale. An
+  Authenticode check for the win.rar GmbH signature is the likely answer
+  (`scripts/install-rarlab-unrar.ps1`).
+- **Move the `unrar` finder onto `CliToolFinder`.** *Open idea.* `find_rarlab_unrar` repeats
+  the policy in `internal/external/cli.py`, so a probe or cache fix lands twice. About
+  sixty test sites patch the finder's internals, so do it as its own change, with those
+  tests rewritten against the finder object.
+- **Join RAR sets at the source boundary.** *Open idea.* Numbered parts are joined in
+  `resolve_source`, but a RAR set is rediscovered and joined inside `RarReader`. Joining it
+  at the source boundary would delete the RAR branch in `core.py` and the double
+  discovery. Check the SFX stub follower and explicit part lists first.

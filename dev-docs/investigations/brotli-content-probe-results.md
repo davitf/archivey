@@ -1,7 +1,7 @@
 # Brotli content probe — investigation results
 
 **Brief:** `dev-docs/investigations/brotli-content-probe-brief.md` (lands with PR #254)
-**Registered as:** `dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10 (both from #254)
+**Registered as:** `dev-docs/threat-model.md` O10 (from #254)
 **Date:** 2026-08-19
 **Status:** complete. No production code changed — the brief asks for findings plus, if
 warranted, an OpenSpec proposal. A proposal is warranted; §7 says what it should contain.

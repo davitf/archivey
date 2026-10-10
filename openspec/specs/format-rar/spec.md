@@ -479,26 +479,28 @@ member type.
 
 ### Requirement: Handle RAR5 redirect link types natively
 
-The system SHALL read RAR5 link semantics from native `file_redir` metadata.
-Hardlinks (`RAR5_XREDIR_HARD_LINK`) SHALL be exposed as `MemberType.HARDLINK`
-with `link_target` set from the redirect, so `ArchiveReader` link following returns
-the target FILE's data. A RAR hardlink SHALL resolve only to a member before it, in
-random access as in a streaming pass, as `unrar` extracts it from what it has already
-written. A hardlink whose only same-named member comes after it has no
-`link_target_member`; opening it raises `LinkTargetNotFoundError`. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`) SHALL be
-exposed as `MemberType.FILE` with `extra["is_file_copy"] == True`, `link_target` set
-to the stored source path and `link_target_member` set to the source: the latest
-earlier `FILE` member that path names. Reading a copy SHALL return the source's bytes,
-and extraction SHALL write it as an independent file, as `unrar` does. A copy with no
-such source SHALL raise `LinkTargetNotFoundError` when read.
-Unix symlinks and Windows symlinks/junctions (`RAR5_XREDIR_UNIX_SYMLINK`,
-`RAR5_XREDIR_WINDOWS_SYMLINK`, `RAR5_XREDIR_WINDOWS_JUNCTION`) SHALL be
-exposed as `MemberType.SYMLINK` with `link_target` from the redirect and
-resolved by the format-independent link-following layer. The target of a Windows
-symlink or junction SHALL be normalized as a ZIP or 7z reparse buffer's is: `\`
-becomes `/`, a leading `\??\` or `/??/` is dropped, and `UNC\` after it becomes
-`//`. A Unix symlink's target SHALL be kept as stored. Redirect members MUST
-NOT appear in the solid `unrar p` demux size map.
+The system SHALL read RAR5 link semantics from native `file_redir` metadata. Hardlinks
+(`RAR5_XREDIR_HARD_LINK`) SHALL be exposed as `MemberType.HARDLINK` with `link_target`
+set from the redirect, so `ArchiveReader` link following returns the target FILE's
+data. A RAR hardlink SHALL resolve only to a member before it, in random access as in
+a streaming pass, as `unrar` extracts it from what it has already written. A hardlink
+whose only same-named member comes after it has no `link_target_member`; opening it
+raises `LinkTargetNotFoundError`. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`)
+SHALL be exposed as `MemberType.FILE` with `extra["is_file_copy"] == True`,
+`link_target` set to the stored source path and `link_target_member` set to the
+source: the latest earlier `FILE` member that path names. A path that `..`-escapes the
+archive root names no source: extraction writes a copy from its source's bytes under
+the copy's own name, and does not refuse a copy of a refused member as it refuses a
+hard link. Reading a copy SHALL return the source's bytes, and extraction SHALL write
+it as an independent file, as `unrar` does. A copy with no such source SHALL raise
+`LinkTargetNotFoundError` when read. Unix symlinks and Windows symlinks/junctions
+(`RAR5_XREDIR_UNIX_SYMLINK`, `RAR5_XREDIR_WINDOWS_SYMLINK`,
+`RAR5_XREDIR_WINDOWS_JUNCTION`) SHALL be exposed as `MemberType.SYMLINK` with
+`link_target` from the redirect and resolved by the format-independent link-following
+layer. The target of a Windows symlink or junction SHALL be normalized as a ZIP or 7z
+reparse buffer's is: `\` becomes `/`, a leading `\??\` or `/??/` is dropped, and
+`UNC\` after it becomes `//`. A Unix symlink's target SHALL be kept as stored.
+Redirect members MUST NOT appear in the solid `unrar p` demux size map.
 
 #### Scenario: redirect matrix
 

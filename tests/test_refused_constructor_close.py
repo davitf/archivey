@@ -239,6 +239,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
+    "archivey.internal.streams.codecs.zlib_codec._DeflateEndCheckStream": (
+        "plain assignments only"
+    ),
     "archivey.internal.streams.codecs.gzip_codec._GzipTruncationCheckStream": (
         "plain assignments only"
     ),

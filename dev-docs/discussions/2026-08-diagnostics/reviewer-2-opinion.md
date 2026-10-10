@@ -52,7 +52,7 @@ same mistake a second time, at larger scale: it deletes eight codes as a group
 when the eight do not behave alike under any test the project actually uses.
 
 Retire the O-23 sentence explicitly rather than leaving it in
-`review/docs/observations.md` for the next reviewer to cite as settled.
+`review/archive/2026-10-06-docs/observations.md` for the next reviewer to cite as settled.
 
 ## 2. Two objections to the drafted ceiling
 
