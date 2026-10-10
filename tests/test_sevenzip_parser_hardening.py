@@ -635,8 +635,12 @@ def test_a_member_with_data_and_a_directory_mode_is_a_file(
 def test_an_anti_bit_left_on_a_member_with_data_is_dropped() -> None:
     """``kEmptyStream`` repeated after ``kAnti`` moves the stream to the anti entry.
 
-    7-Zip clears the anti bits on each ``kEmptyStream`` and lists ``a`` as an 11-byte
-    file and ``b`` as a folder; ``a`` must not be an anti item whose data is skipped.
+    7-Zip 23.01 refuses a header that repeats ``kEmptyStream`` (``E_INVALIDARG``), which
+    is the evidence that no real producer writes this shape (DR-5a). Archivey keeps
+    listing the recoverable members and types the entry that has the stream as a file
+    (DR-2, DR-17): ``a`` must not be an anti item whose data is skipped. Each
+    ``kEmptyStream`` clears the anti and empty-file bits, which is what 7-Zip's
+    ``7zIn.cpp`` would do if it got that far.
     """
     props = (
         _file_prop(_EMPTY_STREAM, _bits([True, False]))
@@ -649,3 +653,23 @@ def test_an_anti_bit_left_on_a_member_with_data_is_dropped() -> None:
         assert members["a"].type is MemberType.FILE
         assert reader.read(members["a"]) == _FILE_DATA
         assert members["b/"].type is MemberType.DIRECTORY
+
+
+def test_an_anti_bit_does_not_move_to_another_member_without_data() -> None:
+    """A repeated ``kEmptyStream`` re-partitions the stream-less entries.
+
+    The ``kAnti`` bit was assigned to ``a`` under the first vector; the second vector
+    gives ``a`` no anti bit, so ``a`` is not an anti item (deletion marker).
+    """
+    props = (
+        _file_prop(_EMPTY_STREAM, _bits([True, False, False]))
+        + _file_prop(_ANTI, _bits([True]))
+        + _file_prop(_EMPTY_STREAM, _bits([True, True, False]))
+    )
+    data = _copy_archive(["a", "b", "c"], props)
+    with open_archive(io.BytesIO(data)) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert members["a/"].type is MemberType.DIRECTORY
+        assert members["b/"].type is MemberType.DIRECTORY
+        assert members["c"].type is MemberType.FILE
+        assert reader.read(members["c"]) == _FILE_DATA

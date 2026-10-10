@@ -239,7 +239,6 @@ class SevenZipFileRecord:
     emptystream: bool
     is_anti: bool
     is_directory: bool
-    is_empty_file: bool
     attributes: int | None
     creation_time: int | None
     last_access_time: int | None
@@ -1152,8 +1151,15 @@ def _read_files_info(
         payload = cur.slice(size, "7z file property payload")
         if prop == _Property.EMPTY_STREAM:
             empty_streams = _read_boolean(payload, num_files)
+            # kEmptyFile and kAnti are indexed over the stream-less entries of the
+            # current vector, so a new vector drops the bits assigned under the old
+            # one, as 7zIn.cpp clears emptyFileVector and antiFileVector here. A bit
+            # can then only sit on an entry with no stream, and a crafted header that
+            # repeats kEmptyStream cannot move one onto another member.
             for file_props, empty in zip(files, empty_streams, strict=True):
                 file_props.emptystream = empty
+                file_props.is_anti = False
+                file_props.is_empty_file = False
             num_empty_streams = empty_streams.count(True)
             continue
         if prop == _Property.COMMENT:
@@ -1309,19 +1315,16 @@ _FILES_INFO_HANDLERS: dict[
 
 
 def _file_record_from_props(props: _FileProps) -> SevenZipFileRecord:
-    # A record with a stream is a file: never a directory, an empty file or an anti
-    # item, as in 7-Zip (7zIn.cpp clears all three when HasStream). The anti and
-    # empty-file bits can otherwise stay on a data record when a crafted header repeats
-    # kEmptyStream after kAnti, and the member's data would then never be read.
-    emptystream = props.emptystream
-    is_anti = emptystream and props.is_anti
-    is_empty_file = emptystream and props.is_empty_file
+    # The kEmptyStream handler in _read_files_info leaves kAnti and kEmptyFile bits
+    # only on stream-less entries, so a record with a stream is never a directory or
+    # an anti item.
     return SevenZipFileRecord(
         filename=props.filename,
-        emptystream=emptystream,
-        is_anti=is_anti,
-        is_directory=emptystream and not is_empty_file and not is_anti,
-        is_empty_file=is_empty_file,
+        emptystream=props.emptystream,
+        is_anti=props.is_anti,
+        is_directory=props.emptystream
+        and not props.is_empty_file
+        and not props.is_anti,
         attributes=props.attributes,
         creation_time=props.creation_time,
         last_access_time=props.last_access_time,
