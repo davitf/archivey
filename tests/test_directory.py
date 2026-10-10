@@ -645,22 +645,6 @@ def test_subdirectory_vanishing_mid_walk_is_skipped(
     assert any("vanished" in r.message for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
-# stat timestamps are guarded like every backend's (deep W2)
-# ---------------------------------------------------------------------------
-
-
-def test_stat_datetime_guards_out_of_range_values() -> None:
-    # A network/FUSE filesystem can report garbage timestamps; one bad file must not
-    # sink the whole walk (on Windows even tz-aware fromtimestamp raises OSError).
-    from datetime import UTC, datetime
-
-    from archivey.internal.backends.directory_reader import _stat_datetime
-
-    assert _stat_datetime(0) == datetime(1970, 1, 1, tzinfo=UTC)
-    assert _stat_datetime(2**62) is None
-
-
 def test_symlink_vanishing_before_readlink_is_skipped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

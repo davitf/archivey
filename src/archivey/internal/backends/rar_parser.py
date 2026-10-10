@@ -341,7 +341,9 @@ class RarMemberInfo:
     orig_filename: bytes | None
     file_size: int
     compress_size: int
-    compress_type: int | None  # 0x30..0x35
+    # RAR3: the stored method byte as written, which a crafted header can set to
+    # any value. RAR5: 0x30 plus its 3-bit method field (0x30..0x37).
+    compress_type: int
     crc32: int | None
     blake2sp_hash: bytes | None
     mtime: datetime | None  # RAR4 naive; RAR5 aware UTC
@@ -461,6 +463,15 @@ class RarMemberInfo:
             and not self.is_directory
         )
 
+    @property
+    def is_stored(self) -> bool:
+        """Whether the member's data is stored (method M0), not compressed.
+
+        ``compress_type`` is normalised to the RAR3 method byte for both formats
+        (``_RAR3_M0`` plus the RAR5 method), so this holds for RAR4 and RAR5 alike.
+        """
+        return self.compress_type == _RAR3_M0
+
     def unknown_compression_version(self) -> str | None:
         """The compression version this member declares and ``unrar`` cannot decode.
 
@@ -471,7 +482,7 @@ class RarMemberInfo:
         ``UNP_VER`` 13 to 29. Outside them ``unrar`` reports "Unknown method" and
         "You may need a newer version of RAR" and writes nothing.
         """
-        if self.compress_type == _RAR3_M0:
+        if self.is_stored:
             return None
         if self.rar5_algorithm_version is not None:
             if self.rar5_algorithm_version > _RAR5_ALGO_NEWEST:
@@ -1009,7 +1020,8 @@ def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
 
     An end block has no data area, so no ``LONG_BLOCK`` flag, and its header is 7
     bytes plus at most a data CRC (4), a volume number (2) and 7 reserved bytes:
-    20 at most. Every FILE header carries ``LONG_BLOCK`` and is larger than that.
+    20 at most. A FILE header's fixed fields are 25 bytes past the 7-byte common
+    header, so even one with ``LONG_BLOCK`` clear is larger than that.
     """
     return not flags & _RAR3_LONG_BLOCK and header_size <= _RAR3_ENDARC_MAX_HEADER
 
@@ -2097,6 +2109,12 @@ def _parse_rar3(
                 proven=password_proven,
             )
 
+            # The data size is PACK_SIZE (with HIGH_PACK_SIZE for a >4 GiB member),
+            # whatever LONG_BLOCK says, as unrar reads it. ``add_size`` is the same
+            # low 32 bits when LONG_BLOCK is set and 0 when it is clear, and skipping
+            # 0 parsed a member's data as more headers, listing members unrar does
+            # not have.
+            packed_size = member.compress_size
             if block_type == _RAR3_FILE:
                 # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
                 # care about; member data is always left to RARLAB ``unrar``.
@@ -2111,14 +2129,17 @@ def _parse_rar3(
             elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
-                and member.compress_type == _RAR3_M0
+                and member.is_stored
                 and not member.is_encrypted
                 and not member.split_before
                 and not member.split_after
-                and member.compress_size > 0
+                and packed_size > 0
             ):
+                # The span the walk skips below, so no byte is read both as
+                # comment data and as a later header, which let a stack of small
+                # CMT headers each re-read the rest of the archive.
                 source.seek(data_offset)
-                raw = _read_stored_comment(source, member.compress_size, "RAR3 comment")
+                raw = _read_stored_comment(source, packed_size, "RAR3 comment")
                 if member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE:
                     # unrar converts ``CmtSize / 2`` units, so an odd trailing byte
                     # is dropped rather than shown as U+FFFD. Cut at the first NUL
@@ -2133,13 +2154,6 @@ def _parse_rar3(
                 else:
                     comment = cmt
 
-            # For a >4 GiB packed member the LONG_BLOCK ``add_size`` holds only the low
-            # 32 bits; ``member.compress_size`` carries the full 64-bit size (with
-            # HIGH_PACK_SIZE) so the walk skips the whole packed region and does not land
-            # mid-data on the next header.
-            packed_size = (
-                member.compress_size if (flags & _RAR3_FILE_LARGE) else add_size
-            )
             _seek_after_packed(source, data_offset, packed_size)
             continue
 
@@ -2492,7 +2506,7 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
     # answer; that would be a wrong one.
     return (
         member.filename == _RAR5_CMT_NAME
-        and member.compress_type == _RAR3_M0
+        and member.is_stored
         and not member.split_before
         and not member.split_after
         and member.compress_size > 0
@@ -2650,7 +2664,7 @@ def _try_list_via_rar5_qo(
         )
         if (
             member.filename != _RAR5_QO_NAME
-            or member.compress_type != _RAR3_M0
+            or not member.is_stored
             or member.is_encrypted
             # Same slice-and-parse hazard as the CMT gate above: an unsettled
             # header would have this parse a member table out of bytes that may
@@ -2771,6 +2785,11 @@ def _parse_rar5(
     truncated: str | None = None
     end_block_seen = False
     end_block_damaged_at: int | None = None
+    # Only the first MAIN of a volume is asked for the quick-open table. unrar
+    # accepts a repeated MAIN, and each try reads a QO payload of up to
+    # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
+    # that read again.
+    qo_tried = not use_qo
 
     while True:
         header_fd: _Readable = source
@@ -2860,7 +2879,8 @@ def _parse_rar5(
             # Header-encrypted QO stores IV+ciphertext header copies and
             # file-encrypts the QO payload; reconstructed data_offset then
             # misses AES padding. Treat that QO as unreadable (FILE walk).
-            if hdr_enc is None and use_qo:
+            if hdr_enc is None and not qo_tried:
+                qo_tried = True
                 qopen_abs = _rar5_locator_qopen_abs(hdata, extra_size, header_offset)
                 if qopen_abs is not None:
                     resume_pos = source.tell()
