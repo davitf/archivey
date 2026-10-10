@@ -369,7 +369,7 @@ class LinkWatch:
         """``path`` with its parent resolved: where the entry physically is."""
         try:
             return resolve_or_raise_on_loop(path.parent) / path.name
-        except (OSError, RuntimeError):
+        except OSError:
             return path
 
 

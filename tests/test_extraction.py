@@ -53,6 +53,7 @@ from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     apply_name_policy,
     check_universal,
+    resolve_or_raise_on_loop,
     transform_standard,
     transform_strict,
 )
@@ -1489,6 +1490,79 @@ def test_tar_symlink_closing_a_loop_is_rejected(
     assert isinstance(error, FilterRejectionError)
     assert error.message == "Symlink target escapes destination"
     assert not os.path.lexists(dest / closing)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_under_a_symlink_loop_raises_eloop(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest below a looping link is refused with the OSError mkdir raises, for every
+    # backend and on every Python version. Before 3.13 Path.resolve() raised
+    # RuntimeError there, and the directory backend's into-itself check let it out.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(OSError) as info:
+            reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+    assert info.value.errno == errno.ELOOP
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("shape", ["self", "ancestor"])
+def test_resolve_or_raise_on_loop_raises_eloop(tmp_path: Path, shape: str) -> None:
+    # One OSError on every Python version, naming the path asked about: before 3.13
+    # resolve() raises RuntimeError itself, from 3.13 only the stat sees the loop.
+    os.symlink("loop", tmp_path / "loop")
+    path = tmp_path / "loop" if shape == "self" else tmp_path / "loop" / "x" / "y"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
+    assert info.value.filename == str(path)
+
+
+def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> None:
+    (tmp_path / "d").mkdir()
+    path = tmp_path / "d" / "missing" / "f"
+    assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
+    tmp_path: Path,
+) -> None:
+    # A dangling link inside dest must resolve to its target name, not count as a loop
+    # (an escape, at the call sites).
+    os.symlink("nowhere", tmp_path / "dangling")
+    assert resolve_or_raise_on_loop(tmp_path / "dangling") == (
+        tmp_path.resolve() / "nowhere"
+    )
+
+
+def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows reports a loop as ERROR_CANT_RESOLVE_FILENAME, not ELOOP. Raised here by
+    # a stubbed stat so the branch runs on every platform.
+    def stat(self: Path, **kwargs: object) -> os.stat_result:
+        exc = OSError(errno.EINVAL, "The name of the file cannot be resolved")
+        exc.winerror = 1921  # type: ignore[attr-defined]
+        raise exc
+
+    monkeypatch.setattr(Path, "stat", stat)
+    path = tmp_path / "x"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert info.value.filename == str(path)
 
 
 # ---------------------------------------------------------------------------

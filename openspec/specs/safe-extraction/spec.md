@@ -419,10 +419,10 @@ with the destination empty, or revise an already-deleted member to `OVERWRITTEN`
 The system SHALL validate a SYMLINK member after `os.symlink(link_target,
 dest_path)` creates the link on disk. It resolves the created link target through
 the real filesystem and, if the resolved path escapes `dest`, immediately unlinks the
-new link and raises `FilterRejectionError`. A symlink loop on the way (`ELOOP` or its
-platform equivalent) SHALL fail safe the same way: unlink the just-created link and
-reject the member. The loop SHALL be detected on every supported Python version, not
-only where `Path.resolve()` raises for one (it does before 3.13 and does not from 3.13).
+new link and raises `FilterRejectionError`. Any failure to resolve the created link
+(`OSError`, such as `ELOOP` or its platform equivalent) SHALL fail safe the same way:
+unlink the just-created link and reject the member. A symlink loop SHALL be detected
+on every supported Python version.
 
 This post-creation check SHALL catch chained symlink attacks where earlier archive
 members influence later target resolution, without allowing writes through an
@@ -988,6 +988,7 @@ are the per-result outcome.
 | User filter returns `None` | No `ExtractionResult`; no result-count impact (like a selector exclusion) |
 | User filter returns anything but an `ArchiveMember` or `None` | `TypeError` naming what it returned; the call ends (a caller bug, not a member outcome) |
 | `extract_all()` on a directory source with `dest` inside that directory | `ExtractionError` before anything is created (the pass would read its own output) |
+| `extract_all()` with `dest` under a symlink loop, any format | `OSError` (`ELOOP`), as `mkdir` raises it, before anything is created |
 | Selector excludes member | No `ExtractionResult`; no result-count impact |
 | Member blocked by `FilterRejectionError` under `CONTINUE` | Result is `BLOCKED` with matching error; no diagnostic emitted |
 | Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error; no diagnostic emitted |

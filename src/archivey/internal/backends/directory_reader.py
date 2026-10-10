@@ -32,6 +32,7 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -196,9 +197,10 @@ class DirectoryReader(BaseArchiveReader):
         # Extracting a tree into a directory inside it reads its own output: a
         # streaming walk descends into what it just wrote (`copy/copy/copy/...`)
         # until a path is too long, and a listing taken later includes it. `cp -r`
-        # refuses the same request.
-        root = self._root.resolve()
-        target = dest.resolve()
+        # refuses the same request. A dest under a symlink loop raises the OSError
+        # (ELOOP) mkdir would, as it does for every other backend.
+        root = resolve_or_raise_on_loop(self._root)
+        target = resolve_or_raise_on_loop(dest)
         if target == root or target.is_relative_to(root):
             raise ExtractionError(
                 f"Cannot extract a directory into itself: {display_path(dest)} is "

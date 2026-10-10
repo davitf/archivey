@@ -142,31 +142,37 @@ _ERROR_CANT_RESOLVE_FILENAME = 1921
 
 
 def resolve_or_raise_on_loop(path: Path) -> Path:
-    """``path.resolve()``, raising ``OSError`` when a symlink loop is on the way.
+    """``path.resolve()``, raising ``OSError`` (``ELOOP``) when a symlink loop is on
+    the way, on every Python version.
 
-    A missing component is kept as a name, as ``resolve()`` does. Before Python 3.13,
+    A missing component is kept as a name, as ``resolve()`` does, and any other error
+    from the ``stat`` (``ENOENT`` for a dangling link) is ignored. Before Python 3.13,
     ``resolve()`` raised ``RuntimeError`` on a loop; from 3.13 it returns a path that
-    still contains the looping link. The ``stat`` restores the older answer, so one
-    archive gets the same outcome on every Python version.
+    still contains the looping link. The ``RuntimeError`` is turned into an ``OSError``
+    and the ``stat`` finds the loop on 3.13+, so callers catch ``OSError`` alone and
+    one archive gets the same outcome on every version. The error names ``path``.
     """
-    resolved = path.resolve()
+    try:
+        resolved = path.resolve()
+    except RuntimeError:
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from None
     try:
         resolved.stat()
     except OSError as exc:
         if exc.errno == errno.ELOOP or (
             getattr(exc, "winerror", None) == _ERROR_CANT_RESOLVE_FILENAME
         ):
-            raise
+            raise OSError(exc.errno, exc.strerror, str(path)) from None
     return resolved
 
 
 def _escapes(path: Path, root: Path) -> bool:
     """Whether ``path`` resolves outside ``root``. A path that cannot be resolved (a
-    symlink loop) counts as an escape, as it does in the check after a link is
+    symlink loop, say) counts as an escape, as it does in the check after a link is
     created."""
     try:
         return not _within(resolve_or_raise_on_loop(path), root)
-    except (OSError, RuntimeError):
+    except OSError:
         return True
 
 
@@ -354,24 +360,26 @@ def check_universal(
     # rather than follow, so following it here would wrongly reject a REPLACE. Combined
     # with the no-".." name check above, a parent inside the root guarantees the member
     # lands inside the root. A symlinked *parent* that escapes is still caught.
-    dest_root = dest.resolve()
-    if rel not in ("", "."):  # "" / "." is the root dir member itself
-        try:
-            parent = resolve_or_raise_on_loop((dest_root / rel).parent)
-        except (OSError, RuntimeError) as exc:
-            # A symlink loop the destination already had. Links this run creates
-            # never loop: one that would is removed as an escape. The member cannot be placed, and that is
-            # the destination's state, not a policy decision.
-            raise ExtractionError(
-                "Member's parent directory does not resolve in the destination "
-                f"(a symlink loop?): {exc}",
-                member_name=name,
-            ) from exc
-        if not _within(parent, dest_root):
-            raise FilterRejectionError(
-                "Member resolves outside the destination root",
-                member_name=name,
-            )
+    is_root = rel in ("", ".")  # "" / "." is the root dir member itself
+    try:
+        dest_root = resolve_or_raise_on_loop(dest)
+        parent = (
+            dest_root if is_root else resolve_or_raise_on_loop((dest_root / rel).parent)
+        )
+    except OSError as exc:
+        # A symlink loop the destination already had, in dest or below it. Links this
+        # run creates never loop: one that would is removed as an escape. The member
+        # cannot be placed, and that is the destination's state, not a policy decision.
+        raise ExtractionError(
+            "Member's parent directory does not resolve in the destination "
+            f"(a symlink loop?): {exc}",
+            member_name=name,
+        ) from exc
+    if not is_root and not _within(parent, dest_root):
+        raise FilterRejectionError(
+            "Member resolves outside the destination root",
+            member_name=name,
+        )
 
     # Symlink-target escape at planning time (the authoritative check is re-run
     # post-creation in the coordinator). The target is relative to the link's own
