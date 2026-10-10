@@ -695,6 +695,16 @@ Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and leave the
 active pass/stream valid. (Unlike random `open()`, whose independently owned
 streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 
+Reader close is the one exception, and only while the pass is suspended at a yield
+(the caller holds the iterator and is not inside a `next()` call). `close()` and
+`with`-exit then close the reader, as `zipfile.ZipFile.close()` does with member
+handles open: the yielded stream is closed and the backend's pass is wound down
+before teardown. Resuming that iterator SHALL raise `ArchiveyUsageError`. A pass
+that is executing (inside `next()`, e.g. a selector on another thread) still makes
+`close()` raise. This was the maintainer's ruling on 2026-10-10: before it, a pass
+kept in a variable or wrapped in `enumerate()` made `with`-exit raise
+`ArchiveyUsageError`, leave the reader open, and hide the body's own exception.
+
 #### Scenario: stream_members matrix
 
 | Case | Expected |
@@ -707,6 +717,8 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 | Advance after one yield | Prior stream closed/invalidated first |
 | Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
+| `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
+| `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
 | Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config), either access mode | The link's target is resolved; its folder is decoded up to the link once |
 | Pass to the end without `members()`, either access mode, over a ZIP, 7z, RAR4 or RAR5 holding symlinks (default config) | Each yielded symlink ends with the same `link_target` a `members()` call would set, unset where that read cannot produce one |
@@ -798,6 +810,12 @@ be idempotent.
   concurrent external close with I/O is unsupported.
 - `__exit__` always calls `close()`. Close failure propagates on normal exit;
   during body-exception unwind the body exception remains via normal chaining.
+- A `stream_members()` or streaming-iteration pass suspended at a yield does not
+  block `close()`: the reader closes and resuming that iterator raises
+  `ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see the
+  `stream_members()` requirement). So a `with` block whose body kept such an
+  iterator alive exits cleanly, and a body exception is never replaced by a
+  close-time usage error.
 
 **Under `MemberStreams.CONCURRENT`:** `reader.close()` drains in-flight worker
 `open()`/`read()` before transitioning to closed (see `reader-concurrency`).
@@ -814,7 +832,8 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | Open stream, then close reader (no concurrent I/O) | New reader ops → `ArchiveyUsageError`; the stream is closed by that `close()`; backend released after it |
 | Idle open stream + `reader.close()` | Close succeeds and closes the stream; a later read raises; `stream.close()` is a no-op |
 | Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
-| `close()` raises (active pass/worker) | Reader stays open; member streams untouched |
+| `close()` raises (executing pass/worker) | Reader stays open; member streams untouched |
+| `close()` while a pass is suspended at a yield | Reader closed; yielded stream closed; resuming the pass → `ArchiveyUsageError` |
 | Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
 | `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |

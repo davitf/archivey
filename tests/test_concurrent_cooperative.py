@@ -7,9 +7,13 @@ Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
 from __future__ import annotations
 
 import contextvars
+import gc
 import gzip
 import io
+import sys
+import tarfile
 import threading
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -110,14 +114,161 @@ def test_iterate_rejected_during_active_pass(tmp_path: Path) -> None:
         list(it)
 
 
-def test_close_during_stream_members_raises(tmp_path: Path) -> None:
-    root = _dir_with_files(tmp_path)
-    reader = open_archive(root)
+# --- Closing while a pass is suspended at a yield ---------------------------------------
+#
+# A pass whose generator is suspended at a yield is not running: the caller holds the
+# iterator. close() closes the reader anyway, like zipfile.ZipFile.close() with member
+# handles open, and resuming the iterator afterwards raises ArchiveyUsageError.
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+_RAR_FIXTURE = _FIXTURES / "rar" / "basic_solid__.rar"
+_SEVENZIP_FIXTURE = _FIXTURES / "sevenzip" / "links_mid_folder_solid.7z"
+
+
+def _zip_with_files(tmp_path: Path) -> Path:
+    path = tmp_path / "files.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", b"aaa")
+        zf.writestr("b.txt", b"bbb")
+    return path
+
+
+def _tar_gz_with_files(tmp_path: Path) -> Path:
+    path = tmp_path / "files.tar.gz"
+    with tarfile.open(path, "w:gz") as tf:
+        for name, data in (("a.txt", b"aaa"), ("b.txt", b"bbb")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+_SUSPENDED_SOURCES = [
+    pytest.param(_dir_with_files, False, id="dir"),
+    pytest.param(_zip_with_files, False, id="zip"),
+    pytest.param(_zip_with_files, True, id="zip-streaming"),
+    pytest.param(_tar_gz_with_files, True, id="tar.gz-streaming"),
+    pytest.param(lambda _tmp: _RAR_FIXTURE, False, id="rar-solid"),
+    pytest.param(lambda _tmp: _RAR_FIXTURE, True, id="rar-solid-streaming"),
+    pytest.param(lambda _tmp: _SEVENZIP_FIXTURE, False, id="7z-solid"),
+    pytest.param(lambda _tmp: _SEVENZIP_FIXTURE, True, id="7z-solid-streaming"),
+]
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_close_while_stream_members_suspended_closes_reader(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    reader = open_archive(make_source(tmp_path), streaming=streaming)
+    it = reader.stream_members()
+    # Stop at the first file, so a stream is open mid-pass.
+    stream = next(s for _m, s in it if s is not None)
+    reader.close()
+    # The yielded stream went with the reader, and the reader takes no new calls.
+    assert stream.closed
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.stream_members()
+    # Resuming the suspended pass reports the close instead of reading on.
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+    with pytest.raises(StopIteration):
+        next(it)
+    reader.close()  # idempotent
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_with_exit_closes_reader_with_suspended_stream_members(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    """The iterator kept in a variable: leaving the block closes the reader cleanly."""
+    with open_archive(make_source(tmp_path), streaming=streaming) as reader:
+        it = reader.stream_members()
+        next(it)
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.stream_members()
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_body_exception_survives_with_exit_over_suspended_stream_members(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    """A wrapped pass held in a variable is still alive at exit; the body's error wins."""
+    with pytest.raises(RuntimeError, match="boom") as excinfo:  # noqa: PT012
+        with open_archive(make_source(tmp_path), streaming=streaming) as reader:
+            numbered = enumerate(reader.stream_members())
+            for _i, (_member, _stream) in numbered:
+                raise RuntimeError("boom")
+    assert excinfo.value.__context__ is None
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.stream_members()
+
+
+@pytest.mark.parametrize(
+    ("make_source", "streaming"),
+    [p for p in _SUSPENDED_SOURCES if p.values[1]],
+)
+def test_close_while_streaming_iteration_suspended_closes_reader(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    """Streaming ``iter(reader)`` holds the same kind of pass as ``stream_members()``."""
+    reader = open_archive(make_source(tmp_path), streaming=streaming)
+    it = iter(reader)
+    next(it)
+    reader.close()
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_dropping_pass_after_close_raises_nothing(
+    tmp_path: Path,
+    make_source,
+    streaming: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backend's pass is wound down by close(), before teardown, not later by GC."""
+    unraisable: list[object] = []
+    monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
+    reader = open_archive(make_source(tmp_path), streaming=streaming)
     it = reader.stream_members()
     next(it)
-    with pytest.raises(ArchiveyUsageError, match="is active"):
-        reader.close()
-    list(it)
+    reader.close()
+    del it
+    gc.collect()
+    assert unraisable == []
+
+
+def test_close_still_refused_while_pass_runs_on_another_thread(tmp_path: Path) -> None:
+    """Only a pass suspended at a yield is closed underneath; a running one still blocks."""
+    root = _dir_with_files(tmp_path)
+    reader = open_archive(root)
+    entered = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+
+    def selector(_member: object) -> bool:
+        entered.set()
+        release.wait(10)
+        return True
+
+    def run() -> None:
+        try:
+            list(reader.stream_members(selector))
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(10)
+        with pytest.raises(ArchiveyUsageError, match="is active"):
+            reader.close()
+    finally:
+        release.set()
+        worker.join(10)
+    assert errors == []
     reader.close()
 
 

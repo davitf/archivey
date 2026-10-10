@@ -320,8 +320,10 @@ requirement only states how the capabilities compose with `streaming`.
 Random-access `stream_members()` remains exclusive even when random `open()` is
 otherwise available (simultaneous streams use materialize + random `open()` under
 `concurrent_members=True` — see `reader-concurrency`). Detected pass/open/close overlap →
-later op `ArchiveyUsageError`; active pass stays usable. Ops after `reader.close()` →
-`ArchiveyUsageError` (idempotent `close`).
+later op `ArchiveyUsageError`; active pass stays usable. The exception is `close()`
+while the pass is suspended at a yield: the reader closes and resuming the pass raises
+`ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see `archive-reading`). Ops
+after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
 
 Defaults and behaviour are unchanged by the spelling: this requirement previously
 described the same composition in terms of a `member_streams` flag enum.
@@ -332,7 +334,8 @@ described the same composition in terms of a `member_streams` flag enum.
 | --- | --- |
 | `streaming=True` + `concurrent_members=True` | `ArchiveyUsageError` at open; no reader |
 | RA + `concurrent_members=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
-| Active pass + conflicting pass/open/close | Later → `ArchiveyUsageError`; original pass usable |
+| Active pass + conflicting pass/open, or close while the pass executes | Later → `ArchiveyUsageError`; original pass usable |
+| Pass suspended at a yield + `close()` | Reader closed; resuming the pass → `ArchiveyUsageError` |
 | RA `stream_members` active + `open()` | `ArchiveyUsageError` |
 | `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
 

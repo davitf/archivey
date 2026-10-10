@@ -53,6 +53,8 @@ from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from archivey.internal.open_site import OpenSite
     from archivey.internal.streams.archive_stream import ArchiveStream
 
@@ -103,8 +105,15 @@ class OperationToken:
     # loop body, so a call from that thread is not re-entry from a callback and
     # ``_same_thread_token_locked`` skips the token. While the generator is executing a
     # step (where a diagnostic callback fires) the flag is False and the token counts.
-    # Set with :meth:`ReaderState.set_suspended`.
+    # Set with :meth:`ReaderState.set_suspended`. A suspended pass also does not block
+    # ``close()``: the reader closes and the pass is wound down (see ``on_abandon``).
     suspended: bool = field(default=False, repr=False)
+    # Winds down the backend side of a generator-held pass (closes the format's own
+    # member iterator). ``close()`` calls it, through
+    # :meth:`ReaderState.take_suspended_pass_closer`, when it closes the reader under a
+    # pass suspended at a yield, so the backend's cleanup runs before teardown rather
+    # than whenever the caller's iterator is collected.
+    on_abandon: Callable[[], None] | None = field(default=None, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
@@ -235,6 +244,18 @@ class ReaderState:
         """Mark a generator-held pass as suspended at a yield, or running again."""
         with self._lock:
             token.suspended = suspended
+
+    def take_suspended_pass_closer(self) -> Callable[[], None] | None:
+        """After the close transition: the suspended pass's ``on_abandon``, once.
+
+        ``None`` when no pass was suspended at the close, or another caller took it.
+        """
+        with self._lock:
+            root = self._root
+            if root is None or not root.suspended or root._released:
+                return None
+            closer, root.on_abandon = root.on_abandon, None
+            return closer
 
     def release_pass(self, token: OperationToken) -> None:
         with self._lock:
@@ -449,7 +470,9 @@ class ReaderState:
         artificial timeout.
 
         Without ``CONCURRENT``, overlapping worker calls still raise
-        :class:`~archivey.exceptions.ArchiveyUsageError`. Concurrent double-``close()`` is
+        :class:`~archivey.exceptions.ArchiveyUsageError`, as does a reader-wide pass
+        that is executing. A pass whose generator is suspended at a yield does not
+        block: the reader closes under it. Concurrent double-``close()`` is
         idempotent: one thread drains and closes; others wait for that transition and
         return without running teardown again.
         """
@@ -484,7 +507,11 @@ class ReaderState:
                         # Invariant: False is returned only when lifecycle is not OPEN.
                         continue
                     return False
-                if self._root is not None:
+                # A pass suspended at a yield is not running: the caller holds its
+                # iterator. Close anyway, as zipfile.ZipFile.close() does with member
+                # handles open; resuming that iterator then raises (maintainer's
+                # ruling, 2026-10-10). Only a pass that is executing refuses the close.
+                if self._root is not None and not self._root.suspended:
                     raise ArchiveyUsageError(
                         "Cannot close the archive reader while another reader "
                         f"operation ({self._root.name!r}) is active."

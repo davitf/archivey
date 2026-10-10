@@ -8,7 +8,7 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Generator, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -184,6 +184,15 @@ _UNCONFIRMED_EVIDENCE: Mapping[_UnconfirmedEvidence, _UnconfirmedWording] = {
 The extension code is also the empty-listing code, which
 ``_emit_listed_empty_unconfirmed`` emits with its own message.
 """
+
+
+def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
+    """The ``close`` of a backend's pass iterator when it is a generator, else ``None``.
+
+    Recorded as the pass token's ``on_abandon`` so that ``close()`` can wind the backend
+    pass down before teardown when the caller's iterator is suspended at a yield.
+    """
+    return source.close if isinstance(source, Generator) else None
 
 
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
@@ -2460,7 +2469,9 @@ class BaseArchiveReader(ArchiveReader):
             token = self._state.acquire_pass("__iter__")
             try:
                 self._enter_forward_pass("__iter__")
-                for member in self._begin_forward_pass():
+                source = self._begin_forward_pass()
+                token.on_abandon = _closer_of(source)
+                for member in source:
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
                     self._state.set_suspended(token, True)
@@ -2468,6 +2479,8 @@ class BaseArchiveReader(ArchiveReader):
                         yield member
                     finally:
                         self._state.set_suspended(token, False)
+                    # close() may have closed the reader while the pass was suspended.
+                    self._state.require_open("Iterating the reader")
             finally:
                 self._state.release_pass(token)
             return
@@ -2818,7 +2831,9 @@ class BaseArchiveReader(ArchiveReader):
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
-            for m, stream in self._iter_with_data(copies):
+            source = self._iter_with_data(copies)
+            token.on_abandon = _closer_of(source)
+            for m, stream in source:
                 if current is not None:
                     current.close()
                     current = None
@@ -2846,6 +2861,8 @@ class BaseArchiveReader(ArchiveReader):
                         yield m, stream
                     finally:
                         self._state.set_suspended(token, False)
+                    # close() may have closed the reader while the pass was suspended.
+                    self._state.require_open("stream_members()")
                 elif stream is not None:
                     stream.close()
             # Only a pass that reached the end has offered every member. A caller
@@ -2963,8 +2980,10 @@ class BaseArchiveReader(ArchiveReader):
         not outlive the reader it came from.
 
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
-        pass is actively executing, and the reader stays open. Teardown runs at most
-        once, after the last stream's lease drops.
+        pass is actively executing, and the reader stays open. A ``stream_members()`` or
+        streaming iteration pass suspended at a yield does not block it: the reader
+        closes, and resuming that iterator raises ``ArchiveyUsageError``. Teardown runs
+        at most once, after the last stream's lease drops.
         """
         if self._closed:
             return
@@ -2984,7 +3003,15 @@ class BaseArchiveReader(ArchiveReader):
         # ArchiveStream.close tests `self.closed` outside its lock, so two concurrent
         # close() calls could otherwise both reach inner.close() on the same stream.
         if self._state.claim_stream_shutdown():
-            self._close_public_streams()
+            # Wind down a pass suspended at a yield before its streams close: the last
+            # stream close can run teardown, and the backend's own pass cleanup must
+            # come before it. The streams are closed even if that cleanup fails.
+            closer = self._state.take_suspended_pass_closer()
+            try:
+                if closer is not None:
+                    closer()
+            finally:
+                self._close_public_streams()
         # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
         # so this is a no-op wherever mark_reader_closed() returned False for a good
         # reason. It is not a no-op after a close() interrupted just past the transition:
