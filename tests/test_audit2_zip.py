@@ -17,6 +17,7 @@ import os
 import struct
 import subprocess
 import sys
+import types
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ import pytest
 
 import archivey
 from archivey.config import AcceleratorMode, ArchiveyConfig
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, SymlinkTargetContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -53,6 +54,8 @@ class _Entry:
     extract_version: int = 20
     external_attr: int = 0o100644 << 16
     flags: int = 0  # general-purpose bit flags, both headers
+    create_system: int = 3  # "version made by" high byte; 3 is Unix
+    date: int = 0x21  # DOS date, both headers: 1980-01-01
 
 
 def _build_zip(entries: list[_Entry]) -> bytes:
@@ -71,7 +74,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             e.flags,
             e.method,
             0,  # time
-            0x21,  # date: 1980-01-01
+            e.date,
             crc,
             len(e.data),
             min(usize, 0xFFFFFFFF),
@@ -90,12 +93,12 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             "<4sBBHHHHHIIIHHHHHII",
             b"PK\x01\x02",
             20,  # version made by
-            3,  # create system: Unix
+            e.create_system,
             e.extract_version,
             e.flags,
             e.method,
             0,
-            0x21,
+            e.date,
             crc,
             len(e.data),
             min(usize, 0xFFFFFFFF),
@@ -641,3 +644,232 @@ def test_eocd_disk_fields_spelling_the_signature_are_still_refused() -> None:
         assert zf.namelist() == ["a"]  # stdlib parsed the record at the end
     with pytest.raises(UnsupportedFeatureError):
         _open_and_list(bytes(crafted))
+
+
+# ---------------------------------------------------------------------------------------
+# Z11: a member's type came from ZipInfo.is_dir(), which reads stdlib's rewritten
+# filename. That rewrite depends on the host (os.sep becomes "/" on Windows) and on the
+# Python version (3.12+ substitutes the Unicode Path field's name), so the same entry
+# could be a FILE on one machine and a DIRECTORY on another.
+# ---------------------------------------------------------------------------------------
+
+_FAT = 0
+_FILE_ATTRIBUTE_ARCHIVE = 0x20
+_FILE_ATTRIBUTE_DIRECTORY = 0x10
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _pretend_zipfile_runs_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give stdlib zipfile Windows' separators, which is all that its filename rewrite
+    and ``ZipInfo.is_dir`` read. Everything else in ``os`` stays the real module."""
+
+    class _WindowsPath(types.ModuleType):
+        sep = "\\"
+        altsep = "/"
+
+        def __getattr__(self, attr: str) -> object:
+            return getattr(os.path, attr)
+
+    class _WindowsOs(types.ModuleType):
+        sep = "\\"
+        altsep = "/"
+        path = _WindowsPath("ntpath")
+
+        def __getattr__(self, attr: str) -> object:
+            return getattr(os, attr)
+
+    monkeypatch.setattr(zipfile, "os", _WindowsOs("nt"))
+    assert zipfile.ZipInfo("a\\").filename == "a/", (
+        "the Windows separator patch no longer reaches zipfile"
+    )
+
+
+def _listing(blob: bytes) -> list[tuple[str, str, int, list[str]]]:
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        return [
+            (m.name, m.type.name, m.size, [d.code.name for d in m.diagnostics])
+            for m in ar.members()
+        ]
+
+
+_HOST_DEPENDENT_ENTRIES = [
+    # A Unix entry keeps "\\" as a literal name character: a file.
+    _Entry(b"unix\\", b"data"),
+    # A DOS-origin entry treats "\\" as a separator, so the name ends in one: a directory.
+    _Entry(b"fat\\", b"", create_system=_FAT, external_attr=_FILE_ATTRIBUTE_ARCHIVE),
+]
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_member_type_does_not_depend_on_the_host(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    blob = _build_zip(_HOST_DEPENDENT_ENTRIES)
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    assert _listing(blob) == [
+        ("unix\\", "FILE", 4, []),
+        # The "\\" -> "/" rewrite is reported, as for any DOS-origin name.
+        ("fat/", "DIRECTORY", 0, ["MEMBER_NAME_NORMALIZED"]),
+    ]
+
+
+def _reparse_listing(name: bytes) -> tuple[str, str, str | None, list[str]]:
+    # A directory-shaped reparse point whose data is not a link buffer.
+    blob = _build_zip(
+        [
+            _Entry(
+                name,
+                b"not a reparse buffer",
+                create_system=_FAT,
+                external_attr=_FILE_ATTRIBUTE_DIRECTORY | _FILE_ATTRIBUTE_REPARSE_POINT,
+            )
+        ]
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        reasons = [
+            d.context.reason
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+            and isinstance(d.context, SymlinkTargetContext)
+        ]
+        return member.name, member.type.name, member.link_target, reasons
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_dos_backslash_reparse_point_is_directory_shaped(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    # Directory-shaped, a reparse point whose data is not a link buffer stays a
+    # targetless link (handbook zip.md, section 2.2.1). Spelled "link\\" by a DOS-origin
+    # writer, it is the same member as "link/" on every host.
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    expected = ("link", "SYMLINK", None, ["reparse_data_unrecognized"])
+    assert _reparse_listing(b"link/") == expected
+    assert _reparse_listing(b"link\\") == expected
+
+
+def test_member_type_follows_the_unicode_path_name_on_every_python() -> None:
+    # The header's bytes are not valid UTF-8 and do not end in "/"; the Unicode Path
+    # field that names the member does. stdlib 3.12+ puts the field's name in
+    # ZipInfo.filename and 3.11 does not, so is_dir() disagreed across versions.
+    # archivey names the member from the field on every version, and types it from
+    # that same name.
+    header = b"x\xff"
+    blob = _build_zip(
+        [_Entry(header, b"", extra=_unicode_path_field(stored=header, name=b"dir/"))]
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert (member.name, member.type) == ("dir/", archivey.MemberType.DIRECTORY)
+        assert member.extra["alternate_raw_name"] == header
+
+
+def _ntfs_extra(mtime: int) -> bytes:
+    """An NTFS extra field (0x000A) whose tag-1 attribute holds ``mtime``."""
+    attribute = struct.pack("<HHQQQ", 1, 24, mtime, 0, 0)
+    body = bytes(4) + attribute
+    return struct.pack("<HH", 0x000A, len(body)) + body
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_messages_name_the_member_as_listed_on_every_host(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    # stdlib's ZipInfo.filename is "a/" on Windows and "a\\" elsewhere; the message
+    # names the member the way the listing and the diagnostic's context do.
+    blob = _build_zip(
+        [
+            _Entry(
+                b"a\\",
+                b"",
+                create_system=_FAT,
+                external_attr=_FILE_ATTRIBUTE_ARCHIVE,
+                extra=_ntfs_extra(2**64 - 1),
+            )
+        ]
+    )
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        (invalid,) = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
+    assert member.name == "a/"
+    assert invalid.message == f"Invalid NTFS timestamp for 'a/': {2**64 - 1}"
+
+
+_DOS_MONTH_13 = (13 << 5) | 1  # 1980-13-01: no such date
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_dos_date_message_names_the_member_as_listed_on_every_host(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    # The DOS date_time branch of the same message: stdlib's ZipInfo.filename is "a\\"
+    # on POSIX and "a/" on Windows, and the message names archivey's "a/" on both.
+    blob = _build_zip(
+        [
+            _Entry(
+                b"a\\",
+                b"",
+                create_system=_FAT,
+                external_attr=_FILE_ATTRIBUTE_ARCHIVE,
+                date=_DOS_MONTH_13,
+            )
+        ]
+    )
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        (invalid,) = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
+    assert member.name == "a/"
+    assert invalid.message == "Invalid ZIP date_time for 'a/': (1980, 13, 1, 0, 0, 0)"
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+@pytest.mark.parametrize(
+    ("stored", "listed", "quoted_name"),
+    [
+        # A Unix "a\\" keeps its backslash; stdlib's filename is "a/" on Windows.
+        (b"a\\", "a\\", r"'a\\'"),
+        # UTF-8 bytes with the UTF-8 flag clear: stdlib decodes them as cp437
+        # ("\u251c\u2310.txt"), archivey as UTF-8.
+        ("\u00e9.txt".encode(), "\u00e9.txt", "'\u00e9.txt'"),
+    ],
+    ids=["backslash", "unflagged_utf8"],
+)
+def test_directory_overrun_names_the_entry_as_listed_on_every_host(
+    monkeypatch: pytest.MonkeyPatch,
+    windows: bool,
+    stored: bytes,
+    listed: str,
+    quoted_name: str,
+) -> None:
+    # The report names the entry from archivey's decode, the name the listing shows,
+    # not from either of stdlib's names for it.
+    blob = bytearray(_build_zip([_Entry(stored, b"hi")]))
+    entry = blob.rfind(b"PK\x01\x02")
+    struct.pack_into("<H", blob, entry + 32, 3000)  # comment length past the end
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    with archivey.open_archive(io.BytesIO(bytes(blob))) as ar:
+        assert [m.name for m in ar.members()] == [listed]
+        (finding,) = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+        ]
+    assert finding.message.startswith(
+        f"ZIP central directory entry {quoted_name} declares"
+    )

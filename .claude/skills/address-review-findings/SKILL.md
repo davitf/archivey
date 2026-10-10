@@ -120,6 +120,15 @@ Usually the answer is that the code is not self-documenting, which makes it 🟡
 a comment or an assertion that encodes the invariant, not a shrug. "Later" with no PR
 and no tracked item is just dropping it slowly.
 
+**Answer with the rule's own condition before adding a case.** When a finding asks a
+comment, rule or bound to cover one more case (a reviewer asks "what about pipes?" of
+"seeks are best-effort on non-seekable sources"), and the condition the text states
+already covers that case, the reply quotes the condition and the text stays as it is.
+When a second finding lands on the same block, rewrite the block as the condition behind
+its cases ("formats with a central directory", not "ZIP, 7z and ISO") rather than adding
+one more case. A list of cases grows by one finding per round; in
+another project's review loop one block took 24 findings over 9 rounds this way.
+
 ---
 
 ## 3. Verify before you act
@@ -130,6 +139,12 @@ in a file the reviewer never opened (answer with evidence, not a duplicate test)
 finding is often **narrower and sharper** than described, and reproducing it gives a
 better fix and test; and a fix for the reported symptom can leave the *cause* alive in a
 second place.
+
+**A safety finding needs evidence to be disproven.** A finding on path escape, bomb or
+resource limits, parser bounds on hostile input or the exception contract is disproven
+only by a cited `file:line`, test or commit that refutes it, not by a trace in prose.
+Without that it stays open: fix it, or escalate it (§6). A wrong "disproven" here ships the
+bug the library exists to prevent, so it costs more than a needless fix.
 
 When a finding is real, ask what **class** it belongs to. If an ad-hoc audit found it, the
 audit is the deliverable: convert it into a standing test so the claim is checked every
@@ -226,6 +241,15 @@ propagate, a gap narrowed rather than closed, a comment edited and left stale. S
 you add the label again, and equally before you stop after an approving verdict, run
 `review_prep.py --base <the sha the round reviewed>`, re-read that fix-diff the way a
 reviewer would, and update the PR body in the same push so it no longer describes round 1.
+
+### Before the `review` label: write down what the round taught
+
+Run each 📚 `[learning]` note and each disproven finding whose answer took real
+tracing through the lessons test in `CONTRIBUTING.md` §"Where does a new doc go?".
+A lesson that passes goes into its home in this PR, before you run `review_prep.py`
+above, so its sweep covers the new text. Record the outcome in the round's reply (§7),
+one line per note or finding: `Lesson: <path §section>` or `Lesson: none (<reason>)`.
+A 📚 note that stays only in a PR comment is not read again.
 
 ---
 
