@@ -36,7 +36,7 @@ The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.br`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` |
 | Has a filename but no recognized compressor extension | Append `.uncompressed`; do not strip arbitrary extensions |
 | Anonymous stream | `data` |
@@ -294,6 +294,16 @@ then stop reading the source. Bytes after the end SHALL be classified this way:
   most 4) and a zero first byte of range-coder data, as `lzma.LZMAFile` reads a second
   stream. Bytes that pass this check but are not a valid stream fail the read with
   `CorruptionError`;
+- for xz, lzip, zstd, LZ4 and bzip2, bytes that match the codec's stream magic in at
+  least half of its positions, but not in all of them, are a further stream with a
+  damaged header: the read, and a seek that reaches them, SHALL raise `CorruptionError`.
+  The positions compared are the first `len(magic)` bytes after any padding the codec
+  skips (xz stream padding, zero bytes for zstd, LZ4 and bzip2; none for lzip). For
+  zstd, LZ4 and bzip2, a run of zero bytes shorter than the magic SHALL also be
+  compared as the first bytes of the magic, since a damaged byte can be zero; a run as
+  long as the magic or longer is padding. This is lzip's rule for a corrupt header in a
+  multimember file. A tail shorter than the magic is not judged by it. gzip, zlib, LZMA
+  Alone and Brotli do not apply it;
 - zero bytes are padding and SHALL NOT be reported;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
@@ -318,6 +328,8 @@ whose following bytes start another stream, as the first bullet above classifies
 them, is not the last one, so the search SHALL NOT stop there: when the last stream's
 own footer or trailer is damaged, the index is reported unreadable, the size and CRC
 are unknown, and the read or seek that reaches the damage raises `CorruptionError`.
+The same holds when the bytes after a footer or trailer are a damaged header magic, as
+the second bullet above classifies them.
 
 Brotli's decoder fails on input past the end the same way it fails on damage. The
 system SHALL tell them apart by decoding the source again from the start up to the
@@ -341,6 +353,12 @@ after the data decode as more codes.
 | `.xz` / `.lz` + junk within 1 MiB | Size known, seek works, full payload, one report |
 | Two concatenated `.xz` streams (with or without stream padding) or `.lz` members, last footer or trailer damaged | Size and CRC unknown; data up to the damage, then `CorruptionError` from the read or `SEEK_END` |
 | `.lz` member + zero bytes + a damaged member | Size and CRC of the first member; its payload and one report |
+| Two `.xz` / `.lz` / `.zst` / `.lz4` / `.bz2` streams, one byte of the second stream's magic damaged | `CorruptionError` from the read and from `SEEK_END`, from a file and from a pipe; no size from the index |
+| Two `.zst` / `.lz4` / `.bz2` streams, the second stream's first magic byte set to zero | `CorruptionError` from the read, with the accelerator on and off for `.bz2` |
+| Two `.xz` / `.lz` / `.zst` / `.lz4` / `.bz2` streams, the second one's first one or two magic bytes set to zero and the file ending after its magic | `CorruptionError` from the read, from a file and from a pipe; accelerator on and off for `.bz2` |
+| A stream + 64 random bytes that match no magic in half of its positions | Full payload; one report |
+| A stream + its own first `len(magic) - 1` bytes, at the end of the file | Full payload; one report |
+| `.bz2` + `BZh0` and an empty stream's end-of-stream marker | `CorruptionError`, with the accelerator on and off |
 | `.xz` / `.lz` + more than 1 MiB of junk | Size unknown; seeking reports `SEEK_INDEX_DEGRADED`; payload and one report |
 | `.lz` + 900 000 zero bytes + junk | Size known, seek works, full payload, one report |
 | `.xz` + 1 MiB of `00 00 59 5A`, `.lz` + 1 MiB of 8 zero bytes and one byte, repeated | Size unknown; payload and one report, after at most 4096 candidates checked |
@@ -386,7 +404,10 @@ NOT be decoded:
   bits, can only handle 16 bits").
 
 A header the tool reports as damaged stays `CorruptionError`, such as a gzip header CRC
-that does not match.
+that does not match. A damaged byte in one of the fields listed above reads the same as
+the unsupported value, since nothing tells the two apart; the `UnsupportedFeatureError`
+message SHALL say that a damaged header reads the same way (the `error-handling` error
+split carries the general rule).
 
 #### Scenario: unsupported stream headers
 
@@ -397,3 +418,4 @@ that does not match.
 | zstd frame compressed with a dictionary | `UnsupportedFeatureError` |
 | `.Z` with maximum code width 17 or 31 | `UnsupportedFeatureError` |
 | gzip header CRC mismatch | `CorruptionError` |
+| zlib stream whose CM is 7 (zlib: "unknown compression method") | `CorruptionError` |

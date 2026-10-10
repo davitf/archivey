@@ -51,7 +51,9 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     disk_spelled,
+    numbered_name,
     reroot_absolute,
+    resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
@@ -94,6 +96,20 @@ _DRY_RUN_PREFIX = "archivey-dry-run-"
 # on POSIX.
 _WINDOWS = os.name == "nt"
 
+
+def _dir_mode_as_stored(mode: int) -> int:
+    """The mode ``os.stat`` reports for a directory after ``os.chmod(path, mode)``.
+
+    On Windows a mode carries only the read-only attribute, taken from the owner-write
+    bit, and ``os.stat`` reports a directory as ``0o777`` or, read-only, ``0o555``.
+    Comparing the member's mode as given would report every existing directory as
+    having kept its mode there (``0o755`` against ``0o777``) when applying the
+    member's would have changed nothing."""
+    if not _WINDOWS:
+        return mode
+    return 0o777 if mode & stat.S_IWUSR else 0o555
+
+
 # Win32 error codes matched on ``OSError.winerror``, which exists only on Windows.
 _ERROR_INVALID_NAME = 123
 _ERROR_FILENAME_EXCED_RANGE = 206
@@ -127,13 +143,13 @@ def _at_link_limit(exc: OSError) -> bool:
 def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
     """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
 
-    Resolved through the real filesystem, so links on the way are followed. A
-    cyclic or adversarial link makes ``resolve()`` raise ELOOP or ``RuntimeError``,
-    which counts as an escape: fail safe rather than crash.
+    Resolved through the real filesystem, so links on the way are followed. A link
+    that cannot be resolved counts as an escape: fail safe rather than crash. That
+    includes a symlink loop, on every Python version (``resolve_or_raise_on_loop``).
     """
     try:
-        resolved = (link_path.parent / target).resolve()
-    except (OSError, RuntimeError):
+        resolved = resolve_or_raise_on_loop(link_path.parent / target)
+    except OSError:
         return True
     return not (resolved == dest_root or resolved.is_relative_to(dest_root))
 
@@ -904,8 +920,8 @@ class ExtractionCoordinator:
             return self._run(reader, dest)
         given = Path(os.path.abspath(dest))
         try:
-            resolved = given.resolve()
-        except (OSError, RuntimeError):
+            resolved = resolve_or_raise_on_loop(given)
+        except OSError:
             resolved = given
         # Resolved, so a path built from the resolved root (``dest_root``) and one built
         # from ``dest`` translate the same way (macOS's /var -> /private/var). The pass
@@ -1027,7 +1043,7 @@ class ExtractionCoordinator:
                 unmatched_pending = selector
         # Created only after that report, so a refusal leaves no directory behind.
         created_root = self._ensure_dest_root(dest)
-        dest_root = dest.resolve()
+        dest_root = resolve_or_raise_on_loop(dest)
         members_total = len(all_members) if all_members is not None else None
         self._state = _RunState(
             dest=dest,
@@ -1803,7 +1819,7 @@ class ExtractionCoordinator:
                 # the same rule as --no-overwrite-dir.
                 wanted = self._effective_mode(transformed)
                 current = stat.S_IMODE(os.stat(dest_path).st_mode)
-                if wanted is not None and wanted != current:
+                if wanted is not None and _dir_mode_as_stored(wanted) != current:
                     kept_mode = current
             else:
                 self._defer_directory_metadata(dest_path, transformed)
@@ -2077,8 +2093,8 @@ class ExtractionCoordinator:
         if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
-                resolved = os.fspath(Path(parent).resolve())
-            except (OSError, RuntimeError):
+                resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
+            except OSError:
                 return None
             prefix = root if root.endswith(os.sep) else root + os.sep
             if os.path.normcase(resolved) == os.path.normcase(root):
@@ -2132,9 +2148,8 @@ class ExtractionCoordinator:
     def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
 
-        The counter goes before the final suffix so the extension is preserved
-        (``photo.jpg`` → ``photo (1).jpg``); a directory has no suffix and appends to the
-        whole segment.
+        :func:`numbered_name` spells each candidate (``photo.jpg`` → ``photo (1).jpg``),
+        the same spelling the CLI's single-root hoist uses.
 
         The search resumes after the last ``N`` this run handed out for the same
         collision key, rather than starting at 1 each time: restarting made ``k``
@@ -2145,15 +2160,12 @@ class ExtractionCoordinator:
         deterministic, which is what the spec asks. ``_release_claim`` resets the
         counters, so a name freed by an anti-item is found again."""
         parent = requested.parent
-        if transformed.type == MemberType.DIRECTORY:
-            stem, suffix = requested.name, ""
-        else:
-            stem, suffix = requested.stem, requested.suffix
+        is_dir = transformed.type == MemberType.DIRECTORY
         rename_next = self._state.rename_next
         counter_key = self._collision_key(requested)
         n = rename_next.get(counter_key, 1)
         while True:
-            candidate = parent / f"{stem} ({n}){suffix}"
+            candidate = parent / numbered_name(requested.name, n, is_dir=is_dir)
             candidate_key = self._collision_key(candidate)
             if candidate_key not in self._state.collision_map and not self._occupied(
                 candidate
@@ -2385,12 +2397,12 @@ class ExtractionCoordinator:
         # escape the planning check cannot see. We can't do this "just before" creating the
         # link because there is no link to resolve until it exists; and resolving the *bare
         # target string* would only repeat check_universal. So: create, resolve, and unlink
-        # if it escaped. A cyclic/adversarial link makes resolve() raise ELOOP/RuntimeError,
-        # which we also treat as an escape (fail safe rather than crash). This is the third
-        # of the three defense-in-depth layers named in the `safe-extraction` spec
-        # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
-        # check_universal. A *later* member can still change what this link resolves
-        # to; the caller records the link in ``links`` for that.
+        # if it escaped. A link that cannot be resolved, a symlink loop included on
+        # every Python version, also counts as an escape (fail safe rather than crash).
+        # This is the third of the three defense-in-depth layers named in the
+        # `safe-extraction` spec ("Symlink Escape Re-Validated at Extraction Time");
+        # layers 1-2 are in check_universal. A *later* member can still change what
+        # this link resolves to; the caller records the link in ``links`` for that.
         if _symlink_escapes(dest_path, on_disk, self._state.dest_root):
             try:
                 dest_path.unlink()

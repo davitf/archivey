@@ -162,7 +162,15 @@ stream (`.zz`, `.tar.zz`), `ON` also checks the Adler-32, which rapidgzip does n
 that check needs every byte from the start: a seek forward moves the skipped bytes out of
 the child process. Listing a `.tar.zz` under `ON` therefore transfers the whole
 decompressed archive once, even when no member is read, and a single far seek transfers
-everything before it. `AUTO` never gives a bare zlib stream to rapidgzip.
+everything before it. `AUTO` never gives a bare zlib stream to rapidgzip. For gzip, the
+end check needs the same, but only at the end: a seek to the end of a `.gz` (a size
+query) moves the decompressed bytes after the part read in order from the start out of
+the child once.
+
+rapidgzip keeps decoded data in memory, so a small file that decodes to a lot of data can
+make it hold a lot of memory. `DecoderLimits.max_decoder_memory` (2 GiB by default) caps
+its child process. A child that goes over the cap is stopped, and the stdlib decoder reads
+the rest of the stream: the bytes are the same, only slower.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without

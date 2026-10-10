@@ -4,8 +4,10 @@ end-of-archive verification."""
 
 from __future__ import annotations
 
+import errno
 import io
 import logging
+import os
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1287,6 +1289,282 @@ def test_corrupt_tar_header_raises() -> None:
         with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.TAR) as ar:
             ar.members()
     assert isinstance(excinfo.value.__cause__, tarfile.ReadError)
+
+
+def _raw_tar_header(
+    name: str, typeflag: bytes, size: int, *, size_field: bytes | None = None
+) -> bytes:
+    """A ustar header block for ``name`` with the given typeflag and size. ``size_field``
+    replaces the 12-byte size field as stored (for a GNU base-256 size)."""
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mode = 0o755
+    header = bytearray(info.tobuf(format=tarfile.USTAR_FORMAT))
+    header[156:157] = typeflag
+    if size_field is not None:
+        header[124:136] = size_field
+    header[148:156] = b" " * 8
+    header[148:156] = b"%06o\0 " % sum(header)
+    return bytes(header)
+
+
+def _tar_slash_entry_with_data(
+    typeflag: bytes,
+    *,
+    own_name: str = "d/",
+    wrapper: str | None = None,
+    final_name: str = "d/",
+    size_field: bytes | None = None,
+) -> bytes:
+    """A ustar entry with the given typeflag and 15 bytes of data, then a regular file
+    ``after.txt``. GNU tar 1.35 and 7-Zip list ``d/`` as a directory and skip its data
+    when the typeflag is NUL (old-style ``AREGTYPE``) or ``0``; they report an error
+    when it is ``5`` (``DIRTYPE``), which carries no data.
+
+    ``wrapper`` puts a PAX ``path`` record (``"pax"``) or a GNU long name (``"gnu"``)
+    holding ``final_name`` before the header, whose own name field is ``own_name``.
+    """
+    data = b"hello directory"
+    prefix = b""
+    if wrapper == "pax":
+        record = f"path={final_name}\n".encode()
+        length = len(record) + 2
+        length += len(str(length)) - 1
+        record = b"%d " % length + record
+        assert len(record) == length
+        prefix = _raw_tar_header("PaxHeaders/d", tarfile.XHDTYPE, len(record))
+        prefix += record.ljust(512, b"\0")
+    elif wrapper == "gnu":
+        long_name = final_name.encode() + b"\0"
+        prefix = _raw_tar_header(
+            "././@LongLink", tarfile.GNUTYPE_LONGNAME, len(long_name)
+        )
+        prefix += long_name.ljust(512, b"\0")
+    after = tarfile.TarInfo("after.txt")
+    after.size = 6
+    return (
+        prefix
+        + _raw_tar_header(own_name, typeflag, len(data), size_field=size_field)
+        + data.ljust(512, b"\0")
+        + after.tobuf(format=tarfile.USTAR_FORMAT)
+        + b"after\n".ljust(512, b"\0")
+        + b"\0" * 1024
+    )
+
+
+def _stream_all(data: bytes, streaming: bool) -> list[tuple[str, MemberType, Any]]:
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        return [
+            (m.name, m.type, stream.read() if stream is not None else None)
+            for m, stream in ar.stream_members()
+        ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_old_style_directory_with_data_is_skipped(streaming: bool) -> None:
+    # stdlib tarfile turns an AREGTYPE header whose name ends in "/" into a directory
+    # and then reads its data blocks as the next header. GNU tar skips the data.
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("wrapper", ["pax", "gnu"])
+@pytest.mark.parametrize("own_name", ["d", "d/"])
+def test_old_style_directory_name_from_extended_header(
+    wrapper: str, own_name: str, streaming: bool
+) -> None:
+    # GNU tar and 7-Zip decide on the final name, after a PAX path or a GNU long name,
+    # whatever the header's own name field holds. stdlib tarfile decides on the own
+    # name field, and only on Pythons without the 2025 fixes.
+    data = _tar_slash_entry_with_data(
+        tarfile.AREGTYPE, own_name=own_name, wrapper=wrapper, final_name="d/"
+    )
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("wrapper", ["pax", "gnu"])
+def test_aregtype_slash_name_overridden_without_slash_is_a_file(
+    wrapper: str, streaming: bool
+) -> None:
+    # The own name field says "d/", the final name says "d": GNU tar lists a file.
+    data = _tar_slash_entry_with_data(
+        tarfile.AREGTYPE, own_name="d/", wrapper=wrapper, final_name="d"
+    )
+    assert _stream_all(data, streaming) == [
+        ("d", MemberType.FILE, b"hello directory"),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+
+
+def test_old_style_directory_keeps_stored_typeflag() -> None:
+    # extra["tar.type"] is the typeflag byte as stored, which tells an old-style
+    # directory apart from a DIRTYPE one.
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        member = ar.members()[0]
+    assert member.type == MemberType.DIRECTORY
+    assert member.extra["tar.type"] == tarfile.AREGTYPE
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_old_style_directory_data_cut_off_is_truncation(streaming: bool) -> None:
+    # The archive ends inside the data area the directory header declares.
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)[:512]
+    with pytest.raises(TruncatedError):
+        _stream_all(data, streaming)
+
+
+@pytest.mark.parametrize("from_file", [True, False], ids=["file", "bytesio"])
+@pytest.mark.parametrize("typeflag", [tarfile.AREGTYPE, tarfile.REGTYPE])
+def test_size_past_filesystem_limit_is_truncation(
+    tmp_path: Path, typeflag: bytes, from_file: bool
+) -> None:
+    # A GNU base-256 size of 2**62 is under the largest seek offset. ext4 refuses a
+    # seek that far with OSError(EINVAL); APFS and a BytesIO accept it, and the next
+    # read finds the end of the data. The same archive must give the same error from
+    # every source on every OS.
+    size_field = b"\x80" + (2**62).to_bytes(11, "big")
+    data = _tar_slash_entry_with_data(typeflag, size_field=size_field)
+    path = tmp_path / "big.tar"
+    path.write_bytes(data)
+    source = path if from_file else io.BytesIO(data)
+    with pytest.raises(TruncatedError):
+        with open_archive(source, format=ArchiveFormat.TAR) as ar:
+            ar.members()
+
+
+class _SeekRefusingBytesIO(io.BytesIO):
+    """A ``BytesIO`` that refuses a seek past ``limit`` as ext4 does past its largest
+    file size, so the refused-seek path runs on every filesystem and OS."""
+
+    def __init__(self, data: bytes, *, err: int, limit: int = 2**40) -> None:
+        super().__init__(data)
+        self._err = err
+        self._limit = limit
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if whence == io.SEEK_SET and offset > self._limit:
+            raise OSError(self._err, os.strerror(self._err))
+        return super().seek(offset, whence)
+
+
+@pytest.mark.parametrize("err", [errno.EINVAL, errno.EOVERFLOW])
+def test_refused_seek_is_truncation_naming_the_offset(err: int) -> None:
+    inner = _SeekRefusingBytesIO(b"\0" * 1024, err=err)
+    fileobj = tar_reader_module._BoundedTarFileobj(inner, bounded=False)
+    with pytest.raises(TruncatedError, match=r"byte 4611686018427388415\b"):
+        fileobj.seek(2**62 + 511)
+
+
+def test_refused_seek_with_other_errno_propagates() -> None:
+    # Only the errnos lseek gives for an offset past the filesystem's limit read as
+    # the end of the data; any other OSError is an I/O failure (DR-15a).
+    inner = _SeekRefusingBytesIO(b"\0" * 1024, err=errno.EIO)
+    fileobj = tar_reader_module._BoundedTarFileobj(inner, bounded=False)
+    with pytest.raises(OSError) as excinfo:
+        fileobj.seek(2**62)
+    assert excinfo.value.errno == errno.EIO
+    assert not isinstance(excinfo.value, TruncatedError)
+
+
+@pytest.mark.parametrize("typeflag", [tarfile.AREGTYPE, tarfile.REGTYPE])
+def test_refused_seek_through_open_archive_is_truncation(typeflag: bytes) -> None:
+    # The ext4 arm of test_size_past_filesystem_limit_is_truncation, on any OS.
+    size_field = b"\x80" + (2**62).to_bytes(11, "big")
+    data = _tar_slash_entry_with_data(typeflag, size_field=size_field)
+    source = _SeekRefusingBytesIO(data, err=errno.EINVAL)
+    with pytest.raises(TruncatedError, match="past the end of the archive"):
+        with open_archive(source, format=ArchiveFormat.TAR) as ar:
+            ar.members()
+
+
+@pytest.mark.parametrize(
+    ("name", "pax_path", "is_dir"),
+    [
+        # The header's own name, with no PAX path.
+        ("d/", None, True),
+        # tarfile strips the slash from a PAX path, so the record decides.
+        ("d", "d/", True),
+        # A PAX path with no slash over an own name of "d/": the PAX name is final.
+        ("d", "d", False),
+    ],
+    ids=["own-name", "pax-slash", "pax-no-slash"],
+)
+def test_mark_old_style_directory_reads_the_final_name(
+    name: str, pax_path: str | None, is_dir: bool
+) -> None:
+    info = tar_reader_module._TarInfo(name)
+    info.type = tarfile.AREGTYPE
+    info.old_style_directory = False  # as _undo_stdlib_directory_check leaves it
+    if pax_path is not None:
+        info.pax_headers = {"path": pax_path}
+    info._mark_old_style_directory()
+    assert info.old_style_directory is is_dir
+    assert info.type == (tarfile.DIRTYPE if is_dir else tarfile.AREGTYPE)
+    assert info.name == "d"
+
+
+def test_nested_fromtarfile_does_not_mark() -> None:
+    # On Pythons without the 2025 tarfile fixes (CPython 3.11.15 and 3.12.13, for
+    # example), a PAX or GNU long-name header parses the member's own header through
+    # fromtarfile from inside its own call. That inner parse is not final, so it must
+    # not mark; the outer call marks once the final name is known.
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    tar = tar_reader_module._TarFile(
+        fileobj=io.BytesIO(data), tarinfo=tar_reader_module._TarInfo
+    )
+    tar.fileobj.seek(0)
+    tar.offset = 0
+    tar.header_depth = 1
+    info = tar_reader_module._TarInfo.fromtarfile(tar)
+    assert tar.header_depth == 1
+    assert info.type == tarfile.AREGTYPE
+    assert info.name == "d/"
+    assert not info.old_style_directory
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "expected"),
+    [(tarfile.AREGTYPE, True), (tarfile.DIRTYPE, False), (tarfile.REGTYPE, False)],
+)
+def test_old_style_directory_marked_by_public_frombuf(
+    typeflag: bytes, expected: bool
+) -> None:
+    # Python versions before the 2025 tarfile fixes parse headers through the public
+    # frombuf(), not _frombuf(); stdlib's own old-style directory rule must be undone
+    # on that path too, so the header reads as the file it is stored as.
+    header = _tar_slash_entry_with_data(typeflag)[:512]
+    info = tar_reader_module._TarInfo.frombuf(header, "utf-8", "surrogateescape")
+    assert (info.type == tarfile.AREGTYPE and info.name == "d/") is expected
+
+
+def test_old_style_directory_with_data_extracts(tmp_path: Path) -> None:
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
+    assert (tmp_path / "d").is_dir()
+    assert (tmp_path / "after.txt").read_bytes() == b"after\n"
+
+
+def test_dirtype_with_data_stays_corruption() -> None:
+    # A DIRTYPE header has no data area, so the caller gets CorruptionError: in random
+    # access the listing yields no members, and after.txt is not reached. GNU tar 1.35
+    # reports an error ("Skipping to next header") and keeps listing; 7-Zip stops.
+    data = _tar_slash_entry_with_data(tarfile.DIRTYPE)
+    with raises_corruption_not_truncation():
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            ar.members()
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:

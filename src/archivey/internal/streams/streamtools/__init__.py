@@ -26,6 +26,7 @@ Module map:
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
 - :mod:`.locked` — ``LockedStream`` (whole-op lock wrapper)
 - :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
+- :mod:`.sparse` — ``SparseStream`` (a sparse file's logical bytes, holes as zeros)
 
 When to use which concurrency helper:
 
@@ -80,6 +81,7 @@ from archivey.internal.streams.streamtools.solid import (
     SolidBlockReader,
     skip_forward,
 )
+from archivey.internal.streams.streamtools.sparse import SparseStream
 
 __all__ = [
     "BinaryIOWrapper",
@@ -91,6 +93,7 @@ __all__ = [
     "SharedView",
     "SlicingStream",
     "SolidBlockReader",
+    "SparseStream",
     "ensure_binaryio",
     "ensure_bufferedio",
     "fix_stream_start_position",

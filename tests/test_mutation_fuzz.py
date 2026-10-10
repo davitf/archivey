@@ -117,6 +117,10 @@ _FUZZ_CONFIG = ArchiveyConfig(
     use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
 )
 
+# The mutated bytes have no file name, so by default detection would run no content probe;
+# always_probe_content keeps the probe decoders under the detection invariant below.
+_DETECT_CONFIG = ArchiveyConfig(always_probe_content=True)
+
 MUTATION_KINDS: tuple[str, ...] = ("truncate", "bitflip", "zero", "junk")
 
 # Only file-backed formats are mutated ("dir" has no byte stream to corrupt).
@@ -543,10 +547,11 @@ def test_mutations_fail_typed_or_succeed(
             out_dir = Path(out_raw)
             _exercise(mutated, entry, key, out_dir, kind, seed, desc)
 
-            # Detection must uphold the same invariant on arbitrary bytes (it may return
-            # any format, or raise FormatDetectionError — never a raw codec exception).
+            # Detection must uphold the same invariant on arbitrary bytes, content probes
+            # included (it may return any format, or raise FormatDetectionError — never a
+            # raw codec exception).
             try:
-                detect_format(io.BytesIO(mutated))
+                detect_format(io.BytesIO(mutated), config=_DETECT_CONFIG)
             except ArchiveyError:
                 pass
             except Exception as exc:  # noqa: BLE001 - invariant check
@@ -577,7 +582,7 @@ def test_static_rar_mutations_fail_typed_or_succeed(
             _exercise(mutated, entry, key, out_dir, kind, seed, desc)
 
             try:
-                detect_format(io.BytesIO(mutated))
+                detect_format(io.BytesIO(mutated), config=_DETECT_CONFIG)
             except ArchiveyError:
                 pass
             except Exception as exc:  # noqa: BLE001 - invariant check

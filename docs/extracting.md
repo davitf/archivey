@@ -370,7 +370,7 @@ Archive order and identity matter more than “the” name.
 | Collision vs pre-existing file | `ExtractionResult.collided_with` names the already-written path a member collided with, under every resolution (skip, error, replace, rename), for a directory member landing on a file as for a file. It is `None` when the destination was simply already on disk — otherwise the two are indistinguishable. |
 | `RENAME` and directories | When a file or symlink, yours or the run's, holds a directory member's name, archivey writes the directory as `name (1)/` and keeps the file. The members inside it follow it: `dd/f` lands at `dd (1)/f`, and its result reports `requested_path` `dd/f` and `path` `dd (1)/f`. The CLI reports the directory's rename once, not once per member. |
 | `REPLACE` and directories | `REPLACE` removes an existing directory only when it is empty. A non-empty one fails that member with `ExtractionError`, so a later member cannot delete files the run already wrote or files you already had. When the run wrote the empty directory it removes, that directory's result is revised to `OVERWRITTEN`, like any clobbered member. Its `collided_with` stays `None` and `AbortOn.NAME_COLLISION` does not fire, because directories are not in the collision map. |
-| Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. |
+| Directories you already had | A directory member over a directory that was there before the run, including the destination itself (a `./` entry), leaves its mode and times alone. When the archive asked for a different mode, the result's `kept_mode` holds the mode the directory kept. The member's mode is compared as the platform stores it, so on Windows only the read-only attribute counts: a `0o755` member over a writable directory reports no `kept_mode`. |
 | Directory modes and times | archivey sets a directory's stored mode and modification time once the run ends, deepest directory first, as GNU tar does. So a directory stored without write or search permission (`0o555`, `0o644`) still gets its members, and writing them does not change its time. This also happens when the run stops early on an error. |
 | Reserved names / `:` | Rejected under `STRICT`/`STANDARD` on every platform (`CON`, `NUL`, `COM¹`, `CONIN$`, `file:ads`, …). |
 | Links on Windows | A symlink target's `/` is written as `\`, so `sub/file` resolves as on POSIX. Creating a symlink needs Developer Mode or an elevated process; without it each symlink member fails with an `ExtractionError` that says so. NTFS allows 1024 names for one file; a hard link past that is written as a copy, and those copied bytes count toward `max_extracted_bytes` and the archive-wide `max_ratio`. |
@@ -492,10 +492,14 @@ the reader's lifetime.
 That read can show the member is not a link at all. A member flagged as a Windows
 reparse point whose data is not a reparse buffer is a file, and listing would have
 presented it as one. When extraction is the first to read it, under
-`read_link_targets=False` or in a streaming pass, `extract_all` re-types it and calls
-your `filter` a second time, now with the file, so a filter can see such a member twice.
-In random access it then writes the file's content. A streaming pass has already gone
-past that content, so the member fails under `on_error` instead.
+`read_link_targets=False` or in a streaming pass that has not read it yet,
+`extract_all` re-types it and calls your `filter` a second time, now with the file, so a
+filter can see such a member twice. In random access it then writes the file's content.
+A streaming pass has already gone past that content, so the member fails under
+`on_error` instead. A 7z `stream_members()` pass under the default
+`read_link_targets=True` is the exception: it reads the member's data when it reaches
+the member, re-types it there and yields the file with its content, so `extract_all`
+writes it as a file in either access mode.
 
 A hard link to a symlink, directly or through other hard links, goes the other way: your
 `filter` sees the HARDLINK the archive lists, and its result keeps that member, but what

@@ -103,3 +103,21 @@ the reviewer and the head. Attribution and footer rules are unchanged.
 
 Coverage is counted from these markers, never from thread counts, by
 `scripts/sweep_coverage.py` (its docstring has the recipe).
+
+## Sweeping a doc rather than code
+
+When the file is a lesson doc (a handbook page's §5 Sharp edges or §6 Decisions,
+`dev-docs/known-issues.md`, a `CONTRIBUTING.md` trap), give each entry one outcome and
+post it as a finding unless it is Keep:
+
+- **Keep**: still true and still the only place that says it.
+- **Update**: still right, but a path, name, link or example drifted.
+- **Consolidate**: two entries say one thing; keep the better home, delete the other.
+- **Replace**: the advice no longer holds, and the code shows what does.
+- **Delete**: the problem itself is gone; missing code alone does not prove that.
+
+Age alone is not staleness: an old entry that still matches the code is a Keep.
+Unverifiable is not false: act on a contradiction in the code, not on a claim the repo
+cannot confirm. Two docs saying one thing will drift, so Consolidate as soon as you see
+it. These five outcomes and three rules are adapted from the `ce-compound-refresh` skill
+of EveryInc/compound-engineering-plugin (MIT).
