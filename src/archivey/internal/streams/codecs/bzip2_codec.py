@@ -156,9 +156,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     right after the last one alone, where the standard library decodes it and raises.
     So when another stream header follows the last stream, with nothing but empty
     streams before it, the standard library takes over at the end and gives the
-    verdict; not for a container coder's single stream (``CodecParams.single_stream``),
-    where that stream is trailing data, as with the accelerator off. After zero bytes,
-    both engines stop: what follows them is trailing data, a valid stream too.
+    verdict. After zero bytes, both engines stop: what follows them is trailing data, a
+    valid stream too. A container coder's data is one stream
+    (``CodecParams.single_stream``): a further stream is trailing data there, as with
+    the accelerator off, and where the decoder read on into one, the read hands over at
+    its start (:class:`_Bzip2Layout`). When the coder's input must end with its stream
+    (``StreamConfig.refuse_input_after_end``), any byte after it is refused at the end
+    (:meth:`_refuse_input_after_end`).
 
     A seek gets the same verdicts as a read. A seek past a skipped region hands over
     at it, and a seek that reaches the decoder's end runs the end check, or, when the
@@ -188,7 +192,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         self._armed = True
         # The accelerator is still the decoder, and has not reached the end yet.
         self._end_unchecked = True
-        self._layout = _Bzip2Layout()
+        self._layout = _Bzip2Layout(single_stream=single_stream)
         # The decoder's compressed position when the layout was last checked.
         self._layout_checked_at: int | None = None
 
@@ -290,10 +294,10 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     def _refuse_input_after_end(self, first_end: int | None) -> None:
         """Raise when any byte, a zero too, follows the first stream.
 
-        ``StreamConfig.refuse_input_after_end`` (a ZIP member), as the standard library
-        path refuses it. ``first_end`` is where the first end-of-stream marker ends,
-        from :meth:`_check_combined_crcs`; without an index, the decoder's compressed
-        position. The accelerator reads a second stream as data, so the check is from
+        ``StreamConfig.refuse_input_after_end`` (a ZIP member, a 7z coder), as the
+        standard library path refuses it. ``first_end`` is where the first end-of-stream
+        marker ends, from :meth:`_check_combined_crcs`; without an index, the decoder's
+        compressed position. The accelerator reads a second stream as data, so the check is from
         the first stream's end, not the last one's.
         """
         if first_end is None:
@@ -574,9 +578,14 @@ class _Bzip2Layout:
     (see ``dev-docs/formats/bzip2.md`` §2.3 for the measured cost). An index that is not
     in that order, or that lists an entry behind the ones walked, which rapidgzip has
     not been seen to do, restarts the walk over the whole index.
+
+    For a container coder's single stream (``single_stream``), no further stream may
+    start: the standard library ends the data at the first one, so a block after it
+    counts as skipped, and the read hands over there.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, single_stream: bool = False) -> None:
+        self._single_stream = single_stream
         # The magic read at each bit offset walked (``None`` for the end entry).
         self._kinds: dict[int, int | None] = {}
         self._last_bit = -1
@@ -617,7 +626,11 @@ class _Bzip2Layout:
                         self._last_bit = bit
                         self.covered = offsets[bit]
                         continue
-                    if not _bzip2_stream_starts(view, self._next_stream, bit):
+                    # Byte 0 is the first stream, checked as usual; under
+                    # single_stream any later stream is a gap.
+                    if (
+                        self._single_stream and self._next_stream != 0
+                    ) or not _bzip2_stream_starts(view, self._next_stream, bit):
                         self.gap = offsets[bit]
                         return self.gap
                     self._next_stream = None

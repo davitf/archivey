@@ -94,13 +94,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
   restore method 2. Under ZipCrypto both read as the password-or-damage
   ``EncryptionError`` instead, because those settings are encrypted.
-- Bytes inside a member's compressed data after its compressed stream ends (a zero
-  byte, junk, or a second stream) raise `CorruptionError` when the member is read, for
-  every compression method, as `7z t` reports an error for them. Under ZipCrypto they
-  read as the password-or-damage ``EncryptionError`` instead, caused by that
-  ``CorruptionError``, because the bytes are encrypted. Two cases still read:
-  a PPMd member whose stream has no end mark (7-Zip writes one), and, under rapidgzip,
-  a second DEFLATE stream that the member's declared size and CRC both cover.
+- A member's compressed data must hold one stream of its codec and nothing else, as
+  7-Zip checks. Bytes after the stream (junk, zero bytes, a second DEFLATE, bzip2 or
+  Zstd stream) raise ``CorruptionError`` once the data before them has been read, for
+  every compression method, whatever the member's declared size and CRC cover; so does
+  an LZMA member without an end marker, or a PPMd member, whose declared size stops
+  short of its data. Under ZipCrypto they read as the password-or-damage
+  ``EncryptionError`` instead, caused by that ``CorruptionError``, because the bytes are
+  encrypted. The same holds for a 7z coder, except that a 7z Zstd or LZ4 coder reads
+  concatenated frames as one stream, so a further frame is content that counts against
+  the declared size. One zero byte after LZMA data without an end marker reads, because
+  7-Zip's encoder sometimes writes it. A standalone compressed file reports bytes after
+  its stream as a warning instead (see [Single-file compressors](#single-file-compressors)).
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
@@ -611,8 +616,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `CorruptionError`. Brotli has no end marker the library reports, so archivey finds the
   end by decoding the source again, which needs a seekable source: from a pipe, bytes
   after a Brotli stream raise `CorruptionError`. The check applies to a bare compressed
-  file and to a compressed tar; inside a ZIP or 7z member the container's sizes decide.
-  `.Z` is not covered: it has no end marker, so appended bytes decode as more data.
+  file and to a compressed tar; inside a ZIP or 7z member such bytes raise
+  `CorruptionError` (see [ZIP](#zip)). `.Z` is not covered: it has no end marker, so
+  appended bytes decode as more data.
 - `open_archive` decodes the first byte of a seekable source, so a file that is not
   the codec its name or detection claims (a `.gz` full of zeros, an empty `.bz2`) raises
   `CorruptionError` or `TruncatedError` from `open_archive` rather than from the first

@@ -398,45 +398,32 @@ pipeline uses for the same byte. A PPMd member's restore method 2 is
 Method" and "Data Error". Under ZipCrypto those settings are decrypted with a key one
 byte vouched for, so both stay `CorruptionError` there and count as the candidate failing.
 
-On the standard library path a bzip2 member ends at its first end-of-stream marker, as
-7-Zip, Info-ZIP and `zipfile` read it, and as a DEFLATE, LZMA or PPMd member ends at its own.
-An LZMA member ends at its end marker too (`lzma.LZMAFile` would start a second raw stream on
-the bytes after it and read that as content).
-
-**Any byte of a member's compressed data after its codec's end is `CorruptionError`** (DR-3),
-a zero too, and a second stream too. Under ZipCrypto the read raises the `EncryptionError` of
-an unconfirmed password instead, caused by that `CorruptionError`, as the verify table below
-records. The member's compressed size is the codec's input exactly, with no padding in it,
-and `7z t` (23.01) reports these bytes as an error: "There
-are some data after the end of the payload data" for DEFLATE, Deflate64 and BZip2, "Data
-Error" for LZMA and PPMd. The reader sets `StreamConfig.refuse_input_after_end`, and
-`DecompressorStream` raises when its decoder reports input after the end
-(`Decoder.input_after_end`), so every method goes through one check. LZMA raises on its own
-(`LzmaDataAfterEndError`), as it does in 7z. Two codecs needed help to see those bytes:
-
-- `inflate64` drops input after a Deflate64 stream's end and has no `unused_data`. Its `eof`
-  turns True only with the stream's last byte, so `Deflate64Decoder` holds back the last byte
-  it is given: when `eof` is already True as that byte goes in, input follows the end.
-- pyppmd decodes a PPMd8 end mark only when asked for more output than the member holds,
-  and only then shows the input after it in `unused_data`. So at the declared size one more
-  symbol is asked for, once, when the decoder stopped on its budget with input left. An end
-  mark there, as 7-Zip writes it, makes any `unused_data` input after the end. A decoder
-  already at `eof` is not asked: pyppmd 1.3.1 sets a PPMd8 decoder's `eof` only when it
-  decodes the end mark, so its `unused_data` is checked the same way. No end mark
-  (a decoded byte, or no `eof`) cannot be told from input past the size, so that member
-  reads clean, as a marker-less LZMA1 member does. The child-process decoder reports the
-  length of `unused_data` in its reply for the same check.
-
-With bit 1 clear an LZMA member ends at its declared size; a marker right there is still
-checked. The accelerators read on into a second stream, and they stay on for ZIP members.
-rapidgzip's bzip2 decoder is checked from its block index: any byte after the first stream's
-end-of-stream marker raises. A raw DEFLATE member under rapidgzip finishes on zlib, from the
-position already delivered, when a read would pass the declared size or rapidgzip fails on
-bytes after the stream, so those cases read as on zlib; at the end, its end check follows the
-streams rapidgzip read with zlib and raises for any byte after the last one. Two DEFLATE
-streams whose output the declared size and CRC both cover still read under rapidgzip (§5):
-the end check decodes from rapidgzip's newest resume point, which can lie after the first
-stream's end, and decoding from the start instead would cost a second full decode.
+A member's compressed data is one stream of its codec and nothing else, as 7-Zip,
+Info-ZIP and `zipfile` read it: each codec ends the member at its stream's end (an LZMA
+member at its end marker; `lzma.LZMAFile` would start a second raw stream on the bytes
+after it and read that as content). The reader opens every member with
+`StreamConfig.refuse_input_after_end`, so any byte of the compressed data the codec
+leaves after that end, a zero too, and a second stream, are `DataAfterEndError` (a
+`CorruptionError`), raised once the output before them has been read, whatever the
+declared size and CRC cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error",
+or "There are some data after the end of the payload data"), and the bytes may be a side
+channel (`design-rules.md` DR-3). Under ZipCrypto the read raises the `EncryptionError`
+of an unconfirmed password instead, caused by that `CorruptionError`, as the verify
+table below records. A Zstd member (method 93) is one frame: a second frame, a skippable
+one too, is refused, where a 7z Zstd coder reads concatenated frames as one stream. An
+LZMA member with bit 1 clear, and a PPMd member, end at their declared size, and their
+input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
+encoder sometimes writes), after the end mark PPMd8 must carry. So a declared size short
+of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
+not short. The 7z handbook (§ coders, *Input after the stream*) has how each codec finds
+its end, and what it cannot see; `inflate64` drops input after a Deflate64 stream's end
+and has no `unused_data`, so `Deflate64Decoder` holds back the last byte it is given,
+and input follows the end when `eof` is already True as that byte goes in. The
+accelerators read on into a second stream; at the bytes after the first they hand the
+read over to the standard library, which refuses them, so the verdict does not depend on
+the accelerator. Finding where a DEFLATE member's first stream ends takes a zlib decode
+from its start (a rapidgzip resume point may lie in a second stream), so a full read
+under rapidgzip pays that decode too; the accelerator still speeds up seeks.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through
@@ -658,8 +645,6 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a seek, no CRC checks a ZipCrypto member, and a wrong password that passed the check byte goes unnoticed on a STORED member | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order, so a seek gives it up (ADR 0014). Keeping it for a read that returns over bytes already hashed, as the AES HMAC does, is tracked internally. A compressed member's decoder usually still objects to a wrong key on the bytes a forward seek decodes; a STORED member has no decoder, so a seek then a read returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
-| Under rapidgzip, a DEFLATE member holding two streams whose size and CRC cover both reads clean; without it, the member is `CorruptionError` | **library** / **archivey** | zlib stops at the first stream's end and the bytes after it are refused (§2.3); rapidgzip reads on, and its end check decodes from its newest resume point, which can lie after the first stream's end. Only a crafted member does this. Every other shape agrees: bytes after the last stream, a DEFLATE member whose accelerated output passes the declared size, and every bzip2 case (checked from the decoder's block index) |
-| A PPMd member with bytes after its stream reads clean when the stream has no end mark | **library** | pyppmd shows input after a PPMd8 stream only once it has decoded the end mark. 7-Zip writes one, and such a member is checked (§2.3); without one the extra bytes cannot be told from data past the size. 7-Zip reports "Data Error" for both |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
 
@@ -721,12 +706,13 @@ move.
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
 | Overlapping-entry bomb, without stdlib's end offsets too; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_overlap_guard_does_not_depend_on_stdlib_end_offsets`, `::test_entries_sharing_one_local_header_read_only_once` |
+| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is refused | `tests/test_surplus_input.py`, `tests/test_audit2_zip.py::test_bytes_after_a_deflate_members_stream_are_corrupt`, `::test_bzip2_member_with_a_second_stream_is_corrupt` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |
-| Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators; `7z t` fails on the same members | `tests/test_zip_native_codecs.py::test_zip_member_with_input_after_its_stream_is_corrupt`, `::test_zip_zstd_member_with_input_after_its_frame_is_corrupt`, `::test_zip_input_after_the_stream_is_corrupt_under_the_accelerator`, `::test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process` |
+| Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators (for DEFLATE on a seek to the end too); `7z t` fails on the same members | `tests/test_zip_native_codecs.py::test_zip_member_with_input_after_its_stream_is_corrupt`, `::test_zip_zstd_member_with_input_after_its_frame_is_corrupt`, `::test_zip_input_after_the_stream_is_corrupt_under_the_accelerator`, `::test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process`, `tests/test_accelerator_takeover.py::test_a_seek_to_the_end_refuses_input_after_a_container_streams_end` |
 | A Zstd member with a second frame or a skippable frame after its first frame is `CorruptionError`; the shared framed decoder refuses a second stream | `tests/test_zip_native_codecs.py::test_zip_zstd_member_with_a_second_frame_is_corrupt`, `::test_zip_zstd_member_with_a_skippable_frame_is_corrupt`, `::test_framed_stream_refuses_a_second_stream_after_the_end` |
 | Bytes after the stream inside a ZipCrypto member (the `EncryptionError` of an unconfirmed password, caused by the `CorruptionError`) or a WinZip AES member raise | `tests/test_zip_native_codecs.py::test_zip_zipcrypto_member_with_input_after_its_stream_is_corrupt`, `::test_zip_winzip_aes_member_with_input_after_its_stream_is_corrupt` |
-| A PPMd member with no end mark reads clean, in process and in a child; an end mark already decoded at the size is checked; a worker the end-mark probe parks is quiesced on close | `tests/test_zip_native_codecs.py::test_zip_ppmd_member_without_an_end_mark_reads_clean`, `tests/test_ppmd_raw_streams.py::test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data`, `::test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close` |
-| A second DEFLATE or bzip2 stream in a member is `CorruptionError`, except a DEFLATE pair under rapidgzip whose size and CRC cover both | `tests/test_audit2_zip.py::test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt`, `::test_bzip2_accelerator_refuses_a_second_stream_the_declared_crc_covers`, `::test_rapidgzip_reads_a_second_deflate_stream_the_declared_crc_covers` |
+| A PPMd member with no end mark is `CorruptionError`, in process and in a child; an end mark already decoded at the size is checked; a worker the end-mark probe parks is quiesced on close | `tests/test_zip_native_codecs.py::test_zip_ppmd_member_without_an_end_mark_is_corrupt`, `tests/test_ppmd_raw_streams.py::test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data`, `::test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close` |
+| A second bzip2 stream in a member is `DataAfterEndError`, whatever the size and CRC cover, where `zipfile` ends the member at the first | `tests/test_audit2_zip.py::test_bzip2_member_ends_at_its_first_stream`, `::test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt` |
 | Tampered HMAC raises on a full read (STORED and DEFLATE); partial read then `close()` is quiet | `tests/test_zip_aes.py::test_aes_tampered_hmac_raises_corruption`, `::test_aes_tampered_hmac_partial_read_then_close_is_quiet` |
 | AES decrypt stream `close()` still releases the source after a partial read; a source `OSError` still marks the wrapper closed | `::test_aes_decrypt_stream_close_releases_source`, `::test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises` |
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |

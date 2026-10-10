@@ -154,7 +154,10 @@ seekability is declared **and** the known compressed input is at least
 `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (16 MiB). rapidgzip runs in a child process that
 takes about 45 ms to start and open, and it saves about 3.4 ms per MB of compressed input
 over the stdlib, so it is only faster from about 13 MB. Smaller members stay on stdlib
-`zlib`/`gzip`. Set
+`zlib`/`gzip`. For a DEFLATE member of a ZIP or 7z archive the saving is in seeks and in
+the first output, not in a whole read: at the end of the member, `zlib` decodes it again
+from the start to check that nothing follows its stream (see below), so a read to the
+end costs that decode on top of rapidgzip's. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
 `ON` needs a source that can seek: on a pipe, or on a member stream of an outer archive
 opened without `seekable_members=True`, it raises `StreamNotSeekableError`. For a zlib
@@ -179,12 +182,12 @@ raises `PackageNotInstalledError` naming `[seekable]` — even without
 without raising. The stream is still seekable, but a backward seek may re-decode from
 the start. `use_indexed_bzip2` behaves the same way for bzip2.
 
-An accelerator raises on the same corrupt input as the stdlib decoder, with one kind of
-exception: crafted stream boundaries that the data's own checksums cannot see. Inside a
-ZIP member, a second compressed stream or bytes after the first stream's end end the
-member on the stdlib path, while the accelerator reads on; the member's declared size and
-CRC then decide. In a multi-member `.gz`, rapidgzip does not check the length field
-(ISIZE) of a member before the last, but it does check every member's CRC.
+An accelerator raises on the same corrupt input as the stdlib decoder, with one
+exception: in a multi-member `.gz`, rapidgzip does not check the length field (ISIZE) of
+a member before the last, but it does check every member's CRC. Inside a ZIP or 7z
+member, a second compressed stream or bytes after the first stream's end raise
+`CorruptionError` with the accelerator on or off, whatever the member's declared size and
+CRC cover.
 
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 
