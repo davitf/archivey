@@ -342,7 +342,8 @@ member-to-stdout verb does not silently change the meaning of
 ### Requirement: exit codes are argparse-aligned with a policy-refusal code
 
 The system SHALL exit `0` on success and `2` on CLI usage errors (unknown
-verb/flag or bad arguments — the argparse default). Operational failures
+verb/flag or bad arguments — the argparse default), unless the output or message
+could not be delivered (see the codes `128` and above below). Operational failures
 (unreadable, unsupported, or corrupt archive; read/integrity failure; member
 extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
 an early abort under `--stop-on-error` on a member **failure**, or any

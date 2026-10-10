@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import stat
@@ -1191,8 +1192,10 @@ def test_reader_leaving_mid_output_exits_141(
 
     Nothing is closed before the child starts, so this runs on Windows too, where a
     write to a pipe whose reader has gone fails with ERROR_NO_DATA and CPython raises
-    ``BrokenPipeError`` for it. The child has more to write than a pipe holds, so it
-    is blocked on a write, not finished, when the reader leaves.
+    ``OSError(EINVAL)`` for it, not ``BrokenPipeError``. The child has more to write
+    than a pipe holds, so it is blocked on a write, not finished, when the reader
+    leaves. On failure the message also shows what a plain write to such a pipe
+    raises on this platform.
     """
     import subprocess
 
@@ -1213,8 +1216,180 @@ def test_reader_leaving_mid_output_exits_141(
         returncode = proc.wait(timeout=120)
     other = other_path.read_bytes()
     assert first, other
-    assert returncode == EXIT_BROKEN_PIPE, other
+    if returncode != EXIT_BROKEN_PIPE:
+        pytest.fail(
+            f"exit {returncode}, other stream {other!r}; "
+            f"a plain write to a pipe whose reader left raises {_dead_pipe_probe()}"
+        )
     _assert_no_pipe_noise(other)
+
+
+_DEAD_PIPE_PROBE = """
+import sys
+try:
+    while True:
+        sys.stdout.write("x" * 4096 + "\\n")
+        sys.stdout.flush()
+except OSError as exc:
+    sys.stderr.write(
+        f"{type(exc).__name__} errno={exc.errno} "
+        f"winerror={getattr(exc, 'winerror', None)} {exc.strerror!r}"
+    )
+"""
+
+
+def _dead_pipe_probe() -> str:
+    """What this platform raises when a pipe's reader leaves mid-write (diagnostic)."""
+    import subprocess
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _DEAD_PIPE_PROBE],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    proc.stdout.readline()
+    proc.stdout.close()
+    _, probe_err = proc.communicate(timeout=60)
+    return probe_err.decode(errors="replace")
+
+
+@pytest.mark.parametrize(
+    ("exc", "on_windows", "elsewhere"),
+    [
+        (BrokenPipeError(errno.EPIPE, "Broken pipe"), True, True),
+        # What CPython raises on Windows for ERROR_NO_DATA: EINVAL, no winerror.
+        (OSError(errno.EINVAL, "Invalid argument"), True, False),
+        (OSError(errno.ENOSPC, "No space left on device"), False, False),
+    ],
+)
+def test_is_dead_pipe_reads_windows_einval_as_a_closed_pipe(
+    monkeypatch: pytest.MonkeyPatch, exc: OSError, on_windows: bool, elsewhere: bool
+) -> None:
+    from archivey.cli.main import _is_dead_pipe
+
+    assert _is_dead_pipe(exc) is elsewhere
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _is_dead_pipe(exc) is on_windows
+
+
+@pytest.mark.parametrize("winerror", [109, 232])
+def test_is_dead_pipe_matches_windows_pipe_winerrors(
+    monkeypatch: pytest.MonkeyPatch, winerror: int
+) -> None:
+    from archivey.cli.main import _is_dead_pipe
+
+    # On POSIX the constructor ignores a fourth (winerror) argument, so set it.
+    exc = OSError(errno.EIO, "I/O error")
+    exc.winerror = winerror  # type: ignore[attr-defined]
+    assert not _is_dead_pipe(exc)
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _is_dead_pipe(exc)
+
+
+class _EinvalStream(io.StringIO):
+    """A stream that fails as a Windows pipe does once its reader has gone."""
+
+    def __init__(self, *, at_flush: bool) -> None:
+        super().__init__()
+        self.at_flush = at_flush
+
+    def write(self, s: str) -> int:
+        if not self.at_flush:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        return super().write(s)
+
+    def flush(self) -> None:
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+
+@pytest.mark.parametrize("closed", ["out", "err"])
+@pytest.mark.parametrize("at_flush", [False, True])
+def test_windows_einval_on_output_exits_141(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    closed: str,
+    at_flush: bool,
+) -> None:
+    """On Windows, ``EINVAL`` from the CLI's own output stream is a closed pipe."""
+    from archivey.cli import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    dead = _EinvalStream(at_flush=at_flush)
+    streams = {"out": io.StringIO(), "err": io.StringIO(), closed: dead}
+    # A missing archive writes to err; list of a real one writes to out.
+    archive = tmp_path / ("a.zip" if closed == "out" else "missing.zip")
+    if closed == "out":
+        _zip(archive, {"a.txt": b"a"})
+    assert main(["list", str(archive)], **streams) == EXIT_BROKEN_PIPE
+
+
+def test_einval_on_output_is_not_a_closed_pipe_off_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    out = _EinvalStream(at_flush=False)
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_FAIL
+    assert "Invalid argument" in err.getvalue()
+
+
+class _FullDiskAtFlush(io.StringIO):
+    """A stream redirected to a full disk: writes are buffered, the flush fails."""
+
+    def flush(self) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def test_final_flush_os_error_prints_message_and_exits_1(tmp_path: Path) -> None:
+    """``archivey list x > /dev/full``: one line on stderr and exit 1, no traceback."""
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    assert main(["list", str(archive)], out=_FullDiskAtFlush(), err=err) == EXIT_FAIL
+    assert err.getvalue() == "archivey: No space left on device\n"
+
+
+def test_final_flush_interrupted_exits_130(tmp_path: Path) -> None:
+    class _InterruptedAtFlush(io.StringIO):
+        def flush(self) -> None:
+            raise KeyboardInterrupt
+
+    archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
+    err = io.StringIO()
+    out = _InterruptedAtFlush()
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_INTERRUPTED
+    assert err.getvalue() == "interrupted\n"
+
+
+def test_lost_log_record_exits_141(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A warning logged to a closed stderr still exits 141.
+
+    logging's StreamHandler swallows the write error itself, so only main()'s final
+    flush sees the closed pipe. The zip's end record declares more entries than its
+    central directory holds, which ``list`` reports as a warning.
+    """
+    import logging
+
+    from archivey.cli import main as main_mod
+
+    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    # Off, as for a process whose stderr is gone: handleError writes nowhere.
+    monkeypatch.setattr(logging, "raiseExceptions", False)
+    archive = _zip(tmp_path / "a.zip", {f"m{i}.txt": b"x" for i in range(3)})
+    data = bytearray(archive.read_bytes())
+    eocd = data.rindex(b"PK\x05\x06")
+    data[eocd + 8 : eocd + 12] = (7).to_bytes(2, "little") * 2
+    archive.write_bytes(bytes(data))
+    err = _PipeClosedAtFlush()
+    out = io.StringIO()
+    assert main(["list", str(archive)], out=out, err=err) == EXIT_BROKEN_PIPE
+    # The record did reach the stream: the flush, not a print, raised.
+    assert err.getvalue()
 
 
 class _PipeClosedAtFlush(io.StringIO):

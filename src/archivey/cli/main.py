@@ -172,9 +172,10 @@ class _ArchiveyArgumentParser(argparse.ArgumentParser):
         if message:
             try:
                 (file or sys.stderr).write(message)
-            except BrokenPipeError:
-                raise
-            except (AttributeError, OSError):
+            except OSError as exc:
+                if _is_dead_pipe(exc):
+                    raise _as_broken_pipe(exc) from exc
+            except AttributeError:
                 pass
 
 
@@ -667,16 +668,21 @@ def main(
     # Archive text (member names, comments) is printable but may not be encodable: a
     # cp1252 console, PYTHONIOENCODING=ascii. The interpreter's stderr already escapes
     # what it cannot encode; stdout raises, so it gets the same errors handler here.
-    out_stream = cast(
+    # Both streams also go through _DeadPipeWriter, so a closed pipe is a
+    # BrokenPipeError on Windows too.
+    escaping = cast(
         TextIO, _BackslashReplacingWriter(out if out is not None else sys.stdout)
     )
-    err_stream = err if err is not None else sys.stderr
+    out_stream = cast(TextIO, _DeadPipeWriter(escaping))
+    err_stream = cast(TextIO, _DeadPipeWriter(err if err is not None else sys.stderr))
     try:
         exit_code = _parse_and_dispatch(argv, out=out_stream, err=err_stream)
         # Flush here, not at interpreter exit, so a reader that closed the pipe
         # after the last write is still a broken pipe handled below. Without out=
         # and err=, these are the process streams, so this also flushes argparse's
-        # buffered help and usage text.
+        # buffered help and usage text. It also carries a lost log record to 141:
+        # logging's StreamHandler swallows its own write error, which leaves the
+        # record in the buffer, so this flush is where the closed pipe surfaces.
         out_stream.flush()
         err_stream.flush()
         return exit_code
@@ -688,6 +694,26 @@ def main(
         # usage error whose message is lost also lands here, as 141 rather than 2.
         _silence_broken_pipe()
         return EXIT_BROKEN_PIPE
+    except OSError as exc:
+        # The final flush failed for another reason (a full disk, a quota, a
+        # network share that went away). _parse_and_dispatch handles the same
+        # error the same way when a write inside the verb raises it.
+        _report_quietly(escape_member_name(_format_os_error(exc)), err_stream)
+        return EXIT_FAIL
+    except KeyboardInterrupt:
+        _report_quietly("interrupted", err_stream)
+        return EXIT_INTERRUPTED
+
+
+def _report_quietly(message: str, err: TextIO) -> None:
+    """Print ``message`` to ``err``, dropping a second error from that stream."""
+    try:
+        print(message, file=err)
+        err.flush()
+    except OSError:
+        # err may be the stream whose flush just failed; the exit code still
+        # says what happened.
+        pass
 
 
 def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO) -> int:
@@ -761,12 +787,74 @@ class _BackslashReplacingWriter:
         return getattr(self._stream, name)
 
 
+# What a write to a pipe whose reader has gone raises on Windows. CPython writes
+# through the C runtime, which maps ERROR_BROKEN_PIPE (109) to EPIPE, so that one is
+# already a BrokenPipeError, but maps ERROR_NO_DATA (232) to EINVAL: a plain OSError,
+# "Invalid argument", with no winerror attached. The winerror codes are matched in
+# case a write path sets them (compare internal/extraction.py's _typed_os_error).
+_WINDOWS_DEAD_PIPE_WINERRORS = frozenset({109, 232})
+
+
+def _is_dead_pipe(exc: OSError) -> bool:
+    """Whether ``exc``, raised writing or flushing an output stream, is a closed pipe.
+
+    Only for errors from the CLI's own output streams: ``EINVAL`` is far too broad to
+    read as a closed pipe anywhere else, and even here it counts only on Windows.
+    """
+    if isinstance(exc, BrokenPipeError):
+        return True
+    if sys.platform != "win32":
+        return False
+    if getattr(exc, "winerror", None) in _WINDOWS_DEAD_PIPE_WINERRORS:
+        return True
+    return exc.errno == errno.EINVAL
+
+
+def _as_broken_pipe(exc: OSError) -> BrokenPipeError:
+    if isinstance(exc, BrokenPipeError):
+        return exc
+    return BrokenPipeError(errno.EPIPE, exc.strerror or "Broken pipe")
+
+
+class _DeadPipeWriter:
+    """An output stream whose closed-pipe errors are all ``BrokenPipeError``.
+
+    On Windows a write to a pipe whose reader has gone can raise ``OSError(EINVAL)``
+    instead (see ``_is_dead_pipe``). Translating it at the stream keeps the match
+    to the CLI's own output: the ``except BrokenPipeError`` arms in ``main()`` and
+    in the verbs then cover Windows too, and an ``EINVAL`` from archive I/O is
+    still reported as the error it is.
+    """
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        try:
+            return self._stream.write(text)
+        except OSError as exc:
+            if _is_dead_pipe(exc):
+                raise _as_broken_pipe(exc) from exc
+            raise
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        except OSError as exc:
+            if _is_dead_pipe(exc):
+                raise _as_broken_pipe(exc) from exc
+            raise
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._stream, name)
+
+
 def _silence_broken_pipe() -> None:
     """Point a closed standard stream at the null device, with no message.
 
     The interpreter flushes ``sys.stdout`` and ``sys.stderr`` as it exits. Output
-    still buffered for a closed pipe would raise ``BrokenPipeError`` again there and
-    print "Exception ignored". A stream that still flushes is left as it is.
+    still buffered for a closed pipe would fail again there (``BrokenPipeError``, or
+    ``EINVAL`` on Windows) and print "Exception ignored". A stream that still flushes is left as it is.
     """
     for stream in (sys.stdout, sys.stderr):
         if stream is None:
