@@ -125,6 +125,13 @@ that is also a `ValueError`. The two classes are private subclasses in
 `ArchiveyUsageError`. From the list above, an `ArchiveMember` from another reader,
 `open_archive(streaming=True, concurrent_members=True)`, `open_stream()` given a
 container `format=`, and `open()` / `read()` of a non-payload member are value errors.
+So are refusals made after looking at what an argument names: a `format=` that
+conflicts with what the source is (a directory source with a container `format=`, or a
+stub volume whose first volume is a different container), a directory path passed to
+`open_stream()`, and a volume sequence that is not the parts of one set, including one
+that sibling discovery assembled from a single path. Until #673 lands, two cases do not
+meet this requirement: `open_archive(file, format=ArchiveFormat.DIRECTORY)` raises a
+bare `TypeError`, and `reader.get()` given a non-`str` name returns `None`.
 The rest of the list (overlap, reentry, a closed reader or source, the access mode)
 SHALL raise a plain `ArchiveyUsageError` that is neither a `TypeError` nor a
 `ValueError`.
@@ -148,6 +155,9 @@ raise `io.UnsupportedOperation`.
 | `open_archive(src, config="strict")` | Caught by `except TypeError` and by `except ArchiveyUsageError` |
 | `extract_all(dest, overwrite="nonsense")` | Caught by `except ValueError` and by `except ArchiveyUsageError` |
 | Operation after `reader.close()` | A plain `ArchiveyUsageError`: not caught by `except TypeError` or `except ValueError` |
+| `open_archive(directory, format=ArchiveFormat.ZIP)`, or a stub volume beside a first volume of another container | A `format=` that conflicts with what the source is: caught by `except ValueError` and by `except ArchiveyUsageError` |
+| `open_stream(directory)` | Caught by `except ValueError` and by `except ArchiveyUsageError`; not a `FileNotFoundError` |
+| `open_archive([alpha.zip.001, beta.zip.002])`, or discovery from one path finding parts of two sets | A volume sequence that is not the parts of one set: caught by `except ValueError` and by `except ArchiveyUsageError` |
 
 ### Requirement: Close teardown failures preserve state and causes
 

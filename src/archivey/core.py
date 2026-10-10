@@ -210,6 +210,8 @@ def _follow_stub_volume(
             pass
         else:
             if info.format.container != format.container:
+                # DR-15's value half: format= is a usable type, and the call refuses
+                # this value because it conflicts with what the source is.
                 raise _UsageValueError(
                     f"{display_path(stub)} has no archive magic; "
                     f"the split first volume beside it is {info.format.display_name}, "
@@ -469,6 +471,7 @@ def _open_resolved(
         # Every other explicit-format conflict is refused loudly; so is this one.
         if format is not None and format != ArchiveFormat.DIRECTORY:
             assert archive_source.path is not None  # the directory form has a path
+            # DR-15's value half: format= conflicts with what the source is.
             raise _UsageValueError(
                 f"{archive_name or display_path(archive_source.path)} is a directory, but format="
                 f"{format!r} was requested. Pass a path to an archive file, or "
@@ -709,7 +712,8 @@ def open_stream(
         if path.is_dir():
             # Split out of the is_file() check: a directory exists, so "not found" sends
             # the caller looking for a missing file. open_archive() reads the same path
-            # happily as a directory archive, which is the likely intent.
+            # happily as a directory archive, which is the likely intent. DR-15's
+            # value half: the path is a usable type whose value this call refuses.
             raise _UsageValueError(
                 f"{display_path(path)} is a directory, not a compressed stream; "
                 f"use open_archive() to read a directory tree"

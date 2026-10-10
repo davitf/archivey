@@ -13,8 +13,10 @@ beside their arguments:
   reader to tell "wrong type" from "not this reader's member")
 
 What this module covers: ``config=``, ``limits=``, ``encoding=``, ``extract_all``'s
-``dest``, and the ``on_progress=`` / ``filter=`` callbacks. There is no useful conversion from a
-wrong-typed one of these, so the answer is an error.
+``dest``, the ``on_progress=`` / ``filter=`` callbacks, and the ``source`` refusals
+(``require_source``, ``reject_source``, ``raise_if_text_stream``,
+``raise_if_write_only_stream``). There is no useful conversion from a wrong-typed one of
+these, so the answer is an error.
 
 Every check answers with :class:`~archivey.ArchiveyUsageError`, which sits outside
 ``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot swallow a
@@ -139,13 +141,22 @@ def check_callable(value: object, *, call: str) -> None:
 
 
 def check_dest(value: object, *, call: str) -> None:
-    """Raise ``ArchiveyUsageError`` unless ``value`` is a ``str`` or path-like.
+    """Raise ``ArchiveyUsageError`` unless ``value`` is a ``str`` or a ``str`` path-like.
 
     ``Path(0)`` would otherwise raise ``expected str, bytes or os.PathLike object, not
-    int``, which names neither the call nor the argument.
+    int``, which names neither the call nor the argument. The resolved value is checked,
+    not the protocol: a path-like whose ``__fspath__`` returns bytes (which ``os`` and
+    ``shutil`` accept) makes ``Path()`` fail the same way.
     """
-    if isinstance(value, (str, os.PathLike)):
+    if isinstance(value, str):
         return
+    if isinstance(value, os.PathLike):
+        try:
+            resolved = os.fspath(value)
+        except TypeError:  # ``__fspath__`` returned neither str nor bytes
+            resolved = None
+        if isinstance(resolved, str):
+            return
     raise _UsageTypeError(
         f"{call} takes a directory path (str or Path), but got {describe_value(value)}."
     )

@@ -49,6 +49,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from archivey import (
+    ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
     DecoderLimits,
@@ -791,6 +792,31 @@ def _closed_reader_members(archive: Path) -> Any:
     return reader.members()
 
 
+class _BytesPath:
+    """A path-like whose ``__fspath__`` returns bytes, as ``os`` and ``shutil`` accept."""
+
+    def __fspath__(self) -> bytes:
+        return b"/nonexistent-archivey-dest"
+
+
+def _a_directory(tmp_path: Path) -> Path:
+    directory = tmp_path / "a-directory"
+    directory.mkdir(exist_ok=True)
+    return directory
+
+
+def _parts_of_two_sets(tmp_path: Path) -> list[Path]:
+    parts = [tmp_path / "alpha.zip.001", tmp_path / "beta.zip.002"]
+    for part in parts:
+        part.write_bytes(b"PK")
+    return parts
+
+
+def _get_member(archive: Path, name: Any) -> Any:
+    with open_archive(archive) as reader:
+        return reader.get(name)
+
+
 def _foreign_member(archive: Path, tmp_path: Path) -> Any:
     other = tmp_path / "other.zip"
     with zipfile.ZipFile(other, "w") as zf:
@@ -889,12 +915,63 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
     ),
     ("reader.open(0)", lambda a, t: _open_member(a, 0), TypeError),
     ("reader.open(foreign member)", _foreign_member, ValueError),
+    # A path-like around bytes: ``Path()`` would raise "argument should be a str or an
+    # os.PathLike object where __fspath__ returns a str", naming nothing of ours.
+    (
+        "extract_all(bytes path-like)",
+        lambda a, t: _extract_all(a, _BytesPath(), None),
+        TypeError,
+    ),
+    # The field has a real default; ``None`` is a wrong type, not a way to ask for one.
+    (
+        "DiagnosticPolicy(overrides=None)",
+        lambda a, t: DiagnosticPolicy(overrides=None),
+        TypeError,
+    ),
+    # Refusals made after looking at what an argument names are value errors too: the
+    # argument is a usable type and the call refuses its value (DR-15).
+    (
+        "open_stream(directory)",
+        lambda a, t: open_stream(_a_directory(t)),
+        ValueError,
+    ),
+    (
+        "open_archive(directory, format=ZIP)",
+        lambda a, t: open_archive(_a_directory(t), format=ArchiveFormat.ZIP),
+        ValueError,
+    ),
+    (
+        "open_archive(parts of two sets)",
+        lambda a, t: open_archive(_parts_of_two_sets(t)),
+        ValueError,
+    ),
+]
+
+# Known gaps, owned by #673. ``strict=False`` so they stop failing quietly when it lands;
+# #673 removes them and adds the plain rows.
+_KNOWN_GAPS: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] = [
+    (
+        "open_archive(file, format=DIRECTORY)",
+        lambda a, t: open_archive(a, format=ArchiveFormat.DIRECTORY),
+        ValueError,
+    ),
+    ("reader.get(bytes)", lambda a, t: _get_member(a, b"h.txt"), TypeError),
+    ("reader.get(0)", lambda a, t: _get_member(a, 0), TypeError),
 ]
 
 
 @pytest.mark.parametrize(
     ("call", "builtin"),
-    [pytest.param(call, builtin, id=label) for label, call, builtin in _BUILTIN_CASES],
+    [pytest.param(call, builtin, id=label) for label, call, builtin in _BUILTIN_CASES]
+    + [
+        pytest.param(
+            call,
+            builtin,
+            id=label,
+            marks=pytest.mark.xfail(reason="known gap, fixed by #673", strict=False),
+        )
+        for label, call, builtin in _KNOWN_GAPS
+    ],
 )
 def test_wrong_argument_is_caught_by_the_builtin_and_the_usage_error(
     archive: Path,

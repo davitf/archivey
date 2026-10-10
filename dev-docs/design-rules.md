@@ -653,14 +653,22 @@ that the error make the fix obvious.
 
 ### DR-15. Usage errors are for what the types cannot rule out
 
-**Rule.** A wrong argument type raises a `TypeError` and a wrong value of a usable type
-raises a `ValueError`. Both are also `ArchiveyUsageError`s: the boundary helpers
+**Rule.** A wrong argument type raises a `TypeError`. An argument of a usable type whose
+value the call refuses raises a `ValueError`; that includes a value refused only after
+looking at what it names, such as a `format=` that conflicts with what the source is, a
+directory passed to `open_stream()`, or a volume sequence that is not the parts of one
+set. Both are also `ArchiveyUsageError`s: the boundary helpers
 (`internal/arg_checks.py`, `enum_args.py`, `format_args.py`, the `*Limits` field checks)
 raise the private `_UsageTypeError` or `_UsageValueError` from `archivey/exceptions.py`,
 so `except TypeError`, `except ValueError` and `except ArchiveyUsageError` all catch a
 bad argument. A plain `ArchiveyUsageError` is for misuse the signature cannot express,
 such as calling a method in the wrong mode or using a closed reader. Translate only
 known third-party exceptions; never add a catch-all.
+
+Two known gaps remain until #673 lands:
+`open_archive(file, format=ArchiveFormat.DIRECTORY)` raises a bare `TypeError`, and
+`reader.get()` with a non-`str` name returns `None`. Both are `xfail` rows in
+`tests/test_argument_boundary.py`.
 
 **Rulings.**
 - 2026-09-25, recorded in the ADR 0012 amendment: wrong argument types keep

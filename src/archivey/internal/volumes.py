@@ -981,6 +981,9 @@ def _sequence_scheme_and_base(
 
 
 def _different_sets_error(first: str, second: str) -> _UsageValueError:
+    # DR-15's value half: the volume sequence is a usable type whose value (parts of
+    # two sets) the call refuses. That holds when sibling discovery built the sequence
+    # from one path too: the path named a part of a set archivey cannot join.
     return _UsageValueError(
         f"Volume parts belong to different sets: {display_path(first)} and "
         f"{display_path(second)}. A volume sequence must be the parts of one archive; "

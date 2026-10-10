@@ -712,7 +712,15 @@ class DiagnosticPolicy:
         )
         # Without this, ``overrides=0`` failed in ``dict()`` as "'int' object is not
         # iterable", naming neither the class nor the argument.
-        check_instance(self.overrides, Mapping, call="DiagnosticPolicy(overrides=…)")
+        # The field has a real default, so ``None`` is a wrong value here, not a way
+        # of asking for one. ``_freeze_mapping`` keeps its ``None`` arm for
+        # ``DiagnosticSummary.counts``.
+        check_instance(
+            self.overrides,
+            Mapping,
+            call="DiagnosticPolicy(overrides=…)",
+            allow_none=False,
+        )
         overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
         for key, value in _freeze_mapping(self.overrides).items():
             code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
