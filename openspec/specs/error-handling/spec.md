@@ -519,9 +519,10 @@ The arguments covered:
 | `ArchiveReader.open()` / `.read()` | `member` |
 | `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references` |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
+| `DetectionBudget(...)` | every field |
 
-`ArchiveyConfig` and the two `*Limits` types SHALL validate their own fields at
-construction. Validating `config=` at an entry point does not reach them: the object
+`ArchiveyConfig`, the `*Limits` types and `DetectionBudget` SHALL validate their own
+fields at construction, through one shared field check. Validating `config=` at an entry point does not reach them: the object
 passed there is of the right type and the wrong one is a field in, and a limit is a
 promise about an operation that has not begun, so construction is the last place a
 message can still name what the caller wrote.
@@ -538,7 +539,14 @@ rather than several frames into a member-name decode.
 The raw exceptions the contract already permits SHALL continue to escape unchanged:
 `KeyError` for an unknown member **name**, `TypeError` for `len()` / `in` and for a
 wrong-typed `source` or `dest`, `io.UnsupportedOperation` for an unsupported `seek`,
-`ValueError` for I/O on a closed stream, and `OSError`. Boolean flags read for their
+`ValueError` for I/O on a closed stream, and `OSError`.
+
+An empty string passed as a path SHALL raise `ValueError` at the entry point, before
+anything is read or created. This covers the `source` of `open_archive()` (alone or as
+an item of a volume list), `open_stream()` and `detect_format()`, and the `dest` of
+`ArchiveReader.extract_all()`. `Path("")` is `Path(".")`, so an empty string, typically
+an unset environment variable, would otherwise open the current directory as a
+directory archive or extract into it. Boolean flags read for their
 truthiness are not covered, there being no wrong type to find, except
 `ArchiveyConfig`'s guard switches (`rar_allow_glob_member_concatenation`,
 `read_link_targets`), which SHALL be a `bool`: a string such as `"false"` is truthy
@@ -558,6 +566,7 @@ and would silently switch the guard.
 | `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `ExtractionLimits(ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
 | `ExtractionLimits(max_extracted_bytes=True)` | `ArchiveyUsageError`; `bool` is an `int` subclass and would cap at one byte |
+| `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
 | `open_archive(src, encoding=0)` | `ArchiveyUsageError`; not silently ignored |
 | `extract_all(dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
@@ -569,6 +578,8 @@ and would silently switch the guard.
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `TypeError: unsupported source type` — unchanged |
+| `open_archive("")`, `open_archive(["", ...])`, `detect_format("")`, `open_stream("")` | `ValueError` naming the empty path; the current directory is not read |
+| `extract_all("")` | `ValueError` before anything is written; nothing is extracted into the current directory |
 
 ### Requirement: Enum-typed public arguments are converted at the boundary
 

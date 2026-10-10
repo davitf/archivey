@@ -57,6 +57,7 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_callable,
     check_extraction_limits,
+    check_path_not_empty,
     describe_value,
 )
 from archivey.internal.diagnostics_collector import (
@@ -2909,6 +2910,7 @@ class BaseArchiveReader(ArchiveReader):
         # created. Same reason as filter: a refusal that has already touched the disk
         # is a side effect of a call the caller got wrong.
         normalize_member_selector(members)
+        check_path_not_empty(dest, call="extract_all()")
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives

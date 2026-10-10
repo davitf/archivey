@@ -77,7 +77,7 @@ from archivey.diagnostics import (
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
-from archivey.internal.arg_checks import check_config
+from archivey.internal.arg_checks import check_config, check_path_not_empty
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import DETECTION_LIMIT, PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
@@ -761,6 +761,7 @@ def detect_format_into(
     # `AttributeError: 'int' object has no attribute 'read'`, while `open_archive` on
     # the same value already said "unsupported source type". Same refusal, same words.
     require_source(source)
+    check_path_not_empty(source, call="detect_format()")
     check_config(config, call="detect_format(config=…)")
     if _is_directory_source(source):
         return directory_format_info()

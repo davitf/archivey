@@ -22,6 +22,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.arg_checks import check_path_not_empty
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
     is_stream,
@@ -1204,6 +1205,7 @@ class ResolvedSource:
 
 def _coerce_path_or_stream(item: object) -> Path | BinaryIO:
     if isinstance(item, (str, Path)):
+        check_path_not_empty(item, call="open_archive()")
         return Path(item)
     # A caller stream goes into the join as it is: ``ConcatenatedFile`` gathers short
     # reads itself and never closes a stream part, and the source over the join bounds.
@@ -1265,6 +1267,7 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
 
 def _resolve_single(source: object) -> ResolvedSource:
     if isinstance(source, (str, Path)):
+        check_path_not_empty(source, call="open_archive()")
         path = Path(source)
         if path.is_dir():
             return ResolvedSource(ArchiveSource.for_path(path), str(path), 1)

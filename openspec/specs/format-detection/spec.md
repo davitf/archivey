@@ -57,7 +57,8 @@ A **directory path** SHALL return `FormatInfo(format=DIRECTORY,
 confidence=CERTAIN, detected_by="directory")` without reading anything, the same
 format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt (one pass, no
 bytes read). It SHALL NOT raise `IsADirectoryError` or any
-other `OSError`.
+other `OSError`. An empty string is not a directory path, although `Path("")` is
+`Path(".")`: `detect_format("")` SHALL raise `ValueError` (`error-handling`).
 
 **Collectors:**
 
@@ -75,6 +76,7 @@ other `OSError`.
 | Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
+| Empty string `""` | `ValueError`; the current directory is not detected |
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring

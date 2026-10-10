@@ -58,7 +58,11 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.detection_cost import BALANCED_BUDGET, DetectionBudgetPreset
+from archivey.detection_cost import (
+    BALANCED_BUDGET,
+    DetectionBudget,
+    DetectionBudgetPreset,
+)
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 
 # TypeError is permitted only for the arguments named here; see the module docstring.
@@ -136,6 +140,22 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: detect_format(archive, config=b),
             ),
         ]
+
+    # ``DetectionBudget`` has no defaults, so each row starts from a real preset and
+    # replaces one field. Every field is a byte count compared or sliced with, and
+    # ``None`` there is not "off": it fails mid-detection.
+    for budget_field in dataclasses.fields(DetectionBudget):
+        for bad in ("x", -1, True, 1.5, None):
+            rows.append(
+                _case(
+                    "DetectionBudget",
+                    budget_field.name,
+                    bad,
+                    lambda b=bad, f=budget_field.name: dataclasses.replace(
+                        BALANCED_BUDGET, **{f: b}
+                    ),
+                )
+            )
 
     for bad in ("x", 0, ExtractionLimits):
         rows += [
@@ -592,6 +612,7 @@ def _public_surface() -> list[tuple[str, list[str]]]:
     for cls in (
         ArchiveyConfig,
         DecoderLimits,
+        DetectionBudget,
         ExtractionLimits,
         ListingLimits,
         SpoolLimits,
@@ -778,3 +799,41 @@ def test_class_of_the_wrong_kind_gets_no_constructor_hint() -> None:
     message = str(info.value)
     assert "the ListingLimits class itself" in message
     assert "did you mean" not in message
+
+
+def _empty_path_calls(archive: Path) -> list[tuple[str, Callable[[], Any]]]:
+    return [
+        ("open_archive('')", lambda: open_archive("")),
+        ("open_archive([''])", lambda: open_archive([""])),
+        ("open_archive([archive, ''])", lambda: open_archive([archive, ""])),
+        ("open_archive(['', archive])", lambda: open_archive(["", archive])),
+        ("detect_format('')", lambda: detect_format("")),
+        ("open_stream('')", lambda: open_stream("")),
+        ("extract_all('')", lambda: _extract_all(archive, _as_any(""), None)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "index", range(7), ids=[label for label, _ in _empty_path_calls(Path("a.zip"))]
+)
+def test_empty_string_path_is_refused(
+    archive: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    index: int,
+) -> None:
+    """An empty string is a wrong argument, not the current directory.
+
+    ``Path("")`` is ``Path(".")``, so an empty string (an unset environment variable,
+    typically) used to open the working directory as a directory archive, or extract
+    into it. ``open("")`` raises; so does every archivey entry point that takes a path.
+    """
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "precious.txt").write_text("keep")
+    monkeypatch.chdir(cwd)
+
+    _label, call = _empty_path_calls(archive)[index]
+    with pytest.raises(ValueError, match="empty path"):
+        call()
+    assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]
