@@ -146,12 +146,12 @@ and turning a name back into a record fails when a Rock Ridge name holds `/` or 
 entries share one, costing the whole listing. So the walk enumerates each directory's
 children through `pycdlib`'s private `_yield_children` — the one place that skips a
 multi-extent file's extra records and follows Rock Ridge relocation — and renders a path
-from the record. That skip also hides a record that repeats the identifier of the record
-before it without being part of a multi-extent file. The walk adds back each such record
-that `pycdlib` linked to the one before it, as a member of its own
-(`_records_sharing_identifier`, §2.3). A repeated record `pycdlib` did not link (an
-associated file, flag bit 2) stays hidden (§5). Each directory extent is entered once. Within a directory, subdirectories come first, then files, in
-record order, except that plain ISO 9660 files sort by (name, version).
+from the record. That skip also hides every other record with the same identifier, also
+when it is not part of a multi-extent file, so the walk works out the entries among those
+records from the directory as written and lists each one (`_entries_sharing_identifier`,
+§2.3). Each directory extent is entered once. Within a directory, subdirectories come
+first, then files, in record order, except that plain ISO 9660 files sort by (name,
+version).
 
 What is ISO-specific in turning a record into a member:
 
@@ -276,23 +276,31 @@ here, over the extents read straight from the image (`_data_inode`):
 
   `pycdlib` builds that chain for a file record whose identifier repeats the record just
   before it on disc, and sets the multi-extent flag on the earlier record in memory while
-  doing it. The earlier record can be a directory. Any other repeated identifier (a
+  doing it. The earlier record can be a directory. An associated file (flag bit 2, such
+  as a resource fork) is never linked, and `pycdlib` puts it before the records that
+  share its identifier, whatever the order on disc. Any other repeated identifier (a
   directory after a file or after another directory, or two records that are not next
-  to each other) makes `pycdlib` refuse the image at open. So the in-memory flags cannot
-  tell a real multi-extent file from two unrelated entries that share a name. archivey
-  re-reads the directory's extent, only when a chain exists, and follows the flag as
-  written (`_file_records`): each record that carries it continues into the next, and the
-  first record without it ends the file. A directory ends it at once. Each record's flag
-  is found by its identifier and its position among the records with that identifier
-  (`_multi_extent_on_disc`), not by its extent, because two records can share an extent.
-  The next record with the same identifier starts another member. Two members with one
-  name then follow the shared duplicate-name rule, as two ZIP or TAR members with one
-  name do: both list, and the later one is current, so extraction writes it. A superseded
-  plain-ISO version keeps `is_current=False` even when it is repeated: the shared rule
-  leaves a row the backend marked not current alone. 7-Zip lists every record of such an
-  image too. Hiding the later records instead would lose a file with no diagnostic. The
-  one repeated record left hidden is one `pycdlib` does not link: an associated file
-  (§5).
+  to each other) makes `pycdlib` refuse the image at open. So neither the in-memory
+  flags nor the links nor `pycdlib`'s order tell a real multi-extent file from unrelated
+  entries that share a name. When a directory holds several records with one identifier,
+  archivey re-reads the directory's extent and works the entries out from the records as
+  written (`_entries_sharing_identifier`). Each `pycdlib` record is matched to its bytes
+  on disc by the fields `pycdlib` keeps as written (`_record_key`: extent, length as
+  clamped, flags without the multi-extent bit, date and the other fixed fields), not by
+  its extent alone, because two records can share an extent. Then, in on-disc order, a
+  file record that carries the flag continues into the next record if that is a file
+  record of the same kind (associated or not), and the first record without it ends the
+  file. A directory is never part of a file. Each entry lists as its own member, an
+  associated file included. Two members with one name then follow the shared
+  duplicate-name rule, as two ZIP or TAR members with one name do: both list, and the
+  later one is current, so extraction writes it; ECMA-119 §9.3 stores an associated file
+  before its data file, so the data file is the current one. A superseded plain-ISO
+  version keeps `is_current=False` even when it is repeated: the shared rule leaves a row
+  the backend marked not current alone. 7-Zip lists every record of such an image too.
+  Hiding records instead would lose a file with no diagnostic. Records whose matched
+  fields are all equal hold the same data, so which takes which place changes no
+  member's data; if a record cannot be matched at all, each record with that identifier
+  lists on its own.
 - **The boot catalog.** `pycdlib` keeps it in memory and gives its record no inode. Its
   extent still holds the bytes, which is what a mounted image shows. Because it has no
   inode, `pycdlib` never clamped its length to the image either; the inode built here
@@ -452,7 +460,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field, and this image has no Joliet name that lines up with it (none, cut at 64 characters, or a directory with no file under it). Pass `encoding=` (§2.2) |
 | A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, 7-Zip Joliet first |
 | A DVD image lists 8.3 names while the disc shows long ones | **archivey** | Long names are in UDF, which is not read (§3) |
-| A record that repeats the identifier of the record before it and is an associated file (flag bit 2) is missing from the listing, with no diagnostic | **library** | `pycdlib`'s walk skips every repeated identifier, and it links only the records it reads as one multi-extent file, which an associated file never is. archivey adds back the linked records only (§2.2, §2.3) |
 | A multi-extent file with non-contiguous extents raises `UnsupportedFeatureError` on read | **archivey** | Its `size` is right; reading it would need a chained stream rather than one run. No writer seen does this (§2.3) |
 | Two members share their bytes, and extraction writes both | **format** | Hardlinks are records sharing an extent; there is no hardlink record to map to `HARDLINK` |
 | Opening a large image is slow and listing is instant | **library** | `open_fp` parses every tree up front (§2.2). The cost class `INDEXED` is still right: nothing is decoded |
@@ -513,7 +520,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current`, `::test_a_directory_identifier_keeps_its_version_like_suffix` |
 | `TF` long-form dates; `TF` wins over the record date | `::test_rock_ridge_long_form_tf_time_is_read`, `::test_rock_ridge_tf_modification_time_wins_over_record_date` |
 | Boot catalog reads and extracts, and one declared past the image end reads short | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_boot_catalog_declared_past_the_image_end_reads_short` |
-| Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_lists_each_file`, `::test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list`, `::test_records_sharing_an_extent_keep_their_own_multi_extent_flags`, `::test_a_repeated_superseded_version_stays_not_current`, `::test_a_directory_and_a_file_with_one_identifier_both_list`, `::test_the_raw_directory_walk_crosses_sector_padding` |
+| Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_lists_each_file`, `::test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list`, `::test_records_sharing_an_extent_keep_their_own_multi_extent_flags`, `::test_a_repeated_superseded_version_stays_not_current`, `::test_a_directory_and_a_file_with_one_identifier_both_list`, `::test_an_associated_file_and_a_file_with_its_identifier_both_list`, `::test_the_raw_directory_walk_crosses_sector_padding` |
 | No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
 | Cycle guard in `pycdlib`'s own walk, in all three trees | `::test_pycdlib_directory_cycle_does_not_hang` |
 | Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens. The chained tests exercise the check only on `pycdlib` 1.21+; on the locked 1.16 they pin `pycdlib`'s own refusal of a second `CE` (`_pycdlib_follows_ce_chains`), so run them with `uv run --with pycdlib==1.21.0` after touching the hook | `tests/test_iso_metadata_bounds.py` |

@@ -1233,6 +1233,48 @@ def test_a_repeated_superseded_version_stays_not_current(tmp_path: Path) -> None
     assert (tmp_path / "FOO").read_bytes() == b"NEW"
 
 
+@pytest.mark.parametrize(
+    ("flags", "associated", "expected"),
+    [
+        # ECMA-119 §9.3 order: the associated file (a resource fork) first, then
+        # the data file it belongs to, here stored in two extents.
+        ((False, True), 0, [b"a" * 2048, b"b" * 2048 + b"c" * 1000]),
+        # The associated file stored after a two-extent data file.
+        ((True, False), 2, [b"a" * 2048 + b"b" * 2048, b"c" * 1000]),
+    ],
+    ids=["associated-first", "associated-last"],
+)
+def test_an_associated_file_and_a_file_with_its_identifier_both_list(
+    flags: tuple[bool, ...], associated: int, expected: list[bytes]
+) -> None:
+    """pycdlib does not link an associated-file record (flag bit 2) to the records
+    that share its identifier, and puts it before them whatever the order on disc,
+    so its walk listed one record and hid the rest. The entries are worked out from
+    the records as written: both files list in on-disc order, each with its own
+    data, and the later one is current."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = bytearray(_split_into_extents(out.getvalue(), b"BIG.BIN;1", flags=flags))
+    at = image.index(b"BIG.BIN;1") - 33
+    for _ in range(associated):
+        at += image[at]
+    image[at + 25] |= 0x04
+
+    with open_archive(io.BytesIO(bytes(image))) as ar:
+        members = ar.members()
+        assert [m.name for m in members] == ["BIG.BIN", "BIG.BIN"]
+        assert [m.size for m in members] == [len(data) for data in expected]
+        assert [ar.read(m) for m in members] == expected
+        assert [m.is_current for m in members] == [False, True]
+
+
 def test_a_directory_and_a_file_with_one_identifier_both_list() -> None:
     """pycdlib links a file record to the record just before it when the two share an
     identifier, even when that record is a directory. A directory is never part of
@@ -1380,7 +1422,8 @@ def test_the_raw_directory_walk_crosses_sector_padding() -> None:
     data = first.ljust(2048, b"\0") + second.ljust(2048, b"\0")
 
     raw = _parse_raw_directory(data, 2048, image_length=201 * 2048 + 5000)
-    assert raw.multi_extent == {b"BIG;1": (True, False), b"HUGE;1": (True, False)}
+    flags = {ident: [r.multi_extent for r in rs] for ident, rs in raw.repeated.items()}
+    assert flags == {b"BIG;1": [True, False], b"HUGE;1": [True, False]}
     assert raw.lengths_to_end == {(201, b"HUGE;1"): 9000}
 
 

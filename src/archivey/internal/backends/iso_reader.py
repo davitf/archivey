@@ -907,13 +907,23 @@ def _is_directory_record(obj: object) -> TypeGuard[DirectoryRecord]:
     return _pycdlib_dr is not None and isinstance(obj, _pycdlib_dr.DirectoryRecord)
 
 
+_RecordKey = tuple[int, int, int, int, int, int, int, bytes]
+
+
+class _RawRecord(NamedTuple):
+    """One of several records that share an identifier, as written on disc."""
+
+    # The fields that tell it apart from the others with its identifier, in the form
+    # pycdlib keeps them (``_record_key``).
+    key: _RecordKey
+    multi_extent: bool
+
+
 class _RawDirectory(NamedTuple):
     """What a directory's records say on disc that pycdlib does not keep as written."""
 
-    # The multi-extent flag of each record that is not an associated file, in
-    # on-disc order, per identifier; kept only for an identifier at least one of
-    # whose records carries the flag.
-    multi_extent: Mapping[bytes, tuple[bool, ...]]
+    # The records of each identifier written more than once, in on-disc order.
+    repeated: Mapping[bytes, tuple[_RawRecord, ...]]
     # Declared data length of each record whose data reaches the end of the image,
     # keyed by (extent, identifier): the records pycdlib may have clamped.
     lengths_to_end: Mapping[tuple[int, bytes], int]
@@ -922,20 +932,23 @@ class _RawDirectory(NamedTuple):
 def _parse_raw_directory(
     directory_data: bytes, block_size: int, image_length: int
 ) -> _RawDirectory:
-    """The multi-extent flags and clamped lengths in a directory's data.
+    """The repeated identifiers and clamped lengths in a directory's data.
 
     Walks the raw records as ECMA-119 §9.1 lays them out: byte 0 is the record length,
-    bytes 2-5 the extent and bytes 10-13 the data length (little-endian), byte 25 the
-    file flags (bit 7 multi-extent), byte 32 the identifier length and the identifier
-    from byte 33. A zero length byte pads to the end of the sector. Only the non-zero
-    lengths that reach ``image_length``, and the flags of identifiers that carry the
-    multi-extent flag somewhere, are kept, so the result grows with the records
-    pycdlib may have changed rather than with the directory. The ``>=`` is
-    load-bearing: pycdlib clamps on ``>``, so every clamped length is kept, including
-    one clamped to zero, and ``IsoReader._layout`` reads a zero-length miss as a
-    genuinely empty file.
+    byte 1 the extended-attribute length, bytes 2-5 the extent and bytes 10-13 the
+    data length (little-endian), bytes 18-24 the date, byte 25 the file flags (bit 7
+    multi-extent), bytes 26 and 27 the file unit size and interleave gap, bytes 28-29
+    the volume sequence number, byte 32 the identifier length and the identifier from
+    byte 33. A zero length byte pads to the end of the sector. Only the non-zero
+    lengths that reach ``image_length``, and the records of identifiers written more
+    than once, are kept, so the result grows with the records pycdlib may have
+    changed or hidden rather than with the directory. The ``>=`` is load-bearing:
+    pycdlib clamps on ``>``, so every clamped length is kept, including one clamped
+    to zero, and ``IsoReader._layout`` reads a zero-length miss as a genuinely empty
+    file.
     """
-    flags: dict[bytes, list[bool]] = {}
+    # Where each identifier's records start; only the repeated ones are read again.
+    offsets: dict[bytes, list[int]] = {}
     lengths: dict[tuple[int, bytes], int] = {}
     offset = 0
     while offset + 33 <= len(directory_data):
@@ -946,17 +959,61 @@ def _parse_raw_directory(
         extent = int.from_bytes(directory_data[offset + 2 : offset + 6], "little")
         ident_length = directory_data[offset + 32]
         ident = bytes(directory_data[offset + 33 : offset + 33 + ident_length])
-        file_flags = directory_data[offset + 25]
-        if not file_flags & 0x04:  # an associated file is never part of a chain
-            flags.setdefault(ident, []).append(bool(file_flags & 0x80))
         data_length = int.from_bytes(
             directory_data[offset + 10 : offset + 14], "little"
         )
+        offsets.setdefault(ident, []).append(offset)
         if data_length and extent * block_size + data_length >= image_length:
             lengths[(extent, ident)] = data_length
         offset += length
-    multi_extent = {ident: tuple(f) for ident, f in flags.items() if any(f)}
-    return _RawDirectory(multi_extent, lengths)
+    repeated = {
+        ident: tuple(
+            _raw_record(directory_data, at, block_size, image_length) for at in starts
+        )
+        for ident, starts in offsets.items()
+        if len(starts) > 1
+    }
+    return _RawDirectory(repeated, lengths)
+
+
+def _raw_record(
+    directory_data: bytes, offset: int, block_size: int, image_length: int
+) -> _RawRecord:
+    """The record at ``offset`` of a directory's data, keyed as ``_record_key`` is."""
+    extent = int.from_bytes(directory_data[offset + 2 : offset + 6], "little")
+    data_length = int.from_bytes(directory_data[offset + 10 : offset + 14], "little")
+    start = extent * block_size
+    file_flags = directory_data[offset + 25]
+    key = (
+        extent,
+        # pycdlib's clamp: a length running past the image becomes what is left.
+        image_length - start if start + data_length > image_length else data_length,
+        file_flags & 0x7F,
+        directory_data[offset + 1],
+        directory_data[offset + 26],
+        directory_data[offset + 27],
+        int.from_bytes(directory_data[offset + 28 : offset + 30], "little"),
+        bytes(directory_data[offset + 18 : offset + 25]),
+    )
+    return _RawRecord(key, bool(file_flags & 0x80))
+
+
+def _record_key(record: DirectoryRecord) -> _RecordKey:
+    """``_RawRecord.key`` for a record pycdlib parsed: the fields it keeps as written.
+
+    The multi-extent bit is left out of the flags, because pycdlib sets it in
+    memory, and the length is the one pycdlib clamped at the end of the image.
+    """
+    return (
+        record.extent_location(),
+        record.data_length,
+        record.file_flags & 0x7F,
+        record.xattr_len,
+        record.file_unit_size,
+        record.interleave_gap_size,
+        record.seqnum,
+        bytes(record.date.record()),
+    )
 
 
 class _Extent(NamedTuple):
@@ -1223,9 +1280,9 @@ class IsoReader(BaseArchiveReader):
         self._layouts: dict[int, tuple[_Extent, ...] | None] = {}
         # What each directory's records say on disc, per directory extent read.
         self._raw_directories: dict[int, _RawDirectory] = {}
-        # Each record's multi-extent flag as written, keyed by ``id`` of the record,
-        # per directory (by ``id``) whose records a chain was followed in.
-        self._multi_extent_flags: dict[int, Mapping[int, bool]] = {}
+        # The records of a file stored in more than one record, keyed by ``id`` of
+        # each of them; joined by the walk (``_entries_sharing_identifier``).
+        self._file_records_of: dict[int, tuple[DirectoryRecord, ...]] = {}
         # What the System Use filter kept aside while ``open_fp`` parsed the Rock Ridge
         # areas: zisofs entries, and the areas it cut short.
         self._system_use = _SystemUseNotes(self._iso)
@@ -1554,8 +1611,8 @@ class IsoReader(BaseArchiveReader):
 
         Within a directory, subdirectories come first and then files, each in record
         order, except that plain ISO 9660 files are ordered by (name, version). Records
-        that share an identifier but are separate files each list
-        (``_records_sharing_identifier``).
+        that share an identifier but are separate entries each list
+        (``_entries_sharing_identifier``).
         ``superseded`` is true for a plain ISO 9660 file when the same directory holds
         a higher version of the same name.
         """
@@ -1567,6 +1624,9 @@ class IsoReader(BaseArchiveReader):
             dirpath, raw_dirpath, dir_record = stack.pop()
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
+            groups: dict[bytes, list[DirectoryRecord]] = {}
+            for record in dir_record.children:
+                groups.setdefault(bytes(record.file_ident), []).append(record)
             for first in _yield_children(dir_record, use_rr):
                 if (
                     use_rr
@@ -1575,7 +1635,13 @@ class IsoReader(BaseArchiveReader):
                     and self._is_rr_moved(first)
                 ):
                     continue
-                for child in self._records_sharing_identifier(first):
+                # A directory relocated from elsewhere has no group here.
+                group = (
+                    groups.get(bytes(first.file_ident), [first])
+                    if first.parent is dir_record
+                    else [first]
+                )
+                for child in self._entries_sharing_identifier(dir_record, group):
                     name, raw_name = self._record_name(child)
                     path = self._join(dirpath, name)
                     raw_path = (
@@ -1602,81 +1668,86 @@ class IsoReader(BaseArchiveReader):
                 seen_extents.add(extent)
                 stack.append((path, raw_path, record))
 
-    def _records_sharing_identifier(
-        self, record: DirectoryRecord
-    ) -> Iterator[DirectoryRecord]:
-        """``record``, then each later record with its identifier that starts an entry.
+    def _entries_sharing_identifier(
+        self, directory: DirectoryRecord, group: list[DirectoryRecord]
+    ) -> list[DirectoryRecord]:
+        """The first record of each entry among ``group``, records with one identifier.
 
-        ``_yield_children`` yields only the first of several records that share an
-        identifier, because a file of 4 GiB or more is stored that way. pycdlib links
-        the later records to the first through ``data_continuation``, and links two
-        files that share an identifier the same way, or a file that follows a
-        directory with its identifier; only the multi-extent flag on disc tells them
-        apart (``_file_records``). Each entry is listed, as ZIP and TAR list two
-        members with one name and as 7-Zip lists such an image; the shared
-        duplicate-name rule then makes the later one current. Only linked records
-        are found: a repeated associated file, which pycdlib never links, stays
-        hidden by ``_yield_children``.
+        ``_yield_children`` yields only the first of the records with one identifier,
+        because a file of 4 GiB or more is stored as several records with one name.
+        Two files, a directory and a file, or a file and its associated file (flag
+        bit 2, such as a resource fork) can share an identifier too, and pycdlib's
+        links (``data_continuation``) and order do not tell these apart: it links
+        each later record to the one before it, sets the multi-extent flag on the
+        earlier one in memory, and puts an associated file before the records that
+        share its identifier, whatever the order on disc.
+
+        So the entries are worked out from the records as written. Each record is
+        matched to its bytes on disc (``_record_key``); then, in on-disc order, a file
+        record that carries the multi-extent flag continues into the next record if
+        that is a file record of the same kind (associated or not). Each entry is
+        listed, as ZIP and TAR list two members with one name and as 7-Zip lists such
+        an image; the shared duplicate-name rule then makes the later one current. Records whose matched fields are all equal hold the
+        same data, so which takes which place changes no member's data. If a record
+        cannot be matched, each record of the group is listed on its own.
         """
-        start: DirectoryRecord | None = record
-        while start is not None:
-            yield start
-            start = self._file_records(start)[-1].data_continuation
+        if len(group) == 1:
+            return group
+        on_disc = self._raw_directory(directory).repeated.get(
+            bytes(group[0].file_ident), ()
+        )
+        if len(on_disc) != len(group):
+            return group
+        # Records with equal keys are taken in pycdlib's order.
+        by_key: dict[_RecordKey, list[DirectoryRecord]] = {}
+        for record in reversed(group):
+            by_key.setdefault(_record_key(record), []).append(record)
+        ordered: list[tuple[DirectoryRecord, bool]] = []
+        for raw in on_disc:
+            candidates = by_key.get(raw.key)
+            if not candidates:
+                return group
+            match = candidates.pop()
+            ordered.append((match, raw.multi_extent and not match.is_dir()))
+        heads: list[DirectoryRecord] = []
+        entry: list[DirectoryRecord] = []
+        continues = False
+        for record, flagged in ordered:
+            if (
+                entry
+                and continues
+                and not record.is_dir()
+                and record.is_associated_file() == entry[-1].is_associated_file()
+            ):
+                entry.append(record)
+            else:
+                self._add_entry(heads, entry)
+                entry = [record]
+            continues = flagged
+        self._add_entry(heads, entry)
+        return heads
 
-    def _file_records(self, record: DirectoryRecord) -> list[DirectoryRecord]:
-        """The records that hold one file's data: ``record``, then the records it chains.
+    def _add_entry(
+        self, heads: list[DirectoryRecord], entry: list[DirectoryRecord]
+    ) -> None:
+        """Add an entry's first record to ``heads``, and keep a file's records."""
+        if not entry:
+            return
+        heads.append(entry[0])
+        if len(entry) > 1:
+            records = tuple(entry)
+            for record in records:
+                self._file_records_of[id(record)] = records
 
-        pycdlib links a file record whose identifier repeats the record just before
-        it on disc through ``data_continuation``, and sets the multi-extent flag on
-        the earlier record as it does. The earlier record can be a directory. So the
-        in-memory flag cannot tell the extents of one file from two entries that
-        share an identifier. Here the chain follows the flag as written in the image
-        (``_multi_extent_on_disc``): each record that carries it continues into the
-        next, and the first record without it is the file's last. A directory is
-        never part of a file, so it ends the chain at once.
-        """
-        records = [record]
-        if record.data_continuation is None or record.is_dir():
-            return records
-        flags = self._multi_extent_on_disc(record)
-        while records[-1].data_continuation is not None and flags[id(records[-1])]:
-            records.append(records[-1].data_continuation)
-        return records
-
-    def _multi_extent_on_disc(self, record: DirectoryRecord) -> Mapping[int, bool]:
-        """Whether each record in ``record``'s directory carries the multi-extent flag.
-
-        Keyed by ``id`` of the record. A record is matched to its bytes on disc by
-        its identifier and its position among the records with that identifier.
-        pycdlib keeps the records it links in their on-disc order, and the position,
-        unlike the extent, tells apart two records that share an extent. Associated
-        files are left out on both sides: pycdlib never links one, and puts it
-        before a record with the same identifier rather than after.
-        """
-        parent = record.parent
-        assert parent is not None, "a listed record has a parent directory"
-        flags = self._multi_extent_flags.get(id(parent))
-        if flags is None:
-            on_disc = self._raw_directory(parent).multi_extent
-            seen: dict[bytes, int] = {}
-            flags = {}
-            for child in parent.children:
-                if child.is_associated_file():
-                    flags[id(child)] = False
-                    continue
-                ident = bytes(child.file_ident)
-                position = seen.get(ident, 0)
-                seen[ident] = position + 1
-                stored = on_disc.get(ident, ())
-                flags[id(child)] = position < len(stored) and stored[position]
-            self._multi_extent_flags[id(parent)] = flags
-        return flags
+    def _file_records(self, record: DirectoryRecord) -> tuple[DirectoryRecord, ...]:
+        """The records that hold one file's data, as the walk joined them."""
+        return self._file_records_of.get(id(record), (record,))
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
         # the record walk traverses in-memory parsed catalog records and reads nothing
         # from the image, except in two cases. For a repeated identifier
-        # (``_records_sharing_identifier``) or a file whose data ends at the end of
+        # (``_entries_sharing_identifier``) or a file whose data ends at the end of
         # the image (``_make_member``), ``_raw_directory`` re-reads the directory's
         # extent through ``_cdfp`` and takes the handle guard itself. The
         # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
@@ -2062,16 +2133,16 @@ class IsoReader(BaseArchiveReader):
     def _as_written(self, record: DirectoryRecord) -> bool:
         """Whether pycdlib's inode for ``record`` is the file's whole data, unchanged.
 
-        Not so for a record with no inode (the El Torito boot catalog), a record
-        pycdlib linked to another with the same identifier (possibly a multi-extent
-        file), or one whose data ends exactly at the end of the image. pycdlib clamps a
+        Not so for a record with no inode (the El Torito boot catalog), a record of a
+        file the walk joined from several records (a multi-extent file), or one whose
+        data ends exactly at the end of the image. pycdlib clamps a
         file running past the end of the image to end there, and overwrites the
         declared length with the clamped one: zero when the extent starts at the end,
         negative when it starts past it.
         """
         return (
             record.inode is not None
-            and record.data_continuation is None
+            and id(record) not in self._file_records_of
             and not self._reaches_image_end(record)
         )
 
@@ -2084,8 +2155,8 @@ class IsoReader(BaseArchiveReader):
         """A file's extents with their lengths as declared on disc.
 
         A file of 4 GiB or more is stored as several records with one name, each
-        flagged multi-extent but the last. ``_file_records`` finds them from the
-        flags as written in the image.
+        flagged multi-extent but the last. ``_file_records`` gives the records the walk
+        joined from the flags as written in the image.
 
         A record whose data ends at the end of the image takes its length from the
         directory's records on disc. One not found there keeps a length of 0 if it has
