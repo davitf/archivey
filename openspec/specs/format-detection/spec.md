@@ -229,7 +229,9 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 ### Requirement: Magic-less formats are detected by a content probe
 
 When the magic-byte table yields no match, the system SHALL run each registered
-content probe on the peeked prefix (consumes nothing). This covers Brotli (no
+content probe on the peeked prefix (consumes nothing), except after a strong executable
+cue or a known non-archive signature (see *A known non-archive signature stops the content
+probes*). This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
 properties byte is too weak for exact magic). Probes typically decode a bounded
 prefix; MAY gate on cheap structural bytes first; and MAY consult the source length
@@ -676,8 +678,8 @@ prohibition on knobs.
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
 | Arbitrary data whose first declared block happens to fit | Probe may still accept at *this* requirement's floor; the residual is then narrowed by *A content probe SHALL follow a format's self-describing block chain* below |
-| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
-| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
+| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` does not run the probes: the OLE signature stops them (*A known non-archive signature stops the content probes*) |
+| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Brotli gate accepts. End-to-end `BROTLI` at `GUESS`: the Alone probe declines the header's zero uncompressed size |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
 | Non-seekable source of unknown length (≥ `DETECTION_LIMIT` peek) | Gate skipped; today's behaviour |
 | Non-seekable source shorter than the detection peek | Length inferred from the short peek; gate applies |
@@ -783,7 +785,7 @@ SHALL NOT decompress.
 | 16 MiB source whose first declared block fits trivially (MLEN ceiling) | Walk decides; first-block check alone would have accepted |
 | Chain longer than the link bound | Verdict unchanged from the earlier rules; **not** a rejection |
 | Non-seekable `read_at` past the 1 MiB offset ceiling | Declined → cannot disprove; earlier verdict stands |
-| OLE/CFB file ≥ 7425 bytes | Still accepted — its constant magic yields a fitting chain. Known residual, unchanged |
+| OLE/CFB file ≥ 7425 bytes | The probe still accepts it — its constant magic yields a fitting chain. Detection does not run the probe on it (*A known non-archive signature stops the content probes*) |
 
 ### Requirement: A read failure on probe-only evidence names its provenance
 
@@ -887,3 +889,29 @@ not supported, nothing to install. The `.dmg` suffix SHALL NOT select the format
 | `format=DMG` or `format="dmg"` | `UnsupportedFeatureError` naming UDIF |
 | Non-seekable source longer than the far-magic window, zlib first block, `koly` at the end | `ZLIB`; the trailer is not seeked to |
 | `format_availability(DMG)` | `NONE`, `missing` empty; in `list_known_formats()`, absent from `list_supported_formats()` |
+
+### Requirement: A known non-archive signature stops the content probes
+
+When the source starts with a recognized **non-archive signature**, detection SHALL NOT run
+the content probes or the SFX scan, whatever executable cue the bytes raise, and SHALL fall
+through to the extension guess. The magic tiers run as before. With no extension, the
+`FormatDetectionError` SHALL name the evidence that stopped the probes, as it SHALL after
+a strong executable cue. Today the one signature is OLE / Compound File Binary,
+`D0 CF 11 E0 A1 B1 1A E1` at offset 0.
+
+#### Scenario: non-archive signature
+
+Both the Brotli and the LZMA Alone probe accept an OLE header followed by zeros (`.doc`,
+`.xls`, `.ppt`, `.msi`, `Thumbs.db`), and neither can reject it on its own framing: the
+header is a fitting Brotli chain, and a range coder decodes zero bytes without error.
+This is not the threshold that *Executable-looking prefixes must not silently become a
+wrong stream format* forbids: it is positive evidence of another format, and an
+eight-byte signature at offset 0 is as specific as an archive's exact magic. A two-byte
+prefix such as `MZ` is not specific enough. The SFX scan is skipped because these files
+are not stubs: an archive stored inside one is part of the document, not its payload.
+
+The cases are pinned in `tests/test_audit_backup_scan.py`: an OLE header over zeros is
+`FormatDetectionError` naming the OLE signature, not `BROTLI` or `LZMA_ALONE`; an OLE file
+named `x.br` is `BROTLI` / `GUESS` / `extension`; a ZIP inside an OLE file is not
+reported; and a signature whose bytes raise an executable cue does not start the SFX
+scan. The measurement is in `dev-docs/investigations/2026-10-backup-scan.md` §3.2.
