@@ -332,16 +332,15 @@ def test_zip_bzip2_with_bytes_after_its_stream_is_corrupt(
 
 
 @requires_zstd()
-def test_zip_zstd_frames_read_as_one_stream() -> None:
-    # The Zstd decoder reads concatenated frames as one stream, so a second frame in a
-    # method-93 member is content: it reads when the declared size and CRC count it,
-    # and is output past the size when they stop at the first. Bytes after the last
-    # frame that start no frame are refused like any codec's. The 7z counterpart is
+def test_zip_zstd_member_is_one_frame() -> None:
+    # A method-93 member is one Zstd frame (CodecParams.single_stream): a second frame
+    # is input after the first frame's end, whether the declared size and CRC count it
+    # or stop at the first, and so are bytes after it that start no frame. A 7z Zstd
+    # coder reads its frames as one stream instead:
     # test_audit_sevenzip.py::test_codec_streams_count_together_against_the_unpack_size.
     first, second = _text(3000, seed=1), _text(2000, seed=2)
     frames = zstd_backend().compress(first) + zstd_backend().compress(second)
-    whole = _zip_member(frames, first + second, method=93, flags=0)
-    assert _outcome(whole) == _ok(first + second)
+    _assert_surplus(_outcome(_zip_member(frames, first + second, method=93, flags=0)))
     _assert_surplus(_outcome(_zip_member(frames, first, method=93, flags=0)))
     junk = _zip_member(frames + _TAILS["junk"], first + second, method=93, flags=0)
     _assert_surplus(_outcome(junk))

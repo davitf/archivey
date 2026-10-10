@@ -70,8 +70,9 @@ class DataAfterEndError(CorruptionError):
     A ZIP member or a 7z coder declares its compressed size, so no honest writer leaves
     bytes there that the codec does not read; a zero byte counts too. 7-Zip reports
     them as a data error ("There are some data after the end of the payload data", or
-    "Data Error"). Raised where a stream was opened with ``exact_input``, and by raw
-    LZMA, which is container-only, whatever it was opened with. A class of its own so
+    "Data Error"). Raised where a stream was opened with
+    ``StreamConfig.refuse_input_after_end``, and by raw LZMA, which is container-only,
+    whatever it was opened with (:func:`input_after_end_error`). A class of its own so
     a check that reads one byte past a coder's declared output, and discards a decoder
     error there, can still let this one through.
     """
@@ -98,6 +99,22 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
 _GZIP_UNSUPPORTED_HEADER = ("unknown compression method", "unknown header flags set")
 
 
+def input_after_end_error(name: str, output: int | None = None) -> DataAfterEndError:
+    """The error for input after a codec's end, where the container refuses it.
+
+    ``StreamConfig.refuse_input_after_end`` (DR-3). The decoders' check
+    (``DecompressorStream``) and the bzip2 accelerator's end check both raise it.
+    ``output`` is the stream's output before that end, when known. The bytes are
+    either data the member carries after the stream or, for a codec that stops at a
+    declared output size, the rest of a stream that size cuts short.
+    """
+    at = "" if output is None else f" after {output} bytes of output"
+    return DataAfterEndError(
+        f"{name} stream ends{at} before its input does: bytes are left after its end "
+        "(data after the stream, or a declared size shorter than the stream)"
+    )
+
+
 def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     """The error for a ``zlib.error`` from a gzip stream.
 
@@ -105,11 +122,14 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     anything else is :func:`gzip_corruption`.
     """
     if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
-        return UnsupportedFeatureError(f"Unsupported gzip member header: {exc!r}")
+        return UnsupportedFeatureError(
+            f"Unsupported gzip member header: {exc!r}; a damaged header reads the "
+            "same way"
+        )
     return gzip_corruption(exc)
 
 
-@dataclass(order=True)
+@dataclass(order=True, slots=True)
 class SeekPoint:
     """A point from which decompression can resume.
 
@@ -180,10 +200,11 @@ class Decoder(Protocol):
 
     @property
     def input_after_end(self) -> bool:
-        """True once any byte has been fed after the end of the data, a zero too.
+        """True once any byte, a zero too, has been fed after the stream's end.
 
-        Wider than :attr:`trailing_bytes`, which ignores zero padding: a stream opened
-        with ``exact_input`` reads it to refuse every byte its codec did not use.
+        Unlike :attr:`trailing_bytes` this counts zero padding, and the decoder may go
+        on reading after it. A stream opened with ``refuse_input_after_end`` ends there
+        and raises :class:`DataAfterEndError` once its output has been read (DR-3).
         """
         ...
 
@@ -535,8 +556,8 @@ class DecompressorStream(ReadOnlyIOStream):
     next read returns them. ``seek`` and a size query raise after they finish, with the
     position where they left it. Either way the handle stays usable.
 
-    ``exact_input`` marks a source that is exactly one container coder's compressed
-    data (a ZIP member's, a 7z coder's declared input). Any byte the decoder is fed
+    ``refuse_input_after_end`` marks a source that is exactly one container coder's
+    compressed data (a ZIP member's, a 7z coder's declared input). Any byte the decoder is fed
     after the end of its data, a zero byte too, is then :class:`DataAfterEndError`,
     raised after the output before that end has been delivered, as for a truncation.
     ``report_trailing_data`` does not apply to such a stream.
@@ -552,13 +573,13 @@ class DecompressorStream(ReadOnlyIOStream):
         seekable: bool = True,
         owns_inner: bool = False,
         report_trailing_data: bool = False,
-        exact_input: bool = False,
+        refuse_input_after_end: bool = False,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
-        self._exact_input = exact_input
-        # The DataAfterEndError of an ``exact_input`` stream, raised once the output
-        # before the end has been read (see _end_error), until a seek restarts.
+        self._refuse_input_after_end = refuse_input_after_end
+        # The DataAfterEndError of a ``refuse_input_after_end`` stream, raised once the
+        # output before the end has been read (see _end_error), until a seek restarts.
         self._surplus: DataAfterEndError | None = None
         self._diagnostics_collector = collector
         self._codec_name = codec_name
@@ -873,10 +894,11 @@ class DecompressorStream(ReadOnlyIOStream):
     def _ended(self) -> bool:
         """Whether the decoder has been fed bytes past its end that end this stream.
 
-        For an ``exact_input`` stream that is any byte, a zero too; otherwise the first
-        byte that is not zero padding (:attr:`Decoder.trailing_bytes`).
+        For a ``refuse_input_after_end`` stream that is any byte, a zero too (every
+        codec a container member uses reports it through :attr:`Decoder.input_after_end`);
+        otherwise the first byte that is not zero padding (:attr:`Decoder.trailing_bytes`).
         """
-        if self._exact_input:
+        if self._refuse_input_after_end:
             return self._decoder.input_after_end
         return self._decoder.trailing_bytes is not None
 
@@ -891,21 +913,19 @@ class DecompressorStream(ReadOnlyIOStream):
 
         ``data`` is this call's output, all of it before that end. Nothing further is
         read from the source: the bytes past the end are not decoded, however many
-        there are. In an ``exact_input`` stream they are :class:`DataAfterEndError`,
-        raised once ``data`` and what came before it have been read, and no size is
+        there are. In a ``refuse_input_after_end`` stream they are
+        :class:`DataAfterEndError`, raised once ``data`` and what came before it have
+        been read, and no size is
         published. Otherwise the stream is complete, so its size is published, and
         the bytes are reported once per stream, as ``ARCHIVE_TRAILING_DATA``, when the
         stream is one the caller was handed (``report_trailing_data``).
         """
-        if self._exact_input:
+        if self._refuse_input_after_end:
             if not self._eof:
                 self._eof = True
-                ended_at = self._pos + len(self._buffer) + len(data)
-                self._surplus = DataAfterEndError(
-                    f"The {self._codec_name or 'compressed'} stream ends after "
-                    f"{ended_at} bytes of output with input left in the member's "
-                    "compressed data: bytes after the stream, or a declared size "
-                    "shorter than the stream (7-Zip: data error)"
+                self._surplus = input_after_end_error(
+                    self._codec_name or "compressed",
+                    self._pos + len(self._buffer) + len(data),
                 )
             return data
         if not self._eof:

@@ -13,7 +13,6 @@ import errno
 import os
 import stat
 from collections.abc import Iterator, Mapping
-from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -32,6 +31,7 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -52,15 +52,6 @@ from archivey.types import (
     MemberStreams,
     MemberType,
 )
-
-
-def _stat_datetime(ts: float) -> datetime | None:
-    """A stat timestamp as an aware UTC datetime, or ``None`` when out of range.
-
-    A network/FUSE filesystem can genuinely report an out-of-range value, and a
-    pre-1970 one is a real date on every platform (``unix_to_datetime``).
-    """
-    return unix_to_datetime(ts)
 
 
 def _link_extra(member_type: MemberType, is_junction: bool) -> MemberExtra:
@@ -159,7 +150,6 @@ def _is_junction(entry: os.DirEntry[str]) -> bool:
 class DirectoryReader(BaseArchiveReader):
     """Reads a filesystem directory as an archive."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     # A filesystem directory has no O(1) upfront index: enumerating members is an
     # os.scandir walk (a scan). So this is False (like plain TAR) — members_report_if_available()
     # returns None rather than triggering an uncached walk on every call, and the walk only runs
@@ -197,8 +187,19 @@ class DirectoryReader(BaseArchiveReader):
         # streaming walk descends into what it just wrote (`copy/copy/copy/...`)
         # until a path is too long, and a listing taken later includes it. `cp -r`
         # refuses the same request.
-        root = self._root.resolve()
-        target = dest.resolve()
+        #
+        # A dest that does not resolve is left to the shared path, so it fails as on
+        # every other backend: under a symlink loop, mkdir raises OSError (ELOOP); a
+        # dest that is itself a looping link exists and is not a directory, so it is
+        # refused with ExtractionError. A source root that does not resolve skips the
+        # check too, and the walk fails on it a moment later. So neither case writes
+        # members into the source, but in the second the dest directory itself may
+        # already be created inside the source, as it was with 3.13's resolve().
+        try:
+            root = resolve_or_raise_on_loop(self._root)
+            target = resolve_or_raise_on_loop(dest)
+        except OSError:
+            return
         if target == root or target.is_relative_to(root):
             raise ExtractionError(
                 f"Cannot extract a directory into itself: {display_path(dest)} is "
@@ -506,16 +507,16 @@ class DirectoryReader(BaseArchiveReader):
         # network/FUSE filesystem can report a value outside datetime's range, which
         # lists as None rather than sinking the whole walk. A pre-1970 value is a real
         # date on every platform.
-        modified = _stat_datetime(st.st_mtime)
-        accessed = _stat_datetime(st.st_atime)
+        modified = unix_to_datetime(st.st_mtime)
+        accessed = unix_to_datetime(st.st_atime)
         # st_birthtime is the true creation time but only exists on some platforms
         # (macOS/BSD, Windows; never Linux); st_ctime is metadata-change time on
         # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
         birthtime = getattr(st, "st_birthtime", None)
-        created = _stat_datetime(birthtime) if birthtime is not None else None
+        created = unix_to_datetime(birthtime) if birthtime is not None else None
         # On Windows st_ctime was the creation time before 3.12 (deprecated since),
         # so it is only an inode change time elsewhere.
-        ctime = _stat_datetime(st.st_ctime) if os.name != "nt" else None
+        ctime = unix_to_datetime(st.st_ctime) if os.name != "nt" else None
 
         # os.stat_result always defines st_uid/st_gid (both 0 on Windows), so no
         # getattr guard is needed.

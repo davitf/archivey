@@ -18,6 +18,7 @@ from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
     CodecSource,
+    ProbeChargeDecode,
     ProbeReadAt,
     _restoring_position,
     _source_tail,
@@ -27,6 +28,8 @@ from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStr
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.deflate_resume import stream_end
 from archivey.internal.streams.codecs.stdlib_takeover import (
+    _DRAIN_CHUNK,
+    _drain_into,
     _OutputChecksum,
     _SourceViews,
     _StdlibOnAcceleratorError,
@@ -34,6 +37,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     gzip_corruption,
+    input_after_end_error,
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
@@ -70,12 +74,15 @@ def _rapidgzip_reads_as_zlib(source: CodecSource) -> bool:
     return _zlib_header_plausible(prefix) and not prefix[1] & 0x20
 
 
-def _stdlib_zlib(source: CodecSource, config: StreamConfig) -> BinaryIO:
+def _stdlib_zlib(
+    source: CodecSource, config: StreamConfig, *, wbits: int = zlib.MAX_WBITS
+) -> BinaryIO:
     return ZlibDecompressorStream(
         source,
-        wbits=zlib.MAX_WBITS,
+        wbits=wbits,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
+        refuse_input_after_end=config.refuse_input_after_end,
     )
 
 
@@ -200,16 +207,17 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             if size < 0:
                 # A completing read: reach the end now, so the check raises from this
                 # read rather than leave the caller to find it on a later one.
-                while more := self._inner.read(1 << 20):
-                    self._count(more)
-                    data += more
+                buf = bytearray(data)
+                _drain_into(self._inner, buf, self._count)
                 tail = self._at_end(size, start)
                 # Where the standard library took over: _at_end put _pos there, then
                 # moved it on by the tail it read. With no handover the tail is empty
                 # and this is the end of data. Bytes of this read past that point (a
                 # second zlib stream) are dropped.
                 handover = self._pos - len(tail)
-                data = data[: handover - start] + tail
+                del buf[handover - start :]
+                buf += tail
+                data = bytes(buf)
         else:
             data = self._at_end(size, start)
         self._returned = max(self._returned, start + len(data))
@@ -243,7 +251,11 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         """Advance the frontier to ``target`` (``None``: the end) by reading."""
         self._pos = self._inner.seek(self._sum.frontier)
         while target is None or self._pos < target:
-            want = 1 << 20 if target is None else min(1 << 20, target - self._pos)
+            want = (
+                _DRAIN_CHUNK
+                if target is None
+                else min(_DRAIN_CHUNK, target - self._pos)
+            )
             data = self._inner.read(want)
             if not data:
                 # The rest of a cut stream, if any, is the read's after this seek.
@@ -358,25 +370,26 @@ class _DeflateEndCheckStream(DelegatingStream):
     when there is none. Raw DEFLATE has no checksum, so the resumed decode is a full
     answer:
 
-    - zlib reaches a final block: the stream is whole. That block can end before the
-      offset, when rapidgzip read on into a second stream after it, within the size the
-      container declared (past that size, ``limit`` of ``_StdlibOnAcceleratorError``
+    - zlib reaches a final block: the stream is whole. Without
+      ``refuse_input_after_end``, that block can end before the offset, when rapidgzip
+      read on into a second stream after it, within the size the caller declared (past that size, ``limit`` of ``_StdlibOnAcceleratorError``
       hands over). The ``compressed-streams`` spec accepts that difference: the
       declared size and CRC decide.
-    - zlib reaches a final block, but the stream was opened with ``exact_input`` (a
-      ZIP member or a 7z coder) and a byte follows that block: as below, since the
-      standard library raises ``DataAfterEndError`` there. A resumed decode cannot see
-      that: a point past the end of a first stream starts in the second, which ends at
-      the offset. So under ``exact_input`` zlib decodes the stream from its start.
     - zlib does not reach a final block (a cut or damaged stream): the read goes to the
       standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
       inside), which gives the verdict it gives with the accelerator off.
+    - With ``refuse_input_after_end`` (a ZIP member or a 7z coder), any byte of the
+      source after the first stream's final block, a zero too and a second stream
+      rapidgzip read whole, raises :class:`DataAfterEndError`, as the standard library
+      does. A resumed decode cannot see a second stream: a resume point past the first
+      stream's end lies in the second, which ends at the offset. So there zlib decodes
+      the stream from its start.
 
     The check costs a decode of the output between the resume point and the end, or
-    of the whole stream under ``exact_input``: a full read of a ZIP member or 7z coder
-    under rapidgzip pays a standard-library decode on top of rapidgzip's, so there the
-    accelerator speeds up seeks and the first output, not the full read. The
-    child keeps its first point only once 4 MiB of output has been delivered
+    of the whole stream under ``refuse_input_after_end``: a full read of a ZIP member
+    or 7z coder under rapidgzip pays a standard-library decode on top of rapidgzip's,
+    so there the accelerator speeds up seeks and the first output, not the full read.
+    The child keeps its first point only once 4 MiB of output has been delivered
     (``_MIN_QUERY_SPACING`` in ``rapidgzip_child.py``), so a stream with less output
     than that is decoded again whole, by zlib in one thread: under ``ON`` such a member
     pays a whole standard-library decode on top of rapidgzip's (measured on 2 MiB:
@@ -409,13 +422,13 @@ class _DeflateEndCheckStream(DelegatingStream):
         inner: _StdlibOnAcceleratorError,
         *,
         views: _SourceViews,
-        exact_input: bool = False,
+        refuse_input_after_end: bool = False,
     ) -> None:
         super().__init__(inner)
         # The same object as ``_inner``, typed: the handover calls it.
         self._takeover = inner
         self._views = views
-        self._exact_input = exact_input
+        self._refuse_input_after_end = refuse_input_after_end
         self._checked = False
 
     def read(self, size: int = -1, /) -> bytes:
@@ -424,11 +437,13 @@ class _DeflateEndCheckStream(DelegatingStream):
         data = self._inner.read(size)
         if data and size >= 0:
             return data
-        if data:
-            # A completing read: reach the end now, so the check raises from this read.
-            while more := self._inner.read(1 << 20):
-                data += more
-        return data + self._at_end(size)
+        if not data:
+            return self._at_end(size)
+        # A completing read: reach the end now, so the check raises from this read.
+        buf = bytearray(data)
+        _drain_into(self._inner, buf)
+        buf += self._at_end(size)
+        return bytes(buf)
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
@@ -442,11 +457,16 @@ class _DeflateEndCheckStream(DelegatingStream):
         end = self._takeover.position
         resume_point = getattr(self._takeover.accelerator, "resume_point", None)
         point = None
-        if resume_point is not None and not self._exact_input:
+        if resume_point is not None and not self._refuse_input_after_end:
             point = resume_point(end)
         with self._views.view() as f:
-            if stream_end(f, point, end, exact_input=self._exact_input) is not None:
-                return b""
+            found, input_after = stream_end(
+                f, point, end, check_input_after=self._refuse_input_after_end
+            )
+        if found is not None:
+            if input_after:
+                raise input_after_end_error("deflate", found)
+            return b""
         self._takeover.switch_to_stdlib()
         return self._inner.read(size)
 
@@ -472,7 +492,9 @@ class DeflateCodec(_ZlibErrorCodec):
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
-        return ZlibDecompressorStream(source, wbits=-15, exact_input=config.exact_input)
+        # Under rapidgzip it is also the takeover's decoder, so bytes after the stream
+        # that rapidgzip fails on are refused there too (refuse_input_after_end).
+        return _stdlib_zlib(source, config, wbits=-15)
 
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -493,8 +515,9 @@ class DeflateCodec(_ZlibErrorCodec):
         accel_source: CodecSource,
         views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        refuse = config.refuse_input_after_end
         return lambda stream: _DeflateEndCheckStream(
-            stream, views=views, exact_input=config.exact_input
+            stream, views=views, refuse_input_after_end=refuse
         )
 
     def _accelerated_limit(
@@ -577,6 +600,7 @@ class ZlibCodec(_ZlibErrorCodec):
         *,
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
     ) -> bool:
         """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
         return _zlib_header_plausible(prefix) and self._decodes_sample(

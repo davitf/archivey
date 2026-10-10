@@ -36,9 +36,12 @@ import struct
 import sys
 from typing import IO
 
-_OPEN = struct.Struct("<BBIB")
-_REQUEST = struct.Struct("<iI")
-_REPLY = struct.Struct("<BBBI")
+# The protocol's messages. ``ppmd_child.py`` imports them from here, which imports
+# nothing back.
+OPEN = struct.Struct("<BBIB")
+REQUEST = struct.Struct("<iI")
+REPLY = struct.Struct("<BBBI")
+# A request length that asks for the decoder's ``unused_data`` (module docstring).
 UNUSED_DATA_REQUEST = -2
 
 
@@ -56,7 +59,7 @@ def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
 def _reply(out: IO[bytes], status: int, decoder: object, payload: bytes) -> None:
     eof = bool(getattr(decoder, "eof", False))
     needs_input = bool(getattr(decoder, "needs_input", True))
-    out.write(_REPLY.pack(status, eof, needs_input, len(payload)))
+    out.write(REPLY.pack(status, eof, needs_input, len(payload)))
     out.write(payload)
     out.flush()
 
@@ -104,10 +107,10 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
-    header = _read_exact(stdin, _OPEN.size)
+    header = _read_exact(stdin, OPEN.size)
     if header is None:
         return
-    variant, order, mem_size, restore_method = _OPEN.unpack(header)
+    variant, order, mem_size, restore_method = OPEN.unpack(header)
     decoder = None
     try:
         import pyppmd
@@ -125,10 +128,10 @@ def main() -> None:
         return
     _reply(stdout, 0, decoder, b"")
     while True:
-        request = _read_exact(stdin, _REQUEST.size)
+        request = _read_exact(stdin, REQUEST.size)
         if request is None:
             return
-        length, size = _REQUEST.unpack(request)
+        length, size = REQUEST.unpack(request)
         data = _read_exact(stdin, size) if size else b""
         if data is None:
             return

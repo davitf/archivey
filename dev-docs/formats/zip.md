@@ -187,7 +187,8 @@ gap, not the ZIP "not supported" message. A part that is not on disk itself is
 `UnsupportedFeatureError` with the rejoin-first text. Both run in `open_archive`
 before detection, because middle parts have no magic at offset 0 and detection
 alone would raise `FormatDetectionError`. After stdlib opens the archive:
-non-zero classic EOCD disk fields (with `0xFFFF` treated as the ZIP64 sentinel),
+non-zero EOCD disk fields (the ZIP64 end record's when there is one, else the
+classic record's, with `0xFFFF` treated as the ZIP64 sentinel),
 which is what catches Info-ZIP's final `.zip` part — it lists cleanly, because it
 holds the central directory — and a ZIP64 locator claiming more than one disk,
 where stdlib raises and archivey re-types by matching the exception text.
@@ -248,10 +249,10 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `extra["alternate_raw_name"]` | The CDH name bytes, when the Unicode Path field named the member | No such field, or it does not match |
 | `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
 | `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey; `zipfile` only surfaces the DOS field and the raw `extra`. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
-| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory via `ZipInfo.is_dir()` otherwise | — |
+| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word (`zipfile` has no `is_symlink`); directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry. Not `ZipInfo.is_dir()`: it reads stdlib's rewritten `filename`, which depends on the host OS and the Python version. A directory-shaped entry that declares data is still a `DIRECTORY`: its data cannot be opened or extracted, and `size` still reports it | — |
 | `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
 | `compression` | `compress_type` → `CompressionMethod` | — |
-| `is_encrypted` | `flag_bits & 0x1` | — |
+| `is_encrypted` | `flag_bits & 0x1`, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
 | `comment` | CDH member comment | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
@@ -401,20 +402,23 @@ A member's compressed data is one stream of its codec and nothing else, as 7-Zip
 Info-ZIP and `zipfile` read it: each codec ends the member at its stream's end (an LZMA
 member at its end marker; `lzma.LZMAFile` would start a second raw stream on the bytes
 after it and read that as content). The reader opens every member with
-`StreamConfig.exact_input`, so any byte of the compressed data the codec leaves after that
+`StreamConfig.refuse_input_after_end`, so any byte of the compressed data the codec leaves after that
 end, a zero too, and a second stream, are `DataAfterEndError` (a `CorruptionError`),
 raised once the output before them has been read, whatever the declared size and CRC
 cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error", or "There are some data
 after the end of the payload data"), and the bytes may be a side channel
-(`design-rules.md` DR-3). The exception is Zstd (method 93): its decoder reads
-concatenated frames as one stream, as for a 7z Zstd coder, so a second frame is content
-when the declared size and CRC count it, and output past the size when they stop before
-it; bytes after the last frame that start no frame are refused. An LZMA member with bit 1 clear, and a PPMd member, end at their
-declared size, and their input must end there too: right after it for LZMA (or one zero
+(`design-rules.md` DR-3). Under ZipCrypto the read raises the `EncryptionError` of an
+unconfirmed password instead, caused by that `CorruptionError`, as the verify table
+below records. A Zstd member (method 93) is one frame: a second frame, a skippable one
+too, is refused, where a 7z Zstd coder reads concatenated frames as one stream. An LZMA
+member with bit 1 clear, and a PPMd member, end at their declared size, and their input must end there too: right after it for LZMA (or one zero
 byte later, which 7-Zip's encoder sometimes writes), after the end mark PPMd8 must carry.
 So a declared size short of the stream's data is `CorruptionError`, not `TruncatedError`:
 the input is too long, not short. The 7z handbook (§ coders, *Input after the stream*)
-has how each codec finds its end, and what it cannot see. The accelerators read on into
+has how each codec finds its end, and what it cannot see; `inflate64` drops input after
+a Deflate64 stream's end and has no `unused_data`, so `Deflate64Decoder` holds back the
+last byte it is given, and input follows the end when `eof` is already True as that
+byte goes in. The accelerators read on into
 a second stream; at the bytes after the first they hand the read over to the standard
 library, which refuses them, so the verdict does not depend on the accelerator. Finding
 where a DEFLATE member's first stream ends takes a zlib decode from its start (a rapidgzip
@@ -606,8 +610,15 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   stored CRC, so neither bounds the output; the caps are enforced against bytes actually
   written, plus a live ratio measured from bytes consumed. Nesting is not tracked — a
   zip-of-zips amplifies one level at a time (O6).
-- **Overlapping entries** are a distinct crafted shape, caught by stdlib's open-time
-  overlap guard and translated to `CorruptionError`.
+- **Overlapping entries** are a distinct crafted shape, caught when a member opens by
+  an overlap guard and raised as `CorruptionError`. The guard is stdlib's (each
+  entry's data must end before the next local header, or before the central
+  directory), but archivey computes the bounds itself because stdlib sets them only
+  from Python 3.11.8. Of two entries over one local header, the first in directory
+  order reads and the later one is refused. stdlib raises on 3.11, on 3.12 before
+  3.12.10 and on 3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read both.
+  archivey keeps refusing, because many entries over one local header is the
+  overlapping-entry amplification shape (DR-9a).
 - **Confirming a ZipCrypto password costs time that depends on the archive, and that cost
   is observable**: the one-byte verifier cannot decide between candidates, so a STORED
   member is read through and its CRC compared. Timing the call, or watching how much is
@@ -650,7 +661,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Refuse PKWARE Strong Encryption at member open, not implement it | Without these checks, a member marked only by extra `0x0017` (no bit 6) was decrypted as ZipCrypto: a wrong-password or corruption error, or with the right password bytes handed back as plaintext. A bit-6 member already reached stdlib's own `NotImplementedError`, translated to `UnsupportedFeatureError`; checking bit 6 here gives it a message archivey owns and refuses a symlink's target before its data is read. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
-| Short ZipCrypto header is `TruncatedError` on both password paths | Physical EOF; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
+| Short ZipCrypto header is `TruncatedError` on both password paths; a declared size too small for the encryption header is `CorruptionError` for ZipCrypto and WinZip AES alike | A short read is physical EOF; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split. A declared size under 12 bytes (ZipCrypto) or under salt + verifier + HMAC (WinZip AES) is an impossible header in a file that did not end, so it is checked before the read and is damage, the same for both schemes; for WinZip AES it is also checked before the `cryptography` availability gate, so the type does not depend on the install (DR-5) | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
 | ZipCrypto decrypts in archivey, ahead of the codec layer, not in stdlib's `ZipExtFile` | One pipeline for every member: ZipCrypto members gain the three methods stdlib cannot decode, the fused verifier and the codec layer's seek, and share WinZip AES's password ladder. Stdlib's decrypter is pure Python too, so nothing is slower | Keeping `ZipExtFile` for ZipCrypto, which left it the one exception to the shared stream layer |
 | Several WinZip AES candidates are confirmed like ZipCrypto ones | The first candidate to pass the 2-byte `pw_verify` used to win outright, so a colliding wrong password ahead of the right one failed the read on the HMAC. A confirm walk costs one extra read of a small or uncompressed member, only when there is more than one candidate | Accepting on `pw_verify` (2⁻¹⁶ per wrong candidate) |
 | WinZip AES seeks by restarting CTR at the target's block, and keeps the HMAC | CTR decrypts from any offset (counter `1 + offset // 16`), so a seek costs one block. The HMAC covers the ciphertext, not the plaintext, so it survives seeks: the HMAC takes in ciphertext while reads continue its hashed prefix, and the read that returns the last byte reads the rest from the source, without decrypting, before it returns. That keeps the only check an AE-2 member has, and the candidate confirmation, under rapidgzip's own out-of-order reads too, so accelerators stay on | Refusing to seek, which broke the `seekable_members=True` guarantee; forfeiting the HMAC on a seek as a CRC is forfeited, which let an accelerator's seeks silently drop it; turning accelerators off over the AES stage |
@@ -680,7 +691,7 @@ move.
 | --- | --- |
 | Cost receipt, central-directory lookup without I/O | `tests/test_zip.py::test_cost_receipt`, `::test_central_directory_lookup_no_io` |
 | Non-seekable refused at open | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection` |
-| Spanned set and unjoinable segment refused | `::test_split_segment_name_rejected`, `::test_infozip_spanned_set_still_refused`, `::test_sevenzip_split_segment_without_siblings_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format`, `tests/test_volumes.py::test_lone_numbered_volume_names_missing_parts` |
+| Spanned set and unjoinable segment refused | `::test_split_segment_name_rejected`, `::test_infozip_spanned_set_still_refused`, `::test_sevenzip_split_segment_without_siblings_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_zip64_end_record_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format`, `tests/test_volumes.py::test_lone_numbered_volume_names_missing_parts` |
 | A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set | `tests/test_volume_missing_part.py` |
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
 | `7z -v` set joined, read across a part boundary, opened from any part | `::test_sevenzip_split_zip_set_is_joined_and_read`, `::test_sevenzip_split_zip_set_opens_from_a_middle_part`, `::test_sevenzip_split_zip_set_with_missing_part_is_truncated` |
@@ -694,9 +705,14 @@ move.
 | Symlink target from member data; encrypted target withheld | `::test_symlink_member`, `::test_encrypted_symlink_listing_without_password` |
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
-| Overlapping-entry bomb | `::test_overlapping_entries_bomb_translated_to_corruption` |
-| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is content | `tests/test_surplus_input.py`, `tests/test_audit2_zip.py::test_bytes_after_a_deflate_members_stream_are_corrupt`, `::test_bzip2_member_with_a_second_stream_is_corrupt` |
+| Overlapping-entry bomb, without stdlib's end offsets too; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_overlap_guard_does_not_depend_on_stdlib_end_offsets`, `::test_entries_sharing_one_local_header_read_only_once` |
+| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is refused | `tests/test_surplus_input.py`, `tests/test_audit2_zip.py::test_bytes_after_a_deflate_members_stream_are_corrupt`, `::test_bzip2_member_with_a_second_stream_is_corrupt` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |
+| Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators; `7z t` fails on the same members | `tests/test_zip_native_codecs.py::test_zip_member_with_input_after_its_stream_is_corrupt`, `::test_zip_zstd_member_with_input_after_its_frame_is_corrupt`, `::test_zip_input_after_the_stream_is_corrupt_under_the_accelerator`, `::test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process` |
+| A Zstd member with a second frame or a skippable frame after its first frame is `CorruptionError`; the shared framed decoder refuses a second stream | `tests/test_zip_native_codecs.py::test_zip_zstd_member_with_a_second_frame_is_corrupt`, `::test_zip_zstd_member_with_a_skippable_frame_is_corrupt`, `::test_framed_stream_refuses_a_second_stream_after_the_end` |
+| Bytes after the stream inside a ZipCrypto member (the `EncryptionError` of an unconfirmed password, caused by the `CorruptionError`) or a WinZip AES member raise | `tests/test_zip_native_codecs.py::test_zip_zipcrypto_member_with_input_after_its_stream_is_corrupt`, `::test_zip_winzip_aes_member_with_input_after_its_stream_is_corrupt` |
+| A PPMd member with no end mark reads clean, in process and in a child; an end mark already decoded at the size is checked; a worker the end-mark probe parks is quiesced on close | `tests/test_zip_native_codecs.py::test_zip_ppmd_member_without_an_end_mark_reads_clean`, `tests/test_ppmd_raw_streams.py::test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data`, `::test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close` |
+| A second DEFLATE or bzip2 stream in a member is `CorruptionError`, except a DEFLATE pair under rapidgzip whose size and CRC cover both | `tests/test_audit2_zip.py::test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt`, `::test_bzip2_accelerator_refuses_a_second_stream_the_declared_crc_covers`, `::test_rapidgzip_reads_a_second_deflate_stream_the_declared_crc_covers` |
 | Tampered HMAC raises on a full read (STORED and DEFLATE); partial read then `close()` is quiet | `tests/test_zip_aes.py::test_aes_tampered_hmac_raises_corruption`, `::test_aes_tampered_hmac_partial_read_then_close_is_quiet` |
 | AES decrypt stream `close()` still releases the source after a partial read; a source `OSError` still marks the wrapper closed | `::test_aes_decrypt_stream_close_releases_source`, `::test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises` |
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
@@ -707,11 +723,12 @@ move.
 | A tampered AE-2 DEFLATE member still raises under rapidgzip's own seeks (`AUTO` and `ON`, one password and two) | `tests/test_zip_aes.py::test_aes_hmac_survives_a_seekable_accelerator` |
 | A lone ZipCrypto password that passed the check byte: a partial read is reported unverified, a read to EOF and extraction are not; a forward seek on a compressed member raises the password-or-damage error, and a seek on a STORED one is reported as `seek` | `tests/test_encrypted_member_unverified.py`, `tests/test_zip_multipassword.py::test_single_colliding_password_fails_a_forward_seek`, `::test_single_colliding_password_stored_seek_reports_unverified` |
 | A seek then a full read of a weakly accepted AES member is not reported unverified; a seek then a partial read is, as `partial_read` | `tests/test_encrypted_member_unverified.py::test_winzip_aes_seek_then_full_read_is_not_reported`, `::test_winzip_aes_seek_then_partial_read_is_reported_as_a_partial_read` |
+| A method-99 member with bit 0 clear lists as encrypted and asks for a password | `tests/test_zip_aes.py::test_method_99_without_encryption_flag_lists_as_encrypted` |
 | WinZip AES candidates confirmed, not taken on `pw_verify` | `tests/test_zip_aes.py::test_aes_candidate_passing_pw_verify_does_not_shadow_the_right_one` |
 | A failing HMAC is `CorruptionError` with a candidate list too, including when only colliding wrong candidates reach it | `tests/test_zip_aes.py::test_aes_tampered_hmac_with_candidates_raises_corruption`, `::test_aes_only_colliding_candidates_report_damage` |
 | A damaged symlink target (CRC, HMAC, declared size) lists the link targetless with `target_data_damaged`; open and extraction raise; strict refuses | `tests/test_damaged_link_target.py`, `tests/test_link_target_cap.py::test_a_zip_target_longer_than_its_declared_size_is_corruption` |
-| PKWARE Strong Encryption refused at open, a symlink of it listed with the target unset; unrelated extra records still read; an encrypted central directory recognized where stdlib reads it, a damaged one (and a record at a stale declared offset) still `CorruptionError` | `tests/test_zip.py::test_strong_encryption_member_is_unsupported`, `::test_strong_encryption_symlink_lists_with_target_unset`, `::test_zipcrypto_member_with_unrelated_extra_still_reads`, `::test_encrypted_central_directory_is_unsupported`, `::test_damaged_central_directory_stays_corruption`, `::test_record_at_the_stale_declared_offset_is_not_read_as_encryption` |
-| Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths; codec-path and member-read `IndexError` stay raw; CONCURRENT stamp releases the handle lock | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated`, `::test_truncated_zipcrypto_stamp_releases_handle_lock` |
+| PKWARE Strong Encryption refused at open, a symlink of it listed with the target unset; unrelated extra records still read; an encrypted central directory recognized where stdlib reads it, a damaged one (and a record at a stale declared offset) still `CorruptionError` | `tests/test_zip.py::test_strong_encryption_member_is_unsupported`, `::test_strong_encryption_symlink_lists_with_target_unset`, `::test_zipcrypto_member_with_unrelated_extra_still_reads`, `::test_encrypted_central_directory_is_unsupported`, `::test_encrypted_zip64_central_directory_is_unsupported`, `::test_record_inside_a_damaged_zip64_directory_is_not_read_as_encryption`, `::test_damaged_central_directory_stays_corruption`, `::test_record_at_the_stale_declared_offset_is_not_read_as_encryption` |
+| Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths; a declared size too small for the ZipCrypto or WinZip AES header is `CorruptionError` naming the member; codec-path and member-read `IndexError` stay raw; CONCURRENT stamp releases the handle lock | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_encryption_header_larger_than_declared_size_is_corruption`, `tests/test_zip_aes.py::test_aes_header_too_short_is_corruption_without_crypto`, `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated`, `::test_truncated_zipcrypto_stamp_releases_handle_lock` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 
 **Building fixtures.** Stdlib `zipfile` cannot write encryption, so encrypted fixtures shell

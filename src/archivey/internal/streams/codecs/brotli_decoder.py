@@ -186,7 +186,18 @@ class BrotliDecoder(BaseDecoder):
                     raise error
                 remaining -= len(chunk)
                 self._discard(decomp, chunk)
-            region = inner.read(failed_end - self._settled)
+            # Read the whole region even when the source returns short reads (a probe
+            # sample serves 4 KiB per read). A short region would end the replay early
+            # and report the original error for a stream that only had bytes after it.
+            parts: list[bytes] = []
+            wanted = failed_end - self._settled
+            while wanted:
+                chunk = inner.read(wanted)
+                if not chunk:
+                    break
+                parts.append(chunk)
+                wanted -= len(chunk)
+            region = b"".join(parts)
         finally:
             inner.seek(position)
         self._decomp = decomp
@@ -301,7 +312,7 @@ def BrotliDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
-    exact_input: bool = False,
+    refuse_input_after_end: bool = False,
 ) -> DecompressorStream:
     """Decode a raw Brotli stream (forward-only)."""
     return DecompressorStream(
@@ -310,5 +321,5 @@ def BrotliDecompressorStream(
         collector=collector,
         codec_name="brotli",
         report_trailing_data=report_trailing_data,
-        exact_input=exact_input,
+        refuse_input_after_end=refuse_input_after_end,
     )

@@ -7,6 +7,7 @@ from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
 from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
     PpmdChildDecoder,
@@ -62,7 +63,7 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 
 _DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
 
-# Input after a member's declared output that an ``exact_input`` decoder collects
+# Input after a member's declared output that an ``refuse_input_after_end`` decoder collects
 # before its end check: room for an end mark and its range-coder flush. Measured on
 # pyppmd 1.3.1 and 7-Zip 23.01, that is at most 3 bytes for PPMd8 and 1 for PPMd7; the
 # bound leaves slack over it, so that a producer that flushes a little more reaches
@@ -130,7 +131,7 @@ class PpmdDecoder(BaseDecoder):
     :data:`_PPMD_EXTRA_NUL_MAX_OUTPUT`; unsized PPMd8 gets **no** post-eof drain at all
     (its end mark terminates valid decodes; a drain would only fabricate trailing bytes).
 
-    ``exact_input`` (``StreamConfig.exact_input``: a ZIP member, a 7z coder) checks
+    ``refuse_input_after_end`` (``StreamConfig.refuse_input_after_end``: a ZIP member, a 7z coder) checks
     that the member's input ends where its declared output does, as 7-Zip does
     (:meth:`_check_end`); a byte it leaves is ``DataAfterEndError`` through the stream.
 
@@ -152,7 +153,7 @@ class PpmdDecoder(BaseDecoder):
         unpack_size: int | None = None,
         pack_size: int | None = None,
         in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
-        exact_input: bool = False,
+        refuse_input_after_end: bool = False,
     ) -> None:
         if variant != 8 and unpack_size is None:
             raise ValueError(
@@ -206,7 +207,7 @@ class PpmdDecoder(BaseDecoder):
         # no decoder to go on with.
         self._refusal: str | None = None
         self._decomp: _PpmdNativeDecoder | None = None
-        self._exact_input = exact_input
+        self._refuse_input_after_end = refuse_input_after_end
         # Input fed after the output reached ``unpack_size``, before the end check
         # (``_check_end``), and whether that check has run.
         self._tail = b""
@@ -264,7 +265,7 @@ class PpmdDecoder(BaseDecoder):
             unpack_size=self._unpack_size,
             pack_size=self._pack_size,
             in_process_max_input=self._in_process_max_input,
-            exact_input=self._exact_input,
+            refuse_input_after_end=self._refuse_input_after_end,
         )
 
     @property
@@ -488,9 +489,9 @@ class PpmdDecoder(BaseDecoder):
         return DecodeOut(out)
 
     def _at_declared_size(self) -> bool:
-        """Whether an ``exact_input`` member has all its output, input handed over."""
+        """Whether an ``refuse_input_after_end`` member has all its output, input handed over."""
         return (
-            self._exact_input
+            self._refuse_input_after_end
             and self._unpack_size is not None
             and self._decomp is not None
             and self._produced >= self._unpack_size
@@ -719,7 +720,8 @@ def PpmdDecompressorStream(
     unpack_size: int | None = None,
     pack_size: int | None = None,
     in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
-    exact_input: bool = False,
+    refuse_input_after_end: bool = False,
+    collector: DiagnosticCollector | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
@@ -740,10 +742,11 @@ def PpmdDecompressorStream(
             unpack_size=unpack_size,
             pack_size=pack_size,
             in_process_max_input=in_process_max_input,
-            exact_input=exact_input,
+            refuse_input_after_end=refuse_input_after_end,
         ),
+        collector=collector,
         codec_name="ppmd",
-        exact_input=exact_input,
+        refuse_input_after_end=refuse_input_after_end,
     )
 
 

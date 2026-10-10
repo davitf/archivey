@@ -51,6 +51,35 @@ parameter because the API returns one stream.
 | Open compressed source without `seekable=True` | Reads forward; `seekable()` false; `seek()` unsupported; no index |
 | Open same source with `seekable=True` | Seekable behavior follows `seekable-decompressor-streams` |
 
+### Requirement: open_stream peels the compression layer of a compressed tar
+
+When `open_stream` is given a compressed tar — any `(TAR, <codec>)` pair whose codec is
+not `UNCOMPRESSED`, such as `TAR_GZ`, `TAR_XZ` or `(TAR, LZIP)` — it SHALL open that
+codec's stream and return the decompressed tar bytes, the same bytes the raw-stream
+format of the same codec returns (`format="gz"` for a `.tar.gz`). This SHALL hold
+whether auto-detection (`format=None`) found the pair or the caller passed it as
+`format=`: how the format was chosen does not change what the file is. The codec SHALL
+be the pair's stream half, the one the detector built the pair from, read through one
+shared rule rather than a second table. This is what `gzip.open` does for a `.tar.gz`,
+and the migration guide offers `open_stream` as its replacement.
+
+Any other container — ZIP, 7z, RAR, ISO, DMG, or an uncompressed tar — has no
+compression layer to remove. Detecting one SHALL raise `FormatDetectionError`; passing
+one as `format=` SHALL raise `ArchiveyUsageError` (`backend-registry`). A directory path
+is refused as `ArchiveyUsageError` before detection runs, and so is
+`format=ArchiveFormat.DIRECTORY`.
+
+#### Scenario: compressed tar through open_stream
+
+| Case | Expected |
+| --- | --- |
+| `open_stream("a.tar.gz")` | Returns the tar bytes; equal to `open_stream("a.tar.gz", format="gz").read()` |
+| `open_stream("a.tar.gz", format=ArchiveFormat.TAR_GZ)` or `format="tar.gz"` | The same tar bytes |
+| `open_archive(open_stream(p, seekable=True))` for every compressed-tar corpus fixture | Same members (every compared field) and data as `open_archive(p)`; `format` is `TAR` |
+| `open_archive(open_stream(p), streaming=True)` | Same `stream_members()` pass as `open_archive(p, streaming=True)` |
+| `open_stream("a.tar")`, `open_stream("a.zip")` | `FormatDetectionError` |
+| `open_stream(p, format=ArchiveFormat.TAR)`, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError` |
+
 ### Requirement: One StreamCodec descriptor describes each codec
 
 The system SHALL register each single-stream codec through one descriptor
@@ -88,7 +117,11 @@ a facility exists, it SHALL be optional, absent by default, and bounded in both 
 range (forward-only ceiling today: 1 MiB) and number of links walked; a probe that does not
 take it SHALL behave exactly as it does today. This exception exists for the self-describing
 block chain in `format-detection`, whose successor offsets frequently sit past a 4 KiB
-prefix, and it does not license open-ended reading.
+prefix, and for the decode up to the first compressed block of that chain (within the
+same 1 MiB reach). It does not license open-ended reading. A probe that decodes past its
+sample SHALL first ask a second optional facility, `charge_decode(n)`, which the detector
+backs with its decode allowance; when the answer is no, the probe keeps the verdict it
+has.
 
 Registering a standalone codec descriptor SHALL make detection, the single-file
 reader, and availability reporting work without edits elsewhere.
@@ -107,7 +140,7 @@ reader, and availability reporting work without edits elsewhere.
 | Any probe, `source_length <= len(prefix)`, decode wants more input within the output drain | Reject — the whole source is visible and the stream does not terminate |
 | Any probe, `source_length <= len(prefix)`, decode completes within the output drain | Accept |
 | Probe offered no bounded read facility | Behaves exactly as today; prefix is its whole world |
-| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk only |
+| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk and the Brotli decode to its first compressed block only |
 | Probe given one, attempts an unbounded or unlimited-count read | Not permitted |
 
 ### Requirement: Each supported codec has a default backend
@@ -250,9 +283,12 @@ expected hashes) when a read **reaches the member's end**:
 - **Size-declared** (`expected_size` set): the read that consumes the declared
   size is a verifying event (checksum and over-run). On digest mismatch or
   over-run it SHALL raise `CorruptionError` and return **no bytes** for that call
-  (withhold the final chunk). On truncation-shaped EOF before the declared size,
-  the first read that asks past available output returns the remaining prefix
-  (short return); the next empty `read` raises `TruncatedError`.
+  (withhold the final chunk). When the data past the declared size fails to
+  decode, that read SHALL raise the decoder's error as the verdict and return no
+  bytes, even when the declared bytes match their checksum; the translator above
+  the verifier types it as `CorruptionError`. On truncation-shaped EOF before the
+  declared size, the first read that asks past available output returns the
+  remaining prefix (short return); the next empty `read` raises `TruncatedError`.
 - **Size-unknown**: every data chunk MAY be returned first; `CorruptionError`
   SHALL raise on the read that observes end-of-stream (typically the terminal
   empty `read`) — no mandatory one-chunk delayed-release lookahead.
@@ -540,10 +576,11 @@ stream's end, a zero byte too, and a second stream there SHALL raise
 declared size and CRC cover, with the accelerator on or off: an accelerator that reads
 on past the first stream hands the read to the standard-library decoder there, which
 refuses it. 7-Zip 23.01 fails such a member ("There are some data after the end of the
-payload data", or "Data Error"), and the bytes may hide a second payload. The
-exception is Zstd and LZ4, whose decoders read concatenated frames as one stream in a
-container too: a further frame is content that counts against the declared size and
-CRC, and only bytes after the last frame that start no frame SHALL raise. A codec that
+payload data", or "Data Error"), and the bytes may hide a second payload. A ZIP
+Zstd member is one frame, so a second frame there SHALL raise too. The exception is a
+7z Zstd or LZ4 coder, whose concatenated frames are read as one stream: a further frame
+is content that counts against the declared size and CRC, and only bytes after the
+last frame that start no frame SHALL raise. A codec that
 stops at a declared output size (LZMA1 without an end marker, PPMd) SHALL raise the
 same way when its input goes on past that size; such a cut leaves input over, so it is
 not a `TruncatedError`. A standalone compressed file keeps reporting the bytes after its
@@ -592,6 +629,7 @@ no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 | --- | --- | --- |
 | Two DEFLATE or bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
 | One DEFLATE or bzip2 stream, then junk or zero bytes | `CorruptionError` | `CorruptionError` |
+| ZIP Zstd member with two frames | `CorruptionError` | — |
 | ZIP LZMA without an end marker, or 7z LZMA1, whose declared size is 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
 | ZIP PPMd8 or 7z PPMd, then junk, or a declared size 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
 | A `.bz2` file with junk after its stream | Content, and `ARCHIVE_TRAILING_DATA` | Content, and `ARCHIVE_TRAILING_DATA` |

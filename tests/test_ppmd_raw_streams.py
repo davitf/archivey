@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from archivey.exceptions import CorruptionError
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.codecs.ppmd_decoder import (
     PpmdDecoder,
@@ -998,3 +999,67 @@ def test_ppmd7_drain_stops_at_the_first_short_return_at_eof() -> None:
     assert dec._exhausted
     assert fake.calls[1:] == [(b"", 64)]
     assert dec.pending_error is not None
+
+
+class _FakePpmd8(_FakeDecomp):
+    """A PPMd8 stand-in with ``unused_data``; a ``decode(b"", 1)`` that returns
+    nothing leaves it parked on empty input, as pyppmd's worker is then."""
+
+    def __init__(
+        self, *, needs_input: bool, eof: bool, returns: list[bytes], unused: bytes
+    ) -> None:
+        super().__init__(needs_input=needs_input, eof=eof, returns=returns)
+        self.unused_data = unused
+
+    def decode(self, data: bytes, length: int) -> bytes:
+        out = super().decode(data, length)
+        self.needs_input = not out
+        return out
+
+
+def _ppmd8_at_size(fake: _FakePpmd8) -> PpmdDecoder:
+    """A ZIP PPMd8 decoder whose output reached ``unpack_size``, with all input fed."""
+    dec = PpmdDecoder(
+        order=_ORDER,
+        mem_size=_MEM,
+        variant=8,
+        unpack_size=100,
+        pack_size=50,
+        refuse_input_after_end=True,
+    )
+    dec._decomp = fake  # type: ignore[assignment]  # test double for the native decoder
+    dec._held = None
+    dec._produced = 100
+    dec._fed_compressed = 50
+    return dec
+
+
+@pytest.mark.parametrize(("unused", "after"), [(b"J", True), (b"", False)])
+def test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data(
+    unused: bytes, after: bool
+) -> None:
+    """A decoder already at ``eof`` has decoded its end mark (pyppmd sets PPMd8
+    ``eof`` only there), so its ``unused_data`` is input after the end, and it is
+    asked for no further symbol."""
+    fake = _FakePpmd8(needs_input=False, eof=True, returns=[], unused=unused)
+    dec = _ppmd8_at_size(fake)
+    assert dec.flush().data == b""
+    assert dec.finished
+    assert dec.input_after_end is after
+    assert fake.calls == []
+
+
+def test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close() -> None:
+    """No end mark at the size: the member is corrupt, as 7-Zip reads it, and the
+    probe's empty return parks the worker, so close() must send it the NUL although
+    the member is finished."""
+    fake = _FakePpmd8(needs_input=False, eof=False, returns=[b"", b"x"], unused=b"")
+    dec = _ppmd8_at_size(fake)
+    assert dec.flush().data == b""
+    assert dec.finished
+    assert not dec.input_after_end
+    assert isinstance(dec.pending_error, CorruptionError)
+    assert "no end mark" in str(dec.pending_error)
+    assert fake.calls == [(b"", 1)]
+    dec.close()
+    assert fake.calls == [(b"", 1), (b"\0", 1)]

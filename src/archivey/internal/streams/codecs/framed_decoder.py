@@ -118,11 +118,17 @@ class FramedDecoder(BaseDecoder):
         )
 
     def _next_stream(self, data: bytes) -> bytes:
-        """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
+        """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``.
+
+        A further stream continues the output only where ``magic`` accepts it; a
+        container coder that is one stream (``CodecParams.single_stream``) accepts
+        none, so a further stream there (a skippable zstd frame too) is input after
+        the end, like any other byte that starts no stream.
+        """
         rest = data.lstrip(b"\x00") if self._zero_padding else data
         if len(rest) < len(data):
-            # Zero padding is input after a stream's end, which an ``exact_input``
-            # stream refuses (``input_after_end``).
+            # Zero padding is input after a stream's end, which a
+            # ``refuse_input_after_end`` stream refuses (``input_after_end``).
             self._input_after_end = True
         if not rest:
             return b""
@@ -209,7 +215,7 @@ def FramedDecompressorStream(
     zero_padding: bool = True,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
-    exact_input: bool = False,
+    refuse_input_after_end: bool = False,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec (forward-only; O(n) rewind)."""
     return DecompressorStream(
@@ -220,5 +226,5 @@ def FramedDecompressorStream(
         collector=collector,
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,
-        exact_input=exact_input,
+        refuse_input_after_end=refuse_input_after_end,
     )

@@ -167,6 +167,11 @@ the child process. Listing a `.tar.zz` under `ON` therefore transfers the whole
 decompressed archive once, even when no member is read, and a single far seek transfers
 everything before it. `AUTO` never gives a bare zlib stream to rapidgzip.
 
+rapidgzip keeps decoded data in memory, so a small file that decodes to a lot of data can
+make it hold a lot of memory. `DecoderLimits.max_decoder_memory` (2 GiB by default) caps
+its child process. A child that goes over the cap is stopped, and the stdlib decoder reads
+the rest of the stream: the bytes are the same, only slower.
+
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without
 `seekable_members=True`, at the first gzip, zlib or deflate stream it would handle.

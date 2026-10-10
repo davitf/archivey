@@ -131,10 +131,12 @@ class ZstdCodec(StreamCodec):
             source,
             lambda: zstd.ZstdDecompressor(options=options),
             codec_name="zstd",
-            magic=_ZSTD_STREAMS,
+            # A container coder that is one stream (a ZIP member) reads no further
+            # frame: one there is input after the end (``CodecParams.single_stream``).
+            magic=stream_magic() if params.single_stream else _ZSTD_STREAMS,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
-            exact_input=config.exact_input,
+            refuse_input_after_end=config.refuse_input_after_end,
         )
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:
@@ -157,7 +159,8 @@ class ZstdCodec(StreamCodec):
                 # The frame names a dictionary (its Dictionary_ID), and archivey has no
                 # way to be given one. zstd reports the same "Dictionary mismatch".
                 return UnsupportedFeatureError(
-                    f"zstd frame needs a dictionary, which is not supported: {exc!r}"
+                    f"zstd frame needs a dictionary, which is not supported: {exc!r}; "
+                    "a damaged header reads the same way"
                 )
             if "checksum" in str(exc):
                 # The frame's content checksum ("Restored data doesn't match

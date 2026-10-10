@@ -48,7 +48,7 @@ from archivey.internal.streams.resume import ResumeReachedStreamEnd
 WINDOW_SIZE = 32 << 10
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DeflateResume:
     """A :class:`SeekPoint` state: a DEFLATE block boundary inside the stream.
 
@@ -226,9 +226,14 @@ class DeflateResumeDecoder(BaseDecoder):
 
 
 def stream_end(
-    source: BinaryIO, point: SeekPoint | None, cap: int, *, exact_input: bool = False
-) -> int | None:
-    """The decompressed offset where the raw DEFLATE stream in ``source`` ends.
+    source: BinaryIO,
+    point: SeekPoint | None,
+    cap: int,
+    *,
+    check_input_after: bool = False,
+) -> tuple[int | None, bool]:
+    """The decompressed offset where the raw DEFLATE stream in ``source`` ends, and
+    whether input follows it.
 
     ``source`` is the compressed stream, seekable from offset 0. The decode starts at
     ``point`` (a :class:`DeflateResume` block boundary at or before ``cap``), or at the
@@ -236,8 +241,13 @@ def stream_end(
     ``None`` when it does not get there: the input runs out first (a cut stream), zlib
     raises, or the output passes ``cap``. Raw DEFLATE has no checksum, so a resumed
     decode that reaches the end is as good as a full one. Output is counted and
-    dropped, in bounded pieces. With ``exact_input`` (``StreamConfig.exact_input``),
-    also ``None`` when any byte of ``source`` follows the stream's end.
+    dropped, in bounded pieces.
+
+    The second value is False unless ``check_input_after`` is set. Then it is whether
+    ``source`` holds any byte after the stream's end, a zero too, a further stream
+    included. Only a decode from the start (``point`` of ``None``) can say that of the
+    stream's first end: a resume point can lie in a further stream that rapidgzip read
+    on into.
     """
     produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
     if point is not None:
@@ -253,16 +263,17 @@ def stream_end(
     try:
         while not decomp.eof:
             if produced > cap:
-                return None
+                return None, False
             if not data:
                 data = source.read(1 << 16)
                 if not data:
-                    return None
+                    return None, False
                 data, bit = _splice(bit, data), 0
             produced += len(decomp.decompress(data, 1 << 20))
             data = decomp.unconsumed_tail
     except zlib.error:
-        return None
-    if exact_input and (decomp.unused_data or data or source.read(1)):
-        return None
-    return produced if produced <= cap else None
+        return None, False
+    if produced > cap:
+        return None, False
+    after = check_input_after and (bool(decomp.unused_data) or bool(source.read(1)))
+    return produced, after

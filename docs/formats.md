@@ -95,15 +95,17 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   restore method 2. Under ZipCrypto both read as the password-or-damage
   ``EncryptionError`` instead, because those settings are encrypted.
 - A member's compressed data must hold one stream of its codec and nothing else, as
-  7-Zip checks. Bytes after the stream (junk, zero bytes, a second DEFLATE or bzip2
-  stream) raise ``CorruptionError`` once the data before them has been read, whatever
-  the member's declared size and CRC cover; so does an LZMA member without an end
-  marker, or a PPMd member, whose declared size stops short of its data. The same holds
-  for a 7z coder. The exceptions: Zstd and LZ4 read concatenated frames as one stream,
-  so a further frame is content that counts against the declared size, and one zero
-  byte after LZMA data without an end marker reads, because 7-Zip's encoder sometimes
-  writes it. A standalone compressed file reports bytes after its stream as a warning
-  instead (see [Single-file compressors](#single-file-compressors)).
+  7-Zip checks. Bytes after the stream (junk, zero bytes, a second DEFLATE, bzip2 or
+  Zstd stream) raise ``CorruptionError`` once the data before them has been read, for
+  every compression method, whatever the member's declared size and CRC cover; so does
+  an LZMA member without an end marker, or a PPMd member, whose declared size stops
+  short of its data. Under ZipCrypto they read as the password-or-damage
+  ``EncryptionError`` instead, caused by that ``CorruptionError``, because the bytes are
+  encrypted. The same holds for a 7z coder, except that a 7z Zstd or LZ4 coder reads
+  concatenated frames as one stream, so a further frame is content that counts against
+  the declared size. One zero byte after LZMA data without an end marker reads, because
+  7-Zip's encoder sometimes writes it. A standalone compressed file reports bytes after
+  its stream as a warning instead (see [Single-file compressors](#single-file-compressors)).
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
@@ -173,10 +175,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   corrupt member header *after the first* as a clean end of archive — no exception is
   raised; iteration just stops early. Archivey backstops this with its end-of-archive
   marker check:
-    - When the shortened scan stops on a **rejected (non-null) header block**, archivey
-      raises `CorruptionError` **by default** — a well-formed tar never ends that way. In
-      random-access reads this holds even when the bad header is the archive's *final*
-      block.
+    - When the shortened scan stops on a **header `tarfile` rejected**, archivey raises
+      `CorruptionError` **by default** — a well-formed tar never ends that way. This
+      holds in random-access and streaming reads alike, whatever follows the bad header:
+      more members, nothing (it is the archive's *final* block), or a block of zeros.
     - A tar that merely **ends cleanly on a member boundary without the two-block null
       trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
@@ -204,9 +206,6 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       listing.
     - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
       whatever the policy.
-  - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access
-    reads but not in forward-only streaming, where it surfaces as the missing-trailer
-    warning instead. A future native TAR reader may close this gap.
 
 ## 7z
 
@@ -491,11 +490,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   it does a 7z name (see 7z above).
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
-- Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
+- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty
   extension), and `extra["iso.version"]` keeps the number. When a directory holds
   several versions of one name, the highest takes the bare name and the others list
   under their stored identifier (`FOO.;1`) with `is_current=False`, the same shape as
-  RAR file-version history. Entries within a directory list in on-disc record order.
+  RAR file-version history. Plain directory names have no version and keep any `;N`. Two
+  files stored with the same identifier both list, the later one current, as in ZIP
+  and TAR. That includes a file and its associated file (such as the resource fork on a
+  Mac hybrid image), which list as two members with one name and nothing to tell the
+  fork apart. Entries within a directory list in on-disc record order.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
@@ -566,7 +569,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
   not `CorruptionError`: a gzip member with a method other than deflate or a reserved
   flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
-  dictionary, and a `.Z` file with a code width over 16 bits.
+  dictionary, and a `.Z` file with a code width over 16 bits. A damaged byte in one of
+  those same fields raises the same error, because nothing tells the two apart; the
+  message says a damaged header reads the same way (see
+  [Errors and diagnostics](errors-and-diagnostics.md)).
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable
@@ -615,10 +621,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `UnsupportedFeatureError`. Detection reads a sample of the stream with no cap, so
   a frame declaring 2 GiB has that much address space reserved while `open_archive`
   detects it, whatever the cap.
+- A `.zst` frame carries a content checksum only when its writer adds one, as a modern
+  `.lz4` frame does. Archivey checks it when it is there; a frame without one can decode
+  damaged data to wrong bytes with no error.
 - The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) reads as `.lz4`. It has
   no checksum, so damaged data can decode to wrong bytes with no error, as a modern
   frame written without one can. It has no end mark either, so a file cut exactly
   between two of its blocks reads short with no error.
+- Brotli (`.br`), unix-compress (`.Z`) and LZMA Alone (`.lzma`) have no checksum
+  either, so damaged data can decode to wrong bytes with no error. Archivey does not
+  report this with a diagnostic on each file, because there is no check to skip. A
+  `.Z` file has no end mark, so a cut can also read short with no error (see the `.Z`
+  bullet above).
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 

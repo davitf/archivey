@@ -90,18 +90,18 @@ settings are decrypted data, so both SHALL raise `CorruptionError` there, which 
 password confirmation counts as the candidate failing (see below).
 
 A member's compressed data SHALL be one stream of its codec and nothing else, as 7-Zip
-23.01 reads it. A byte of it the codec leaves after the stream's end, a zero byte too,
-and a further stream there, SHALL raise `CorruptionError` once the output before it is
-read, whatever the declared size and CRC cover, with an accelerator on or off. The
-exception is Zstd (method 93), whose decoder reads concatenated frames as one stream: a
-further frame is content that counts against the declared size and CRC, and only bytes
-after the last frame that start no frame SHALL raise. An LZMA
-member without the end-marker flag (general-purpose bit 1) and a PPMd member end at
-their declared size: their input SHALL end there too (after an end marker right at
-that size for LZMA, and after PPMd8's end mark, which a member SHALL carry), so a
-declared size short of the stream's data SHALL raise `CorruptionError`, not
-`TruncatedError`. One zero byte after LZMA data without an end marker reads, as 7-Zip's
-encoder sometimes flushes it past the decoder's last read.
+23.01 reads it (DR-3). A byte of it the codec leaves after the stream's end, a zero
+byte too, and a further stream there (a second Zstd frame, a skippable one too), SHALL
+raise `CorruptionError` (`DataAfterEndError`) once the output before it is read,
+whatever the declared size and CRC cover, for every method and for encrypted members
+too, with an accelerator on or off; under ZipCrypto the password confirmation counts it
+as the candidate failing, as above. An LZMA member without the end-marker flag
+(general-purpose bit 1) and a PPMd member end at their declared size: their input
+SHALL end there too (after an end marker right at that size for LZMA, and after PPMd8's
+end mark, which a member SHALL carry), so a declared size short of the stream's data
+SHALL raise `CorruptionError`, not `TruncatedError`. One zero byte after LZMA data
+without an end marker reads, as 7-Zip's encoder sometimes flushes it past the
+decoder's last read.
 
 #### Scenario: ZIP codec-layer decoding
 
@@ -111,8 +111,7 @@ encoder sometimes flushes it past the decoder's last read.
 | LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error" |
 | LZMA member without an end marker (bit 1 clear), with junk after its data or a declared size 1000 bytes short of it | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
 | PPMd member with junk or zero bytes after its end mark, a declared size 1000 bytes short of its data, or no end mark | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
-| DEFLATE or bzip2 member with junk, zero bytes or a second stream after its stream, accelerator off or on | `CorruptionError` (7-Zip: "There are some data after the end of the payload data") |
-| Zstd member of two frames | Original bytes when the declared size and CRC count both; `CorruptionError` when the size stops after the first |
+| DEFLATE, Deflate64, BZIP2 or Zstd member with junk, zero bytes or a second stream (a Zstd frame, a skippable one too) after its stream, accelerator off or on | `CorruptionError` (7-Zip: "There are some data after the end of the payload data") |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
@@ -145,7 +144,9 @@ declared size, `CorruptionError` otherwise). AE-2 members SHALL surface no
 members SHALL surface and verify `crc32` in addition to the HMAC. AES
 decryption requires `cryptography` (`[recommended]`); when it is absent an AE member SHALL raise
 `PackageNotInstalledError` (detection still identifies the member as
-AES-encrypted). With several possible passwords, WinZip AES candidates SHALL be
+AES-encrypted), except that a member no library can read, one whose declared size cannot
+hold salt, verification value and HMAC, SHALL raise `CorruptionError` with or without
+`cryptography`. With several possible passwords, WinZip AES candidates SHALL be
 confirmed as "Confirm multi-candidate ZipCrypto passwords" describes, not accepted on
 the verification value alone.
 
@@ -158,10 +159,12 @@ the verification value alone.
 | Tampered ciphertext, correct password | HMAC mismatch → `CorruptionError` at terminal read |
 | Tampered ciphertext, several candidates including the correct one | `CorruptionError` naming the member as most likely damaged |
 | Declared size past the stored data, one password or several | `TruncatedError` |
+| Declared size too small for the encryption header | `CorruptionError` naming the member |
 | Tampered ciphertext, partial read then `close()` | Quiet; `close()` is teardown, not a verdict (ADR 0014) |
 | AE-2 member | `crc32` absent; no CRC check; HMAC is the integrity signal |
 | AE-1 member | `crc32` present and verified alongside the HMAC |
 | AES member without `cryptography` installed | `PackageNotInstalledError`; still reported as encrypted |
+| Same, declared size too small for the encryption header | `CorruptionError` |
 | Several candidates, a wrong one passing the verification value first | Wrong candidate rejected by the confirm; the right one reads |
 
 ### Requirement: Refuse PKWARE Strong Encryption
@@ -173,8 +176,10 @@ field `0x0017` SHALL list with `is_encrypted=True`, and opening it SHALL raise
 Listing a symlink of this kind SHALL leave `link_target` unset and emit
 `SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When stdlib
 cannot read the central directory and an archive extra data record
-(`PK\x06\x08`) sits where stdlib reads the directory (the EOCD position minus
-the recorded directory size), opening the archive SHALL
+(`PK\x06\x08`) sits where stdlib reads the directory (the position of the end
+record that follows the directory, minus the directory size that record gives; for
+a ZIP64 archive both come from the ZIP64 end record, on every Python patch level),
+opening the archive SHALL
 raise `UnsupportedFeatureError` naming Strong Encryption rather than
 `CorruptionError`.
 
@@ -210,9 +215,9 @@ rules:
 | --- | --- |
 | `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
-| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints |
+| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
-| `is_encrypted` | `flag_bits & 0x1 != 0` |
+| `is_encrypted` | `flag_bits & 0x1 != 0`, or `compress_type == 99` (WinZip AES) whatever bit 0 says |
 
 Invalid DOS or NTFS timestamp values SHALL fall through to the next valid
 precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`, whose `field`
@@ -242,7 +247,10 @@ halts with `DiagnosticRaisedError`.
 | NTFS FILETIMEs present, no Extended Timestamp, DOS-attribute host | Present `modified` / `accessed` / `created` fields are timezone-aware UTC from `0x000A` |
 | Creation time stored (NTFS or Extended Timestamp third time), FAT / OS2 / NTFS / VFAT host | `created` holds it (the Extended Timestamp wins); `ctime is None` |
 | Creation time stored, Unix or any other host | `created is None`; `ctime` holds it (7-Zip and libarchive on Linux and macOS store `st_ctime`) |
-| `flag_bits & 0x1` | `member.is_encrypted is True` |
+| `flag_bits & 0x1`, or method 99 with bit 0 clear | `member.is_encrypted is True` |
+| Unix-origin entry named `a\` | `FILE` named `a\` on every host OS |
+| DOS-origin entry named `a\` | `DIRECTORY` named `a/` on every host OS; any data it declares is not reachable (no `open()`, extraction writes an empty directory) and `size` still reports it |
+| Header name without a trailing `/`, Unicode Path field `dir/` | `DIRECTORY` named `dir/` on every Python version |
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 | Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |
@@ -271,8 +279,9 @@ any other missing path.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
 rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:
-Info-ZIP `.zNN` segment names, non-zero classic EOCD disk fields (`0xFFFF` is the
-ZIP64 sentinel, not a disk number), and ZIP64 locator `disks > 1`. Info-ZIP
+Info-ZIP `.zNN` segment names, non-zero EOCD disk fields (the ZIP64 end record's
+when there is one; a classic `0xFFFF` is the ZIP64 sentinel, not a disk number), and
+ZIP64 locator `disks > 1`. Info-ZIP
 `zip -s` writes a genuinely spanned
 set addressed by `(disk, offset-within-disk)`, which stdlib `zipfile` cannot
 resolve; a linear join lists correctly and then reads only whichever members
@@ -429,6 +438,7 @@ Rejected-candidate streams SHALL be closed before trying the next candidate.
 | WinZip AES candidates all fail after passing `pw_verify` | `CorruptionError` (`TruncatedError` for a short member); no bytes returned |
 | `OSError` from the source | Propagates unchanged; failed stream is closed |
 | Structural local-header damage | `CorruptionError`; no further password iteration |
+| Declared size too small for the encryption header | `CorruptionError` naming the member |
 | One distinct static candidate, stream closed before EOF | Data returned; `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`) |
 | Several candidates, STORED or compressed member within the prefix, stream closed before EOF | No diagnostic (the CRC confirmed the winner) |
 | Several candidates, compressed member past the prefix, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`); winner not added to known-good |

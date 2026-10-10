@@ -53,6 +53,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 )
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
+    input_after_end_error,
     report_trailing_data,
 )
 from archivey.internal.streams.resume import ask_resume_offset
@@ -91,8 +92,10 @@ _NO_FURTHER_STREAM = stream_magic()
 
 
 def _stdlib_bzip2(
-    source: CodecSource, config: StreamConfig, *, single_stream: bool = False
+    source: CodecSource, config: StreamConfig, *, single_stream: bool
 ) -> BinaryIO:
+    # ``single_stream`` has no default: every engine that decodes a coder's data,
+    # the accelerator's fallbacks too, must agree on what follows its stream (DR-5).
     return FramedDecompressorStream(
         source,
         bz2.BZ2Decompressor,
@@ -100,7 +103,7 @@ def _stdlib_bzip2(
         magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
-        exact_input=config.exact_input,
+        refuse_input_after_end=config.refuse_input_after_end,
     )
 
 
@@ -152,8 +155,8 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     coder's data is one stream (``CodecParams.single_stream``): a further stream is
     trailing data there, as with the accelerator off, and where the decoder read on into
     one, the read hands over at its start (:class:`_Bzip2Layout`). When the coder's input
-    must end with its stream (``StreamConfig.exact_input``), any byte after it hands
-    over at the end, and the standard library refuses it.
+    must end with its stream (``StreamConfig.refuse_input_after_end``), any byte after
+    it is refused at the end (:meth:`_refuse_input_after_end`).
 
     A seek gets the same verdicts as a read. A seek past a skipped region hands over
     at it, and a seek that reaches the decoder's end runs the end check, or, when the
@@ -172,7 +175,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         *,
         views: _SourceViews,
         config: StreamConfig,
-        single_stream: bool = False,
+        single_stream: bool,
     ) -> None:
         super().__init__(inner)
         self._views = views
@@ -277,10 +280,31 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         """Check the combined CRCs, then what follows the last stream. Return whether
         the standard library took over at the end to decode a further stream."""
         self._end_unchecked = False
-        self._check_combined_crcs()
+        first_end = self._check_combined_crcs()
+        if self._config.refuse_input_after_end:
+            self._refuse_input_after_end(first_end)
         return self._check_trailing_data()
 
-    def _check_combined_crcs(self) -> None:
+    def _refuse_input_after_end(self, first_end: int | None) -> None:
+        """Raise when any byte, a zero too, follows the first stream.
+
+        ``StreamConfig.refuse_input_after_end`` (a ZIP member, a 7z coder), as the
+        standard library path refuses it. ``first_end`` is where the first end-of-stream
+        marker ends, from :meth:`_check_combined_crcs`; without an index, the decoder's
+        compressed position. The accelerator reads a second stream as data, so the check is from
+        the first stream's end, not the last one's.
+        """
+        if first_end is None:
+            position = getattr(self._accelerator(), "compressed_position", None)
+            first_end = position() if position is not None else None
+        if first_end is None:
+            return
+        with self._views.view() as view:
+            view.seek(first_end)
+            if view.read(1):
+                raise input_after_end_error("bzip2")
+
+    def _check_combined_crcs(self) -> int | None:
         """Check each stream's combined CRC, which the accelerator does not.
 
         rapidgzip's bzip2 decoder checks every block's CRC against its data, but not the
@@ -290,11 +314,15 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         in its block's header, so the decoder's index (where every block and every
         end-of-stream marker starts) and 80 bits of the source at each of those places
         are enough to check it, without decoding anything again.
+
+        Returns the byte offset where the first stream's end-of-stream marker ends, or
+        ``None`` when there is no index or no marker in it.
         """
         offsets_fn = getattr(self._accelerator(), "block_offsets", None)
         offsets = offsets_fn() if offsets_fn is not None else None
         if not offsets:
-            return
+            return None
+        first_end: int | None = None
         with self._views.view() as view:
             combined = 0
             stream_end = -1
@@ -320,6 +348,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
                         )
                     combined = 0
                     stream_end = -(-(bit + 80) // 8) * 8
+                    if first_end is None:
+                        first_end = stream_end // 8
+        return first_end
 
     def _check_trailing_data(self) -> bool:
         """Find the first byte after the last stream that is neither zero padding nor
@@ -337,30 +368,16 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         stopped before it, so the standard library takes over at the end and decides
         (class docstring). For a container coder's single stream the standard library
         would not read a further stream either, so that stream is reported as trailing
-        bytes instead; and where the coder's input must end with the stream
-        (``StreamConfig.exact_input``), any byte there hands over, for the standard
-        library to refuse. Return whether the standard library took over.
+        bytes instead. Return whether the standard library took over.
         """
         end = getattr(self._accelerator(), "compressed_position", lambda: None)()
         if end is None:
             return False
-        takeover = self._takeover()
-        if self._config.exact_input:
-            # A container coder's input is the stream and nothing else
-            # (``StreamConfig.exact_input``): any byte after it, a zero too, is
-            # refused. The standard library raises there, so it takes over.
-            if takeover is None:
-                return False
-            with self._views.view() as view:
-                view.seek(end)
-                if not view.read(1):
-                    return False
-            takeover.switch_to_stdlib()
-            return True
         found = self._first_trailing_byte(end)
         if found is None:
             return False
         offset, starts_stream = found
+        takeover = self._takeover()
         if starts_stream and takeover is not None and not self._single_stream:
             takeover.switch_to_stdlib()
             return True
@@ -447,7 +464,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
 
     def _fall_back_to_stdlib(self) -> None:
         """Replace a decoder that read the stream as empty with the standard library,
-        from the start; a read and a seek fall back here alike."""
+        from the start; a read and a seek fall back here alike. The seek is why this is
+        not ``empty_to_stdlib`` of :class:`_StdlibOnAcceleratorError`, which acts on a
+        read only."""
         self._armed = False
         self._end_unchecked = False  # the stdlib engine reports its own end
         self._replace_inner(

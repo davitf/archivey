@@ -66,14 +66,14 @@ class StreamConfig:
     ``report_trailing_data`` is set where the codec stream *is* the file — a bare
     compressed file, a compressed TAR, ``open_stream`` — so bytes after the stream's
     end are something the caller was given and not told about, and the stream codecs
-    report them as ``ARCHIVE_TRAILING_DATA``. ``exact_input`` is set by the ZIP and 7z
-    readers instead: there the source is exactly one coder's compressed data, whose
-    size the archive declares, so a byte the codec leaves after its end (a zero byte
-    too) is input the member declares and does not use. It may hide a second payload,
-    and 7-Zip reports it as a data error, so the codec raises ``DataAfterEndError`` (a
-    ``CorruptionError``). The 7z reader cuts a coder's input at its declared size first,
-    so a 7z AES stage's block padding is not in it. Raw LZMA is container-only and
-    refuses such bytes whatever the flag says.
+    report them as ``ARCHIVE_TRAILING_DATA``. ``refuse_input_after_end`` is set by the
+    ZIP and 7z readers instead: there the source is exactly one coder's compressed data,
+    whose size the archive declares, so a byte the codec leaves after its end (a zero
+    byte too) is input the member declares and does not use. It may hide a second
+    payload, and 7-Zip reports it as a data error, so the codec raises
+    ``DataAfterEndError`` (a ``CorruptionError``; DR-3). The 7z reader cuts a coder's
+    input at its declared size first, so a 7z AES stage's block padding is not in it.
+    Raw LZMA is container-only and refuses such bytes whatever the flag says.
     """
 
     streaming: bool = False
@@ -86,7 +86,7 @@ class StreamConfig:
     decoder_limits: DecoderLimits = DecoderLimits()
     collector: DiagnosticCollector | None = field(default=None, compare=False)
     report_trailing_data: bool = False
-    exact_input: bool = False
+    refuse_input_after_end: bool = False
 
 
 def stream_config_from_archivey(
@@ -94,13 +94,13 @@ def stream_config_from_archivey(
     *,
     streaming: bool,
     seekable: bool = False,
-    exact_input: bool = False,
+    refuse_input_after_end: bool = False,
 ) -> StreamConfig:
     """Derive the codec-layer view from the public config and declared seek demand."""
     return StreamConfig(
         streaming=streaming,
         seekable=seekable,
-        exact_input=exact_input,
+        refuse_input_after_end=refuse_input_after_end,
         use_rapidgzip=config.use_rapidgzip,
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,

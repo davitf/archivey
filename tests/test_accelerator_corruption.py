@@ -835,12 +835,15 @@ def _soft_short_backstop() -> tuple[_GzipTruncationCheckStream, bytes]:
 
     stream = _GzipTruncationCheckStream(
         _StdlibOnAcceleratorError(
-            io.BytesIO(prefix), views=views, open_stdlib=open_stdlib, label="gzip"
+            io.BytesIO(prefix),
+            views=views,
+            open_stdlib=open_stdlib,
+            label="gzip",
+            empty_to_stdlib=True,
         ),
         views=views,
         isize=int.from_bytes(cut[-4:], "little"),
         source_len=len(cut),
-        open_stdlib=open_stdlib,
     )
     return stream, prefix
 
@@ -1104,14 +1107,22 @@ def test_bzip2_accelerator_seeks_into_damage_as_off(
 
 
 @pytest.mark.parametrize(
-    "between", [bytes(16), b"junkjunk"], ids=["zero-padding", "junk"]
+    "between",
+    [
+        pytest.param(bytes(16), id="zero-padding"),
+        pytest.param(b"junkjunk", id="junk"),
+        pytest.param(b"BZh9" + bytes(40), id="header-and-zeros"),
+        pytest.param(_bz2_without_markers(b"B"), id="damaged-stream"),
+    ],
 )
 def test_bzip2_accelerator_reads_a_container_coders_single_stream_as_off(
     between: bytes,
 ) -> None:
     # A ZIP or 7z coder's data is one stream (CodecParams.single_stream); the standard
     # library stops at its end. The accelerator stops at the padding too, and the end
-    # check must not hand a following stream to a standard library that reads it.
+    # check must not hand a following stream to a standard library that reads it. At
+    # a damaged stretch the standard library takes over with the single-stream rule,
+    # so it stops at the first stream's end as well.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _bz2_stream(b"X") + between + _bz2_stream(b"Y")
     params = CodecParams(single_stream=True)
@@ -1134,20 +1145,24 @@ def test_bzip2_accelerator_reads_a_container_coders_single_stream_as_off(
         pytest.param(_bz2_without_markers(b"B"), id="damaged-stream"),
     ],
 )
-@pytest.mark.parametrize("exact_input", [False, True], ids=["bounded", "exact"])
+@pytest.mark.parametrize(
+    "refuse_input_after_end", [False, True], ids=["bounded", "exact"]
+)
 def test_bzip2_accelerator_ends_a_container_coders_single_stream_as_off(
-    between: bytes, exact_input: bool
+    between: bytes, refuse_input_after_end: bool
 ) -> None:
     # A container coder's data is one stream: the accelerator hands over where a
-    # further stream starts, so both modes read the first alone. With exact_input (a
-    # ZIP member, a 7z coder), both refuse what follows it.
+    # further stream starts, so both modes read the first alone. With
+    # refuse_input_after_end (a ZIP member, a 7z coder), both refuse what follows it.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     data = _bz2_stream(b"X") + between + _bz2_stream(b"Y")
     params = CodecParams(single_stream=True)
     results: list[int | type[Exception]] = []
     for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
         config = StreamConfig(
-            use_indexed_bzip2=mode, seekable=True, exact_input=exact_input
+            use_indexed_bzip2=mode,
+            seekable=True,
+            refuse_input_after_end=refuse_input_after_end,
         )
         try:
             with open_codec_stream(
@@ -1156,5 +1171,24 @@ def test_bzip2_accelerator_ends_a_container_coders_single_stream_as_off(
                 results.append(len(s.read()))
         except CorruptionError as exc:
             results.append(type(exc))
-    expected = DataAfterEndError if exact_input else 1000
+    expected = DataAfterEndError if refuse_input_after_end else 1000
     assert results == [expected, expected]
+
+
+@pytest.mark.parametrize("single_stream", [True, False])
+def test_bzip2_read_as_empty_fallback_keeps_the_single_stream_rule(
+    single_stream: bool,
+) -> None:
+    # The standard library that an empty first accelerator read hands over to decodes
+    # as the accelerator-off path does: after a container coder's single stream (7z),
+    # a second stream is trailing data, not content.
+    from archivey.internal.streams.codecs.bzip2_codec import _Bzip2EmptyStreamCheck
+
+    data = bz2.compress(b"first") + bz2.compress(b"second")
+    stream = _Bzip2EmptyStreamCheck(
+        io.BytesIO(b""),  # an accelerator that read the stream as empty
+        views=_SourceViews(lambda: io.BytesIO(data)),
+        config=DEFAULT_STREAM_CONFIG,
+        single_stream=single_stream,
+    )
+    assert stream.read() == (b"first" if single_stream else b"firstsecond")
