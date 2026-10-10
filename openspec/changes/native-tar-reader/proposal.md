@@ -4,7 +4,7 @@
 
 The TAR backend reads through stdlib `tarfile`, and a growing share of it exists to work
 around `tarfile`. An inventory on 2026-10-10 found 20 places, about 650 of the backend's
-1 810 lines, 7 of them on private `tarfile` methods. The open TAR fix PRs add about 350
+1 810 lines at the time, 7 of them on private `tarfile` methods. The open TAR fix PRs add about 350
 more lines, nearly all of them overrides of private parse methods, one of them a copy of
 two stdlib function bodies pinned by source hashes.
 
@@ -21,15 +21,18 @@ The cost is not only lines:
   three members on Python 3.12.13 and two on 3.12.3 (Ubuntu) and 3.13.16, because
   upstream changed the private functions we hook. Upstream is still changing them.
 
-TAR is the simplest format archivey reads. A native reader is estimated at 900 to 1 300
-lines, smaller than the 7z parser, and deletes the workaround layer instead of growing
-it. The maintainer moved it into 0.2.0 on 2026-10-10.
+TAR is the simplest format archivey reads. The case does not rest on line count: the
+backend ends up about the same size (about 2 100 lines against 1 789 on `main`, and
+about 2 140 once the open fix PRs merge; `design.md` §"Module layout"). What goes is the
+workaround layer: the 20 sites, the 7 private-API hooks, the hash-pinned stdlib copies
+and the ~350 lines the open PRs add. The maintainer moved it into 0.2.0 on 2026-10-10.
 
 ## What Changes
 
 - New `internal/backends/tar_parser.py`: v7, ustar and old GNU header blocks, GNU
   base-256 numbers, PAX records (per-member and global), GNU long names and links, and
-  the four GNU sparse encodings (old GNU, PAX 0.0, 0.1, 1.0). Pure, no I/O, fuzzed.
+  the four GNU sparse encodings (old GNU, PAX 0.0, 0.1, 1.0), and the walker that
+  reads them from one byte stream in a loop. Fuzzed.
 - New `streams/streamtools/sparse.py`: a member's logical bytes over its stored bytes,
   holes as zeros, seekable when its source is.
 - `tar_reader.py` reads headers with an iterative walker over the same byte stream it
@@ -37,16 +40,18 @@ it. The maintainer moved it into 0.2.0 on 2026-10-10.
   it. Every `tarfile` hook, override and copied function goes.
 - Fixes that fall out: a member `seek` past the end behaves as in every other format;
   a sparse member never serves its padding; `raw_name` is always the stored bytes; a
-  streaming pass keeps one member list, not two; the listing no longer depends on the
-  Python patch release.
+  GNU incremental archive (`tar -G`) lists its real names, not names under a directory
+  of digits; a streaming pass keeps one member list, not two; the listing no longer
+  depends on the Python patch release.
 - `tarfile` stays as the test-fixture writer and a differential-test oracle.
 
 No public name, signature, exception type or diagnostic code changes.
 
 ## Impact
 
-- Capabilities: `format-tar` (format properties, handle-lock requirement, `raw_name`
-  mapping; a new requirement for what the parser reads).
+- Capabilities: `format-tar`: a new requirement for what the parser reads; format
+  properties, the handle lock, metadata mapping, hardlink lookup, truncation detection
+  and name decoding rewritten without `tarfile`.
 - Code: `internal/backends/tar_reader.py` (rewritten), `tar_parser.py` and
   `streamtools/sparse.py` (new), `streamtools/binaryio.py` (one `tarfile` workaround
   removed).
