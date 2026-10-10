@@ -14,7 +14,7 @@ states the behaviour and links the row.
 | --- | --- |
 | Read | `.Z` as a one-member archive and inside `.tar.Z` |
 | Write | **Not shipped** |
-| Backends | Native: `internal/streams/unix_compress.py`, always available |
+| Backends | Native: `internal/streams/codecs/unix_compress_decoder.py`, always available |
 | Seeking | From the nearest CLEAR code, when the source is seekable. A file with no CLEAR code re-decodes from the start |
 | Size | `None`. The format has no size field |
 | Digests | None. The format has no checksum |
@@ -231,8 +231,9 @@ The truncation gap is the format's, not an open question;
 - The `compress` format has no formal specification; `ncompress` 5.0's source is the
   reference implementation, including the code-group padding after CLEAR
 - [`uncompresspy`](https://github.com/kYwzor/uncompresspy), BSD 3-Clause, the origin of the
-  LZW kernel (notice at the end of `unix_compress.py`)
+  LZW kernel (notice at the end of `unix_compress_decoder.py`)
 - Decisions: [`library-analysis.md`](../library-analysis.md) §unix-compress
-- Code: `internal/streams/unix_compress.py` (`LzwState`, `UnixCompressDecoder`,
-  `UnixCompressDecompressorStream`) · `internal/streams/codecs.py` (`UnixCompressCodec`)
+- Code: `internal/streams/codecs/` (`unix_compress_decoder.py`: `LzwState`,
+  `UnixCompressDecoder`, `UnixCompressDecompressorStream`; `unix_compress_codec.py`:
+  `UnixCompressCodec`)
 - Handbook: [`single-file.md`](single-file.md) · [`tar.md`](tar.md)

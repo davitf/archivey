@@ -91,7 +91,7 @@ Each stage: who does the work, what is shared across the codecs, what is refused
 ### 2.1 Identify
 
 Seven codecs have magic at offset 0, declared on their codec descriptor in
-`internal/streams/codecs.py` and aggregated by the detector: gzip `1f 8b`, bzip2 `BZh`,
+`internal/streams/codecs/` and aggregated by the detector: gzip `1f 8b`, bzip2 `BZh`,
 xz `fd 37 7a 58 5a 00`, lzip `LZIP`, zstd `28 b5 2f fd`, LZ4 `04 22 4d 18` (and its legacy
 stream `02 21 4c 18`), `.Z` `1f 9d`.
 zstd also matches behind a run of skippable frames ([`zstd-lz4.md`](zstd-lz4.md) §2.1).
@@ -122,8 +122,9 @@ The extension is the last resort (`GUESS`): `.gz`, `.zz`, `.bz2`, `.xz`, `.lz`, 
 
 **`SingleFileReader` serves every codec.** It is codec-agnostic: the codec is picked by the
 format, and everything format-specific is a method on that codec's `StreamCodec` subclass.
-Adding a codec is one subclass in `codecs.py`, with no edit to the detector, the reader
-or the registry.
+Adding a codec is one subclass in its own `codecs/<name>_codec.py`, listed in
+`codecs/registry.py`'s `STREAM_CODECS`, with no edit to the detector, the reader or the
+backend registry.
 
 **The source decides how members are opened.** A path is handed to the codec on every
 open, so concurrent opens get independent handles. A seekable stream is wrapped once in a
@@ -242,7 +243,7 @@ have small fixed windows. The `.Z` decoder's table stays under about 19 MiB (abo
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
 trailer, zlib's Adler-32, the end of an xz stream, lzip member or LZMA Alone payload,
 and the end the bzip2, zstd and LZ4 libraries report for one stream. For bzip2, LZMA
-Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/decompress.py` runs one
+Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/codecs/framed_decoder.py` runs one
 library decompressor per stream and starts another only when the next bytes are that
 codec's magic (a zstd skippable frame counts), so a concatenated file still reads as one
 payload. LZMA Alone has no magic; the next bytes start a stream when the header's
@@ -410,7 +411,7 @@ pbzip2 lbzip2 lzip plzip zstd lz4 brotli ncompress`.
   · [`compressed-streams`](../../openspec/specs/compressed-streams/spec.md)
   · [`seekable-decompressor-streams`](../../openspec/specs/seekable-decompressor-streams/spec.md)
   · [`format-detection`](../../openspec/specs/format-detection/spec.md)
-- Code: `internal/backends/single_file_reader.py` (the reader) · `internal/streams/codecs.py`
+- Code: `internal/backends/single_file_reader.py` (the reader) · `internal/streams/codecs/`
   (codec descriptors, accelerators, probes) · `internal/streams/decompressor_stream.py`
   (the engine and seek table) · `internal/streams/archive_stream.py` (translation, rewind
   report) · `internal/detection.py` (probe order, inner-TAR probe)

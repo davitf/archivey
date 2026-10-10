@@ -25,11 +25,13 @@ import pytest
 from archivey import AcceleratorMode, ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import CorruptionError, DiagnosticRaisedError, TruncatedError
+from archivey.internal.streams.codecs.lzip_decoder import (
+    _SIZE_FIELD as _LZIP_SIZE_FIELD,
+)
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
 )
-from archivey.internal.streams.lzip import _SIZE_FIELD as _LZIP_SIZE_FIELD
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
@@ -219,7 +221,7 @@ def test_brotli_replay_keeps_output_the_library_held_back(
     """``brotli`` holds output back even without a limit, so a replay starts only from a
     point where a call returned nothing; compressible data over many pieces shows it.
     The replayed region stays one piece long, not the whole file."""
-    from archivey.internal.streams import decompress
+    from archivey.internal.streams.codecs import brotli_decoder as decompress
 
     regions: list[int] = []
     start_replay = decompress.BrotliDecoder._start_replay
@@ -349,7 +351,7 @@ def test_the_next_lzma_stream_rule_matches_what_liblzma_decodes() -> None:
             decodes = True
         except lzma.LZMAError:
             decodes = False
-        assert codecs._alone_props_liblzma_decodes(props) is decodes, props
+        assert codecs.lzma_codec._alone_props_liblzma_decodes(props) is decodes, props
 
 
 @requires_zstd()
@@ -476,11 +478,11 @@ def test_the_index_search_reaches_its_bound_and_no_further(
     ("suffix", "module", "check", "tail"),
     [
         pytest.param(
-            ".xz", "xz", "_parse_xz_footer", b"\x00\x00YZ" * (1 << 18), id="xz"
+            ".xz", "xz_decoder", "_parse_xz_footer", b"\x00\x00YZ" * (1 << 18), id="xz"
         ),
         pytest.param(
             ".lz",
-            "lzip",
+            "lzip_decoder",
             "_member_ends_at",
             (b"\x00" * 8 + b"J") * ((1 << 20) // 9),
             id="lz",
@@ -499,7 +501,7 @@ def test_the_index_search_checks_a_bounded_number_of_candidates(
     each a few) is given up on after a fixed number, not checked per byte."""
     import importlib
 
-    target = importlib.import_module(f"archivey.internal.streams.{module}")
+    target = importlib.import_module(f"archivey.internal.streams.codecs.{module}")
     original = getattr(target, check)
     calls = 0
 
