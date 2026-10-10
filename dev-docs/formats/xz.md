@@ -109,19 +109,20 @@ neither is known before the read ends.
 
 **Through bytes after the end.** The walk has to start at the last stream's end, not at
 the file's. Zero bytes are skipped first. For xz, `_data_end()` in
-`internal/streams/codecs/xz_decoder.py` then looks back for a footer that checks out:
-`YZ` at a 4-aligned end and a valid CRC-32 over its fields. For lzip, `_data_end()` in
-`lzip_decoder.py` looks for a trailer whose `member_size` leads back to an `LZIP` header; a candidate must end in the
-zero high bytes that any real `member_size` has, which rules out most offsets without a
-read. A `member_size` is not zero, so a trailer ends at most 7 bytes past the start of a
-run of zeros: a run of padding of any length gives a few candidates, found with one regex
-match over the reversed window. Both look back at most `TRAILING_DATA_SEARCH` (1 MiB) and
-check at most `TRAILING_DATA_CANDIDATES` (4096) candidate ends there: a tail can be
-crafted so that every `YZ` is 4-aligned, or as thousands of short runs of zeros. Past
-either bound the index is reported unreadable: `size=None`, and a seek falls back to
-decoding forward with `SEEK_INDEX_DEGRADED`. The forward read then reports the bytes as
-`ARCHIVE_TRAILING_DATA` ([`single-file.md`](single-file.md) §2.3). The two bounds keep the
-cost of a file of junk to 1 MiB of reading and 4096 checks at open, a few milliseconds.
+`internal/streams/codecs/xz_decoder.py` then looks back for a footer that checks out: `YZ`
+at a 4-aligned end and a valid CRC-32 over its fields. For lzip, `_data_end()` in
+`lzip_decoder.py` looks for a trailer whose `member_size` leads back to an `LZIP` header;
+a candidate must end in the zero high bytes that any real `member_size` has, which rules
+out most offsets without a read. A `member_size` is not zero, so a trailer ends at most 7
+bytes past the start of a run of zeros: a run of padding of any length gives a few
+candidates, found with one regex match over the reversed window. Both look back at most
+`TRAILING_DATA_SEARCH` (1 MiB) and check at most `TRAILING_DATA_CANDIDATES` (4096)
+candidate ends there: a tail can be crafted so that every `YZ` is 4-aligned, or as
+thousands of short runs of zeros. Past either bound the index is reported unreadable:
+`size=None`, and a seek falls back to decoding forward with `SEEK_INDEX_DEGRADED`. The
+forward read then reports the bytes as `ARCHIVE_TRAILING_DATA`
+([`single-file.md`](single-file.md) §2.3). The two bounds keep the cost of a file of junk
+to 1 MiB of reading and 4096 checks at open, a few milliseconds.
 
 **LZMA Alone** gives its size from the header when the header is not the all-ones
 "unknown" marker. `xz --format=lzma` always writes the marker; the LZMA SDK writes the real
