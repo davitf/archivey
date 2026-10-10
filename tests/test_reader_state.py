@@ -325,6 +325,52 @@ def test_interrupted_close_is_finished_by_the_next_close(
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
+def test_close_interrupted_after_the_stream_shutdown_claim_is_finished_by_the_next_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C just after close() took the stream-shutdown claim, with a pass suspended.
+
+    The close transition took the pass wind-down lease. The interrupted close() must
+    hand the claim back, so the next close() can wind the pass down, drop that lease
+    and tear the archive down. A spent claim would strand the lease for good.
+    """
+    path = tmp_path / "two.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", b"aaa")
+        zf.writestr("b.txt", b"bbb")
+    reader = open_archive(path)
+    assert isinstance(reader, BaseArchiveReader)
+    state = reader._state
+    source = reader._source
+    assert source is not None
+    real_claim = state.claim_stream_shutdown
+    claims: list[bool] = []
+
+    def interrupt_after_the_claim(*args: object) -> bool:
+        claimed = real_claim(*args)
+        claims.append(claimed)
+        if len(claims) == 1:
+            raise KeyboardInterrupt
+        return claimed
+
+    monkeypatch.setattr(state, "claim_stream_shutdown", interrupt_after_the_claim)
+    it = reader.stream_members()
+    stream = next(s for _m, s in it if s is not None)
+    assert stream.read() == b"aaa"
+    with pytest.raises(KeyboardInterrupt):
+        reader.close()
+    assert claims == [True]
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    reader.close()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    assert source.closed
+    assert stream.closed
+    # The retry took the claim back.
+    assert claims == [True, True]
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+
+
 # ---------------------------------------------------------------------------
 # S17-K10 / S17-K11: long symlink chains
 # ---------------------------------------------------------------------------

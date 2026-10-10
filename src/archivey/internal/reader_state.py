@@ -23,8 +23,11 @@ Leases, and why teardown is separate from close
 
 Marking the reader closed does not close the archive. A lease is held by whatever still
 reads through the source: the reader itself (one lease, from construction until
-``close()``, kept as ``_reader_lease_held``) plus each live member stream or reservation
-(counted in ``_lease_count``). The underlying file handle or ``unrar`` /
+``close()``, kept as ``_reader_lease_held``), each live member stream or reservation
+(counted in ``_lease_count``), and a ``stream_members()`` pass that ``close()`` found
+suspended at a yield (one lease, ``_pass_wind_down_lease``, from the close transition
+until ``close()`` has wound the pass down and closed the streams; a flag for the same
+reason as the reader's). The underlying file handle or ``unrar`` /
 ``7z`` process is torn down by whoever drops the **last** lease. ``close()`` drops the
 reader's lease first and then closes the still-open member streams, so with streams open
 the last lease usually goes with the last stream's close, not with the reader's. That is
@@ -167,12 +170,17 @@ class ReaderState:
         # interrupted before that store is finished by the next mark_reader_closed().
         self._reader_lease_held = True
         self._teardown_claimed = False
-        self._stream_shutdown_claimed = False
+        # The stream-shutdown claim (see :meth:`claim_stream_shutdown`): the ticket of
+        # the close() that holds it, and whether that close() finished the step. An
+        # interrupted holder hands the claim back, so the next close() retakes it.
+        self._stream_shutdown_owner: object | None = None
+        self._stream_shutdown_done = False
         # A suspended pass's ``pass_closer``, handed over by the close transition with
         # a lease of its own; see :meth:`take_pass_wind_down`. Like the reader's lease,
         # that lease is a flag read by _outstanding_leases_locked, so taking and dropping
         # it are one store each, and it is tracked apart from the closer so close() can
-        # drop it even when an interrupt lost the closer.
+        # drop it even when an interrupt lost the closer. Only the holder of the
+        # stream-shutdown claim drops it, in :meth:`finish_stream_shutdown`.
         self._pass_wind_down: Callable[[], None] | None = None
         self._pass_wind_down_lease = False
         # Library-internal open windows (extract_all's coordinator, first-touch link
@@ -264,22 +272,13 @@ class ReaderState:
         """The closer the close transition took from a suspended pass, once.
 
         The transition also took a lease for it, so teardown cannot be claimed until
-        the caller has run the closer and called :meth:`finish_pass_wind_down`.
-        ``None`` when no suspended pass had a closer, or another caller took it.
+        the holder of the stream-shutdown claim has run the closer and called
+        :meth:`finish_stream_shutdown`. ``None`` when no suspended pass had a closer,
+        or an earlier, interrupted ``close()`` took it.
         """
         with self._lock:
             closer, self._pass_wind_down = self._pass_wind_down, None
             return closer
-
-    def finish_pass_wind_down(self) -> None:
-        """Drop the lease taken with the pass closer, if still held. Teardown is next.
-
-        Idempotent, and a no-op when the transition took no closer, so ``close()`` can
-        call it unconditionally from a ``finally``.
-        """
-        with self._lock:
-            self._pass_wind_down = None
-            self._pass_wind_down_lease = False
 
     def release_pass(self, token: OperationToken) -> None:
         with self._lock:
@@ -575,8 +574,8 @@ class ReaderState:
                     self._close_cv.notify_all()
                     raise
 
-    def claim_stream_shutdown(self) -> bool:
-        """True exactly once, for the caller that should close live member streams.
+    def claim_stream_shutdown(self, ticket: object) -> bool:
+        """True for the one caller that should wind the pass down and close live streams.
 
         The same shape as :meth:`claim_teardown`, and needed for the same reason.
         ``mark_reader_closed`` returns ``False`` both for "I performed the transition
@@ -587,14 +586,44 @@ class ReaderState:
         reach ``inner.close()`` on the same stream. A backend that is not re-entrant on
         close (rapidgzip especially) would be entered twice.
 
-        Like teardown, the claim is not retried: a ``close()`` whose stream shutdown
-        raises has already consumed it.
+        ``ticket`` is an object the calling ``close()`` made for itself; the claim is
+        held by storing it, one store. :meth:`finish_stream_shutdown` spends the claim
+        for good: a ``close()`` whose wind-down or stream shutdown raises an
+        ``Exception`` still finishes, and the step is not retried. An interrupt is
+        different: the ``close()`` hands the claim back with
+        :meth:`abandon_stream_shutdown`, so the next ``close()`` retakes it and drops
+        the pass wind-down lease that the interrupted one still held.
         """
         with self._lock:
-            if self._stream_shutdown_claimed:
+            if self._stream_shutdown_done or self._stream_shutdown_owner is not None:
                 return False
-            self._stream_shutdown_claimed = True
+            self._stream_shutdown_owner = ticket
             return True
+
+    def finish_stream_shutdown(self, ticket: object) -> None:
+        """Spend the claim ``ticket`` holds and drop the pass wind-down lease.
+
+        A no-op unless ``ticket`` holds the claim. The lease is dropped before the
+        claim is marked spent: an interrupt between the two leaves a claim that
+        :meth:`abandon_stream_shutdown` hands back, never a spent claim with the
+        lease still held.
+        """
+        with self._lock:
+            if self._stream_shutdown_owner is not ticket:
+                return
+            self._pass_wind_down = None
+            self._pass_wind_down_lease = False
+            self._stream_shutdown_done = True
+
+    def abandon_stream_shutdown(self, ticket: object) -> None:
+        """Hand back the claim ``ticket`` holds, unless it was spent. For an interrupt.
+
+        The pass wind-down lease, and the closer if nobody took it, stay: the next
+        ``close()`` retakes the claim, runs what is left and drops the lease.
+        """
+        with self._lock:
+            if self._stream_shutdown_owner is ticket and not self._stream_shutdown_done:
+                self._stream_shutdown_owner = None
 
     def claim_teardown(self) -> bool:
         with self._lock:
