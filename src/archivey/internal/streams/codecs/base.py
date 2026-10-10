@@ -247,19 +247,17 @@ class MetadataContext:
 # --- the codec descriptors -------------------------------------------------------------
 
 
-# Detection probes decode uncapped. A probe decodes a bounded sample, so a declared
-# dictionary cannot *fill* more than that sample's output — but liblzma still
-# *reserves* the declared size when the decoder is built, so a probe over a stream
-# declaring 4 GiB asks the allocator for 4 GiB. Under overcommit that costs nothing
-# resident; under ``RLIMIT_AS`` or a strict commit limit it is a ``MemoryError`` at
-# detection, before the caller's cap is ever consulted. Capping the probe instead
-# would make detection answer "not this format" for a stream whose dictionary is
-# over the cap, and a caller who opened it with ``DecoderLimits.UNLIMITED`` would get
-# the wrong format rather than the read they asked for. ``DecoderLimits`` says so;
-# the open that follows detection applies the caller's limits. libzstd reserves the
-# same way: a probe decodes with ``window_log_max`` at libzstd's ceiling (2 GiB on a
-# 64-bit build), so a frame declaring a 2 GiB window is reserved in full during
-# detection whatever ``max_decoder_memory`` says.
+# Detection probes decode uncapped: capping a probe would make detection answer "not
+# this format" for a stream whose dictionary is over the cap, and a caller who opened
+# it with ``DecoderLimits.UNLIMITED`` would get the wrong format rather than the read
+# they asked for. ``DecoderLimits`` says so; the open that follows detection applies
+# the caller's limits. Nor does a probe reserve what the archive declares: each one
+# sets ``StreamConfig.probe_read_bound`` to the output it reads, and the LZMA family
+# builds its decoder with only the dictionary that read needs (liblzma would
+# otherwise reserve the declared size, up to 4 GiB, which under ``RLIMIT_AS`` or a
+# strict commit limit is a ``MemoryError`` during detection). zstd cannot shrink a
+# window, so a probe lowers ``window_log_max`` to libzstd's default and a frame over
+# it is "can't tell".
 _PROBE_STREAM_CONFIG = replace(
     DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits.UNLIMITED
 )
@@ -465,9 +463,11 @@ class StreamCodec:
             if fully_visible
             else max(len(sample), _PROBE_PREFIX)
         )
+        # The most output read below: the budget, then one byte past it.
+        config = replace(_PROBE_STREAM_CONFIG, probe_read_bound=out_budget + 1)
         try:
             with open_codec_stream(
-                self.codec, io.BytesIO(sample), config=_PROBE_STREAM_CONFIG
+                self.codec, io.BytesIO(sample), config=config
             ) as stream:
                 if fully_visible:
                     # Drain up to the budget in chunks. A truncated high-ratio stream
@@ -502,4 +502,8 @@ class StreamCodec:
                 return False  # whole file in hand; stream did not terminate
             return True  # decoded fine, just ran out of the bounded prefix
         except ArchiveyError:
+            return False
+        except MemoryError:
+            # A decoder the bound did not shrink (Brotli's window, up to 16 MiB) under
+            # a tight memory limit: "can't tell", not a failed detection.
             return False

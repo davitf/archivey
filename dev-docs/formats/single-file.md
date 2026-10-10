@@ -105,7 +105,8 @@ What is codec-specific about a probe: it runs with accelerators off and decoder 
 limits lifted, because a probe decodes a bounded sample and a capped probe would call a
 stream with a large dictionary "not this format" for a caller who opened it with
 `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG`). The open that follows applies the
-caller's limits. The shared machinery around the probes (the sample size, the
+caller's limits. Lifting the cap does not mean reserving what the header declares: a probe
+sets `StreamConfig.probe_read_bound`, and the decoder is sized to that read (§4). The shared machinery around the probes (the sample size, the
 whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
 probe-only result) is on [`topics/detection.md`](../topics/detection.md) §2.4 and §4.1.
 
@@ -324,9 +325,14 @@ Shared by the codecs; each page adds its own.
   allows it ([`brotli.md`](brotli.md) §4); extraction's ratio guard bounds what is written.
 - **A declared dictionary sizes an allocation.** xz, lzip and LZMA Alone declare their
   dictionary before any data, and liblzma reserves it. `DecoderLimits` refuses one over the
-  cap before the decoder is built (§2.3). Detection probes lift the cap and rely on the
-  bounded sample, which bounds what is written into the dictionary but not what liblzma
-  reserves.
+  cap before the decoder is built (§2.3). Detection probes lift the cap and do not
+  reserve the declaration either: a probe sets `StreamConfig.probe_read_bound` to the
+  output it reads, and the decoder is built with a dictionary of that size (4 KiB at
+  least), which decodes those bytes identically, since a match never reaches back past
+  output already produced. `.lzma` and lzip rewrite the probe's copy of the header; xz
+  decodes each block raw with its filter chain and a clamped LZMA2 dictionary, and a
+  chain Python's `lzma` cannot build raw (ARM64, RISC-V) leaves the inner TAR
+  unclaimed.
 - **A crafted index misplaces bytes on a seek.** xz and lzip seeks trust the file's own
   index; a forward read verifies it, a cold seek does not. Accepted: threat-model O17.
 - **A seek table grows with the unit count the file declares.** An lzip member can be 26

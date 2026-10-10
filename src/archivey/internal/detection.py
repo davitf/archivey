@@ -303,8 +303,11 @@ def _probe_inner_tar(
     same reason the codec content probes lift them (``_PROBE_STREAM_CONFIG`` in
     ``codecs/base.py``): a capped probe would call a ``.tar.xz`` with a large dictionary a
     bare ``.xz`` even for a caller who opened it with ``DecoderLimits.UNLIMITED``. The
-    read is bounded, so the dictionary cannot fill past it, but liblzma still reserves
-    the declared size. The open that follows applies the caller's limits.
+    open that follows applies the caller's limits. ``probe_read_bound`` keeps the probe
+    from reserving what the archive declares: the LZMA family (``.xz``, ``.lzma``,
+    ``.lz``) decodes the 512 bytes with a 4 KiB dictionary, which gives the same bytes,
+    and a zstd frame whose window is over libzstd's default 128 MiB is "can't tell".
+    A ``MemoryError`` from a decoder no bound shrinks is "can't tell" too.
 
     With a workspace, the compressed input is bounded by what is left of the budget's
     ``max_decode_input`` (and the workspace's read ceiling) as well as by
@@ -361,11 +364,13 @@ def _probe_inner_tar(
                 use_rapidgzip=AcceleratorMode.OFF,
                 use_indexed_bzip2=AcceleratorMode.OFF,
                 decoder_limits=DecoderLimits.UNLIMITED,
+                probe_read_bound=_INNER_TAR_PROBE_BYTES,
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
-    except (ArchiveyError, OSError, ValueError):
-        # Not decodable as this codec, or truncated before a full block -> not an inner tar.
+    except (ArchiveyError, OSError, ValueError, MemoryError):
+        # Not decodable as this codec, truncated before a full block, or a decoder
+        # the allocator refused -> not an inner tar.
         pass
     found = head[257:262] == b"ustar"
     if workspace is not None:

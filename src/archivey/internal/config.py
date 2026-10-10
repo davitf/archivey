@@ -33,6 +33,7 @@ __all__ = [
     "StreamConfig",
     "check_decoder_memory",
     "exceeds_decoder_memory",
+    "probe_lzma_dictionary",
     "stream_config_from_archivey",
 ]
 
@@ -69,6 +70,12 @@ class StreamConfig:
     report them as ``ARCHIVE_TRAILING_DATA``. Inside a ZIP or 7z the container bounds
     the coder's input, and what follows a coder's end there (a 7z AES stage's block
     padding) is the container's business, so the codec stops at its end silently.
+    ``probe_read_bound`` is set only by a detection probe: the most decompressed bytes
+    it reads from the stream. A codec whose decoder reserves a window the archive
+    declares builds it no larger than that read needs (:func:`probe_lzma_dictionary`
+    for the LZMA family; zstd, which cannot shrink a window, lowers
+    ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
+    no further.
     """
 
     streaming: bool = False
@@ -81,6 +88,7 @@ class StreamConfig:
     decoder_limits: DecoderLimits = DecoderLimits()
     collector: DiagnosticCollector | None = field(default=None, compare=False)
     report_trailing_data: bool = False
+    probe_read_bound: int | None = None
 
 
 def stream_config_from_archivey(
@@ -102,6 +110,30 @@ def stream_config_from_archivey(
 DEFAULT_STREAM_CONFIG = stream_config_from_archivey(
     DEFAULT_ARCHIVEY_CONFIG, streaming=False, seekable=False
 )
+
+
+# liblzma's smallest dictionary: the LZMA specification has a decoder round a smaller
+# declaration up to it, so a clamp below it would change nothing.
+_LZMA_DICT_MIN = 4096
+# Output a filter ahead of LZMA2 in an xz chain may ask of LZMA2 beyond what it hands
+# on: a BCJ filter holds back at most one instruction (liblzma's x86 filter, 5 bytes).
+_LZMA_FILTER_LOOKAHEAD = 64
+
+
+def probe_lzma_dictionary(declared: int, read_bound: int | None) -> int:
+    """The LZMA dictionary to decode with when at most ``read_bound`` bytes are read.
+
+    An LZMA or LZMA2 match refers back at most as far as the output already produced,
+    so a dictionary as large as the output decodes it exactly as the declared one
+    does: liblzma's decoder produces only what it is asked for, and a dictionary it
+    never fills is only reserved. A detection probe reads a few KiB; the declaration
+    is the archive's, up to 4 GiB, and liblzma reserves all of it when the decoder is
+    built — under ``RLIMIT_AS`` or a strict commit limit that is a ``MemoryError``
+    during detection. ``None`` (not a probe) keeps the declared size.
+    """
+    if read_bound is None:
+        return declared
+    return min(declared, max(read_bound + _LZMA_FILTER_LOOKAHEAD, _LZMA_DICT_MIN))
 
 
 def exceeds_decoder_memory(declared: int, limits: DecoderLimits) -> bool:

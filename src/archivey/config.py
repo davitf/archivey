@@ -423,14 +423,18 @@ class DecoderLimits:
     compressed tar inside ``.tar.xz`` and its siblings) are recognised by
     decoding a small sample, and that sample is decoded with no decoder limit,
     because a capped probe would report a different format for a caller who
-    passed :attr:`UNLIMITED`. The sample bounds how much of the dictionary is
-    filled, not how much liblzma reserves: under a memory cap, a file declaring
-    4 GiB can raise ``MemoryError`` from ``open_archive`` before this limit is
-    consulted. The open that follows detection is capped as described here. Under a memory cap (a container
-    limit, ``RLIMIT_AS``, a small machine) a refused native allocation does not
-    surface as ``MemoryError`` — pyppmd 1.3.1 dies on ``double free or
-    corruption`` and takes the interpreter with it, so no ``try``/``except``
-    around the decode can contain it.
+    passed :attr:`UNLIMITED`. It does not need one: a probe builds its LZMA
+    decoder with only the dictionary its sample needs (a few KiB, whatever the
+    header declares), which decodes the sample to the same bytes, and lowers
+    zstd's window limit to libzstd's default 128 MiB, treating a frame over it
+    as unrecognised. The open that follows detection is capped as described
+    here.
+
+    Under a memory cap (a container limit, ``RLIMIT_AS``, a small machine) a
+    refused native allocation does not always surface as ``MemoryError`` —
+    pyppmd 1.3.1 dies on ``double free or corruption`` and takes the
+    interpreter with it, so no ``try``/``except`` around the decode can contain
+    it.
 
     (The ``Attributes:`` block below is the older form; new fields in this module get
     an attribute docstring after the assignment, as :class:`ArchiveyConfig` has.)

@@ -22,6 +22,7 @@ XZ spec: https://tukaani.org/xz/xz-file-format.txt
 
 from __future__ import annotations
 
+import io
 import lzma
 import os
 import struct
@@ -38,7 +39,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.config import DecoderLimits
+from archivey.internal.config import DecoderLimits, probe_lzma_dictionary
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -1135,3 +1136,157 @@ def XzDecompressorStream(
     )
     stream_cell[0] = stream
     return stream
+
+
+# --- the detection probe's bounded decode --------------------------------------------
+
+# Compressed bytes the probe decode reads at a time.
+_HEAD_READ_SIZE = 4096
+# The xz filters a probe decodes ahead of LZMA2: delta and the BCJ filters Python's
+# ``lzma`` can build for a raw decoder (ARM64 and RISC-V it cannot).
+_HEAD_BCJ_FILTERS = frozenset(
+    {
+        lzma.FILTER_X86,
+        lzma.FILTER_POWERPC,
+        lzma.FILTER_IA64,
+        lzma.FILTER_ARM,
+        lzma.FILTER_ARMTHUMB,
+        lzma.FILTER_SPARC,
+    }
+)
+
+
+def _check_size(check: int) -> int:
+    """Bytes of a block's check field for a stream's check ID (xz spec §3.4)."""
+    return 0 if check == 0 else 4 << ((check - 1) // 3)
+
+
+def _lzma2_dictionary(code: int) -> int:
+    """The dictionary an LZMA2 properties byte declares (xz spec §5.3.1)."""
+    if code > 40:
+        raise CorruptionError(f"XZ LZMA2 dictionary byte {code} is over 40")
+    if code == 40:
+        return 0xFFFFFFFF
+    return (2 | (code & 1)) << (code // 2 + 11)
+
+
+def _head_filter_chain(header: bytes, read_bound: int) -> list[dict[str, int]]:
+    """The raw filter chain a block header declares, its LZMA2 dictionary clamped.
+
+    ``header`` is the whole block header, CRC included and already checked. Delta and
+    the BCJ filters are kept as declared; only the LZMA2 dictionary changes, to
+    :func:`~archivey.internal.config.probe_lzma_dictionary`. A chain this cannot build
+    raises ``UnsupportedFeatureError``, which the probe reads as "can't tell".
+    """
+    body = header[:-4]
+    flags = body[1]
+    if flags & 0x3C:
+        raise UnsupportedFeatureError("XZ block header has reserved flags set")
+    pos = 2
+    for size_present in (flags & 0x40, flags & 0x80):
+        if size_present:  # compressed, then uncompressed size: not needed here
+            pos += _decode_mbi(body, pos)[1]
+    last = flags & 0x03
+    chain: list[dict[str, int]] = []
+    for index in range(last + 1):
+        filter_id, n = _decode_mbi(body, pos)
+        pos += n
+        props_size, n = _decode_mbi(body, pos)
+        pos += n
+        props = body[pos : pos + props_size]
+        pos += props_size
+        if len(props) != props_size:
+            raise CorruptionError("XZ block header filter properties are truncated")
+        if index == last and filter_id == lzma.FILTER_LZMA2 and props_size == 1:
+            declared = _lzma2_dictionary(props[0])
+            chain.append(
+                {
+                    "id": lzma.FILTER_LZMA2,
+                    "dict_size": probe_lzma_dictionary(declared, read_bound),
+                }
+            )
+        elif index < last and filter_id == lzma.FILTER_DELTA and props_size == 1:
+            chain.append({"id": lzma.FILTER_DELTA, "dist": props[0] + 1})
+        elif index < last and filter_id in _HEAD_BCJ_FILTERS and props_size in (0, 4):
+            bcj: dict[str, int] = {"id": filter_id}
+            if props_size:
+                bcj["start_offset"] = int.from_bytes(props, "little")
+            chain.append(bcj)
+        else:
+            raise UnsupportedFeatureError(
+                f"XZ filter {filter_id:#x} at position {index} of the chain is not "
+                "decoded by the detection probe"
+            )
+    if any(body[pos:]):
+        raise CorruptionError("XZ block header padding is not zero")
+    return chain
+
+
+def _decode_xz_head(read: Callable[[int], bytes], size: int) -> bytes:
+    """Up to ``size`` bytes of the xz stream ``read`` returns, its dictionaries clamped.
+
+    Each block is decoded raw, with the filter chain its header declares and the LZMA2
+    dictionary clamped to what ``size`` bytes of output need (see
+    :func:`_head_filter_chain`). Stream header and block header CRCs are checked; the
+    block check is not, since a bounded read rarely reaches it. Decoding stops at
+    ``size`` bytes or at the stream's index, whichever comes first.
+    """
+    pending = bytearray()
+
+    def take(n: int) -> bytes:
+        while len(pending) < n:
+            chunk = read(max(n - len(pending), _HEAD_READ_SIZE))
+            if not chunk:
+                raise TruncatedError("XZ stream is truncated")
+            pending.extend(chunk)
+        taken = bytes(pending[:n])
+        del pending[:n]
+        return taken
+
+    check = _parse_xz_header(take(_STREAM_HEADER_SIZE))
+    out = bytearray()
+    while len(out) < size:
+        first = take(1)
+        if first == b"\x00":
+            break  # the index indicator: the stream has no more blocks
+        header = first + take(first[0] * 4 + 3)
+        (stored,) = struct.unpack_from("<I", header, len(header) - 4)
+        if zlib.crc32(header[:-4]) & 0xFFFFFFFF != stored:
+            raise CorruptionError("XZ block header CRC32 mismatch")
+        dec = lzma.LZMADecompressor(
+            format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size)
+        )
+        fed = 0
+        while not dec.eof and len(out) < size:
+            data = b""
+            if dec.needs_input:
+                if not pending:
+                    chunk = read(_HEAD_READ_SIZE)
+                    if not chunk:
+                        raise TruncatedError("XZ stream is truncated")
+                    pending.extend(chunk)
+                data = bytes(pending)
+                pending.clear()
+                fed += len(data)
+            out += dec.decompress(data, size - len(out))
+        if not dec.eof:
+            break  # ``size`` reached inside the block
+        pending[:0] = dec.unused_data
+        compressed = len(header) + fed - len(dec.unused_data)
+        take(-compressed % 4 + _check_size(check))  # block padding, then its check
+    return bytes(out)
+
+
+def open_xz_head(source: str | os.PathLike[str] | BinaryIO, size: int) -> BinaryIO:
+    """The first ``size`` bytes an xz stream decodes to, for a detection probe.
+
+    liblzma reserves the dictionary a block header declares, up to 4 GiB, when its
+    xz decoder reads that header; a probe reading 512 bytes needs 4 KiB of it. So
+    this decodes each block raw with the dictionary clamped instead
+    (``StreamConfig.probe_read_bound``), which gives the same bytes. The stream ends
+    at ``size``.
+    """
+    if isinstance(source, (str, os.PathLike)):
+        with open(os.fspath(source), "rb") as f:
+            return io.BytesIO(_decode_xz_head(f.read, size))
+    return io.BytesIO(_decode_xz_head(source.read, size))
