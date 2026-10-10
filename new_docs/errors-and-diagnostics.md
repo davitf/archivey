@@ -66,3 +66,15 @@ with archivey.open_archive("damaged.tar") as archive:
     if report.error is not None:
         print("The list stops early:", report.error)
 ```
+
+Reading a member from start to end lets archivey notice if its data is damaged, and the read that
+reaches the end raises. If you stop early, nothing is checked. A loop that reads in chunks gets
+every byte that could be read before the error, but those bytes may be wrong too, since archivey
+can't tell where the damage starts. A few formats, such as Brotli, `.Z` and `.lzma`, store nothing
+to check against, so damage there can go unnoticed.
+
+A seek back to the start begins the check again, but after a seek anywhere else, damage may go
+unnoticed. Once a read has raised, a later read that reaches the end raises the same error, even
+after a seek, so seeking back can't hand you the damaged member as if it were complete.
+
+[Damaged members](extracting.md#damaged-members) covers what extraction does.
