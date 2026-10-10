@@ -264,9 +264,9 @@ def _assert_truncated_listing(
     with open_archive(
         io.BytesIO(data), password=password, streaming=streaming
     ) as reader:
-        # members() is random-access only; scan_members() is the streaming listing.
+        # members() is random-access only; a streaming pass raises at the damage.
         with pytest.raises(TruncatedError):
-            reader.scan_members() if streaming else reader.members()
+            list(reader) if streaming else reader.members()
 
 
 @requires("cryptography")

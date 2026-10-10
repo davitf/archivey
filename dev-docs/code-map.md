@@ -81,7 +81,7 @@ Three things about this path are worth knowing before you debug it:
 
 - **A reader lists its members once, and every method hands out the same objects.**
   `BaseArchiveReader` owns one member list (`_listed`) filled by one pull over the
-  backend's `_iter_members()`. The peek, `members()`, `scan_members()`, `get()`,
+  backend's `_iter_members()`. The peek, `members()`, `members_report()`, `get()`,
   `stream_members()` and `extract_all()` all read that list; `_pull_member` stamps,
   checks and accounts each member exactly once, so per-member work needs no dedupe. The
   walk runs once when it completes. A random-access walk that fails without terminal

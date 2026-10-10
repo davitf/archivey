@@ -32,7 +32,7 @@ honored on every format; `AccessCost` / `solid_block_count` only describe
 expense.
 
 **Post-materialization worker seam.** After one owner has completed `members()`
-or `scan_members()` and the reader has published its member list/name index,
+or `members_report()` and the reader has published its member list/name index,
 concurrent calls from multiple threads to `open(member_or_name)` SHALL be
 supported. Streams from different opens SHALL have independent logical
 positions/state: workers MAY concurrently call `read`, `readinto`, and `close`
@@ -74,8 +74,8 @@ redundant decompression.
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
 `stream_members`, `extract_all`) and `members_report_if_available` initialization
 remain single-owner and cannot overlap one another or the random worker seam. Under
-`CONCURRENT`, first-touch materialization through `members()`, `members_report()` or
-`scan_members()` is coordinated (wait/share) and `reader.close()` drains
+`CONCURRENT`, first-touch materialization through `members()` or `members_report()`
+is coordinated (wait/share) and `reader.close()` drains
 in-flight worker calls rather than rejecting them. The base reader SHALL
 represent ownership with an explicit unforgeable root token, not thread
 identity. Private helpers MAY receive that token to enter child scopes:

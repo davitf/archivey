@@ -202,8 +202,8 @@ dense pass; one header per lock hold was measurably slower on ordinary listings.
 the walk fails partway through a batch, the headers already parsed are handed out first,
 so `members_report()` keeps its salvaged prefix. tarfile still keeps every header it has
 parsed in `TarFile.members`, so a listing holds each header twice: once as tarfile's
-`TarInfo` and once as the `ArchiveMember`. On a streaming reader, `scan_members()` and
-`members_report()` count members against the cap as they arrive and raise at the one
+`TarInfo` and once as the `ArchiveMember`. On a streaming reader,
+`members_report()` counts members against the cap as they arrive and raises at the one
 past it. `stream_members()` and forward-only iteration are not capped, by design, and
 there both lists grow for the whole pass.
 
@@ -433,7 +433,7 @@ extraction checks (§2.4).
 | A hardlink placed before the only member it names does not extract | **format** | A hardlink refers to an earlier member, as tarfile and `tar(1)` read it; `LinkTargetNotFoundError` in both modes (§2.3) |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
-| A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
+| A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `members_report()` |
 | `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
 
 ## 6. Decisions

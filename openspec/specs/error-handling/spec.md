@@ -185,7 +185,7 @@ Required surfaces:
 | --- | --- |
 | `members_report()` | Always returns `MemberListReport` with prefix in `members` and the failure in `error` |
 | `__iter__` / `stream_members` (either access mode) | Yield every recovered member, then raise the same error |
-| `members()` / `scan_members()` | Raise the error; MUST NOT return a partial list |
+| `members()` | Raise the error; MUST NOT return a partial list |
 
 The system SHALL NOT publish a successful complete member cache for an incomplete
 listing. `ResourceLimitError` from listing caps remains raise-only on these APIs

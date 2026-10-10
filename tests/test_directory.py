@@ -113,7 +113,7 @@ def test_cost_receipt(simple_dir: Path) -> None:
 
 def test_members_report_if_available_returns_none_before_scan(simple_dir: Path) -> None:
     # A directory has no upfront index: the scan-free peek must NOT trigger a walk,
-    # so it returns None until a real pass (members()/scan_members()) has run.
+    # so it returns None until a real pass (members()/members_report()) has run.
     with open_archive(simple_dir) as reader:
         assert reader.members_report_if_available() is None
         reader.members()  # forces the walk

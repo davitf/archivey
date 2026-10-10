@@ -133,7 +133,10 @@ def _list(reader: ArchiveReader, streaming: bool) -> list[ArchiveMember]:
     for _member, stream in reader.stream_members():
         if stream is not None:
             stream.read()
-    return reader.scan_members()
+    report = reader.members_report()
+    if report.error is not None:
+        raise report.error
+    return list(report.members)
 
 
 def _too_long(reader: ArchiveReader) -> list[str]:

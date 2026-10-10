@@ -309,7 +309,7 @@ archive declares.
 **Mechanism.**
 - `ListingLimits` (`max_members` 1,048,576, `max_metadata_bytes` 64 MiB) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
-  materialized list (`members()`, `scan_members()`, extract preparation). Crossing a cap
+  materialized list (`members()`, `members_report()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
   `stream_members()` and `streaming=True` are unguarded, as the O(1) escape hatch,
   except on 7z, RAR and ISO, which check the caps while parsing. Unguarded bounds memory,
