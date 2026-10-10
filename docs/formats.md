@@ -94,6 +94,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
   restore method 2. Under ZipCrypto both read as the password-or-damage
   ``EncryptionError`` instead, because those settings are encrypted.
+- Bytes inside a member's compressed data after its compressed stream ends (a zero
+  byte, junk, or a second stream) raise `CorruptionError` when the member is read, for
+  every compression method, as `7z t` reports an error for them. Under ZipCrypto they
+  read as the password-or-damage ``EncryptionError`` instead, caused by that
+  ``CorruptionError``, because the bytes are encrypted. Two cases still read:
+  a PPMd member whose stream has no end mark (7-Zip writes one), and, under rapidgzip,
+  a second DEFLATE stream that the member's declared size and CRC both cover.
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the

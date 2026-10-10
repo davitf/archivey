@@ -22,7 +22,11 @@ from archivey import (
     OverwritePolicy,
 )
 from archivey.cli.choices import from_cli_choice
-from archivey.cli.common import open_for_cli, reject_salvage
+from archivey.cli.common import (
+    open_for_cli,
+    reject_empty_path,
+    reject_salvage,
+)
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import (
     count_selected,
@@ -880,6 +884,11 @@ def run_extract(
 ) -> int:
     del out  # extract reports to stderr; files go to the filesystem
     reject_salvage(salvage)
+    # On the strings, before Path() turns "" into ".". The stdin token "-" is
+    # refused by open_for_cli below.
+    reject_empty_path(archive, arg="archive")
+    if dest is not None:
+        reject_empty_path(dest, arg="--dest")
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     pred = member_predicate(patterns, exclude)
