@@ -927,6 +927,30 @@ def test_pax_sparse_version_with_no_map_is_damage(major: str) -> None:
         _walk(_pax_1_0_member(major, "0"))
 
 
+def _pax_1_0_member_without_major(records: dict[str, str]) -> bytes:
+    map_text = _data(b"1\n10\n3\n")
+    return (
+        _pax({"GNU.sparse.name": "real", **records})
+        + _block(b"GNUSparseFile.1/real", size=len(map_text) + 3)
+        + map_text
+        + _data(b"abc")
+        + _END
+    )
+
+
+def test_pax_sparse_realsize_without_a_major_is_damage() -> None:
+    """A realsize declares a 1.0 member's logical size; with no major the map
+    cannot be read, and GNU tar fails on the member."""
+    with pytest.raises(CorruptionError):
+        _walk(_pax_1_0_member_without_major({"GNU.sparse.realsize": "20"}))
+
+
+def test_pax_sparse_minor_alone_reads_as_a_plain_member() -> None:
+    """GNU tar lists a member with only a minor record as a plain file, exit 0."""
+    (entry,), _ = _walk(_pax_1_0_member_without_major({"GNU.sparse.minor": "0"}))
+    assert (entry.sparse_format, entry.sparse) == (None, None)
+
+
 def _pax_0_x_member(records: dict[str, str]) -> bytes:
     """A PAX 0.0 or 0.1 member whose 20-byte file holds ``abc`` at offset 10."""
     return (
