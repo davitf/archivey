@@ -368,6 +368,14 @@ def open_archive(
     open_site = capture_open_site()
 
     format = coerce_archive_format(format, call="open_archive(format=…)")
+    if format == ArchiveFormat.UNKNOWN:
+        # Detection's answer for "none of the above", not a format a caller can assert.
+        # Refused here rather than in coerce_archive_format: format_availability(UNKNOWN)
+        # is a legitimate query that answers NONE.
+        raise ArchiveyUsageError(
+            "open_archive(format=…) cannot open ArchiveFormat.UNKNOWN; pass the "
+            "archive's format, or None to auto-detect."
+        )
     check_config(config, call="open_archive(config=…)")
     check_encoding(encoding, call="open_archive(encoding=…)")
 
@@ -476,6 +484,18 @@ def _open_resolved(
                 f"format=ArchiveFormat.DIRECTORY to read the directory tree."
             )
         resolved_format = ArchiveFormat.DIRECTORY
+    elif format == ArchiveFormat.DIRECTORY:
+        # The mirror of the conflict above, refused the same way. It used to reach the
+        # directory backend and fail there as a raw TypeError naming the backend.
+        where = archive_name or (
+            display_path(archive_source.path)
+            if archive_source.path is not None
+            else "The source stream"
+        )
+        raise ArchiveyUsageError(
+            f"{where} is not a directory, but format={format!r} was requested. Pass a "
+            f"directory path, or the archive's own format (or None to auto-detect)."
+        )
 
     detected: FormatInfo | None = None
     # What ``reader.format_info`` reports. A directory is decided without running

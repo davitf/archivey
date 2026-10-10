@@ -166,6 +166,21 @@ def test_open_archive_rejects_any_non_archive_format(
     assert "ArchiveFormat" in str(exc_info.value)
 
 
+@pytest.mark.parametrize("value", [ArchiveFormat.UNKNOWN, "unknown"])
+def test_open_archive_refuses_the_unknown_format_before_reading(value: object) -> None:
+    """``UNKNOWN`` is what detection answers, not a format a caller can assert.
+
+    It used to reach the registry and fail as ``UnsupportedFeatureError`` ("No read
+    backend registered"), an ``ArchiveyError`` reporting a caller's mistake as a
+    missing feature. ``format_availability(UNKNOWN)`` keeps answering (see above).
+    """
+    source = io.BytesIO(b"PK\x03\x04not really a zip")
+    with pytest.raises(ArchiveyUsageError, match="UNKNOWN"):
+        open_archive(source, format=value)  # type: ignore[call-overload]
+
+    assert source.tell() == 0
+
+
 def test_open_archive_still_accepts_an_archive_format_and_none(zip_path: Path) -> None:
     for fmt in (None, ArchiveFormat.ZIP):
         with open_archive(zip_path, format=fmt) as reader:
@@ -347,9 +362,9 @@ def test_the_archive_accepted_list_only_recommends_spellings_open_archive_takes(
     """Every spelling the refusal recommends resolves to a format that opens something.
 
     The list is repair advice appended to every ``coerce_archive_format`` refusal, so a
-    spelling on it that leads somewhere worse — ``format="unknown"`` raises
-    ``UnsupportedFeatureError``, ``format="directory"`` an ``OSError``,
-    ``format="dmg"`` refuses the image — is a message sending the caller into a
+    spelling on it that leads somewhere worse — ``format="unknown"`` is refused,
+    ``format="directory"`` opens only a directory path, ``format="dmg"`` refuses the
+    image — is a message sending the caller into a
     second failure. Asserted as the property rather than as the absence of the names
     that prompted it, so another format that opens nothing cannot arrive unnoticed.
     """

@@ -90,6 +90,23 @@ def test_conflicting_format_on_directory_raises(simple_dir: Path) -> None:
         open_archive(simple_dir, format=ArchiveFormat.ZIP)
 
 
+@pytest.mark.parametrize("form", ["path", "str", "stream"])
+@pytest.mark.parametrize("fmt", [ArchiveFormat.DIRECTORY, "directory"])
+def test_directory_format_on_a_file_raises_a_usage_error(
+    tmp_path: Path, form: str, fmt: object
+) -> None:
+    """The mirror of the conflict above fails the same way.
+
+    It used to escape as ``TypeError: Directory backend requires a directory path
+    source``, naming an internal class instead of the argument.
+    """
+    path = tmp_path / "data.bin"
+    path.write_bytes(b"not a directory")
+    source: object = {"path": path, "str": str(path), "stream": io.BytesIO(b"x")}[form]
+    with pytest.raises(archivey.ArchiveyUsageError, match="is not a directory"):
+        open_archive(source, format=fmt)  # type: ignore[call-overload]
+
+
 def test_archive_info_format(simple_dir: Path) -> None:
     with open_archive(simple_dir) as reader:
         info = reader.info

@@ -78,8 +78,10 @@ A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=
 naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:
 silently overruling it returns a reader over the directory tree to a caller who
 asserted a different format, so every read downstream succeeds on the wrong data.
-`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. This is the
-assertion half of the rule above, not a special case.
+`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. The mirror
+conflict, `format=ArchiveFormat.DIRECTORY` on a source that is not a directory path,
+SHALL raise the same `ArchiveyUsageError`. This is the assertion half of the rule
+above, not a special case.
 
 **Diagnostics at open (observable):** On success, advisory events from automatic
 detection (if any) appear in this reader's cumulative `diagnostics` for its
@@ -105,6 +107,7 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 | Directory path, no `format=` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError`, naming the path and the requested format |
+| File path or stream, `format=ArchiveFormat.DIRECTORY` | `ArchiveyUsageError`, naming the source and the requested format |
 
 ### Requirement: Declared member-stream capabilities
 
@@ -571,7 +574,10 @@ def __contains__(self, member: ArchiveMember) -> bool: ...  # identity, O(1), an
 
 `get()` looks up by normalized name; duplicates → **last** (sequential extraction
 winner). On `streaming=True` SHALL raise `ArchiveyUsageError` regardless of
-loaded index. For a no-scan peek use `members_report_if_available()`.
+loaded index. A `name` that is not a `str` (a `bytes` name, an `ArchiveMember`)
+SHALL raise `ArchiveyUsageError`, as `open()` does: answering `default` for it would
+report a member that exists as absent. For a no-scan peek use
+`members_report_if_available()`.
 
 `member in reader` is identity membership (yielded by this reader), O(1), any mode.
 Non-`ArchiveMember` (notably a name string) SHALL raise `TypeError` pointing to
@@ -585,6 +591,7 @@ would consume a streaming pass.
 | `get` existing name | That `ArchiveMember` |
 | `get` missing | `default` / `None`; `open`/`read` of missing name → `KeyError` |
 | `get` on `streaming=True` | `ArchiveyUsageError` |
+| `get(b"file.txt")`, `get(0)`, `get(member)` | `ArchiveyUsageError`; never `default`, never `unhashable type` |
 | `member in ar` (yielded by `ar`) | `True`; foreign member → `False`; no scan |
 | `"file.txt" in ar` | `TypeError` → use `get()`; never iterate |
 

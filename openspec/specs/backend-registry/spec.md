@@ -372,6 +372,7 @@ a separate table, so a codec added later is named here without a second edit.
 | `open_stream(src, format=object())` | `ArchiveyUsageError`; the source is not read and detection does not run |
 | `open_stream(src, format=StreamFormat.GZIP \| ArchiveFormat.GZ \| None)` | Opens as before |
 | `open_archive(path, format=ArchiveFormat.ZIP \| None)` | Opens as before |
+| `open_archive(src, format=ArchiveFormat.UNKNOWN)` or `format="unknown"` | `ArchiveyUsageError` before the source is read; `format_availability(ArchiveFormat.UNKNOWN)` still answers `NONE` |
 | `except ArchiveyError` around any of the refusals | Does not catch it |
 
 #### Scenario: format spelled as a string

@@ -567,6 +567,7 @@ and would silently switch the guard.
 | `stream_members(members=0)` | `ArchiveyUsageError` at the call, not on first `next()` |
 | `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
+| `reader.get(b"a.txt")`, `reader.get(member)` | `ArchiveyUsageError`, as `reader.open()`; never `None` for a member that exists |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `TypeError: unsupported source type` — unchanged |
 

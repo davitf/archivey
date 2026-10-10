@@ -2607,6 +2607,14 @@ class BaseArchiveReader(ArchiveReader):
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
         self._require_random_access("get()")
+        # Without this a ``bytes`` name answered "absent" for a member that exists (a
+        # wrong answer), and an ArchiveMember escaped as ``unhashable type``. ``open()``
+        # refuses the same values with the same error.
+        if not isinstance(name, str):
+            raise ArchiveyUsageError(
+                f"reader.get() takes a member name (str), but got "
+                f"{describe_value(name)}."
+            )
         token = self._state.acquire_worker("get")
         try:
             materialized = self._materialize_members()
