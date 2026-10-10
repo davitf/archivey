@@ -32,8 +32,12 @@ from archivey.internal.streams.codecs.base import (
     ProbeReadAt,
     StreamCodec,
 )
-from archivey.internal.streams.decompress import FramedDecompressorStream
-from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.codecs.framed_decoder import FramedDecompressorStream
+from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
+from archivey.internal.streams.codecs.xz_decoder import (
+    XzDecompressorStream,
+    lzma_error_to_archivey,
+)
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -42,7 +46,6 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.streams.streamtools.slice import SlicingStream
-from archivey.internal.streams.xz import XzDecompressorStream, lzma_error_to_archivey
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,

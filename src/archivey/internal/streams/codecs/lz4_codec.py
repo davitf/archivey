@@ -20,12 +20,12 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.decompress import (
+from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     stream_magic,
 )
+from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
-from archivey.internal.streams.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,

@@ -22,7 +22,7 @@ not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
   raw chain must end in LZMA1/LZMA2 in encode order, so that codec decodes first)
 - Several LZMA1/LZMA2 coders in one run → one chain each
 - BCJ2 (``0x0303011B``) → the source of its chain: four branch chains, each capped at
-  its declared size, feed :class:`~archivey.internal.streams.bcj2.Bcj2DecoderStream`
+  its declared size, feed :class:`~archivey.internal.streams.codecs.bcj2_filter.Bcj2DecoderStream`
 
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
 :func:`open_folder_pipeline` / :func:`_execute_stage` fold stages onto the packed
@@ -85,8 +85,6 @@ from archivey.internal.config import (
     check_decoder_memory,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.arm64 import FILTER_ARM64
-from archivey.internal.streams.bcj2 import Bcj2DecoderStream
 from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
@@ -96,8 +94,14 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
     parse_ppmd_var_h_properties,
 )
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
+from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
+from archivey.internal.streams.codecs.zstd_framing import (
+    MAX_FRAME_HEADER_SIZE,
+    frame_window_size,
+)
 from archivey.internal.streams.crypto import open_aes_decrypt_stream
-from archivey.internal.streams.decompress import FilterStream
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
 from archivey.internal.streams.streamtools.base import DelegatingStream
@@ -105,10 +109,6 @@ from archivey.internal.streams.streamtools.binaryio import (
     read_blocking,
     readinto_via_read,
     try_readinto,
-)
-from archivey.internal.streams.zstd_framing import (
-    MAX_FRAME_HEADER_SIZE,
-    frame_window_size,
 )
 
 # Omitting max_members on the archive-level entry point means the ListingLimits

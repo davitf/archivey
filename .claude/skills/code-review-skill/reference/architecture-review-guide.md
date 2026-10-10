@@ -10,7 +10,7 @@ changes what the public package imports. The everyday layering checks are in
 Public API        archivey/__init__, core.py, reader.py, types.py, exceptions.py, config.py
 Orchestration     internal/: registry.py, detection.py, extraction.py, base_reader.py
 Format backends   internal/backends/: *_reader.py, *_parser.py, *_detect.py
-Codecs & streams  internal/streams/: codecs/, decompress.py, child_process.py, …
+Codecs & streams  internal/streams/: codecs/, decompressor_stream.py, child_process.py, …
 Outer             stdlib I/O, optional extras (lazy), external programs (unrar, unar)
 ```
 

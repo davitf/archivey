@@ -1577,6 +1577,63 @@ def test_tar_hardlink_shares_inode(tmp_path: Path) -> None:
     assert os.path.samefile(dest / "file.txt", dest / "hard.txt")
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("second_link", "overwrite"),
+    [
+        # A tar that lists the same hard link twice: the second copy supersedes the
+        # first, whose parked name is already the same file as the source.
+        ("h", OverwritePolicy.ERROR),
+        # Under REPLACE, STANDARD folds ``H`` onto ``h``, a link to the same file.
+        ("H", OverwritePolicy.REPLACE),
+    ],
+)
+def test_link_onto_a_name_of_the_same_file_leaves_no_temp(
+    tmp_path: Path, streaming: bool, second_link: str, overwrite: OverwritePolicy
+) -> None:
+    # POSIX rename(2) does nothing, and reports success, when the temp link and the
+    # destination are already names of the same file. The temp name then stayed in the
+    # destination as a stray ``.archivey-tmp-*`` entry.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "f", b"data"), ("hard", "h", "f"), ("hard", second_link, "f")]
+        )
+    )
+    dest = tmp_path / "out"
+
+    report = open_and_extract(src, dest, streaming=streaming, overwrite=overwrite)
+
+    assert report.results[-1].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in dest.iterdir()) == ["f", "h"]
+    assert (dest / "h").read_bytes() == b"data"
+    assert os.path.samefile(dest / "f", dest / "h")
+
+
+def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The swap removes the temp name after ``os.replace``. When that unlink fails (on
+    # Windows, a scanner holding the file open), the member is already in place, so the
+    # failure must not turn a completed write into FAILED.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(path).startswith(".archivey-tmp-"):
+            raise PermissionError(errno.EACCES, "held open", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    with open_archive(src) as r:
+        report = r.extract_all(dest)
+
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
+    assert (dest / "f").read_bytes() == b"AAA"
+
+
 def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
     # A filter excludes the source but keeps the link; a seekable source recovers the
     # content in a second pass, writing it to the link path (source name never created).

@@ -97,7 +97,7 @@ from archivey.internal.sfx import (
     iter_magic_in_prefix,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.brotli_framing import (
+from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     parse_metablock,
 )
