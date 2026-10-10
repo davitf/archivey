@@ -46,6 +46,7 @@ CHAIN_DECODE_MAX_END = PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
 class BrotliCodec(StreamCodec):
     codec = Codec.BROTLI
     stream_format = StreamFormat.BROTLI
+    extension_aliases = (".brotli",)
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
     requirement = MissingComponent(
         "brotli", "pip install archivey[recommended]", ("brotli",)
