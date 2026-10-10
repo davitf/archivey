@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 from enum import Enum, Flag, StrEnum, auto
@@ -935,11 +935,12 @@ class ArchiveInfo:
 # Shared selector / filter aliases, used by both the public reader.py signature and the
 # internal coordinator.
 #
-# ``MemberSelectorArg`` — which members to extract: a collection of names / ArchiveMembers,
-# a predicate, or ``None`` (= all). The collection form is normalized to a predicate by the
-# shared ``normalize_member_selector`` helper (also used by ``stream_members``).
+# ``MemberSelectorArg`` — which members to extract: an iterable of names / ArchiveMembers
+# (read once, so a generator works), a predicate, or ``None`` (= all). The iterable form
+# is normalized to a predicate by the shared ``normalize_member_selector`` helper (also
+# used by ``stream_members``).
 MemberSelectorArg = (
-    Collection["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
+    Iterable["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )
 # ``MemberFilter`` — a per-member sanitize/rename hook run after the policy transform and
 # before the safety checks, so it sees unsafe members too and can rename them; the

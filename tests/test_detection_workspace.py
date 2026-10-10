@@ -458,6 +458,24 @@ def test_read_at_on_path_seeks_without_buffering_prefix(tmp_path: Path) -> None:
         assert ws.receipt.unique_bytes_read == before + 4
 
 
+def test_read_at_straddling_the_prefix_fetches_only_the_rest(tmp_path: Path) -> None:
+    # A seek read that starts inside the prefix takes that part from the prefix and
+    # fetches only the rest, without growing the prefix; at EOF it comes back short.
+    data = bytes(range(256)) * 400
+    path = tmp_path / "f.bin"
+    path.write_bytes(data)
+    with PrefixWorkspace(path, BALANCED_BUDGET) as ws:
+        ws.peek_prefix(4096)
+        before = ws.receipt.unique_bytes_read
+        assert ws.read_at(4000, 200) == data[4000:4200]
+        assert ws.receipt.unique_bytes_read == before + 104
+        assert ws.buffered_length == 4096
+        assert ws.read_at(4090, len(data)) == data[4090:]
+        assert ws.buffered_length == 4096
+        # The handle is back at the end of the prefix: the prefix grows correctly.
+        assert ws.peek_prefix(8192) == data[:8192]
+
+
 def test_read_at_nonseekable_past_cap_records_budget_exhausted() -> None:
     # Decision 2B: capped buffer; past the cap → None + BUDGET_EXHAUSTED.
     from archivey.internal.detection_workspace import (

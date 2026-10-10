@@ -70,7 +70,8 @@ archivey decodes and reports with `archive_trailing_data`, as `xz --format=lzma`
 Pinned: `test_id3_tagged_mp3_is_not_lzma_alone`,
 `test_ole_magic_then_zeros_is_not_lzma_alone`, and the mechanism itself in
 `test_zero_run_after_an_alone_header_decodes_without_error`. The OLE case is fixed by the
-OLE signature check in §3.2. The probe itself is unchanged, so the ID3 case stays open.
+OLE signature check in §3.2. The ID3 case was fixed later: the probe now refuses a zero
+run at the start of the range-coder data, which also covers the OLE case on its own.
 
 ### 3.2 Brotli on OLE files: the P12 residual (437 files)
 
