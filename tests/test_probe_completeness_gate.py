@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import lzma
 import os
+import random
 import zlib
 from pathlib import Path
 
@@ -168,8 +170,10 @@ def test_zlib_complete_small_stream_still_accepted() -> None:
 
 def test_lzma_alone_completeness_on_fully_visible_nonterminating() -> None:
     alone = LzmaAloneCodec()
-    header = bytes([0x5D, 0x00, 0x00, 0x01, 0x00]) + b"\xff" * 8
-    blob = header + b"\x00" * 40
+    # A real stream cut 10 bytes short. A header over zeros would also never terminate,
+    # but the probe refuses a zero run before decoding.
+    stream = lzma.compress(random.Random(3).randbytes(200), format=lzma.FORMAT_ALONE)
+    blob = stream[:-10]
     # Prefix-only must match; when the whole source is visible and does not terminate,
     # completeness must reject.
     assert alone.content_probe(blob, source_length=None) is True

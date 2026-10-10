@@ -195,8 +195,10 @@ guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
   files are a constant header followed by zero runs, which the Brotli and LZMA Alone probes
   both accept. A scan of a backup drive found 437 files claimed as Brotli, all but two of
   which failed to decode. OLE files were among them, but they were not counted separately,
-  and the scan did not record what the two that decoded were. Neither probe's own framing
-  can reject these files, and the spec forbids a threshold. An eight-byte signature is as
+  and the scan did not record what the two that decoded were. Brotli's own framing cannot
+  reject these files, and the spec forbids a threshold there; the LZMA Alone probe now
+  refuses a zero run after its header, so for it the signature is defence in depth. An
+  eight-byte signature is as
   specific as archive magic. The signature also turns off the SFX scan (§2.2): an OLE file
   is not a stub, and a ZIP stored inside a document is not the document's payload. With no
   extension, the error names the signature, as it names a `STRONG` cue.
@@ -204,7 +206,7 @@ guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
   This check is the Brotli probe's own, on [`formats/brotli.md`](../formats/brotli.md).
 
 The guards reduce false claims. They do not remove them: some structured binary files
-(COFF objects, MP3s whose ID3 tag starts with padding) still pass a probe. What bounds
+(COFF objects) still pass a probe. What bounds
 the damage is provenance. A probe hit with nothing to corroborate it is stamped, and when
 a read fails, the error has
 `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. The open is not refused on
@@ -415,7 +417,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
 | A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | The one tail read is the 512-byte `koly` block (§2.4), not a ZIP trailer. `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
 | An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
-| Some binary files (COFF, ID3-tagged MP3) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). Threat-model O10 |
+| Some binary files (COFF) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). Threat-model O10 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.6) |
 | A v7 tar inside gzip, named `.tar.gz`, opens as bare `GZ` | **format** | No `ustar`, so no inner-TAR upgrade. [`formats/tar.md`](../formats/tar.md) §2.1 |
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |
