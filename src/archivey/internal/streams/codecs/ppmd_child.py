@@ -16,7 +16,6 @@ The child runs ``ppmd_worker.py`` as a script, which imports nothing from ``arch
 
 from __future__ import annotations
 
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -31,11 +30,7 @@ from archivey.internal.streams.child_process import (
     reap,
     spawn,
 )
-
-_OPEN = struct.Struct("<BBIB")
-_REQUEST = struct.Struct("<iI")
-# Kept equal to ``_REPLY`` in ``ppmd_worker.py``, which cannot import it.
-_REPLY = struct.Struct("<BBBII")
+from archivey.internal.streams.codecs.ppmd_worker import OPEN, REPLY, REQUEST
 
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
@@ -172,7 +167,7 @@ class PpmdChildDecoder:
         # the decoder (see ``ppmd_worker``); a death between the two is the
         # constructor's allocation of ``mem_size``.
         try:
-            self._send(_OPEN.pack(variant, order, mem_size, restore_method))
+            self._send(OPEN.pack(variant, order, mem_size, restore_method))
             self._receive()
         except (PpmdChildError, PpmdChildReportedError) as exc:
             self.close()
@@ -236,8 +231,8 @@ class PpmdChildDecoder:
         proc = self._proc
         assert proc is not None and proc.stdout is not None
         try:
-            status, eof, needs_input, unused, size = _REPLY.unpack(
-                _read_exact(proc.stdout, _REPLY.size)
+            status, eof, needs_input, unused, size = REPLY.unpack(
+                _read_exact(proc.stdout, REPLY.size)
             )
             payload = _read_exact(proc.stdout, size)
         except PpmdChildError as exc:
@@ -261,7 +256,7 @@ class PpmdChildDecoder:
 
     def decode(self, data: bytes | bytearray | memoryview, length: int) -> bytes:
         try:
-            self._send(_REQUEST.pack(length, len(data)), bytes(data))
+            self._send(REQUEST.pack(length, len(data)), bytes(data))
             return self._receive()
         except PpmdChildError as exc:
             if is_crash(exc.returncode):

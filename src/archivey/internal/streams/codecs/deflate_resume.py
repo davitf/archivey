@@ -230,9 +230,10 @@ def stream_end(
     point: SeekPoint | None,
     cap: int,
     *,
-    input_after: list[bool] | None = None,
-) -> int | None:
-    """The decompressed offset where the raw DEFLATE stream in ``source`` ends.
+    check_input_after: bool = False,
+) -> tuple[int | None, bool]:
+    """The decompressed offset where the raw DEFLATE stream in ``source`` ends, and
+    whether input follows it.
 
     ``source`` is the compressed stream, seekable from offset 0. The decode starts at
     ``point`` (a :class:`DeflateResume` block boundary at or before ``cap``), or at the
@@ -242,10 +243,11 @@ def stream_end(
     decode that reaches the end is as good as a full one. Output is counted and
     dropped, in bounded pieces.
 
-    With ``input_after``, a stream that ends below ``cap`` is followed by the next
-    one, as rapidgzip reads on into it, until a stream ends at ``cap``; then one entry
-    is appended: whether ``source`` holds any byte after that stream, a zero too. The
-    result then does not depend on where ``point`` lies.
+    The second value is False unless ``check_input_after`` is set. Then a stream that
+    ends below ``cap`` is followed by the next one, as rapidgzip reads on into it,
+    until a stream ends at ``cap``, and the second value is whether ``source`` holds
+    any byte after that stream, a zero too. The result then does not depend on where
+    ``point`` lies.
     """
     produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
     if point is not None:
@@ -262,20 +264,21 @@ def stream_end(
         while True:
             while not decomp.eof:
                 if produced > cap:
-                    return None
+                    return None, False
                 if not data:
                     data = source.read(1 << 16)
                     if not data:
-                        return None
+                        return None, False
                     data, bit = _splice(bit, data), 0
                 produced += len(decomp.decompress(data, 1 << 20))
                 data = decomp.unconsumed_tail
-            if input_after is None or produced >= cap:
+            if not check_input_after or produced >= cap:
                 break
             data = decomp.unused_data
             decomp = zlib.decompressobj(-15)
     except zlib.error:
-        return None
-    if input_after is not None and produced <= cap:
-        input_after.append(bool(decomp.unused_data) or bool(source.read(1)))
-    return produced if produced <= cap else None
+        return None, False
+    if produced > cap:
+        return None, False
+    after = check_input_after and (bool(decomp.unused_data) or bool(source.read(1)))
+    return produced, after

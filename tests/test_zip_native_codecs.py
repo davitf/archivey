@@ -416,6 +416,69 @@ def test_zip_zstd_member_with_input_after_its_frame_is_corrupt(tail: bytes) -> N
         _read_whole(data, None)
 
 
+@requires_zstd()
+@pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
+def test_zip_zstd_member_with_a_second_frame_is_corrupt(chunk: int | None) -> None:
+    # A second frame is input after the first frame's end, though zstd reads it as more
+    # content. The declared size and CRC cover both frames' output.
+    zstd = zstd_backend()
+    second = b"second frame\n"
+    compressed = zstd.compress(_PAYLOAD) + zstd.compress(second)
+    data = _build_minimal_zip(b"z.bin", compressed, _PAYLOAD + second, 93)
+    with pytest.raises(CorruptionError, match="left after its end"):
+        _read_whole(data, chunk)
+
+
+@requires_zstd()
+@pytest.mark.parametrize(
+    "skippable",
+    [
+        pytest.param(struct.pack("<II", 0x184D2A50, 0), id="empty"),
+        pytest.param(struct.pack("<II", 0x184D2A5F, 6) + b"hidden", id="payload"),
+    ],
+)
+def test_zip_zstd_member_with_a_skippable_frame_is_corrupt(skippable: bytes) -> None:
+    # A skippable frame decodes to nothing, so the size and CRC match and only the
+    # input-after-end check sees the hidden bytes.
+    compressed = zstd_backend().compress(_PAYLOAD) + skippable
+    data = _build_minimal_zip(b"z.bin", compressed, _PAYLOAD, 93)
+    with pytest.raises(CorruptionError, match="left after its end"):
+        _read_whole(data, None)
+
+
+@pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
+def test_framed_stream_refuses_a_second_stream_after_the_end(
+    chunk: int | None,
+) -> None:
+    # The shared framed path, with the concatenation magic a bare .bz2 file uses: a
+    # second stream is input after the first one's end.
+    import bz2
+
+    from archivey.internal.streams.codecs.framed_decoder import (
+        FramedDecompressorStream,
+        stream_magic,
+    )
+
+    data = bz2.compress(_PAYLOAD) + bz2.compress(b"second")
+    magic = stream_magic((b"B", b"Z", b"h", b"123456789"))
+
+    def read(refuse: bool) -> bytes:
+        stream = FramedDecompressorStream(
+            io.BytesIO(data),
+            bz2.BZ2Decompressor,
+            codec_name="bzip2",
+            magic=magic,
+            refuse_input_after_end=refuse,
+        )
+        if chunk is None:
+            return stream.read()
+        return b"".join(iter(lambda: stream.read(chunk), b""))
+
+    assert read(refuse=False) == _PAYLOAD + b"second"
+    with pytest.raises(CorruptionError, match="left after its end"):
+        read(refuse=True)
+
+
 @requires_binary("7z")
 @requires("rapidgzip")
 @pytest.mark.parametrize(
@@ -459,3 +522,90 @@ def test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process(
                 continue
             with pytest.raises(CorruptionError, match="left after its end"):
                 ar.read(member)
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    body = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return body.compress(data) + body.flush()
+
+
+@pytest.mark.parametrize("tail", _TAILS)
+@pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
+def test_zip_zipcrypto_member_with_input_after_its_stream_is_corrupt(
+    tail: bytes, chunk: int | None
+) -> None:
+    # The decrypt stage hands the codec ``compress_size - 12`` bytes: the tail is
+    # inside them, after the DEFLATE stream's end. Under ZipCrypto a damaged member
+    # cannot be told from a wrong password that passed the one-byte check, so the
+    # CorruptionError arrives as the cause of an EncryptionError.
+    for suffix, raises in ((b"", False), (tail, True)):
+        data = build_zipcrypto_zip(
+            b"pw",
+            b"c.bin",
+            _PAYLOAD,
+            compression=zipfile.ZIP_DEFLATED,
+            compressed=_raw_deflate(_PAYLOAD) + suffix,
+        )
+        with open_archive(io.BytesIO(data), password=b"pw") as ar:
+            (member,) = ar.members()
+            if not raises:
+                assert ar.read(member) == _PAYLOAD
+                continue
+            with pytest.raises(EncryptionError) as excinfo:
+                if chunk is None:
+                    ar.read(member)
+                else:
+                    with ar.open(member) as stream:
+                        while stream.read(chunk):
+                            pass
+            cause = excinfo.value.__cause__
+            assert isinstance(cause, CorruptionError)
+            assert "left after its end" in str(cause)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("tail", _TAILS)
+def test_zip_winzip_aes_member_with_input_after_its_stream_is_corrupt(
+    tail: bytes,
+) -> None:
+    # The authentication code follows the ciphertext, so the codec's input ends
+    # exactly at the ciphertext's end; the tail is encrypted inside it.
+    from tests.zip_aes_fixture import build_aes_zip
+
+    for suffix, raises in ((b"", False), (tail, True)):
+        data = build_aes_zip(
+            [(b"a.bin", _PAYLOAD)], password=b"pw", compressed_tail=suffix
+        )
+        with open_archive(io.BytesIO(data), password=b"pw") as ar:
+            (member,) = ar.members()
+            if not raises:
+                assert ar.read(member) == _PAYLOAD
+                continue
+            with pytest.raises(CorruptionError, match="left after its end"):
+                ar.read(member)
+
+
+@requires("pyppmd")
+@pytest.mark.parametrize("in_child", [False, True], ids=["in-process", "child"])
+@pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
+def test_zip_ppmd_member_without_an_end_mark_reads_clean(
+    in_child: bool, chunk: int | None
+) -> None:
+    # A PPMd8 stream may end with no end mark; at the declared size it reads clean.
+    # Read in 7-byte chunks, this payload's end-mark probe parks the worker, which
+    # close() then has to quiesce.
+    import pyppmd
+
+    enc = pyppmd.Ppmd8Encoder(6, 16 << 20, 0)
+    body = _zip_ppmd_header(0) + enc.encode(_PAYLOAD) + enc.flush(False)
+    data = _build_minimal_zip(b"p.bin", body, _PAYLOAD, 98)
+    limits = DecoderLimits(max_ppmd_in_process_input=16 if in_child else 1 << 20)
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(decoder_limits=limits)
+    ) as ar:
+        (member,) = ar.members()
+        if chunk is None:
+            assert ar.read(member) == _PAYLOAD
+        else:
+            with ar.open(member) as stream:
+                assert b"".join(iter(lambda: stream.read(chunk), b"")) == _PAYLOAD

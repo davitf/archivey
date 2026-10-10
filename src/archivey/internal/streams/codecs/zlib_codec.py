@@ -445,11 +445,12 @@ class _DeflateEndCheckStream(DelegatingStream):
         end = self._takeover.position
         resume_point = getattr(self._takeover.accelerator, "resume_point", None)
         point = resume_point(end) if resume_point is not None else None
-        input_after: list[bool] | None = [] if self._refuse_input_after_end else None
         with self._views.view() as f:
-            found = stream_end(f, point, end, input_after=input_after)
+            found, input_after = stream_end(
+                f, point, end, check_input_after=self._refuse_input_after_end
+            )
         if found is not None:
-            if input_after and input_after[0]:
+            if input_after:
                 raise input_after_end_error("deflate")
             return b""
         self._takeover.switch_to_stdlib()

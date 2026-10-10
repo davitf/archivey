@@ -417,7 +417,9 @@ Error" for LZMA and PPMd. The reader sets `StreamConfig.refuse_input_after_end`,
 - pyppmd decodes a PPMd8 end mark only when asked for more output than the member holds,
   and only then shows the input after it in `unused_data`. So at the declared size one more
   symbol is asked for, once, when the decoder stopped on its budget with input left. An end
-  mark there, as 7-Zip writes it, makes any `unused_data` input after the end. No end mark
+  mark there, as 7-Zip writes it, makes any `unused_data` input after the end. A decoder
+  already at `eof` is not asked: pyppmd 1.3.1 sets a PPMd8 decoder's `eof` only when it
+  decodes the end mark, so its `unused_data` is checked the same way. No end mark
   (a decoded byte, or no `eof`) cannot be told from input past the size, so that member
   reads clean, as a marker-less LZMA1 member does. The child-process decoder reports the
   length of `unused_data` in its reply for the same check.
@@ -711,6 +713,9 @@ move.
 | Overlapping-entry bomb | `::test_overlapping_entries_bomb_translated_to_corruption` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |
 | Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators; `7z t` fails on the same members | `tests/test_zip_native_codecs.py::test_zip_member_with_input_after_its_stream_is_corrupt`, `::test_zip_zstd_member_with_input_after_its_frame_is_corrupt`, `::test_zip_input_after_the_stream_is_corrupt_under_the_accelerator`, `::test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process` |
+| A Zstd member with a second frame or a skippable frame after its first frame is `CorruptionError`; the shared framed decoder refuses a second stream | `tests/test_zip_native_codecs.py::test_zip_zstd_member_with_a_second_frame_is_corrupt`, `::test_zip_zstd_member_with_a_skippable_frame_is_corrupt`, `::test_framed_stream_refuses_a_second_stream_after_the_end` |
+| Bytes after the stream inside a ZipCrypto member (the `EncryptionError` of an unconfirmed password, caused by the `CorruptionError`) or a WinZip AES member raise | `tests/test_zip_native_codecs.py::test_zip_zipcrypto_member_with_input_after_its_stream_is_corrupt`, `::test_zip_winzip_aes_member_with_input_after_its_stream_is_corrupt` |
+| A PPMd member with no end mark reads clean, in process and in a child; an end mark already decoded at the size is checked; a worker the end-mark probe parks is quiesced on close | `tests/test_zip_native_codecs.py::test_zip_ppmd_member_without_an_end_mark_reads_clean`, `tests/test_ppmd_raw_streams.py::test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data`, `::test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close` |
 | A second DEFLATE or bzip2 stream in a member is `CorruptionError`, except a DEFLATE pair under rapidgzip whose size and CRC cover both | `tests/test_audit2_zip.py::test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt`, `::test_bzip2_accelerator_refuses_a_second_stream_the_declared_crc_covers`, `::test_rapidgzip_reads_a_second_deflate_stream_the_declared_crc_covers` |
 | Tampered HMAC raises on a full read (STORED and DEFLATE); partial read then `close()` is quiet | `tests/test_zip_aes.py::test_aes_tampered_hmac_raises_corruption`, `::test_aes_tampered_hmac_partial_read_then_close_is_quiet` |
 | AES decrypt stream `close()` still releases the source after a partial read; a source `OSError` still marks the wrapper closed | `::test_aes_decrypt_stream_close_releases_source`, `::test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises` |

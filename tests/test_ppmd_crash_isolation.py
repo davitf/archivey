@@ -47,6 +47,7 @@ from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildStartError,
     child_decoding_available,
 )
+from archivey.internal.streams.codecs.ppmd_worker import OPEN, REPLY
 from tests.conftest import requires
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_ppmd_raw_streams import (
@@ -448,15 +449,16 @@ def test_child_crash_surfaces_as_corruption_error(
 
 
 # A stand-in worker that answers the opening message like ``ppmd_worker.py`` and then
-# does what ``body`` says. ``reply()`` sends one empty success reply.
-_FAKE_WORKER_HEAD = """\
+# does what ``body`` says. ``reply()`` sends one empty success reply. The message
+# formats come from ``ppmd_worker``, so a format change reaches the fake too.
+_FAKE_WORKER_HEAD = f"""\
 import os, signal, struct, sys
 out = sys.stdout.buffer
 inp = sys.stdin.buffer
 def reply():
-    out.write(struct.pack("<BBBII", 0, 0, 1, 0, 0))
+    out.write(struct.pack({REPLY.format!r}, 0, 0, 1, 0, 0))
     out.flush()
-inp.read(7)
+inp.read({OPEN.size})
 """
 
 
@@ -643,7 +645,7 @@ def test_close_with_an_unread_reply_does_not_wait_for_the_timeout() -> None:
     data = b"hello child " * 200_000
     packed = _encode_ppmd7(data)
     child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
-    child._send(ppmd_child_module._REQUEST.pack(len(data), len(packed)), packed)
+    child._send(ppmd_child_module.REQUEST.pack(len(data), len(packed)), packed)
     started = time.monotonic()
     child.close()
     assert time.monotonic() - started < 2.0

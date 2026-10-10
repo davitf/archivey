@@ -92,8 +92,10 @@ _NO_FURTHER_STREAM = stream_magic()
 
 
 def _stdlib_bzip2(
-    source: CodecSource, config: StreamConfig, *, single_stream: bool = False
+    source: CodecSource, config: StreamConfig, *, single_stream: bool
 ) -> BinaryIO:
+    # ``single_stream`` has no default: every engine that decodes a coder's data,
+    # the accelerator's fallbacks too, must agree on what follows its stream (DR-5).
     return FramedDecompressorStream(
         source,
         bz2.BZ2Decompressor,
@@ -462,7 +464,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         from the start; a read and a seek fall back here alike."""
         self._armed = False
         self._end_unchecked = False  # the stdlib engine reports its own end
-        self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
+        self._replace_inner(
+            _stdlib_bzip2(
+                self._views.for_stdlib(),
+                self._config,
+                single_stream=self._single_stream,
+            )
+        )
 
 
 # The 48-bit magic numbers that start a bzip2 block and an end-of-stream marker. Each
@@ -723,7 +731,9 @@ class Bzip2Codec(StreamCodec):
             takeover = _StdlibOnAcceleratorError(
                 stream,
                 views=views,
-                open_stdlib=lambda fallback: _stdlib_bzip2(fallback, config),
+                open_stdlib=lambda fallback: _stdlib_bzip2(
+                    fallback, config, single_stream=params.single_stream
+                ),
                 label="bzip2",
                 takes_over=self._accelerator_data_error,
                 resume_points=_bzip2_resume_points,

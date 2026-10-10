@@ -119,10 +119,12 @@ class FramedDecoder(BaseDecoder):
 
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
-        rest = data.lstrip(b"\x00") if self._zero_padding else data
-        if len(rest) < len(data):
-            # Zero padding, which a container may refuse (``input_after_end``).
+        if data:
+            # Any byte after a stream's end, zero padding or another stream too
+            # (a skippable zstd frame included), is input a container may refuse
+            # (``input_after_end``).
             self._input_after_end = True
+        rest = data.lstrip(b"\x00") if self._zero_padding else data
         if not rest:
             return b""
         state = self._magic(rest)

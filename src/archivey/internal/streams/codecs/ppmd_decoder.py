@@ -539,12 +539,13 @@ class PpmdDecoder(BaseDecoder):
         (:attr:`input_after_end`). Anything else means no end mark at the size: a
         stream written without one, which pyppmd cannot tell from input past the
         size, so it reads clean, as a marker-less LZMA1 stream does. The extra symbol
-        is dropped.
+        is dropped. A decoder already at ``eof`` is not asked; its ``unused_data`` is
+        checked the same way.
 
-        Asked only of a worker that stopped on its output budget with input left
-        (``needs_input`` False): with all input consumed, nothing can follow the
-        stream, and resuming a worker parked on empty input is the crash path
-        ``_note_decoded`` describes. One symbol is far inside the over-decode
+        The symbol is asked only of a worker that stopped on its output budget with
+        input left (``needs_input`` False): with all input consumed, nothing can
+        follow the stream, and resuming a worker parked on empty input is the crash
+        path ``_note_decoded`` describes. One symbol is far inside the over-decode
         pyppmd survives (``_PPMD_UNSIZED_DECODE_CHUNK``). PPMd7 (7z) has no end mark
         and is not asked.
         """
@@ -558,13 +559,18 @@ class PpmdDecoder(BaseDecoder):
             return
         self._end_checked = True
         native = self._native
-        if native.eof or getattr(native, "needs_input", True):
-            return
-        extra = native.decode(b"", 1)
-        if extra or not native.eof:
-            # No end mark here. A worker that returned nothing is waiting for input.
-            self._end_probe_parked = not extra and not native.eof
-            return
+        # Already at ``eof``, the end mark is decoded and is not asked for again.
+        # pyppmd 1.3.1 sets ``eof`` on PPMd8 only when the end symbol decodes (the
+        # early ``eof`` of a range coder at ``Code == 0`` is PPMd7's alone), so
+        # ``unused_data`` then holds exactly the input after the end mark.
+        if not native.eof:
+            if getattr(native, "needs_input", True):
+                return
+            extra = native.decode(b"", 1)
+            if extra or not native.eof:
+                # No end mark here. A worker that returned nothing waits for input.
+                self._end_probe_parked = not extra and not native.eof
+                return
         if isinstance(native, PpmdChildDecoder):
             unused = native.unused_size
         else:
