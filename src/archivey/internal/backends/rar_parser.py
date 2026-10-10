@@ -877,27 +877,30 @@ def _parse_rar_volume(
     start = source.tell()
     version, sfx_offset = _find_sfx_header(source, start)
     source.seek(start + sfx_offset)
-    if version == 5:
-        archive = _parse_rar5(
-            source,
-            password=password,
-            kdf_cache=kdf_cache,
-            sfx_offset=sfx_offset,
-            volume_index=volume_index,
-            use_qo=use_qo,
-            max_members=max_members,
-        )
-    else:
-        archive = _parse_rar3(
-            source,
-            password=password,
-            kdf_cache=kdf_cache,
-            sfx_offset=sfx_offset,
-            volume_index=volume_index,
-            max_members=max_members,
-            name_encoding=name_encoding,
-            password_proven=password_proven,
-        )
+    try:
+        if version == 5:
+            archive = _parse_rar5(
+                source,
+                password=password,
+                kdf_cache=kdf_cache,
+                sfx_offset=sfx_offset,
+                volume_index=volume_index,
+                use_qo=use_qo,
+                max_members=max_members,
+            )
+        else:
+            archive = _parse_rar3(
+                source,
+                password=password,
+                kdf_cache=kdf_cache,
+                sfx_offset=sfx_offset,
+                volume_index=volume_index,
+                max_members=max_members,
+                name_encoding=name_encoding,
+                password_proven=password_proven,
+            )
+    except _PRIVATE_WALK_ERRORS as exc:
+        raise _public_walk_error(exc) from None
     # RAR5 normally refuses a later volume earlier, from MAIN's volume number;
     # this check covers RAR 1.5-4, which records none, and a RAR5 MAIN without one.
     # The emit rule appends a split_before member only to an empty list, so
@@ -1141,6 +1144,21 @@ class _RarHeaderCutError(TruncatedError):
     the header, so any other :class:`TruncatedError` raised inside the same ``try``
     still fails the open. Callers catching ``TruncatedError`` are unaffected.
     """
+
+
+_PRIVATE_WALK_ERRORS = (_RarHeaderCrcError, _RarEndBlockCrcError, _RarHeaderCutError)
+
+
+def _public_walk_error(exc: CorruptionError) -> CorruptionError:
+    """The public exception for a private walk signal that the walk re-raised.
+
+    The private types are for the walks to catch by type. One that escapes them (a
+    damaged main header, say) leaves the parser as its public base class, so callers
+    and ``type(exc).__name__`` never see a private name (DR-13). The traceback of the
+    original raise is kept.
+    """
+    public = TruncatedError if isinstance(exc, TruncatedError) else CorruptionError
+    return public(exc.raw_message).with_traceback(exc.__traceback__)
 
 
 def _plain_header_cut(start: int) -> str:

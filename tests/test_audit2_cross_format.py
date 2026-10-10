@@ -1141,14 +1141,17 @@ def test_rar_damaged_main_header_stays_corruption_at_open(
     fixture: str, version: int
 ) -> None:
     """Nothing precedes MAIN, and its flags (solid, volume, header encryption) are
-    needed to read anything after it, so damage there still fails the open."""
+    needed to read anything after it, so damage there still fails the open. The
+    error is the public ``CorruptionError`` itself, not the walk's private CRC
+    subclass: ``scripts/scan_archives.py`` reports ``type(exc).__name__``."""
     data = bytearray((_RAR_FIXTURES / fixture).read_bytes())
     blocks = _rar4_blocks(bytes(data)) if version == 4 else _rar5_blocks(bytes(data))
     main_type = 0x73 if version == 4 else 1
     _pos, _type, header_end, _size = next(b for b in blocks if b[1] == main_type)
     data[header_end - 1] ^= 0x01
-    with pytest.raises(CorruptionError, match="CRC mismatch"):
+    with pytest.raises(CorruptionError, match="CRC mismatch") as excinfo:
         parse_rar_archive(io.BytesIO(bytes(data)), password=None)
+    assert type(excinfo.value) is CorruptionError
 
 
 # The TAR twin of the rule above (maintainer ruling 2026-10-06): a zero block ends
