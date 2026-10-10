@@ -10,15 +10,20 @@ name: Atheris fuzz
 # - workflow_dispatch: force the full partition on demand (optional budget_scale)
 on:
   pull_request:
-    # Skip documentation-only pull requests (same set as the `changes` job in ci.yml;
-    # no test here reads a doc file). Not a required check, so no run is fine.
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "new_docs/**"
-      - "docs_templates/**"
-      - mkdocs.yml
-      - LICENSE
+    # Skip documentation-only pull requests. Same list as ci.yml's pull_request paths
+    # (see the comment there); keep the three in step.
+    paths:
+      - "**"
+      - ".*"
+      - ".*/**"
+      - "!**.md"
+      - "!docs/**"
+      - "!new_docs/**"
+      - "!docs_templates/**"
+      - "!mkdocs.yml"
+      - "!LICENSE"
+      - docs/api.md
+      - review/problem-catalogue/**
   schedule:
     # Offset from benchmark-wall (17 6) so the two nightlies do not start together.
     - cron: "47 6 * * *"

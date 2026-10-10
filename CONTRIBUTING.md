@@ -131,18 +131,22 @@ re-test 3.11. Today the `ci.yml` test matrix sets `UV_PYTHON` and passes `--pyth
 free-threaded job and the stress workflows pin each call with `--python` or `UV_PYTHON`.
 Keep that when you add a step.
 
-A pull request that changes only documentation skips the code jobs (lint, tests,
-benchmark gate) and the fuzz and PPMd stress workflows; the docs build and the OpenSpec
-checks still run. The `changes` job in `ci.yml` holds the list of paths that count as
-documentation. If a test starts reading a doc file, add that file to the job's
-exception list, or a change to it will skip the test that reads it.
-
 > **`--resolution lowest-direct` rewrites `uv.lock`**, and every later `uv sync --frozen`
 > / `uv run --no-sync` keeps the downgraded set. `./scripts/test.sh --all-configs`
 > restores `uv.lock` and the everyday environment on exit. Running the legs by hand,
 > restore with `git checkout -- uv.lock && uv sync --frozen --group dev --extra all`. The
 > lint and type checkers are pinned exactly in `pyproject.toml` so that leg 2 cannot
 > change what the gates report.
+
+A pull request that changes only documentation does not start `ci.yml` (lint, every
+test leg, the benchmark gate), `atheris-fuzz.yml` or `ppmd-native-stress.yml`. The docs
+build and the OpenSpec checks live in `docs-checks.yml`, which always runs. The list of
+documentation paths is the `pull_request: paths:` filter in those three workflows; if a
+test starts reading a doc file, re-include that file there, as `docs/api.md` is, or a
+change to it will skip the test that reads it. Branch protection on `main` requires no
+status checks today. If one is added, it must come from a workflow that runs on every
+pull request, because a filtered workflow reports no check at all and the PR would wait
+on it forever.
 
 ## Cutting a release
 

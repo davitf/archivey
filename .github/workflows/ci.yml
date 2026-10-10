@@ -14,6 +14,31 @@ on:
   push:
     branches: [main]
   pull_request:
+    # A pull request that changes only documentation does not start this workflow; the
+    # docs build and OpenSpec checks live in docs-checks.yml so they still run. A
+    # workflow-level filter costs nothing, where a classifier job would hold every code
+    # run in the runner queue until it finished. `**` first, then the documentation
+    # globs with `!`, then the two doc paths that tests read, re-included (later
+    # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
+    # (test_review_problem_catalogue). Add a path there when a test starts reading
+    # another doc file. atheris-fuzz.yml and ppmd-native-stress.yml carry the same list.
+    # Branch protection on main requires no status checks today. If that changes, a
+    # required check must come from a workflow that always runs: a docs-only PR gets no
+    # check from this one at all, and would wait on it forever.
+    paths:
+      - "**"
+      # Dotfiles listed explicitly in case `**` skips them: .github/ and
+      # .pre-commit-config.yaml changes must run the tests.
+      - ".*"
+      - ".*/**"
+      - "!**.md"
+      - "!docs/**"
+      - "!new_docs/**"
+      - "!docs_templates/**"
+      - "!mkdocs.yml"
+      - "!LICENSE"
+      - docs/api.md
+      - review/problem-catalogue/**
   workflow_dispatch:
 
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
@@ -23,61 +48,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Decides whether the code jobs (lint, test, unar-distro-packages,
-  # free-threaded-concurrency, benchmark) run. They skip, and report "skipped", when a
-  # pull request changes only documentation; docs and the two openspec jobs always run.
-  # A job-level `if:` rather than workflow `paths-ignore`, because paths-ignore would
-  # also drop the docs build. Pushes to main and manual dispatches always run everything.
-  #
-  # Documentation here means Markdown anywhere, docs/, new_docs/, docs_templates/,
-  # mkdocs.yml and LICENSE, minus the Markdown that tests read: docs/api.md
-  # (test_public_api) and review/problem-catalogue/ (test_review_problem_catalogue).
-  # Add a path to that exception list when a test starts reading another doc file.
-  changes:
-    name: Detect docs-only change
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      code: ${{ steps.classify.outputs.code }}
-    steps:
-      - name: Classify changed files
-        id: classify
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # A rename lists both names, so moving code into docs/ still counts as code.
-          files=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" \
-            --jq '.[] | .filename, (.previous_filename // empty)')
-          # The files API stops at 3000; past that, run everything.
-          count=$(printf '%s\n' "$files" | grep -c . || true)
-          code=false
-          if [ "$count" -eq 0 ] || [ "$count" -ge 3000 ]; then
-            code=true
-          fi
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            case "$f" in
-              docs/api.md | review/problem-catalogue/*) ;;
-              *.md | docs/* | new_docs/* | docs_templates/* | mkdocs.yml | LICENSE) continue ;;
-            esac
-            echo "code change: $f"
-            code=true
-          done <<< "$files"
-          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
-
   # Lint + type-check once (these are environment-independent). No continue-on-error:
   # a failure here fails CI — the "clean on Pyrefly AND ty" gate is enforced.
   lint:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     name: Lint & type-check
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -104,87 +77,7 @@ jobs:
       - name: ty
         run: uv run ty check
 
-  # Build the API-reference site with mkdocstrings. `--strict` turns broken refs and
-  # rendering warnings into failures, so doc rot (a renamed/removed public symbol, a bad
-  # cross-reference) fails CI like any other check.
-  docs:
-    name: Docs build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Set up Python
-        run: uv python install 3.12
-      # Runs before the build because it catches what the build cannot: mkdocs reports
-      # published-but-unlisted pages at INFO level and exits 0, which is how six pages
-      # stayed URL-reachable and search-indexed while absent from every menu.
-      - name: Check docs tree completeness
-        run: uv run --python 3.12 --group docs python scripts/check_docs_nav.py
-      - name: Check internal markdown links
-        # Relative links under dev-docs/ and .claude/skills/ (pair-workflow + skills).
-        # Stdlib-only; does not need the docs group.
-        run: uv run --python 3.12 --no-sync python scripts/check_internal_md_links.py
-      - name: Build docs (strict)
-        # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
-        run: uv run --python 3.12 --group docs mkdocs build --strict
-      - name: Check no Sphinx roles leaked into the site
-        # --strict cannot see these: to Markdown a Sphinx role is plain text.
-        run: python3 scripts/check_docs_rendered.py site
-
-  # The specs under `openspec/specs/` are the authority, but a change only reaches them
-  # when someone runs `openspec archive` — a step that was missed three times in a row
-  # (#212, #213, #214), each time leaving the authority describing an API or a set of
-  # extras that no longer shipped.
-  #
-  # Runs on pull requests too, since 2026-08. It originally did not, on the reasoning
-  # that an implementing PR is *meant* to tick its last task while still unarchived — but
-  # that reasoning assumed archiving is a separate step by nature. It is not: most changes
-  # here are proposed and implemented in one PR, where archiving in that same PR is simply
-  # the right move. Deferring it instead produced a steady stream of bookkeeping PRs whose
-  # entire content was `openspec archive` (#214, #215, #222, #227, #238 — five of the
-  # thirty-seven merges in three weeks) and a window on main where the authority was wrong.
-  #
-  # The escape hatch is unchanged and costs one character: a change that is complete but
-  # deliberately *not* being archived yet (design still moving under review, or the archive
-  # is deliberately batched with a sibling change) leaves its trailing task unchecked. The
-  # gate reads finished-ness from the checkboxes, so an unchecked box is an honest
-  # "not done yet" rather than a suppression. See CONTRIBUTING.md §"Archiving an OpenSpec
-  # change".
-  #
-  # Expressed as a plain job rather than an `if:` so a manual `workflow_dispatch` also runs
-  # it — dispatch is how you ask main for a verdict when the push event never produced a
-  # run, and a gate silently missing from that answer would defeat the point.
-  openspec:
-    name: OpenSpec changes archived
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      # Stdlib-only script, so no uv sync — the runner's python3 is enough.
-      - name: Assert no finished change is left unarchived
-        run: python3 scripts/check_openspec_archived.py
-
-  # A separate job rather than a second step in `openspec`, so the existing required
-  # check keeps meaning exactly what its name says. Rename/merge them if branch
-  # protection is updated to match.
-  openspec-self-reference:
-    name: OpenSpec spec prose
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      # Stdlib-only script, so no uv sync — the runner's python3 is enough.
-      - name: Assert no spec prose refers to "this change"
-        run: python3 scripts/check_openspec_self_reference.py
-
   test:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     runs-on: ${{ matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
@@ -583,8 +476,6 @@ jobs:
   # official image (a name with no slash); the names stay Docker Hub's so the job
   # names do not change.
   unar-distro-packages:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     name: unar package / ${{ matrix.image }}
     runs-on: ubuntu-latest
     container: mirror.gcr.io/library/${{ matrix.image }}
@@ -642,8 +533,6 @@ jobs:
   # lz4 or cryptography on it yet (2026-10-08), so both build from source; cryptography
   # keeps the GIL disabled there, as on 3.14t.
   free-threaded-concurrency:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -716,8 +605,6 @@ jobs:
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
   # as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.
   benchmark:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     name: Benchmark gate (structural)
     runs-on: ubuntu-latest
     timeout-minutes: 15
