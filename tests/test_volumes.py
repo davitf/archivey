@@ -1149,6 +1149,79 @@ def test_detect_format_on_any_numbered_part_agrees_with_open_archive(
     assert detected.format == ArchiveFormat.ZIP
 
 
+def test_detect_format_on_a_gapped_numbered_set_raises_truncated(
+    tmp_path: Path,
+) -> None:
+    """A set with a gap is refused by name before detection reads a byte.
+
+    ``detect_format`` resolves the path as ``open_archive`` does, so both raise the
+    same ``TruncatedError`` naming the missing part.
+    """
+    data = _zip_bytes({"payload.bin": os.urandom(3000)})
+    third = len(data) // 3
+    (tmp_path / "set.zip.002").write_bytes(data[third : 2 * third])
+    (tmp_path / "set.zip.003").write_bytes(data[2 * third :])
+    for opener in (detect_format, open_archive):
+        with pytest.raises(TruncatedError, match="missing part 1"):
+            opener(tmp_path / "set.zip.002")
+
+
+def test_detect_format_on_a_lone_first_part_reports_its_bytes(tmp_path: Path) -> None:
+    """A lone first part is detected as what its bytes show.
+
+    ``open_archive`` refuses it as an incomplete set; detection names the format, as
+    it does for any truncated archive whose header is intact.
+    """
+    data = _zip_bytes({"payload.bin": os.urandom(3000)})
+    lone = tmp_path / "set.zip.001"
+    lone.write_bytes(data[: len(data) // 3])
+    info = detect_format(lone)
+    assert (info.format, info.detected_by) == (ArchiveFormat.ZIP, "magic")
+    with pytest.raises(TruncatedError, match="found part 1 only"):
+        open_archive(lone)
+
+
+@pytest.mark.parametrize(
+    ("volume_one", "continuation", "fixtures"),
+    [
+        ("x.part1.rar", "x.part2.rar", ("tinyvol.part1.rar", "tinyvol.part2.rar")),
+        ("x.rar", "x.r00", ("tinyvol_rnn.rar", "tinyvol_rnn.r00")),
+    ],
+    ids=["part-n", "old-scheme-rnn"],
+)
+@pytest.mark.parametrize("volume_one_bytes", ["rar", "zip"])
+def test_detect_format_on_a_rar_continuation_agrees_with_open_archive(
+    tmp_path: Path,
+    volume_one: str,
+    continuation: str,
+    fixtures: tuple[str, str],
+    volume_one_bytes: str,
+) -> None:
+    """``detect_format`` on a RAR continuation reads volume 1, as ``open_archive`` does.
+
+    The ``zip`` case writes a ZIP under volume 1's name. No producer does that; it is
+    here because only bytes that differ from the continuation's show which file
+    detection read.
+    """
+    first_fixture, continuation_fixture = fixtures
+    if volume_one_bytes == "rar":
+        shutil.copy(_RAR_FIXTURES / first_fixture, tmp_path / volume_one)
+    else:
+        (tmp_path / volume_one).write_bytes(_zip_bytes({"a.txt": b"not rar"}))
+    shutil.copy(_RAR_FIXTURES / continuation_fixture, tmp_path / continuation)
+    path = tmp_path / continuation
+    with open_archive(path) as archive:
+        opened = archive.format_info
+    detected = detect_format(path)
+    assert (detected.format, detected.detected_by, detected.payload_offset) == (
+        opened.format,
+        opened.detected_by,
+        opened.payload_offset,
+    )
+    expected = ArchiveFormat.RAR if volume_one_bytes == "rar" else ArchiveFormat.ZIP
+    assert detected.format == expected
+
+
 def test_numbered_part_discovery_stats_only_matching_names(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

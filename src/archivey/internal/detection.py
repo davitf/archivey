@@ -64,6 +64,7 @@ arbitrary bytes will sometimes say yes:
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
@@ -735,6 +736,11 @@ def detect_format(
     A path to any part of a numbered split set (``set.7z.002``, ``set.zip.003``) or to
     a RAR continuation is detected on the set ``open_archive`` reads for it: the parts
     joined in order, or RAR volume 1. A middle part alone has no magic at offset 0.
+    That resolution runs before detection reads a byte, and it can raise:
+    ``TruncatedError`` for a numbered set with a gap (``set.zip.002`` and
+    ``set.zip.003`` with no ``set.zip.001``), as ``open_archive`` does. A lone first
+    part (``set.zip.001`` with no other part) is detected as the format its bytes
+    show, where ``open_archive`` refuses it as an incomplete set.
 
     A directory path returns :attr:`ArchiveFormat.DIRECTORY` with ``CERTAIN``
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
@@ -766,7 +772,25 @@ def detect_format_into(
     # the same value already said "unsupported source type". Same refusal, same words.
     require_source(source)
     check_config(config, call="detect_format(config=…)")
-    if _is_directory_source(source):
+    if not isinstance(source, (str, Path)):
+        return _detect_source_into(source, config, collector, follow_stub_volumes)
+    # A path is resolved once, as ``open_archive`` resolves it: any part of a numbered
+    # split set (``set.zip.002``) becomes the joined set, and a RAR continuation its
+    # volume 1. A middle part has no magic of its own, so detecting the named file
+    # alone refused what ``open_archive`` opens. Resolution can itself raise, before
+    # detection reads a byte: ``TruncatedError`` for a numbered set with a gap.
+    with closing(resolve_source(source).source) as resolved:
+        return _detect_source_into(resolved, config, collector, follow_stub_volumes)
+
+
+def _detect_source_into(
+    source: BinaryIO,
+    config: ArchiveyConfig | None,
+    collector: DiagnosticCollector | None,
+    follow_stub_volumes: bool,
+) -> FormatInfo:
+    """:func:`detect_format_into` on a stream or an already resolved source."""
+    if isinstance(source, ArchiveSource) and source.is_directory:
         return directory_format_info()
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
@@ -783,13 +807,16 @@ def detect_format_into(
     # carries its cost and its skips too. ``passes`` says there were two.
     receipt = MutableDetectionCostReceipt()
     try:
-        info = _detect_resolved(source, collector, resolved_budget, receipt)
+        info = _detect_format_body(source, collector, resolved_budget, receipt)
     except FormatDetectionError:
         alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
         if alt is None:
             raise
         receipt.passes += 1
-        info = _detect_resolved(alt, collector, resolved_budget, receipt)
+        # The volume is resolved as ``open_archive`` resolves it after the switch:
+        # ``vol.7z.001`` is detected on the joined set, not on its first slice.
+        with closing(resolve_source(alt).source) as alt_source:
+            info = _detect_format_body(alt_source, collector, resolved_budget, receipt)
     diagnostics = (
         collector.snapshot()
         if owned_collector
@@ -798,42 +825,9 @@ def detect_format_into(
     return replace(info, diagnostics=diagnostics)
 
 
-def _is_directory_source(source: str | Path | BinaryIO) -> bool:
-    """Whether ``source`` names a directory, by the test ``ArchiveSource`` uses."""
-    if isinstance(source, ArchiveSource):
-        return source.is_directory
-    if isinstance(source, (str, Path)):
-        return Path(source).is_dir()
-    return False
-
-
-def _detect_resolved(
-    source: str | Path | BinaryIO,
-    collector: DiagnosticCollector,
-    budget: DetectionBudget,
-    receipt: MutableDetectionCostReceipt,
-) -> FormatInfo:
-    """Detect on the bytes ``open_archive`` would read for ``source``.
-
-    A path goes through :func:`resolve_source`, as in ``open_archive``: any part of a
-    numbered split set (``set.zip.002``) is read as the joined set, and a RAR
-    continuation as its volume 1. A middle part has no magic of its own, so reading
-    the named file alone refused what ``open_archive`` opens. A stream or an
-    ``ArchiveSource`` is already the source and is detected as it is.
-    """
-    if not isinstance(source, (str, Path)):
-        return _detect_format_body(source, collector, budget, receipt)
-    resolved = resolve_source(source).source
-    try:
-        return _detect_format_body(resolved, collector, budget, receipt)
-    finally:
-        resolved.close()
-
-
-def _first_volume_beside_stub(source: str | Path | BinaryIO) -> Path | None:
-    path = source.path if isinstance(source, ArchiveSource) else source
-    if isinstance(path, (str, Path)):
-        return first_volume_for_stub(Path(path))
+def _first_volume_beside_stub(source: BinaryIO) -> Path | None:
+    if isinstance(source, ArchiveSource) and source.path is not None:
+        return first_volume_for_stub(source.path)
     return None
 
 

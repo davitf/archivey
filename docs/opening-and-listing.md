@@ -255,10 +255,12 @@ mislabel). You can still find out that the name lied.
 
 `detect_format` reports the same format `open_archive` would use; a directory path
 reports `ArchiveFormat.DIRECTORY`, since `open_archive` reads a directory as an
-archive. There is one wrinkle worth knowing: telling a `.tar.zst` from a plain `.zst`
-means decompressing a little of it to look for the tar header, so when that
-compressor's package is not installed the check cannot run and the bare compressor is
-reported instead. You are not left guessing: opening the file raises
+archive. A path to any part of a split set is detected on the whole set, so
+`backup.7z.002` reports 7-Zip. When a part before the last one is missing, part 1
+included, it raises the same `TruncatedError` that opening does. There is one wrinkle
+worth knowing: telling a `.tar.zst` from a plain `.zst` means decompressing a little of
+it to look for the tar header, so when that compressor's package is not installed the
+check cannot run and the bare compressor is reported instead. You are not left guessing: opening the file raises
 `PackageNotInstalledError`, naming the package to install.
 See [Install and extras](install.md#what-each-format-needs).
 
