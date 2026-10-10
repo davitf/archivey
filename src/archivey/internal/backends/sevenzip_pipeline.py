@@ -22,13 +22,13 @@ not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
   raw chain must end in LZMA1/LZMA2 in encode order, so that codec decodes first)
 - Several LZMA1/LZMA2 coders in one run → one chain each
 - BCJ2 (``0x0303011B``) → the source of its chain: four branch chains, each capped at
-  its declared size, feed :class:`~archivey.internal.streams.bcj2.Bcj2DecoderStream`
+  its declared size, feed :class:`~archivey.internal.streams.codecs.bcj2_filter.Bcj2DecoderStream`
 
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
 :func:`open_folder_pipeline` / :func:`_execute_stage` fold stages onto the packed
-sources. Encoded-header decode and the convenience :func:`parse_sevenzip_archive`
-also live here (parser stays structure-only). The encoded header stays linear-only:
-no writer puts BCJ2 there.
+sources. Encoded-header decode also lives here (parser stays structure-only); the
+archive-open flow that uses it is ``load_sevenzip_archive`` in ``sevenzip_reader``.
+The encoded header stays linear-only: no writer puts BCJ2 there.
 """
 
 from __future__ import annotations
@@ -36,11 +36,10 @@ from __future__ import annotations
 import io
 import lzma
 import zlib
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
-from archivey.config import ListingLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -64,19 +63,12 @@ from archivey.internal.backends.sevenzip_parser import (
     MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
     FolderGraph,
-    HeaderBlock,
-    PlainHeader,
-    SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
     check_bind_pairs,
     check_packed_indices,
-    empty_archive,
-    encoded_folder_slices,
+    encoded_header_slice,
     folder_is_encrypted,
-    materialize_archive,
-    parse_header_block,
-    read_signature_and_next_header,
 )
 from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
@@ -84,8 +76,6 @@ from archivey.internal.config import (
     check_decoder_memory,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.arm64 import FILTER_ARM64
-from archivey.internal.streams.bcj2 import Bcj2DecoderStream
 from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
@@ -95,8 +85,14 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
     parse_ppmd_var_h_properties,
 )
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
+from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
+from archivey.internal.streams.codecs.zstd_framing import (
+    MAX_FRAME_HEADER_SIZE,
+    frame_window_size,
+)
 from archivey.internal.streams.crypto import open_aes_decrypt_stream
-from archivey.internal.streams.decompress import FilterStream
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
 from archivey.internal.streams.streamtools.base import DelegatingStream
@@ -105,15 +101,6 @@ from archivey.internal.streams.streamtools.binaryio import (
     readinto_via_read,
     try_readinto,
 )
-from archivey.internal.streams.zstd_framing import (
-    MAX_FRAME_HEADER_SIZE,
-    frame_window_size,
-)
-
-# Omitting max_members on the archive-level entry point means the ListingLimits
-# default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
-_DEFAULT_MAX_MEMBERS = ListingLimits().max_members
-HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -1051,112 +1038,29 @@ def decode_encoded_header(
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
 ) -> bytes:
-    """Materialize an ENCODED_HEADER's packed folders to plaintext header bytes."""
-    decoded = bytearray()
-    claimed = 0
-    for (
-        folder,
-        absolute_offset,
-        compressed_size,
-        uncompressed_size,
-    ) in encoded_folder_slices(encoded):
-        # Hostile archives can claim a multi-EiB folder unpack size. Cap the
-        # running total before ``read_exact`` / codec buffers allocate
-        # (Atheris: raw MemoryError). Per-folder is redundant: unpack sizes
-        # are non-negative, so a single folder over the cap fails the total
-        # on the same iteration. Two COPY folders at 40 MiB concatenate past
-        # the 64 MiB next-header cap (S2-F2) — that is why the total matters.
-        claimed += uncompressed_size
-        if claimed > MAX_NEXT_HEADER_SIZE:
-            raise CorruptionError(
-                f"Encoded 7z header unpack size {claimed} exceeds the "
-                f"{MAX_NEXT_HEADER_SIZE}-byte parser limit"
-            )
-        source = SlicingStream(archive_fp, absolute_offset, compressed_size)
-        decoded.extend(
-            decode_folder_to_bytes(
-                source,
-                folder,
-                compressed_size=compressed_size,
-                uncompressed_size=uncompressed_size,
-                password=password,
-                key_cache=key_cache,
-                stream_config=stream_config,
-                collector=collector,
-            )
+    """Materialize an ENCODED_HEADER's one packed folder to plaintext header bytes."""
+    folder, absolute_offset, compressed_size, uncompressed_size = encoded_header_slice(
+        encoded
+    )
+    # Hostile archives can claim a multi-EiB folder unpack size. Cap it before
+    # ``read_exact`` / codec buffers allocate (Atheris: raw MemoryError).
+    if uncompressed_size > MAX_NEXT_HEADER_SIZE:
+        raise CorruptionError(
+            f"Encoded 7z header unpack size {uncompressed_size} exceeds the "
+            f"{MAX_NEXT_HEADER_SIZE}-byte parser limit"
         )
-    return bytes(decoded)
+    return decode_folder_to_bytes(
+        SlicingStream(archive_fp, absolute_offset, compressed_size),
+        folder,
+        compressed_size=compressed_size,
+        uncompressed_size=uncompressed_size,
+        password=password,
+        key_cache=key_cache,
+        stream_config=stream_config,
+        collector=collector,
+    )
 
 
 def encoded_header_needs_password(encoded: EncodedHeader) -> bool:
     folders = encoded.streams.folders or []
     return any(folder_is_encrypted(folder) for folder in folders)
-
-
-def unwrap_encoded_header(
-    block: HeaderBlock,
-    decode: Callable[[EncodedHeader], bytes],
-    *,
-    max_members: int | None,
-) -> tuple[PlainHeader, bool]:
-    """Decode at most one encoded-header layer. 7-Zip writes one.
-
-    Returns the plain header and whether that layer used 7zAES.
-    """
-    header_encrypted = False
-    if isinstance(block, EncodedHeader):
-        header_encrypted = encoded_header_needs_password(block)
-        block = parse_decoded_header(decode(block), max_members=max_members)
-    assert isinstance(block, PlainHeader)
-    return block, header_encrypted
-
-
-def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHeader:
-    """Parse the plaintext an encoded-header layer decoded to."""
-    block = parse_header_block(decoded, max_members=max_members)
-    if isinstance(block, EncodedHeader):
-        # A second EncodedHeader is hostile (COPY payload that is itself; O14).
-        raise CorruptionError("Encoded 7z header decoded to another encoded header")
-    return block
-
-
-def parse_sevenzip_archive(
-    fp: BinaryIO,
-    *,
-    password: bytes | None = None,
-    key_cache: SevenZipKeyCache | None = None,
-    stream_config: StreamConfig | None = None,
-    collector: DiagnosticCollector | None = None,
-    max_members: int | None = _DEFAULT_MAX_MEMBERS,
-) -> SevenZipArchive:
-    """Parse a 7z archive end-to-end (plain or encoded header).
-
-    Used by fuzz harnesses and tests. The reader uses the same two-phase flow with
-    password-candidate prompting instead of a single ``password``.
-    Omitting ``max_members`` applies the ``ListingLimits`` default, the same as
-    :func:`~archivey.internal.backends.sevenzip_parser.parse_header_block` and the RAR
-    parser's archive-level entry points; ``None`` is the explicit UNLIMITED opt-out.
-    """
-    cache = key_cache if key_cache is not None else SevenZipKeyCache()
-    signature = read_signature_and_next_header(fp)
-    if not signature.header_data:
-        return empty_archive(signature)
-
-    block = parse_header_block(signature.header_data, max_members=max_members)
-    block, header_encrypted = unwrap_encoded_header(
-        block,
-        lambda encoded: decode_encoded_header(
-            fp,
-            encoded,
-            password=password,
-            key_cache=cache,
-            stream_config=stream_config,
-            collector=collector,
-        ),
-        max_members=max_members,
-    )
-    # O8: encrypted headers never legitimately decode to zero file records.
-    # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
-    if header_encrypted and not block.files:
-        raise EncryptionError(HEADER_PASSWORD_REJECTED)
-    return materialize_archive(signature, block, is_header_encrypted=header_encrypted)

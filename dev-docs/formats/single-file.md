@@ -91,21 +91,25 @@ Each stage: who does the work, what is shared across the codecs, what is refused
 ### 2.1 Identify
 
 Seven codecs have magic at offset 0, declared on their codec descriptor in
-`internal/streams/codecs.py` and aggregated by the detector: gzip `1f 8b`, bzip2 `BZh`,
+`internal/streams/codecs/` and aggregated by the detector: gzip `1f 8b`, bzip2 `BZh`,
 xz `fd 37 7a 58 5a 00`, lzip `LZIP`, zstd `28 b5 2f fd`, LZ4 `04 22 4d 18` (and its legacy
 stream `02 21 4c 18`), `.Z` `1f 9d`.
 zstd also matches behind a run of skippable frames ([`zstd-lz4.md`](zstd-lz4.md) §2.1).
 The other three have none that is safe to trust, and are found by a **content probe**
 that decodes a bounded sample: LZMA Alone, then zlib, then Brotli, in that order. The
 steps run strongest signal first — near magic, the SFX scan, far magic, content probes,
-extension — so a probe only sees what nothing stronger claimed.
+extension — so a probe only sees what nothing stronger claimed. By default a probe runs
+only when the source's extension names its format; `always_probe_content=True` and
+`open_stream` run them all
+([`topics/detection.md`](../topics/detection.md) §2.5).
 [`topics/detection.md`](../topics/detection.md) has the order and why.
 
 What is codec-specific about a probe: it runs with accelerators off and decoder memory
 limits lifted, because a probe decodes a bounded sample and a capped probe would call a
 stream with a large dictionary "not this format" for a caller who opened it with
 `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG`). The open that follows applies the
-caller's limits. The shared machinery around the probes (the sample size, the
+caller's limits. Lifting the cap does not mean reserving what the header declares: a probe
+sets `StreamConfig.probe_read_bound`, and the decoder is sized to that read (§4). The shared machinery around the probes (the sample size, the
 whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
 probe-only result) is on [`topics/detection.md`](../topics/detection.md) §2.4 and §4.1.
 
@@ -122,8 +126,9 @@ The extension is the last resort (`GUESS`): `.gz`, `.zz`, `.bz2`, `.xz`, `.lz`, 
 
 **`SingleFileReader` serves every codec.** It is codec-agnostic: the codec is picked by the
 format, and everything format-specific is a method on that codec's `StreamCodec` subclass.
-Adding a codec is one subclass in `codecs.py`, with no edit to the detector, the reader
-or the registry.
+Adding a codec is one subclass in its own `codecs/<name>_codec.py`, listed in
+`codecs/registry.py`'s `STREAM_CODECS`, with no edit to the detector, the reader or the
+backend registry.
 
 **The source decides how members are opened.** A path is handed to the codec on every
 open, so concurrent opens get independent handles. A seekable stream is wrapped once in a
@@ -242,7 +247,7 @@ have small fixed windows. The `.Z` decoder's table stays under about 19 MiB (abo
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
 trailer, zlib's Adler-32, the end of an xz stream, lzip member or LZMA Alone payload,
 and the end the bzip2, zstd and LZ4 libraries report for one stream. For bzip2, LZMA
-Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/decompress.py` runs one
+Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/codecs/framed_decoder.py` runs one
 library decompressor per stream and starts another only when the next bytes are that
 codec's magic (a zstd skippable frame counts), so a concatenated file still reads as one
 payload. LZMA Alone has no magic; the next bytes start a stream when the header's
@@ -251,8 +256,19 @@ zero, which every LZMA encoder writes and text almost never has. That is how
 `lzma.LZMAFile` reads a concatenated `.lzma` too, and a second stream's dictionary is
 checked against `max_decoder_memory` like the first. Past the end, zero bytes are
 padding, as `tar` pads its records; the first non-zero byte ends the stream there.
-`DecompressorStream` stops reading the source, returns everything decoded, and emits one
-`ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` at that byte's offset.
+One exception: bytes that hold the codec's stream magic in at least half of its
+positions, and not in all of them, are a further stream with a damaged header, not
+appended data. xz, lzip, zstd, LZ4 and bzip2 raise `CorruptionError` there, on the
+forward read and in the xz and lzip index searches, so a file is never read as its
+first stream alone. The rule is lzip's for a corrupt header in a multimember file;
+`near_stream_magic()` in `decompressor_stream.py` states it once for all five. A tail
+shorter than the magic is too short to judge and is trailing data. Where zero bytes
+are padding (zstd, LZ4, bzip2), a run shorter than the magic is also judged as the
+magic's first bytes, since the damaged byte can be a zero, also when the file ends
+right after the magic. Unlike `lzip --loose-trailing`, nothing turns the rule off.
+gzip does not apply the rule (§7). Otherwise `DecompressorStream` stops reading the
+source, returns everything decoded, and emits one `ARCHIVE_TRAILING_DATA` with
+`expected_marker="end_of_stream"` at that byte's offset.
 Only a bare file, a compressed TAR's codec and `open_stream` report
 (`StreamConfig.report_trailing_data`); a codec inside a ZIP or 7z member stops silently,
 because the container's sizes decide there, and so do the detection and metadata probes.
@@ -310,6 +326,8 @@ codecs' own tools disagree; archivey treats every codec with an end marker the s
 | xz | as above | `xz -t`: "Unexpected end of input", exit 1 |
 | lzip | as above | `plzip -t`: exit 0; the lzip manual allows trailing data |
 | zstd | as above | `zstd -t`: "unsupported format", exit 1 |
+| xz, lzip, zstd, LZ4, bzip2, a second stream whose magic has one damaged byte | `CorruptionError`, on a read and on a seek | `xz -t`: "Compressed data is corrupt", exit 1; `lzip` reports a corrupt header; `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
+| gzip, the same | The first member, then `ARCHIVE_TRAILING_DATA` | `gzip -t`: "trailing garbage ignored", exit 2 |
 | Brotli from a pipe | `CorruptionError`: telling the junk from damage needs a second read ([`brotli.md`](brotli.md) §2.3) | — |
 | `.Z` | `TruncatedError`, because the junk decodes as codes | — |
 
@@ -323,9 +341,14 @@ Shared by the codecs; each page adds its own.
   allows it ([`brotli.md`](brotli.md) §4); extraction's ratio guard bounds what is written.
 - **A declared dictionary sizes an allocation.** xz, lzip and LZMA Alone declare their
   dictionary before any data, and liblzma reserves it. `DecoderLimits` refuses one over the
-  cap before the decoder is built (§2.3). Detection probes lift the cap and rely on the
-  bounded sample, which bounds what is written into the dictionary but not what liblzma
-  reserves.
+  cap before the decoder is built (§2.3). Detection probes lift the cap and do not
+  reserve the declaration either: a probe sets `StreamConfig.probe_read_bound` to the
+  output it reads, and the decoder is built with a dictionary of that size (4 KiB at
+  least), which decodes those bytes identically, since a match never reaches back past
+  output already produced. `.lzma` and lzip rewrite the probe's copy of the header; xz
+  decodes each block raw with its filter chain and a clamped LZMA2 dictionary, walking
+  into later streams, and a chain Python's `lzma` cannot build raw (ARM64, RISC-V)
+  leaves the inner TAR unclaimed, recorded as `CAPABILITY_UNAVAILABLE`.
 - **A crafted index misplaces bytes on a seek.** xz and lzip seeks trust the file's own
   index; a forward read verifies it, a cold seek does not. Accepted: threat-model O17.
 - **A seek table grows with the unit count the file declares.** An lzip member can be 26
@@ -367,9 +390,16 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A truncation keeps raising after a seek back | The source did not change, so a second pass must not end cleanly | Clearing the error with the position (PR #491) |
 | An absolute 1 MiB threshold for the rewind report (PR #232) | Wall time follows bytes re-decoded, not the ratio to the jump | A relative threshold, which goes quiet on the worst case |
 | Read every stream to its end, then report non-zero bytes after it as `ARCHIVE_TRAILING_DATA`; zeros are padding | The payload is intact, so refusing it helps no one, and a diagnostic lets a caller who cares refuse through the policy. One rule for every codec, as for TAR | Refusing, as `xz` and `zstd` do; ignoring without a word, as the standard library's readers do |
+| Bytes after a stream that hold its magic in at least half of the positions, but not all, raise `CorruptionError` (xz, lzip, zstd, LZ4, bzip2) | A damaged magic on a later stream otherwise reads as the first stream plus a warning, which can be 1% of the file. The rule is `lzip`'s own, and one helper states it for every codec | Reporting it as trailing data; a prefix-of-the-magic rule, which misses a damaged first byte; for bzip2 alone, ignoring it as `bzip2` does |
 | Cap the seek table and thin it, rather than refuse (PR #420) | A seek table is an optimisation; nothing becomes unreadable | A `ListingLimits` field that fails the read |
 
 ## 7. Open questions
+
+- **Whether gzip should refuse a damaged member magic too.** A second gzip member whose
+  `1f 8b` is damaged reads as the first member plus `ARCHIVE_TRAILING_DATA`. `gzip -t`
+  calls it trailing garbage too. The rule above would judge gzip on two magic bytes,
+  where one chance byte is half, and the `rapidgzip` path finds the end its own way, so
+  it needs its own check ([`gzip.md`](gzip.md) §2.3).
 
 - **Whether to report the content size zstd and LZ4 frames declare.** It changes `size`
   from `None` to a number for most `.zst` files written from a file. A frame's declared
@@ -395,6 +425,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `password=` accepted and unused | `::test_password_is_accepted_and_recorded` |
 | `open_stream` is forward-only unless asked, and builds no index then | `tests/test_open_stream.py::test_open_stream_default_is_forward_only`, `::test_open_stream_xz_default_builds_no_index`, `::test_open_stream_xz_seekable_exposes_size` |
 | Bytes after the stream: payload, one report, zeros silent, strict raises, xz and lzip keep their index, containers silent | `tests/test_stream_trailing_data.py` |
+| A damaged magic on a later stream raises on a read and a seek, also when a zero replaces its first bytes, in the middle of the file or at its end; other bytes and a tail shorter than the magic still report; the rule is lzip's | `tests/test_stream_trailing_data.py::test_a_damaged_magic_on_a_later_stream_is_corruption`, `::test_other_bytes_after_a_stream_are_still_reported`, `::test_the_near_magic_rule_is_lzips`, `::test_a_magic_damaged_to_a_zero_byte_is_corruption`, `::test_a_magic_damaged_to_zeros_at_the_end_of_the_file_is_corruption`, `::test_bzip2_judges_a_short_zero_run_as_the_magic_in_both_modes`, `::test_a_zero_run_is_judged_the_same_however_the_input_is_cut` |
 | A new codec needs only a descriptor | `tests/test_codec_descriptor.py` |
 | Probe order, completion window, `format_unconfirmed` | `tests/test_detection.py`, `tests/test_brotli_framing_gate.py::test_guess_decode_failure_sets_format_unconfirmed` |
 
@@ -410,7 +441,7 @@ pbzip2 lbzip2 lzip plzip zstd lz4 brotli ncompress`.
   · [`compressed-streams`](../../openspec/specs/compressed-streams/spec.md)
   · [`seekable-decompressor-streams`](../../openspec/specs/seekable-decompressor-streams/spec.md)
   · [`format-detection`](../../openspec/specs/format-detection/spec.md)
-- Code: `internal/backends/single_file_reader.py` (the reader) · `internal/streams/codecs.py`
+- Code: `internal/backends/single_file_reader.py` (the reader) · `internal/streams/codecs/`
   (codec descriptors, accelerators, probes) · `internal/streams/decompressor_stream.py`
   (the engine and seek table) · `internal/streams/archive_stream.py` (translation, rewind
   report) · `internal/detection.py` (probe order, inner-TAR probe)

@@ -13,6 +13,8 @@ from collections.abc import Callable
 from archivey.exceptions import CorruptionError
 from archivey.internal.backends.rar_parser import (
     _RAR3_MAIN,
+    _RAR5_ENCRYPTION,
+    _RAR5_MAIN,
     _S_BLK_HDR,
     RAR5_ID,
     RAR_ID,
@@ -26,9 +28,7 @@ from archivey.internal.sfx import HitOutcome
 _RAR3_MAIN_MIN = _S_BLK_HDR.size + 6
 _RAR3_HEADER_CAP = 64 * 1024
 
-# RAR5 MAIN / ENCRYPTION (encrypted-headers archive: first block is ENCRYPTION).
-_RAR5_MAIN = 1
-_RAR5_ENCRYPTION = 4
+# RAR5: an encrypted-headers archive's first block is ENCRYPTION, not MAIN.
 # Identity only — a MAIN/ENCRYPTION header is small. Cap so a hostile vint
 # cannot force a 2 MiB peek.
 _RAR5_HEADER_CAP = 64 * 1024

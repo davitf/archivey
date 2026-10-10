@@ -22,7 +22,7 @@ from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.codecs import _stdlib_bzip2
+from archivey.internal.streams.codecs.bzip2_codec import _stdlib_bzip2
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -192,7 +192,9 @@ def test_a_decoder_error_is_raised_again_after_a_seek_to_the_same_place() -> Non
     # must still restart the decoder rather than feed the spent one. Whether a spent
     # bz2 decoder raises ValueError or repeats its OSError depends on the CPython build,
     # so the fake decoder below is the check that does not.
-    stream = _stdlib_bzip2(io.BytesIO(b"not bzip2"), StreamConfig(seekable=True))
+    stream = _stdlib_bzip2(
+        io.BytesIO(b"not bzip2"), StreamConfig(seekable=True), single_stream=False
+    )
     with pytest.raises(OSError, match="Invalid data stream"):
         stream.read(10)
     for _ in range(2):

@@ -64,7 +64,7 @@ from archivey.internal.sfx import (
     scan_for_magic,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.brotli_framing import (
+from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     parse_metablock,
 )
@@ -83,6 +83,8 @@ _STUB = b"MZ" + b"\x90" * 4094
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _SEVENZIP_FIXTURES = Path(__file__).parent / "fixtures" / "sevenzip"
 _SIGNATURE_HEADER_SIZE = 32
+# A source not named ``.br`` runs the Brotli probe only with every content probe on.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 def _elf_stub(size: int) -> bytes:
@@ -811,11 +813,12 @@ def _7z_bytes(tmp_path: Path) -> bytes:
 
 
 def _assert_sfx_opens(path: Path, expected: ArchiveFormat, offset: int) -> None:
-    detected = detect_format(path)
+    # Every probe on, so the scan is shown to win over the Brotli probe, not to run alone.
+    detected = detect_format(path, config=_ALWAYS_PROBE)
     assert detected.format == expected
     assert detected.payload_offset == offset
     assert detected.detected_by == "sfx_scan"
-    with open_archive(path) as archive:
+    with open_archive(path, config=_ALWAYS_PROBE) as archive:
         members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
     assert members == _FILES
 
@@ -897,7 +900,7 @@ def test_a_weak_cue_still_lets_a_content_probe_answer(tmp_path: Path) -> None:
     path = tmp_path / "weak.bin"
     path.write_bytes(header + b"\x90" * (need - len(header)) + second + b"\x00" * 8)
     assert executable_cue(path.read_bytes()[:8]) is ExecutableCue.WEAK
-    detected = detect_format(path)
+    detected = detect_format(path, config=_ALWAYS_PROBE)
     assert detected.format == ArchiveFormat.BROTLI
     assert detected.detected_by == "content_probe"
 
@@ -906,7 +909,7 @@ def test_a_real_brotli_stream_is_unaffected(tmp_path: Path) -> None:
     brotli = pytest.importorskip("brotli")
     path = tmp_path / "payload.bin"
     path.write_bytes(brotli.compress(b"hello world\n" * 500))
-    detected = detect_format(path)
+    detected = detect_format(path, config=_ALWAYS_PROBE)
     assert detected.format == ArchiveFormat.BROTLI
     assert detected.detected_by == "content_probe"
     assert detected.payload_offset == 0

@@ -18,18 +18,18 @@ import zlib
 import pytest
 
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.internal.streams.decompress import (
+from archivey.internal.streams.codecs.deflate_decoder import (
     GzipDecompressorStream,
     ZlibDecoder,
     ZlibDecompressorStream,
 )
-from archivey.internal.streams.decompressor_stream import SeekPoint
-from archivey.internal.streams.deflate_resume import (
+from archivey.internal.streams.codecs.deflate_resume import (
     WINDOW_SIZE,
     DeflateResume,
     DeflateResumeDecoder,
     stream_end,
 )
+from archivey.internal.streams.decompressor_stream import SeekPoint
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 
 _WORDS = [
@@ -46,7 +46,10 @@ def _text(rng: random.Random, size: int) -> bytes:
 
 def _decoder(bit: int, window: bytes) -> DeflateResumeDecoder:
     return DeflateResumeDecoder(
-        DeflateResume(bit, window), ZlibDecoder(-15), corruption=None, truncated="cut"
+        DeflateResume(bit, window),
+        ZlibDecoder(-15),
+        corruption=lambda exc: CorruptionError(str(exc)),
+        truncated="cut",
     )
 
 
@@ -69,7 +72,7 @@ def _decodes_from(bit: int, head: bytes, tail: bytes, data: bytes) -> bool:
         _feed(decoder, tail, 500, out)
     except ResumeReachedStreamEnd:
         pass
-    except zlib.error:
+    except CorruptionError:
         return False
     return len(out) > len(data) // 2 and data.startswith(out)
 
@@ -170,12 +173,12 @@ def test_stream_end_finds_the_final_block_from_a_resume_point(bit: int) -> None:
     stream, start, head, data = _stream(bit)
     end = len(head) + len(data)
     point = SeekPoint(len(head), start, DeflateResume(bit, head[-WINDOW_SIZE:]))
-    assert stream_end(io.BytesIO(stream), point, end) == end
-    assert stream_end(io.BytesIO(stream), None, end) == end
+    assert stream_end(io.BytesIO(stream), point, end)[0] == end
+    assert stream_end(io.BytesIO(stream), None, end)[0] == end
     # The input runs out first, or the output passes the cap: no end.
     cut = stream[: start + (len(stream) - start) // 2]
-    assert stream_end(io.BytesIO(cut), point, end) is None
-    assert stream_end(io.BytesIO(stream), point, end - 1) is None
+    assert stream_end(io.BytesIO(cut), point, end)[0] is None
+    assert stream_end(io.BytesIO(stream), point, end - 1)[0] is None
 
 
 def test_stream_end_needs_a_final_block() -> None:
@@ -184,6 +187,6 @@ def test_stream_end_needs_a_final_block() -> None:
     compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
     body = compressor.compress(b"payload " * 100) + compressor.flush(zlib.Z_FULL_FLUSH)
     assert len(zlib.decompressobj(-15).decompress(body)) == 800
-    assert stream_end(io.BytesIO(body), None, 800) is None
+    assert stream_end(io.BytesIO(body), None, 800)[0] is None
     final = body + compressor.flush()
-    assert stream_end(io.BytesIO(final), None, 800) == 800
+    assert stream_end(io.BytesIO(final), None, 800)[0] == 800

@@ -96,7 +96,7 @@ _SCENARIOS: dict[str, str] = {
     "archivey-truncated": _PREAMBLE
     + textwrap.dedent(
         """\
-        from archivey.internal.streams.decompress import PpmdDecoder
+        from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecoder
         for _ in range(CYCLES):
             dec = PpmdDecoder(order=ORDER, mem_size=MEM, variant=7,
                               unpack_size=len(CONTENT), pack_size=len(PACKED))
@@ -115,7 +115,7 @@ _SCENARIOS: dict[str, str] = {
         """\
         import io
         from archivey.exceptions import TruncatedError
-        from archivey.internal.streams.decompress import PpmdDecompressorStream
+        from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
         for _ in range(CYCLES):
             with PpmdDecompressorStream(
                 io.BytesIO(PACKED[: len(PACKED) // 2]),

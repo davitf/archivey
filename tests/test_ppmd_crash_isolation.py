@@ -32,21 +32,22 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.config import StreamConfig
-from archivey.internal.streams import decompress as decompress_module
-from archivey.internal.streams import ppmd_child as ppmd_child_module
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
     PpmdCodec,
     open_codec_stream,
+    ppmd_decoder,
 )
-from archivey.internal.streams.ppmd_child import (
+from archivey.internal.streams.codecs import ppmd_child as ppmd_child_module
+from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildDecoder,
     PpmdChildError,
     PpmdChildReportedError,
     PpmdChildStartError,
     child_decoding_available,
 )
+from archivey.internal.streams.codecs.ppmd_worker import OPEN, REPLY
 from tests.conftest import requires
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_ppmd_raw_streams import (
@@ -256,7 +257,7 @@ def test_without_a_child_process_a_large_member_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A frozen app cannot start a child: past the limit, ``ResourceLimitError``."""
-    monkeypatch.setattr(decompress_module, "child_decoding_available", lambda: False)
+    monkeypatch.setattr(ppmd_decoder, "child_decoding_available", lambda: False)
     packed = _encode_ppmd7(_ZERO_RUN)
     params = _params(7, len(packed), len(_ZERO_RUN))
     with open_codec_stream(
@@ -277,7 +278,7 @@ def test_a_member_past_the_limit_is_refused_even_when_one_read_carries_it_whole(
     One large ``read(n)`` hands the decoder the whole pack in a single feed. It is still
     past the limit, so without a child process it is refused rather than decoded here.
     """
-    monkeypatch.setattr(decompress_module, "child_decoding_available", lambda: False)
+    monkeypatch.setattr(ppmd_decoder, "child_decoding_available", lambda: False)
     packed = _encode_ppmd7(_ZERO_RUN)
     assert 1024 < len(packed) < 1 << 20  # past the limit, inside one 1 MiB feed
     params = _params(7, len(packed), len(_ZERO_RUN))
@@ -372,7 +373,7 @@ def test_the_child_writes_no_core_dump() -> None:
     probe = textwrap.dedent(
         """
         import ctypes
-        from archivey.internal.streams.ppmd_worker import disable_core_dumps
+        from archivey.internal.streams.codecs.ppmd_worker import disable_core_dumps
         disable_core_dumps()
         print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))  # PR_GET_DUMPABLE
         """
@@ -448,15 +449,16 @@ def test_child_crash_surfaces_as_corruption_error(
 
 
 # A stand-in worker that answers the opening message like ``ppmd_worker.py`` and then
-# does what ``body`` says. ``reply()`` sends one empty success reply.
-_FAKE_WORKER_HEAD = """\
+# does what ``body`` says. ``reply()`` sends one empty success reply. The message
+# formats come from ``ppmd_worker``, so a format change reaches the fake too.
+_FAKE_WORKER_HEAD = f"""\
 import os, signal, struct, sys
 out = sys.stdout.buffer
 inp = sys.stdin.buffer
 def reply():
-    out.write(struct.pack("<BBBI", 0, 0, 1, 0))
+    out.write(struct.pack({REPLY.format!r}, 0, 0, 1, 0, 0))
     out.flush()
-inp.read(7)
+inp.read({OPEN.size})
 """
 
 
@@ -643,7 +645,7 @@ def test_close_with_an_unread_reply_does_not_wait_for_the_timeout() -> None:
     data = b"hello child " * 200_000
     packed = _encode_ppmd7(data)
     child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
-    child._send(ppmd_child_module._REQUEST.pack(len(data), len(packed)), packed)
+    child._send(ppmd_child_module.REQUEST.pack(len(data), len(packed)), packed)
     started = time.monotonic()
     child.close()
     assert time.monotonic() - started < 2.0

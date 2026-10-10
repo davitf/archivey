@@ -1,0 +1,144 @@
+"""Child-process side of ``PpmdChildDecoder`` (``ppmd_child.py``).
+
+pyppmd can take the whole process down on corrupt input (it decodes past the end of
+a stream that has already ended; see ``dev-docs/known-issues.md``). Large PPMd members
+are therefore decoded in a child process that runs this file, so a crash costs the
+member and not the caller.
+
+This file is run as a script (``python -P ppmd_worker.py``) and imports nothing from
+``archivey``: importing any ``archivey`` module imports the whole package, which costs
+more start-up time than the decode of a small member. It depends on the standard
+library and ``pyppmd`` only. The parent keeps all the decoding logic; the child owns one native
+decoder and answers one request at a time.
+
+Protocol, all integers little-endian, over the child's stdin and stdout:
+
+- Parent sends ``<BBIB`` (variant, order, mem_size, restore_method) once. The child
+  replies twice: once after ``import pyppmd``, and once after it has constructed the
+  decoder. The constructor allocates ``mem_size`` bytes, and pyppmd aborts the process
+  rather than raising when it cannot, so the parent can tell a child that died
+  allocating its model (between the two replies) from one that never started.
+- Then, per request: ``<iI`` (length, data size) and the data bytes. The child calls
+  ``decode(data, length)``.
+- Every reply, including the two to the opening message: ``<BBBII`` (status, eof,
+  needs_input, length of the decoder's ``unused_data``, payload size) and the
+  payload. Status 0 carries the decoded bytes; status 1 carries
+  ``"<exception type name>\\n<message>"`` in UTF-8.
+- The parent closes stdin to end the child.
+"""
+
+from __future__ import annotations
+
+import signal
+import struct
+import sys
+from typing import IO
+
+# The protocol's three messages. ``ppmd_child.py`` imports them from here, which
+# imports nothing back.
+OPEN = struct.Struct("<BBIB")
+REQUEST = struct.Struct("<iI")
+REPLY = struct.Struct("<BBBII")
+
+
+def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
+    parts: list[bytes] = []
+    while size:
+        chunk = stream.read(size)
+        if not chunk:
+            return None
+        parts.append(chunk)
+        size -= len(chunk)
+    return b"".join(parts)
+
+
+def _reply(out: IO[bytes], status: int, decoder: object, payload: bytes) -> None:
+    eof = bool(getattr(decoder, "eof", False))
+    needs_input = bool(getattr(decoder, "needs_input", True))
+    unused = len(getattr(decoder, "unused_data", b"") or b"")
+    out.write(REPLY.pack(status, eof, needs_input, unused, len(payload)))
+    out.write(payload)
+    out.flush()
+
+
+def _error_payload(exc: BaseException) -> bytes:
+    return f"{type(exc).__name__}\n{exc}".encode("utf-8", "replace")
+
+
+def disable_core_dumps() -> None:
+    """Ask the system not to write a core dump when this process crashes.
+
+    A crash here is expected on corrupt or hostile input (the reason this process
+    exists), so a core is useless, and it is about the size of the model the archive
+    declared, up to ``max_decoder_memory`` (2 GiB by default). ``RLIMIT_CORE`` of 0
+    stops a core file but not a core piped to a crash handler (``core_pattern``
+    starting with ``|``: apport, systemd-coredump), which the kernel feeds whatever the
+    limit while this process stays alive and the parent waits. Linux skips the dump
+    entirely for a process that is not dumpable. ``rapidgzip_worker.py`` has a copy,
+    since neither worker can import the other; ``tests/test_worker_scripts.py`` keeps
+    the two the same.
+
+    Best effort: anything missing (no ``resource`` on Windows, a Python built without
+    ``ctypes``, no ``prctl``) is skipped.
+    """
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+
+            pr_set_dumpable = 4
+            ctypes.CDLL(None).prctl(pr_set_dumpable, 0, 0, 0, 0)
+        except (ImportError, OSError, AttributeError):
+            pass
+
+
+def main() -> None:
+    disable_core_dumps()
+    # A terminal's Ctrl-C signals the whole foreground process group, this child too.
+    # The parent decides what an interrupt means.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
+    header = _read_exact(stdin, OPEN.size)
+    if header is None:
+        return
+    variant, order, mem_size, restore_method = OPEN.unpack(header)
+    decoder = None
+    try:
+        import pyppmd
+    except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
+        _reply(stdout, 1, decoder, _error_payload(exc))
+        return
+    _reply(stdout, 0, decoder, b"")
+    try:
+        if variant == 8:
+            decoder = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
+        else:
+            decoder = pyppmd.Ppmd7Decoder(order, mem_size)
+    except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
+        _reply(stdout, 1, decoder, _error_payload(exc))
+        return
+    _reply(stdout, 0, decoder, b"")
+    while True:
+        request = _read_exact(stdin, REQUEST.size)
+        if request is None:
+            return
+        length, size = REQUEST.unpack(request)
+        data = _read_exact(stdin, size) if size else b""
+        if data is None:
+            return
+        try:
+            result = decoder.decode(data, length)
+        except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
+            _reply(stdout, 1, decoder, _error_payload(exc))
+            continue
+        _reply(stdout, 0, decoder, result)
+
+
+if __name__ == "__main__":
+    main()

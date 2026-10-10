@@ -55,6 +55,12 @@ Standard repo loop: `dev-docs/code-map.md` for where to start,
 needs a handbook note or a thin brief. Red–green for bug fixes. Specs and
 published docs move with the contract, in the same PR.
 
+Before you change a format, read its handbook page (`dev-docs/formats/<format>.md`,
+§5 Sharp edges and §6 Decisions) and `dev-docs/known-issues.md`: a trap someone
+already hit is written there. If the fix taught something new, apply the lessons test
+in `CONTRIBUTING.md` §"Where does a new doc go?" and write it in the same PR
+(`address-review-findings` §5 does the same after each review round).
+
 Gates **before pushing**: `./scripts/check.sh --fix` and `./scripts/test.sh`
 (`AGENTS.md` §Every task; `--all-configs` when extras or versions matter).
 

@@ -393,6 +393,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.rar_copy_sources as rar_copy_sources
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
+    import archivey.internal.backends.sevenzip_reader as sevenzip_reader
     import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.backends.zip_reader as zip_reader
@@ -403,29 +404,30 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.password_confirm as password_confirm
     import archivey.internal.source as source_mod
     import archivey.internal.streams.archive_stream as archive_stream
-    import archivey.internal.streams.bcj2 as bcj2
     import archivey.internal.streams.codecs as codecs
+    import archivey.internal.streams.codecs.bcj2_filter as bcj2
+    import archivey.internal.streams.codecs.rapidgzip_child as rapidgzip_child
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.crypto as crypto
     import archivey.internal.streams.decompressor_stream as decompressor_stream
-    import archivey.internal.streams.rapidgzip_child as rapidgzip_child
     import archivey.internal.streams.streamtools.locked as locked
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
+    import archivey.internal.streams.streamtools.sparse as sparse
     import archivey.internal.streams.verify as verify
 
     forwards_or_owns = {
         archive_stream.ArchiveStream,
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
-        codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
+        codecs.rapidgzip_inprocess._AcceleratorStream,  # owns rapidgzip available_block_offsets
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
-        codecs._DeflateEndCheckStream,
-        codecs._GzipTruncationCheckStream,
-        codecs._ZlibAdlerCheckStream,
-        codecs._Bzip2EmptyStreamCheck,
-        codecs._StdlibOnAcceleratorError,
-        codecs._StdlibSeekContract,
-        codecs._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
+        codecs.zlib_codec._DeflateEndCheckStream,
+        codecs.gzip_codec._GzipTruncationCheckStream,
+        codecs.zlib_codec._ZlibAdlerCheckStream,
+        codecs.bzip2_codec._Bzip2EmptyStreamCheck,
+        codecs.stdlib_takeover._StdlibOnAcceleratorError,
+        codecs.rapidgzip_select._StdlibSeekContract,
+        codecs.lzma_codec._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -451,6 +453,13 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         cli.ProcessOutputStream,  # the base of the two subprocess stdout streams
         iso_reader._PyCdlibStream,
         solid._MemberSlice,
+        # A table below it (gzip under a .tar.gz) is in stored offsets, and the map
+        # from logical to stored offsets is not a contiguous shift, so a slice's
+        # translation does not carry over. Declining costs this: ArchiveStream takes
+        # None as a resume at 0, so where a rewind warning applies (a .tar.gz), a
+        # backward seek reports its whole read position as re-decoded work, more
+        # than it costs when the member is mostly holes.
+        sparse.SparseStream,
         # The source boundary: it wraps the archive source, and every seek-point
         # table is above it.
         source_mod.ArchiveSource,
@@ -467,12 +476,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         detection._BoundedPeekReader,
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
         # bytes and has no seek-point table to forward to.
-        codecs._RefusedAloneStream,
+        codecs.lzma_codec._RefusedAloneStream,
         # Sits under tarfile, which hands out member data through its own
         # ExFileObject: nothing above it can ask it for a resume offset.
-        tar_reader._EofProbeStream,
+        tar_reader._BoundedTarFileobj,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
+        # A 7z pass's member stream, forward-only like the folder decode under it:
+        # nothing seeks it, so nothing asks it for a resume offset.
+        sevenzip_reader._ReadAheadStream,
     }
 
     found = _readonly_stream_subclasses()
@@ -598,6 +610,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.sparse as sparse
 
     owns_via_base = {
         locked.LockedStream,
@@ -605,23 +618,24 @@ def test_delegating_stream_close_inventory() -> None:
         counting.OutputCountingStream,
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
-        codecs._DeflateEndCheckStream,
-        codecs._GzipTruncationCheckStream,
-        codecs._ZlibAdlerCheckStream,
-        codecs._Bzip2EmptyStreamCheck,
-        codecs._StdlibOnAcceleratorError,
-        codecs._StdlibSeekContract,
-        codecs._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
+        codecs.zlib_codec._DeflateEndCheckStream,
+        codecs.gzip_codec._GzipTruncationCheckStream,
+        codecs.zlib_codec._ZlibAdlerCheckStream,
+        codecs.bzip2_codec._Bzip2EmptyStreamCheck,
+        codecs.stdlib_takeover._StdlibOnAcceleratorError,
+        codecs.rapidgzip_select._StdlibSeekContract,
+        codecs.lzma_codec._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
+        sparse.SparseStream,
     }
     subclass_closes_inner = {
         cli.ProcessOutputStream,
         rar_reader._UnrarOwnedStream,
         unar.UnarOutputStream,
-        codecs._AcceleratorStream,
+        codecs.rapidgzip_inprocess._AcceleratorStream,
     }
     found = _delegating_stream_subclasses()
     leftover = found - owns_via_base - subclass_closes_inner

@@ -27,7 +27,10 @@ from pathlib import Path
 import pytest
 
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.decompress import PpmdDecoder, PpmdDecompressorStream
+from archivey.internal.streams.codecs.ppmd_decoder import (
+    PpmdDecoder,
+    PpmdDecompressorStream,
+)
 from archivey.internal.streams.streamtools import read_exact
 from tests.conftest import requires
 
@@ -570,7 +573,7 @@ def test_archivey_ppmd7_truncated_input_raises_truncated_error() -> None:
             """\
             import io
             from archivey.exceptions import TruncatedError
-            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
             from tests.test_ppmd_raw_streams import _CONTENT, _ORDER, _MEM, _encode_ppmd7
 
             packed = _encode_ppmd7(_CONTENT)
@@ -605,7 +608,7 @@ def test_archivey_ppmd7_near_truncated_pack_raises_truncated_error() -> None:
             """\
             import io
             from archivey.exceptions import TruncatedError
-            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
             from tests.test_ppmd_raw_streams import _CONTENT, _ORDER, _MEM, _encode_ppmd7
 
             packed = _encode_ppmd7(_CONTENT)
@@ -634,7 +637,7 @@ def test_ppmd_decoder_truncated_flush_reports_unfinished() -> None:
     _run_ppmd_child(
         textwrap.dedent(
             """\
-            from archivey.internal.streams.decompress import PpmdDecoder
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecoder
             from tests.test_ppmd_raw_streams import _CONTENT, _ORDER, _MEM, _encode_ppmd7
 
             packed = _encode_ppmd7(_CONTENT)
@@ -661,7 +664,7 @@ def test_archivey_ppmd7_early_close_partial_read() -> None:
         textwrap.dedent(
             """\
             import io
-            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
             from archivey.internal.streams.streamtools import read_exact
             from tests.test_ppmd_raw_streams import _CONTENT, _ORDER, _MEM, _encode_ppmd7
 
@@ -732,8 +735,8 @@ def test_ppmd_decoder_truncated_flush_caps_nul_max_length() -> None:
     _run_ppmd_child(
         textwrap.dedent(
             """\
-            from archivey.internal.streams import decompress as decompress_module
-            from archivey.internal.streams.decompress import PpmdDecoder
+            from archivey.internal.streams.codecs import ppmd_decoder
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecoder
             from tests.test_ppmd_raw_streams import (
                 _CONTENT,
                 _ORDER,
@@ -760,7 +763,7 @@ def test_ppmd_decoder_truncated_flush_caps_nul_max_length() -> None:
             assert spy.lengths, "expected native decode calls"
             assert all(length >= 0 for length in spy.lengths), spy.lengths
             assert (
-                spy.lengths[-1] <= decompress_module._PPMD_EXTRA_NUL_MAX_OUTPUT
+                spy.lengths[-1] <= ppmd_decoder._PPMD_EXTRA_NUL_MAX_OUTPUT
             ), spy.lengths
             print("ok")
             """
@@ -902,7 +905,7 @@ def test_archivey_ppmd7_overstated_unpack_size_raises_truncated_error(
             f"""\
             import io
             from archivey.exceptions import TruncatedError
-            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
             from tests.test_ppmd_raw_streams import (
                 _K6_PAYLOAD, _ORDER, _MEM, _DecodeCallSpy, _calls_after_payload_spent,
                 _encode_ppmd7,
@@ -995,3 +998,59 @@ def test_ppmd7_drain_stops_at_the_first_short_return_at_eof() -> None:
     assert dec._exhausted
     assert fake.calls[1:] == [(b"", 64)]
     assert dec.pending_error is not None
+
+
+class _FakePpmd8(_FakeDecomp):
+    """A PPMd8 stand-in with ``unused_data``; a ``decode(b"", 1)`` that returns
+    nothing leaves it parked on empty input, as pyppmd's worker is then."""
+
+    def __init__(
+        self, *, needs_input: bool, eof: bool, returns: list[bytes], unused: bytes
+    ) -> None:
+        super().__init__(needs_input=needs_input, eof=eof, returns=returns)
+        self.unused_data = unused
+
+    def decode(self, data: bytes, length: int) -> bytes:
+        out = super().decode(data, length)
+        self.needs_input = not out
+        return out
+
+
+def _ppmd8_at_size(fake: _FakePpmd8) -> PpmdDecoder:
+    """A ZIP PPMd8 decoder whose output reached ``unpack_size``, with all input fed."""
+    dec = PpmdDecoder(
+        order=_ORDER, mem_size=_MEM, variant=8, unpack_size=100, pack_size=50
+    )
+    dec._decomp = fake  # type: ignore[assignment]  # test double for the native decoder
+    dec._held = None
+    dec._produced = 100
+    dec._fed_compressed = 50
+    return dec
+
+
+@pytest.mark.parametrize(("unused", "after"), [(b"J", True), (b"", False)])
+def test_ppmd8_end_mark_decoded_before_the_size_check_reads_unused_data(
+    unused: bytes, after: bool
+) -> None:
+    """A decoder already at ``eof`` has decoded its end mark (pyppmd sets PPMd8
+    ``eof`` only there), so its ``unused_data`` is input after the end, and it is
+    asked for no further symbol."""
+    fake = _FakePpmd8(needs_input=False, eof=True, returns=[], unused=unused)
+    dec = _ppmd8_at_size(fake)
+    assert dec.flush().data == b""
+    assert dec.finished
+    assert dec.input_after_end is after
+    assert fake.calls == []
+
+
+def test_ppmd8_end_probe_that_parks_the_worker_quiesces_it_on_close() -> None:
+    """No end mark at the size: the probe's empty return parks the worker, and
+    close() must send it the NUL although the member is finished."""
+    fake = _FakePpmd8(needs_input=False, eof=False, returns=[b"", b"x"], unused=b"")
+    dec = _ppmd8_at_size(fake)
+    assert dec.flush().data == b""
+    assert dec.finished
+    assert not dec.input_after_end
+    assert fake.calls == [(b"", 1)]
+    dec.close()
+    assert fake.calls == [(b"", 1), (b"\0", 1)]

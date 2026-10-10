@@ -34,6 +34,12 @@ from archivey.internal.reader_state import (
 )
 from archivey.reader import ArchiveReader
 from archivey.types import MemberStreams
+from tests.test_concurrent_cooperative import (
+    _assert_wound_down_once_in_order,
+    _interrupt_close_at,
+    _open_under_suspended_pass,
+    _zip_with_files,
+)
 
 REENTRY = "re-entered from inside its own"
 CLOSE_FROM_INSIDE = "from inside one of its own calls"
@@ -105,15 +111,19 @@ def test_suspended_pass_is_not_diagnosed_as_a_callback() -> None:
     state = _state()
     token = state.acquire_pass("stream_members")
     state.set_suspended(token, True)
-    with pytest.raises(ArchiveyUsageError, match="another reader operation") as ei:
-        state.mark_reader_closed()
-    assert CLOSE_FROM_INSIDE not in str(ei.value)
     with pytest.raises(ArchiveyUsageError, match="another reader operation"):
         state.acquire_worker("open")
     # Running again (a diagnostic fired inside a step): that is re-entry.
     state.set_suspended(token, False)
     with pytest.raises(ArchiveyUsageError, match=REENTRY):
         state.acquire_worker("open")
+    with pytest.raises(ArchiveyUsageError, match=CLOSE_FROM_INSIDE):
+        state.mark_reader_closed()
+    # Suspended again: the close comes from the caller's loop body, and a suspended
+    # pass does not block it. The reader closes under the pass.
+    state.set_suspended(token, True)
+    state.mark_reader_closed()
+    assert state.lifecycle is not LifecycleState.OPEN
 
 
 def test_internal_open_window_still_admits_children() -> None:
@@ -184,9 +194,11 @@ def test_loop_body_of_stream_members_keeps_the_generic_message() -> None:
             with pytest.raises(ArchiveyUsageError) as ei:
                 reader.get("plain.txt")
             assert "another reader operation ('stream_members')" in str(ei.value)
-            with pytest.raises(ArchiveyUsageError) as ei:
-                reader.close()
-            assert CLOSE_FROM_INSIDE not in str(ei.value)
+            # Not a callback either: the close is the caller's, and a pass suspended
+            # at a yield does not block it.
+            reader.close()
+            with pytest.raises(ArchiveyUsageError, match="closed"):
+                reader.get("plain.txt")
             break
 
 
@@ -319,6 +331,42 @@ def test_interrupted_close_is_finished_by_the_next_close(
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
+@pytest.mark.parametrize(
+    "point",
+    [
+        # Just after close() took the stream-shutdown claim, before it took the closer:
+        # the retry runs the closer.
+        "claim",
+        # Inside the closer, after its real work: the closer is gone, so the retry
+        # skips the wind-down and only closes the streams and drops the lease.
+        "closer",
+    ],
+)
+def test_close_interrupted_in_the_stream_shutdown_step_is_finished_by_the_next_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    """Ctrl-C inside close()'s stream-shutdown step, with a pass suspended.
+
+    The close transition took the pass wind-down lease. The interrupted close() must
+    hand the claim back, so the next close() can finish the step, drop that lease and
+    tear the archive down. A spent claim would strand the lease for good. The pass is
+    wound down exactly once, before teardown, at either point.
+    """
+    p = _open_under_suspended_pass(_zip_with_files(tmp_path), False, monkeypatch)
+    state = p.reader._state
+    _interrupt_close_at(state, point, monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        p.reader.close()
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    p.reader.close()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    _assert_wound_down_once_in_order(p.events)
+    assert p.source is None or p.source.closed
+    assert p.stream.closed
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(p.it)
+
+
 # ---------------------------------------------------------------------------
 # S17-K10 / S17-K11: long symlink chains
 # ---------------------------------------------------------------------------
@@ -376,8 +424,12 @@ def test_open_long_cycle_raises_read_error(tmp_path: Path) -> None:
     with open_archive(path) as reader:
         start = reader.get("l0")
         assert start is not None and start.link_target_member is None
-        with pytest.raises(ReadError, match="Link cycle detected"):
+        with pytest.raises(ReadError, match="Link cycle detected") as info:
             reader.open("l0")
+    # The member name is an attribute, rendered once by __str__, not repeated in
+    # the message text.
+    assert info.value.member_name is not None
+    assert str(info.value).count(info.value.member_name) == 1
 
 
 # The terminal memo is sound only because every lookup is node-local. These shapes

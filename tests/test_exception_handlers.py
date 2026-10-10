@@ -8,10 +8,12 @@ are ``dev-docs/topics/exception-handlers.md``.
 from __future__ import annotations
 
 import io
+import struct
 import subprocess
 import sys
 import textwrap
 import zipfile
+import zlib
 from typing import TYPE_CHECKING, NoReturn
 
 import pytest
@@ -19,7 +21,10 @@ import pytest
 import archivey
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.reader_state import LifecycleState
-from archivey.internal.streams.codecs import _AcceleratorStream, _TrappingSource
+from archivey.internal.streams.codecs.rapidgzip_inprocess import (
+    _AcceleratorStream,
+    _TrappingSource,
+)
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
 
@@ -83,16 +88,159 @@ def test_overrun_probe_lets_resource_errors_through(error: BaseException) -> Non
     stream.close()
 
 
-def test_overrun_probe_still_reads_an_opaque_decoder_error_as_the_end() -> None:
-    """The narrowed probe keeps its reason: an opaque decoder error past the end is EOF."""
-    inner = _ExactThenFails(b"x" * 10, RuntimeError("std::exception"))
+@pytest.mark.parametrize("n", [-1, 10])
+def test_overrun_probe_reads_a_closed_source_as_the_end(n: int) -> None:
+    """verify.py ``_probe_past_declared``: a closed source past the end is "no more data".
+
+    The digests still judge the declared bytes: a wrong CRC raises.
+    """
+    closed = ValueError("I/O operation on closed file.")
+    good = zlib.crc32(b"x" * 10).to_bytes(4, "big")
+    with VerifyingStream(
+        _ExactThenFails(b"x" * 10, closed), {"crc32": good}, expected_size=10
+    ) as stream:
+        assert stream.read(n) == b"x" * 10
+    bad = (zlib.crc32(b"x" * 10) ^ 1).to_bytes(4, "big")
+    with VerifyingStream(
+        _ExactThenFails(b"x" * 10, closed), {"crc32": bad}, expected_size=10
+    ) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read(n)
+
+
+@pytest.mark.parametrize("n", [-1, 10])
+def test_overrun_probe_raises_a_decoder_error_past_the_end(n: int) -> None:
+    """verify.py ``_probe_past_declared``: a decoder error past the declared size raises.
+
+    It used to read as "the member ends here", so the read that reached the declared
+    size returned its bytes as verified and only a later read raised.
+    """
+    inner = _ExactThenFails(b"x" * 10, zlib.error("invalid block type"))
     with VerifyingStream(inner, {}, expected_size=10) as stream:
-        assert stream.read() == b"x" * 10
+        with pytest.raises(zlib.error):
+            stream.read(n)
+
+
+def _stored_block(data: bytes) -> bytes:
+    """A non-final stored DEFLATE block holding ``data``."""
+    return b"\x00" + struct.pack("<HH", len(data), len(data) ^ 0xFFFF) + data
+
+
+def _zip_with_bad_block_after_declared_size() -> tuple[bytes, int]:
+    """A ZIP deflate member whose declared size and CRC match its first blocks.
+
+    The body is ``size`` bytes in non-final stored blocks ending exactly at compressed
+    offset 4 x 64 KiB, then a block of the reserved type 11. zlib and 7-Zip reject it.
+    """
+    blocks, compressed_len = 5, 4 * 65536
+    size = compressed_len - 5 * blocks
+    payload = bytes(range(256)) * (size // 256) + bytes(range(size % 256))
+    step = size // blocks
+    bounds = [i * step for i in range(blocks)] + [size]
+    raw = b"".join(
+        _stored_block(payload[a:b]) for a, b in zip(bounds, bounds[1:], strict=False)
+    )
+    assert len(raw) == compressed_len
+    raw += b"\x07\x00\x00"
+    crc = zlib.crc32(payload)
+    name = b"m"
+    local = struct.pack(
+        "<IHHHHHIIIHH", 0x04034B50, 20, 0, 8, 0, 0, crc, len(raw), size, len(name), 0
+    )
+    body = local + name + raw
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            0,
+            8,
+            0,
+            0,
+            crc,
+            len(raw),
+            size,
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+    )
+    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(body), 0)
+    return body + central + end, size
+
+
+@pytest.mark.parametrize("n", [-1, 65536, 262119])
+def test_read_reaching_declared_size_raises_when_the_body_goes_on_corrupt(
+    n: int,
+) -> None:
+    """A read that reaches ``member.size`` does not hand over a member zlib rejects.
+
+    With ``read(65536)`` the four reads ended at the declared size with no error, so a
+    caller that stops at ``member.size`` took a damaged member as verified. The verdict
+    is corruption, not truncation, and the reaching read withholds its chunk: only the
+    reads before it deliver bytes.
+    """
+    blob, size = _zip_with_bad_block_after_declared_size()
+    with pytest.raises(zlib.error):
+        zipfile.ZipFile(io.BytesIO(blob)).read("m")
+    got = 0
+    with (
+        archivey.open_archive(io.BytesIO(blob)) as reader,
+        reader.open("m") as stream,
+        pytest.raises(CorruptionError) as info,
+    ):
+        while got < size:
+            chunk = stream.read(n)
+            if not chunk:
+                break
+            got += len(chunk)
+    assert not isinstance(info.value, TruncatedError)
+    assert got == (0 if n < 0 else (size - 1) // n * n)
+
+
+def _zip_declared_empty_with_garbage_body() -> bytes:
+    """A one-member ZIP: DEFLATE, declared size 0 and CRC 0, and a 64-byte body that is
+    not DEFLATE."""
+    name, body = b"a.txt", b"\xff" * 64
+    fields = struct.pack("<HHHHHIII", 20, 0, 8, 0, 0, 0, len(body), 0)
+    local = b"PK\x03\x04" + fields + struct.pack("<HH", len(name), 0) + name
+    central = (
+        b"PK\x01\x02"
+        + struct.pack("<H", 20)
+        + fields
+        + struct.pack("<HHHHHII", len(name), 0, 0, 0, 0, 0, 0)
+        + name
+    )
+    offset = len(local) + len(body)
+    end = b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, 1, 1, len(central), offset, 0)
+    return local + body + central + end
+
+
+def test_overrun_probe_raises_a_typed_decoder_error() -> None:
+    """verify.py ``_probe_past_declared``: the standard-library DEFLATE decoder raises
+    a typed ``CorruptionError`` past the declared size, and the probe lets it through.
+    A garbage body behind a member declared empty is not read as an empty member. A valid
+    DEFLATE body there: test_audit2_zip.py
+    ::test_zero_declared_size_with_data_raises_rather_than_serving_it."""
+    blob = _zip_declared_empty_with_garbage_body()
+    with (
+        archivey.open_archive(io.BytesIO(blob)) as reader,
+        reader.open(reader.get("a.txt")) as stream,
+        pytest.raises(CorruptionError, match="deflate stream") as info,
+    ):
+        stream.read()
+    assert not isinstance(info.value, TruncatedError)
 
 
 @requires("rapidgzip")
 def test_bzip2_accelerator_traps_a_failing_caller_source() -> None:
-    """codecs.py: the bzip2 accelerator reads a caller's stream through the trap too.
+    """codecs/bzip2_codec.py: the bzip2 accelerator reads a caller's stream through the trap too.
 
     Without it, the caller's ``OSError`` crossed into rapidgzip's C++ callback and
     aborted the interpreter (``std::invalid_argument``), so this runs in a child.
@@ -170,7 +318,7 @@ def _call(stream: _AcceleratorStream, how: str) -> None:
 
 @pytest.mark.parametrize("how", ["read", "readinto", "seek"])
 def test_parked_source_fault_wins_over_the_accelerator_error(how: str) -> None:
-    """codecs.py ``_AcceleratorStream``: when the accelerator raises its own error on
+    """codecs/rapidgzip_inprocess.py ``_AcceleratorStream``: when the accelerator raises its own error on
     the shim's EOF-shaped answer, the parked source fault is what propagates."""
     stream, _ = _accelerator_over_failing_source(RuntimeError("Unexpected end of file"))
     with pytest.raises(OSError, match="disk gone") as info:
@@ -191,9 +339,9 @@ def test_an_interrupt_is_not_replaced_by_a_parked_fault(how: str) -> None:
 
 
 def test_fault_parked_during_accelerator_open_raises_at_open() -> None:
-    """codecs.py ``_open_accelerator``: a fault seen while the decoder opens (through
+    """codecs/rapidgzip_inprocess.py ``_open_accelerator``: a fault seen while the decoder opens (through
     the shim's ``seekable``/``tell``) raises there, not on a later read."""
-    from archivey.internal.streams.codecs import _open_accelerator
+    from archivey.internal.streams.codecs.rapidgzip_inprocess import _open_accelerator
 
     class _Broken(io.BytesIO):
         def seekable(self) -> bool:

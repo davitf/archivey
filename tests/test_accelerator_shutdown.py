@@ -1,5 +1,6 @@
 """Canary for the accelerator interpreter-shutdown abort and archivey's guard against it
-(see ``dev-docs/investigations/rapidgzip-upstream-report.md`` §6 and ``_AcceleratorStream`` in ``archivey.internal.streams.codecs``).
+(see ``dev-docs/investigations/rapidgzip-upstream-report.md`` §6 and ``_AcceleratorStream`` in
+``archivey.internal.streams.codecs.rapidgzip_inprocess``).
 
 archivey uses a single accelerator library, ``rapidgzip``, for both gzip (``RapidgzipFile``) and
 bzip2 (its bundled ``IndexedBzip2File``) — deliberately NOT the separate ``indexed_bzip2``

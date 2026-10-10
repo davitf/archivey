@@ -16,8 +16,10 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -28,9 +30,13 @@ from archivey.diagnostics import (
     DiagnosticDisposition,
     DiagnosticPolicy,
 )
-from archivey.exceptions import FilterRejectionError, LinkTargetNotFoundError
-from archivey.internal.backends import directory_reader
-from archivey.internal.backends.rar_parser import RarMemberInfo
+from archivey.exceptions import (
+    CorruptionError,
+    FilterRejectionError,
+    LinkTargetNotFoundError,
+)
+from archivey.internal.backends import directory_reader, rar_parser
+from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
 from archivey.internal.backends.zip_reader import ZipReader
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
@@ -44,6 +50,7 @@ from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
 from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak
+from tests.test_link_target_portability import _7z_number
 
 _JUNCTION_DIR = Path(__file__).parent / "fixtures" / "external" / "junction"
 
@@ -155,9 +162,32 @@ def test_an_odd_name_length_is_declined_rather_than_raising(which: str) -> None:
 
 def test_truncated_payload_does_not_raise() -> None:
     whole = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "target", "target")
-    # Every prefix is either declined or parsed into a shorter target; none may raise.
-    for cut in range(len(whole)):
-        parse_reparse_data(whole[:cut])
+    # 8-byte header, 8 bytes of name offsets, 4 bytes of symlink flags, then the
+    # substitute name (12 bytes and a NUL) from byte 20 of the payload.
+    names_end = 16
+    substitute_end = 16 + 4 + len("target".encode("utf-16-le"))
+    # No prefix raises. One too short for the name offsets is declined; one that holds
+    # them but not a whole name parses to a link with no target; past that, the
+    # substitute name is in bounds and is the target.
+    for cut in range(len(whole) + 1):
+        parsed = parse_reparse_data(whole[:cut])
+        if cut < names_end:
+            assert parsed is None, cut
+        elif cut < substitute_end:
+            assert parsed is not None, cut
+            assert parsed.target == "", cut
+        else:
+            assert parsed is not None, cut
+            assert parsed.target == "target", cut
+
+
+@pytest.mark.parametrize("declared", [0, 7])
+def test_a_declared_payload_shorter_than_the_name_offsets_is_declined(
+    declared: int,
+) -> None:
+    """The declared length is trusted when the bytes are there, so it can decline alone."""
+    data = struct.pack("<IHH", IO_REPARSE_TAG_SYMLINK, declared, 0) + b"\0" * 64
+    assert parse_reparse_data(data) is None
 
 
 # --------------------------------------------------------------------------------
@@ -512,6 +542,206 @@ def _zip_with_reparse_member(
         info.create_system = 0  # FAT, as every Windows writer of these uses
         info.external_attr = attributes
         zf.writestr(info, data)
+
+
+def _sevenzip_with_members(path: Path, entries: list[tuple[str, int, bytes]]) -> None:
+    """A 7z archive with one Copy folder holding each ``(name, attributes, data)``.
+
+    No 7z writer stores a reparse-flagged file with arbitrary data, so the header is
+    built here. Every entry needs data: a zero-size entry would need an empty-stream
+    property, which this builder does not write.
+    """
+    num = _7z_number
+    datas = [data for _, _, data in entries]
+    packed = b"".join(datas)
+    substreams = b"\x08\x0d" + num(len(datas))
+    if len(datas) > 1:
+        substreams += b"\x09" + b"".join(num(len(d)) for d in datas[:-1])
+    substreams += b"\x0a\x01" + b"".join(
+        struct.pack("<I", zlib.crc32(d)) for d in datas
+    )
+    substreams += b"\x00"
+    streams = (
+        b"\x04\x06"  # MainStreamsInfo, PackInfo
+        + num(0)
+        + num(1)
+        + b"\x09"
+        + num(len(packed))
+        + b"\x00"
+        + b"\x07\x0b"
+        + num(1)
+        + b"\x00"
+        + b"\x01\x01\x00"  # one coder, a one-byte id, Copy
+        + b"\x0c"
+        + num(len(packed))
+        + b"\x00"
+        + substreams
+        + b"\x00"
+    )
+    name_data = b"\x00" + b"".join(
+        name.encode("utf-16-le") + b"\0\0" for name, _, _ in entries
+    )
+    attr_data = b"\x01\x00" + b"".join(
+        struct.pack("<I", attributes) for _, attributes, _ in entries
+    )
+    files = (
+        b"\x05"
+        + num(len(entries))
+        + b"\x11"
+        + num(len(name_data))
+        + name_data
+        + b"\x15"
+        + num(len(attr_data))
+        + attr_data
+        + b"\x00"
+    )
+    header = b"\x01" + streams + files + b"\x00"
+    start = struct.pack("<QQI", len(packed), len(header), zlib.crc32(header))
+    signature = b"7z\xbc\xaf\x27\x1c\x00\x04" + struct.pack("<I", zlib.crc32(start))
+    path.write_bytes(signature + start + packed + header)
+
+
+# The pass reads 9 bytes of such a member to decide its type: the 8 header bytes, plus
+# one, because the payload length it declares counts only for a link tag. This content
+# is much longer than those 9 bytes, so the rest of the member takes many reads of the
+# folder decoder after them.
+_LONG_CONTENT = bytes(range(256)) * 300
+
+
+def _read_whole_member(member: ArchiveMember, stream: BinaryIO) -> bytes:
+    """Read ``stream`` with one ``read(member.size)``, which is full-count.
+
+    The next read must give ``b""``: a short return is terminal, never "ask again".
+    """
+    assert member.size is not None
+    data = stream.read(member.size)
+    assert stream.read(1) == b""
+    return data
+
+
+@pytest.mark.parametrize("read_link_targets", [True, False])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+@pytest.mark.parametrize(
+    "content", [b"not a reparse buffer", _LONG_CONTENT], ids=["short", "long"]
+)
+def test_a_7z_pass_yields_a_non_link_reparse_member_with_its_content(
+    tmp_path: Path, read_link_targets: bool, streaming: bool, content: bytes
+) -> None:
+    """`stream_members()` agrees with `members()` on such a member, in both modes.
+
+    A 7z pass reads a link member's data as it passes it. It used to keep those bytes
+    and decide only at the end, so the member was yielded as a link with no stream and
+    re-typed to a file afterwards: its content was dropped with no error. The pass now
+    decides when it reaches the member and yields its whole content. The member after
+    it in the same folder still reads correctly.
+
+    Under `read_link_targets=False` the pass reads no link data on its own, so it
+    yields the member as listing types it, a link with no stream, and nothing re-types
+    it later.
+    """
+    archive = tmp_path / "odd_reparse.7z"
+    _sevenzip_with_members(
+        archive,
+        [
+            ("tree/weird", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, content),
+            ("tree/after.txt", 0x20, b"next member"),
+        ],
+    )
+    config = ArchiveyConfig(read_link_targets=read_link_targets)
+    with open_archive(archive, streaming=streaming, config=config) as opened:
+        yielded = [
+            (
+                member,
+                member.type,
+                None if stream is None else _read_whole_member(member, stream),
+            )
+            for member, stream in opened.stream_members()
+        ]
+    seen = [(member.name, member_type, data) for member, member_type, data in yielded]
+    if read_link_targets:
+        assert seen == [
+            ("tree/weird", MemberType.FILE, content),
+            ("tree/after.txt", MemberType.FILE, b"next member"),
+        ]
+    else:
+        assert seen == [
+            ("tree/weird", MemberType.SYMLINK, None),
+            ("tree/after.txt", MemberType.FILE, b"next member"),
+        ]
+    # The pass does not re-type a member after yielding it.
+    assert [member.type for member, _, _ in yielded] == [t for _, t, _ in seen]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+def test_a_7z_pass_extracts_a_non_link_reparse_member_as_a_file(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The pass knows the member is a file before extraction sees it, so a streaming
+    pass writes it too instead of failing it as one it cannot go back for."""
+    archive = tmp_path / "odd_reparse.7z"
+    _sevenzip_with_members(
+        archive, [("weird", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, _LONG_CONTENT)]
+    )
+    dest = tmp_path / "out"
+    with open_archive(archive, streaming=streaming) as opened:
+        (result,) = opened.extract_all(dest).results
+    assert result.member.type is MemberType.FILE
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert (dest / "weird").read_bytes() == _LONG_CONTENT
+
+
+def test_a_7z_pass_verifies_the_content_it_yields_for_a_reparse_member(
+    tmp_path: Path,
+) -> None:
+    """The bytes read to decide the type are given back, not read again, so the CRC
+    still has to cover them: damage in them fails the read of the yielded stream.
+
+    Those bytes are the 8 header bytes plus one. The damaged byte is the ninth: the
+    tag is still not a link tag, so the member is still re-typed to a file.
+    """
+    archive = tmp_path / "odd_reparse.7z"
+    _sevenzip_with_members(
+        archive, [("weird", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, _LONG_CONTENT)]
+    )
+    data = bytearray(archive.read_bytes())
+    # The packed data starts after the 32-byte start header; the folder is stored.
+    data[32 + 8] ^= 0xFF
+    archive.write_bytes(bytes(data))
+    with open_archive(archive, streaming=True) as opened:
+        for member, stream in opened.stream_members():
+            assert member.type is MemberType.FILE
+            assert member.size is not None
+            assert stream is not None
+            with pytest.raises(CorruptionError):
+                stream.read(member.size)
+
+
+def test_a_7z_pass_still_reads_a_real_link_buffer_as_a_link(tmp_path: Path) -> None:
+    """Deciding at the member leaves a reparse buffer that names a target a link."""
+    archive = tmp_path / "link.7z"
+    _sevenzip_with_members(
+        archive,
+        [
+            (
+                "link",
+                0x20 | FILE_ATTRIBUTE_REPARSE_POINT,
+                _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target"),
+            ),
+            ("after.txt", 0x20, b"next member"),
+        ],
+    )
+    with open_archive(archive, streaming=True) as opened:
+        yielded = [
+            (member, member.type, None if stream is None else stream.read())
+            for member, stream in opened.stream_members()
+        ]
+    link = yielded[0][0]
+    seen = [(member.name, member_type, data) for member, member_type, data in yielded]
+    assert seen == [
+        ("link", MemberType.SYMLINK, None),
+        ("after.txt", MemberType.FILE, b"next member"),
+    ]
+    assert link.link_target == "C:/target"
 
 
 def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
@@ -1030,16 +1260,22 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     all, and each flag here is the only thing that would differ between this fixture
     and the archive a RAR4 writer would emit. The branch reads nothing else off the
     member. Only the symlinks are touched, so the rest of the listing stays honest.
+
+    The fields are patched after the header walk, not in the member's constructor:
+    the walk skips a FILE header's data by its parsed ``compress_size``, so zeroing
+    it any earlier would also move the walk into the link's data.
     """
-    original_init = RarMemberInfo.__init__
+    original_walk = rar_parser._parse_rar3
 
-    def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
-        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
-        if self.is_symlink:
-            for name in fields:
-                setattr(self, name, value)
+    def patched_walk(*args: Any, **kwargs: Any) -> RarArchive:
+        archive = original_walk(*args, **kwargs)
+        for member in archive.members:
+            if member.is_symlink:
+                for name in fields:
+                    setattr(member, name, value)
+        return archive
 
-    monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
+    monkeypatch.setattr(rar_parser, "_parse_rar3", patched_walk)
 
     fixture = Path(__file__).parent / "fixtures" / "rar" / "symlinks_solid__rar4.rar"
     with open_archive(fixture) as opened:

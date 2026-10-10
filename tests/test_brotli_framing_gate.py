@@ -20,21 +20,29 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
 )
-from archivey.internal.streams.brotli_framing import (
+from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
+from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     first_block_overruns_source,
     parse_metablock,
 )
-from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
 from tests.conftest import requires
-from tests.streams_util import brotli_compressed_metablock_header, truncated_brotli
+from tests.streams_util import (
+    brotli_compressed_metablock_header,
+    brotli_link_cap_residual,
+    truncated_brotli,
+)
+
+# The sources below are unnamed, and detection runs content probes on an unnamed source
+# only when the config asks for all of them.
+PROBE_ALL = ArchiveyConfig(always_probe_content=True)
 
 
 @requires("brotli")
 def test_partial_output_then_error_on_fitting_uncompressed_prefix() -> None:
     # First uncompressed block fits; decoder copies a full buffer before failing.
     blob = _chain_surviving_guess_residual()
-    with open_archive(io.BytesIO(blob)) as reader:
+    with open_archive(io.BytesIO(blob), config=PROBE_ALL) as reader:
         member = next(iter(reader))
         stream = reader.open(member)
         chunk = stream.read(65536)
@@ -46,11 +54,12 @@ def test_partial_output_then_error_on_fitting_uncompressed_prefix() -> None:
 
 
 def _chain_surviving_guess_residual() -> bytes:
-    """Uncompressed-first FP that passes framing + chain (compressed second link)."""
-    framing = parse_metablock(b"/**\n")
-    assert framing.consumed is not None and framing.declared_length is not None
-    second = brotli_compressed_metablock_header(first=False)
-    return b"/**\n" + b"x" * framing.declared_length + second + b"Z" * 32
+    """Uncompressed-first FP that every probe check accepts (a chain past the link cap).
+
+    A chain that reaches a compressed block is decoded up to it, which rejects the
+    fabrications this used to be built from (``/**\n`` + padding + a compressed link).
+    """
+    return brotli_link_cap_residual()
 
 
 @requires("brotli")
@@ -75,7 +84,7 @@ def test_real_brotli_corpus_zero_false_negatives() -> None:
                     data = brotli.compress(payload, quality=quality, lgwin=lgwin)
                 except brotli.error:
                     continue
-                info = detect_format(io.BytesIO(data))
+                info = detect_format(io.BytesIO(data), config=PROBE_ALL)
                 assert info.format == ArchiveFormat.BROTLI, (
                     f"missed q={quality} lgwin={lgwin} len={len(payload)}"
                 )
@@ -87,7 +96,7 @@ def test_real_brotli_compressed_first_is_probable_without_extension() -> None:
 
     data = brotli.compress(b"payload " * 40)
     assert parse_metablock(data).outcome is BrotliBlock.COMPRESSED
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
@@ -109,7 +118,7 @@ def test_framing_gate_rejects_mz_stub_and_doxygen_opener() -> None:
     for blob in (b"MZ" + b"\x90" * 4094, b"/**\n" + b" " * 200):
         assert first_block_overruns_source(blob, len(blob))
         with pytest.raises(FormatDetectionError):
-            detect_format(io.BytesIO(blob))
+            detect_format(io.BytesIO(blob), config=PROBE_ALL)
 
 
 @requires("brotli")
@@ -122,7 +131,7 @@ def test_framing_gate_rejects_random_overrunning_blobs() -> None:
         if first_block_overruns_source(blob, len(blob)):
             rejected += 1
             with pytest.raises(FormatDetectionError):
-                detect_format(io.BytesIO(blob))
+                detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert rejected > 0
 
 
@@ -130,23 +139,23 @@ def test_lzma_alone_rejects_header_only_source() -> None:
     alone = LzmaAloneCodec()
     assert alone.content_probe(b"cryptography\n", source_length=13) is False
     with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(b"cryptography\n"))
+        detect_format(io.BytesIO(b"cryptography\n"), config=PROBE_ALL)
 
 
 @requires("brotli")
 def test_ole_and_coff_residuals_honest_detect_format() -> None:
     # Named residual families survive the Brotli first-block gate *and* the chain walk
     # when the source is larger than the detection peek (completeness does not apply).
-    # What end-to-end detect_format does with each is what this pins.
+    # The walk stops at a compressed block, and the probe's decode up to that block is
+    # what turns them away. What end-to-end detect_format does with each is pinned.
     #
-    # OLE: the probe still accepts it, but detection never runs the probes on it. Its
-    # signature is a known non-archive signature, which stops the content probes, so
-    # with no extension detection fails instead of claiming a stream.
+    # OLE: the probe rejects it, and detection does not run the probes on it anyway.
+    # Its signature is a known non-archive signature, which stops the content probes,
+    # so with no extension detection fails instead of claiming a stream.
     #
     # COFF: the Alone probe refuses a header declaring an uncompressed size of exactly
     # zero (bytes 5..12), because such a stream carries no payload to open. COFF's are
-    # all zero, so Alone declines and Brotli takes it, at GUESS: a weak claim on a
-    # fabrication, probe-only and so stamping `format_unconfirmed` on a read failure.
+    # all zero, so Alone declines, and the Brotli probe rejects it as for OLE.
     from archivey.internal.detection_workspace import DETECTION_LIMIT
 
     ole = bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
@@ -158,10 +167,10 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
 
     assert (
         BrotliCodec().content_probe(prefix, source_length=len(ole), read_at=read_at)
-        is True
+        is False
     )
     with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(ole))
+        detect_format(io.BytesIO(ole), config=PROBE_ALL)
 
     # COFF AMD64 machine word + crafted trailer that is a fitting uncompressed Brotli
     # first block (IMAGE_FILE_MACHINE_AMD64 = 0x8664 little-endian).
@@ -189,20 +198,17 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
         BrotliCodec().content_probe(
             coff_prefix, source_length=len(coff), read_at=coff_read_at
         )
-        is True
+        is False
     )
     assert int.from_bytes(coff[5:13], "little") == 0  # why Alone declines this one
-    coff_info = detect_format(io.BytesIO(coff))
-    assert coff_info.format == ArchiveFormat.BROTLI
-    assert coff_info.confidence == DetectionConfidence.GUESS
-    assert coff_info.detected_by == "content_probe"
-    assert coff_info.corroborated is False  # probe-only: a read failure still stamps
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(coff), config=PROBE_ALL)
 
 
 @requires("brotli")
 def test_brotli_residual_that_fits_framing_detects_as_guess() -> None:
     blob = _chain_surviving_guess_residual()
-    info = detect_format(io.BytesIO(blob))
+    info = detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert info.confidence == DetectionConfidence.GUESS
     assert info.detected_by == "content_probe"
@@ -211,7 +217,7 @@ def test_brotli_residual_that_fits_framing_detects_as_guess() -> None:
 @requires("brotli")
 def test_guess_decode_failure_sets_format_unconfirmed() -> None:
     blob = _chain_surviving_guess_residual()
-    with open_archive(io.BytesIO(blob)) as reader:
+    with open_archive(io.BytesIO(blob), config=PROBE_ALL) as reader:
         member = next(iter(reader))
         with pytest.raises(CorruptionError) as caught:
             reader.open(member).read()
@@ -285,8 +291,12 @@ def test_nonseekable_pipe_skips_gate_at_detection_limit() -> None:
     stub = b"MZ" + b"\x90" * 4094
     short = stub[:3000]
     with pytest.raises(FormatDetectionError):
-        detect_format(ArchiveSource.for_stream(NonSeekableBytesIO(short)))
-    info = detect_format(ArchiveSource.for_stream(NonSeekableBytesIO(stub)))
+        detect_format(
+            ArchiveSource.for_stream(NonSeekableBytesIO(short)), config=PROBE_ALL
+        )
+    info = detect_format(
+        ArchiveSource.for_stream(NonSeekableBytesIO(stub)), config=PROBE_ALL
+    )
     assert info.format == ArchiveFormat.BROTLI
 
 
@@ -296,7 +306,9 @@ def test_pedantic_keeps_typed_error_on_probe_unconfirmed() -> None:
     from archivey.exceptions import DiagnosticRaisedError
 
     blob = _chain_surviving_guess_residual()
-    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
+    cfg = ArchiveyConfig(
+        always_probe_content=True, diagnostic_policy=DiagnosticPolicy.pedantic()
+    )
     with open_archive(io.BytesIO(blob), config=cfg) as reader:
         member = next(iter(reader))
         with pytest.raises(CorruptionError) as caught:
@@ -311,7 +323,7 @@ def test_pedantic_keeps_typed_error_on_probe_unconfirmed() -> None:
 @requires("brotli")
 def test_probe_unconfirmed_diagnostic_emitted_once_across_retries() -> None:
     blob = _chain_surviving_guess_residual()
-    with open_archive(io.BytesIO(blob)) as reader:
+    with open_archive(io.BytesIO(blob), config=PROBE_ALL) as reader:
         stream = reader.open(next(iter(reader)))
         for _ in range(3):
             with pytest.raises(CorruptionError) as caught:
@@ -329,7 +341,9 @@ def test_probe_unconfirmed_dedup_holds_under_a_raising_policy() -> None:
     from archivey.exceptions import DiagnosticRaisedError
 
     blob = _chain_surviving_guess_residual()
-    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
+    cfg = ArchiveyConfig(
+        always_probe_content=True, diagnostic_policy=DiagnosticPolicy.pedantic()
+    )
     with open_archive(io.BytesIO(blob), config=cfg) as reader:
         stream = reader.open(next(iter(reader)))
         for _ in range(3):
@@ -353,7 +367,7 @@ def test_probe_unconfirmed_dedup_holds_under_a_raising_policy() -> None:
 @requires("brotli")
 def test_probe_unconfirmed_context_carries_detected_format() -> None:
     blob = _chain_surviving_guess_residual()
-    with open_archive(io.BytesIO(blob)) as reader:
+    with open_archive(io.BytesIO(blob), config=PROBE_ALL) as reader:
         with pytest.raises(CorruptionError):
             reader.open(next(iter(reader))).read()
         probe_diags = [
@@ -370,7 +384,7 @@ def test_probe_unconfirmed_context_carries_detected_format() -> None:
 
 def test_zlib_probe_uses_source_length_for_completeness() -> None:
     data = zlib.compress(b"zlib payload")
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=PROBE_ALL)
     assert info.format == ArchiveFormat.ZLIB
     assert info.confidence == DetectionConfidence.PROBABLE
     # Completeness: a fully-visible incomplete zlib header must not match.

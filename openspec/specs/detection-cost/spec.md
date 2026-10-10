@@ -50,6 +50,10 @@ class DetectionCostReceipt:
     passes: int            # detection passes summed (2 after following a stub), each under the full budget
 ```
 
+Every `DetectionBudget` field SHALL be a non-negative `int`, checked at construction
+with the same field check as the `*Limits` types (`error-handling`): a `bool`, a
+`float`, `None` or a negative value raises `ArchiveyUsageError` naming the field.
+
 The budget SHALL be set through `ArchiveyConfig.detection_budget`, which takes a
 `DetectionBudget`, a `DetectionBudgetPreset` or its string spelling, and the same budget
 SHALL govern `detect_format` and the detection `open_archive` / `open_stream` run. The
@@ -66,30 +70,38 @@ otherwise forbid.
 Budget fields that gate detection: `max_prefix_bytes` (near peek clamp), `max_far_bytes`,
 `max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output`, and
 `completion_window_bytes` (see `format-detection`: a content-probe hit on a source no
-larger than this is re-checked against the whole source). Content-probe reads at an offset
-have no budget field: the Brotli walk caps them at `CHAIN_MAX_LINKS` (8) header reads of
-24 bytes, and that is the probe-seek allowance below. The UDIF trailer is the same kind
+larger than this is re-checked against the whole source). Content-probe header reads at
+an offset have no budget field: the Brotli walk caps them at `CHAIN_MAX_LINKS` (8) header
+reads of 24 bytes, and that is the probe-seek allowance below. The Brotli chain decode
+(see `format-detection`) reads `[0, end)`, and the fields bound it: it runs only when `end`
+is within the prefix/far/scan ceiling and the decode allowance covers it. The UDIF trailer is the same kind
 of fixed read: one 512-byte block on a cheap seek, with no budget field of its own, and
 that length is the trailer allowance below.
 
 `max_decode_input` SHALL be one allowance for the whole `detect_format` pass, not a limit
 per tier or per candidate: every tier that decodes draws on what earlier tiers left, so
 adding tiers or candidates cannot multiply the compressed input a budget allows decoded.
-Today three tiers draw on it. `max_decode_output` bounds the inner-TAR probe only; a
-content probe's output is bounded by the codec's own drain (4 KiB, or 64 KiB when the
-whole source is in hand) and is not charged to `decode_output`. Each content probe is
+Today four tiers draw on it. `max_decode_output` bounds the inner-TAR probe only; a
+content probe's output is bounded by the codec's own drain (4 KiB, 64 KiB when the whole
+source is in hand, and the sample length, up to 1 MiB, for the Brotli chain decode) and
+is not charged to `decode_output`. That is deliberate for the chain decode too: its
+output is mostly a copy of the input it was charged for. Each content probe is
 charged the sample it was handed, whether or not a header check turned it away before
 decoding; a probe the remaining allowance cannot cover does not run, and `content_probe`
 is recorded *budget exhausted* (or *not enabled by policy* when `max_decode_input` is 0).
 The completion check is charged the whole source it decodes and records `probe_completion`
 *budget exhausted* when the allowance cannot cover it (a zero allowance stops the probes
 before any hit asks for completion), and *not enabled by policy* when
-`completion_window_bytes` is 0. The inner-TAR probe caps its compressed input at the
+`completion_window_bytes` is 0. The Brotli chain decode is charged the `end` bytes it
+decodes, and records `content_probe_decode` *budget exhausted* when the allowance cannot
+cover them or `end` is past the prefix/far/scan ceiling or the 1 MiB reach; the probe's
+verdict then stands. The inner-TAR probe caps its compressed input at the
 smaller of what is left and 1 MiB, is charged whether its decode succeeds or fails, and
 records `inner_tar` as *budget exhausted* when the cap cut it short or less than one
 512-byte TAR header of output is left. Content-probe `read_at` seeks on cheap
 random-access sources (path, non-`ArchiveStream` seekable streams) without
-growing the prefix through `[0, offset)`; non-seekable and expensive-seek sources grow
+growing the prefix through `[0, offset)`, and take the part of a read the prefix already
+holds from the prefix; non-seekable and expensive-seek sources grow
 under the smaller of 1 MiB and the budget's prefix/far/scan ceiling, and record
 `BUDGET_EXHAUSTED` past it. A far signature that ends past a positive `max_far_bytes`
 SHALL be recorded as `far_magic` *budget exhausted* rather than searched in a window too
@@ -124,10 +136,14 @@ short. The library does not expose this check; the test suite asserts it.
 | ISO under a `max_far_bytes` smaller than the `CD001` span | Extension `GUESS`; `far_magic` recorded *budget exhausted*; `far_bytes` 0 |
 | `.tar.bz2` whose first block exceeds `FAST`'s decode input | Bare `BZ2`; `decode_input` ≤ 64 KiB; `inner_tar` recorded *budget exhausted*; within `FAST` |
 | Expensive-seek source, content probe asks past the budget ceiling | `read_at` returns `None`; `content_probe_read_at` recorded *budget exhausted*; within budget |
+| Pipe or member stream that reaches the trailer step (a bzip2 stream with a `koly` block after it) | Tail not read; `trailer` recorded *capability unavailable*; the near-magic answer (`BZ2`) stands |
+| Source shorter than the 512-byte trailer block | Tail not read; nothing recorded: there is no block to miss |
 | Stub-only `vol.exe` beside `vol.7z.001` | `SEVEN_Z`; the receipt includes the stub pass's SFX scan; `passes` 2; within two budgets, not one; a skip both passes record is kept once |
 | `max_decode_output` below one 512-byte TAR header | Inner-TAR probe not run; `inner_tar` recorded *budget exhausted*; nothing charged |
 | `max_decode_input` 0, zlib stream | No content probe runs; `content_probe` recorded *not enabled by policy*; `decode_input` 0; detection fails |
 | `max_decode_input` smaller than the samples the probes ahead of zlib were charged | Probing stops before zlib; `content_probe` recorded *budget exhausted*; `decode_input` within the budget |
+| Brotli chain decode of 270 KiB (a `.pyc`-shaped file), `BALANCED` | Decoded and charged; the claim is rejected; within budget |
+| The same under `FAST` | Not decoded; `content_probe_decode` recorded *budget exhausted*; the `BROTLI` claim stands; within budget |
 
 ### Requirement: FormatInfo reports the receipt and the tiers that did not run
 
@@ -216,5 +232,6 @@ content probe that would read past what the budget lets a pipe buffer SHALL be r
 
 | Case | Expected |
 | --- | --- |
-| Pipe, default budget | Prefix tiers run; `unavailable_tiers` empty; no unbounded buffering |
+| Pipe, default budget, settled before the trailer step (ZIP, gzip) | Prefix tiers run; `unavailable_tiers` empty; no unbounded buffering |
+| Pipe, default budget, reaches the trailer step (bzip2, xz or zlib, 512 bytes or more) | Prefix tiers run; tail not read; `trailer` recorded *capability unavailable* (see *receipt reflects the source kind*); no unbounded buffering |
 | Detection finds a format whose backend cannot consume the source | `open_archive` raises the capability error rather than opening |

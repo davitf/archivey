@@ -1,4 +1,4 @@
-"""BaseArchiveReader ABC and ReadBackend/WriteBackend ABCs."""
+"""BaseArchiveReader ABC and the ReadBackend ABC."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Generator, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +57,7 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_callable,
     check_extraction_limits,
+    check_path_not_empty,
     describe_value,
 )
 from archivey.internal.diagnostics_collector import (
@@ -84,14 +85,21 @@ from archivey.internal.naming import (
 )
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
-from archivey.internal.reader_state import LiveStreamReservation, ReaderState
+from archivey.internal.reader_state import (
+    LiveStreamReservation,
+    ReaderState,
+)
 from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
 )
 from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.archive_stream import (
+    ArchiveStream,
+    RewindWarning,
+    as_closed_source_error,
+)
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -109,7 +117,7 @@ from archivey.internal.windows_reparse import (
     parse_reparse_data,
     reparse_payload_length,
 )
-from archivey.reader import ArchiveReader, MemberSelector
+from archivey.reader import ArchiveReader
 from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -186,20 +194,32 @@ The extension code is also the empty-listing code, which
 """
 
 
+def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
+    """The ``close`` of a backend's pass iterator when it is a generator, else ``None``.
+
+    Recorded as the pass token's ``pass_closer`` so that ``close()`` can wind the
+    backend pass down before teardown when the caller's iterator is suspended at a yield.
+    """
+    return source.close if isinstance(source, Generator) else None
+
+
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     """Stamp is_current for duplicate names (last same-name entry wins).
 
-    Members whose ``name`` appears only once are left unchanged so format-specific
-    non-current rows (RAR ``path;N`` file-version history) keep the flag the backend
-    already set.
+    A member the backend already marked not current (a RAR ``path;N`` file-version
+    history row, an older plain ISO 9660 version) keeps that flag and takes no part
+    in the count: a superseded version stays superseded even when a crafted archive
+    repeats it. Members whose ``name`` appears only once among the rest are left
+    unchanged.
     """
     counts: dict[str, int] = {}
     for member in members:
-        counts[member.name] = counts.get(member.name, 0) + 1
+        if member.is_current:
+            counts[member.name] = counts.get(member.name, 0) + 1
 
     seen: set[str] = set()
     for member in reversed(members):
-        if counts[member.name] < 2:
+        if counts.get(member.name, 0) < 2 or not member.is_current:
             continue
         if member.name in seen:
             member.is_current = False
@@ -353,26 +373,6 @@ class ReadBackend(ABC):
         ...
 
 
-class WriteBackend(ABC):
-    """Stateless factory for creating ArchiveWriter instances."""
-
-    FORMATS: tuple[ArchiveFormat, ...]
-    OPTIONAL_DEPENDENCY: str | None = None
-
-    @abstractmethod
-    def open_write(
-        self,
-        dest: Path | BinaryIO,
-        compression: object | None,
-        password: bytes | None,
-        encoding: str | None,
-    ) -> ArchiveWriter: ...
-
-
-class ArchiveWriter(ABC):
-    """Abstract base for archive writers. Defined here as a placeholder."""
-
-
 class BaseArchiveReader(ArchiveReader):
     """Internal helper base for all format readers — the backend contract lives here.
 
@@ -394,20 +394,15 @@ class BaseArchiveReader(ArchiveReader):
     - ``_close_archive()``      — release resources (called exactly once, via
       ``close()``).
 
-    **MUST set** when they differ from the defaults (both default ``True``):
+    **MUST set** when it differs from the default (``True``):
 
     - ``_MEMBER_LIST_UPFRONT``    — does the backend have a true upfront index (central
       directory, 7z header, filesystem listing) that yields the full member list
       *without scanning*? This is the predicate behind :meth:`members_report_if_available`
       (it returns a report when ``True``, else ``None``). It does **not** gate the
       access-mode-enforced methods — those key off the ``streaming`` flag alone.
-    - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
-      When ``False``, ``open``/``read`` raise ``UnsupportedFeatureError``; sequential
-      access via ``stream_members`` still works. (The open-time fail-fast for a
-      non-seekable source under ``streaming=False`` — which also consults this — lands
-      with format detection in Phase 3.)
 
-    Access-mode enforcement (independent of the flags above): a ``streaming=True`` reader
+    Access-mode enforcement (independent of the flag above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
     ``ArchiveyUsageError`` — uniformly, not per-backend. Only a single pass of
     ``__iter__``/``stream_members``/``extract_all`` is allowed; ``scan_members()`` may
@@ -432,9 +427,6 @@ class BaseArchiveReader(ArchiveReader):
     an extension point.
     """
 
-    # Can an arbitrary member be opened out of order? When False, open()/read() raise
-    # UnsupportedFeatureError and callers must use stream_members() instead.
-    _SUPPORTS_RANDOM_ACCESS: bool = True
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
@@ -562,15 +554,22 @@ class BaseArchiveReader(ArchiveReader):
 
         The single backend-side error boundary (the out-of-stream counterpart of
         ``ArchiveStream._fail``): an already-typed ``ArchiveyError`` is stamped and
-        re-raised as-is; a raw exception the translator recognizes is stamped and raised
-        chained to the original; an unrecognized exception propagates unchanged (the
-        catch-all-free rule in CONTRIBUTING). ``stamp_encryption=False`` skips member
-        stamping for ``EncryptionError`` (ZIP's password errors carry their own message
-        and must not be reattributed).
+        re-raised as-is; a closed source (``as_closed_source_error``) raises a usage
+        error naming ``member_name``, as it does inside a member stream; a
+        raw exception the translator recognizes is stamped and raised chained to the
+        original; an unrecognized exception propagates unchanged (the catch-all-free
+        rule in CONTRIBUTING). ``stamp_encryption=False`` skips member stamping for
+        ``EncryptionError`` (ZIP's password errors carry their own message and must
+        not be reattributed).
         """
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
+        closed = as_closed_source_error(exc, member_name)
+        if closed is not None:
+            # Checked before the backend's translator, which may map every ValueError
+            # to corruption (ZIP's bad-offset rule, ISO's pycdlib rule).
+            raise closed from exc
         translated = self._translate_exception(exc)
         if translated is None:
             raise exc
@@ -638,9 +637,11 @@ class BaseArchiveReader(ArchiveReader):
     def _maybe_teardown(self, pending: Exception | None = None) -> None:
         """Run archive teardown outside lifecycle state once the last lease drops.
 
-        ``pending`` is a stream-close failure to combine with a teardown failure into an
-        ``ExceptionGroup`` (D9). Teardown is never retried; the lifecycle is marked
-        complete even when ``_close_archive`` fails.
+        ``pending`` is a failure from ``close()``'s own steps before teardown: the pass
+        wind-down, the member-stream close, or both as one ``ExceptionGroup``. It is
+        combined with a teardown failure into an ``ExceptionGroup`` (D9). Teardown is
+        never retried; the lifecycle is marked complete even when ``_close_archive``
+        fails.
         """
         if not self._state.claim_teardown():
             if pending is not None:
@@ -656,7 +657,7 @@ class BaseArchiveReader(ArchiveReader):
                 source = self._source
                 if source is not None:
                     source.close()
-        except Exception as exc:  # noqa: BLE001 - combine with pending stream-close failure
+        except Exception as exc:  # noqa: BLE001 - combine with pending close() failure
             # Held, not swallowed: every path below raises it. Exception, not
             # BaseException: an interrupt propagates alone, through the finally.
             teardown_exc = exc
@@ -665,7 +666,7 @@ class BaseArchiveReader(ArchiveReader):
             self._state.complete_teardown()
         if pending is not None and teardown_exc is not None:
             raise ExceptionGroup(
-                "member-stream close and archive teardown both failed",
+                "close-time cleanup and archive teardown both failed",
                 [pending, teardown_exc],
             )
         if pending is not None:
@@ -971,6 +972,7 @@ class BaseArchiveReader(ArchiveReader):
                 verify_member=verify_member,
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
+                member_name=member_name,
             )
 
         assert inner is not None
@@ -994,6 +996,7 @@ class BaseArchiveReader(ArchiveReader):
             verify_member=verify_member,
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
+            member_name=member_name,
         )
 
     @abstractmethod
@@ -2399,16 +2402,40 @@ class BaseArchiveReader(ArchiveReader):
         ``safe-extraction``): for zip/7z/rar/compressed-tar the source size *is* the
         compressed size, and for a plain tar or other uncompressed container the
         resulting ~1:1 ratio simply never trips the guard. Cheap only — see
-        ``source_byte_size``: path ``stat``, a ``size`` attribute (fsspec convention,
-        also on archivey's own member/codec streams, enabling nested archives), a
-        ``try_get_size()`` index scan, or a ``SEEK_END`` probe restricted to provably
-        O(1) types (never a decompressor). Backends record their source in
-        ``self._source``; readers without one (directory) or with an unknowable
-        source report ``None``.
+        ``source_byte_size``: path ``stat``, a ``size`` attribute on a seekable source
+        or on an archivey member stream (enabling nested archives), a ``try_get_size()``
+        index scan, or a ``SEEK_END`` probe restricted to provably O(1) types (never a
+        decompressor). Backends record their source in ``self._source``; readers
+        without one (directory) or with an unknowable source report ``None``.
+
+        A caller's **non-seekable** stream reports ``None`` even when it has a ``size``
+        attribute: that is the caller's claim, and a pipe has no end to check it
+        against. An inflated claim would make the static ratio unreachable and, as the
+        complement below, switch off the live counter too. A member stream of another
+        archive keeps its ``size`` whether it seeks or not
+        (``ArchiveSource.seek_is_expensive`` marks it). That ``size`` is the length the
+        container declares, and the container is untrusted input as well: a member
+        shorter than its declaration is refused by the container's end-of-member check
+        only after its payload is decoded, so for a nested archive ``max_extracted_bytes``
+        is the bound that holds.
         """
         self._state.require_open("compressed_source_size")
-        # The hint, not the fact: this reports, it bounds nothing.
-        return self._source.size_hint if self._source is not None else None
+        return self._trusted_source_size()
+
+    def _trusted_source_size(self) -> int | None:
+        """The source's size hint when it may be the ratio denominator, else ``None``.
+
+        The one answer ``compressed_source_size`` reports and ``_wrap_compressed_input``
+        complements. A seekable source's hint counts, and so does a member stream's
+        declared length (``seek_is_expensive``), itself unchecked until the member ends.
+        A caller's non-seekable stream's ``size`` does not.
+        """
+        src = self._source
+        if src is None:
+            return None
+        if src.seekable() or src.seek_is_expensive:
+            return src.size_hint
+        return None
 
     @property
     def compressed_bytes_consumed(self) -> int | None:
@@ -2418,10 +2445,11 @@ class BaseArchiveReader(ArchiveReader):
         The **live** denominator for extraction's archive-wide decompression-ratio guard
         (see ``safe-extraction``), used when ``compressed_source_size`` is ``None`` — a
         compressed archive whose source size is not cheaply knowable (a non-seekable pipe,
-        or a seekable stream that is neither a whitelisted O(1)-seek type nor
-        ``.size``-advertising). A backend that decompresses a *stream* source wraps it in a
-        ``CountingReader`` and records it here; readers with a knowable source size (a path,
-        a sizable stream) leave it ``None`` and rely on the cheaper static ratio instead.
+        with or without a ``size`` attribute, or a seekable stream that is neither a
+        whitelisted O(1)-seek type nor ``.size``-advertising). A backend that
+        decompresses a *stream* source wraps it in a ``CountingReader`` and records it
+        here; readers with a knowable source size (a path, a sizable stream) leave it
+        ``None`` and rely on the cheaper static ratio instead.
         """
         self._state.require_open("compressed_bytes_consumed")
         c = self._compressed_input_counter
@@ -2441,10 +2469,10 @@ class BaseArchiveReader(ArchiveReader):
         scan, an accelerator); re-read bytes are counted again, which only ever inflates
         the denominator — the guard gets weaker, never a false positive.
         """
-        # Asked of the reader's source the way ``compressed_source_size`` asks it, hint
-        # included, so the two stay complements; ``source`` may be a view over it.
+        # Asked of the reader's source the way ``compressed_source_size`` asks it, so the
+        # two stay complements; ``source`` may be a view over it.
         known = (
-            self._source.size_hint
+            self._trusted_source_size()
             if self._source is not None
             else source_byte_size(source)
         )
@@ -2468,6 +2496,8 @@ class BaseArchiveReader(ArchiveReader):
                         yield member
                     finally:
                         self._state.set_suspended(token, False)
+                    # close() may have closed the reader while the pass was suspended.
+                    self._state.require_open("Iterating the reader")
             finally:
                 self._state.release_pass(token)
             return
@@ -2595,6 +2625,7 @@ class BaseArchiveReader(ArchiveReader):
         # a __contains__, the `in` operator falls back to iterating __iter__, which
         # would silently consume a streaming reader's single forward pass (and compare
         # members by value). Strings are rejected: name lookup is get().
+        self._state.require_open("__contains__")
         if isinstance(member, ArchiveMember):
             return member._archive_id == self._archive_id
         raise TypeError(
@@ -2607,6 +2638,15 @@ class BaseArchiveReader(ArchiveReader):
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
         self._require_random_access("get()")
+        # Without this a ``bytes`` name answered "absent" for a member that exists (a
+        # wrong answer), and an ArchiveMember escaped as ``unhashable type``. ``open()``
+        # refuses a ``bytes`` name the same way; it takes a member object, which get()
+        # does not, because get() looks up by name.
+        if not isinstance(name, str):
+            raise ArchiveyUsageError(
+                f"reader.get() takes a member name (str), but got "
+                f"{describe_value(name)}."
+            )
         token = self._state.acquire_worker("get")
         try:
             materialized = self._materialize_members()
@@ -2627,15 +2667,7 @@ class BaseArchiveReader(ArchiveReader):
         concurrent ``open`` is supported. Positioning requires
         ``open_archive(seekable_members=True)``.
         """
-        # Two independent gates: the access mode (streaming=True forbids random access)
-        # and the backend capability (_SUPPORTS_RANDOM_ACCESS, used by the Phase-3
-        # open-time fail-fast for non-seekable sources).
         self._require_random_access("open()/read()")
-        if not self._SUPPORTS_RANDOM_ACCESS:
-            raise UnsupportedFeatureError(
-                "This reader does not support random access (open()/read()); "
-                "iterate with stream_members() instead.",
-            )
         token = self._state.acquire_worker("open")
         try:
             materialized = self._materialize_members()
@@ -2728,10 +2760,10 @@ class BaseArchiveReader(ArchiveReader):
                 )
             member_id = current._member_id
             if member_id in visited:
-                raise ReadError(
-                    f"Link cycle detected at '{current.name}'",
-                    member_name=current.name,
-                )
+                # The CLI's ``_is_link_destination_error`` (``cli/test_cmd.py``)
+                # matches this exact message, since the CLI may not import a shared
+                # constant from ``internal``. Change both together.
+                raise ReadError("Link cycle detected", member_name=current.name)
             visited.add(member_id)
             if current.link_target_member is not None:
                 current = current.link_target_member
@@ -2767,7 +2799,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def stream_members(
         self,
-        members: MemberSelector = None,
+        members: MemberSelectorArg = None,
         *,
         file_copy_streams: bool = True,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
@@ -2786,7 +2818,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._stream_members(members, FileCopyPass(streams=file_copy_streams))
 
     def _stream_members(
-        self, members: MemberSelector, copies: FileCopyPass
+        self, members: MemberSelectorArg, copies: FileCopyPass
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """``stream_members()`` with the file-copy handling given whole.
 
@@ -2818,7 +2850,9 @@ class BaseArchiveReader(ArchiveReader):
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
-            for m, stream in self._iter_with_data(copies):
+            source = self._iter_with_data(copies)
+            self._state.set_pass_closer(token, _closer_of(source))
+            for m, stream in source:
                 if current is not None:
                     current.close()
                     current = None
@@ -2846,6 +2880,8 @@ class BaseArchiveReader(ArchiveReader):
                         yield m, stream
                     finally:
                         self._state.set_suspended(token, False)
+                    # close() may have closed the reader while the pass was suspended.
+                    self._state.require_open("stream_members()")
                 elif stream is not None:
                     stream.close()
             # Only a pass that reached the end has offered every member. A caller
@@ -2861,6 +2897,14 @@ class BaseArchiveReader(ArchiveReader):
             if current is not None:
                 current.close()
             self._state.release_pass(token)
+            # A close() interrupted inside its stream-shutdown step handed the step
+            # back with the pass wind-down lease still held. Finish it here, so
+            # dropping this iterator still reaches teardown without another close().
+            # A no-op when close() finished the step, or the reader is still open.
+            # A failure here propagates out of the generator's close(), or, when the
+            # generator is being collected, goes to sys.unraisablehook.
+            if not self._state.lifecycle_is_open():
+                self._maybe_teardown(self._finish_stream_shutdown_step())
 
     def _check_extraction_dest(self, dest: Path) -> None:
         """Refuse a destination this reader's own source would read back.
@@ -2905,10 +2949,13 @@ class BaseArchiveReader(ArchiveReader):
         # the extraction is under way; a non-callable there reads as
         # ``TypeError: 'int' object is not callable`` with nothing naming the argument.
         check_callable(filter, call="extract_all(filter=…)")
-        # ``members=`` used to be checked inside the coordinator, after dest was
-        # created. Same reason as filter: a refusal that has already touched the disk
-        # is a side effect of a call the caller got wrong.
-        normalize_member_selector(members)
+        # ``members=`` is checked before dest is created, for the same reason as
+        # filter: a refusal that has already touched the disk is a side effect of a
+        # call the caller got wrong. It is normalized here once and only the result is
+        # passed on, because ``members`` may be a one-shot iterable that a second read
+        # would find empty.
+        selector = normalize_member_selector(members)
+        check_path_not_empty(dest, call="extract_all()")
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
@@ -2934,7 +2981,7 @@ class BaseArchiveReader(ArchiveReader):
             on_error=on_error,
             abort_on=abort_on,
             on_progress=on_progress,
-            members=members,
+            selector=selector,
             filter=filter,
             limits=effective_limits,
             dry_run=dry_run,
@@ -2963,8 +3010,11 @@ class BaseArchiveReader(ArchiveReader):
         not outlive the reader it came from.
 
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
-        pass is actively executing, and the reader stays open. Teardown runs at most
-        once, after the last stream's lease drops.
+        pass is actively executing, and the reader stays open. A ``stream_members()`` or
+        streaming iteration pass suspended at a yield does not block it: the reader
+        closes, and resuming that iterator raises ``ArchiveyUsageError``. A suspended
+        ``stream_members()`` pass is wound down here, before teardown. Teardown runs at
+        most once, after the last lease drops.
         """
         if self._closed:
             return
@@ -2972,26 +3022,81 @@ class BaseArchiveReader(ArchiveReader):
         # closed only once the transition has actually happened. Its "run teardown now"
         # result is not needed: _maybe_teardown() below asks claim_teardown() directly.
         # Every step below is idempotent on its own (a spent claim refuses), so
-        # ``_closed`` is set only at the end: an interrupt in between leaves teardown
-        # reachable instead of short-circuited by the check above -- by the next close()
-        # when no stream lease survives, and otherwise by the last stream's own close,
-        # whose lease callback runs _maybe_teardown(). Stream shutdown itself is not
-        # retried (see ReaderState.claim_stream_shutdown).
+        # ``_closed`` is set only at the end, and only once the stream-shutdown step is
+        # spent: an interrupt in between, or a peer close() that found the step's
+        # holder still working, leaves teardown reachable instead of short-circuited by
+        # the check above. The next close() reaches it, and so does the suspended
+        # pass's own finally (see _finish_stream_shutdown_step()).
         self._state.mark_reader_closed()
-        # Exactly one caller closes the streams. mark_reader_closed() returns False both
-        # when this thread transitioned with leases outstanding and when a peer had
-        # already closed, so it cannot tell the owner from a late caller -- and
-        # ArchiveStream.close tests `self.closed` outside its lock, so two concurrent
-        # close() calls could otherwise both reach inner.close() on the same stream.
-        if self._state.claim_stream_shutdown():
-            self._close_public_streams()
+        pending = self._finish_stream_shutdown_step()
         # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
         # so this is a no-op wherever mark_reader_closed() returned False for a good
         # reason. It is not a no-op after a close() interrupted just past the transition:
         # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
-        # although nothing tore the archive down.
-        self._maybe_teardown()
-        self._closed = True
+        # although nothing tore the archive down. With teardown already claimed, it
+        # still raises ``pending``.
+        self._maybe_teardown(pending)
+        if self._state.stream_shutdown_done():
+            self._closed = True
+
+    def _finish_stream_shutdown_step(self) -> Exception | None:
+        """Wind a suspended pass down and close member streams, if this call may.
+
+        Returns a held ``Exception`` from either, for ``_maybe_teardown()`` to raise.
+        Called by ``close()`` and, once the reader is closed, by the ``finally`` of a
+        ``stream_members()`` pass: the pass wind-down lease has no other releaser, so
+        a pass dropped after an interrupted ``close()`` must still be able to finish
+        the step itself.
+        """
+        # Exactly one caller winds the pass down and closes the streams.
+        # mark_reader_closed() returns False both when this thread transitioned with
+        # leases outstanding and when a peer had already closed, so it cannot tell the
+        # owner from a late caller -- and ArchiveStream.close tests `self.closed` outside
+        # its lock, so two concurrent close() calls could otherwise both reach
+        # inner.close() on the same stream.
+        pending: Exception | None = None
+        # This call's claim on the step. The claim is the single store of this ticket in
+        # the state, and it is taken inside the try below, so an interrupt anywhere
+        # after it reaches the except arm, which hands the claim back. Whoever calls
+        # this next -- a later close(), or the pass's own finally -- then retakes it and
+        # drops the pass wind-down lease, which only the holder of the claim may drop:
+        # a peer sees the claim held and must not drop a lease while the holder's
+        # closer runs.
+        ticket = object()
+        try:
+            if self._state.claim_stream_shutdown(ticket):
+                # A stream_members() pass suspended at a yield: close the backend's
+                # pass iterator first, whose finally closes its last stream and then
+                # frees the pass's own resources. The transition took a lease with the
+                # closer, so no stream close in here can claim teardown; it runs at
+                # the caller's _maybe_teardown(), after finish_stream_shutdown() drops
+                # the lease. An Exception from the wind-down or the stream shutdown is
+                # held and returned for _maybe_teardown() to raise after teardown.
+                try:
+                    closer = self._state.take_pass_wind_down()
+                    if closer is not None:
+                        closer()
+                except Exception as exc:  # noqa: BLE001 - raised by _maybe_teardown
+                    pending = exc
+                finally:
+                    try:
+                        self._close_public_streams()
+                    except Exception as exc:  # noqa: BLE001 - raised by _maybe_teardown
+                        pending = (
+                            exc
+                            if pending is None
+                            else ExceptionGroup(
+                                "winding down the pass and closing member streams "
+                                "both failed",
+                                [pending, exc],
+                            )
+                        )
+                self._state.finish_stream_shutdown(ticket)
+        except BaseException:
+            # An interrupt: hand the claim back unless it was spent, then propagate.
+            self._state.abandon_stream_shutdown(ticket)
+            raise
+        return pending
 
     def _close_public_streams(self) -> None:
         """Close member streams that are still open, in the order they were opened.

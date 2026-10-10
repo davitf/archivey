@@ -40,13 +40,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams import rapidgzip_child
-from archivey.internal.streams.codecs import Codec, open_codec_stream
-from archivey.internal.streams.rapidgzip_child import (
+from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
+from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
 )
-from archivey.internal.streams.rapidgzip_worker import ERR, READ, SEEK
+from archivey.internal.streams.codecs.rapidgzip_worker import ERR, READ, SEEK
 from tests.conftest import requires
 from tests.corruption_util import is_corruption_not_truncation
 
@@ -455,7 +454,9 @@ def test_bzip2_stays_in_process() -> None:
         config=StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON),
     ) as stream:
         inner = stream
-        while not isinstance(inner, codecs_module._AcceleratorStream):
+        while not isinstance(
+            inner, codecs_module.rapidgzip_inprocess._AcceleratorStream
+        ):
             inner = getattr(inner, "_inner")
         assert stream.read() == b"x" * 1000
 
@@ -653,7 +654,7 @@ def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
     for minutes on CI, and a worker died at the 60 s timeout. The child turns its dumps
     off: a core limit of 0, and not dumpable, which is what stops a piped dump."""
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
-    with RapidgzipChildStream(str(path), label="gzip") as stream:
+    with RapidgzipChildStream(str(path), label="gzip", max_memory=None) as stream:
         assert stream._proc is not None
         limits = Path(f"/proc/{stream._proc.pid}/limits").read_text()
     core = next(line for line in limits.splitlines() if line.startswith("Max core"))
@@ -662,7 +663,7 @@ def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
     # worker's function is run in a fresh interpreter.
     probe = """
         import ctypes
-        from archivey.internal.streams.rapidgzip_worker import disable_core_dumps
+        from archivey.internal.streams.codecs.rapidgzip_worker import disable_core_dumps
         disable_core_dumps()
         print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))  # PR_GET_DUMPABLE
     """
@@ -819,7 +820,9 @@ def test_an_offset_past_the_frame_range_is_refused_and_the_stream_survives(
     """A seek the protocol cannot carry is refused before anything is sent, so the
     child is still in step and the stream goes on reading."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         with pytest.raises(OverflowError):
@@ -851,7 +854,9 @@ def test_a_refused_seek_keeps_the_position_and_buffer(offset: int, whence: int) 
     """A seek refused before the child moves, here or by the child itself, leaves the
     read-ahead buffer and the position as they were (review round 2, K8)."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         assert child.read(10) == payload[10:20]  # fills the read-ahead buffer
@@ -892,7 +897,9 @@ def test_a_failed_read_leaves_the_position_where_it_started(failing_read: int) -
     count bytes the caller never got and the next read returns them (round 3, K15)."""
     payload = _payload()
     assert len(payload) > rapidgzip_child._CHUNK  # read() takes two chunks
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         _fail_the_nth_read(child, failing_read)
@@ -910,7 +917,9 @@ def test_a_failed_read_that_cannot_move_back_leaves_the_stream_unusable() -> Non
     position: the read raises its own error, the child is stopped, and every later
     call raises ``ReadError`` (round 4, K18)."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         _fail_the_nth_read(child, 1, fail_seeks=True)
@@ -929,7 +938,9 @@ def test_a_negative_seek_after_a_failed_read_is_refused() -> None:
     position, so a failed read cannot let ``seek(-1)`` reach the child, which would
     clamp it to 0 (round 3, K13)."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         _fail_the_nth_read(child, 1)
@@ -986,10 +997,14 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
     """A frozen application has no interpreter to run the worker. AUTO decodes with the
     standard library; ON, which asked for rapidgzip, is refused rather than run in-process."""
     monkeypatch.setattr(
-        codecs_module, "rapidgzip_child_unavailable_reason", lambda: "no child here"
+        codecs_module.rapidgzip_select,
+        "rapidgzip_child_unavailable_reason",
+        lambda: "no child here",
     )
     # Low enough that AUTO would otherwise pick rapidgzip for this input.
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     payload = _payload()
     path = _write(tmp_path, "valid.gz", gzip.compress(payload))
     auto = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.AUTO)
@@ -1043,7 +1058,9 @@ def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
     """AUTO decodes with the standard library when no child starts, as it does when
     rapidgzip is absent: valid data reads, and cut or damaged data raises as the stdlib
     backend reports it (translated, from the original start of the source)."""
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     payload = _payload()
     data = _compress(codec, payload)
     damaged = bytearray(data)
@@ -1111,8 +1128,10 @@ def test_an_auto_fallback_warns_once_per_process(
     """A child that cannot start is a fact about the environment: AUTO logs it once,
     naming why, however many streams fall back. A normal open, and ON (which raises),
     log nothing."""
-    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     caplog.set_level(logging.WARNING, logger="archivey.streams")
     payload = _payload()
     path = _write(tmp_path, "valid.gz", gzip.compress(payload))
@@ -1149,8 +1168,10 @@ def test_resolving_a_codec_does_not_warn(
 ) -> None:
     """``resolve_codec`` is a query that opens nothing, so it logs nothing; the open
     that then reads with the stdlib is what warns."""
-    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
+    monkeypatch.setattr(
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     caplog.set_level(logging.WARNING, logger="archivey.streams")
     payload = _payload()
     data = zlib.compress(payload)
@@ -1174,12 +1195,14 @@ def test_no_fallback_warning_when_rapidgzip_is_not_installed(
 ) -> None:
     """Without rapidgzip, AUTO reads with the stdlib as it always has, quietly: there is
     no child to fail."""
-    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
-    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", False)
     monkeypatch.setattr(
-        codecs_module,
-        "_rapidgzip",
-        codecs_module._LazyOptional("rapidgzip", present=False),
+        codecs_module.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
+    monkeypatch.setattr(
+        codecs_module.deps,
+        "rapidgzip",
+        codecs_module.deps.LazyOptional("rapidgzip", present=False),
     )
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     caplog.set_level(logging.WARNING, logger="archivey.streams")
