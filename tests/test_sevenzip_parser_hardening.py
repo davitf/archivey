@@ -37,10 +37,8 @@ from archivey.internal.backends.sevenzip_parser import (
     parse_header_block,
     read_signature_and_next_header,
 )
-from archivey.internal.backends.sevenzip_pipeline import (
-    parse_sevenzip_archive,
-    plan_folder,
-)
+from archivey.internal.backends.sevenzip_pipeline import plan_folder
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 
@@ -543,12 +541,12 @@ def test_archive_entry_point_applies_the_default_listing_limit() -> None:
         next_crc=zlib.crc32(header) & 0xFFFFFFFF,
     )
     with pytest.raises(ResourceLimitError, match="max_members"):
-        parse_sevenzip_archive(io.BytesIO(data + header))
+        load_sevenzip_archive(io.BytesIO(data + header))
     with pytest.raises(ResourceLimitError, match="max_members"):
         parse_header_block(header)
 
 
-@pytest.mark.parametrize("entry", [parse_header_block, parse_sevenzip_archive])
+@pytest.mark.parametrize("entry", [parse_header_block, load_sevenzip_archive])
 def test_entry_points_default_to_the_listing_limit(
     entry: Callable[..., object],
 ) -> None:
@@ -557,13 +555,8 @@ def test_entry_points_default_to_the_listing_limit(
     assert param.default is not None
 
 
-@pytest.mark.parametrize(
-    "helper",
-    [
-        sevenzip_pipeline.unwrap_encoded_header,
-        sevenzip_parser.parse_decoded_header,
-    ],
-)
-def test_header_helpers_require_max_members(helper: Callable[..., object]) -> None:
-    param = inspect.signature(helper).parameters["max_members"]
+def test_decoded_header_parse_requires_max_members() -> None:
+    param = inspect.signature(sevenzip_parser.parse_decoded_header).parameters[
+        "max_members"
+    ]
     assert param.default is inspect.Parameter.empty

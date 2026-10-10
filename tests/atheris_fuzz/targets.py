@@ -20,7 +20,7 @@ from archivey import (
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.internal.backends.rar_unrar import find_rarlab_unrar
-from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs import (
     Codec,
@@ -92,7 +92,7 @@ _ZIP_PASSWORD_CANDIDATES: list[str | bytes] = ["", "password"]
 
 def sevenzip_header_one(data: bytes) -> None:
     try:
-        parse_sevenzip_archive(io.BytesIO(data))
+        load_sevenzip_archive(io.BytesIO(data))
     except ArchiveyError:
         return
 

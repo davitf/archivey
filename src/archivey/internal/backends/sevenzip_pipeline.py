@@ -26,9 +26,9 @@ not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
 
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
 :func:`open_folder_pipeline` / :func:`_execute_stage` fold stages onto the packed
-sources. Encoded-header decode and the convenience :func:`parse_sevenzip_archive`
-also live here (parser stays structure-only). The encoded header stays linear-only:
-no writer puts BCJ2 there.
+sources. Encoded-header decode also lives here (parser stays structure-only); the
+archive-open flow that uses it is ``load_sevenzip_archive`` in ``sevenzip_reader``.
+The encoded header stays linear-only: no writer puts BCJ2 there.
 """
 
 from __future__ import annotations
@@ -36,11 +36,10 @@ from __future__ import annotations
 import io
 import lzma
 import zlib
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
-from archivey.config import ListingLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -64,20 +63,12 @@ from archivey.internal.backends.sevenzip_parser import (
     MAX_NEXT_HEADER_SIZE,
     EncodedHeader,
     FolderGraph,
-    HeaderBlock,
-    PlainHeader,
-    SevenZipArchive,
     SevenZipCoder,
     SevenZipFolder,
     check_bind_pairs,
     check_packed_indices,
-    empty_archive,
     encoded_header_slice,
     folder_is_encrypted,
-    materialize_archive,
-    parse_decoded_header,
-    parse_header_block,
-    read_signature_and_next_header,
 )
 from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
@@ -111,9 +102,6 @@ from archivey.internal.streams.zstd_framing import (
     frame_window_size,
 )
 
-# Omitting max_members on the archive-level entry point means the ListingLimits
-# default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
-_DEFAULT_MAX_MEMBERS = ListingLimits().max_members
 HEADER_PASSWORD_REJECTED = "Password(s) rejected for the 7z header"
 
 if TYPE_CHECKING:
@@ -1078,63 +1066,3 @@ def decode_encoded_header(
 def encoded_header_needs_password(encoded: EncodedHeader) -> bool:
     folders = encoded.streams.folders or []
     return any(folder_is_encrypted(folder) for folder in folders)
-
-
-def unwrap_encoded_header(
-    block: HeaderBlock,
-    decode: Callable[[EncodedHeader], bytes],
-    *,
-    max_members: int | None,
-) -> tuple[PlainHeader, bool]:
-    """Decode at most one encoded-header layer. 7-Zip writes one.
-
-    Returns the plain header and whether that layer used 7zAES.
-    """
-    header_encrypted = False
-    if isinstance(block, EncodedHeader):
-        header_encrypted = encoded_header_needs_password(block)
-        block = parse_decoded_header(decode(block), max_members=max_members)
-    assert isinstance(block, PlainHeader)
-    return block, header_encrypted
-
-
-def parse_sevenzip_archive(
-    fp: BinaryIO,
-    *,
-    password: bytes | None = None,
-    key_cache: SevenZipKeyCache | None = None,
-    stream_config: StreamConfig | None = None,
-    collector: DiagnosticCollector | None = None,
-    max_members: int | None = _DEFAULT_MAX_MEMBERS,
-) -> SevenZipArchive:
-    """Parse a 7z archive end-to-end (plain or encoded header).
-
-    Used by fuzz harnesses and tests. The reader uses the same two-phase flow with
-    password-candidate prompting instead of a single ``password``.
-    Omitting ``max_members`` applies the ``ListingLimits`` default, the same as
-    :func:`~archivey.internal.backends.sevenzip_parser.parse_header_block` and the RAR
-    parser's archive-level entry points; ``None`` is the explicit UNLIMITED opt-out.
-    """
-    cache = key_cache if key_cache is not None else SevenZipKeyCache()
-    signature = read_signature_and_next_header(fp)
-    if not signature.header_data:
-        return empty_archive(signature)
-
-    block = parse_header_block(signature.header_data, max_members=max_members)
-    block, header_encrypted = unwrap_encoded_header(
-        block,
-        lambda encoded: decode_encoded_header(
-            fp,
-            encoded,
-            password=password,
-            key_cache=cache,
-            stream_config=stream_config,
-            collector=collector,
-        ),
-        max_members=max_members,
-    )
-    # O8: encrypted headers never legitimately decode to zero file records.
-    # Without this, ~0.3% of wrong-password py7zr salts slip through as empty.
-    if header_encrypted and not block.files:
-        raise EncryptionError(HEADER_PASSWORD_REJECTED)
-    return materialize_archive(signature, block, is_header_encrypted=header_encrypted)

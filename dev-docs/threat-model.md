@@ -651,7 +651,7 @@ never reported as success. Public:
   folder CRC when the writer stored one (7-Zip does; py7zr does not), then by the parse
   failing. About 1 in 256 wrong keys decode to a leading `END` (or `HEADER`+`END`) that
   parses as an empty archive (measured about 0.3% of py7zr salts). Legitimate writers
-  never encrypt an empty header, so `SevenZipReader._decode_encoded_header_block`
+  never encrypt an empty header, so `sevenzip_reader._decode_encoded_header_block`
   rejects a decoded header with zero file records as `EncryptionError`.
 - A password only a weak check accepted, or none tested (RAR3/4 encrypted data has no
   check), is confirmed by the member's own CRC at EOF. Closing such a stream early emits

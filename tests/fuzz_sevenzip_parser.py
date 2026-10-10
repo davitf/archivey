@@ -17,7 +17,7 @@ import pytest
 
 from archivey import ArchiveyError
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
-from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 
 pytestmark = pytest.mark.skipif(
@@ -62,10 +62,10 @@ def _mutations(seed: bytes, label: str) -> Iterable[bytes]:
             yield bytes(data)
 
 
-def test_parse_sevenzip_archive_fuzz_harness(tmp_path: Path) -> None:
+def test_load_sevenzip_archive_fuzz_harness(tmp_path: Path) -> None:
     for index, seed in enumerate(_seed_bytes(tmp_path)):
         for mutated in _mutations(seed, str(index)):
             try:
-                parse_sevenzip_archive(io.BytesIO(mutated))
+                load_sevenzip_archive(io.BytesIO(mutated))
             except ArchiveyError:
                 pass
