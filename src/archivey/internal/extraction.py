@@ -614,15 +614,23 @@ class _RunState:
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
     # Directories ``_makedirs`` created this run, as parents of what it wrote.
     created_dirs: set[Path] = field(default_factory=set)
+    # Every directory this run wrote or created, by ``_physical_key`` -> where each one
+    # physically is (``_physical_path``), so a member that names one under another
+    # spelling is not taken for the caller's (``_is_run_directory``).
+    run_dirs: dict[str, set[Path]] = field(default_factory=dict)
     # Directory members whose ownership, mode and times wait for the end of the run
-    # (``_apply_directory_metadata``), by the path the directory was written at, in
-    # the order they were last written: the directory's identity on disk (device,
-    # inode) when it was written, the number of ``/`` in its path relative to the
-    # root once the parent is resolved (so a deeper directory sorts first), and the
-    # transformed member. Keyed by path, not identity: some filesystems report inode
-    # 0 for every entry (``_Identity.of`` in the directory reader).
-    pending_dirs: dict[Path, tuple[tuple[int, int], int, ArchiveMember]] = field(
-        default_factory=dict
+    # (``_apply_directory_metadata``): ``_physical_key`` -> where the directory physically
+    # is -> the directory's identity on disk (device, inode) when it was written, the
+    # number of ``/`` in that physical path relative to the root (so a deeper
+    # directory sorts first), and the transformed member. In each key, in the order
+    # they were last written. Keyed by place, not identity: some filesystems report
+    # inode 0 for every entry (``_Identity.of`` in the directory reader). By the
+    # physical path, not the spelled one: two spellings through a symlink of the
+    # archive's share one entry, and the metadata pass opens the directory through
+    # shallower directories only, which it has not changed yet. Under a casefolded
+    # key, so a removal by a case variant finds the entry (``_drop_pending_dir``).
+    pending_dirs: dict[str, dict[Path, tuple[tuple[int, int], int, ArchiveMember]]] = (
+        field(default_factory=dict)
     )
     # ``_physical_rel``'s resolved parents, as spelled -> relative to the root with a
     # trailing ``/``. Only a symlink created, replaced or removed changes a
@@ -1305,7 +1313,7 @@ class ExtractionCoordinator:
             if path.is_dir() and not path.is_symlink():
                 # Random access never writes the superseded copy, so its metadata
                 # is not applied, whether or not the directory stays as a parent.
-                state.pending_dirs.pop(path, None)
+                self._drop_pending_dir(path)
                 with contextlib.suppress(OSError):  # not empty: members live under it
                     os.rmdir(path)
                     state.written_paths.discard(path)
@@ -1801,6 +1809,7 @@ class ExtractionCoordinator:
                 self._defer_directory_metadata(dest_path, transformed)
             if not existed:
                 written_paths.add(dest_path)
+                self._note_run_directory(dest_path)
             return ExtractionResult(
                 original,
                 dest_path,
@@ -2047,12 +2056,8 @@ class ExtractionCoordinator:
 
         The key is remembered per path, so releasing the claim later finds it even after
         a symlink in ``path`` was repointed and ``path`` resolves somewhere else."""
-        rel = self._physical_rel(path)
-        physical = self._state.dest / rel if rel is not None else path
-        key = collision_key(
-            rel if rel is not None else self._rel_name(path), self._policy
-        )
-        self._state.collision_map[key] = _Claim(path, index, physical)
+        key = self._collision_key(path)
+        self._state.collision_map[key] = _Claim(path, index, self._physical_path(path))
         self._state.claim_keys[path] = key
 
     def _claimed_key(self, path: Path) -> str:
@@ -2085,6 +2090,13 @@ class ExtractionCoordinator:
             resolved_parents[parent] = rel_parent
         return rel_parent + name
 
+    def _physical_path(self, path: Path) -> Path:
+        """Where ``path`` is, under the destination as given, with its parent
+        resolved (``_physical_rel``); ``path`` itself when that parent does not resolve
+        inside the root."""
+        rel = self._physical_rel(path)
+        return self._state.dest / rel if rel is not None else path
+
     def _collision_key(self, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
 
@@ -2099,6 +2111,23 @@ class ExtractionCoordinator:
         if rel is None:
             rel = self._rel_name(path)
         return collision_key(rel, self._policy)
+
+    def _physical_key(self, path: Path) -> str:
+        """The key of the directory at ``path`` in ``run_dirs`` and ``pending_dirs``:
+        where it physically is, with case and Unicode normalization folded under every
+        policy.
+
+        ``_collision_key`` folds only under ``STRICT`` and ``STANDARD``, because it
+        decides which member's result a name reaches. These two maps ask whether a
+        directory is one this run made, which does not depend on how the archive spelled
+        it: on a case-insensitive filesystem ``D/`` and ``d/`` are one directory under
+        ``TRUSTED`` too. Where the folded key covers two directories (``X/`` beside
+        ``x/`` on a case-sensitive filesystem), the readers tell them apart on disk.
+        """
+        rel = self._physical_rel(path)
+        if rel is None:
+            rel = self._rel_name(path)
+        return collision_key(rel, ExtractionPolicy.STANDARD)
 
     def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
@@ -2166,7 +2195,7 @@ class ExtractionCoordinator:
             if stat.S_ISDIR(st.st_mode):
                 os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop(dest_path, None)
+                self._drop_pending_dir(dest_path)
             else:
                 os.unlink(dest_path)
             if stat.S_ISLNK(st.st_mode):
@@ -2987,21 +3016,51 @@ class ExtractionCoordinator:
                     ) from exc
             raise
         self._state.created_dirs.update(missing)
+        for component in missing:
+            self._note_run_directory(component)
 
     def _is_callers_directory(self, path: Path) -> bool:
         """Whether ``path`` is a directory that was there before this run: the
         destination root unless this run created it, or a directory this run neither
-        wrote nor created. The root is decided by name, as it may be the caller's
-        symlink to a directory."""
+        wrote nor created (``_is_run_directory``). The root is decided by name, as it
+        may be the caller's symlink to a directory."""
         state = self._state
         if path == state.dest:
             return path not in state.created_dirs
         try:
-            if not stat.S_ISDIR(os.lstat(path).st_mode):
-                return False
+            st = os.lstat(path)
         except OSError:
             return False
-        return path not in state.written_paths and path not in state.created_dirs
+        return stat.S_ISDIR(st.st_mode) and not self._is_run_directory(path, st)
+
+    def _note_run_directory(self, path: Path) -> None:
+        """Record that this run wrote or created the directory at ``path``."""
+        self._state.run_dirs.setdefault(self._physical_key(path), set()).add(
+            self._physical_path(path)
+        )
+
+    def _is_run_directory(self, path: Path, st: os.stat_result) -> bool:
+        """Whether the directory at ``path`` (``st`` its ``lstat``) is one this run
+        wrote or created, under any spelling: through a symlink the archive created
+        (the same physical path), or a case variant on a case-insensitive filesystem
+        under every policy (one recorded under the same ``_physical_key`` that is the
+        same directory). Where
+        the filesystem reports inode 0, a case variant cannot be told from another
+        directory and is taken for the caller's, which keeps its mode."""
+        recorded = self._state.run_dirs.get(self._physical_key(path))
+        if not recorded:
+            return False
+        if self._physical_path(path) in recorded:
+            return True
+        if st.st_ino == 0:
+            return False
+        for other in recorded:
+            try:
+                if os.path.samestat(st, os.lstat(other)):
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _prepare_destination(
         self, member: ArchiveMember, dest_path: Path, *, atomic: bool = False
@@ -3073,7 +3132,7 @@ class ExtractionCoordinator:
                 with self._readonly_cleared(dest_path):
                     os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop(dest_path, None)
+                self._drop_pending_dir(dest_path)
                 self._current.removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
@@ -3324,13 +3383,33 @@ class ExtractionCoordinator:
             st = os.lstat(path)
         except OSError:
             return
-        rel = self._physical_rel(path)
-        depth = (rel if rel is not None else self._rel_name(path)).count("/")
-        pending = self._state.pending_dirs
-        # Moved to the end, so where two spellings reach one directory, the member
-        # written last is applied last (the sort by depth is stable).
-        pending.pop(path, None)
-        pending[path] = ((st.st_dev, st.st_ino), depth, member)
+        physical = self._physical_path(path)
+        depth = self._rel_name(physical).count("/")
+        pending = self._state.pending_dirs.setdefault(self._physical_key(path), {})
+        # Moved to the end, so where two spellings reach one directory (a case
+        # variant), the member written last is applied last.
+        pending.pop(physical, None)
+        pending[physical] = ((st.st_dev, st.st_ino), depth, member)
+
+    def _drop_pending_dir(self, path: Path) -> None:
+        """Drop the deferred metadata of the directory at ``path``, which is being
+        removed, under whichever spelling it was written.
+
+        Found by ``_physical_key``, under every policy: the entry at the same physical
+        path is dropped, and so is one under a case variant that is gone from disk. A
+        casefolded key also covers another directory on a
+        case-sensitive filesystem (``X/`` beside ``x/``); that one is still there, and
+        keeps its entry."""
+        key = self._physical_key(path)
+        pending = self._state.pending_dirs.get(key)
+        if not pending:
+            return
+        physical = self._physical_path(path)
+        for other in list(pending):
+            if other == physical or not os.path.lexists(other):
+                del pending[other]
+        if not pending:
+            del self._state.pending_dirs[key]
 
     def _apply_directory_metadata(self) -> None:
         """Apply the deferred directory metadata (``_defer_directory_metadata``),
@@ -3359,8 +3438,9 @@ class ExtractionCoordinator:
         def is_ours(st: os.stat_result, identity: tuple[int, int]) -> bool:
             return stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == identity
 
+        entries = [item for by_key in pending.values() for item in by_key.items()]
         for path, (identity, _depth, member) in sorted(
-            pending.items(), key=lambda item: item[1][1], reverse=True
+            entries, key=lambda item: item[1][1], reverse=True
         ):
             if by_fd:
                 try:
