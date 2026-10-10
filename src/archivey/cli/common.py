@@ -29,6 +29,7 @@ def reject_stdin_token(archive: str) -> None:
 
     A pipe on stdin is still readable through its path, ``/dev/stdin``, which
     :func:`is_read_once` treats as any other pipe, so the message names that path.
+    Windows has no such path, so there the message says to copy the archive to a file.
 
     Also refuses the empty string, through :func:`reject_empty_path`. Call it on the
     string the user typed, before any ``Path()``: ``Path("")`` is ``Path(".")``.
@@ -36,10 +37,12 @@ def reject_stdin_token(archive: str) -> None:
     reject_empty_path(archive, arg="archive")
     if archive == "-":
         # Grammar-level "not available yet" → usage exit (D7), matching reserved verbs.
+        if sys.platform == "win32":
+            hint = "copy the archive to a regular file and pass its path"
+        else:
+            hint = "to read an archive piped on stdin, pass /dev/stdin instead"
         raise CliError(
-            "the '-' token for stdin is reserved and not supported yet; "
-            "to read an archive piped on stdin, pass /dev/stdin instead "
-            "(not on Windows)",
+            f"the '-' token for stdin is reserved and not supported yet; {hint}",
             code=EXIT_USAGE,
         )
 

@@ -119,7 +119,7 @@ avoid tarbombs. When a cheap member index is available without a streaming scan
 multiple top-level entries; extract into `.` when it already has a single
 top-level directory (no redundant nesting) or the archive is a
 single-file/single-stream archive. When no cheap index is available (plain TAR,
-future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
+an archive read from a pipe, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
 the cwd and remove the wrapper. The hoist SHALL NOT run when the wrapper was
@@ -387,8 +387,10 @@ SHALL open it in streaming mode, because the user has no option to choose the mo
 `extract` SHALL extract them in one pass. When the format cannot be read in one
 forward pass (ZIP, 7z, RAR, ISO), the verb SHALL exit `1` with a message that names
 the format by its file extension (`zip`, `7z`, `rar`, `iso`) and tells the user to
-copy the input to a regular file first. The message MUST NOT suggest `streaming=True`
-or a `BytesIO`, which a CLI user cannot pass. A block device rereads the same bytes and
+copy the input to a regular file first. When the format's optional package is not
+installed, the verb SHALL report the missing package first, as it does for a regular
+file. The message MUST NOT suggest `streaming=True` or a `BytesIO`, which a CLI user
+cannot pass. A block device rereads the same bytes and
 opens as a regular file does.
 
 A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
@@ -410,14 +412,16 @@ separate and stays reserved (below).
 
 The system SHALL treat `-` as a reserved token meaning "read archive from stdin"
 and SHALL fail fast with a clear "not supported yet" message rather than opening a
-filesystem entry literally named `-`. The message SHALL name `/dev/stdin`, through
-which a piped archive is read as a read-once path (above).
+filesystem entry literally named `-`. Outside Windows, the message SHALL name
+`/dev/stdin`, through which a piped archive is read as a read-once path (above). On
+Windows, which has no `/dev/stdin`, the message SHALL tell the user to copy the archive
+to a regular file instead.
 
 #### Scenario: stdin reserved
 
 | Case | Expected |
 | --- | --- |
-| `archivey list -` | Non-zero exit; message says the `-` token is not supported yet and names `/dev/stdin` |
+| `archivey list -` | Non-zero exit; message says the `-` token is not supported yet and names `/dev/stdin` (on Windows: says to copy the archive to a regular file) |
 | `archivey extract -` | Same |
 
 ### Requirement: an empty path argument is a usage error

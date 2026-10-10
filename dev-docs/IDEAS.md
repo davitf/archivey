@@ -232,7 +232,9 @@ Each idea carries a status:
 
 ## CLI
 
-- **Read the archive from stdin.** *Open idea.* `-` is reserved as the archive argument.
+- **Read the archive from stdin.** *Open idea.* A piped archive is already read through
+  `/dev/stdin` on Linux and macOS. What is still open is wiring the reserved `-` archive
+  argument to it.
 - **`--json` output.** *Needs design.* Waits for a designed member schema. The flag name
   is `--json`.
 - **`--raw` names.** *Open idea.* An escape hatch that prints exact names, for scripts that

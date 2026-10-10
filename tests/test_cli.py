@@ -247,8 +247,14 @@ def test_dash_prefixed_verb_rejected(sample_zip: Path) -> None:
 def test_stdin_token_reserved(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["list", "-"]) == EXIT_USAGE
     assert main(["-"]) == EXIT_USAGE
-    # The token is reserved, but a piped archive is readable through /dev/stdin.
-    assert "/dev/stdin" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    if sys.platform == "win32":
+        # Windows has no /dev/stdin, so the message names the action that works there.
+        assert "/dev/stdin" not in err
+        assert "copy the archive to a regular file" in err
+    else:
+        # The token is reserved, but a piped archive is readable through /dev/stdin.
+        assert "/dev/stdin" in err
 
 
 @pytest.mark.parametrize("verb", ["list", "test", "info", "extract"])
@@ -691,10 +697,11 @@ def test_verbs_on_a_gz_fifo_read_the_single_member(
     """
     payload = _gz_bytes(b"hello gz")
 
-    listed = tmp_path / "list.gz"
+    # Not "list.gz": the member name must be a word the verb cannot print by itself.
+    listed = tmp_path / "payload.gz"
     named_fifo_with_writer(listed, payload)
     assert _main_on_fifo(listed, ["list", str(listed)]) == EXIT_OK
-    assert "list" in capsys.readouterr().out
+    assert "payload" in capsys.readouterr().out
 
     tested = tmp_path / "test.gz"
     named_fifo_with_writer(tested, payload)
