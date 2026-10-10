@@ -529,16 +529,22 @@ bypass the check: on such a stream the accelerator clamps the seek to 0. Acceler
 is a performance choice and SHALL NOT be observable as a difference in whether a corrupt
 source raises, with one exception. Where every byte of output is covered by checks the
 data itself declares, those checks give the verdict, and an accelerator MAY differ from
-the standard-library decoder on stream-boundary malformations they cannot see:
+the standard-library decoder on a stream-boundary malformation they cannot see: for a
+standalone multi-member gzip, a wrong ISIZE on a member other than the last, when every
+member's CRC-32 is still checked.
 
-- for a container member that declares its size and CRC (a ZIP member, a 7z coder
-  under a CRC-checked file), a second stream or
-  trailing bytes inside the member's compressed data, which the accelerator MAY read as
-  content where the standard-library decoder stops at the first stream's end; the
-  declared size and CRC then decide, so output that matches both reads and output that
-  breaks either raises;
-- for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
-  when every member's CRC-32 is still checked.
+A container member's compressed data (a ZIP member's, a 7z coder's declared input) is
+one stream of its codec and nothing else. A byte of it the codec leaves after the
+stream's end, a zero byte too, and a second stream there SHALL raise
+`CorruptionError`, after the output before that end has been delivered, whatever the
+declared size and CRC cover, with the accelerator on or off: an accelerator that reads
+on past the first stream hands the read to the standard-library decoder there, which
+refuses it. 7-Zip 23.01 fails such a member ("There are some data after the end of the
+payload data", or "Data Error"), and the bytes may hide a second payload. A codec that
+stops at a declared output size (LZMA1 without an end marker, PPMd) SHALL raise the
+same way when its input goes on past that size; such a cut leaves input over, so it is
+not a `TruncatedError`. A standalone compressed file keeps reporting the bytes after its
+streams as `ARCHIVE_TRAILING_DATA` instead.
 
 A wrong ISIZE on the last member of a one-member gzip is not among them, whatever follows
 the member. The accelerator reads the output through a CRC-32 and finds the trailer as the
@@ -575,12 +581,14 @@ no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 | Case | Expected |
 | --- | --- |
 | `open_archive(corrupt.bz2, seekable_members=True).read(member)` | Raises, matching `seekable_members=False` |
-| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformations listed above |
+| A capability flag (`seekable_members`) | Never changes whether a corrupt source raises, except through the accelerator on the stream-boundary malformation listed above |
 
-#### Scenario: a ZIP member with a second stream inside its compressed data
+#### Scenario: a container member with input after its stream
 
 | Member | Accelerator `OFF` | Accelerator `ON` |
 | --- | --- | --- |
-| Two DEFLATE or bzip2 streams; declared size and CRC cover both | `TruncatedError` (decoder stops after the first) | Both streams' content |
-| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `TruncatedError` | `CorruptionError` (CRC) |
-| Two bzip2 streams; declared size and CRC cover the first | First stream's content | `CorruptionError` (output past the declared size) |
+| Two DEFLATE or bzip2 streams; declared size and CRC cover both, or the first only | `CorruptionError` | `CorruptionError` |
+| One DEFLATE or bzip2 stream, then junk or zero bytes | `CorruptionError` | `CorruptionError` |
+| ZIP LZMA without an end marker, or 7z LZMA1, whose declared size is 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
+| ZIP PPMd8 or 7z PPMd, then junk, or a declared size 1000 bytes short of its data | `CorruptionError` (not `TruncatedError`) | — |
+| A `.bz2` file with junk after its stream | Content, and `ARCHIVE_TRAILING_DATA` | Content, and `ARCHIVE_TRAILING_DATA` |

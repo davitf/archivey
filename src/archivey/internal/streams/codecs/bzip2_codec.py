@@ -100,6 +100,7 @@ def _stdlib_bzip2(
         magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
+        exact_input=config.exact_input,
     )
 
 
@@ -147,9 +148,12 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     At the end, the decoder can also stop short: after zero padding it does not find a
     further stream, where the standard library decodes it. So when what follows the
     last stream starts another stream after any zero padding and empty streams, the
-    standard library takes over at the end, and decodes it or raises; not for a
-    container coder's single stream (``CodecParams.single_stream``), where that stream
-    is trailing data, as with the accelerator off.
+    standard library takes over at the end, and decodes it or raises. A container
+    coder's data is one stream (``CodecParams.single_stream``): a further stream is
+    trailing data there, as with the accelerator off, and where the decoder read on into
+    one, the read hands over at its start (:class:`_Bzip2Layout`). When the coder's input
+    must end with its stream (``StreamConfig.exact_input``), any byte after it hands
+    over at the end, and the standard library refuses it.
 
     A seek gets the same verdicts as a read. A seek past a skipped region hands over
     at it, and a seek that reaches the decoder's end runs the end check, or, when the
@@ -179,7 +183,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         self._armed = True
         # The accelerator is still the decoder, and has not reached the end yet.
         self._end_unchecked = True
-        self._layout = _Bzip2Layout()
+        self._layout = _Bzip2Layout(single_stream=single_stream)
         # The decoder's compressed position when the layout was last checked.
         self._layout_checked_at: int | None = None
 
@@ -333,16 +337,30 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         stopped before it, so the standard library takes over at the end and decides
         (class docstring). For a container coder's single stream the standard library
         would not read a further stream either, so that stream is reported as trailing
-        bytes instead. Return whether the standard library took over.
+        bytes instead; and where the coder's input must end with the stream
+        (``StreamConfig.exact_input``), any byte there hands over, for the standard
+        library to refuse. Return whether the standard library took over.
         """
         end = getattr(self._accelerator(), "compressed_position", lambda: None)()
         if end is None:
             return False
+        takeover = self._takeover()
+        if self._config.exact_input:
+            # A container coder's input is the stream and nothing else
+            # (``StreamConfig.exact_input``): any byte after it, a zero too, is
+            # refused. The standard library raises there, so it takes over.
+            if takeover is None:
+                return False
+            with self._views.view() as view:
+                view.seek(end)
+                if not view.read(1):
+                    return False
+            takeover.switch_to_stdlib()
+            return True
         found = self._first_trailing_byte(end)
         if found is None:
             return False
         offset, starts_stream = found
-        takeover = self._takeover()
         if starts_stream and takeover is not None and not self._single_stream:
             takeover.switch_to_stdlib()
             return True
@@ -432,7 +450,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         from the start; a read and a seek fall back here alike."""
         self._armed = False
         self._end_unchecked = False  # the stdlib engine reports its own end
-        self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
+        self._replace_inner(
+            _stdlib_bzip2(
+                self._views.for_stdlib(),
+                self._config,
+                single_stream=self._single_stream,
+            )
+        )
 
 
 # The 48-bit magic numbers that start a bzip2 block and an end-of-stream marker. Each
@@ -487,9 +511,14 @@ class _Bzip2Layout:
     (see ``dev-docs/formats/bzip2.md`` §2.3 for the measured cost). An index that is not
     in that order, or that lists an entry behind the ones walked, which rapidgzip has
     not been seen to do, restarts the walk over the whole index.
+
+    For a container coder's single stream (``single_stream``), no further stream may
+    start: the standard library ends the data at the first one, so a block after it
+    counts as skipped, and the read hands over there.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, single_stream: bool = False) -> None:
+        self._single_stream = single_stream
         # The magic read at each bit offset walked (``None`` for the end entry).
         self._kinds: dict[int, int | None] = {}
         self._last_bit = -1
@@ -530,7 +559,9 @@ class _Bzip2Layout:
                         self._last_bit = bit
                         self.covered = offsets[bit]
                         continue
-                    if not _bzip2_stream_starts(view, self._next_stream, bit):
+                    if (
+                        self._single_stream and self._next_stream
+                    ) or not _bzip2_stream_starts(view, self._next_stream, bit):
                         self.gap = offsets[bit]
                         return self.gap
                     self._next_stream = None
@@ -693,7 +724,9 @@ class Bzip2Codec(StreamCodec):
             takeover = _StdlibOnAcceleratorError(
                 stream,
                 views=views,
-                open_stdlib=lambda fallback: _stdlib_bzip2(fallback, config),
+                open_stdlib=lambda fallback: _stdlib_bzip2(
+                    fallback, config, single_stream=params.single_stream
+                ),
                 label="bzip2",
                 takes_over=self._accelerator_data_error,
                 resume_points=_bzip2_resume_points,

@@ -363,11 +363,19 @@ class _DeflateEndCheckStream(DelegatingStream):
       container declared (past that size, ``limit`` of ``_StdlibOnAcceleratorError``
       hands over). The ``compressed-streams`` spec accepts that difference: the
       declared size and CRC decide.
+    - zlib reaches a final block, but the stream was opened with ``exact_input`` (a
+      ZIP member or a 7z coder) and a byte follows that block: as below, since the
+      standard library raises ``DataAfterEndError`` there. A resumed decode cannot see
+      that: a point past the end of a first stream starts in the second, which ends at
+      the offset. So under ``exact_input`` zlib decodes the stream from its start.
     - zlib does not reach a final block (a cut or damaged stream): the read goes to the
       standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
       inside), which gives the verdict it gives with the accelerator off.
 
-    The check costs a decode of the output between the resume point and the end. The
+    The check costs a decode of the output between the resume point and the end, or
+    of the whole stream under ``exact_input``: a full read of a ZIP member or 7z coder
+    under rapidgzip pays a standard-library decode on top of rapidgzip's, so there the
+    accelerator speeds up seeks and the first output, not the full read. The
     child keeps its first point only once 4 MiB of output has been delivered
     (``_MIN_QUERY_SPACING`` in ``rapidgzip_child.py``), so a stream with less output
     than that is decoded again whole, by zlib in one thread: under ``ON`` such a member
@@ -397,12 +405,17 @@ class _DeflateEndCheckStream(DelegatingStream):
     readinto_passthrough = False
 
     def __init__(
-        self, inner: _StdlibOnAcceleratorError, *, views: _SourceViews
+        self,
+        inner: _StdlibOnAcceleratorError,
+        *,
+        views: _SourceViews,
+        exact_input: bool = False,
     ) -> None:
         super().__init__(inner)
         # The same object as ``_inner``, typed: the handover calls it.
         self._takeover = inner
         self._views = views
+        self._exact_input = exact_input
         self._checked = False
 
     def read(self, size: int = -1, /) -> bytes:
@@ -428,9 +441,11 @@ class _DeflateEndCheckStream(DelegatingStream):
         self._checked = True
         end = self._takeover.position
         resume_point = getattr(self._takeover.accelerator, "resume_point", None)
-        point = resume_point(end) if resume_point is not None else None
+        point = None
+        if resume_point is not None and not self._exact_input:
+            point = resume_point(end)
         with self._views.view() as f:
-            if stream_end(f, point, end) is not None:
+            if stream_end(f, point, end, exact_input=self._exact_input) is not None:
                 return b""
         self._takeover.switch_to_stdlib()
         return self._inner.read(size)
@@ -457,7 +472,7 @@ class DeflateCodec(_ZlibErrorCodec):
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
-        return ZlibDecompressorStream(source, wbits=-15)
+        return ZlibDecompressorStream(source, wbits=-15, exact_input=config.exact_input)
 
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -478,7 +493,9 @@ class DeflateCodec(_ZlibErrorCodec):
         accel_source: CodecSource,
         views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
-        return lambda stream: _DeflateEndCheckStream(stream, views=views)
+        return lambda stream: _DeflateEndCheckStream(
+            stream, views=views, exact_input=config.exact_input
+        )
 
     def _accelerated_limit(
         self, params: CodecParams, config: StreamConfig

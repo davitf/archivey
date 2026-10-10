@@ -89,12 +89,26 @@ above 2 SHALL raise `CorruptionError` (7-Zip: "Data Error"). Under ZipCrypto the
 settings are decrypted data, so both SHALL raise `CorruptionError` there, which the
 password confirmation counts as the candidate failing (see below).
 
+A member's compressed data SHALL be one stream of its codec and nothing else, as 7-Zip
+23.01 reads it. A byte of it the codec leaves after the stream's end, a zero byte too,
+and a further stream there, SHALL raise `CorruptionError` once the output before it is
+read, whatever the declared size and CRC cover, with an accelerator on or off. An LZMA
+member without the end-marker flag (general-purpose bit 1) and a PPMd member end at
+their declared size: their input SHALL end there too (after an end marker right at
+that size for LZMA, and after PPMd8's end mark, which a member SHALL carry), so a
+declared size short of the stream's data SHALL raise `CorruptionError`, not
+`TruncatedError`. One zero byte after LZMA data without an end marker reads, as 7-Zip's
+encoder sometimes flushes it past the decoder's last read.
+
 #### Scenario: ZIP codec-layer decoding
 
 | Case | Expected |
 | --- | --- |
 | STORED / DEFLATE / BZIP2 / LZMA member, unencrypted | Decodes via the shared codec layer; CRC verified through `VerifyingStream` |
-| LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error"; with bit 1 clear, only a marker right at the declared size is checked |
+| LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error" |
+| LZMA member without an end marker (bit 1 clear), with junk after its data or a declared size 1000 bytes short of it | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
+| PPMd member with junk or zero bytes after its end mark, a declared size 1000 bytes short of its data, or no end mark | `CorruptionError`, not `TruncatedError` (7-Zip: "Data Error") |
+| DEFLATE or bzip2 member with junk, zero bytes or a second stream after its stream, accelerator off or on | `CorruptionError` (7-Zip: "There are some data after the end of the payload data") |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |

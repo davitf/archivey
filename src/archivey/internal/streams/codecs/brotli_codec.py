@@ -51,6 +51,7 @@ class BrotliCodec(StreamCodec):
             source,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
+            exact_input=config.exact_input,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

@@ -134,6 +134,7 @@ class ZstdCodec(StreamCodec):
             magic=_ZSTD_STREAMS,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
+            exact_input=config.exact_input,
         )
 
     def translator(self, config: StreamConfig) -> ExceptionTranslator:

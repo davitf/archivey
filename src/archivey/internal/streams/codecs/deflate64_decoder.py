@@ -39,6 +39,12 @@ class Deflate64Decoder(BaseDecoder):
     throughput): 1→514 B / ~320 MiB/s; 64→19 KiB / ~700 MiB/s; 256→70 KiB /
     ~710 MiB/s; 64 KiB→18 MiB / ~460 MiB/s. 64 keeps peaks under a 64 KiB
     read budget while recovering most of the speed of larger feeds.
+
+    ``inflate64`` says when the stream has ended (``eof``) but not where: it keeps no
+    ``unused_data`` and drops whatever follows. So the last byte fed is held back
+    until the input ends (``flush``). A stream that ends before that byte reaches the
+    inflater has input after its end, which :meth:`_inflate` hands to
+    ``_past_end``; a stream that uses all its input ends on that byte.
     """
 
     # Compressed bytes per inflate() under a max_length budget. See class docstring.
@@ -50,22 +56,35 @@ class Deflate64Decoder(BaseDecoder):
         self._decomp: _Inflate64Inflater = inflate64.Inflater()
         self._pending = b""
         self._pending_out = b""
+        # The last byte fed, held back from the inflater (see the class docstring).
+        self._last = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Deflate64Decoder:
         del point, inner
         return Deflate64Decoder()
 
+    def _inflate(self, data: bytes) -> bytes:
+        """Inflate ``data``, or account for it as input after the stream's end."""
+        if self._decomp.eof:
+            self._past_end(data)
+            return b""
+        return self._decomp.inflate(data)
+
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if chunk:
+            chunk = self._last + chunk
+            self._last = chunk[-1:]
+            chunk = chunk[:-1]
         data = self._pending + chunk
         self._pending = b""
         if max_length < 0:
             if self._pending_out:
-                data = self._pending_out + (self._decomp.inflate(data) if data else b"")
+                data = self._pending_out + (self._inflate(data) if data else b"")
                 self._pending_out = b""
                 return DecodeOut(data)
             if not data:
                 return DecodeOut(b"")
-            return DecodeOut(self._decomp.inflate(data))
+            return DecodeOut(self._inflate(data))
 
         out = bytearray()
         if self._pending_out:
@@ -78,7 +97,7 @@ class Deflate64Decoder(BaseDecoder):
 
         step = self._BUDGETED_FEED
         while data and len(out) < max_length:
-            produced = self._decomp.inflate(data[:step])
+            produced = self._inflate(data[:step])
             data = data[step:]
             room = max_length - len(out)
             if len(produced) > room:
@@ -90,16 +109,14 @@ class Deflate64Decoder(BaseDecoder):
         return DecodeOut(bytes(out))
 
     def flush(self) -> DecodeOut:
-        # Flush remaining state with an empty feed (mirrors py7zr's Deflate64Decompressor).
-        if self._pending_out:
-            out = self._pending_out
-            self._pending_out = b""
-            if not self._decomp.eof:
-                out += self._decomp.inflate(b"")
-        elif self._decomp.eof:
-            out = b""
-        else:
-            out = self._decomp.inflate(b"")
+        # The held-back last byte goes in first. Then flush the remaining state with
+        # an empty feed (mirrors py7zr's Deflate64Decompressor).
+        rest = self._pending + self._last
+        self._pending = self._last = b""
+        out = self._pending_out + (self._inflate(rest) if rest else b"")
+        self._pending_out = b""
+        if not self._decomp.eof:
+            out += self._decomp.inflate(b"")
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")
         return DecodeOut(out)
@@ -114,7 +131,12 @@ class Deflate64Decoder(BaseDecoder):
 
 
 def Deflate64DecompressorStream(
-    path: str | os.PathLike[str] | BinaryIO,
+    path: str | os.PathLike[str] | BinaryIO, *, exact_input: bool = False
 ) -> DecompressorStream:
     """Decode a Deflate64 stream (forward-only)."""
-    return DecompressorStream(path, make_decoder=lambda _p, _i: Deflate64Decoder())
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: Deflate64Decoder(),
+        codec_name="deflate64",
+        exact_input=exact_input,
+    )

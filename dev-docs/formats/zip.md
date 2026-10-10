@@ -397,19 +397,26 @@ pipeline uses for the same byte. A PPMd member's restore method 2 is
 Method" and "Data Error". Under ZipCrypto those settings are decrypted with a key one
 byte vouched for, so both stay `CorruptionError` there and count as the candidate failing.
 
-On the standard library path a bzip2 member ends at its first end-of-stream marker, as
-7-Zip, Info-ZIP and `zipfile` read it, and as a DEFLATE, LZMA or PPMd member ends at its own.
-An LZMA member ends at its end marker too (`lzma.LZMAFile` would start a second raw stream on
-the bytes after it and read that as content), and any byte of the member's compressed data
-after the marker, a zero too, is `CorruptionError`, as 7-Zip reports "Data Error" for it.
-With bit 1 clear the member ends at its declared size; a marker right there is still checked.
-The accelerators read on into a second stream, and they stay on for ZIP members: the declared
-size and CRC give the verdict (`compressed-streams`, *An accelerator preserves the error
-contract*), so output that matches both is the member's data and output that breaks either
-raises. A second stream inside a member's compressed bytes is only there if someone put it
-there, so the two paths differ only on crafted members (§5). A raw DEFLATE member under
-rapidgzip finishes on zlib, from the position already delivered, when a read would pass the
-declared size or rapidgzip fails on bytes after the stream, so those cases read as on zlib.
+A member's compressed data is one stream of its codec and nothing else, as 7-Zip,
+Info-ZIP and `zipfile` read it: each codec ends the member at its stream's end (an LZMA
+member at its end marker; `lzma.LZMAFile` would start a second raw stream on the bytes
+after it and read that as content). The reader opens every member with
+`StreamConfig.exact_input`, so any byte of the compressed data the codec leaves after that
+end, a zero too, and a second stream, are `DataAfterEndError` (a `CorruptionError`),
+raised once the output before them has been read, whatever the declared size and CRC
+cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error", or "There are some data
+after the end of the payload data"), and the bytes may be a side channel (maintainer
+ruling, 2026-10-07). An LZMA member with bit 1 clear, and a PPMd member, end at their
+declared size, and their input must end there too: right after it for LZMA (or one zero
+byte later, which 7-Zip's encoder sometimes writes), after the end mark PPMd8 must carry.
+So a declared size short of the stream's data is `CorruptionError`, not `TruncatedError`:
+the input is too long, not short. The 7z handbook (§ coders, *Input after the stream*)
+has how each codec finds its end, and what it cannot see. The accelerators read on into
+a second stream; at the bytes after the first they hand the read over to the standard
+library, which refuses them, so the verdict does not depend on the accelerator. Finding
+where a DEFLATE member's first stream ends takes a zlib decode from its start (a rapidgzip
+resume point may lie in a second stream), so a full read under rapidgzip pays that decode
+too; the accelerator still speeds up seeks.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through
@@ -624,7 +631,6 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a seek, no CRC checks a ZipCrypto member, and a wrong password that passed the check byte goes unnoticed on a STORED member | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order, so a seek gives it up (ADR 0014). Keeping it for a read that returns over bytes already hashed, as the AES HMAC does, is tracked internally. A compressed member's decoder usually still objects to a wrong key on the bytes a forward seek decodes; a STORED member has no decoder, so a seek then a read returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
-| Under an accelerator, a DEFLATE or bzip2 member holding two streams whose size and CRC cover both reads clean; without it, the member is truncated. A bzip2 member whose size and CRC cover only the first stream reads under the standard library and raises under the accelerator | **library** / **archivey** | zlib and `bz2` stop at the first stream's end; `rapidgzip` and its bzip2 decoder read on, and the declared size and CRC decide (§2.3). Only a crafted member does this. A DEFLATE member whose accelerated output passes the declared size finishes on zlib instead, so that case agrees |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
 

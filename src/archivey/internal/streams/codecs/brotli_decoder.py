@@ -301,6 +301,7 @@ def BrotliDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
+    exact_input: bool = False,
 ) -> DecompressorStream:
     """Decode a raw Brotli stream (forward-only)."""
     return DecompressorStream(
@@ -309,4 +310,5 @@ def BrotliDecompressorStream(
         collector=collector,
         codec_name="brotli",
         report_trailing_data=report_trailing_data,
+        exact_input=exact_input,
     )

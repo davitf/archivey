@@ -120,6 +120,10 @@ class FramedDecoder(BaseDecoder):
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
         rest = data.lstrip(b"\x00") if self._zero_padding else data
+        if len(rest) < len(data):
+            # Zero padding is input after a stream's end, which an ``exact_input``
+            # stream refuses (``input_after_end``).
+            self._input_after_end = True
         if not rest:
             return b""
         state = self._magic(rest)
@@ -205,6 +209,7 @@ def FramedDecompressorStream(
     zero_padding: bool = True,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
+    exact_input: bool = False,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec (forward-only; O(n) rewind)."""
     return DecompressorStream(
@@ -215,4 +220,5 @@ def FramedDecompressorStream(
         collector=collector,
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,
+        exact_input=exact_input,
     )

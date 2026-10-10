@@ -64,6 +64,19 @@ class _StreamChecksumError(CorruptionError):
     """
 
 
+class DataAfterEndError(CorruptionError):
+    """Input left over in a container coder's compressed data after its codec's end.
+
+    A ZIP member or a 7z coder declares its compressed size, so no honest writer leaves
+    bytes there that the codec does not read; a zero byte counts too. 7-Zip reports
+    them as a data error ("There are some data after the end of the payload data", or
+    "Data Error"). Raised where a stream was opened with ``exact_input``, and by raw
+    LZMA, which is container-only, whatever it was opened with. A class of its own so
+    a check that reads one byte past a coder's declared output, and discards a decoder
+    error there, can still let this one through.
+    """
+
+
 def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
     """The error for a ``zlib.error`` from a gzip or zlib stream.
 
@@ -166,6 +179,15 @@ class Decoder(Protocol):
         ...
 
     @property
+    def input_after_end(self) -> bool:
+        """True once any byte has been fed after the end of the data, a zero too.
+
+        Wider than :attr:`trailing_bytes`, which ignores zero padding: a stream opened
+        with ``exact_input`` reads it to refuse every byte its codec did not use.
+        """
+        ...
+
+    @property
     def needs_input(self) -> bool:
         """False when more output can be produced without reading new compressed bytes."""
         ...
@@ -204,6 +226,7 @@ class BaseDecoder:
 
     _pending_error: BaseException | None = None
     _trailing_bytes: int | None = None
+    _input_after_end = False
 
     @property
     def pending_error(self) -> BaseException | None:
@@ -213,13 +236,20 @@ class BaseDecoder:
     def trailing_bytes(self) -> int | None:
         return self._trailing_bytes
 
+    @property
+    def input_after_end(self) -> bool:
+        return self._input_after_end
+
     def _past_end(self, data: bytes) -> bool:
         """Account for ``data``, fed after the stream's last byte; True once it is junk.
 
         Zeros are padding and pass, as they do after a TAR trailer: block devices, tape
         and ``dd`` pad files with them. The first non-zero byte sets
-        :attr:`trailing_bytes`; the caller then stops decoding.
+        :attr:`trailing_bytes`; the caller then stops decoding. Any byte, a zero too,
+        sets :attr:`input_after_end`.
         """
+        if data:
+            self._input_after_end = True
         if self._trailing_bytes is None:
             rest = data.lstrip(b"\x00")
             if rest:
@@ -504,6 +534,12 @@ class DecompressorStream(ReadOnlyIOStream):
     consumes: the bytes it decoded stay buffered and the position is unchanged, so the
     next read returns them. ``seek`` and a size query raise after they finish, with the
     position where they left it. Either way the handle stays usable.
+
+    ``exact_input`` marks a source that is exactly one container coder's compressed
+    data (a ZIP member's, a 7z coder's declared input). Any byte the decoder is fed
+    after the end of its data, a zero byte too, is then :class:`DataAfterEndError`,
+    raised after the output before that end has been delivered, as for a truncation.
+    ``report_trailing_data`` does not apply to such a stream.
     """
 
     def __init__(
@@ -516,9 +552,14 @@ class DecompressorStream(ReadOnlyIOStream):
         seekable: bool = True,
         owns_inner: bool = False,
         report_trailing_data: bool = False,
+        exact_input: bool = False,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
+        self._exact_input = exact_input
+        # The DataAfterEndError of an ``exact_input`` stream, raised once the output
+        # before the end has been read (see _end_error), until a seek restarts.
+        self._surplus: DataAfterEndError | None = None
         self._diagnostics_collector = collector
         self._codec_name = codec_name
         self._report_trailing_data = report_trailing_data
@@ -750,6 +791,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._decoder = old_decoder.recreate(point, self._inner)
         self._decoder.clear_pending_error()
         self._spent = None
+        self._surplus = None
         self._buffer.clear()
         self._eof = False
         self._pos = point.decompressed_offset
@@ -764,7 +806,7 @@ class DecompressorStream(ReadOnlyIOStream):
             drained = self._ingest_decode(
                 self._decoding(lambda: self._decoder.feed(b"", max_length))
             )
-            if self._decoder.trailing_bytes is not None:
+            if self._ended():
                 return self._end_at_trailing_data(drained)
             if drained:
                 return drained
@@ -775,7 +817,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._compressed_read += len(chunk)
         if not chunk:
             leftover = self._ingest_decode(self._decoding(self._decoder.flush))
-            if self._decoder.trailing_bytes is not None:
+            if self._ended():
                 return self._end_at_trailing_data(leftover)
             if leftover and getattr(self._decoder, "drains_after_flush", False):
                 # The decoder took its input whole at compressed EOF and has more
@@ -795,7 +837,7 @@ class DecompressorStream(ReadOnlyIOStream):
         data = self._ingest_decode(
             self._decoding(lambda: self._decoder.feed(chunk, max_length))
         )
-        if self._decoder.trailing_bytes is not None:
+        if self._ended():
             return self._end_at_trailing_data(data)
         return data
 
@@ -828,16 +870,42 @@ class DecompressorStream(ReadOnlyIOStream):
             self._spent = exc
             raise
 
+    def _ended(self) -> bool:
+        """Whether the decoder has been fed bytes past its end that end this stream.
+
+        For an ``exact_input`` stream that is any byte, a zero too; otherwise the first
+        byte that is not zero padding (:attr:`Decoder.trailing_bytes`).
+        """
+        if self._exact_input:
+            return self._decoder.input_after_end
+        return self._decoder.trailing_bytes is not None
+
+    def _end_error(self) -> BaseException | None:
+        """The error this stream raises at its end, once its output has been read."""
+        if self._surplus is not None:
+            return self._surplus
+        return self._decoder.pending_error
+
     def _end_at_trailing_data(self, data: bytes) -> bytes:
         """End the stream where the decoder found bytes past the codec's end.
 
-        ``data`` is this call's output, all of it before that end. The stream is
-        complete, so its size is published, and nothing further is read from the
-        source: the bytes past the end are not decoded, however many there are. They
-        are reported once per stream, as ``ARCHIVE_TRAILING_DATA``, when the stream is
-        one the caller was handed (``report_trailing_data``); inside a container they
-        end the stream silently.
+        ``data`` is this call's output, all of it before that end. Nothing further is
+        read from the source: the bytes past the end are not decoded, however many
+        there are. In an ``exact_input`` stream they are :class:`DataAfterEndError`,
+        raised once ``data`` and what came before it have been read, and no size is
+        published. Otherwise the stream is complete, so its size is published, and
+        the bytes are reported once per stream, as ``ARCHIVE_TRAILING_DATA``, when the
+        stream is one the caller was handed (``report_trailing_data``).
         """
+        if self._exact_input:
+            if not self._eof:
+                self._eof = True
+                self._surplus = DataAfterEndError(
+                    f"The {self._codec_name or 'compressed'} stream ends before the "
+                    "coder's compressed data does: the bytes after its end are not "
+                    "part of it (7-Zip: data after the end of the payload data)"
+                )
+            return data
         if not self._eof:
             self._eof = True
             self._size = self._pos + len(self._buffer) + len(data)
@@ -897,7 +965,7 @@ class DecompressorStream(ReadOnlyIOStream):
                 # true total is _pos plus everything in chunks.
                 joined = b"".join(chunks)
                 self._buffer[:0] = joined
-                if self._decoder.pending_error is None and self._decoder.finished:
+                if self._end_error() is None and self._decoder.finished:
                     self._size = self._pos + len(joined)
                 raise held
         # A read(-1)/readall() caller expects the complete stream and will not call
@@ -908,7 +976,7 @@ class DecompressorStream(ReadOnlyIOStream):
         # the recorded error's traceback keeps this frame, and its locals, alive. Gate
         # _size *before* raising so a caller that catches TruncatedError cannot then
         # read a clean prefix-as-complete size.
-        err = self._decoder.pending_error
+        err = self._end_error()
         if err is not None:
             chunks.clear()
             self._raise_deferred(err)
@@ -954,7 +1022,7 @@ class DecompressorStream(ReadOnlyIOStream):
         del self._buffer[:n]
         self._pos += len(data)
         if not data:
-            err = self._decoder.pending_error
+            err = self._end_error()
             if err is not None:
                 self._raise_deferred(err)
         return data
@@ -969,6 +1037,7 @@ class DecompressorStream(ReadOnlyIOStream):
         error again at the same place.
         """
         self._decoder.clear_pending_error()
+        self._surplus = None
         self._spent = err
         raise err
 
@@ -1059,7 +1128,7 @@ class DecompressorStream(ReadOnlyIOStream):
             # Truncated streams must not publish a clean complete size; surface
             # the deferred fault instead of asserting or treating the prefix as
             # the full stream.
-            err = self._decoder.pending_error
+            err = self._end_error()
             if err is not None:
                 self._raise_deferred(err)
             if self._size is None:

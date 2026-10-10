@@ -720,10 +720,13 @@ class ZipReader(BaseArchiveReader):
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
         self._encoding = encoding
+        # A member's or coder's compressed data is the codec's whole input, so a
+        # byte its codec leaves unread is refused (``StreamConfig.exact_input``).
         self._stream_config = stream_config_from_archivey(
             self._config,
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
+            exact_input=True,
         )
         # No reader-level handle lock: member data never goes through ZipFile.open /
         # ZipExtFile. Every member reads through a SharedView under zipfile's own
@@ -1444,10 +1447,10 @@ class ZipReader(BaseArchiveReader):
                 if size is not None and size >= 0:
                     params = replace(params, unpack_size=size)
             elif method == 12:  # ZIP bzip2
-                # A member is one bzip2 stream: the standard-library decoder ends it at
-                # its end-of-stream marker, as 7-Zip, Info-ZIP and stdlib zipfile read
-                # it. rapidgzip reads on into a further stream; the declared size and
-                # CRC then decide (dev-docs/formats/zip.md §2.3).
+                # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
+                # read it: a further stream after its end-of-stream marker is input
+                # the member does not use, refused like any other (exact_input), with
+                # the accelerator on or off (dev-docs/formats/zip.md §2.3).
                 params = replace(params, single_stream=True)
             return open_codec_stream(
                 codec,

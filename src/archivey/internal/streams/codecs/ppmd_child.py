@@ -9,7 +9,8 @@ end in zeros at a chunk boundary. ``PpmdDecoder`` avoids the question for member
 enough to hand pyppmd whole; larger ones decode through :class:`PpmdChildDecoder`.
 
 :class:`PpmdChildDecoder` has the same surface as ``pyppmd.Ppmd7Decoder`` /
-``Ppmd8Decoder`` as ``PpmdDecoder`` uses it (``decode``, ``eof``, ``needs_input``), so
+``Ppmd8Decoder`` as ``PpmdDecoder`` uses it (``decode``, ``eof``, ``needs_input``,
+``unused_data``), so
 all the decoding logic stays in ``PpmdDecoder``; the child only owns the native object.
 The child runs ``ppmd_worker.py`` as a script, which imports nothing from ``archivey``.
 """
@@ -35,6 +36,8 @@ from archivey.internal.streams.child_process import (
 _OPEN = struct.Struct("<BBIB")
 _REQUEST = struct.Struct("<iI")
 _REPLY = struct.Struct("<BBBI")
+# The request for the decoder's ``unused_data`` (``ppmd_worker.UNUSED_DATA_REQUEST``).
+_UNUSED_DATA_REQUEST = -2
 
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
@@ -256,8 +259,16 @@ class PpmdChildDecoder:
         raise known(message)
 
     def decode(self, data: bytes | bytearray | memoryview, length: int) -> bytes:
+        return self._request(length, bytes(data))
+
+    @property
+    def unused_data(self) -> bytes:
+        """The child decoder's ``unused_data``: its input left past ``eof``."""
+        return self._request(_UNUSED_DATA_REQUEST, b"")
+
+    def _request(self, length: int, data: bytes) -> bytes:
         try:
-            self._send(_REQUEST.pack(length, len(data)), bytes(data))
+            self._send(_REQUEST.pack(length, len(data)), data)
             return self._receive()
         except PpmdChildError as exc:
             if is_crash(exc.returncode):

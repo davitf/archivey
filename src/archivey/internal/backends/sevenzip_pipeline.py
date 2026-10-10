@@ -88,7 +88,6 @@ from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
     Codec,
     CodecParams,
-    LzmaDataAfterEndError,
     decode_lzma_filter_properties,
     open_codec_stream,
     parse_ppmd_var_h_properties,
@@ -101,6 +100,7 @@ from archivey.internal.streams.codecs.zstd_framing import (
     frame_window_size,
 )
 from archivey.internal.streams.crypto import open_aes_decrypt_stream
+from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
 from archivey.internal.streams.streamtools.base import DelegatingStream
@@ -148,10 +148,11 @@ class _CodecStage:
     ``pack_size`` is the coder's *input* length — the output of the preceding coder in
     its chain, or a BCJ2 source's declared output (``None`` when this coder consumes
     the packed slice directly, whose length ``open_codec_stream`` recovers from the
-    sized source). PPMd uses it
-    to gate post-eof recovery on full pack delivery. Deflate/zlib/bzip2 rapidgzip
-    uses it to bound the input so AES pad bytes are not a concatenated member or
-    trailing-garbage stderr.
+    sized source). The codec's input is cut at it, as 7-Zip reads it: a byte of
+    that span the codec leaves after its end is refused (``StreamConfig.exact_input``),
+    and an AES stage's block padding, past the span, is not in it. PPMd also uses it
+    to gate post-eof recovery on full pack delivery, and the rapidgzip accelerators
+    to bound their own input.
     """
 
     codec: Codec
@@ -169,7 +170,9 @@ class _LzmaChainStage:
     reader past the declared size (a BCJ look-ahead, BPO-21872, or a following codec)
     would otherwise ask for input that is not there. ``None`` means no cap. The
     following ``_FilterStage`` must close the capped stream (``owns_inner=True``) —
-    DecompressorStream does not close a passed-in stream by default.
+    DecompressorStream does not close a passed-in stream by default. The capped
+    output is checked too (:class:`_DecodedPastSizeCheck`): its read past the size
+    is where the codec reports input left after the stream's end.
 
     ``end_check_size`` is set for an LZMA2 chain instead: the declared output size,
     past which a decoded byte is corruption (:class:`_DecodedPastSizeCheck`).
@@ -661,10 +664,15 @@ def _lzma_chain_stage(
 
 
 # The codecs whose output _DecodedPastSizeCheck checks, with 7-Zip's name for each.
-# This is an allowlist: a codec belongs here only when it ends its own stream, so that
-# output past its declared size is surplus and not data. A codec that relies on the
-# declared size to stop (LZMA1, PPMd) must stay out, or valid archives fail the check.
+# This is an allowlist. Most codecs here end their own stream, so output past the
+# declared size is surplus and not data. LZMA1 and PPMd stop at the declared size
+# themselves and check there that their input ends too; the check's one read past the
+# size is what reaches that verdict (:class:`DataAfterEndError`), since every reader
+# above stops at the size. A codec that relied on the declared size to stop and did
+# not stop there itself would fail valid archives here.
 _CODEC_LABELS = {
+    Codec.LZMA: "LZMA",
+    Codec.PPMD: "PPMD",
     Codec.LZMA2: "LZMA2",
     Codec.DEFLATE: "Deflate",
     Codec.DEFLATE64: "Deflate64",
@@ -678,9 +686,11 @@ _CODEC_LABELS = {
 class _DecodedPastSizeCheck(DelegatingStream):
     """Refuse a coder that decodes more than its declared unpack size.
 
-    It wraps the output of every codec in :data:`_CODEC_LABELS`: an LZMA2 chain, and
-    Deflate, Deflate64, BZip2, Zstd, LZ4 and Brotli. LZMA1 and PPMd have no end
-    marker in 7z, so they are capped at their size and surplus output is not seen.
+    It wraps the output of every codec in :data:`_CODEC_LABELS`: an LZMA1 or LZMA2
+    chain, and PPMd, Deflate, Deflate64, BZip2, Zstd, LZ4 and Brotli. LZMA1 and PPMd
+    have no end marker in 7z, so they stop at their size themselves and decode
+    nothing past it; for them the read past the size finds only whether their input
+    ended there too (:class:`DataAfterEndError`).
     It also wraps a COPY coder that reads a pack stream (:class:`_CopyStage`): pack
     bytes past the COPY coder's size would otherwise reach the coder after it.
 
@@ -699,14 +709,12 @@ class _DecodedPastSizeCheck(DelegatingStream):
     same bound as decoding the folder, so it is accepted rather than bounded here.
     Bounding it would need a counter on the codec's input, outside this wrapper.
 
-    AES padding in the codec's input is not output, so it is never surplus: LZMA2
-    reads only its ``pack_size`` span, which excludes the pad. The other decoders end
-    the stream before the pad (or, for the rapidgzip accelerators, never see it: their
-    input is cut to ``pack_size``). So a decoder error on the probe read is not surplus
-    output either, with one exception: input left in an LZMA2 coder's span after its
-    end marker (:class:`LzmaDataAfterEndError`), which 7-Zip reports as a data error.
-    For the other codecs 7-Zip only warns about input after the end of the stream.
-    Discarding that error is safe because every codec wrapped here verifies its data
+    AES padding in the codec's input is not output, so it is never surplus: every
+    codec reads only its ``pack_size`` span, which excludes the pad. So a decoder
+    error on the probe read is not surplus output either, with one exception: input
+    left in the coder's span after its stream's end (:class:`DataAfterEndError`),
+    which 7-Zip reports as a data error, for every codec. Discarding the other
+    errors is safe because every codec wrapped here verifies its data
     before or together with delivering it (the BZip2 block CRC, the Zstd and LZ4
     content checksums), so a failed check of the declared data raises on the read
     that delivers that data, before the probe: only input after the stream reaches
@@ -743,9 +751,9 @@ class _DecodedPastSizeCheck(DelegatingStream):
             self._checked = True
             try:
                 surplus = self._inner.read(1)
-            except LzmaDataAfterEndError:
-                # Input after an LZMA2 end marker inside the coder's span: 7-Zip's
-                # "Data Error". The span excludes AES padding (``pack_size``).
+            except DataAfterEndError:
+                # Input after the stream's end inside the coder's span: 7-Zip's
+                # data error. The span excludes AES padding (``pack_size``).
                 raise
             except (ArchiveyError, lzma.LZMAError, EOFError):
                 surplus = b""
@@ -791,6 +799,15 @@ def _execute_stage(
             stream, stage.coder, password=password, key_cache=key_cache
         )
     if isinstance(stage, _CodecStage):
+        if stage.pack_size is not None:
+            # The coder's input span, which excludes an AES stage's padding. The slice
+            # does not clamp to its source's size: a short source raises its own error.
+            stream = SlicingStream(
+                stream,
+                length=stage.pack_size,
+                owns_inner=False,
+                probe_source_size=False,
+            )
         decoded = open_codec_stream(
             stage.codec,
             stream,
@@ -810,8 +827,6 @@ def _execute_stage(
         )
         label = _CODEC_LABELS.get(stage.codec)
         if label is None:
-            # Not on the allowlist: PPMd, which has no end mark in 7z and is capped
-            # at unpack_size by the codec itself, so nothing past it can be seen.
             return decoded
         # The planner always sets unpack_size; None is only the dataclass default.
         assert stage.unpack_size is not None
@@ -821,8 +836,8 @@ def _execute_stage(
             stage.codec,
             stream,
             config=stream_config,
-            # An LZMA1 chain is capped at its size by the codec (``unpack_size``),
-            # which also looks for an end marker there.
+            # An LZMA1 chain stops at its size in the codec (``unpack_size``),
+            # which also checks that its input ends there.
             params=CodecParams(
                 filters=stage.filters,
                 unpack_size=stage.cap_size,
@@ -831,9 +846,12 @@ def _execute_stage(
             collector=collector,
             seekable=seekable,
         )
-        if stage.end_check_size is not None:
+        size = stage.end_check_size
+        if size is None:
+            size = stage.cap_size
+        if size is not None:
             out = _DecodedPastSizeCheck(
-                out, size=stage.end_check_size, label=_CODEC_LABELS[Codec.LZMA2]
+                out, size=size, label=_CODEC_LABELS[stage.codec]
             )
         return out
     if isinstance(stage, _CopyStage):

@@ -225,7 +225,9 @@ class DeflateResumeDecoder(BaseDecoder):
         return not self._decomp.unconsumed_tail
 
 
-def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | None:
+def stream_end(
+    source: BinaryIO, point: SeekPoint | None, cap: int, *, exact_input: bool = False
+) -> int | None:
     """The decompressed offset where the raw DEFLATE stream in ``source`` ends.
 
     ``source`` is the compressed stream, seekable from offset 0. The decode starts at
@@ -234,7 +236,8 @@ def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | Non
     ``None`` when it does not get there: the input runs out first (a cut stream), zlib
     raises, or the output passes ``cap``. Raw DEFLATE has no checksum, so a resumed
     decode that reaches the end is as good as a full one. Output is counted and
-    dropped, in bounded pieces.
+    dropped, in bounded pieces. With ``exact_input`` (``StreamConfig.exact_input``),
+    also ``None`` when any byte of ``source`` follows the stream's end.
     """
     produced, bit, decomp = 0, 0, zlib.decompressobj(-15)
     if point is not None:
@@ -259,5 +262,7 @@ def stream_end(source: BinaryIO, point: SeekPoint | None, cap: int) -> int | Non
             produced += len(decomp.decompress(data, 1 << 20))
             data = decomp.unconsumed_tail
     except zlib.error:
+        return None
+    if exact_input and (decomp.unused_data or data or source.read(1)):
         return None
     return produced if produced <= cap else None
