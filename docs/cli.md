@@ -30,8 +30,14 @@ archivey extract photos.zip -d .
 archivey extract photos.zip --stop-on-error
 
 # Filters: positionals are includes; --exclude subtracts. Unmatched includes
-# warn on stderr; extract/test exit 1 when nothing matched (list warns but
-# stays 0). A sole unmatched pattern that looks like a destination gets a -d hint.
+# warn on stderr; extract/test exit 1 when the patterns select nothing, also when
+# --exclude removed every match (list warns but stays 0). A sole unmatched
+# pattern that looks like a destination gets a -d hint. On an archive with no
+# index (a compressed TAR) these warnings come after the run: the run's own pass
+# is what checks the patterns, so the archive is decompressed once. A listing
+# that ends in damage settles no pattern: no verb warns that a pattern matched
+# nothing, because the members past the damage are unknown, and an extract that
+# aborts there may leave the destination directory it created.
 archivey extract photos.zip -d out/ '*.py' --exclude '*_test.py'
 archivey extract photos.zip --policy trusted -d /tmp/out
 
@@ -102,7 +108,7 @@ encrypted members fail as if no password had been given.
   hostile name cannot rewrite the terminal line that reports it
   (see [Errors and diagnostics](errors-and-diagnostics.md#the-exception-tree)).
 - Exit codes: `0` success, `1` operation failed or extract aborted on a member
-  failure (`--stop-on-error`), `2` usage error (argparse), `3` extract
+  failure (`--stop-on-error`), `2` usage error, `3` extract
   **completed** with ≥1 safety-policy block and no member failure (safe members
   on disk; under CONTINUE or STOP), `130` interrupted by Ctrl-C (it prints
   `interrupted`; `130` is 128 + 2, the shell's code for SIGINT). Codes `4` to
@@ -111,3 +117,5 @@ encrypted members fail as if no password had been given.
   head -1`), every verb stops quietly with exit `0`. For `test` that means the
   archive was not fully verified.
 - `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.
+- An empty archive path or `--dest ""` is a usage error, not the current
+  directory. Write `.` for the current directory.

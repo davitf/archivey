@@ -35,6 +35,7 @@ Note: after the header walk, ``tarfile`` has typically already consumed the
 
 from __future__ import annotations
 
+import errno
 import stat
 import tarfile
 import threading
@@ -64,6 +65,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.base_reader import (
     BaseArchiveReader,
@@ -110,6 +112,7 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     StreamFormat,
+    _ReadOnlyDict,
 )
 
 # Read size for the trailing-bytes scan. The tail past the trailer is unbounded (a
@@ -172,6 +175,10 @@ _MAX_SEEK_OFFSET = 2**63 - 1
 # ``TarInfo``, which reads the data through it, and a PAX sparse 1.0 map lives in the
 # data area, so no header text the cap already weighs stands in for it.
 _SPARSE_ENTRY_BYTES = 24
+
+# The ``tarfile`` module under a name that ``tarfile``'s own method signatures, which
+# call their ``TarFile`` argument ``tarfile``, do not shadow.
+_tarfile = tarfile
 
 
 def _sparse_map(info: tarfile.TarInfo) -> list[tuple[int, int]] | None:
@@ -295,39 +302,178 @@ class _TarFile(tarfile.TarFile):
 
     stopped_on: _HeaderStop | None = None
 
+    header_depth: int = 0
+    """How many :meth:`_TarInfo.fromtarfile` calls are running. A GNU long name or a
+    PAX header parses the header after it from inside its own call on Pythons without
+    the 2025 tarfile fixes (CPython 3.11.15 and 3.12.13 among them; a distribution's
+    build of an older version may carry the fixes, as Ubuntu's 3.12.3 does), so 0
+    after a call returns means the member is final."""
+
+    # The PAX global records as they stood at the last member parsed, or ``None``
+    # once a global header has changed them since (:meth:`_TarInfo._proc_member`).
+    _global_records: _GlobalPaxRecords | None = None
+
+    def global_records(self) -> _GlobalPaxRecords:
+        """One shared copy of the PAX global records now in force.
+
+        ``tarfile`` gives every member its own copy of ``pax_headers``, the global
+        records included, so one global header of K records cost K entries per
+        member, from a 512-byte header each. Members with no records of their own
+        share this copy instead (:meth:`_TarInfo._proc_builtin`).
+        """
+        if self._global_records is None:
+            self._global_records = _GlobalPaxRecords(self.pax_headers)
+        return self._global_records
+
+
+class _GlobalPaxRecords(dict[str, str]):
+    """The PAX global records shared by every member that has none of its own.
+
+    A type of its own so the listing can tell a shared copy from a member's own
+    records, and share its ``extra["tar.pax_headers"]`` the same way
+    (:meth:`TarReader._extra_pax_headers`). Nothing writes to it once made.
+    """
+
+    __slots__ = ()
+
+
+def _charge_sparse_map(entries: int, name: str) -> None:
+    """Refuse a sparse map of ``entries`` entries that weighs more than is left of
+    ``max_metadata_bytes`` for this member.
+
+    ``tarfile`` parses a map whole, into a list of tuples, before the member it
+    belongs to can be weighed: a PAX sparse 1.0 map lives in the data area and has no
+    size of its own, and an old GNU map grows by one extension block at a time. This
+    is called with the count before the entries are parsed, or as each block adds
+    some, so the refusal comes before the cost.
+    """
+    budget = _HEADER_BUDGET.get()
+    if budget is None:
+        return
+    left, cap = budget
+    weight = entries * _SPARSE_ENTRY_BYTES
+    if weight > left:
+        raise ResourceLimitError(
+            f"Listing limit reached: max_metadata_bytes={cap} (the TAR sparse map of "
+            f"{quoted(name)} has {entries} entries, weighing {weight} bytes, "
+            f"{max(left, 0)} left)"
+        )
+
+
+# The most characters one number of a PAX sparse 1.0 map may have. GNU tar reads each
+# into a buffer sized for the largest ``uintmax_t`` (20 digits) and refuses a longer
+# one, so no map it writes or reads has more. Structural, not a policy limit: without
+# it a number with no newline after it grows one buffer for as long as the archive
+# lasts.
+_SPARSE_NUMBER_DIGITS = 20
+
 
 class _TarInfo(tarfile.TarInfo):
-    """A ``TarInfo`` that records where its member's stored data ends, and refuses an
-    extended header larger than the listing's metadata budget before reading it.
+    """A ``TarInfo`` that records where its member's stored data ends, refuses an
+    extended header or a sparse map larger than the listing's metadata budget before
+    reading it, and shares the PAX global records between members.
 
     ``tarfile`` keeps no record of how many bytes a sparse member stores: it replaces
     ``size`` with the logical size and reads the data through the sparse map, even
     where the map claims more than the member stores and the read runs on into the
     next header. :func:`_sparse_map_error` compares the map to this end.
+
+    It also decides old-style directories itself, as GNU tar does: see
+    :meth:`_mark_old_style_directory`. That needs the nesting count only a
+    :class:`_TarFile` keeps, so :meth:`fromtarfile` requires one.
     """
 
-    __slots__ = ("stored_end",)
+    __slots__ = ("old_style_directory", "stored_end")
 
     stored_end: int
     """The offset where the member's data area ends, rounded up to whole blocks."""
+
+    old_style_directory: bool
+    """The header is a regular file (``AREGTYPE``, typeflag NUL) whose final name ends
+    in ``/``, listed as a directory. ``type`` is then ``DIRTYPE``."""
+
+    @classmethod
+    def frombuf(cls, buf: bytes | bytearray, encoding: str, errors: str) -> Self:
+        # Python versions before the 2025 tarfile security fixes call this one.
+        info = super().frombuf(buf, encoding, errors)
+        info._undo_stdlib_directory_check(buf)
+        return info
+
+    @classmethod
+    def _frombuf(
+        cls,
+        buf: bytes | bytearray,
+        encoding: str,
+        errors: str,
+        *,
+        dircheck: bool = True,
+    ) -> Self:
+        # Later versions call this one. typeshed does not declare tarfile's private
+        # TarInfo._frombuf.
+        info: Self = super()._frombuf(buf, encoding, errors, dircheck=dircheck)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        info._undo_stdlib_directory_check(buf)
+        return info
+
+    def _undo_stdlib_directory_check(self, buf: bytes | bytearray) -> None:
+        """Keep an ``AREGTYPE`` header a regular file while its member is parsed.
+
+        Old (v7) tars mark a directory as a regular file whose name ends in ``/``.
+        ``tarfile`` decides that from the header's own name field: on every header
+        before the 2025 fixes, and after them only on a header with no GNU long name
+        or PAX header before it. It then does not skip the data, because a directory
+        has none, so a header that declares a size has its data read as the next
+        header. Undone here, so ``tarfile`` skips the data as for any regular file,
+        with the final size, and :meth:`_mark_old_style_directory` decides on the
+        final name once the member is complete.
+        """
+        self.old_style_directory = False
+        if buf[156:157] == tarfile.AREGTYPE and self.type == tarfile.DIRTYPE:
+            self.type = tarfile.AREGTYPE
+            # ``tarfile`` stripped the slash, before adding the ustar prefix.
+            self.name += "/"
+
+    def _mark_old_style_directory(self) -> None:
+        """Make an ``AREGTYPE`` member whose final name ends in ``/`` a directory.
+
+        The final name is the one after a PAX ``path`` or a GNU long name, as GNU tar
+        1.35 and 7-Zip read it. Both list such a member as a directory and skip its
+        data. ``tarfile`` strips the slash from a PAX ``path``, so the record is read
+        again. A ``DIRTYPE`` header that declares a size is not this case: it has no
+        data area.
+        """
+        if self.type != tarfile.AREGTYPE:
+            return
+        name_is_dir = self.name.endswith("/")
+        pax_path = self.pax_headers.get("path")
+        if pax_path is not None and self.name == pax_path.rstrip("/"):
+            name_is_dir = pax_path.endswith("/")
+        if name_is_dir:
+            self.type = tarfile.DIRTYPE
+            self.name = self.name.rstrip("/")
+            self.old_style_directory = True
 
     @classmethod
     def fromtarfile(cls, tarfile: tarfile.TarFile) -> Self:
         # ``TarFile.next()`` swallows the header error that ends the walk, so whether
         # it stopped on a zero block or on a rejected header is recorded here, where
         # the error passes through (see :class:`_TarFile`).
-        if isinstance(tarfile, _TarFile):
-            tarfile.stopped_on = None
+        # Only a _TarFile counts its nesting. Over a plain TarFile this would mark
+        # the inner header of a PAX or GNU long-name member on older CPython patch
+        # releases, before tarfile skips its data, and the data would be read as the
+        # next header.
+        assert isinstance(tarfile, _TarFile)
+        tarfile.stopped_on = None
+        tarfile.header_depth += 1
         try:
             info = super().fromtarfile(tarfile)
         except _EOFHeaderError:
-            if isinstance(tarfile, _TarFile):
-                tarfile.stopped_on = "zero_block"
+            tarfile.stopped_on = "zero_block"
             raise
         except _InvalidHeaderError:
-            if isinstance(tarfile, _TarFile):
-                tarfile.stopped_on = "rejected_header"
+            tarfile.stopped_on = "rejected_header"
             raise
+        finally:
+            tarfile.header_depth -= 1
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
         # the end of this member's data area. This call returns only after any GNU
         # long-name or PAX headers before the member's header have been parsed and
@@ -337,6 +483,8 @@ class _TarInfo(tarfile.TarInfo):
         # long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
         _drop_unweighed_link_name(info)
+        if tarfile.header_depth == 0:
+            info._mark_old_style_directory()
         return info
 
     def _proc_member(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
@@ -358,19 +506,184 @@ class _TarInfo(tarfile.TarInfo):
                     f"header for {quoted(self.name)} declares {self.size} bytes, "
                     f"{max(left, 0)} left)"
                 )
+            # ``tarfile`` parses the next header from inside this one's parse, and
+            # keeps this one's data alive until the member at the end of the chain
+            # is built. So the rest of the chain, and the member's sparse map, draw
+            # from what this header leaves. The walk sets a fresh budget for the
+            # next member.
+            _HEADER_BUDGET.set((left - self.size, cap))
+        if self.type == _tarfile.XGLTYPE and isinstance(tarfile, _TarFile):
+            # This header changes the global records the members after it get.
+            tarfile._global_records = None
         # typeshed does not declare tarfile's private TarInfo._proc_member.
         return super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
 
+    def _proc_builtin(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
+        """Parse as ``tarfile`` does, then share the global records.
 
-def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
-    """Refuse a sparse map that reads data from outside the member's own data area.
+        ``tarfile`` has just given this member its own copy of the PAX global
+        records. With no records of its own (a member that has some gets them from
+        ``_proc_pax`` afterwards, which replaces this), the member takes the copy all
+        such members share instead, and its own is freed.
+        """
+        # typeshed does not declare tarfile's private TarInfo._proc_builtin.
+        info = super()._proc_builtin(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        if isinstance(tarfile, _TarFile) and tarfile.pax_headers:
+            info.pax_headers = tarfile.global_records()
+        return info
+
+    def _proc_sparse(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
+        """Parse an old GNU sparse header and its extension blocks, weighing the map
+        as each block adds to it.
+
+        A copy of stdlib's private ``TarInfo._proc_sparse``, which reads every
+        extension block the archive chains before anything can weigh the map, with
+        the weighing added. A short block, which ``tarfile`` met with a raw
+        ``IndexError``, is a truncated archive. It does not call ``super()``, so a
+        change to stdlib's body is shadowed, not inherited: the copied body was
+        compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
+        ``tests/test_tar_header_memory.py`` fails when stdlib's source changes. A
+        divergence has to be re-checked and carried over, not assumed harmless.
+        """
+        # Set by ``TarInfo.frombuf`` for a sparse header; typeshed does not declare it.
+        structs, isextended, origsize = self._sparse_structs  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        del self._sparse_structs  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        while isextended:
+            buf = tarfile.fileobj.read(_tarfile.BLOCKSIZE)
+            if len(buf) < _tarfile.BLOCKSIZE:
+                raise TruncatedError(
+                    f"TAR archive is truncated in the sparse map of {quoted(self.name)}"
+                )
+            for pos in range(0, 21 * 24, 24):
+                # typeshed does not declare tarfile's nti(). A field it cannot parse
+                # raises ``InvalidHeaderError``, as in ``tarfile``'s own loop.
+                offset = _tarfile.nti(buf[pos : pos + 12])  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+                numbytes = _tarfile.nti(buf[pos + 12 : pos + 24])  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+                if offset and numbytes:
+                    structs.append((offset, numbytes))
+            isextended = bool(buf[504])
+            _charge_sparse_map(len(structs), self.name)
+        self.sparse = structs
+        self.offset_data = tarfile.fileobj.tell()
+        tarfile.offset = self.offset_data + self._block(self.size)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        self.size = origsize
+        return self
+
+    def _proc_gnusparse_00(
+        self, next: tarfile.TarInfo, raw_headers: list[tuple[int, bytes, bytes]]
+    ) -> None:
+        """Weigh a PAX sparse 0.0 map by its count of offset records, then parse as
+        ``tarfile`` does."""
+        entries = sum(
+            1 for _, keyword, _ in raw_headers if keyword == b"GNU.sparse.offset"
+        )
+        _charge_sparse_map(entries, next.name)
+        # typeshed does not declare tarfile's private TarInfo._proc_gnusparse_00.
+        super()._proc_gnusparse_00(next, raw_headers)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+
+    def _proc_gnusparse_01(
+        self, next: tarfile.TarInfo, pax_headers: dict[str, str]
+    ) -> None:
+        """Weigh a PAX sparse 0.1 map by its count of commas, then parse as
+        ``tarfile`` does. The map's text is header text the budget has already
+        weighed; its entries cost more again once parsed."""
+        entries = (pax_headers["GNU.sparse.map"].count(",") + 1) // 2
+        _charge_sparse_map(entries, next.name)
+        # typeshed does not declare tarfile's private TarInfo._proc_gnusparse_01.
+        super()._proc_gnusparse_01(next, pax_headers)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+
+    def _proc_gnusparse_10(
+        self,
+        next: tarfile.TarInfo,
+        pax_headers: dict[str, str],
+        tarfile: tarfile.TarFile,
+    ) -> None:
+        """Parse a PAX sparse 1.0 map, weighing it by its entry count first.
+
+        The map is the start of the member's data area: a count, then an offset and
+        a size per entry, each a decimal number on its own line, padded to a block.
+        ``tarfile`` reads all of it before anything can weigh it, and reads a number
+        with no newline into one buffer that grows for as long as the archive lasts.
+        Here the count is weighed before any entry is read, and a number longer than
+        any GNU tar reads is corruption.
+
+        This replaces stdlib's private ``TarInfo._proc_gnusparse_10`` without calling
+        it, so a change to stdlib's parse is shadowed, not inherited. Stdlib's body
+        was compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
+        ``tests/test_tar_header_memory.py`` fails when its source changes. A
+        divergence has to be re-checked against this parse, not assumed harmless.
+        """
+        fileobj = tarfile.fileobj
+        buf = b""
+
+        def number() -> int:
+            nonlocal buf
+            while (end := buf.find(b"\n")) < 0:
+                if len(buf) > _SPARSE_NUMBER_DIGITS:
+                    break
+                block = fileobj.read(_tarfile.BLOCKSIZE)
+                if not block:
+                    break
+                buf += block
+            if not 0 <= end <= _SPARSE_NUMBER_DIGITS:
+                raise CorruptionError(
+                    f"TAR sparse map of {quoted(next.name)} has a malformed entry"
+                )
+            text, buf = buf[:end], buf[end + 1 :]
+            try:
+                value = int(text)
+            except ValueError:
+                raise CorruptionError(
+                    f"TAR sparse map of {quoted(next.name)} has an entry that is "
+                    f"not a number: {text[:_SPARSE_NUMBER_DIGITS]!r}"
+                ) from None
+            return value
+
+        entries = number()
+        if entries < 0:
+            raise CorruptionError(
+                f"TAR sparse map of {quoted(next.name)} declares {entries} entries"
+            )
+        _charge_sparse_map(entries, next.name)
+        sparse = [(number(), number()) for _ in range(entries)]
+        next.offset_data = fileobj.tell()
+        # What tarfile stores there (see :func:`_sparse_map`); typeshed says ``bytes``.
+        next.sparse = sparse  # pyrefly: ignore[bad-assignment]  # ty: ignore[invalid-assignment]
+
+
+def _sparse_map_error(
+    info: tarfile.TarInfo,
+) -> CorruptionError | UnsupportedFeatureError | None:
+    """Refuse a sparse map that is damaged, or that ``tarfile`` cannot serve right.
 
     ``tarfile`` reads the map's data chunks one after another from the start of the
     data area. A map whose chunks add up to more than the member stores reads the
     following header and members as this member's content, silently; a negative
     entry makes the read go backwards. ``tar(1)`` refuses both. The stored size is
     known only rounded up to whole blocks, so up to 511 bytes of the member's own
-    zero padding can still be read as data; nothing past its data area can.
+    zero padding can still be read as data; nothing past its data area can. For the
+    same reason a map must account for every stored byte but that padding: stored
+    bytes that no chunk names are never served, and leftover bytes inside a member's
+    data are damage (DR-3). GNU tar 1.35 extracts such a member without them.
+
+    A chunk must end at or before the logical size. For a non-empty chunk past it,
+    ``tarfile`` drops the stored bytes of that chunk (DR-3). An empty entry past it
+    loses no bytes in ``tarfile``, which serves the same bytes as for the valid map.
+    The empty entry is refused because the map contradicts its own declared size,
+    and because the readers then disagree on the extracted length (DR-1): GNU tar
+    1.35 refuses such a map in the old GNU and PAX 1.0 encodings, and in PAX 0.0 and
+    0.1 it extracts a file longer than the size ``tarfile`` serves. A chunk past the
+    logical size raises ``CorruptionError``, whether it is empty or not.
+
+    A non-empty chunk must start at or after the end of the previous one. GNU tar
+    1.35 reads an out-of-order or overlapping map, writing each chunk at the offset
+    the map gives; ``tarfile`` instead stitches the chunks into one run, which is a
+    wrong answer (DR-1). Serving them in logical order on the streaming path would
+    mean buffering up to the member's logical size (DR-9). Such a map is valid data
+    that archivey cannot serve, so it raises ``UnsupportedFeatureError`` (DR-4), and
+    only when no damage was found in the same map. An empty entry is exempt from the
+    order check: GNU tar ends a map with ``(realsize, 0)`` when the file ends in a
+    hole, and the old GNU header pads its four slots with ``(0, 0)``.
 
     The logical size (the GNU ``realsize`` field or ``GNU.sparse.realsize``) is held
     to the same bound as a plain size: past ``_MAX_SEEK_OFFSET`` it is no file's size,
@@ -388,29 +701,61 @@ def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
         )
     stored = stored_end - info.offset_data
     total = 0
+    previous_end = 0
+    unordered: UnsupportedFeatureError | None = None
     for offset, numbytes in sparse:
         if offset < 0 or numbytes < 0:
             return CorruptionError(
                 f"TAR sparse map of {quoted(info.name)} has a negative entry "
                 f"(offset {offset}, {numbytes} bytes)"
             )
+        if offset + numbytes > info.size:
+            return CorruptionError(
+                f"TAR sparse map of {quoted(info.name)} has a chunk at offset "
+                f"{offset} ({numbytes} bytes) that ends past the member's size "
+                f"of {info.size} bytes"
+            )
+        if numbytes:
+            if offset < previous_end and unordered is None:
+                unordered = UnsupportedFeatureError(
+                    f"TAR sparse map of {quoted(info.name)} is out of order or "
+                    f"overlapping: a chunk at offset {offset} starts before the "
+                    f"previous chunk ends at {previous_end}"
+                )
+            previous_end = max(previous_end, offset + numbytes)
         total += numbytes
     if total > stored:
         return CorruptionError(
             f"TAR sparse map of {quoted(info.name)} claims {total} bytes of data, but "
             f"the member stores at most {stored}"
         )
-    return None
+    if stored - total > tarfile.BLOCKSIZE - 1:
+        return CorruptionError(
+            f"TAR sparse map of {quoted(info.name)} accounts for only {total} of the "
+            f"{stored} bytes the member stores"
+        )
+    return unordered
 
 
 def _raised_by_tarfile(exc: BaseException) -> bool:
     """Whether the innermost Python frame ``exc`` was raised in is stdlib ``tarfile``'s.
 
     ``tarfile`` parses some header values with a bare ``int()`` or tuple unpacking
-    (the GNU sparse PAX records and the PAX sparse 1.0 map), so a malformed value
+    (the GNU sparse PAX records), so a malformed value
     escapes as a plain ``ValueError``. Where it was raised is what separates that from
     a ``ValueError`` of the stream under ``tarfile``, which is raised in that stream's
-    own code and must propagate unchanged.
+    own code and is not this translator's to map. The closed-handle case among those
+    (``I/O operation on closed file``) is mapped to ``ArchiveyUsageError`` by the
+    error boundary above this translator before this check runs:
+    ``ArchiveStream._raise_translated`` for a member read,
+    ``BaseArchiveReader._raise_translated`` for the reader's own work. The check is
+    also reached from ``_translate_open_error`` while the reader is constructed,
+    behind neither boundary; it returns ``False`` there on its own, because the stream
+    under ``tarfile`` is always one of archivey's own wrappers (``_BoundedTarFileobj``
+    for ``r:``, the ``ArchiveSource`` for ``r|``), so a closed-handle ``ValueError``
+    is raised in that wrapper's frame, not ``tarfile``'s. What is left for this check
+    is ``tarfile``'s own header-parse ``ValueError``s; any other stream ``ValueError``
+    propagates unchanged.
     """
     tb = exc.__traceback__
     if tb is None:
@@ -618,7 +963,34 @@ class _BoundedTarFileobj(ReadOnlyIOStream):
                 f"TAR archive is corrupt: a size field puts data at byte {offset}, "
                 "past the largest offset any file can have"
             )
-        self._inner.seek(offset, whence)
+        try:
+            self._inner.seek(offset, whence)
+        except OSError as e:
+            # A filesystem refuses a smaller offset too, past its largest file size:
+            # ext4 (about 16 TiB) with EINVAL or EOVERFLOW, while APFS and a BytesIO
+            # take it and the next read finds the end of the data. The archive is
+            # shorter than any file that filesystem can hold, so the offset is past
+            # its end, and the same archive is a TruncatedError from any source on
+            # any OS (DR-5), as GNU tar reports it ("Unexpected EOF in archive").
+            #
+            # Taking EINVAL as an archive fact is sound here, though extraction
+            # deliberately does not (safe-extraction spec): there one ``try`` holds
+            # open, mkdir and write calls, where EINVAL has unrelated causes. Over a
+            # plain tar this ``try`` holds one absolute lseek to a non-negative
+            # offset the archive chose, whose EINVAL or EOVERFLOW means only that
+            # the offset is past what the file can hold. Over a decompressor the
+            # seek decodes forward with plain reads of the source, which give
+            # neither errno for a reachable offset.
+            if (
+                whence != SEEK_SET
+                or offset < 0
+                or e.errno not in (errno.EINVAL, errno.EOVERFLOW)
+            ):
+                raise
+            raise TruncatedError(
+                f"TAR archive is truncated: a size field puts data at byte {offset}, "
+                "past the end of the archive"
+            ) from e
         self._pos = self._inner.tell()
         return self._pos
 
@@ -640,12 +1012,11 @@ class _BoundedTarFileobj(ReadOnlyIOStream):
 class TarReader(BaseArchiveReader):
     """Reads a TAR archive (plain or compressed) via stdlib ``tarfile``.
 
-    ``_SUPPORTS_RANDOM_ACCESS`` is True (seekable uncompressed / decompressed sources
-    can open any member), but ``_MEMBER_LIST_UPFRONT`` is False — there is no central
-    directory, so a complete list always requires a scan (or a finished stream pass).
+    A seekable source can open any member, but ``_MEMBER_LIST_UPFRONT`` is False —
+    there is no central directory, so a complete list always requires a scan (or a
+    finished stream pass).
     """
 
-    _SUPPORTS_RANDOM_ACCESS = True
     # TAR has no central directory: the member list only exists after a scan, so it is not
     # "available without scanning" (listing cost is REQUIRES_SCANNING / REQUIRES_DECOMPRESSION,
     # not INDEXED). Once iterated, the base serves the cached list anyway.
@@ -693,6 +1064,10 @@ class TarReader(BaseArchiveReader):
         # explicitly: left to the garbage collector, a stream held by a failed open's
         # traceback kept its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
+        # The last shared copy of the PAX global records a member was built from, and
+        # the ``extra["tar.pax_headers"]`` every member built from it shares
+        # (:meth:`_extra_pax_headers`).
+        self._shared_pax: tuple[_GlobalPaxRecords, _ReadOnlyDict] | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
         # same critical-section shape covers init, progressive walk, extractfile, EOF,
@@ -876,15 +1251,18 @@ class TarReader(BaseArchiveReader):
         if isinstance(exc, tarfile.StreamError):
             # A forward-only read that would have to go backwards ("seeking backwards
             # is not allowed"). tarfile reads a member's data chunks in the order its
-            # sparse map gives them, so only a map with a negative or out-of-order
-            # entry gets here.
+            # sparse map gives them, so a map with a negative entry or with chunks
+            # out of order would get here; _sparse_map_error refuses both before the
+            # first read. This branch keeps any other backward seek tarfile makes on
+            # a forward-only stream typed as damage.
             return CorruptionError(f"Error reading TAR archive: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"TAR archive is truncated: {exc!r}")
         if isinstance(exc, ValueError) and _raised_by_tarfile(exc):
             # A header value tarfile parses with a bare int() or tuple unpack: a GNU
-            # sparse PAX record (GNU.sparse.map / size / realsize) or a PAX sparse 1.0
-            # map that is not a list of integers.
+            # sparse PAX record (GNU.sparse.map / size / realsize) that is not a list
+            # of integers. A PAX sparse 1.0 map is parsed here
+            # (_TarInfo._proc_gnusparse_10), which raises CorruptionError itself.
             return CorruptionError(f"Malformed TAR header value: {exc!r}")
         if isinstance(exc, RecursionError) and _passes_through_tarfile(exc):
             # tarfile parses the header after a GNU long-name/long-link or PAX header
@@ -1444,6 +1822,22 @@ class TarReader(BaseArchiveReader):
             return StreamCapability.SEEKABLE
         return StreamCapability.FORWARD_ONLY
 
+    def _extra_pax_headers(self, pax_headers: Mapping[str, str]) -> _ReadOnlyDict:
+        """``extra["tar.pax_headers"]`` for a member whose records are ``pax_headers``.
+
+        A read-only copy. Members that carry only the PAX global records share one,
+        as they share the records (:meth:`_TarFile.global_records`): one per member
+        cost the global records once for every 512-byte member header. Read-only so
+        that sharing it is invisible: a change made through one member cannot show
+        on another, or reach the ``TarInfo`` the reader reads.
+        """
+        if not isinstance(pax_headers, _GlobalPaxRecords):
+            return _ReadOnlyDict(pax_headers)
+        shared = self._shared_pax
+        if shared is None or shared[0] is not pax_headers:
+            shared = self._shared_pax = (pax_headers, _ReadOnlyDict(pax_headers))
+        return shared[1]
+
     def _to_member(self, info: tarfile.TarInfo, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
         stamps, so the diagnostics raised here can name it before it has one."""
@@ -1486,9 +1880,16 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        extra = MemberExtra({"tar.type": info.type})
+        # The typeflag as stored: NUL for an old-style directory, whose ``type`` is
+        # DIRTYPE.
+        stored_type = (
+            tarfile.AREGTYPE
+            if getattr(info, "old_style_directory", False)
+            else info.type
+        )
+        extra = MemberExtra({"tar.type": stored_type})
         if info.pax_headers:
-            extra["tar.pax_headers"] = dict(info.pax_headers)
+            extra["tar.pax_headers"] = self._extra_pax_headers(info.pax_headers)
         if info.isdev():
             extra["tar.devmajor"] = info.devmajor
             extra["tar.devminor"] = info.devminor
@@ -1613,7 +2014,9 @@ class TarReader(BaseArchiveReader):
             if not defer_sparse_error:
                 raise sparse_error
 
-            def _refuse(error: CorruptionError = sparse_error) -> BinaryIO:
+            def _refuse(
+                error: CorruptionError | UnsupportedFeatureError = sparse_error,
+            ) -> BinaryIO:
                 raise error
 
             return self._wrap_member_stream(

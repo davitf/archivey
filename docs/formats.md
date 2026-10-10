@@ -94,6 +94,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
   restore method 2. Under ZipCrypto both read as the password-or-damage
   ``EncryptionError`` instead, because those settings are encrypted.
+- Bytes inside a member's compressed data after its compressed stream ends (a zero
+  byte, junk, or a second stream) raise `CorruptionError` when the member is read, for
+  every compression method, as `7z t` reports an error for them. Under ZipCrypto they
+  read as the password-or-damage ``EncryptionError`` instead, caused by that
+  ``CorruptionError``, because the bytes are encrypted. Two cases still read:
+  a PPMd member whose stream has no end mark (7-Zip writes one), and, under rapidgzip,
+  a second DEFLATE stream that the member's declared size and CRC both cover.
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
@@ -333,10 +340,20 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
   is what `unrar t` does: each member tests OK, then it reports one error. A damaged
   header counts as the end block only if it has an end block's shape and the file ends
-  right after it; any other damaged header still raises `CorruptionError`. The damaged
-  block's next-volume flag is not trusted, so a volume set goes on to the next volume
-  only when a member's own header says its data continues there. With encrypted headers
-  this needs the password proven, as above; before that it is `EncryptionError`.
+  right after it; any other damaged header lists the members before it and then raises
+  `CorruptionError`. The damaged block's next-volume flag is not trusted, so a volume
+  set goes on to the next volume only when a member's own header says its data
+  continues there. With encrypted headers this needs the password proven, as above;
+  before that it is `EncryptionError`.
+- **A damaged member header lists the members before it.** When a header after the main
+  header fails its checksum, the members before it are listed and read normally, and
+  the listing then ends with `CorruptionError`. No later member of the damaged header's
+  volume is listed: its size field cannot be trusted, so archivey does not know where the
+  next header starts. `unrar` searches on and lists them too. In a volume set, a member
+  before the damage whose data continues is still followed into the next volume, whose
+  members are listed before the error. A damaged main header still raises
+  `CorruptionError` at open. With encrypted headers this needs the password proven, as
+  above; before that it is `EncryptionError`.
 - **A volume set with a volume missing lists what it has.** Whether the missing volume
   is the first, one in the middle or the last, the members whose headers are in the
   volumes present are listed, opened from any of them, and those wholly inside them read
@@ -478,11 +495,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   it does a 7z name (see 7z above).
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
-- Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
+- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty
   extension), and `extra["iso.version"]` keeps the number. When a directory holds
   several versions of one name, the highest takes the bare name and the others list
   under their stored identifier (`FOO.;1`) with `is_current=False`, the same shape as
-  RAR file-version history. Entries within a directory list in on-disc record order.
+  RAR file-version history. Plain directory names have no version and keep any `;N`. Two
+  files stored with the same identifier both list, the later one current, as in ZIP
+  and TAR. That includes a file and its associated file (such as the resource fork on a
+  Mac hybrid image), which list as two members with one name and nothing to tell the
+  fork apart. Entries within a directory list in on-disc record order.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
@@ -553,7 +574,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
   not `CorruptionError`: a gzip member with a method other than deflate or a reserved
   flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
-  dictionary, and a `.Z` file with a code width over 16 bits.
+  dictionary, and a `.Z` file with a code width over 16 bits. A damaged byte in one of
+  those same fields raises the same error, because nothing tells the two apart; the
+  message says a damaged header reads the same way (see
+  [Errors and diagnostics](errors-and-diagnostics.md)).
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable
