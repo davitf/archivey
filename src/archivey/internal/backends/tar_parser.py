@@ -1091,10 +1091,6 @@ class TarWalker:
             )
             data_offset += used
             stored_size -= used
-        else:
-            # Not sparse, but GNU tar still parses a stray size record and reports
-            # one that is not a number as a malformed header.
-            _pax_int(merged, b"GNU.sparse.realsize")
 
         old_style_directory = typeflag == b"\x00" and name.endswith(b"/")
         if not carries_data(typeflag):
