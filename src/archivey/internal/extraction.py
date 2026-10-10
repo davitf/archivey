@@ -51,6 +51,7 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
     disk_spelled,
+    numbered_name,
     reroot_absolute,
 )
 from archivey.internal.link_watch import LinkWatch
@@ -2109,9 +2110,8 @@ class ExtractionCoordinator:
     def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
 
-        The counter goes before the final suffix so the extension is preserved
-        (``photo.jpg`` → ``photo (1).jpg``); a directory has no suffix and appends to the
-        whole segment.
+        :func:`numbered_name` spells each candidate (``photo.jpg`` → ``photo (1).jpg``),
+        the same spelling the CLI's single-root hoist uses.
 
         The search resumes after the last ``N`` this run handed out for the same
         collision key, rather than starting at 1 each time: restarting made ``k``
@@ -2122,15 +2122,12 @@ class ExtractionCoordinator:
         deterministic, which is what the spec asks. ``_release_claim`` resets the
         counters, so a name freed by an anti-item is found again."""
         parent = requested.parent
-        if transformed.type == MemberType.DIRECTORY:
-            stem, suffix = requested.name, ""
-        else:
-            stem, suffix = requested.stem, requested.suffix
+        is_dir = transformed.type == MemberType.DIRECTORY
         rename_next = self._state.rename_next
         counter_key = self._collision_key(requested)
         n = rename_next.get(counter_key, 1)
         while True:
-            candidate = parent / f"{stem} ({n}){suffix}"
+            candidate = parent / numbered_name(requested.name, n, is_dir=is_dir)
             candidate_key = self._collision_key(candidate)
             if candidate_key not in self._state.collision_map and not self._occupied(
                 candidate

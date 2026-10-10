@@ -77,13 +77,16 @@ def _has_windows_root(target: str) -> bool:
     return _has_drive_letter(target)
 
 
-def _is_rooted(name: str) -> bool:
+def is_rooted(name: str) -> bool:
     """Whether ``name`` starts at a filesystem root: a leading ``/`` or ``\\`` (POSIX
     root, UNC share) or a drive letter followed by a separator (``C:/``, ``C:\\``).
 
     Narrower than :func:`_is_absolute`, on purpose. A drive-relative ``C:x`` is also an
     ordinary POSIX name (``a:b``), so it has no root to drop: rewriting it to ``x``
     would put the member where another member named ``x`` belongs. It stays refused.
+
+    The CLI imports this to tell a re-root from a portable rewrite in its report: a
+    rooted ``presented_name`` means a re-root ran, so the two must agree.
     """
     if name[:1] in ("/", "\\"):
         return True
@@ -94,13 +97,13 @@ def strip_absolute_root(name: str) -> str:
     """``name`` with its root removed: every leading ``/`` and ``\\`` and a drive letter
     followed by a separator, repeatedly, so ``C:\\x``, ``//host/share/x`` and ``/C:/x``
     all lose their whole root. A name that is nothing but a root becomes ``"."``. A name
-    that is not rooted (see :func:`_is_rooted`), ``C:x`` included, is returned as is.
+    that is not rooted (see :func:`is_rooted`), ``C:x`` included, is returned as is.
 
     ``C:/`` is dropped on every OS, as bsdtar does, so a member extracts to the same
     place wherever it is extracted. GNU tar keeps it as a literal directory on POSIX.
     """
     stripped = name
-    while _is_rooted(stripped):
+    while is_rooted(stripped):
         if stripped[:1] in ("/", "\\"):
             stripped = stripped.lstrip("/\\")
         else:  # a drive letter and its separator; the next pass strips the separator
@@ -121,12 +124,12 @@ def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
     (``tar -P`` stores ``/a`` and a hardlink naming ``/a``), and the target string
     never becomes a path. A caller filter therefore sees the target as stored.
 
-    Only a rooted name is re-rooted (:func:`_is_rooted`); a drive-relative ``C:x`` is
+    Only a rooted name is re-rooted (:func:`is_rooted`); a drive-relative ``C:x`` is
     left for :func:`check_universal` to refuse.
 
     Returns ``member`` itself when there is nothing to change.
     """
-    if not _is_rooted(member.name):
+    if not is_rooted(member.name):
         return member
     return member.replace(name=strip_absolute_root(member.name))
 
@@ -804,3 +807,17 @@ def collision_key(name: str, policy: ExtractionPolicy) -> str:
     if policy is ExtractionPolicy.TRUSTED:
         return rel
     return unicodedata.normalize("NFC", rel).casefold()
+
+
+def numbered_name(name: str, n: int, *, is_dir: bool) -> str:
+    """``name`` as an ``OverwritePolicy.RENAME`` rename spells it with counter ``n``.
+
+    The counter goes before the final suffix so the extension is preserved
+    (``photo.jpg`` -> ``photo (1).jpg``); a directory has no suffix and the counter goes
+    after the whole name. Extraction and the CLI's single-root hoist both use it, so a
+    hoist renames to the name a direct extraction would have chosen.
+    """
+    if is_dir:
+        return f"{name} ({n})"
+    path = Path(name)
+    return f"{path.stem} ({n}){path.suffix}"

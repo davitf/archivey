@@ -36,6 +36,10 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
+
+# Two naming rules the CLI must apply exactly as extraction does; the ``cli`` spec's
+# public-API requirement records the exception.
+from archivey.internal.filters import is_rooted, numbered_name
 from archivey.reader import ArchiveReader
 from archivey.types import (
     ArchiveFormat,
@@ -173,6 +177,9 @@ class _HoistResult:
     ok: bool = True  # False → collision/failure; caller exits nonzero
     renamed: int = 0
     skipped: int = 0
+    # The sole root's name in the wrapper and the name it has in the wrapper's parent
+    # after the move, so the report can name each member where it is now.
+    moved_root: tuple[str, str] | None = None
 
 
 class _HoistConflict(Exception):
@@ -184,12 +191,10 @@ class _HoistConflict(Exception):
 
 
 def _free_name(dest: Path, *, is_dir: bool) -> Path:
-    """First ``name (N)`` free on disk — mirrors extraction ``_derive_free_name``
-    (counter before the final suffix for files; whole-segment append for dirs)."""
-    stem, suffix = (dest.name, "") if is_dir else (dest.stem, dest.suffix)
+    """First ``name (N)`` free on disk, spelled as extraction spells its renames."""
     n = 1
     while True:
-        candidate = dest.parent / f"{stem} ({n}){suffix}"
+        candidate = dest.parent / numbered_name(dest.name, n, is_dir=is_dir)
         if not os.path.lexists(candidate):
             return candidate
         n += 1
@@ -500,8 +505,22 @@ def maybe_hoist_single_root(
                 (side / child.name).rename(dest)
                 side.rmdir()
         else:
-            landed = _merge_move(child, dest, overwrite, result, err)
-            wrapper.rmdir()
+            # The wrapper took the first free name for the archive's stem, which can
+            # be the free name a rename of the root would take (``foo`` exists, so
+            # ``foo.tar`` extracts into ``foo (1)`` and its root ``foo`` must be
+            # renamed). Step it aside so the merge sees the cwd a direct extraction
+            # sees. The aside name is ``<wrapper> (N)``, which no rename of the root
+            # spells, as the root's name differs from the wrapper's here.
+            side = _free_name(wrapper, is_dir=True)
+            wrapper.rename(side)
+            try:
+                landed = _merge_move(side / child.name, dest, overwrite, result, err)
+            except BaseException:
+                # Leave the remainder where the messages say it is.
+                with contextlib.suppress(OSError):
+                    side.rename(wrapper)
+                raise
+            side.rmdir()
             if landed is None:
                 # SKIP kept the operator's entry and discarded ours; ``skipped:``
                 # already said so, and nothing was moved anywhere. ``dest`` is the
@@ -510,6 +529,7 @@ def maybe_hoist_single_root(
                 result.dest_label = "."
                 return result
             result.target = landed
+            result.moved_root = (child.name, landed.name)
     except _HoistConflict as conflict:
         print(
             f"Destination already exists: {escape_path(conflict.dest)}",
@@ -528,6 +548,8 @@ def maybe_hoist_single_root(
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
+    if result.moved_root is None:
+        result.moved_root = (child.name, child.name)  # flattened in place
     is_dir = result.target.is_dir() and not result.target.is_symlink()
     # The target is the sole root's own name, which the archive chose.
     label = f"{escape_path(result.target)}{'/' if is_dir else ''}"
@@ -586,7 +608,7 @@ def predict_hoist(
         )
     else:
         print(f"would move to {label}", file=err)
-    return _HoistResult(dest, dest_label=label)
+    return _HoistResult(dest, dest_label=label, moved_root=(name, name))
 
 
 def _summary_dest_label(
@@ -655,9 +677,15 @@ def _report_extraction(
     extra_renamed: int = 0,
     extra_skipped: int = 0,
     dest_label: str | None = None,
+    moved_root: tuple[str, str] | None = None,
     dry_run: bool = False,
 ) -> tuple[int, int]:
     """Print rename notices + a closing summary from the library report (F3/D2).
+
+    Per-member paths are named relative to ``target``, the directory extracted into.
+    ``moved_root`` is the hoist's ``(name in target, name after the move)``: the hoist
+    moved that entry up next to ``target``, so a path under it is named from the new
+    name, which is where it is relative to the working directory.
 
     ``extra_renamed`` / ``extra_skipped`` fold in collisions resolved during the
     post-extract hoist (the library report covers only the wrapper extraction,
@@ -692,6 +720,10 @@ def _report_extraction(
         and r.path is not None
         and r.requested_path != r.path
     }
+
+    def shown(path: Path | None) -> str:
+        return escape_member_name(_relative_name(path, target, moved_root))
+
     for result in report:
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
@@ -710,9 +742,7 @@ def _report_extraction(
                 renamed += 1
                 # Renames change where data lives — always report them.
                 print(
-                    f"renamed: "
-                    f"{escape_member_name(_relative_name(result.requested_path, target))}"
-                    f" -> {escape_member_name(_relative_name(result.path, target))}",
+                    f"renamed: {shown(result.requested_path)} -> {shown(result.path)}",
                     file=err,
                 )
             elif verbose:
@@ -725,7 +755,7 @@ def _report_extraction(
                 # archive's. Reported because the tree differs from the archive.
                 print(
                     f"kept existing directory's mode {result.kept_mode:04o}: "
-                    f"{escape_member_name(_relative_name(result.path, target) or '.')}",
+                    f"{shown(result.path) or '.'}",
                     file=err,
                 )
             # A portable rewrite is a different event from a collision rename: the member
@@ -738,7 +768,7 @@ def _report_extraction(
             # cannot tell them apart from the path (a hoist, a trailing ``/`` or a
             # collision suffix all change it too), so the verbose line shows both.
             if result.presented_name is not None:
-                rerooted_name = _has_root(result.presented_name)
+                rerooted_name = is_rooted(result.presented_name)
                 if rerooted_name:
                     rerooted += 1
                 if not rerooted_name or verbose:
@@ -748,26 +778,26 @@ def _report_extraction(
                     label = "re-rooted" if rerooted_name else "name rewritten"
                     print(
                         f"{label}: {escape_member_name(result.presented_name)} -> "
-                        f"{escape_member_name(_relative_name(result.path, target))}",
+                        f"{shown(result.path)}",
                         file=err,
                     )
         elif status is ExtractionStatus.OVERWRITTEN:
             # Written, then clobbered by a later member. Not counted as extracted: its
             # content is not what is on disk. Always reported — data was lost.
             skipped += 1
-            where = _escaped_where(result, target)
+            where = _escaped_where(result, target, moved_root)
             print(f"overwritten: {where}", file=err)
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
-            where = _escaped_where(result, target)
+            where = _escaped_where(result, target, moved_root)
             print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.LINK_TARGET_UNAVAILABLE:
             skipped += 1
             # The archive described a link it never recorded a target for, so there was
             # nothing to write. Always reported: the tree the user gets is missing an
             # entry the listing showed them.
-            where = _escaped_where(result, target)
+            where = _escaped_where(result, target, moved_root)
             print(f"link target unavailable: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
@@ -822,7 +852,9 @@ def _report_extraction(
     return blocked, failed
 
 
-def _escaped_where(result: ExtractionResult, target: Path) -> str:
+def _escaped_where(
+    result: ExtractionResult, target: Path, moved_root: tuple[str, str] | None
+) -> str:
     """The destination to report for a member that did not keep it, terminal-safe.
 
     ``requested_path`` is built from the member's own name. STRICT and STANDARD write the
@@ -837,36 +869,36 @@ def _escaped_where(result: ExtractionResult, target: Path) -> str:
     name is ``/``-separated, so a backslash surviving into it is a real character in a
     member name — which is exactly what should be escaped."""
     if result.requested_path is not None:
-        return escape_member_name(_relative_name(result.requested_path, target))
+        return escape_member_name(
+            _relative_name(result.requested_path, target, moved_root)
+        )
     return escape_member_name(result.member.name)
 
 
-def _has_root(name: str) -> bool:
-    """Whether a stored name had a root for extraction to drop: a leading ``/`` or
-    ``\\``, or a drive letter followed by one.
-
-    A copy of ``archivey.internal.filters._is_rooted``, which the CLI may not import
-    (it uses only the public API); keep the two in step. A rooted ``presented_name``
-    therefore means a re-root ran: ``STRICT`` refuses a rooted name before any rewrite,
-    and at every policy ``check_universal`` refuses a written name that is still
-    absolute, so a rooted name that was not re-rooted never reaches disk."""
-    return name[:1] in ("/", "\\") or (
-        name[:1].isascii() and name[:1].isalpha() and name[1:3] in (":/", ":\\")
-    )
-
-
-def _relative_name(path: PurePath | None, target: PurePath) -> str:
+def _relative_name(
+    path: PurePath | None,
+    target: PurePath,
+    moved_root: tuple[str, str] | None = None,
+) -> str:
     """The on-disk name relative to the extraction root, for reporting.
 
-    Falls back to the full path, still ``/``-separated, when the member landed outside
-    ``target`` (the hoist moves content after extraction, so the report's paths and the
-    final target can disagree) and to ``""`` when nothing was written."""
+    ``moved_root`` is the hoist's ``(old, new)`` name for the entry it moved out of
+    ``target``: a name under ``old`` is given under ``new`` instead, which is where it
+    is relative to ``target``'s parent after the move. Falls back to the full path,
+    still ``/``-separated, when the member landed outside ``target``, and to ``""`` when
+    nothing was written."""
     if path is None:
         return ""
     try:
-        return path.relative_to(target).as_posix()
+        relative = path.relative_to(target).as_posix()
     except ValueError:
         return path.as_posix()
+    if moved_root is not None:
+        old, new = moved_root
+        first, sep, rest = relative.partition("/")
+        if first == old:
+            return f"{new}{sep}{rest}"
+    return relative
 
 
 def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
@@ -1003,12 +1035,13 @@ def run_extract(
                 )
             blocked, failed = _report_extraction(
                 report,
-                target=hoist.target,
+                target=target,
                 verbose=verbose,
                 err=err,
                 extra_renamed=hoist.renamed,
                 extra_skipped=hoist.skipped,
                 dest_label=hoist.dest_label,
+                moved_root=hoist.moved_root,
                 dry_run=dry_run,
             )
             return _exit_for_outcomes(blocked=blocked, failed=failed, hoist_ok=hoist.ok)

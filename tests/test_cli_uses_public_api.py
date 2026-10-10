@@ -14,13 +14,16 @@ from pathlib import Path
 
 CLI_DIR = Path(__file__).resolve().parents[1] / "src" / "archivey" / "cli"
 
-# The one deliberate exception. ``--track-io`` reads the IO counters, which are not
-# public API: the CLI is also a debugging tool for the library, so it may see what a
-# caller cannot. Keyed by the hit text ``_internal_imports`` reports, minus the line
-# number, so the entry names exactly one import statement and nothing else.
+# The deliberate exceptions, keyed by the hit text ``_internal_imports`` reports, minus
+# the line number, so each entry names exactly one import statement and nothing else.
+# ``--track-io`` reads the IO counters, which are not public API: the CLI is also a
+# debugging tool for the library, so it may see what a caller cannot. ``extract``
+# applies two naming rules exactly as extraction does (which stored names are rooted,
+# and the ``name (N)`` spelling of a rename); a copy would have to be kept in step.
 ALLOWED_INTERNAL_IMPORTS = frozenset(
     {
         "common.py: from archivey.internal.measurement import enable_measurement, io_stats",
+        "extract_cmd.py: from archivey.internal.filters import is_rooted, numbered_name",
     }
 )
 

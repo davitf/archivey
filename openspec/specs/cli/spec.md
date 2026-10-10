@@ -148,7 +148,10 @@ containing `src/`) SHALL be flattened in place, not treated as a collision, and 
 wrapper SHALL then take that root's mode and times. A directory stored without owner
 write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
 and search permission for the move and then puts its mode back, as a direct extraction
-into the cwd would have succeeded.
+into the cwd would have succeeded. After a hoist, the per-member lines (`renamed:`,
+`name rewritten:`, `not overwritten:` and the others) SHALL name each member where it
+is after the move, as a direct extraction into the cwd names it, never a path inside
+the removed wrapper.
 Container-name collisions SHALL be resolved by the overwrite policy, with one
 exception: a symlink at the container name, dangling or live, SHALL be treated
 as taken under every overwrite policy and the next free `<stem> (N)` used,
@@ -185,6 +188,8 @@ other processed statuses are omitted from that line).
 | `archivey extract <indexed-archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
 | `archivey extract <indexed-archive> 'b/*'` where filtered set has single root `b/` | Extracts into `.` (tops on filtered set); lands as `./b/…` |
 | `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
+| `archivey extract foo.tar` holding only `foo`, with the operator's `foo` in the cwd | Wraps in `foo (1)/`, then hoists the root to `foo (1)`, as `-d .` does; prints `renamed: foo -> foo (1)` |
+| `archivey extract <no-index-archive>` with a single root `top/` holding `c\x02` | Prints `name rewritten: top/c\x02 -> top/c%02`, the path after the hoist |
 | `archivey extract <no-index-archive>` with multiple top-level entries | Extracts into `./<archive-stem>/` (no hoist) |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a symlink (dangling or to a directory), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written through the link |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
@@ -383,9 +388,12 @@ filesystem entry literally named `-`.
 
 ### Requirement: The CLI uses only public API
 
-The `archivey.cli` package SHALL import nothing from `archivey.internal`, with one
-exception: `--track-io` imports `archivey.internal.measurement`, because the CLI is
-also a debugging tool for the library and IO measurement is not public API. What it
+The `archivey.cli` package SHALL import nothing from `archivey.internal`, with two
+exceptions. `--track-io` imports `archivey.internal.measurement`, because the CLI is
+also a debugging tool for the library and IO measurement is not public API. `extract`
+imports `is_rooted` and `numbered_name` from `archivey.internal.filters`, because its
+report and its single-root hoist must apply those naming rules exactly as extraction
+does: which stored names a re-root changed, and how a rename spells `name (N)`. What it
 needs beyond `archivey.__all__` SHALL otherwise come from a public module, such as
 `archivey.terminal` for terminal-safe display. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
@@ -399,7 +407,7 @@ renaming either field breaks the dry run's hoist line and summary.
 
 | Case | Expected |
 | --- | --- |
-| Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import`, except the one allowlisted measurement import |
+| Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import`, except the two allowlisted imports (measurement, naming rules) |
 | One is added | `tests/test_cli_uses_public_api.py` fails, naming the file and line |
 | The allowlisted import is removed | The same test fails until the allowlist entry goes too |
 

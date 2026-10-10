@@ -2266,6 +2266,114 @@ def test_hoist_does_not_mark_a_file_root_as_a_directory(
     assert _summary_lines(err)[0].endswith("→ a (1).txt")
 
 
+# --- a hoist leaves what a direct extraction into the cwd leaves, and says so -------
+
+
+def _tree(root: Path) -> dict[str, bytes | None]:
+    """Every entry under ``root``, relative and ``/``-separated: a file's bytes, or
+    ``None`` for a directory."""
+    return {
+        p.relative_to(root).as_posix(): None if p.is_dir() else p.read_bytes()
+        for p in sorted(root.rglob("*"))
+    }
+
+
+def _hoist_and_direct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    archive_name: str,
+    entries: dict[str, bytes],
+    mine: dict[str, bytes],
+) -> tuple[tuple[dict[str, bytes | None], str], tuple[dict[str, bytes | None], str]]:
+    """Extract ``entries`` once through the wrapper and hoist, and once with ``-d .``,
+    each into a fresh directory that holds ``mine``; return each tree and stderr.
+
+    A name ending in ``/`` is stored as a directory. A root directory that collides
+    with a file is stored, because a direct extraction fails on an implied one."""
+    runs = []
+    for how, extra in (("hoist", []), ("direct", ["-d", "."])):
+        cwd = tmp_path / how
+        cwd.mkdir()
+        for name, data in mine.items():
+            (cwd / name).write_bytes(data)
+        archive = tmp_path / archive_name
+        with tarfile.open(archive, "w") as tf:
+            for name, data in entries.items():
+                info = tarfile.TarInfo(name.rstrip("/"))
+                if name.endswith("/"):
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    tf.addfile(info)
+                else:
+                    info.size = len(data)
+                    tf.addfile(info, io.BytesIO(data))
+        monkeypatch.chdir(cwd)
+        assert main(["x", str(archive), *extra]) == EXIT_OK
+        runs.append((_tree(cwd), capsys.readouterr().err))
+    return runs[0], runs[1]
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [{"foo": b"ARCHIVE"}, {"foo/": b"", "foo/x.txt": b"ARCHIVE"}],
+    ids=["file-root", "dir-root"],
+)
+def test_hoist_renames_a_root_as_a_direct_extraction_does(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entries: dict[str, bytes],
+) -> None:
+    """``foo.tar`` holding ``foo``, with the operator's own ``foo`` in the cwd.
+
+    The wrapper took ``foo (1)``, the first free name; the hoist then saw that name
+    taken by its own wrapper and moved the root to ``foo (2)``, where a direct
+    extraction writes ``foo (1)``.
+    """
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, "foo.tar", entries, {"foo": b"MINE"}
+    )
+    assert "extracting into foo (1)/" in hoist_err
+    assert hoisted == direct
+    assert hoisted["foo"] == b"MINE"
+    assert _report_lines(hoist_err, "renamed: ") == ["renamed: foo -> foo (1)"]
+    assert _report_lines(direct_err, "renamed: ") == ["renamed: foo -> foo (1)"]
+
+
+@pytest.mark.parametrize(
+    "mine",
+    [{}, {"top": b"MINE"}],
+    ids=["root-kept-its-name", "root-renamed"],
+)
+def test_hoist_reports_member_paths_where_they_landed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine: dict[str, bytes],
+) -> None:
+    """The per-member lines name each member where it is after the hoist.
+
+    They named it inside the wrapper (``t/top/c%02``), which the hoist removed.
+    """
+    entries = {"top/": b"", "top/c\x02": b"c", "top/a\x01b/f": b"f"}
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, "t.tar", entries, mine
+    )
+    assert "extracting into t/" in hoist_err
+    assert hoisted == direct
+    root = "top (1)" if mine else "top"
+    rewritten = _report_lines(hoist_err, "name rewritten: ")
+    assert rewritten == _report_lines(direct_err, "name rewritten: ")
+    assert sorted(rewritten) == [
+        f"name rewritten: top/a\\x01b/f -> {root}/a%01b/f",
+        f"name rewritten: top/c\\x02 -> {root}/c%02",
+    ]
+    assert _report_lines(hoist_err, "renamed: ") == _report_lines(
+        direct_err, "renamed: "
+    )
+
+
 def test_relative_name_falls_back_to_forward_slashes() -> None:
     """A path outside the root is reported whole — ``/``-separated, never native.
 
