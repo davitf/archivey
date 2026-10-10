@@ -122,6 +122,11 @@ binds.
 - [DR-24](#dr-24-tests-pin-behaviour-against-real-producers). **Tests pin behaviour
   against real producers.** A bug fix starts red; tests check behaviour against fixtures
   from real tools.
+- [DR-25](#dr-25-type-comes-from-structure-data-decides-when-structure-is-silent). **Type
+  comes from structure; data decides when structure is silent.** A mode attribute never
+  overrides a format's directory marker or typeflag; an entry with a data stream and no
+  structural type is `FILE`; bytes extraction does not deliver are reported and stay
+  readable.
 
 ## The principles
 
@@ -194,8 +199,10 @@ maintainer, with what each format's tool does, what the other formats do, and ho
 factor came out.
 
 - **Is the tool's result useful?** If it is useless to a caller, consistency wins. Device,
-  FIFO and socket entries are `OTHER` in every format, although unzip and 7-Zip write
-  them as empty files: "they're useless as files" (2026-10-06, PR 610).
+  FIFO and socket entries with no data are `OTHER` in every format, although unzip and
+  7-Zip write them as empty files: "they're useless as files" (2026-10-06, PR 610). An
+  entry whose mode says FIFO but which carries data is a `FILE`, because its bytes are
+  the content and every tool delivers them (2026-10-10, DR-25).
 - **Would the tool's result break a promise archivey makes?** Principles 1 and 2, and the
   policy levels' promises, come first. A 7z name holding a lone UTF-16 surrogate lists
   the way 7-Zip does, but is percent-escaped under STRICT and STANDARD, which promise the
@@ -298,6 +305,10 @@ the right weight.
 - A malformed optional RAR header record is dropped with `MEMBER_HEADER_RECORD_SKIPPED`
   (PR 371).
 - A zero-filled file is a valid empty TAR (ADR 0015).
+- A directory entry that declares data keeps the directory on disk, reports
+  `MEMBER_DIRECTORY_DATA_IGNORED` (a warning; strict refuses) and keeps the bytes
+  readable through `open()` (2026-10-10, DR-25): nothing is misread, so this is the
+  "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 
@@ -353,7 +364,9 @@ that is right on one format and wrong on another breaks callers silently.
 **Rulings.**
 - `created` is birth time only, never `st_ctime`, in any format; the change time goes to
   `ArchiveMember.ctime` (2026-09-25, PR 470).
-- Device, FIFO and socket entries are `OTHER` everywhere (2026-10-06, PR 610).
+- Device, FIFO and socket entries with no data are `OTHER` everywhere (2026-10-06, PR 610);
+  with data they are `FILE` everywhere, and `extra["special_file_type"]` says what the
+  archive called them (2026-10-10, DR-25).
 - Timestamp diagnostics name the member attribute (`modified`, not `mtime` or
   `date_time`) in every format (2026-10-07, PR 608).
 - A valid UTF-8 name wins over `encoding=` in every format; `encoding=` only replaces the
@@ -420,6 +433,46 @@ the archive leaves. An explicit caller assertion that conflicts with the source,
 directory path raises `ArchiveyUsageError` (#225). An empty listing under an explicit
 `format=` is reported, not refused, because an override is obeyed (diagnostics design,
 2026-08).
+
+### DR-25. Type comes from structure; data decides when structure is silent
+
+**Rule.** A member's `type` follows the format's structural marker: the trailing separator
+in the name (ZIP, and the V7 spelling in TAR), the typeflag (TAR), the directory flag
+(RAR), stream presence (7z: a record with a stream is never a directory), the directory
+record (ISO). A mode attribute, the Unix `st_mode` bits a ZIP, 7z, RAR or Rock Ridge
+writer stored, never overrides that marker. Where the structure says nothing about what
+the entry is, the data decides: an entry with a data stream is `FILE`; a special-mode entry
+(device, FIFO, socket, unknown) with no stream is `OTHER`. What the archive said is always
+visible: `extra["special_file_type"]` is set on every member whose stored type is special,
+`FILE` and `OTHER` alike, and a special-mode entry typed `FILE` for its data also gets
+`MEMBER_SPECIAL_FILE_HAS_DATA` (advisory). Bytes that extraction does not deliver, a
+directory entry that declares data, are reported with `MEMBER_DIRECTORY_DATA_IGNORED` (a
+warning; strict refuses) and stay readable: `open()` refuses a member that has no data (an
+anti item, a stream-less `OTHER`, a directory with none), not a member by its type.
+
+**Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
+mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar
+and `zipfile` all write the file, so `OTHER` was the one reader that hid the bytes. The
+2026-10-06 "useless as files" reason only ever described the stream-less case. For
+directories every official tool creates the directory and drops the bytes without a word,
+Go's `archive/zip` refuses to open such an entry, and APPNOTE 4.3.8 forbids it; DR-1 ranks
+a reported loss above a silent one, and a readable `open()` is better than either. The
+Java `jar` tool writes directories with compressed size 2 and uncompressed size 0, so the
+report fires only on a declared uncompressed size above zero. Evidence:
+[`investigations/device-flag-and-directory-data.md`](investigations/device-flag-and-directory-data.md).
+
+**Rulings.**
+- Both halves accepted by the maintainer on that report (2026-10-10).
+- A 7z record with a stream is a file whatever its attribute word says, as in 7-Zip (PR
+  698).
+- A TAR device or directory typeflag followed by data is damage, not a file: GNU tar and
+  libarchive ignore the size field for those typeflags and resync, so archivey's
+  `CorruptionError` stands. A TAR regular-file typeflag named `d/` with data is a
+  directory, as GNU tar and 7-Zip read it (2026-10-10).
+
+**Reopen if** a real producer writes a directory entry whose data users need on disk, or a
+special-mode entry whose bytes are not the content; then that format needs a named
+exception here, not a silent one.
 
 ---
 
