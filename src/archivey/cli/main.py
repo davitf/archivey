@@ -6,7 +6,6 @@ import argparse
 import errno
 import functools
 import os
-import re
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
@@ -61,9 +60,11 @@ _VERB_FLAG_HINTS = {
     "-t": "t",
     "-i": "i",
 }
-# Letters a tar flag bundle is made of: the verb letters above and tar's common
-# modifiers (-v, -f, the -z/-j/-J/-a compressors, -k, -p, -C, -O).
-_TAR_BUNDLE_LETTERS = "xltivfzjJakpCO"
+# Letters a tar flag bundle is made of: the verb letters above, tar's lowercase
+# modifiers (-v, -f, the -z/-j/-J/-a compressors, -k, -p, -m, -h) and GNU tar's
+# uppercase short options (-Z compress, -C, -O, -P, -S, -W and the rest). Other
+# lowercase letters stay out so a mistyped long option (``-exclude``) is no bundle.
+_TAR_BUNDLE_LETTERS = frozenset("xltivfzjJakpmh" + "ABCFGKLMNOPRSTUVWXZ")
 
 
 # The include-pattern positional's metavar; ``_ArchiveyArgumentParser.error`` matches it.
@@ -161,7 +162,11 @@ def _unrecognized_hints(tokens: list[str]) -> str:
     # Tar users type -x/-l/-t, often bundled (-xvf, -zxf); verbs here are bare words.
     # Only a single-dash bundle of tar letters counts, so ``--my-list`` is not ``-l``
     # and a mistyped long option such as ``-exclude`` or ``-file`` is not ``-x``/``-i``.
-    bundles = [o[1:] for o in opts if re.fullmatch(f"-[{_TAR_BUNDLE_LETTERS}]+", o)]
+    bundles = [
+        o[1:]
+        for o in opts
+        if len(o) > 1 and o[0] == "-" and set(o[1:]) <= _TAR_BUNDLE_LETTERS
+    ]
     flags = [f"-{ch}" for bundle in bundles for ch in bundle]
     verb = next((_VERB_FLAG_HINTS[f] for f in flags if f in _VERB_FLAG_HINTS), None)
     if verb is not None:
@@ -580,19 +585,33 @@ def _parse_cli_args(
     (``archivey x a.zip -d out '*.py'``). Fold those tokens back so the
     documented flag/pattern order works.
 
-    Tokens after an explicit ``--`` are always positionals — including names
-    that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
+    Tokens after the first ``--`` are always positionals, including ``--`` itself
+    and names that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
     """
-    args, rest = parser.parse_known_args(argv_list)
-    # Python 3.11 and 3.12 leave the ``--`` and what follows in ``rest`` when a pattern came
-    # before it (``x a.zip -d out '*.py' -- -file``), so split at the first one.
-    cut = rest.index("--") if "--" in rest else len(rest)
-    before, after = rest[:cut], rest[cut + 1 :]
-    # Dash-prefixed leftovers before ``--`` are unknown options (not patterns).
-    unknown_opts = [tok for tok in before if tok.startswith("-") and tok != "-"]
+    # The separator is handled here, not by argparse: 3.11 and 3.12 drop a ``--``
+    # from every positional group they consume, so ``x a.zip -- --`` lost the
+    # pattern ``--`` there while ``x a.zip -d out -- --`` kept it. argparse sees
+    # one ``--`` and opaque stand-ins for the tail, which it cannot strip or read
+    # as options, and the stand-ins are swapped back after parsing.
+    cut = argv_list.index("--") if "--" in argv_list else len(argv_list)
+    head, tail = argv_list[:cut], argv_list[cut + 1 :]
+    stand_ins = {f"\0archivey-tail-{i}\0": tok for i, tok in enumerate(tail)}
+    args, rest = parser.parse_known_args([*head, "--", *stand_ins] if tail else head)
+    for name, value in vars(args).items():
+        if isinstance(value, str) and value in stand_ins:
+            setattr(args, name, stand_ins[value])
+        elif isinstance(value, list):
+            setattr(args, name, [stand_ins.get(v, v) for v in value])
+    # A ``--`` left in ``rest`` is the one passed above; tail tokens are positionals.
+    rest = [tok for tok in rest if tok != "--"]
+    unknown_opts = [
+        tok
+        for tok in rest
+        if tok not in stand_ins and tok.startswith("-") and tok != "-"
+    ]
     if unknown_opts:
         parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
-    rest = before + after
+    rest = [stand_ins.get(tok, tok) for tok in rest]
     if not rest:
         return args
     if not hasattr(args, "patterns"):
