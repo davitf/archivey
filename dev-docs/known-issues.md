@@ -108,40 +108,6 @@ dropped it. Ubuntu picks that up with its next sync from Debian.
 **Evidence.** [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md)
 §Compressed RAR5 member dropped. Handbook: [`formats/rar.md`](formats/rar.md) §3.
 
-## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive (open upstream)
-
-**Symptom.** `tarfile.TarFile.next()` re-raises `InvalidHeaderError` only at offset 0. A
-corrupt member header anywhere later is swallowed and iteration ends, so mid-archive
-corruption gives a shortened listing with no error. All supported Python versions.
-
-**What archivey does.** `_TarInfo.fromtarfile` records the error class of each header
-parse on the `_TarFile` before `next()` swallows it, and `TarReader._verify_tar_eof`
-raises `CorruptionError` when the last parse rejected the header. That holds in both
-access modes, whatever follows the rejected header (members, a zero block, nothing).
-
-**What remains.** Nothing for archivey callers. The workaround depends on tarfile
-raising `InvalidHeaderError` for every header it rejects after the first.
-
-**Upstream.** CPython behaviour; not filed.
-
-**Evidence.** [`formats/tar.md`](formats/tar.md) §2.2, §5 and §7.
-
-## A TAR member's seek past its end returns the member size, not the target (open)
-
-**Symptom.** With `seekable_members=True`, `seek(10)` on a 3-byte TAR member returns 3 and
-leaves `tell()` at 3, where `io.BytesIO` and a real file return 10. Reads agree either way
-(both return `b""`).
-
-**What archivey does.** Nothing; the stream is stdlib `tarfile`'s `ExFileObject`, which
-clamps the position to the member size.
-
-**What remains.** Code that checks `seek()`'s return value sees a different position from
-other backends.
-
-**Upstream.** CPython behaviour; not filed.
-
-**Evidence.** [`formats/tar.md`](formats/tar.md) §5; `docs/access-and-cost.md`.
-
 ## rapidgzip accelerator: upstream defects
 
 Bugs 3, 4 and 5 below are live in rapidgzip 0.16.0, the current and floor version. Bugs 1 and

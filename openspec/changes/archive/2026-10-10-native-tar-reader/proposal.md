@@ -51,11 +51,14 @@ No public name, signature, exception type or diagnostic code changes.
 
 - Capabilities: `format-tar`: a new requirement for what the parser reads; format
   properties, the handle lock, metadata mapping, hardlink lookup, truncation detection
-  and name decoding rewritten without `tarfile`.
+  and name decoding rewritten without `tarfile`. `error-handling` and
+  `testing-contract`: an example that named `tarfile` as a library archivey reads
+  through.
 - Code: `internal/backends/tar_reader.py` (rewritten), `tar_parser.py` and
-  `streamtools/sparse.py` (new), `streamtools/binaryio.py` (one `tarfile` workaround
-  removed).
+  `streamtools/sparse.py` (new). The `tarfile` catch in `streamtools/binaryio.py`
+  stays, for a caller who passes a `tarfile` member stream as a source.
 - Docs: handbook `formats/tar.md`, `known-issues.md` (two TAR entries removed),
-  `threat-model.md` TAR notes, `docs/formats.md`.
+  `threat-model.md` TAR notes, `docs/formats.md`, `docs/how-it-works.md`,
+  `docs/access-and-cost.md`, `docs/errors-and-diagnostics.md`, `code-map.md`.
 - Sequencing: coding of the switch starts after PRs 704, 706 and 716 merge; their tests
   are acceptance tests.

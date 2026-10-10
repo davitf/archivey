@@ -151,7 +151,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 
 ## TAR (and compressed TAR)
 
-- Uncompressed seekable TAR: random access via `tarfile`.
+- Uncompressed seekable TAR: random access, each member read straight from its place in
+  the file. Archivey parses the headers itself, the same way on every Python version.
 - Compressed variants (`.tar.gz` etc.) behave as **solid** for random member opens —
   prefer a single forward pass.
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
@@ -166,14 +167,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before you extract. For a sparse archive you trust, raise the limit:
   `reader.extract_all(dest, limits=ExtractionLimits(max_ratio=...))`, or
   `max_ratio=None`.
-- **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
-  corrupt member header *after the first* as a clean end of archive — no exception is
-  raised; iteration just stops early. Archivey backstops this with its end-of-archive
-  marker check:
-    - When the shortened scan stops on a **header `tarfile` rejected**, archivey raises
-      `CorruptionError` **by default** — a well-formed tar never ends that way. This
-      holds in random-access and streaming reads alike, whatever follows the bad header:
-      more members, nothing (it is the archive's *final* block), or a block of zeros.
+- **Archivey checks how the archive ends.** A tar has no member count, so a corrupt
+  member header *after the first* could otherwise pass for the end of the archive and
+  shorten the listing without an error:
+    - When the walk stops on a **header that does not parse**, archivey raises
+      `CorruptionError` whatever the diagnostic policy — a well-formed tar never ends
+      that way. This holds in random-access and streaming reads alike, whatever follows
+      the bad header: more members, nothing (it is the archive's *final* block), or a
+      block of zeros.
     - A tar that merely **ends cleanly on a member boundary without the two-block null
       trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,

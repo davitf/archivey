@@ -56,8 +56,8 @@ for which library backs each codec, and why.
 ## Format parsers
 
 Format parsers come from the same three places. ZIP uses the standard library's `zipfile`
-for the central directory and TAR uses `tarfile` for its headers. ISO 9660 uses `pycdlib`
-from `[recommended]`. 7z and RAR headers are parsed by Archivey itself. Every header
+for the central directory. ISO 9660 uses `pycdlib` from `[recommended]`. TAR, 7z and RAR
+headers are parsed by Archivey itself. Every header
 parser is written in Python, so a crafted header can make a parser wrong, but cannot make
 it corrupt memory. Whatever parses the headers, Archivey turns each format's names and
 metadata into one member model by the same rules, and member data goes through the stream

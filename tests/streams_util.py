@@ -414,8 +414,7 @@ def assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
     (ZIP) then reported as ``CorruptionError`` on an undamaged archive.
     """
     content = stream.read()
-    # Inside the member: a TAR member's seek past its end returns the member size
-    # (dev-docs/known-issues.md), which is not what this test is about.
+    # A seek inside the member: a seek past the end is not what this test is about.
     start = min(5, len(content))
     assert stream.seek(start) == start
     assert stream.seek(-100, io.SEEK_CUR) == 0

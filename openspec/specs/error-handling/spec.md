@@ -236,8 +236,8 @@ The system SHALL ensure every `ArchiveyError` instance carries:
 
 The system SHALL preserve original decoding-library exceptions as `__cause__`
 using `raise ... from exc`; libraries MUST NOT swallow the original traceback.
-Type translation is per underlying library (for example `zipfile`, `tarfile`,
-`lzma`, `unrar`, crypto backend), not per format. The `ArchiveReader` base class
+Type translation is per underlying library (for example `zipfile`, `lzma`,
+`pycdlib`, `unrar`, crypto backend), not per format. The `ArchiveReader` base class
 SHALL centrally stamp `source_format`, `archive_name`, and `member_name` on
 propagating `ArchiveyError`s; backends do not hand-fill those fields.
 

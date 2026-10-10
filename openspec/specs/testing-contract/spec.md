@@ -588,8 +588,8 @@ without an explicit `format=`**. Detection replays its prefix from the `ArchiveS
 only when it runs, so an explicit `format=` reaches the backend without a replay prefix
 ever having been read; a suite that tests only the detected `open_archive` path would
 not show that the full-count guarantee holds without one. Coverage SHALL NOT be
-satisfied by a backend whose third-party reader happens to coalesce internally (stdlib
-`tarfile._Stream` does): at least one case SHALL assert the boundary directly, on the
+satisfied by a backend whose reader happens to coalesce reads internally (a buffer in
+front of the source does): at least one case SHALL assert the boundary directly, on the
 `ArchiveSource` itself.
 
 Assertions SHALL be **parity against a full-count open of the same bytes**, not

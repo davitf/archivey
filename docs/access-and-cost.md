@@ -21,7 +21,8 @@ rather than here — they go stale faster than this page is revised.
 | --- | --- |
 | Large-member ZIP/TAR/gzip **read** (decompression-dominated) | ≤ **1.3×** stdlib peer |
 | ZIP/TAR **extract** (safety floor) | ≤ ~**2×** stdlib peer |
-| ZIP/TAR **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` / `tarfile` |
+| ZIP **open+list** (wraps stdlib) | ≤ **2–3×** `zipfile` |
+| TAR **open+list** (native parser) | ≤ **2–3×** `tarfile` |
 | 7z/RAR **open+list** (native parsers) | ≈parity (~**1.25×**) vs `py7zr` / `rarfile` |
 
 These are the targets, not a claim about your machine. Measured ratios are
@@ -121,10 +122,9 @@ A seek that lands before the start of a member behaves like `io.BytesIO`: a rela
 seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
 or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
 relative seek before its start reaches the OS and raises `OSError`. A seek past the end
-of a TAR member returns the member size rather than the position you asked for, where
-other formats return the target; reads from there return `b""` either way. An offset or
-`whence` that is not an integer (`seek(1.5)`, `seek(None)`) raises `TypeError`, as on
-`io.BytesIO`, and leaves the position where it was. A `read` size that is neither an
+of a member returns the position you asked for, and reads from there return `b""`. An
+offset or `whence` that is not an integer (`seek(1.5)`, `seek(None)`) raises `TypeError`,
+as on `io.BytesIO`, and leaves the position where it was. A `read` size that is neither an
 integer nor `None` (`read(1.5)`) raises `TypeError` the same way, and an integer
 outside the platform's index range (`read(2**70)`, `read(-2**70)`) raises
 `OverflowError`, both before anything is read.
