@@ -497,6 +497,86 @@ def test_xz_padding_scan_reads_one_group_when_there_is_no_padding() -> None:
     assert source.total < len(blob)
 
 
+def _write_footer_claiming_whole_file(path: Any, size: int, head: bytes = b"") -> None:
+    """A sparse ``size``-byte file whose valid footer claims an index back to ``head``.
+
+    Only the 12-byte footer is valid (its CRC32 covers 6 bytes), and nothing but
+    ``head`` and the footer is on disk.
+    """
+    with open(path, "wb") as f:
+        f.write(head)
+        f.truncate(size - 12)
+        f.seek(size - 12)
+        back = struct.pack("<I", (size - 12 - len(head)) // 4 - 1)
+        body = back + b"\x00\x01"
+        f.write(struct.pack("<I", zlib.crc32(body)) + body + b"YZ")
+
+
+def test_xz_index_scan_reads_a_huge_declared_index_in_chunks(tmp_path: Any) -> None:
+    """A footer claiming an index as large as the file costs one chunk of memory.
+
+    The index CRC32 is checked a chunk at a time, so the index is never held whole.
+    """
+    path = tmp_path / "huge-index.xz"
+    size = 48 << 20
+    _write_footer_claiming_whole_file(path, size)
+    with open(path, "rb") as source:
+
+        def scan() -> None:
+            with raises_corruption_not_truncation(match="index CRC32 mismatch"):
+                _read_xz_index_backwards(source, size)
+
+        assert traced_peak(scan) < 4 << 20
+
+
+def test_xz_open_archive_with_a_huge_declared_index_stays_small(
+    tmp_path: Any,
+) -> None:
+    """Listing a .xz whose footer claims a huge index does not read the index whole."""
+    import archivey
+
+    path = tmp_path / "big.xz"
+    size = 48 << 20
+    _write_footer_claiming_whole_file(path, size, head=lzma.compress(b"x"))
+
+    def listing() -> None:
+        with archivey.open_archive(path) as archive:
+            assert [m.size for m in archive.members()] == [None]
+
+    listing()  # first-use costs (imports, caches) stay out of the measurement
+    # Opening and listing cost about 10 MiB whatever the file size (8 MiB and 48 MiB
+    # files measure the same); reading the index whole cost twice the file.
+    assert traced_peak(listing) < 16 << 20
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (b"", 0),
+        (b"\x00" * 3, 0),
+        (b"\x00" * 4, 4),
+        (b"\x00" * 7 + b"\xfd", 4),
+        (b"\x00" * 8 + b"\xfd", 8),
+        (b"\x01" + b"\x00" * 8, 0),
+        (bytearray(b"\x00" * 12), 12),
+    ],
+)
+def test_xz_stream_padding_length_counts_whole_groups(
+    data: bytes, expected: int
+) -> None:
+    from archivey.internal.streams.codecs.xz_decoder import _stream_padding_length
+
+    assert _stream_padding_length(data) == expected
+
+
+def test_xz_megabytes_of_stream_padding_decode_in_one_strip() -> None:
+    """Padding fed in one buffer is stripped whole, between streams and at the end."""
+    part = lzma.compress(b"x")
+    data = part + b"\x00" * (4 << 20) + part + b"\x00" * (4 << 20)
+    with XzDecompressorStream(io.BytesIO(data), seekable=False) as stream:
+        assert stream.read() == b"xx"
+
+
 @pytest.mark.parametrize("data", [b"", b"\xfd", b"\xfd7zXZ", b"\xfd7zXZ\x00"])
 def test_xz_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None:
     with XzDecompressorStream(io.BytesIO(data)) as stream:
@@ -527,10 +607,10 @@ def test_xz_index_with_room_for_more_records_is_rejected() -> None:
 def test_xz_index_rejects_a_non_minimal_multibyte_integer() -> None:
     from archivey.internal.streams.codecs.xz_decoder import _decode_mbi
 
-    assert _decode_mbi(b"\x00", 0) == (0, 1)
-    assert _decode_mbi(b"\x80\x01", 0) == (128, 2)
+    assert _decode_mbi(iter(b"\x00")) == (0, 1)
+    assert _decode_mbi(iter(b"\x80\x01")) == (128, 2)
     with raises_corruption_not_truncation(match="not minimally encoded"):
-        _decode_mbi(b"\x80\x00", 0)
+        _decode_mbi(iter(b"\x80\x00"))
 
 
 def test_lzip_trailer_member_size_past_start_raises() -> None:
