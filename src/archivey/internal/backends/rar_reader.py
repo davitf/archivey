@@ -2651,7 +2651,7 @@ class RarReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_header_record_diagnostics(info, member.name, member, index)
-        if info.is_directory and member.size:
+        if info.is_directory and (member.size or member.compressed_size):
             # rar writes directories with no data and unrar skips any it finds (its
             # directory branch returns before the data). Say so; read() delivers it.
             self._emit_directory_data_ignored(member, index)
@@ -3800,14 +3800,20 @@ class RarReader(BaseArchiveReader):
         if unknown_version is not None:
             raise self._unknown_compression_error(member, unknown_version)
 
-        if raw.is_directory and not self._is_directly_sliceable(raw):
+        if raw.is_directory and not (
+            self._can_direct_read(raw)
+            or (raw.encryption_unknown and self._is_directly_sliceable(raw))
+        ):
             # unrar emits nothing for a directory entry (``extract.cpp`` returns from
-            # the directory branch before any data), so only stored directory data,
-            # which archivey slices itself, can be delivered.
+            # the directory branch before any data), so only the directory data
+            # archivey slices itself can be delivered: stored and not encrypted (or
+            # stored with the encryption question still open, which the digest check
+            # below settles). Compressed or encrypted data would reach unrar and
+            # come back empty, so it is refused here, as unsupported, not corrupt.
             raise UnsupportedFeatureError(
-                f"Directory {quoted(member.name)} declares compressed data; unrar does "
-                "not decode data stored under a directory entry, so only stored "
-                "(uncompressed) directory data can be read.",
+                f"Directory {quoted(member.name)} declares data that archivey cannot "
+                "deliver: unrar does not decode data stored under a directory entry, "
+                "so only stored (uncompressed), unencrypted directory data can be read.",
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,

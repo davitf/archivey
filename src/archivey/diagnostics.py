@@ -364,7 +364,9 @@ class DirectoryDataContext(_JsonSafeContext):
 
     ``size`` is the declared uncompressed size and ``compressed_size`` the stored
     one (``None`` where the format does not record it). The directory is still
-    created; the bytes are reachable through ``open()`` / ``read()``.
+    created. A declared size is reachable through ``open()`` / ``read()`` where the
+    backend can decode the body (RAR delivers stored data only); a ``size`` of 0 over
+    a non-empty body has nothing ``open()`` could return.
     """
 
     kind: Literal["directory_data"] = "directory_data"

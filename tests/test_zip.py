@@ -1964,6 +1964,104 @@ def test_directory_data_is_reported_and_readable_but_not_extracted(
     assert (tmp_path / "out" / "jar").is_dir()
 
 
+def test_corrupted_directory_data_fails_its_digest_check(tmp_path: Path) -> None:
+    """The bytes ``open()`` delivers for a directory are checked against the stored
+    CRC-32 like a file's: a body that no longer matches raises instead of reading
+    as clean data."""
+    path = tmp_path / "dirdata.zip"
+    _zip_with_directory_data(path, zipfile.ZIP_STORED)
+    data = path.read_bytes()
+    assert data.count(b"hidden data!") == 1
+    path.write_bytes(data.replace(b"hidden data!", b"XXXXXXXXXXXX"))
+    with open_archive(path) as ar:
+        member = ar.get("d/")
+        assert member.hashes == {
+            HashAlgorithm.CRC32: crc32_digest(zlib.crc32(b"hidden data!"))
+        }
+        with pytest.raises(CorruptionError, match="crc32"):
+            ar.read("d/")
+        assert ar.read("d/f.txt") == b"visible"
+
+
+def _zip_with_declared_empty_directory_body(path: Path) -> None:
+    """``d/`` storing 2000 bytes with its uncompressed size field set to 0 in both the
+    local header and the central directory: a body hidden one field away from the
+    declared size."""
+    body = b"0123456789" * 200
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("d/"), body, compress_type=zipfile.ZIP_STORED)
+        z.writestr("d/f.txt", b"visible")
+    data = bytearray(path.read_bytes())
+    assert data[:4] == b"PK\x03\x04"
+    assert struct.unpack_from("<I", data, 22)[0] == len(body)
+    struct.pack_into("<I", data, 22, 0)  # local header: uncompressed size
+    central = data.index(b"PK\x01\x02")
+    assert struct.unpack_from("<I", data, central + 24)[0] == len(body)
+    struct.pack_into(
+        "<I", data, central + 24, 0
+    )  # central directory: uncompressed size
+    path.write_bytes(bytes(data))
+
+
+def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> None:
+    """A directory declaring size 0 over a 2000-byte stored body is the same hidden
+    payload as a declared one: reported, refused by strict, and ``open()`` says why
+    it has nothing to return."""
+    path = tmp_path / "hidden.zip"
+    _zip_with_declared_empty_directory_body(path)
+    with open_archive(path) as ar:
+        member = ar.get("d/")
+        assert member.type is MemberType.DIRECTORY
+        assert (member.size, member.compressed_size) == (0, 2000)
+        [diag] = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["size"] == 0
+        assert diag.context.to_dict()["compressed_size"] == 2000
+        assert "declares no data but stores a 2000-byte body" in diag.message
+        with pytest.raises(ArchiveyUsageError, match="with no data"):
+            ar.read("d/")
+        assert ar.read("d/f.txt") == b"visible"
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with (
+        open_archive(path, config=config) as ar,
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+    ):
+        ar.members()
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+
+
+@pytest.mark.parametrize(
+    "method",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
+)
+def test_empty_directory_body_sizes_match_zipfile(tmp_path: Path, method: int) -> None:
+    """The per-method size of an empty body is what ``zipfile`` writes for a directory
+    given no data, and such a directory is not reported."""
+    from archivey.internal.backends.zip_reader import _ZIP_EMPTY_BODY_SIZES
+
+    assert set(_ZIP_EMPTY_BODY_SIZES) == {
+        zipfile.ZIP_STORED,
+        zipfile.ZIP_DEFLATED,
+        zipfile.ZIP_BZIP2,
+        zipfile.ZIP_LZMA,
+    }
+    path = tmp_path / "empty.zip"
+    try:
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(zipfile.ZipInfo("d/"), b"", compress_type=method)
+    except RuntimeError as exc:  # the compressor's module is not installed
+        pytest.skip(str(exc))
+    with zipfile.ZipFile(path) as z:
+        assert z.infolist()[0].compress_size == _ZIP_EMPTY_BODY_SIZES[method]
+    with open_archive(path) as ar:
+        assert [m.name for m in ar.members()] == ["d/"]
+        assert not ar.diagnostics.retained
+
+
 def test_directory_data_is_refused_by_strict(tmp_path: Path) -> None:
     """The shape is a spec violation that hides bytes, so strict refuses it (DR-3),
     while the jar shape, which declares no data, passes."""

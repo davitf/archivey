@@ -152,7 +152,8 @@ file or a tombstone raises `ArchiveyUsageError` naming the type — check `membe
 first, or use the `stream is None` test that `stream_members()` gives you. The one
 exception is a directory entry whose header declares data (`MEMBER_DIRECTORY_DATA_IGNORED`
 reports it): extraction creates the directory without the bytes, and `open()` is how you
-read them if you need them. `stream_members()` still yields `None` for it.
+read them if you need them (RAR delivers them only when they are stored and not
+encrypted). `stream_members()` still yields `None` for it.
 
 **A member belongs to the reader that produced it.** Passing an `ArchiveMember` from
 a different archive raises `ArchiveyUsageError` rather than resolving it against the

@@ -222,6 +222,27 @@ _ZIP_COMPRESSION_TUPLES: dict[int, tuple[CompressionMethod, ...]] = {
 }
 
 # ZIP method id -> shared codec-layer Codec for member decode, after any decrypt stage.
+# Compressed size of an *empty* body per method, as ``zipfile`` writes one for a
+# directory ``ZipInfo`` given no data (the Java ``jar`` tool deflates every directory's
+# empty body: 2 bytes). ``tests/test_zip.py`` checks the table against ``zipfile``.
+_ZIP_EMPTY_BODY_SIZES: dict[int, int] = {
+    zipfile.ZIP_STORED: 0,
+    zipfile.ZIP_DEFLATED: 2,
+    zipfile.ZIP_BZIP2: 14,
+    zipfile.ZIP_LZMA: 19,
+}
+
+
+def _zip_directory_stores_data(info: zipfile.ZipInfo) -> bool:
+    """True when a directory entry's body holds something: a declared size, or a
+    compressed body larger than an empty one of its method takes (a declared size of
+    0 over a real body is the same hidden payload one header field away). A method
+    the table does not know reports any body at all."""
+    if info.file_size > 0:
+        return True
+    return info.compress_size > _ZIP_EMPTY_BODY_SIZES.get(info.compress_type, 0)
+
+
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
     0: Codec.STORED,
     8: Codec.DEFLATE,
@@ -1068,11 +1089,15 @@ class ZipReader(BaseArchiveReader):
         created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
-        # without decompressing (VISION "hashes without decompression"). Only for FILE and
-        # SYMLINK members, which have data: a directory's stored CRC is a meaningless 0.
-        # AE-2 stores CRC as 0 and relies on the HMAC — do not surface a fake crc32.
+        # without decompressing (VISION "hashes without decompression"). Only for
+        # members with data: FILE and SYMLINK, and a directory whose header declares
+        # some (``open()`` delivers it, so the read is digest-checked like a file's);
+        # a directory with no data stores a meaningless 0. AE-2 stores CRC as 0 and
+        # relies on the HMAC — do not surface a fake crc32.
         hashes: dict[HashAlgorithm, bytes] = {}
-        if member_type in (MemberType.FILE, MemberType.SYMLINK):
+        if member_type in (MemberType.FILE, MemberType.SYMLINK) or (
+            member_type is MemberType.DIRECTORY and info.file_size > 0
+        ):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
@@ -1153,7 +1178,7 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
-        if member.type is MemberType.DIRECTORY and info.file_size > 0:
+        if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(info):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)

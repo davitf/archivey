@@ -138,7 +138,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   target (as `tar -C` and `unzip -d` do).
 - **A directory entry that declares data** is created as a directory and the bytes are
   not written, as every official tool does; `MEMBER_DIRECTORY_DATA_IGNORED` reports it
-  and `reader.read()` on the directory returns them.
+  and `reader.read()` on the directory returns them where the format's reader can
+  decode them.
 - **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,

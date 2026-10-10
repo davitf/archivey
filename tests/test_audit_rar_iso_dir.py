@@ -30,6 +30,7 @@ from archivey import ArchiveyConfig, DiagnosticCode, MemberType, open_archive
 from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
+    ArchiveyUsageError,
     CorruptionError,
     PackageNotInstalledError,
     ResourceLimitError,
@@ -970,9 +971,12 @@ def test_unrar_solid_walk_follows_the_main_solid_flag(
 # --- a directory entry that declares data ---------------------------------------------
 
 
-def _rar_with_directory_data(tmp_path: Path, *, stored: bool) -> Path:
+def _rar_with_directory_data(
+    tmp_path: Path, *, stored: bool, declared_empty: bool = False
+) -> Path:
     """The fixture's second member rewritten as a directory (``FHFL_DIRECTORY``) that
-    keeps its data. ``rar`` never writes one, so the header is edited in the test."""
+    keeps its data. ``rar`` never writes one, so the header is edited in the test.
+    ``declared_empty`` sets the unpacked size to 0 over the same body."""
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
     files = _rar5_file_blocks(blocks)
     files[1]["file_flags"] |= 1  # FHFL_DIRECTORY
@@ -981,6 +985,8 @@ def _rar_with_directory_data(tmp_path: Path, *, stored: bool) -> Path:
         files[1]["unpacked"] = len(files[1]["data"])
         files[1]["crc"] = struct.pack("<I", zlib.crc32(files[1]["data"]))
         files[1]["cinfo"] = 0  # method 0 (stored), version 0
+    if declared_empty:
+        files[1]["unpacked"] = 0
     path = tmp_path / ("dir_stored.rar" if stored else "dir_compressed.rar")
     path.write_bytes(_rar5_build(blocks))
     return path
@@ -1023,6 +1029,62 @@ def test_directory_data_is_reported_and_the_directory_created(
 
 
 @requires_binary("unrar")
+def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> None:
+    """A directory whose unpacked size is 0 over a 15-byte stored body is reported
+    with both sizes; ``open()`` has nothing to return for it and says so."""
+    path = _rar_with_directory_data(tmp_path, stored=True, declared_empty=True)
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        member = archive.get("-inul/")
+        assert member.type is MemberType.DIRECTORY
+        assert (member.size, member.compressed_size) == (0, 15)
+        [diag] = [
+            d
+            for d in archive.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["size"] == 0
+        assert diag.context.to_dict()["compressed_size"] == 15
+        assert "stores a 15-byte body" in diag.message
+        with pytest.raises(ArchiveyUsageError, match="with no data"):
+            archive.read("-inul/")
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_encrypted_stored_directory_data_is_refused_as_unsupported(
+    tmp_path: Path,
+) -> None:
+    """An encrypted stored body under a directory flag is not sliceable by archivey
+    and unrar emits nothing for a directory, so ``open()`` refuses it as unsupported
+    instead of handing it to unrar and reporting whatever comes back."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "f.txt").write_bytes(b"encrypted dir data")
+    built = tmp_path / "enc.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ep1", "-m0", "-psecret", str(built), "f.txt"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    blocks = _rar5_parse(built.read_bytes())
+    [entry] = _rar5_file_blocks(blocks)
+    entry["file_flags"] |= 1  # FHFL_DIRECTORY
+    path = tmp_path / "enc_dir.rar"
+    path.write_bytes(_rar5_build(blocks))
+    with open_archive(path, password="secret", config=_UNRAR_ONLY) as archive:
+        [member] = archive.members()
+        assert member.type is MemberType.DIRECTORY
+        assert member.size == 18
+        assert member.is_encrypted
+        codes = [d.code for d in archive.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        with pytest.raises(UnsupportedFeatureError, match="unencrypted"):
+            archive.read(member)
+
+
+@requires_binary("unrar")
 def test_stored_directory_data_reads_and_compressed_is_refused(tmp_path: Path) -> None:
     """Stored directory data is sliced by archivey itself, so ``read()`` returns it.
     unrar emits nothing for a directory entry, so compressed directory data cannot be
@@ -1036,6 +1098,6 @@ def test_stored_directory_data_reads_and_compressed_is_refused(tmp_path: Path) -
     with open_archive(
         _rar_with_directory_data(tmp_path, stored=False), config=_UNRAR_ONLY
     ) as archive:
-        with pytest.raises(UnsupportedFeatureError, match="compressed data"):
+        with pytest.raises(UnsupportedFeatureError, match="cannot deliver"):
             archive.read("-inul/")
         assert archive.read("@atfile") == payloads["@atfile"]
