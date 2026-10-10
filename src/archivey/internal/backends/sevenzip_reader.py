@@ -28,7 +28,6 @@ import stat
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from itertools import accumulate
 from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
@@ -232,6 +231,9 @@ class _MemberRaw:
     record: SevenZipFileRecord
     folder_index: int | None
     file_in_folder: int | None
+    #: Where the member's bytes start in its folder's output: the sum of the earlier
+    #: members' sizes in that folder. Zero for a member with no folder.
+    folder_prefix: int
 
 
 def _password_to_kdf_bytes(password: bytes) -> bytes:
@@ -364,12 +366,6 @@ class SevenZipReader(BaseArchiveReader):
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
-        self._folder_prefixes = {
-            folder_index: list(
-                accumulate((_member_stream_size(m) for m in members), initial=0)
-            )
-            for folder_index, members in self._folder_members.items()
-        }
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
         """A source view whose ``start`` is measured from the signature header.
@@ -522,10 +518,19 @@ class SevenZipReader(BaseArchiveReader):
 
     def _build_members(self) -> list[ArchiveMember]:
         # is_current is stamped by BaseArchiveReader's shared last-entry-wins pass.
-        return [
-            self._to_member(record, index)
-            for index, record in enumerate(self._archive.files)
-        ]
+        # One walk carries a running sum per folder, so each member's folder offset
+        # costs one addition. The parser assigns a folder's members in file order,
+        # which is also the order their bytes appear in the folder's output.
+        folder_ends: dict[int, int] = {}
+        members: list[ArchiveMember] = []
+        for index, record in enumerate(self._archive.files):
+            folder_index = record.folder_index
+            prefix = 0
+            if folder_index is not None:
+                prefix = folder_ends.get(folder_index, 0)
+                folder_ends[folder_index] = prefix + (record.uncompressed_size or 0)
+            members.append(self._to_member(record, index, folder_prefix=prefix))
+        return members
 
     def _members_by_folder(self) -> dict[int, list[ArchiveMember]]:
         grouped: dict[int, list[ArchiveMember]] = {}
@@ -716,7 +721,14 @@ class SevenZipReader(BaseArchiveReader):
             return pass_link[1]()
         return self._open_member(member)
 
-    def _to_member(self, record: SevenZipFileRecord, index: int) -> ArchiveMember:
+    def _to_member(
+        self, record: SevenZipFileRecord, index: int, *, folder_prefix: int = 0
+    ) -> ArchiveMember:
+        """Build the member for ``record``.
+
+        ``folder_prefix`` is where the member's bytes start in its folder's output,
+        computed by :meth:`_build_members`; it stays 0 for a member with no folder.
+        """
         member_type = self._member_type(record)
         presented_name = record.filename
         if presented_name == "":
@@ -797,7 +809,7 @@ class SevenZipReader(BaseArchiveReader):
             windows_attrs=attrs & 0xFFFF if attrs is not None else None,
             hashes=hashes,
             extra=extra,
-            _raw=_MemberRaw(record, folder_index, record.file_in_folder),
+            _raw=_MemberRaw(record, folder_index, record.file_in_folder, folder_prefix),
         )
         # Every report below names the member by `index`, its position in the walk,
         # which is the id registration will stamp on it.
@@ -1123,11 +1135,7 @@ class SevenZipReader(BaseArchiveReader):
     def _member_prefix(self, member: ArchiveMember) -> int:
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
-        if raw.folder_index is None or raw.file_in_folder is None:
-            return 0
-        # Running sums built once at open: summing the earlier members here, once per
-        # member, made a data pass over a solid folder quadratic in its member count.
-        return self._folder_prefixes[raw.folder_index][raw.file_in_folder]
+        return raw.folder_prefix
 
     def _wrap_folder_member(
         self,

@@ -14,6 +14,7 @@ import io
 import lzma
 import struct
 import subprocess
+import sys
 import zlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -570,16 +571,8 @@ def test_pipeline_helpers_require_max_members(helper: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_solid_folder_data_pass_sizes_each_member_a_bounded_number_of_times(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # One COPY folder holding n one-byte members. Each member's offset in the folder
-    # is the sum of the earlier members' sizes; recomputing that sum for every member
-    # made a full pass over a solid folder cost n**2 / 2 size reads (125,000 here).
-    # Counting the size reads keeps the check exact and free of timing.
-    from archivey.internal.backends import sevenzip_reader
-
-    count = 500
+def _solid_copy_archive(count: int) -> tuple[bytes, bytes]:
+    """One COPY folder holding ``count`` one-byte members, and its payload."""
     payload = bytes(index % 251 for index in range(count))
     header = _header(
         folders=[_linear([_coder(_COPY)])],
@@ -591,25 +584,43 @@ def test_solid_folder_data_pass_sizes_each_member_a_bounded_number_of_times(
         + b"\x09"
         + b"".join(_num(1) for _ in range(count - 1)),
     )
-    data = _archive(payload, header)
+    return _archive(payload, header), payload
 
+
+def _python_calls_for_both_passes(count: int) -> int:
+    """Python function calls made by a streaming pass plus an ``open()`` per member."""
+    data, payload = _solid_copy_archive(count)
     calls = 0
-    real = sevenzip_reader._member_stream_size
 
-    def counting(member: object) -> int:
+    def profile(_frame: object, event: str, _arg: object) -> None:
         nonlocal calls
-        calls += 1
-        return real(member)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(sevenzip_reader, "_member_stream_size", counting)
+        if event == "call":
+            calls += 1
 
     with open_archive(io.BytesIO(data)) as reader:
-        streamed = b"".join(stream.read() for _, stream in reader.stream_members())
-        opened = b""
-        for member in reader.members():
-            with reader.open(member) as stream:
-                opened += stream.read()
+        members = reader.members()
+        streamed = bytearray()
+        opened = bytearray()
+        sys.setprofile(profile)
+        try:
+            for _, stream in reader.stream_members():
+                assert stream is not None
+                streamed += stream.read()
+            for member in members:
+                with reader.open(member) as stream:
+                    opened += stream.read()
+        finally:
+            sys.setprofile(None)
     assert streamed == payload
     assert opened == payload
-    # Linear: a few size reads per member for each of the two passes.
-    assert calls <= 10 * count, calls
+    return calls
+
+
+def test_solid_folder_data_pass_cost_grows_linearly_with_member_count() -> None:
+    # Each member's offset in its folder is the sum of the earlier members' sizes.
+    # Recomputing that sum for every member makes a pass over a solid folder
+    # quadratic: doubling the member count then triples the work or more. Counting
+    # Python calls instead of timing keeps the check deterministic.
+    small = _python_calls_for_both_passes(200)
+    large = _python_calls_for_both_passes(400)
+    assert large / small < 2.5, (small, large)
