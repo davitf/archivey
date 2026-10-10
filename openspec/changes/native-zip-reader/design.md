@@ -278,7 +278,8 @@ One PR each, in order; every PR goes through the review label.
    files on disk must match.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
    (question B, answered).
-5. **Header disagreement.** Waits for open question A.
+5. **Header disagreement.** Cases 1 and 2 read with a new diagnostic code (its name goes
+   to the maintainer in the PR); case 3 stays refused (question A, answered).
 6. **ZIPs over 4 GiB without ZIP64.** macOS Finder writes a classic ZIP past 4 GiB and
    stores every offset modulo 2³². The rule recorded in `IDEAS.md`: offsets must
    increase, so when one falls below the previous member's end, add 2³² until it does
@@ -296,7 +297,8 @@ Stages 6 and 7 are independent of 3 to 5 and can run beside them.
 
 ## Open questions for the maintainer
 
-**A. Central and local headers that disagree.** Archivey refuses a member in three cases
+**A. Central and local headers that disagree.** Answered 2026-10-10: read cases 1 and 2
+with a new diagnostic (strict refuses), keep refusing case 3, as recommended below. Archivey refuses a member in three cases
 that `unzip` reads, found by the backup-drive scan
 (`dev-docs/investigations/2026-10-backup-scan.md` §3.3-3.5; each pinned by an
 `xfail(strict)` test in `tests/test_audit_backup_scan.py`). ZIP has no single official

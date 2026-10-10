@@ -5,7 +5,7 @@
 - [ ] 0.1 The three ZIP fix PRs from the October code sweep have merged (trailing bytes
       after a codec's end, malformed Unicode Path field, comment decoding). Rebase on
       main; their tests are acceptance tests from here on.
-- [ ] 0.2 Open questions A and C in `design.md` have answers, or stages 3 and 5 wait (B is answered).
+- [ ] 0.2 Open question C in `design.md` has an answer, or stage 3 waits (A and B are answered).
 - [ ] 0.3 `openspec validate --strict native-zip-reader`.
 
 ## 1. Parser (PR 1)
@@ -62,10 +62,11 @@
 - [ ] 4.2 Collisions stay ordinary duplicates (question B: keep); a test pins it.
 - [ ] 4.3 Spec, handbook §2.2 and §5, `docs/formats.md`.
 
-## 5. Header disagreement (PR 5, after question A)
+## 5. Header disagreement (PR 5)
 
-- [ ] 5.1 Turn the three `xfail(strict)` tests in `tests/test_audit_backup_scan.py`
-      into the ruled behaviour.
+- [ ] 5.1 Cases 1 and 2 read, with a new diagnostic (name to the maintainer) and
+      strict refusing; case 3 stays refused. Turn the `xfail(strict)` tests in
+      `tests/test_audit_backup_scan.py` into the ruled behaviour.
 
 ## 6. ZIPs over 4 GiB without ZIP64 (PR 6)
 
