@@ -50,7 +50,8 @@ time, and `StreamNotSeekableError` is an `OpenError`. `OpenError` means reading 
 not start (no recognized format, a non-seekable source the format needs to seek, a
 volume file that cannot be opened); a recognized archive whose header is damaged, cut
 short or encrypted raises a `ReadError` subclass, from `open_archive()` as from any
-later call. `DiagnosticRaisedError` is direct
+later call, except a damaged method, codec or version id in a header with no checksum,
+which raises `UnsupportedFeatureError` (see the error split below). `DiagnosticRaisedError` is direct
 because advisory escalation can happen during detection, open, read, stream, or
 extraction. `ResourceLimitError` is direct because configurable resource caps can
 trip during listing materialization, extraction bomb guarding, opening a member's
@@ -70,7 +71,7 @@ the documentation SHALL NOT tell callers to branch on it.
 
 | Error split | Meaning |
 | --- | --- |
-| `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`, `format=ArchiveFormat.UNKNOWN`). |
+| `UnsupportedFeatureError` | The archive uses, or its header appears to use, a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`). An unknown method, codec or version id read from a header with no checksum (such as a ZIP method) may instead mean that header is damaged; Archivey cannot tell the two apart and SHALL report it as `UnsupportedFeatureError`, with a message that says a damaged header reads the same way. |
 | `PackageNotInstalledError` | A package or external tool the format or member needs is absent: at open for a format whose backend or single codec is missing (ISO without `pycdlib`), at read for one member's codec. |
 | `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, a `DecoderLimits` cap on archive-declared decoder memory or key-derivation work, or `SpoolLimits`). |
 
@@ -81,7 +82,8 @@ the documentation SHALL NOT tell callers to branch on it.
 | Any open/read/extract/write failure detected by Archivey | Instance of `ArchiveyError`; `except ArchiveyError` catches it |
 | Diagnostic policy escalates | `DiagnosticRaisedError` is caught by `except ArchiveyError` |
 | Member name with a bidi override, extracted | `FilterRejectionError` whose message names the override; caught by `except ExtractionError` |
-| Recognized archive with a damaged header, opened | `CorruptionError` or `TruncatedError` from `open_archive()`; not an `OpenError` |
+| Recognized archive with a damaged header, opened | `CorruptionError` or `TruncatedError` from `open_archive()`; not an `OpenError`. A method, codec or version id damaged to an unknown value in a header with no checksum is the exception (next row) |
+| gzip member whose compression-method byte is damaged to 7, opened | `UnsupportedFeatureError` from `open_archive()`; its message says a damaged header reads the same way |
 | Member data that ends early, read | `TruncatedError`; caught by `except CorruptionError` and by `except ReadError` |
 
 ### Requirement: Caller misuse remains outside ArchiveyError
@@ -129,9 +131,9 @@ So are refusals made after looking at what an argument names: a `format=` that
 conflicts with what the source is (a directory source with a container `format=`, or a
 stub volume whose first volume is a different container), a directory path passed to
 `open_stream()`, and a volume sequence that is not the parts of one set, including one
-that sibling discovery assembled from a single path. Until #673 lands, two cases do not
-meet this requirement: `open_archive(file, format=ArchiveFormat.DIRECTORY)` raises a
-bare `TypeError`, and `reader.get()` given a non-`str` name returns `None`.
+that sibling discovery assembled from a single path, a non-directory source with
+`format=ArchiveFormat.DIRECTORY`, a `format=` naming the `UNKNOWN` container, and an
+empty string as a path. `reader.get()` given a non-`str` name is a type error.
 The rest of the list (overlap, reentry, a closed reader or source, the access mode)
 SHALL raise a plain `ArchiveyUsageError` that is neither a `TypeError` nor a
 `ValueError`.
@@ -537,18 +539,18 @@ The arguments covered:
 | Entry point | Arguments |
 | --- | --- |
 | `open_archive()`, `open_stream()`, `detect_format()` | `config` |
-| `detect_format()` | `budget` (a `DetectionBudget`; a `DetectionBudgetPreset` is an enum and out of scope) |
 | `open_archive()`, `open_stream()`, `detect_format()` | `source` |
 | `open_archive()` | `encoding`, `password` |
 | `ArchiveReader.extract_all()` | `dest`, `limits`, `on_progress` |
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
-| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references` |
+| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
+| `DetectionBudget(...)` | every field |
 
-`ArchiveyConfig` and the two `*Limits` types SHALL validate their own fields at
-construction. Validating `config=` at an entry point does not reach them: the object
+`ArchiveyConfig`, the `*Limits` types and `DetectionBudget` SHALL validate their own
+fields at construction, through one shared field check. Validating `config=` at an entry point does not reach them: the object
 passed there is of the right type and the wrong one is a field in, and a limit is a
 promise about an operation that has not begun, so construction is the last place a
 message can still name what the caller wrote.
@@ -571,6 +573,14 @@ truthiness are not covered, there being no wrong type to find, except
 `read_link_targets`), which SHALL be a `bool`: a string such as `"false"` is truthy
 and would silently switch the guard.
 
+An empty string passed as a path SHALL raise an `ArchiveyUsageError` that is also a
+`ValueError` at the entry point, before
+anything is read or created. This covers the `source` of `open_archive()` (alone or as
+an item of a volume list), `open_stream()` and `detect_format()`, and the `dest` of
+`ArchiveReader.extract_all()`. `Path("")` is `Path(".")`, so an empty string, typically
+an unset environment variable, would otherwise open the current directory as a
+directory archive or extract into it.
+
 #### Scenario: object argument refusal matrix
 
 | Case | Expected |
@@ -585,6 +595,7 @@ and would silently switch the guard.
 | `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `ExtractionLimits(ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
 | `ExtractionLimits(max_extracted_bytes=True)` | `ArchiveyUsageError`; `bool` is an `int` subclass and would cap at one byte |
+| `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
 | `open_archive(src, encoding=0)` | `ArchiveyUsageError`; not silently ignored |
 | `extract_all(dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
@@ -592,12 +603,15 @@ and would silently switch the guard.
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |
 | `extract_all(dest, members=0)` | `ArchiveyUsageError` at the call, before `dest` is created |
 | `stream_members(members=0)` | `ArchiveyUsageError` at the call, not on first `next()` |
-| `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
+| `ArchiveyConfig(detection_budget=0)` | `ArchiveyUsageError` naming `detection_budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
+| `reader.get(b"a.txt")`, `reader.get(member)` | `ArchiveyUsageError`; never `None` for a member that exists. `reader.open(b"a.txt")` is refused the same way; `reader.open(member)` reads the member |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `ArchiveyUsageError` that is also a `TypeError`: `unsupported source type` |
 | `extract_all(0)` | `ArchiveyUsageError` that is also a `TypeError`, naming `dest`; never `expected str, bytes or os.PathLike object` |
 | `ListingLimits(max_members=-1)` | `ArchiveyUsageError` that is also a `ValueError` |
+| `open_archive("")`, `open_archive(["", ...])`, `detect_format("")`, `open_stream("")` | `ArchiveyUsageError` that is also a `ValueError`, naming the empty path; the current directory is not read |
+| `extract_all("")` | `ArchiveyUsageError` that is also a `ValueError`, before anything is written; nothing is extracted into the current directory |
 
 ### Requirement: Enum-typed public arguments are converted at the boundary
 
@@ -620,9 +634,8 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2` |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
 | `DiagnosticPolicy(...)` | `default`, and the keys and values of `overrides` |
-| `detect_format()` | `budget` (a `DetectionBudget` passes through unconverted) |
 
 A member SHALL be reachable by its `value`, by its member **name**, in any case, and
 with `-` and `_` used interchangeably, so the dash spelling the CLI's `--help`
@@ -661,7 +674,7 @@ vocabulary rather than two that can drift.
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
 | `DiagnosticPolicy(default="raise")` | Field holds `DiagnosticDisposition.RAISE`; a diagnostic the policy covers raises |
 | `DiagnosticPolicy(overrides={"ARCHIVE_TRAILING_DATA": "raise"})` | The key is `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
-| `detect_format(src, budget="fast")` | Detects under the FAST preset |
-| `detect_format(src, budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
+| `ArchiveyConfig(detection_budget="fast")` | Detection under that config uses the FAST preset |
+| `ArchiveyConfig(detection_budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
 | `coerce to OverwritePolicy` given `AbortOn.BLOCKED_MEMBER` | `ArchiveyUsageError` reporting a wrong **type**, though `AbortOn` is a `str` subclass |
 | `except ArchiveyError` around any of the refusals | Does not catch it |

@@ -14,6 +14,7 @@ import io
 import lzma
 import struct
 import subprocess
+import sys
 import zlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -27,7 +28,11 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends import sevenzip_parser, sevenzip_pipeline
+from archivey.internal.backends import (
+    sevenzip_parser,
+    sevenzip_pipeline,
+    sevenzip_reader,
+)
 from archivey.internal.backends.sevenzip_parser import (
     MAGIC_7Z,
     PlainHeader,
@@ -37,10 +42,8 @@ from archivey.internal.backends.sevenzip_parser import (
     parse_header_block,
     read_signature_and_next_header,
 )
-from archivey.internal.backends.sevenzip_pipeline import (
-    parse_sevenzip_archive,
-    plan_folder,
-)
+from archivey.internal.backends.sevenzip_pipeline import plan_folder
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 
@@ -543,12 +546,12 @@ def test_archive_entry_point_applies_the_default_listing_limit() -> None:
         next_crc=zlib.crc32(header) & 0xFFFFFFFF,
     )
     with pytest.raises(ResourceLimitError, match="max_members"):
-        parse_sevenzip_archive(io.BytesIO(data + header))
+        load_sevenzip_archive(io.BytesIO(data + header))
     with pytest.raises(ResourceLimitError, match="max_members"):
         parse_header_block(header)
 
 
-@pytest.mark.parametrize("entry", [parse_header_block, parse_sevenzip_archive])
+@pytest.mark.parametrize("entry", [parse_header_block, load_sevenzip_archive])
 def test_entry_points_default_to_the_listing_limit(
     entry: Callable[..., object],
 ) -> None:
@@ -557,9 +560,107 @@ def test_entry_points_default_to_the_listing_limit(
     assert param.default is not None
 
 
-@pytest.mark.parametrize("helper", ["unwrap_encoded_header", "parse_decoded_header"])
-def test_pipeline_helpers_require_max_members(helper: str) -> None:
-    param = inspect.signature(getattr(sevenzip_pipeline, helper)).parameters[
-        "max_members"
-    ]
+@pytest.mark.parametrize(
+    "helper",
+    [
+        sevenzip_parser.parse_decoded_header,
+        sevenzip_reader._decode_encoded_header_block,  # noqa: SLF001
+    ],
+)
+def test_decoded_header_helpers_require_max_members(
+    helper: Callable[..., object],
+) -> None:
+    param = inspect.signature(helper).parameters["max_members"]
     assert param.default is inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# Unknown property IDs inside streams info
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("context", ["pack", "unpack", "substreams"])
+def test_unknown_streams_info_property_is_skipped(context: str) -> None:
+    """7-Zip skips an unknown ID by its size in PackInfo, UnpackInfo and SubStreamsInfo.
+
+    The unknown property (ID 0x30, size 1) sits before a property archivey must still
+    read, so a skip of the wrong length corrupts the header.
+    """
+    payload = b"hello"
+    crc = struct.pack("<I", zlib.crc32(payload) & 0xFFFFFFFF)
+    unknown = b"\x30\x01\xff"
+
+    def extra(name: str) -> bytes:
+        return unknown if name == context else b""
+
+    pack_info = b"\x06" + _num(0) + _num(1) + b"\x09" + _num(len(payload))
+    pack_info += extra("pack") + b"\x00"
+    unpack_info = b"\x07\x0b" + _num(1) + b"\x00" + _linear([_coder(_COPY)])
+    unpack_info += b"\x0c" + _num(len(payload)) + extra("unpack") + b"\x00"
+    substreams = b"\x08" + extra("substreams") + b"\x0a\x01" + crc + b"\x00"
+    streams = b"\x04" + pack_info + unpack_info + substreams + b"\x00"
+    names_blob = b"\x00" + "a".encode("utf-16le") + b"\x00\x00"
+    files = b"\x05" + _num(1) + b"\x11" + _num(len(names_blob)) + names_blob + b"\x00"
+    header = b"\x01" + streams + files + b"\x00"
+
+    assert _read_only_member(_archive(payload, header)) == payload
+
+
+# ---------------------------------------------------------------------------
+# Solid folder data pass cost
+# ---------------------------------------------------------------------------
+
+
+def _solid_copy_archive(count: int) -> tuple[bytes, bytes]:
+    """One COPY folder holding ``count`` one-byte members, and its payload."""
+    payload = bytes(index % 251 for index in range(count))
+    header = _header(
+        folders=[_linear([_coder(_COPY)])],
+        coder_unpack_sizes=[[count]],
+        pack_sizes=[count],
+        names=[str(index) for index in range(count)],
+        substreams=b"\x0d"
+        + _num(count)
+        + b"\x09"
+        + b"".join(_num(1) for _ in range(count - 1)),
+    )
+    return _archive(payload, header), payload
+
+
+def _python_calls_for_both_passes(count: int) -> int:
+    """Python function calls made by a streaming pass plus an ``open()`` per member."""
+    data, payload = _solid_copy_archive(count)
+    calls = 0
+
+    def profile(_frame: object, event: str, _arg: object) -> None:
+        nonlocal calls
+        if event == "call":
+            calls += 1
+
+    with open_archive(io.BytesIO(data)) as reader:
+        members = reader.members()
+        streamed = bytearray()
+        opened = bytearray()
+        sys.setprofile(profile)
+        try:
+            for _, stream in reader.stream_members():
+                assert stream is not None
+                streamed += stream.read()
+            for member in members:
+                with reader.open(member) as stream:
+                    opened += stream.read()
+        finally:
+            sys.setprofile(None)
+    assert streamed == payload
+    assert opened == payload
+    return calls
+
+
+def test_solid_folder_data_pass_cost_grows_linearly_with_member_count() -> None:
+    # Each member's offset in its folder is the sum of the earlier members' sizes.
+    # Recomputing that sum for every member makes a pass over a solid folder
+    # quadratic: doubling the member count then triples the work or more. Counting
+    # Python calls instead of timing keeps the check deterministic.
+    small = _python_calls_for_both_passes(200)
+    large = _python_calls_for_both_passes(400)
+    assert large / small < 2.5, (small, large)

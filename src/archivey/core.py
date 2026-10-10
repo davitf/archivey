@@ -12,6 +12,7 @@ capability gates (password / seekability) → normalize stream origin →
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, overload
@@ -39,11 +40,11 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_config,
     check_encoding,
+    check_path_not_empty,
     raise_if_text_stream,
     raise_if_write_only_stream,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
-from archivey.internal.backends.udif import UDIF_UNSUPPORTED_MESSAGE
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -59,6 +60,7 @@ from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
+    outer_stream_format,
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import OpenSite, capture_open_site
@@ -198,27 +200,33 @@ def _follow_stub_volume(
     alt = first_volume_for_stub(stub)
     if alt is None:
         return None
-    if format is not None:
-        try:
-            info = detect_format(
-                alt, config=probe_config(config), follow_stub_volumes=False
-            )
-        except FormatDetectionError:
-            # This probe only catches a confident container mismatch. A volume it
-            # cannot identify proves no conflict; the real detection after the
-            # switch reports it, to the caller's own collector.
-            pass
-        else:
-            if info.format.container != format.container:
-                # DR-15's value half: format= is a usable type, and the call refuses
-                # this value because it conflicts with what the source is.
-                raise _UsageValueError(
-                    f"{display_path(stub)} has no archive magic; "
-                    f"the split first volume beside it is {info.format.display_name}, "
-                    f"but format={format!r} was requested."
-                )
     resolved = resolve_source(alt)
-    _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
+    try:
+        if format is not None:
+            try:
+                info = detect_format(
+                    resolved.source,
+                    config=probe_config(config),
+                    follow_stub_volumes=False,
+                )
+            except FormatDetectionError:
+                # This probe only catches a confident container mismatch. A volume
+                # it cannot identify proves no conflict; the real detection after the
+                # switch reports it, to the caller's own collector.
+                pass
+            else:
+                if info.format.container != format.container:
+                    # DR-15's value half: format= is a usable type, and the call
+                    # refuses this value because it conflicts with what the source is.
+                    raise _UsageValueError(
+                        f"{display_path(stub)} has no archive magic; the split first "
+                        f"volume beside it is {info.format.display_name}, but "
+                        f"format={format!r} was requested."
+                    )
+        _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
+    except BaseException:
+        resolved.source.close()
+        raise
     slot.replace(resolved.source)
     return resolved
 
@@ -324,8 +332,12 @@ def open_archive(
     ``encoding``, and ``encoding`` replaces only the format's fallback (cp437 or
     ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
     RAR 1.5-4, surrogate escapes for TAR and ISO). ``member.raw_name`` keeps the stored
-    bytes. 7z, directory and single-file sources decode names another way, ignore it,
-    and record ``ENCODING_ARGUMENT_UNUSED``.
+    bytes. A ZIP comment without the UTF-8 flag (the archive comment always) and an
+    8-bit RAR 1.5-4 comment decode the same way as a name without a declared encoding,
+    and a byte the codec does not define survives as a lone surrogate. The one
+    difference is that a RAR comment's last fallback is always windows-1252. 7z,
+    directory and single-file sources decode names another way, ignore it, and record
+    ``ENCODING_ARGUMENT_UNUSED``.
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
@@ -369,6 +381,15 @@ def open_archive(
     open_site = capture_open_site()
 
     format = coerce_archive_format(format, call="open_archive(format=…)")
+    if format is not None and format.container is ContainerFormat.UNKNOWN:
+        # Detection's answer for "none of the above", not a format a caller can assert;
+        # tested on the container so an unnamed pair such as (UNKNOWN, GZIP) is refused
+        # too. Refused here rather than in coerce_archive_format:
+        # format_availability(UNKNOWN) is a legitimate query that answers NONE.
+        raise _UsageValueError(
+            f"open_archive(format=…) cannot open {format!r}, which names no format; "
+            f"pass the archive's format, or None to auto-detect."
+        )
     check_config(config, call="open_archive(config=…)")
     check_encoding(encoding, call="open_archive(encoding=…)")
 
@@ -478,6 +499,24 @@ def _open_resolved(
                 f"format=ArchiveFormat.DIRECTORY to read the directory tree."
             )
         resolved_format = ArchiveFormat.DIRECTORY
+    elif format is not None and format.container is ContainerFormat.DIRECTORY:
+        # The mirror of the conflict above, refused the same way; tested on the
+        # container, so an unnamed pair such as (DIRECTORY, GZIP) gets this message
+        # rather than "no read backend". A path the OS cannot stat (missing, under a
+        # file, a symlink loop) raises the OS's own error first, as it does under every
+        # other format=; Path.exists() would fold all of those into "missing".
+        if archive_source.path is not None:
+            os.stat(archive_source.path)
+        where = archive_name or (
+            display_path(archive_source.path)
+            if archive_source.path is not None
+            else "The source stream"
+        )
+        # DR-15's value half: format= conflicts with what the source is.
+        raise _UsageValueError(
+            f"{where} is not a directory, but format={format!r} was requested. Pass a "
+            f"directory path, or the archive's own format (or None to auto-detect)."
+        )
 
     detected: FormatInfo | None = None
     # What ``reader.format_info`` reports. A directory is decided without running
@@ -516,7 +555,7 @@ def _open_resolved(
         # bytes as ZIP/7z while auto-detect joined the split set.
         try:
             detect_format(
-                archive_source.path,
+                archive_source,
                 config=probe_config(config),
                 follow_stub_volumes=False,
             )
@@ -542,17 +581,19 @@ def _open_resolved(
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
-    # Detection claims DMG so this refusal can name the image and carry
-    # ``archive_name``. ``reader_for_format`` and ``UdifBackend.open_read`` raise
-    # the same error for a caller that reaches them, and neither has the name.
-    if resolved_format == ArchiveFormat.DMG:
+    # Detection claims a recognised-only format (DMG) so this refusal can name it and
+    # carry ``archive_name``. It comes before ``reader_for_format``, which raises the
+    # same text but takes no archive name. Such a backend's own ``open_read`` must
+    # raise the same refusal too, as ``UdifBackend`` does; nothing provides that.
+    registry = get_registry()
+    unread_message = registry.unread_format_message(resolved_format)
+    if unread_message is not None:
         raise UnsupportedFeatureError(
-            UDIF_UNSUPPORTED_MESSAGE,
+            unread_message,
             source_format=resolved_format,
             archive_name=archive_name,
         )
 
-    registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)
 
     # `password=` and `encoding=` are *resources offered for use if needed*, not
@@ -605,7 +646,7 @@ def _open_resolved(
         # a second refusal explaining the retry could never have worked.
         if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
             raise StreamNotSeekableError(
-                f"Format {resolved_format!r} cannot be read from a non-seekable source "
+                f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
                 f"in either access mode (its index/metadata is not at the front of "
                 f"the stream). Buffer it to disk or a BytesIO and reopen.",
                 source_format=resolved_format,
@@ -615,7 +656,7 @@ def _open_resolved(
             raise StreamNotSeekableError(
                 f"Random access (streaming=False) requires a seekable source. Open with "
                 f"streaming=True for a single forward pass over this "
-                f"{resolved_format!r} stream, "
+                f"{resolved_format.display_name} stream, "
                 f"or buffer it to disk or a BytesIO and reopen.",
                 source_format=resolved_format,
                 archive_name=archive_name,
@@ -689,9 +730,18 @@ def open_stream(
     ``AUTO``, loud slow rewinds on the non-accelerated path).
 
     ``format`` accepts a :class:`~archivey.StreamFormat`, a raw-stream
-    :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), or ``None`` to
-    auto-detect. A container format (ZIP, TAR, …) is rejected — use
-    :func:`open_archive` for those.
+    :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), a compressed-tar
+    :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.TAR_GZ``), or ``None`` to
+    auto-detect.
+
+    For a compressed tar (``.tar.gz``, ``.tar.xz``, …), whether detected or passed as
+    ``format=ArchiveFormat.TAR_GZ`` and so on, the returned stream removes the
+    compression layer only and yields the tar bytes, as ``gzip.open`` does;
+    ``open_archive(open_stream(p), streaming=True)`` then lists the same members as
+    ``open_archive(p)``. Any other container (ZIP, 7z, RAR, ISO, an uncompressed tar)
+    has no compression layer to remove: detecting one raises
+    :class:`~archivey.FormatDetectionError`, and passing one as ``format=`` raises
+    :class:`~archivey.ArchiveyUsageError`. Use :func:`open_archive` for those.
 
     A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
     returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
@@ -702,12 +752,26 @@ def open_stream(
     # Before any I/O: a value of neither format type used to fall through to
     # auto-detection, which silently discards the caller's assertion.
     format = coerce_stream_or_archive_format(format, call="open_stream(format=…)")
+    if (
+        isinstance(format, ArchiveFormat)
+        and format.container is ContainerFormat.UNKNOWN
+    ):
+        # Not a container: detection's answer for "none of the above". Refused here,
+        # as open_archive refuses it, so a missing path or a directory does not answer
+        # first; the container refusal in _resolve_stream_format would also send the
+        # caller to open_archive, which refuses it as well.
+        raise _UsageValueError(
+            f"open_stream cannot open {format!r}, which names no format; pass a "
+            "StreamFormat or a raw-stream ArchiveFormat (e.g. ArchiveFormat.GZ), "
+            "or None to auto-detect."
+        )
     check_config(config, call="open_stream(config=…)")
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     collector = collector_from_config(effective_config)
 
     if isinstance(source, (str, Path)):
+        check_path_not_empty(source, call="open_stream()")
         path = Path(source)
         if path.is_dir():
             # Split out of the is_file() check: a directory exists, so "not found" sends
@@ -817,25 +881,32 @@ def _resolve_stream_format(
     if isinstance(format, StreamFormat):
         return format
     if isinstance(format, ArchiveFormat):
-        if format.container is not ContainerFormat.RAW_STREAM:
+        # An UNKNOWN container never reaches here: open_stream refuses it before any I/O.
+        outer = outer_stream_format(format)
+        if outer is None:
             raise _UsageValueError(
                 f"open_stream does not accept container format {format!r}; "
-                "pass a StreamFormat or a raw-stream ArchiveFormat "
-                "(e.g. ArchiveFormat.GZ), or use open_archive."
+                "pass a StreamFormat, a raw-stream ArchiveFormat "
+                "(e.g. ArchiveFormat.GZ) or a compressed tar, or use open_archive."
             )
-        return format.stream
+        return outer
 
     # The invariant the docstring states, enforced rather than described: without it a
     # future caller of this private helper would auto-detect a value it was handed,
     # which is the silent fall-through this function's boundary check exists to close.
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
+    # The caller says the source is a compressed stream, so a probe answers only which
+    # codec it is, never whether it is an archive: every probe runs, whatever its name.
+    if not config.always_probe_content:
+        config = replace(config, always_probe_content=True)
     detected = detect_format_into(open_source, config=config, collector=collector)
-    if detected.format.container is not ContainerFormat.RAW_STREAM:
+    outer = outer_stream_format(detected.format)
+    if outer is None:
         # Detection found a container, not a compressed stream: to open_stream that is
         # the same answer as finding nothing it can open.
         raise FormatDetectionError(
             f"Detected {detected.format!r}, which is not a single-file compressed "
             "stream. Use open_archive for archive containers."
         )
-    return detected.format.stream
+    return outer

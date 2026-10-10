@@ -28,8 +28,8 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
   ``read``, not a separate one. The bound runs over the full-count strategy, never over
   the raw inner: ``read_within_reach`` takes one ``read`` as final.
 - **Cheap facts.** ``path`` when a real file exists, ``volume_paths`` for a joined set of
-  files, ``size`` when it is a fact, ``size_hint``, ``name``, all settled at
-  construction.
+  files, ``size`` when it is a fact, ``size_hint``, ``name``, ``seek_is_expensive``,
+  all settled at construction.
 
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
@@ -42,9 +42,14 @@ clamping on a hint that understates would truncate a legitimate read. :attr:`siz
 fact alone, so every slice or shared view built over this object — which asks
 ``source_byte_size``, and that reads ``size`` first — clamps on a fact or steps too. The
 hint survives as :attr:`size_hint` for the questions that want the cheap answer and
-bound nothing: ``compressed_source_size`` reports it, the same answer decides whether a
-live byte counter stands in for it (the two are complements, so they share one source of
-truth), and detection's cost receipt takes it as the total size.
+bound no read: detection's cost receipt takes it as the total size, and the reader's
+``_trusted_source_size`` filters it for extraction's archive-wide ratio, where it is both
+``compressed_source_size`` (the denominator) and the complement that decides whether a
+live byte counter stands in. ``_trusted_source_size`` does not take a caller's
+non-seekable stream's hint: nothing can check a pipe's claim, and an inflated one would
+switch off both ratio guards. A member stream's hint is its container's declared length
+(:attr:`seek_is_expensive`) and is taken, seekable or not; that declaration is unchecked
+too until the container's end-of-member check runs, after the payload is decoded.
 
 What stays outside, as wrappers over this object that keep its guarantees: measurement
 (``SeekCountingStream``), and ZIP's start offset (a ``SlicingStream``). Member-level
@@ -62,6 +67,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.internal.arg_checks import raise_if_text_stream
+
+# ``archive_stream`` imports nothing back from the source boundary (this module, the
+# detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
+# without a lazy import.
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ReadOnlyIOStream,
@@ -73,6 +83,7 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
     source_name,
     source_size_fact,
+    underlying_stream,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
 
@@ -93,6 +104,8 @@ class JoinedVolumes(Protocol):
     def volume_count(self) -> int: ...
     @property
     def volume_paths(self) -> list[Path]: ...
+    @property
+    def seek_is_expensive(self) -> bool: ...
     def read(self, n: int = -1, /) -> bytes: ...
     def seek(self, offset: int, whence: int = 0, /) -> int: ...
     def tell(self) -> int: ...
@@ -234,6 +247,7 @@ class ArchiveSource(ReadOnlyIOStream):
         is_directory: bool = False,
         position: int = 0,
         open_path: Path | None = None,
+        seek_is_expensive: bool = False,
     ) -> None:
         super().__init__()
         self._path = path
@@ -250,6 +264,7 @@ class ArchiveSource(ReadOnlyIOStream):
         self._length = length
         self._name = name
         self._caller_stream = caller_stream
+        self._seek_is_expensive = seek_is_expensive
         self._owned = owned
         self._buffer = buffer
         self._volume_paths = list(volume_paths)
@@ -339,6 +354,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # Where the caller left it: the archive starts there (see
         # :meth:`rebase_to_current_position`), and the clamp counts from it.
         position = stream.tell() if seekable else 0
+        expensive = seek_is_expensive(stream)
         if isinstance(stream, io.BufferedIOBase):
             # Already full-count when the stream blocks: ``BufferedIOBase.read(n)``
             # keeps asking its raw until it has ``n`` or reaches EOF. No second
@@ -355,6 +371,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 name=name,
                 caller_stream=stream,
                 position=position,
+                seek_is_expensive=expensive,
             )
         if not seekable:
             return cls(
@@ -366,6 +383,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 length=None,
                 name=name,
                 caller_stream=stream,
+                seek_is_expensive=expensive,
             )
         # A seekable raw source: a fixed-size buffer is full-count and its read-ahead is
         # recoverable by seeking. It is archivey's, so it closes with this object — by
@@ -382,6 +400,7 @@ class ArchiveSource(ReadOnlyIOStream):
             caller_stream=stream,
             buffer=buffer,
             position=position,
+            seek_is_expensive=expensive,
         )
 
     @classmethod
@@ -409,6 +428,7 @@ class ArchiveSource(ReadOnlyIOStream):
             volume_paths=joined.volume_paths,
             volume_count=joined.volume_count,
             joined=joined,
+            seek_is_expensive=joined.seek_is_expensive,
         )
 
     # --- cheap facts ---------------------------------------------------------------------
@@ -456,11 +476,24 @@ class ArchiveSource(ReadOnlyIOStream):
         """The source's total length when cheaply known, a caller's claim included.
 
         What ``source_byte_size`` said of the caller's object, measured once: an fsspec
-        ``size`` attribute counts here and not in :attr:`size`. Read by
-        ``compressed_source_size``, by the choice of whether a byte counter stands in for
-        it, and by detection's total size; never for bounding a read.
+        ``size`` attribute counts here and not in :attr:`size`. Read by detection's total
+        size and by ``compressed_source_size`` (which skips it on a caller's non-seekable
+        stream) and its complement, the choice of whether a byte counter stands in;
+        never for bounding a read.
         """
         return self._size
+
+    @property
+    def seek_is_expensive(self) -> bool:
+        """Whether a seek on this source may re-decode what it skips.
+
+        True when the caller's stream is an :class:`~archivey.ArchiveStream`, under any
+        pass-through buffer (see :func:`seek_is_expensive`), and for a joined set with
+        such a stream among its volumes: a read near the end of the set seeks that
+        volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
+        ``False``.
+        """
+        return self._seek_is_expensive
 
     @property
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a source has a path when the caller gave one
@@ -746,4 +779,27 @@ class ArchiveSource(ReadOnlyIOStream):
         return f"ArchiveSource({self._caller_stream!r})"
 
 
-__all__ = ["ArchiveSource", "JoinedVolumes"]
+def seek_is_expensive(stream: BinaryIO) -> bool:
+    """Whether repositioning ``stream`` may cost a re-decode rather than a pointer move.
+
+    True for an :class:`~archivey.ArchiveStream`: many codecs serve a backward seek by
+    decoding again from the start, and a seek to the end decodes everything before it.
+    The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
+    which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
+    well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
+    hands a member stream to detection, and for a joined set with such a volume. Those
+    two record the fact when they are built, so they are asked for it first, before
+    any type test: a join handed to ``for_stream`` or passed here directly is neither
+    peeled nor a member stream, and must still give the answer it gives itself. The
+    peel is the fallback for everything else. Detection reads this to keep its trailer
+    and probe reads off such a stream (``dev-docs/topics/detection.md`` §4.2).
+    """
+    # ``ArchiveSource`` and ``JoinedVolumes`` both carry the fact as a bool property;
+    # anything else that does not is answered by the peel.
+    own = getattr(stream, "seek_is_expensive", None)
+    if isinstance(own, bool):
+        return own
+    return isinstance(underlying_stream(stream), ArchiveStream)
+
+
+__all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]

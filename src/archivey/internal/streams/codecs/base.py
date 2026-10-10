@@ -224,6 +224,12 @@ _PROBE_COMPLETENESS_OUTPUT = 64 * 1024
 # Optional bounded read-at callback for probes that follow a self-describing block chain
 # past the peeked prefix (``compressed-streams``). ``None`` means the caller declined.
 ProbeReadAt = Callable[[int, int], bytes | None]
+# Optional hook for a probe that decodes more than the sample it was handed (the Brotli
+# chain decode): ``charge_decode(n)`` asks to read and decode the total ``[0, n)`` of
+# the source, and is called before the read, which it also bounds. ``True`` means the
+# caller's budget covers it and ``n`` is charged; ``False`` means it does not, and the
+# probe must keep the verdict it has without reading or decoding.
+ProbeChargeDecode = Callable[[int], bool]
 
 
 @dataclass(frozen=True)
@@ -244,22 +250,37 @@ class MetadataContext:
     probe_lzip_index: Callable[[], tuple[int, int] | None]
 
 
+class _ProbeSample(io.BytesIO):
+    """A probe's sample, served at most ``_PROBE_PREFIX`` bytes per read.
+
+    It stays seekable, so the Brotli decoder can still tell bytes after a stream's end
+    from damage: on a decode error it replays from the start and then hands over, one
+    byte at a time, the input of the call that failed. The smaller reads bound that
+    byte-at-a-time stretch to one read. With the decoder's own 64 KiB reads, a 1 MiB
+    chain-decode sample that fails took a second to reject; 4 KiB reads take a few
+    milliseconds.
+    """
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        if size is None or size < 0 or size > _PROBE_PREFIX:
+            size = _PROBE_PREFIX
+        return super().read(size)
+
+
 # --- the codec descriptors -------------------------------------------------------------
 
 
-# Detection probes decode uncapped. A probe decodes a bounded sample, so a declared
-# dictionary cannot *fill* more than that sample's output — but liblzma still
-# *reserves* the declared size when the decoder is built, so a probe over a stream
-# declaring 4 GiB asks the allocator for 4 GiB. Under overcommit that costs nothing
-# resident; under ``RLIMIT_AS`` or a strict commit limit it is a ``MemoryError`` at
-# detection, before the caller's cap is ever consulted. Capping the probe instead
-# would make detection answer "not this format" for a stream whose dictionary is
-# over the cap, and a caller who opened it with ``DecoderLimits.UNLIMITED`` would get
-# the wrong format rather than the read they asked for. ``DecoderLimits`` says so;
-# the open that follows detection applies the caller's limits. libzstd reserves the
-# same way: a probe decodes with ``window_log_max`` at libzstd's ceiling (2 GiB on a
-# 64-bit build), so a frame declaring a 2 GiB window is reserved in full during
-# detection whatever ``max_decoder_memory`` says.
+# Detection probes decode uncapped: capping a probe would make detection answer "not
+# this format" for a stream whose dictionary is over the cap, and a caller who opened
+# it with ``DecoderLimits.UNLIMITED`` would get the wrong format rather than the read
+# they asked for. ``DecoderLimits`` says so; the open that follows detection applies
+# the caller's limits. Nor does a probe reserve what the archive declares: each one
+# sets ``StreamConfig.probe_read_bound`` to the output it reads, and the LZMA family
+# builds its decoder with only the dictionary that read needs (liblzma would
+# otherwise reserve the declared size, up to 4 GiB, which under ``RLIMIT_AS`` or a
+# strict commit limit is a ``MemoryError`` during detection). zstd cannot shrink a
+# window, so a probe lowers ``window_log_max`` to libzstd's default and a frame over
+# it is "can't tell".
 _PROBE_STREAM_CONFIG = replace(
     DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits.UNLIMITED
 )
@@ -289,6 +310,10 @@ class StreamCodec:
     # The optional-dependency requirement (package / extra / hint + unlocked capability);
     # ``None`` for codecs served by the stdlib, which are always available.
     requirement: ClassVar[MissingComponent | None] = None
+    # Other extensions files of this format are commonly given, besides the canonical one.
+    # They matter most for the formats only a content probe recognises, whose probe runs
+    # only for a name that claims the format.
+    extension_aliases: ClassVar[tuple[str, ...]] = ()
 
     # --- derived single-file identity ---
 
@@ -306,14 +331,13 @@ class StreamCodec:
 
     @property
     def extensions(self) -> tuple[str, ...]:
-        """Standalone file extension(s), derived from the format (e.g. ``GZIP`` → ``.gz``).
-
-        One canonical extension per codec, taken from ``ArchiveFormat.file_extension()``.
-        Extension *aliases* (e.g. ``.zstd``) are intentionally not a per-codec concern; they
-        belong in a format-level alias map if/when they are needed.
+        """Standalone file extension(s): the canonical one, derived from the format (e.g.
+        ``GZIP`` → ``.gz``) by ``ArchiveFormat.file_extension()``, then ``extension_aliases``.
         """
         fmt = self.single_file_format
-        return (f".{fmt.file_extension()}",) if fmt is not None else ()
+        if fmt is None:
+            return ()
+        return (f".{fmt.file_extension()}", *self.extension_aliases)
 
     # --- behavior (overridden by subclasses) ---
 
@@ -344,6 +368,7 @@ class StreamCodec:
         *,
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
     ) -> bool:
         """Whether ``prefix`` is recognized as this codec's stream.
 
@@ -354,7 +379,8 @@ class StreamCodec:
         cannot fit, or an incomplete decode when the whole source is visible; ``None``
         means "unknown — do not reject on that basis." ``read_at`` is an optional bounded
         read facility for probes that follow a self-describing block chain past the
-        peeked prefix; absent by default.
+        peeked prefix; absent by default. ``charge_decode`` meters a decode past the
+        sample (see ``ProbeChargeDecode``); absent means the probe is not metered.
         """
         return False
 
@@ -434,6 +460,7 @@ class StreamCodec:
         *,
         source_length: int | None = None,
         require_output: bool = False,
+        sample_bytes: int = _PROBE_PREFIX,
     ) -> bool:
         """Whether a bounded ``prefix`` decodes cleanly through this codec (the probe primitive).
 
@@ -450,6 +477,9 @@ class StreamCodec:
         are not rejected here (the check is bounded, not a full drain). When the source is
         larger than the prefix, ``TruncatedError`` remains a match (there genuinely is more
         input). ``require_output`` rejects an empty successful read (LZMA Alone).
+        ``sample_bytes`` widens the bounded sample past the detection window for a probe
+        that has already read further (the Brotli chain decode); the output drain grows
+        with it.
         """
         # The registry imports every codec module, and so this one: import it here.
         from archivey.internal.streams.codecs.registry import open_codec_stream
@@ -459,15 +489,17 @@ class StreamCodec:
         fully_visible = source_length is not None and source_length <= len(prefix)
         # Feed the whole source when it is fully visible so "needs more input" means
         # incomplete; otherwise keep the bounded probe sample.
-        sample = prefix[:source_length] if fully_visible else prefix[:_PROBE_PREFIX]
+        sample = prefix[:source_length] if fully_visible else prefix[:sample_bytes]
         out_budget = (
             _PROBE_COMPLETENESS_OUTPUT
             if fully_visible
             else max(len(sample), _PROBE_PREFIX)
         )
+        # The most output read below: the budget, then one byte past it.
+        config = replace(_PROBE_STREAM_CONFIG, probe_read_bound=out_budget + 1)
         try:
             with open_codec_stream(
-                self.codec, io.BytesIO(sample), config=_PROBE_STREAM_CONFIG
+                self.codec, _ProbeSample(sample), config=config
             ) as stream:
                 if fully_visible:
                     # Drain up to the budget in chunks. A truncated high-ratio stream
@@ -502,4 +534,8 @@ class StreamCodec:
                 return False  # whole file in hand; stream did not terminate
             return True  # decoded fine, just ran out of the bounded prefix
         except ArchiveyError:
+            return False
+        except MemoryError:
+            # A decoder the bound did not shrink (Brotli's window, up to 16 MiB) under
+            # a tight memory limit: "can't tell", not a failed detection.
             return False

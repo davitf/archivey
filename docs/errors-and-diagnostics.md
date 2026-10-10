@@ -23,7 +23,7 @@ React to specific cases with the subtypes:
 | Exception | Raised when |
 | --- | --- |
 | [`OpenError`][archivey.OpenError] | reading could not start — `FormatDetectionError` (not a format archivey recognizes, or not a compressed stream under `open_stream()`), `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek), or a volume file that cannot be opened |
-| [`ReadError`][archivey.ReadError] | the archive's data is bad or cannot be read, whether at open (a damaged header) or later; the parent of the next three rows, and the thing to catch when you do not care which. A damaged header raises one of these from `open_archive()`, not `OpenError` |
+| [`ReadError`][archivey.ReadError] | the archive's data is bad or cannot be read, whether at open (a damaged header) or later; the parent of the next three rows, and the thing to catch when you do not care which. A damaged header raises one of these from `open_archive()`, not `OpenError`, except a damaged method, codec or version number in a header with no checksum, which raises `UnsupportedFeatureError` (see that row) |
 | [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
 | [`CorruptionError`][archivey.CorruptionError] | the archive's bytes are damaged: a checksum mismatch, a malformed header or data block, or data cut short. [`TruncatedError`][archivey.TruncatedError], its subclass, marks damage that looks like the data ending early, as a best-effort label (see [The integrity guarantee](#the-integrity-guarantee)) |
 | [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain, or a RAR file copy names a source it does not contain |
@@ -31,7 +31,7 @@ React to specific cases with the subtypes:
 | [`ExtractionError`][archivey.ExtractionError] | writing a member to disk failed; the parent of the next two rows |
 | [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member: a path that escapes the destination, a symlink that resolves outside it, a device node, FIFO or socket, a name the destination OS cannot store safely (such as a Windows-reserved name), or a name built to display as something it is not (such as a bidi override). The message says which |
 | [`NameCollisionError`][archivey.NameCollisionError] / [`NameRewrittenError`][archivey.NameRewrittenError] | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
-| [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is recognized but this archive uses something archivey cannot handle: a variant or layout (a raw CD sector image, a UDIF disk image, a 7z coder graph that is not a tree of chains, multi-volume where the format has none) or a request the backend cannot serve (a RAR password with a line break, which `unrar` cannot be given) |
+| [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is recognized but this archive uses something archivey cannot handle: a variant or layout (a raw CD sector image, a UDIF disk image, a 7z coder graph that is not a tree of chains, multi-volume where the format has none) or a request the backend cannot serve (a RAR password with a line break, which `unrar` cannot be given). An unknown compression method, codec or version number read from a header with no checksum, such as a ZIP method, may also mean that header is damaged: archivey cannot tell the two apart, so it reports it as unsupported, and the message says a damaged header reads the same way |
 | [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] | a diagnostic whose disposition you set to `RAISE` fired; carries the `Diagnostic` (see [Diagnostics](#diagnostics)) |
 | [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and comment bytes at open, compressed RAR 1.5/2.x comments by their declared size), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)). So does an `unrar` or `unar` process the system kills with SIGKILL while it reads a RAR member |
 
@@ -66,11 +66,12 @@ type, and a `ValueError` when the type is right but the value is not (an unknown
 or enum spelling, a negative limit), so `except TypeError`, `except ValueError` and
 `except ArchiveyUsageError` all catch it. The source and destination arguments follow
 the same rule: `open_archive(0)` raises an `ArchiveyUsageError` that is also a
-`TypeError`. Misuse that is not about one argument's type or value, such as using a
-closed reader, raises a plain `ArchiveyUsageError`. Looking up a member name that is
-not in the archive raises `KeyError`, like a mapping.
+`TypeError`, and an empty string raises one that is also a `ValueError` instead of
+meaning the current directory. Misuse that is not about one argument's type or value,
+such as using a closed reader, raises a plain `ArchiveyUsageError`. Looking up a member
+name that is not in the archive raises `KeyError`, like a mapping.
 
-`ArchiveyConfig`, `ExtractionLimits` and `ListingLimits` check their own fields when you
+`ArchiveyConfig`, the limits types and `DetectionBudget` check their own fields when you
 construct them, for the same reason: a limit is a promise about an operation that has not
 started yet, so the constructor is the last place a message can still name what you wrote.
 That also covers the values that would quietly switch a guard off — `None` on

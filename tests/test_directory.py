@@ -23,6 +23,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.types import ContainerFormat, StreamFormat
 from tests.scandir_util import patch_dir_entry_stat
 
 # ---------------------------------------------------------------------------
@@ -88,6 +89,74 @@ def test_conflicting_format_on_directory_raises(simple_dir: Path) -> None:
     # the wrong data.
     with pytest.raises(archivey.ArchiveyUsageError, match="is a directory"):
         open_archive(simple_dir, format=ArchiveFormat.ZIP)
+
+
+@pytest.mark.parametrize("form", ["path", "str", "stream"])
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        ArchiveFormat.DIRECTORY,
+        "directory",
+        # An unnamed pair is refused on the container, not reported as a missing backend.
+        ArchiveFormat(ContainerFormat.DIRECTORY, StreamFormat.GZIP),
+    ],
+)
+def test_directory_format_on_a_file_raises_a_usage_error(
+    tmp_path: Path, form: str, fmt: object
+) -> None:
+    """The mirror of the conflict above fails the same way.
+
+    It used to escape as ``TypeError: Directory backend requires a directory path
+    source``, naming an internal class instead of the argument.
+    """
+    path = tmp_path / "data.bin"
+    path.write_bytes(b"not a directory")
+    source: object = {"path": path, "str": str(path), "stream": io.BytesIO(b"x")}[form]
+    with pytest.raises(archivey.ArchiveyUsageError, match="is not a directory"):
+        open_archive(source, format=fmt)  # type: ignore[call-overload]
+
+
+def test_directory_format_on_a_missing_path_raises_file_not_found(
+    tmp_path: Path,
+) -> None:
+    """A path that does not exist is reported as missing, as under any other format=.
+
+    Not the usage error above: that one asserts the path is not a directory, which
+    nothing read for a path that is absent, and ``except FileNotFoundError`` around the
+    open has to keep catching it.
+    """
+    missing = tmp_path / "absent"
+    for fmt in (ArchiveFormat.DIRECTORY, ArchiveFormat.ZIP, None):
+        with pytest.raises(FileNotFoundError) as exc_info:
+            open_archive(missing, format=fmt)
+        assert exc_info.value.errno == errno.ENOENT
+
+
+def test_directory_format_on_a_path_under_a_file_raises_what_the_os_reports(
+    tmp_path: Path,
+) -> None:
+    """The OS's own error, the same class under every format=.
+
+    ``Path.exists()`` is False for this path too, and a check built on it reported
+    ENOENT under ``DIRECTORY`` while ``ZIP`` and ``None`` raised whatever the OS
+    reported. The class comes from the OS: POSIX reports ENOTDIR
+    (``NotADirectoryError``), Windows reports ERROR_PATH_NOT_FOUND
+    (``FileNotFoundError``).
+    """
+    (tmp_path / "a.txt").write_bytes(b"x")
+    under_a_file = tmp_path / "a.txt" / "sub"
+    try:
+        open(under_a_file, "rb").close()  # noqa: SIM115
+    except OSError as e:
+        expected: type[OSError] = type(e)
+    else:  # pragma: no cover - no OS opens a path under a regular file
+        pytest.fail(f"opening {under_a_file} succeeded")
+    if sys.platform != "win32":
+        assert expected is NotADirectoryError
+    for fmt in (ArchiveFormat.DIRECTORY, ArchiveFormat.ZIP, None):
+        with pytest.raises(OSError) as exc_info:
+            open_archive(under_a_file, format=fmt)
+        assert type(exc_info.value) is expected, fmt
 
 
 def test_archive_info_format(simple_dir: Path) -> None:
@@ -643,22 +712,6 @@ def test_subdirectory_vanishing_mid_walk_is_skipped(
     assert "sub/" in names  # the dir entry itself was listed before it vanished
     assert not any(n.startswith("sub/") and n != "sub/" for n in names)
     assert any("vanished" in r.message for r in caplog.records)
-
-
-# ---------------------------------------------------------------------------
-# stat timestamps are guarded like every backend's (deep W2)
-# ---------------------------------------------------------------------------
-
-
-def test_stat_datetime_guards_out_of_range_values() -> None:
-    # A network/FUSE filesystem can report garbage timestamps; one bad file must not
-    # sink the whole walk (on Windows even tz-aware fromtimestamp raises OSError).
-    from datetime import UTC, datetime
-
-    from archivey.internal.backends.directory_reader import _stat_datetime
-
-    assert _stat_datetime(0) == datetime(1970, 1, 1, tzinfo=UTC)
-    assert _stat_datetime(2**62) is None
 
 
 def test_symlink_vanishing_before_readlink_is_skipped(

@@ -417,11 +417,12 @@ with the destination empty, or revise an already-deleted member to `OVERWRITTEN`
 ### Requirement: Symlink Escape Re-Validated at Extraction Time
 
 The system SHALL validate a SYMLINK member after `os.symlink(link_target,
-dest_path)` creates the link on disk. It resolves the created link target with
-`Path.resolve()` and, if the resolved path escapes `dest`, immediately unlinks the
-new link and raises `FilterRejectionError`. Resolution failures from symlink loops
-or platform equivalents (`OSError` such as `ELOOP`, or `RuntimeError`) SHALL fail
-safe the same way: unlink the just-created link and reject the member.
+dest_path)` creates the link on disk. It resolves the created link target through
+the real filesystem and, if the resolved path escapes `dest`, immediately unlinks the
+new link and raises `FilterRejectionError`. Any failure to resolve the created link
+(`OSError`, such as `ELOOP` or its platform equivalent) SHALL fail safe the same way:
+unlink the just-created link and reject the member. A symlink loop SHALL be detected
+on every supported Python version.
 
 This post-creation check SHALL catch chained symlink attacks where earlier archive
 members influence later target resolution, without allowing writes through an
@@ -443,7 +444,7 @@ waiting are removed unresolved and the run stops with `ResourceLimitError`. Test
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
-| Cyclic links (`a -> b`, `b -> a`) make `Path.resolve()` raise | Just-created link is unlinked; `FilterRejectionError`; no uncaught OS/runtime error |
+| Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError`; no uncaught OS/runtime error; same on every Python version |
 
 ### Requirement: Hardlink Two-Pass Extraction
 
@@ -520,6 +521,7 @@ refuses its links; any other is recovered as above.
 | HARDLINK `hl` → SYMLINK with no target (`/s` under `STRICT`, or `s`) | `hl` `FAILED`, not refused for `/s`'s name: `ExtractionError` naming the source's type when the listing was read first, else `LinkTargetNotFoundError` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
+| `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 
 ### Requirement: Policy-Specific Metadata Transforms
 
@@ -558,13 +560,20 @@ stops the run from reaching a directory inside it. This SHALL also happen when t
 stops early (`OnError.STOP`, an `abort_on` trigger, a limit), for the directories written
 before it stopped. A directory is changed only when the entry at its path is still the
 directory the member wrote: a symlink, or another entry, that a later member put there
-SHALL NOT be changed, and the change SHALL NOT follow a symlink. GNU tar, bsdtar and
-Python's `tarfile` order these changes the same way. With the mode applied at once, a
-stored mode without owner write or search permission refused every member inside the
-directory to a non-root user, and each member written inside changed the directory's
-modification time. One consequence, which GNU tar shares: under `TRUSTED`, the only
-policy that keeps setgid, a setgid directory gets the bit only after its members are
-written, so a non-root run does not give them the directory's group.
+SHALL NOT be changed, and the change SHALL NOT follow a symlink. A directory that a
+member reaches through a directory symlink the archive created SHALL be taken by where it
+physically is, with its parents resolved: that place sets its depth, and the change
+reaches it from the root through that place only. Where several members reach one
+directory, the one written last SHALL be applied last. A later member that removes the
+directory SHALL drop its pending metadata under any spelling that reaches it, under
+every policy: through such a symlink, or a case variant on a case-insensitive
+filesystem. GNU tar, bsdtar and Python's `tarfile` order these changes the same way.
+With the mode applied at once, a stored mode without owner write or search permission
+refused every member inside the directory to a non-root user, and each member written
+inside changed the directory's modification time. One consequence, which GNU tar shares:
+under `TRUSTED`, the only policy that keeps setgid, a setgid directory gets the bit only
+after its members are written, so a non-root run does not give them the directory's
+group.
 
 #### Scenario: metadata policy matrix
 
@@ -579,6 +588,10 @@ written, so a non-root run does not give them the directory's group.
 | DIRECTORY `d/` with a stored mtime, then `d/f` | `d` ends with the stored mtime |
 | DIRECTORY `d/`, then `d/f`, then a member that stops the run | `d` ends with its stored mode and mtime |
 | DIRECTORY `d/` replaced under `REPLACE` by a symlink `d -> t` | `t` keeps its own mode and mtime |
+| `s -> .`, DIRECTORY `s/d/` `0o700`, then `REPLACE` removes `d` for a refused symlink `d -> d`, then `d/x` | `d` is a plain parent: it does not get `0o700` or the stored mtime |
+| DIRECTORY `t/`, DIRECTORY `a/b/c/` `0o000`, `a/b/c/s -> ../../../t`, DIRECTORY `a/b/c/s/u/` `0o750`, non-root user | `t/u` ends with `0o750` and its stored mtime |
+| `s -> .`, FILE `s/d/f`, then DIRECTORY `d/` `0o700` | `d` ends with `0o700` and the stored mtime; `kept_mode` is `None` |
+| `s -> .`, DIRECTORY `d/` `0o700`, then DIRECTORY `s/d/` `0o750` | `d` ends with `0o750`, the member written last |
 
 ### Requirement: Overwrite Policy
 
@@ -637,7 +650,11 @@ this run neither wrote nor created as a parent) SHALL leave that directory's mod
 ownership and times unchanged. When the member's effective mode differs from the
 directory's, the result SHALL carry the mode the directory kept in
 `ExtractionResult.kept_mode`; otherwise `kept_mode` is `None`, and the times were still
-left alone.
+left alone. A directory this run wrote or created is recognized under any spelling that
+reaches it, under every policy: through a directory symlink the archive created, and a
+case variant on a case-insensitive filesystem. A case variant on a filesystem that
+reports inode 0 for every entry cannot be told from another directory, and is taken for
+one that was there before the run.
 
 A HARDLINK is made against the path its source member was written to only while that
 path still holds the source's content. Once a later member replaces that path, the path
@@ -924,7 +941,12 @@ streaming pass does not learn it until EOF, by which time the member has already
 written or not. Those SHALL take the per-member failure that an unresolved target
 takes, and the library default aborts the archive there. Settling them in a streaming
 pass would mean holding a reparse point's data until the member is written, which is a
-different guarantee and is not required here.
+different guarantee and is not required here. One pass does learn it at the member: a 7z
+pass under `read_link_targets=True` reads a reparse-flagged member's data as it reaches
+it, so a member whose bytes are not a link buffer is a file by the time extraction sees
+it, and is written as one. A directory-shaped entry is the exception: it stays a link
+with no target (`archive-reading`, "Link targets stored as member data are read only
+when configured").
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and
@@ -987,6 +1009,8 @@ are the per-result outcome.
 | User filter returns `None` | No `ExtractionResult`; no result-count impact (like a selector exclusion) |
 | User filter returns anything but an `ArchiveMember` or `None` | `TypeError` naming what it returned; the call ends (a caller bug, not a member outcome) |
 | `extract_all()` on a directory source with `dest` inside that directory | `ExtractionError` before anything is created (the pass would read its own output) |
+| `extract_all()` with `dest` under a symlink loop, any format | `OSError` (`ELOOP`), as `mkdir` raises it, before anything is created |
+| `extract_all()` with `dest` itself a symlink loop, any format | `ExtractionError`, as for any `dest` that exists and is not a directory; nothing created |
 | Selector excludes member | No `ExtractionResult`; no result-count impact |
 | Member blocked by `FilterRejectionError` under `CONTINUE` | Result is `BLOCKED` with matching error; no diagnostic emitted |
 | Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error; no diagnostic emitted |
@@ -1111,7 +1135,16 @@ member's `compressed_size` is unknown/zero and the reader exposes a cheap
 `stat`, trusted integer `size`, `try_get_size()` from Archivey streams, or an
 O(1)-safe `SEEK_END`/restore probe for real files, `BytesIO`, and `mmap`.
 Anything that would decompress or scan payload to answer (for example foreign
-decompressor streams) yields `None`. For compressed containers this is compressed
+decompressor streams) yields `None`. A `size` is taken on a seekable source and
+on an Archivey member stream, seekable or not. On a caller's non-seekable stream a
+`size` attribute is an unchecked claim, and an inflated one would disable both
+archive-wide guards, so it yields `None` and the live ratio applies. A member
+stream's `size` is the length its container declares, and that declaration is
+unchecked too: the container is untrusted input, and a member shorter than its
+declaration is refused (`TruncatedError`) by the container's end-of-member check
+only after its payload is decoded. An inflated declaration therefore disables
+both archive-wide guards for a nested archive, and `max_extracted_bytes` is the
+bound that holds there. For compressed containers this is compressed
 size; for uncompressed containers the resulting ratio is about 1:1 and harmless.
 
 The ratio SHALL be `archive_output / compressed_source_size`, where
@@ -1131,10 +1164,11 @@ SHALL raise `ResourceLimitError`.
 | Case | Expected |
 | --- | --- |
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
-| Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
-| Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
+| Compressed tar from non-seekable pipe, with or without a `size` attribute | Static archive-wide ratio skipped; live ratio and cumulative byte limit still apply |
+| Plain `.tar` from a path or a seekable stream with a cheap size | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
+| Plain tar from a non-seekable stream, with or without a `size` attribute | No archive-wide denominator; the cumulative byte limit applies |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
-| Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator |
+| Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator; it is the container's unchecked declaration, so `max_extracted_bytes` is the bound that holds |
 
 ### Requirement: Enforce Maximum Entry Count
 
@@ -1185,8 +1219,9 @@ data as Python `tarfile` may do on symlink-unsupported platforms.
 The system SHALL evaluate a live archive-wide ratio during extraction when no
 per-member `compressed_size` and no cheap static `compressed_source_size` is
 available, but the compressed backend can expose `compressed_bytes_consumed`.
-This covers compressed archives from non-seekable pipes and seekable opaque
-streams whose size is not cheaply knowable. Backends wrap the stream source in
+This covers compressed archives from non-seekable pipes, a pipe that carries a
+`size` attribute included, and seekable opaque streams whose size is not cheaply
+knowable. Backends wrap the stream source in
 the counting reader exactly when the static denominator is absent.
 
 The ratio SHALL be `archive_output / compressed_bytes_consumed`, with
@@ -1205,7 +1240,7 @@ weakening the guard, but never causing a false positive.
 | --- | --- |
 | Highly compressible `.tar.gz` from non-seekable pipe has no static denominator | Live ratio raises `ResourceLimitError` after threshold before absolute byte cap |
 | Live ratio exceeded under `OnError.CONTINUE` | `ResourceLimitError` propagates and extraction halts |
-| Plain uncompressed `.tar` from a pipe | Consumed and written bytes stay about 1:1; live ratio does not trip; byte limit still applies |
+| Plain uncompressed `.tar` from a pipe | No counter is installed, so no live ratio applies; byte limit still applies |
 | `.tar.gz` has cheap `compressed_source_size` | Static archive-wide ratio is used; live path is not engaged/double-counted |
 | Seekable opaque compressed stream has no cheap size/`size`/`try_get_size()`/O(1) end seek | Source is counted live; archive is not left with only the byte cap |
 

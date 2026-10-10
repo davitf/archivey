@@ -53,6 +53,7 @@ from archivey.internal.filters import (
     collision_key,
     disk_spelled,
     reroot_absolute,
+    resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
@@ -89,12 +90,6 @@ _TMP_PREFIX = ".archivey-tmp-"
 # Prefix of the private scratch directory a dry run extracts into (see
 # ``ExtractionCoordinator.run``). Removed when the run ends, like the temp files above.
 _DRY_RUN_PREFIX = "archivey-dry-run-"
-
-# Defaults (see the safe-extraction spec); callers override via extract_all().
-DEFAULT_MAX_EXTRACTED_BYTES = 2 * 2**30  # 2 GiB
-DEFAULT_MAX_RATIO = 1000.0
-DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
-DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
 
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
@@ -134,13 +129,13 @@ def _at_link_limit(exc: OSError) -> bool:
 def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
     """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
 
-    Resolved through the real filesystem, so links on the way are followed. A
-    cyclic or adversarial link makes ``resolve()`` raise ELOOP or ``RuntimeError``,
-    which counts as an escape: fail safe rather than crash.
+    Resolved through the real filesystem, so links on the way are followed. A link
+    that cannot be resolved counts as an escape: fail safe rather than crash. That
+    includes a symlink loop, on every Python version (``resolve_or_raise_on_loop``).
     """
     try:
-        resolved = (link_path.parent / target).resolve()
-    except (OSError, RuntimeError):
+        resolved = resolve_or_raise_on_loop(link_path.parent / target)
+    except OSError:
         return True
     return not (resolved == dest_root or resolved.is_relative_to(dest_root))
 
@@ -305,8 +300,9 @@ class BombTracker:
         self,
         max_bytes: int | None,
         max_ratio: float | None,
-        ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
-        max_entries: int | None = DEFAULT_MAX_ENTRIES,
+        # The defaults come from ExtractionLimits, the one place the limits are set.
+        ratio_activation_threshold: int = ExtractionLimits.ratio_activation_threshold,
+        max_entries: int | None = ExtractionLimits.max_entries,
         *,
         source: BaseArchiveReader | None = None,
     ) -> None:
@@ -620,15 +616,23 @@ class _RunState:
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
     # Directories ``_makedirs`` created this run, as parents of what it wrote.
     created_dirs: set[Path] = field(default_factory=set)
+    # Every directory this run wrote or created, by ``_physical_key`` -> where each one
+    # physically is (``_physical_path``), so a member that names one under another
+    # spelling is not taken for the caller's (``_is_run_directory``).
+    run_dirs: dict[str, set[Path]] = field(default_factory=dict)
     # Directory members whose ownership, mode and times wait for the end of the run
-    # (``_apply_directory_metadata``), by the path the directory was written at, in
-    # the order they were last written: the directory's identity on disk (device,
-    # inode) when it was written, the number of ``/`` in its path relative to the
-    # root once the parent is resolved (so a deeper directory sorts first), and the
-    # transformed member. Keyed by path, not identity: some filesystems report inode
-    # 0 for every entry (``_Identity.of`` in the directory reader).
-    pending_dirs: dict[Path, tuple[tuple[int, int], int, ArchiveMember]] = field(
-        default_factory=dict
+    # (``_apply_directory_metadata``): ``_physical_key`` -> where the directory physically
+    # is -> the directory's identity on disk (device, inode) when it was written, the
+    # number of ``/`` in that physical path relative to the root (so a deeper
+    # directory sorts first), and the transformed member. In each key, in the order
+    # they were last written. Keyed by place, not identity: some filesystems report
+    # inode 0 for every entry (``_Identity.of`` in the directory reader). By the
+    # physical path, not the spelled one: two spellings through a symlink of the
+    # archive's share one entry, and the metadata pass opens the directory through
+    # shallower directories only, which it has not changed yet. Under a casefolded
+    # key, so a removal by a case variant finds the entry (``_drop_pending_dir``).
+    pending_dirs: dict[str, dict[Path, tuple[tuple[int, int], int, ArchiveMember]]] = (
+        field(default_factory=dict)
     )
     # ``_physical_rel``'s resolved parents, as spelled -> relative to the root with a
     # trailing ``/``. Only a symlink created, replaced or removed changes a
@@ -902,8 +906,8 @@ class ExtractionCoordinator:
             return self._run(reader, dest)
         given = Path(os.path.abspath(dest))
         try:
-            resolved = given.resolve()
-        except (OSError, RuntimeError):
+            resolved = resolve_or_raise_on_loop(given)
+        except OSError:
             resolved = given
         # Resolved, so a path built from the resolved root (``dest_root``) and one built
         # from ``dest`` translate the same way (macOS's /var -> /private/var). The pass
@@ -1025,7 +1029,7 @@ class ExtractionCoordinator:
                 unmatched_pending = selector
         # Created only after that report, so a refusal leaves no directory behind.
         created_root = self._ensure_dest_root(dest)
-        dest_root = dest.resolve()
+        dest_root = resolve_or_raise_on_loop(dest)
         members_total = len(all_members) if all_members is not None else None
         self._state = _RunState(
             dest=dest,
@@ -1311,7 +1315,7 @@ class ExtractionCoordinator:
             if path.is_dir() and not path.is_symlink():
                 # Random access never writes the superseded copy, so its metadata
                 # is not applied, whether or not the directory stays as a parent.
-                state.pending_dirs.pop(path, None)
+                self._drop_pending_dir(path)
                 with contextlib.suppress(OSError):  # not empty: members live under it
                     os.rmdir(path)
                     state.written_paths.discard(path)
@@ -1807,6 +1811,7 @@ class ExtractionCoordinator:
                 self._defer_directory_metadata(dest_path, transformed)
             if not existed:
                 written_paths.add(dest_path)
+                self._note_run_directory(dest_path)
             return ExtractionResult(
                 original,
                 dest_path,
@@ -2053,12 +2058,8 @@ class ExtractionCoordinator:
 
         The key is remembered per path, so releasing the claim later finds it even after
         a symlink in ``path`` was repointed and ``path`` resolves somewhere else."""
-        rel = self._physical_rel(path)
-        physical = self._state.dest / rel if rel is not None else path
-        key = collision_key(
-            rel if rel is not None else self._rel_name(path), self._policy
-        )
-        self._state.collision_map[key] = _Claim(path, index, physical)
+        key = self._collision_key(path)
+        self._state.collision_map[key] = _Claim(path, index, self._physical_path(path))
         self._state.claim_keys[path] = key
 
     def _claimed_key(self, path: Path) -> str:
@@ -2078,8 +2079,8 @@ class ExtractionCoordinator:
         if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
-                resolved = os.fspath(Path(parent).resolve())
-            except (OSError, RuntimeError):
+                resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
+            except OSError:
                 return None
             prefix = root if root.endswith(os.sep) else root + os.sep
             if os.path.normcase(resolved) == os.path.normcase(root):
@@ -2090,6 +2091,13 @@ class ExtractionCoordinator:
                 return None
             resolved_parents[parent] = rel_parent
         return rel_parent + name
+
+    def _physical_path(self, path: Path) -> Path:
+        """Where ``path`` is, under the destination as given, with its parent
+        resolved (``_physical_rel``); ``path`` itself when that parent does not resolve
+        inside the root."""
+        rel = self._physical_rel(path)
+        return self._state.dest / rel if rel is not None else path
 
     def _collision_key(self, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
@@ -2105,6 +2113,23 @@ class ExtractionCoordinator:
         if rel is None:
             rel = self._rel_name(path)
         return collision_key(rel, self._policy)
+
+    def _physical_key(self, path: Path) -> str:
+        """The key of the directory at ``path`` in ``run_dirs`` and ``pending_dirs``:
+        where it physically is, with case and Unicode normalization folded under every
+        policy.
+
+        ``_collision_key`` folds only under ``STRICT`` and ``STANDARD``, because it
+        decides which member's result a name reaches. These two maps ask whether a
+        directory is one this run made, which does not depend on how the archive spelled
+        it: on a case-insensitive filesystem ``D/`` and ``d/`` are one directory under
+        ``TRUSTED`` too. Where the folded key covers two directories (``X/`` beside
+        ``x/`` on a case-sensitive filesystem), the readers tell them apart on disk.
+        """
+        rel = self._physical_rel(path)
+        if rel is None:
+            rel = self._rel_name(path)
+        return collision_key(rel, ExtractionPolicy.STANDARD)
 
     def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
@@ -2172,7 +2197,7 @@ class ExtractionCoordinator:
             if stat.S_ISDIR(st.st_mode):
                 os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop(dest_path, None)
+                self._drop_pending_dir(dest_path)
             else:
                 os.unlink(dest_path)
             if stat.S_ISLNK(st.st_mode):
@@ -2362,12 +2387,12 @@ class ExtractionCoordinator:
         # escape the planning check cannot see. We can't do this "just before" creating the
         # link because there is no link to resolve until it exists; and resolving the *bare
         # target string* would only repeat check_universal. So: create, resolve, and unlink
-        # if it escaped. A cyclic/adversarial link makes resolve() raise ELOOP/RuntimeError,
-        # which we also treat as an escape (fail safe rather than crash). This is the third
-        # of the three defense-in-depth layers named in the `safe-extraction` spec
-        # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
-        # check_universal. A *later* member can still change what this link resolves
-        # to; the caller records the link in ``links`` for that.
+        # if it escaped. A link that cannot be resolved, a symlink loop included on
+        # every Python version, also counts as an escape (fail safe rather than crash).
+        # This is the third of the three defense-in-depth layers named in the
+        # `safe-extraction` spec ("Symlink Escape Re-Validated at Extraction Time");
+        # layers 1-2 are in check_universal. A *later* member can still change what
+        # this link resolves to; the caller records the link in ``links`` for that.
         if _symlink_escapes(dest_path, on_disk, self._state.dest_root):
             try:
                 dest_path.unlink()
@@ -2415,10 +2440,13 @@ class ExtractionCoordinator:
             )
 
         if source.member_id in self._state.source_paths:
+            # Taken before ``_make_room``: under REPLACE a link can land on one of its
+            # own source's paths, which ``_make_room`` then forgets.
+            candidates = list(self._state.source_paths[source.member_id])
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
-            self._place_link(source.member_id, dest_path, transformed)
+            self._place_link(source.member_id, candidates, dest_path, transformed)
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
@@ -2675,11 +2703,17 @@ class ExtractionCoordinator:
             orphan.report_stored_spelling(exc)
             raise
         try:
+            # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link
+            # of the group that failed after its ``_make_room`` can have taken the
+            # last path; ``_place_link`` then fails this link as well. No archive
+            # reaches that alone: the earlier link has to fail in ``os.link`` or
+            # ``os.replace``, which needs the filesystem to change under the run.
+            candidates = list(self._state.source_paths.get(source_id, ()))
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
-                self._place_link(source_id, resolved, orphan.transformed)
+                self._place_link(source_id, candidates, resolved, orphan.transformed)
                 self._state.written_paths.add(resolved)
                 result = ExtractionResult(
                     orphan.original, resolved, ExtractionStatus.EXTRACTED, None
@@ -2993,21 +3027,51 @@ class ExtractionCoordinator:
                     ) from exc
             raise
         self._state.created_dirs.update(missing)
+        for component in missing:
+            self._note_run_directory(component)
 
     def _is_callers_directory(self, path: Path) -> bool:
         """Whether ``path`` is a directory that was there before this run: the
         destination root unless this run created it, or a directory this run neither
-        wrote nor created. The root is decided by name, as it may be the caller's
-        symlink to a directory."""
+        wrote nor created (``_is_run_directory``). The root is decided by name, as it
+        may be the caller's symlink to a directory."""
         state = self._state
         if path == state.dest:
             return path not in state.created_dirs
         try:
-            if not stat.S_ISDIR(os.lstat(path).st_mode):
-                return False
+            st = os.lstat(path)
         except OSError:
             return False
-        return path not in state.written_paths and path not in state.created_dirs
+        return stat.S_ISDIR(st.st_mode) and not self._is_run_directory(path, st)
+
+    def _note_run_directory(self, path: Path) -> None:
+        """Record that this run wrote or created the directory at ``path``."""
+        self._state.run_dirs.setdefault(self._physical_key(path), set()).add(
+            self._physical_path(path)
+        )
+
+    def _is_run_directory(self, path: Path, st: os.stat_result) -> bool:
+        """Whether the directory at ``path`` (``st`` its ``lstat``) is one this run
+        wrote or created, under any spelling: through a symlink the archive created
+        (the same physical path), or a case variant on a case-insensitive filesystem
+        under every policy (one recorded under the same ``_physical_key`` that is the
+        same directory). Where
+        the filesystem reports inode 0, a case variant cannot be told from another
+        directory and is taken for the caller's, which keeps its mode."""
+        recorded = self._state.run_dirs.get(self._physical_key(path))
+        if not recorded:
+            return False
+        if self._physical_path(path) in recorded:
+            return True
+        if st.st_ino == 0:
+            return False
+        for other in recorded:
+            try:
+                if os.path.samestat(st, os.lstat(other)):
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _prepare_destination(
         self, member: ArchiveMember, dest_path: Path, *, atomic: bool = False
@@ -3079,7 +3143,7 @@ class ExtractionCoordinator:
                 with self._readonly_cleared(dest_path):
                     os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop(dest_path, None)
+                self._drop_pending_dir(dest_path)
                 self._current.removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
@@ -3184,17 +3248,22 @@ class ExtractionCoordinator:
                 emit_progress()
 
     def _place_link(
-        self, source_id: int, new_path: Path, member: ArchiveMember
+        self,
+        source_id: int,
+        candidates: list[Path],
+        new_path: Path,
+        member: ArchiveMember,
     ) -> None:
-        """Create ``new_path`` as a hardlink to the source's content, trying the recorded
-        on-disk paths newest first; when none takes the link for a reason of its own
-        (see ``_link_refused_here``), copy from an existing path. Appends ``new_path``
-        so a later same-device link can reuse it — which is what keeps a fan-out across
-        one device boundary to a single copy per device rather than one per link, and a
-        fan-out past the link-count limit to one copy per full file. When
-        ``new_path`` already named the source's file, the append does not record it
-        twice: the name existed, so ``_prepare_destination`` dropped it from the list
-        (``_forget_source_path``) before this method ran.
+        """Create ``new_path`` as a hardlink to the source's content, trying
+        ``candidates`` (the source's recorded on-disk paths, taken before
+        ``_make_room`` cleared ``new_path``) newest first; when none takes the link for
+        a reason of its own (see ``_link_refused_here``), copy from an existing path.
+        Records ``new_path`` under ``source_id`` so a later same-device link can reuse
+        it — which is what keeps a fan-out across one device boundary to a single copy
+        per device rather than one per link, and a fan-out past the link-count limit to
+        one copy per full file. When ``new_path`` already named the source's file, it
+        is not recorded twice: the name existed, so ``_prepare_destination`` dropped it
+        from the list (``_forget_source_path``) before this method ran.
 
         The first path at the link-count limit ends the search with a copy. The paths
         recorded before it are older names of the same file, of a file that filled up
@@ -3215,9 +3284,18 @@ class ExtractionCoordinator:
         unlink an existing destination first and leave a hole if the link then fails.
         ``os.replace`` moves the link itself and never follows the entry it replaces, so
         a destination symlink is replaced rather than written through."""
-        existing = self._state.source_paths[source_id]
+        if new_path in candidates and _is_regular_file(new_path):
+            # The link landed on a path that already holds its source's content (a
+            # case-folded name under REPLACE). The callers' ``_make_room`` ran with
+            # ``atomic=True``, which leaves an existing file for the swap rather than
+            # unlinking it, so the file is still in place and there is nothing to link.
+            self._state.source_paths.setdefault(source_id, []).append(new_path)
+            return
         # Each path was a regular file this run wrote, and ``_forget_source_path``
-        # drops one once another member replaces it. Checked again here because
+        # drops one once another member replaces it. ``candidates`` was taken before
+        # the callers' ``_make_room``, so the one path that can be stale here is
+        # ``new_path``: the early return above takes it while it is a regular file,
+        # and the check below skips it when it is not. Checked again here because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,
@@ -3228,7 +3306,7 @@ class ExtractionCoordinator:
             linked = False
             at_link_limit = False
             copy_from: Path | None = None
-            for candidate in reversed(existing):
+            for candidate in reversed(candidates):
                 if not _is_regular_file(candidate):
                     continue
                 if copy_from is None:
@@ -3275,7 +3353,7 @@ class ExtractionCoordinator:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
-        existing.append(new_path)
+        self._state.source_paths.setdefault(source_id, []).append(new_path)
 
     def _swap_into_place(self, tmp: Path, dest: Path) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
@@ -3330,13 +3408,33 @@ class ExtractionCoordinator:
             st = os.lstat(path)
         except OSError:
             return
-        rel = self._physical_rel(path)
-        depth = (rel if rel is not None else self._rel_name(path)).count("/")
-        pending = self._state.pending_dirs
-        # Moved to the end, so where two spellings reach one directory, the member
-        # written last is applied last (the sort by depth is stable).
-        pending.pop(path, None)
-        pending[path] = ((st.st_dev, st.st_ino), depth, member)
+        physical = self._physical_path(path)
+        depth = self._rel_name(physical).count("/")
+        pending = self._state.pending_dirs.setdefault(self._physical_key(path), {})
+        # Moved to the end, so where two spellings reach one directory (a case
+        # variant), the member written last is applied last.
+        pending.pop(physical, None)
+        pending[physical] = ((st.st_dev, st.st_ino), depth, member)
+
+    def _drop_pending_dir(self, path: Path) -> None:
+        """Drop the deferred metadata of the directory at ``path``, which is being
+        removed, under whichever spelling it was written.
+
+        Found by ``_physical_key``, under every policy: the entry at the same physical
+        path is dropped, and so is one under a case variant that is gone from disk. A
+        casefolded key also covers another directory on a
+        case-sensitive filesystem (``X/`` beside ``x/``); that one is still there, and
+        keeps its entry."""
+        key = self._physical_key(path)
+        pending = self._state.pending_dirs.get(key)
+        if not pending:
+            return
+        physical = self._physical_path(path)
+        for other in list(pending):
+            if other == physical or not os.path.lexists(other):
+                del pending[other]
+        if not pending:
+            del self._state.pending_dirs[key]
 
     def _apply_directory_metadata(self) -> None:
         """Apply the deferred directory metadata (``_defer_directory_metadata``),
@@ -3365,8 +3463,9 @@ class ExtractionCoordinator:
         def is_ours(st: os.stat_result, identity: tuple[int, int]) -> bool:
             return stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == identity
 
+        entries = [item for by_key in pending.values() for item in by_key.items()]
         for path, (identity, _depth, member) in sorted(
-            pending.items(), key=lambda item: item[1][1], reverse=True
+            entries, key=lambda item: item[1][1], reverse=True
         ):
             if by_fd:
                 try:

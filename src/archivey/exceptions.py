@@ -259,6 +259,10 @@ class UnsupportedFeatureError(ArchiveyError):
     given). The problem is the archive, not the calling code: that raises
     :class:`ArchiveyUsageError`.
 
+    An unknown compression method, codec or version number read from a header with no
+    checksum (a ZIP method, for example) may also mean that header is damaged. Archivey
+    reports it as unsupported because it cannot tell the two apart.
+
     A refused ``seek()`` or ``tell()`` on a member stream is *not* this class: a member
     stream has to keep behaving like a file object, so it raises
     :exc:`io.UnsupportedOperation` (a subclass of :exc:`OSError` and :exc:`ValueError`).
