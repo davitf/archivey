@@ -1132,7 +1132,11 @@ member's `compressed_size` is unknown/zero and the reader exposes a cheap
 `stat`, trusted integer `size`, `try_get_size()` from Archivey streams, or an
 O(1)-safe `SEEK_END`/restore probe for real files, `BytesIO`, and `mmap`.
 Anything that would decompress or scan payload to answer (for example foreign
-decompressor streams) yields `None`. For compressed containers this is compressed
+decompressor streams) yields `None`. A `size` is trusted on a seekable source and
+on an Archivey member stream, whose `size` is the length its container declares,
+seekable or not. On a caller's non-seekable stream a `size` attribute is an
+unchecked claim, and an inflated one would disable both archive-wide guards, so
+it yields `None` and the live ratio applies. For compressed containers this is compressed
 size; for uncompressed containers the resulting ratio is about 1:1 and harmless.
 
 The ratio SHALL be `archive_output / compressed_source_size`, where
@@ -1152,7 +1156,7 @@ SHALL raise `ResourceLimitError`.
 | Case | Expected |
 | --- | --- |
 | Small `.tar.gz` file with known source size expands past `max_ratio` after threshold | `ResourceLimitError` during extraction |
-| Compressed tar from non-seekable pipe with unknown size | Static archive-wide ratio skipped; cumulative byte limit still applies |
+| Compressed tar from non-seekable pipe, with or without a `size` attribute | Static archive-wide ratio skipped; live ratio and cumulative byte limit still apply |
 | Plain `.tar` | No meaningful compressed denominator; archive-wide ratio does not trip, except on copies of a hard-link source written past the filesystem's link-count limit |
 | ZIP member has known `compressed_size` | Per-member ratio applies; archive-wide ratio does not replace it |
 | Nested archive opened from an Archivey member/codec stream with cheap size | Cheap source size may serve as archive-wide denominator |
@@ -1206,8 +1210,9 @@ data as Python `tarfile` may do on symlink-unsupported platforms.
 The system SHALL evaluate a live archive-wide ratio during extraction when no
 per-member `compressed_size` and no cheap static `compressed_source_size` is
 available, but the compressed backend can expose `compressed_bytes_consumed`.
-This covers compressed archives from non-seekable pipes and seekable opaque
-streams whose size is not cheaply knowable. Backends wrap the stream source in
+This covers compressed archives from non-seekable pipes, a pipe that carries a
+`size` attribute included, and seekable opaque streams whose size is not cheaply
+knowable. Backends wrap the stream source in
 the counting reader exactly when the static denominator is absent.
 
 The ratio SHALL be `archive_output / compressed_bytes_consumed`, with

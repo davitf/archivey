@@ -61,6 +61,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
+from tests.streams_util import NonSeekableBytesIO
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -2280,6 +2281,58 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                     max_extracted_bytes=100 * 2**20,
                 ),
             )
+
+
+class _ClaimedSizePipe(NonSeekableBytesIO):
+    """A non-seekable stream with an fsspec-style ``size`` attribute it sets itself."""
+
+    def __init__(self, data: bytes, size: int) -> None:
+        super().__init__(data)
+        self.size = size
+
+
+@pytest.mark.parametrize("mode", ["gz", "tar.gz"])
+def test_pipe_size_claim_does_not_switch_off_live_ratio(
+    tmp_path: Path, mode: str
+) -> None:
+    # Regression: a non-seekable caller stream's ``size`` attribute became the static
+    # archive-wide denominator, and because a static denominator existed the live byte
+    # counter was not installed. An inflated claim (1 GB for a ~1 KiB gzip) therefore
+    # switched off both archive-wide ratio guards. Nothing can check a pipe's claim, so
+    # the claim is not a denominator: the live counter stays.
+    payload = b"\x00" * (1024 * 1024)
+    if mode == "gz":
+        raw = gzip.compress(payload)
+    else:
+        raw = _tar_bytes([("file", "z.bin", payload)], mode="w:gz")
+    limits = ExtractionLimits(
+        max_ratio=10.0,
+        ratio_activation_threshold=1024,
+        max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+    )
+    with open_archive(_ClaimedSizePipe(raw, size=10**9), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is not None
+        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
+            r.extract_all(tmp_path / "out", limits=limits)
+
+
+def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
+    # A member stream is non-seekable without ``seekable_members``, but its ``size`` is
+    # the length its container declares, not a caller's claim: it stays the static
+    # denominator, and no live counter is installed.
+    inner = gzip.compress(b"\x00" * 4096)
+    outer = tmp_path / "outer.tar"
+    with tarfile.open(outer, "w") as t:
+        info = tarfile.TarInfo("inner.gz")
+        info.size = len(inner)
+        t.addfile(info, io.BytesIO(inner))
+    with open_archive(outer) as outer_ar:
+        with outer_ar.open("inner.gz") as member_stream:
+            assert not member_stream.seekable()
+            with open_archive(member_stream, streaming=True) as inner_ar:
+                assert inner_ar.compressed_source_size == len(inner)
+                assert inner_ar.compressed_bytes_consumed is None
 
 
 # ---------------------------------------------------------------------------

@@ -2381,10 +2381,31 @@ class BaseArchiveReader(ArchiveReader):
         O(1) types (never a decompressor). Backends record their source in
         ``self._source``; readers without one (directory) or with an unknowable
         source report ``None``.
+
+        A caller's **non-seekable** stream reports ``None`` even when it has a ``size``
+        attribute: that is the caller's claim, and a pipe has no end to check it
+        against. An inflated claim would make the static ratio unreachable and, as the
+        complement below, switch off the live counter too. A member stream of another
+        archive keeps its ``size`` whether it seeks or not, because that is the length
+        its container declares (``ArchiveSource.seek_is_expensive`` marks it).
         """
         self._state.require_open("compressed_source_size")
-        # The hint, not the fact: this reports, it bounds nothing.
-        return self._source.size_hint if self._source is not None else None
+        return self._trusted_source_size()
+
+    def _trusted_source_size(self) -> int | None:
+        """The source's size hint when it may be the ratio denominator, else ``None``.
+
+        The one answer ``compressed_source_size`` reports and ``_wrap_compressed_input``
+        complements. A seekable source's hint counts, and so does a member stream's
+        declared length (``seek_is_expensive``). A caller's non-seekable stream's
+        ``size`` does not.
+        """
+        src = self._source
+        if src is None:
+            return None
+        if src.seekable() or src.seek_is_expensive:
+            return src.size_hint
+        return None
 
     @property
     def compressed_bytes_consumed(self) -> int | None:
@@ -2394,10 +2415,11 @@ class BaseArchiveReader(ArchiveReader):
         The **live** denominator for extraction's archive-wide decompression-ratio guard
         (see ``safe-extraction``), used when ``compressed_source_size`` is ``None`` — a
         compressed archive whose source size is not cheaply knowable (a non-seekable pipe,
-        or a seekable stream that is neither a whitelisted O(1)-seek type nor
-        ``.size``-advertising). A backend that decompresses a *stream* source wraps it in a
-        ``CountingReader`` and records it here; readers with a knowable source size (a path,
-        a sizable stream) leave it ``None`` and rely on the cheaper static ratio instead.
+        with or without a ``size`` attribute, or a seekable stream that is neither a
+        whitelisted O(1)-seek type nor ``.size``-advertising). A backend that
+        decompresses a *stream* source wraps it in a ``CountingReader`` and records it
+        here; readers with a knowable source size (a path, a sizable stream) leave it
+        ``None`` and rely on the cheaper static ratio instead.
         """
         self._state.require_open("compressed_bytes_consumed")
         c = self._compressed_input_counter
@@ -2417,10 +2439,10 @@ class BaseArchiveReader(ArchiveReader):
         scan, an accelerator); re-read bytes are counted again, which only ever inflates
         the denominator — the guard gets weaker, never a false positive.
         """
-        # Asked of the reader's source the way ``compressed_source_size`` asks it, hint
-        # included, so the two stay complements; ``source`` may be a view over it.
+        # Asked of the reader's source the way ``compressed_source_size`` asks it, so the
+        # two stay complements; ``source`` may be a view over it.
         known = (
-            self._source.size_hint
+            self._trusted_source_size()
             if self._source is not None
             else source_byte_size(source)
         )
