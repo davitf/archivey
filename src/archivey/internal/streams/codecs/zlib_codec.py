@@ -560,6 +560,7 @@ class ZlibCodec(_ZlibErrorCodec):
     codec = Codec.ZLIB
     _label = "zlib"
     stream_format = StreamFormat.ZLIB
+    extension_aliases = (".zlib",)
     # No exact magic: zlib's 2-byte header is too unspecific, so it is recognized by a content
     # probe that gates on that header before decoding.
 

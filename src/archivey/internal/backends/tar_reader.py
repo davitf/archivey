@@ -807,6 +807,15 @@ _TAR_FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR, *_TAR_COMPRESSED)
 _TAR_EXTENSIONS: dict[str, ArchiveFormat] = {
     f".{fmt.file_extension()}": fmt for fmt in _TAR_FORMATS
 }
+# A codec's extension aliases have their ``.tar.`` forms too (``.tar.brotli``).
+_TAR_EXTENSIONS.update(
+    {
+        f".tar{alias}": ArchiveFormat(ContainerFormat.TAR, codec.stream_format)
+        for codec in SINGLE_FILE_CODECS
+        if codec.stream_format is not None
+        for alias in codec.extension_aliases
+    }
+)
 _TAR_EXTENSIONS.update(
     {
         ".tgz": ArchiveFormat.TAR_GZ,

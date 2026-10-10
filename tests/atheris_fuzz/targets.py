@@ -117,9 +117,14 @@ def sevenzip_open_one(data: bytes) -> None:
 def detect_format_one(data: bytes) -> None:
     from archivey.detection_cost import BALANCED_BUDGET
 
+    # The fuzzer has no file name to give, so by default no content probe would run;
+    # always_probe_content keeps the probe decoders under the fuzzer.
     try:
         info = detect_format(
-            io.BytesIO(data), config=ArchiveyConfig(detection_budget=BALANCED_BUDGET)
+            io.BytesIO(data),
+            config=ArchiveyConfig(
+                detection_budget=BALANCED_BUDGET, always_probe_content=True
+            ),
         )
     except ArchiveyError:
         return

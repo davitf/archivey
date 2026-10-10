@@ -643,6 +643,21 @@ class ArchiveyConfig:
     are the other presets; to change a single limit, ``dataclasses.replace`` one.
     """
 
+    always_probe_content: bool = False
+    """Whether detection tries every content probe, whatever the source is named.
+
+    LZMA Alone, zlib and Brotli have no magic that detection can trust, so only a
+    content probe (a trial decode of the first bytes) recognises them. Arbitrary binary
+    files sometimes pass a probe, so by default :func:`~archivey.open_archive` and
+    :func:`~archivey.detect_format` run a probe only when the source's name ends in one
+    of that format's extensions: ``.lzma`` or ``.tlz`` for LZMA Alone, ``.zz`` or
+    ``.zlib`` for zlib, ``.br`` or ``.brotli`` for Brotli, and the ``.tar.`` form of
+    each except ``.tlz``. An extensionless raw stream of these formats is then refused
+    with :class:`~archivey.FormatDetectionError`. If you read such sources, set this to
+    ``True``, pass ``format=``, or use :func:`~archivey.open_stream`, which always tries
+    every probe because its caller already says the source is a compressed stream.
+    """
+
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
     """Whether each diagnostic code is ignored, collected or raised.
 
@@ -726,7 +741,11 @@ class ArchiveyConfig:
             )
         # Guard switches: a string such as "false" is truthy, so it would silently
         # turn a refusal off. Only a real bool is accepted.
-        for field_name in ("rar_allow_glob_member_concatenation", "read_link_targets"):
+        for field_name in (
+            "rar_allow_glob_member_concatenation",
+            "read_link_targets",
+            "always_probe_content",
+        ):
             check_instance(
                 getattr(self, field_name),
                 bool,

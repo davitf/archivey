@@ -76,9 +76,11 @@ gzip is the magic `1f 8b` at offset 0, reported `CERTAIN`. The inner-TAR probe t
 `.gz` and `.tgz` / `.tar.gz` are registered extensions.
 
 zlib has no magic and is found by a content probe, the second of the three after LZMA Alone.
-It first checks the two header bytes against the RFC 1950 grammar
-(`_zlib_header_plausible`): compression method 8, a window of at most 32 KiB (`CINFO <= 7`),
-and `(CMF * 256 + FLG) % 31 == 0`. The grammar is stated rather than listed, because a list
+The probe runs only for a `.zz` or `.zlib` name (or their `.tar.` forms), under
+`open_stream`, or with `ArchiveyConfig.always_probe_content`
+([`detection.md`](../topics/detection.md) §2.5). It first checks the two header bytes
+against the RFC 1950 grammar (`_zlib_header_plausible`): compression method 8, a window of
+at most 32 KiB (`CINFO <= 7`), and `(CMF * 256 + FLG) % 31 == 0`. The grammar is stated rather than listed, because a list
 of header values is easy to get wrong: the common four leave out six of the seven window
 sizes `zlib` will write. The grammar also admits `CINFO = 0`, which `zlib` cannot write.
 `FDICT` passes the gate; a stream needing a preset dictionary then fails the decode and falls
