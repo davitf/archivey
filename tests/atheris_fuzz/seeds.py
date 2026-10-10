@@ -20,6 +20,9 @@ _SEED_ENTRY_IDS = frozenset(
 )
 # Encrypted ZIP when the 7z CLI is available (AES / ZipCrypto fixtures).
 _ENC_SEED_ENTRY_IDS = frozenset({"encrypted", "encrypted-mixed", "encrypted-multi"})
+# A 7zAES-encoded header (py7zr, in process), so the 7z targets reach the
+# encrypted-header branch with the corpus password.
+_SEVENZIP_ENC_SEED_ENTRY_IDS = frozenset({"encrypted-header"})
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ADVERSARIAL_DIR = _REPO_ROOT / "tests" / "fixtures" / "adversarial"
@@ -79,7 +82,10 @@ def sevenzip_seeds() -> list[bytes]:
         MAGIC_7Z + b"\x00\x04" + b"\xff" * 24,
     ]
     with tempfile.TemporaryDirectory(prefix="atheris-seed-7z-") as tmp:
-        return tiny + _corpus_seeds("7z", Path(tmp)) + _adversarial_seeds(".7z")
+        tmp_path = Path(tmp)
+        corpus = _corpus_seeds("7z", tmp_path)
+        enc = _corpus_seeds("7z", tmp_path, entry_ids=_SEVENZIP_ENC_SEED_ENTRY_IDS)
+        return tiny + corpus + enc + _adversarial_seeds(".7z")
 
 
 def _synthetic_zip_seeds() -> list[bytes]:

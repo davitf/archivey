@@ -365,7 +365,13 @@ three reasons:
 
 - `NOT_ENABLED_BY_POLICY`: the budget turned it off (`probe_completion` under `FAST`).
   The search is still complete for what the policy asked.
-- `CAPABILITY_UNAVAILABLE`: the source cannot do it. The search is incomplete.
+- `CAPABILITY_UNAVAILABLE`: the step could not run here. The inner-TAR probe records it
+  if the codec's backend is absent or its decoder cannot be built within the probe's
+  reservation (an xz filter chain it cannot decode raw, a zstd window over 128 MiB, a
+  `MemoryError`). The search is incomplete. The probe records one reason: a budget that
+  turns it off gives `NOT_ENABLED_BY_POLICY` whatever the backend, and an absent backend
+  gives `CAPABILITY_UNAVAILABLE` ahead of `BUDGET_EXHAUSTED`, since more budget would
+  not help.
 - `BUDGET_EXHAUSTED`: it started or would have started, and the budget cut it short. The
   search is incomplete.
 

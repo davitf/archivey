@@ -77,7 +77,12 @@ from archivey.diagnostics import (
     DiagnosticCode,
     FormatConflictContext,
 )
-from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.exceptions import (
+    ArchiveyError,
+    FormatDetectionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.arg_checks import check_config, check_path_not_empty
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import (
@@ -308,8 +313,11 @@ def _probe_inner_tar(
     same reason the codec content probes lift them (``_PROBE_STREAM_CONFIG`` in
     ``codecs/base.py``): a capped probe would call a ``.tar.xz`` with a large dictionary a
     bare ``.xz`` even for a caller who opened it with ``DecoderLimits.UNLIMITED``. The
-    read is bounded, so the dictionary cannot fill past it, but liblzma still reserves
-    the declared size. The open that follows applies the caller's limits.
+    open that follows applies the caller's limits. ``probe_read_bound`` keeps the probe
+    from reserving what the archive declares: the LZMA family (``.xz``, ``.lzma``,
+    ``.lz``) decodes the 512 bytes with a 4 KiB dictionary, which gives the same bytes,
+    and a zstd frame whose window is over libzstd's default 128 MiB is "can't tell".
+    A ``MemoryError`` from a decoder no bound shrinks is "can't tell" too.
 
     With a workspace, the compressed input is bounded by what is left of the budget's
     ``max_decode_input`` (and the workspace's read ceiling) as well as by
@@ -319,7 +327,12 @@ def _probe_inner_tar(
 
     Returns ``False`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no TAR
-    header.
+    header. An absent backend, or a decoder the probe cannot build within its reservation
+    (``UnsupportedFeatureError``, ``ResourceLimitError``, ``MemoryError``), records
+    ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is "can't tell", not "no TAR".
+    Only one reason is recorded, in this order: a budget that turns the tier off
+    (``NOT_ENABLED_BY_POLICY``), an absent backend (``CAPABILITY_UNAVAILABLE``), a budget
+    that cannot cover the probe (``BUDGET_EXHAUSTED``).
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
     from archivey.internal.config import DecoderLimits, StreamConfig
@@ -333,22 +346,32 @@ def _probe_inner_tar(
         codec = codec_for_stream_format(stream_format)
     except KeyError:
         return False
-    if not is_codec_available(codec):
-        return False
-
-    limit = _INNER_TAR_MAX_PROBE_BYTES
+    # One reason is recorded, in this order: the policy turned the tier off, then the
+    # backend is absent (more budget would not help), then the budget cannot cover it.
     if workspace is not None:
         budget = workspace.budget
-        # Off when either face value is zero. Cut short: output against the budget's
-        # face value, since this is the only tier that charges output and a pass that
-        # reaches it returns a format, so no earlier pass (the sibling-volume retry
-        # shares the receipt) has charged any. Input against what is left, since a
-        # content probe and its completion check draw on the same allowance.
+        # Off when either face value is zero.
         if _record_tier_limit(
             workspace,
             "inner_tar",
             enabled=budget.max_decode_input > 0 and budget.max_decode_output > 0,
-            covered=budget.max_decode_output >= _INNER_TAR_PROBE_BYTES
+        ):
+            return False
+    if not is_codec_available(codec):
+        if workspace is not None:
+            workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
+        return False
+    limit = _INNER_TAR_MAX_PROBE_BYTES
+    if workspace is not None:
+        # Cut short: output against the budget's face value, since this is the only
+        # tier that charges output and a pass that reaches it returns a format, so no
+        # earlier pass (the sibling-volume retry shares the receipt) has charged any.
+        # Input against what is left, since a content probe and its completion check
+        # draw on the same allowance.
+        if _record_tier_limit(
+            workspace,
+            "inner_tar",
+            covered=workspace.budget.max_decode_output >= _INNER_TAR_PROBE_BYTES
             and workspace.decode_input_left > 0,
         ):
             return False
@@ -356,6 +379,7 @@ def _probe_inner_tar(
 
     source = _BoundedPeekReader(peek_more, limit)
     head = b""
+    unavailable = False
     try:
         with open_codec_stream(
             codec,
@@ -366,9 +390,15 @@ def _probe_inner_tar(
                 use_rapidgzip=AcceleratorMode.OFF,
                 use_indexed_bzip2=AcceleratorMode.OFF,
                 decoder_limits=DecoderLimits.UNLIMITED,
+                probe_read_bound=_INNER_TAR_PROBE_BYTES,
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
+    except (UnsupportedFeatureError, ResourceLimitError, MemoryError):
+        # The decoder could not be built within the probe's reservation: a zstd window
+        # over the probe's limit, an xz filter chain it cannot decode raw, or an
+        # allocation refused. "Can't tell", and the receipt says so.
+        unavailable = True
     except (ArchiveyError, OSError, ValueError):
         # Not decodable as this codec, or truncated before a full block -> not an inner tar.
         pass
@@ -379,7 +409,9 @@ def _probe_inner_tar(
             input_bytes=source.tell(),
             output_bytes=len(head),
         )
-        if not found and source.hit_limit:
+        if unavailable:
+            workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
+        elif not found and source.hit_limit:
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
     return found
 

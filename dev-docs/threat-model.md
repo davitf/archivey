@@ -707,7 +707,7 @@ never reported as success. Public:
   Before those two checks, about 1 in 256 wrong keys decoded to a leading `END` or
   `HEADER`+`END` that parsed as empty (measured about 0.3% of py7zr salts); that figure
   is now an upper bound and has not been re-measured. Legitimate writers never encrypt an
-  empty header, so `SevenZipReader._decode_encoded_header_block` rejects a decoded header
+  empty header, so `sevenzip_reader._decode_encoded_header_block` rejects a decoded header
   with zero file records as `EncryptionError`.
 - A password only a weak check accepted, or none tested (RAR3/4 encrypted data has no
   check), is confirmed by the member's own CRC at EOF. Closing such a stream early emits
