@@ -48,6 +48,9 @@ def _seek_reached_end(offset: int, whence: int, result: int) -> bool:
     resolves a relative seek itself. With ``SEEK_CUR``, ``result < offset`` would
     compare a position with a distance."""
     assert whence != io.SEEK_CUR, "a relative seek must be resolved above this layer"
+    # A SEEK_END lands at the end only at offset 0. Elsewhere ``result`` is not the end,
+    # and the callers' end checks (and the gzip read-through) would treat it as the end.
+    assert whence != io.SEEK_END or offset == 0, "only seek(0, SEEK_END) reaches here"
     return whence == io.SEEK_END or result < offset
 
 

@@ -151,11 +151,11 @@ class _GzipTruncationCheckStream(DelegatingStream):
        eight bytes is not one (:meth:`_member_ends_the_file` says how far that holds).
        When a seek short of the end skipped output and a read then meets the end, there
        is no CRC-32 of that output, and the length is compared to the ISIZE read at
-       open, the file's last four bytes, instead. On a mismatch, a file
-       with a further member that zlib confirms (:func:`gzip_has_additional_member`) is taken
-       as multi-member and nothing is raised: the trailer is only the last member's
-       size (a per-member ISIZE sum is deferred). A decode that stopped short of the
-       end, or any other mismatch, hands the read to the standard library.
+       open, the file's last four bytes, instead. On a mismatch, a file with a further
+       member that zlib confirms (:func:`gzip_has_additional_member`) is taken as
+       multi-member and nothing is raised: the trailer is only the last member's size
+       (a per-member ISIZE sum is deferred). A decode that stopped short of the end, or
+       any other mismatch, hands the read to the standard library.
 
        The compressed position is what tells a cut member followed by a complete one
        from a multi-member file: the trailer is then the last member's, and the further
@@ -290,7 +290,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 # seek past the end holds the target and the next read raises.
         if self._settle_end() or (read_through and self._takeover.switched):
             # The standard library decodes now: it seeks to the caller's place, or
-            # raises as it does with the accelerator off.
+            # raises as it does with the accelerator off. The second operand covers a
+            # handover during _read_through, not at the check: _settle_end() then
+            # returns False, as the trailer check defers to a stream already switched.
             self._pos = super().seek(offset, whence)
         return self._pos
 

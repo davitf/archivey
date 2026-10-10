@@ -339,6 +339,34 @@ with rapidgzip.open(sys.argv[1], parallelization=0) as f:
 """
 
 
+@pytest.fixture(scope="module")
+def forged_cut_gzip(tmp_path_factory: pytest.TempPathFactory) -> bytes:
+    """A gzip cut short, its trailer set to the length rapidgzip delivers before its soft
+    end; skips where this rapidgzip build does not end softly on the cut. The probe
+    depends on the installed build and a fixed blob only, so it runs once per module."""
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    cut = bytearray(
+        gzip.compress(random.Random(1).randbytes(300_000) + b"x" * 600_000, mtime=0)[
+            :200_000
+        ]
+    )
+    path = tmp_path_factory.mktemp("forged_cut") / "cut.gz"
+    path.write_bytes(cut)
+    proc = subprocess.run(
+        [sys.executable, "-c", _SOFT_END_PROBE, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or proc.stdout.strip() == "RAISED":
+        # Some builds raise or abort on the cut instead of ending softly (macOS raises;
+        # Linux wheels abort on other cuts). Archivey then reports the truncation without
+        # a soft end, and there is no soft end to forge a trailer for.
+        pytest.skip("this rapidgzip build does not end softly on this cut")
+    cut[-4:] = int(proc.stdout).to_bytes(4, "little")
+    return bytes(cut)
+
+
 def _seek_to_the_end(s: BinaryIO) -> None:
     s.seek(0, io.SEEK_END)
 
@@ -361,7 +389,7 @@ def _seek_to_the_end_then_read_from_the_start(s: BinaryIO) -> None:
 )
 @pytest.mark.parametrize("position_known", [True, False])
 def test_gzip_cut_member_with_a_forged_isize_raises(
-    tmp_path: Path,
+    forged_cut_gzip: bytes,
     monkeypatch: pytest.MonkeyPatch,
     action: Callable[[BinaryIO], object],
     position_known: bool,
@@ -372,35 +400,17 @@ def test_gzip_cut_member_with_a_forged_isize_raises(
     # behaviour that the check accepts as unknown (None): the CRC-32 must find the
     # forgery without it. A seek to the end skips the output, so it must read it
     # through for the CRC-32, not compare the forged length.
-    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     if not position_known:
         from archivey.internal.streams.codecs.rapidgzip_child import (
             RapidgzipChildStream,
         )
 
         monkeypatch.setattr(RapidgzipChildStream, "compressed_position", lambda _: None)
-    cut = bytearray(
-        gzip.compress(random.Random(1).randbytes(300_000) + b"x" * 600_000, mtime=0)[
-            :200_000
-        ]
-    )
-    path = tmp_path / "cut.gz"
-    path.write_bytes(cut)
-    proc = subprocess.run(
-        [sys.executable, "-c", _SOFT_END_PROBE, str(path)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if proc.returncode != 0 or proc.stdout.strip() == "RAISED":
-        # Some builds raise or abort on the cut instead of ending softly (macOS raises;
-        # Linux wheels abort on other cuts). Archivey then reports the truncation without
-        # a soft end, and there is no soft end to forge a trailer for.
-        pytest.skip("this rapidgzip build does not end softly on this cut")
-    cut[-4:] = int(proc.stdout).to_bytes(4, "little")
     for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
         config = StreamConfig(use_rapidgzip=mode, seekable=True)
-        with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(cut)), config=config) as s:
+        with open_codec_stream(
+            Codec.GZIP, io.BytesIO(forged_cut_gzip), config=config
+        ) as s:
             with pytest.raises(TruncatedError):
                 action(s)
 

@@ -203,22 +203,22 @@ source that is seekable, `_GzipTruncationCheckStream` backs it up:
    on ten or more, which hands the read to the standard library engine. A real trailer
    turned down, when its CRC-32 occurs a second time by chance (about one file in 2²⁵) or
    is zero with padding after it, goes to the standard library engine too, which finds
-   nothing wrong. Only when a seek short of the end skipped output and a read then met
-   the end, so that there is no CRC-32 of that output, is the ISIZE trailer read at open
-   (the file's last four bytes) compared with the length instead. A mismatch hands the rest of the read to the standard library engine, which
-   raises the truncation, raises the checksum error for a wrong ISIZE, or reports bytes
-   appended to the file. The exception is a file with a further member: its trailer is
-   only the last member's size, so a mismatch is expected and nothing is raised.
-   `gzip_has_additional_member` decides that. It looks for `1f 8b 08` after offset 0, and
-   since those three bytes turn up by chance in a compressed body about once per 16 MiB,
-   it hands each match to zlib's gzip decoder. The match counts only if zlib accepts the
-   header (method, reserved `FLG` bits, `FHCRC`) and then reaches the member's end with
-   its CRC-32 and ISIZE right, or decodes 64 KiB of input or 1 MiB of output with no
-   error. Random bytes fail within a few hundred DEFLATE symbols. A match the file ends
-   inside does not count: a real member cut there is a truncation. This scan was chosen
-   over handing every mismatch to the standard library, because a multi-member file (bgzip
-   writes one member per 64 KiB) always mismatches, and the handover would decode it a
-   second time from the start.
+   nothing wrong. Only when a seek short of the end skipped output and a read then met the
+   end, so that there is no CRC-32 of that output, is the ISIZE trailer read at open (the
+   file's last four bytes) compared with the length instead. A mismatch hands the rest of
+   the read to the standard library engine, which raises the truncation, raises the
+   checksum error for a wrong ISIZE, or reports bytes appended to the file. The exception
+   is a file with a further member: its trailer is only the last member's size, so a
+   mismatch is expected and nothing is raised. `gzip_has_additional_member` decides that.
+   It looks for `1f 8b 08` after offset 0, and since those three bytes turn up by chance in
+   a compressed body about once per 16 MiB, it hands each match to zlib's gzip decoder. The
+   match counts only if zlib accepts the header (method, reserved `FLG` bits, `FHCRC`) and
+   then reaches the member's end with its CRC-32 and ISIZE right, or decodes 64 KiB of
+   input or 1 MiB of output with no error. Random bytes fail within a few hundred DEFLATE
+   symbols. A match the file ends inside does not count: a real member cut there is a
+   truncation. This scan was chosen over handing every mismatch to the standard library,
+   because a multi-member file (bgzip writes one member per 64 KiB) always mismatches, and
+   the handover would decode it a second time from the start.
 3. A source shorter than 18 bytes that still yielded bytes is handed to the standard
    library engine as well, which raises the truncation. A source whose length cannot be
    read is never called truncated.
@@ -240,9 +240,9 @@ target, so a read after a seek past the end never returns bytes from another off
 raw DEFLATE end check (§2.3, *Other `rapidgzip` workarounds*) and bzip2 do the same at the
 end, without the read-through: neither checks a checksum of the output, so output a seek
 skipped leaves their checks whole. Once the standard library engine has raised, it raises
-again at every later end of data. A container member does not need the check: the
-container declared the size, and `VerifyingStream` checks length and CRC. A bare zlib or raw DEFLATE stream has neither, which is why `AUTO` never gives one to
-`rapidgzip`.
+again at every later end of data. A container member does not need the check: the container
+declared the size, and `VerifyingStream` checks length and CRC. A bare zlib or raw DEFLATE
+stream has neither, which is why `AUTO` never gives one to `rapidgzip`.
 
 **The zlib Adler-32 check.** `rapidgzip` does not check a zlib stream's Adler-32: a damaged
 body or trailer decodes with no error, sometimes short. `_ZlibAdlerCheckStream` keeps an

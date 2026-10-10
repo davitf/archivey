@@ -194,17 +194,16 @@ its CRC-32 as on a read, not by the ISIZE comparison alone. After a handover, at
 or during that read, the stdlib engine SHALL seek to the caller's target. So
 `seek(0, SEEK_END)` on a cut file raises as with the accelerator off and never returns a
 short size, and a read after a seek past the end never returns bytes from offset 0. On a
-mismatch the read SHALL be
-handed to the standard library decoder, whose verdict it then gives (`TruncatedError` for a
-cut, `CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except
-where a further gzip member follows the first: then the trailer records only the last
-member, and the backstop SHALL stand down. Before it compares the length or stands down, the
-backstop SHALL check that rapidgzip's decode reached the end of the source; a decode that
-stopped short of it SHALL be handed to the standard library decoder the same way. A
-`1f 8b 08` in the file SHALL count as a further member only when zlib's gzip decoder accepts
-the header there and decodes from it without an error, to the member's verified end or
-through a bounded probe; three bytes that turn up by chance in a compressed body, or a
-member the source ends inside, SHALL NOT silence the backstop.
+mismatch the read SHALL be handed to the standard library decoder, whose verdict it then
+gives (`TruncatedError` for a cut, `CorruptionError` for a wrong ISIZE, a trailing-data
+report for appended bytes), except where a further gzip member follows the first: then the
+trailer records only the last member, and the backstop SHALL stand down. Before it compares
+the length or stands down, the backstop SHALL check that rapidgzip's decode reached the end
+of the source; a decode that stopped short of it SHALL be handed to the standard library
+decoder the same way. A `1f 8b 08` in the file SHALL count as a further member only when
+zlib's gzip decoder accepts the header there and decodes from it without an error, to the
+member's verified end or through a bounded probe; three bytes that turn up by chance in a
+compressed body, or a member the source ends inside, SHALL NOT silence the backstop.
 
 A **caller-owned** source driven through the accelerator SHALL NOT be closed by the accelerator
 or its truncation wrapper (archivey never closes a source the caller owns); the accelerator's
