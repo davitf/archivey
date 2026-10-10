@@ -278,8 +278,10 @@ skips can no longer reach them:
   the bytes past the frontier.
 - A forward seek past the frontier whose inner stream would decode the skipped
   bytes anyway (its `nearest_resume_offset` for the target, asked as for a seek, is
-  at or before the frontier) SHALL read those bytes through the digests itself, at
-  the same decode cost, and SHALL keep them. A decode error in those bytes raises
+  at or before the frontier) SHALL read those bytes through the digests itself and
+  SHALL keep them. The decode is the one the inner's seek, or its next read, would
+  run; an inner whose seek is lazy (the unrar pipe decodes on the next read) pays it
+  at the seek instead, so a seek forward then back with no read between now decodes. A decode error in those bytes raises
   from the seek, as it would from the inner's own seek.
 - A seek to or past the declared size SHALL keep the digests: concluding reads the
   skipped gap through them (below), so the seek itself reads nothing.
@@ -287,6 +289,10 @@ skips can no longer reach them:
   stored or decrypt-only member, or an inner that cannot say) SHALL forfeit the
   digests once a read starts past the frontier, until a seek to position 0. A seek
   back to the frontier before any such read skips nothing and keeps them.
+
+The digests SHALL cover the first pass over each byte: bytes read again after a seek
+back are not hashed again, so a re-decode that returns different bytes there (a crafted
+seek index) is not caught by the digest.
 
 A seek to position 0 SHALL re-arm every check: the digests start again and the read
 frontier is cleared, so a read from position 0 to the end after any seeks is

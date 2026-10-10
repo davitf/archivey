@@ -296,7 +296,9 @@ What that does and does not promise:
 - **A full-length return from a read with no skipped bytes means the checksum matched.**
   Trust it as far as you trust that digest. Most seeks keep the check: a seek back, a
   seek to position 0 (which starts it again), and a forward seek in a compressed
-  member, whose skipped bytes are decoded anyway and hashed as they go by.
+  member, whose skipped bytes are decoded anyway and hashed as they go by. The check
+  covers the first pass over each byte: bytes read again after a seek back are not
+  checked again.
 - **After a seek that jumps, checking is best effort.** When a forward seek jumps over
   bytes without decoding them (a stored member, or a seek by an index or the
   `[seekable]` accelerator) and you read on from there, the member's stored checksum is

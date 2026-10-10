@@ -572,7 +572,7 @@ class ArchiveStream(ReadOnlyIOStream):
             except Exception:  # noqa: BLE001 - the seek's own error propagates instead
                 pass
 
-    def digest_intact(self) -> bool | None:
+    def _digest_intact(self) -> bool | None:
         """Whether the fused verifier's digest can still run (``ask_digest_intact``).
 
         ``None`` without a fused verifier: a codec-level stream has no member digest.

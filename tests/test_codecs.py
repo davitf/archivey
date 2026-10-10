@@ -1670,7 +1670,7 @@ def test_verify_seek_forfeits_checksum_keeps_length() -> None:
     )
     assert stream.read(10) == CONTENT[:10]
     stream.seek(20)
-    assert stream.digest_intact() is False
+    assert stream._digest_intact() is False
     with pytest.raises(TruncatedError):
         stream.read(-1)
     stream.close()
@@ -1734,7 +1734,7 @@ def test_verify_backward_seek_keeps_checksum(size: int | None) -> None:
     stream = VerifyingStream(io.BytesIO(CONTENT), _BAD_CRC, expected_size=size)
     assert stream.read(30) == CONTENT[:30]
     stream.seek(10)
-    assert stream.digest_intact() is True
+    assert stream._digest_intact() is True
     with pytest.raises(CorruptionError):
         stream.read(-1)
     stream.close()
@@ -1753,14 +1753,17 @@ def test_verify_forward_seek_that_decodes_keeps_checksum(size: int | None) -> No
     stream = VerifyingStream(_DecodingBytesIO(CONTENT), _BAD_CRC, expected_size=size)
     assert stream.read(10) == CONTENT[:10]
     assert stream.seek(500) == 500
-    assert stream.digest_intact() is True
+    assert stream._digest_intact() is True
     with pytest.raises(CorruptionError):
         stream.read(-1)
     stream.close()
 
     stream = VerifyingStream(_DecodingBytesIO(CONTENT), _GOOD_CRC, expected_size=size)
     assert stream.read(10) == CONTENT[:10]
-    stream.seek(400, io.SEEK_CUR)
+    assert stream.seek(400, io.SEEK_CUR) == 410
+    assert stream.tell() == 410
+    if size is not None:
+        assert stream.seek(-400, io.SEEK_END) == len(CONTENT) - 400
     stream.seek(5)  # behind the frontier: the next forward seek starts from it
     stream.seek(800)
     assert stream.tell() == 800
@@ -1776,12 +1779,12 @@ def test_verify_forward_seek_that_jumps_forfeits_checksum() -> None:
     )
     assert stream.read(10) == CONTENT[:10]
     stream.seek(500)
-    assert stream.digest_intact() is False
+    assert stream._digest_intact() is False
     stream.seek(10)  # undone before any read: nothing was skipped
-    assert stream.digest_intact() is True
+    assert stream._digest_intact() is True
     stream.seek(500)
     assert stream.read(-1) == CONTENT[500:]  # mismatch not checked
-    assert stream.digest_intact() is False
+    assert stream._digest_intact() is False
     stream.close()
 
 
@@ -1794,7 +1797,7 @@ def test_verify_seek_to_declared_size_keeps_checksum() -> None:
     stream.seek(0, io.SEEK_END)
     assert inner.tell() == len(CONTENT)
     assert stream._verifier._furthest_read_pos == 10
-    assert stream.digest_intact() is True
+    assert stream._digest_intact() is True
     with pytest.raises(CorruptionError):
         stream.read(1)
     stream.close()
@@ -1812,6 +1815,25 @@ def test_verify_decoding_seek_past_the_end_of_an_unsized_stream() -> None:
 
     stream = VerifyingStream(_DecodingBytesIO(CONTENT), _GOOD_CRC)
     stream.seek(len(CONTENT) + 100)
+    assert stream.read() == b""
+    stream.close()
+
+
+def test_verify_second_seek_past_a_found_end_reads_nothing_again() -> None:
+    """Once a read-through found the end, a later seek past it does not rewind the
+    inner to the frontier to read the same nothing again."""
+    seeks: list[int] = []
+
+    class _Counting(_DecodingBytesIO):
+        def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+            seeks.append(offset)
+            return super().seek(offset, whence)
+
+    stream = VerifyingStream(_Counting(CONTENT), _GOOD_CRC)
+    stream.seek(len(CONTENT) + 100)
+    seeks.clear()
+    stream.seek(len(CONTENT) + 200)
+    assert seeks == [len(CONTENT) + 200]
     assert stream.read() == b""
     stream.close()
 

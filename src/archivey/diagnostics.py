@@ -366,11 +366,11 @@ class EncryptedVerificationContext(_JsonSafeContext):
     ``pw_verify``), ``"confirm_budget_exhausted"`` (confirmation survived its bounded
     prefix without reaching a checksum) or ``"no_password_check"`` (the member carries
     no password check at all, as RAR3/4 data does, so nothing accepted the password
-    before decoding). ``reason`` names why the digest was not
-    reached: ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek that
-    jumped past the bytes read so far gave up a CRC; a WinZip AES HMAC survives seeks, so for an AES member it means only that a
-    failed seek left the position unknown). No password or key material is ever
-    carried.
+    before decoding). ``reason`` names why the digest was not reached:
+    ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek that jumped past
+    the bytes read so far gave up a CRC; a WinZip AES HMAC survives seeks, so for an
+    AES member it means only that a failed seek left the position unknown). No
+    password or key material is ever carried.
 
     The code answers a question a member stream cannot answer for itself yet. Retire it
     when member streams report their verification state (``dev-docs/IDEAS.md``,

@@ -565,7 +565,11 @@ class MemberVerifier:
         before the frontier (``nearest_resume_offset``), the skipped bytes cost the
         same whether the inner discards them or this verifier reads them, so they are
         read here, through the hashers, and the inner's own seek then runs from the
-        position reached.
+        position reached. An inner whose seek is lazy (``_RespawnStream``, the unrar
+        pipe, decodes on the next read) pays that decode at the seek instead, so a
+        seek forward then back with no read between decodes where it did not before.
+        The hashers see the first pass over each byte only: bytes read again after a
+        seek back are not checked again.
 
         Every other seek is passed on (``note_seek``). One to or behind the frontier
         keeps the checksum. So does one to or past the declared size: the read that
@@ -580,6 +584,10 @@ class MemberVerifier:
         if (
             target is not None
             and target > self._furthest_read_pos
+            # Parked past the frontier (a jump, or the end already found there):
+            # reaching the frontier again would mean a rewind, not a decode forward.
+            and self._pos <= self._furthest_read_pos
+            and not self._ended_at_frontier
             and (expected_size is None or target < expected_size)
             and self._expected
             and self.digests_enabled
@@ -588,6 +596,10 @@ class MemberVerifier:
             resume = ask_seek_resume_offset(inner, target)
             if resume is not None and resume <= self._furthest_read_pos:
                 self._read_through(inner, target)
+                # The inner now sits at or short of the absolute target: finish with
+                # an absolute seek, since replaying a relative ``whence`` would apply
+                # the offset a second time.
+                offset, whence = target, 0
         result = inner.seek(offset, whence)
         self.note_seek(result)
         return result
@@ -612,7 +624,7 @@ class MemberVerifier:
         recorded, so the seek past it skips no byte.
         """
         try:
-            if self._pos != self._furthest_read_pos:
+            if self._pos < self._furthest_read_pos:
                 # Behind the frontier after a backward seek: let the inner reach the
                 # frontier its own cheapest way, then read on from there.
                 self._pos = inner.seek(self._furthest_read_pos)
@@ -684,12 +696,13 @@ def note_raised_seek(verifier: MemberVerifier | None, inner: BinaryIO) -> int | 
 def ask_digest_intact(stream: object) -> bool | None:
     """Ask ``stream`` whether the digest its verifier checks can still run.
 
-    Duck-typed on a ``digest_intact()`` method, as :func:`ask_resume_offset` is on
+    Duck-typed on a ``_digest_intact()`` method, as :func:`ask_resume_offset` is on
     ``nearest_resume_offset``: :class:`VerifyingStream` and an ``ArchiveStream`` with
-    a fused verifier answer (see :attr:`MemberVerifier.digest_intact`). ``None``
-    means the stream cannot say: it has no verifier, or one that checks no digest.
+    a fused verifier answer (see :attr:`MemberVerifier.digest_intact`). Private, so
+    the public ``ArchiveStream`` gains no published method. ``None`` means the stream
+    cannot say: it has no verifier, or one that checks no digest.
     """
-    ask = getattr(stream, "digest_intact", None)
+    ask = getattr(stream, "_digest_intact", None)
     if ask is None:
         return None
     answer = ask()
@@ -790,7 +803,7 @@ class VerifyingStream(ReadOnlyIOStream):
             note_raised_seek(self._verifier, self._inner)
             raise
 
-    def digest_intact(self) -> bool | None:
+    def _digest_intact(self) -> bool | None:
         return self._verifier.digest_intact
 
     def tell(self) -> int:

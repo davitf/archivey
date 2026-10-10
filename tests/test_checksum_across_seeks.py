@@ -66,6 +66,20 @@ def test_deflate_member_checksum_survives_seeks(tmp_path: Path, moves: str) -> N
     assert _read_after(good, _MOVES[moves]) == _DATA[position:]
 
 
+@pytest.mark.parametrize("method", [zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED])
+def test_relative_seeks_land_where_asked(tmp_path: Path, method: int) -> None:
+    # A forward seek that reads the gap through the verifier must still land on the
+    # target the caller's whence names, not apply a relative offset twice.
+    good = _zip_with_crc(tmp_path, method, bad_crc=False)
+    with open_archive(good, seekable_members=True) as reader:
+        with reader.open("m.txt") as stream:
+            stream.read(10)
+            assert stream.seek(100_000, io.SEEK_CUR) == 100_010
+            assert stream.read(16) == _DATA[100_010:100_026]
+            assert stream.seek(-50_000, io.SEEK_END) == len(_DATA) - 50_000
+            assert stream.read() == _DATA[-50_000:]
+
+
 def test_stored_member_checksum_survives_a_backward_seek(tmp_path: Path) -> None:
     bad = _zip_with_crc(tmp_path, zipfile.ZIP_STORED, bad_crc=True)
     with pytest.raises(CorruptionError):
@@ -83,7 +97,7 @@ def test_stored_member_forward_seek_jumps_and_loses_the_checksum(
             stream.read(10)
             stream.seek(150_000)
             assert stream.read() == _DATA[150_000:]
-            assert stream.digest_intact() is False
+            assert stream._digest_intact() is False
 
 
 def test_seek_to_the_end_then_read_checks_the_crc(tmp_path: Path) -> None:

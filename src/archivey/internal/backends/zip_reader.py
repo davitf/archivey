@@ -493,7 +493,7 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
         except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
-    def digest_intact(self) -> bool | None:
+    def _digest_intact(self) -> bool | None:
         # The password watch above asks after a seek whether the CRC can still run.
         return ask_digest_intact(self._inner)
 

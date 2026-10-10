@@ -417,7 +417,7 @@ the same fused verifier:
 
 | | Decrypt stage | Notes |
 | --- | --- | --- |
-| Traditional ZipCrypto | archivey (`zipcrypto.py`, `ZipCryptoDecryptStream`) | One-byte verifier, so ~1 in 256 wrong passwords passes it. Pure Python, byte by byte, at the speed of stdlib's own decrypter (~1.6 MiB/s here). The cipher state depends on every earlier byte, so a backward seek restarts from the saved post-header state and a forward seek decrypts what it skips; `AUTO` accelerators stay off over it, because they read out of order. A seek off the read position gives up the CRC, and the CRC is ZipCrypto's only content check: after it, the rest of the member is checked for length only (ADR 0014). A 12-byte header the file cuts short is `TruncatedError` on every password path |
+| Traditional ZipCrypto | archivey (`zipcrypto.py`, `ZipCryptoDecryptStream`) | One-byte verifier, so ~1 in 256 wrong passwords passes it. Pure Python, byte by byte, at the speed of stdlib's own decrypter (~1.6 MiB/s here). The cipher state depends on every earlier byte, so a backward seek restarts from the saved post-header state and a forward seek decrypts what it skips; `AUTO` accelerators stay off over it, because they read out of order. A seek back, or a forward seek in a compressed member (which decodes the gap), keeps the CRC; a forward seek in a STORED member jumps, and a read past it gives the CRC up. The CRC is ZipCrypto's only content check: after that, the rest of the member is checked for length only (ADR 0014). A 12-byte header the file cuts short is `TruncatedError` on every password path |
 | WinZip AES (method 99, extra `0x9901`) | archivey (`zip_aes.py`) | AES-128, -192 or -256, as the extra's strength byte says · PBKDF2-HMAC-SHA1 at 1 000 iterations · AES-CTR · HMAC-SHA1 truncated to 10 bytes |
 | PKWARE Strong Encryption (APPNOTE §7: bit 6, or extra `0x0017`) | refused | Listed as encrypted; opening it raises `UnsupportedFeatureError` naming Strong Encryption, with or without a password. A symlink of this kind lists with `link_target` unset (`target_data_encrypted`). When the central directory itself is encrypted (bit 13), stdlib cannot list the archive; an archive extra data record (`PK\x06\x08`) where the directory should start turns that into the same refusal instead of `CorruptionError`. Best-effort: without that record the archive reads as corrupt |
 
@@ -449,8 +449,8 @@ reaching a CRC or HMAC, the member stream watches for the caller stopping short.
 after reading some bytes and before the end emits `ENCRYPTED_MEMBER_UNVERIFIED`: those
 bytes may have been decrypted with a wrong password. `check` says which of the two
 accepted it (`weak_open_check`, `confirm_budget_exhausted`); `reason` is `partial_read`,
-or `seek` for a ZipCrypto member that seeked and so lost its CRC, even if it then read to
-the end. A WinZip AES seek keeps the HMAC, so there only a read that reaches the end
+or `seek` for a ZipCrypto member whose seek jumped past its read position and so lost
+its CRC (a STORED member's forward seek), even if it then read to the end. A WinZip AES seek keeps the HMAC, so there only a read that reaches the end
 counts. Extraction reads every member to the end and never emits it, and a candidate that
 a CRC confirmed has nothing to report.
 
@@ -462,8 +462,9 @@ read then `close()` is quiet — HMAC is a content verdict, not teardown
 ([ADR 0014](../decisions/0014-integrity-verdicts-from-reads-not-close.md)). AE-1
 surfaces and verifies `crc32` alongside the HMAC; AE-2 surfaces neither. Under
 `seekable_members=True` an AES member seeks by restarting CTR at the target's block. A
-seek gives up the CRC but not the HMAC: the read that returns the last byte reads the
-ciphertext the seeks skipped (no decryption) and completes the HMAC.
+seek that jumps gives up the AE-1 CRC once a read passes it, but never the HMAC: the
+read that returns the last byte reads the ciphertext the seeks skipped (no decryption)
+and completes the HMAC.
 
 An unknown method id lists fine and raises `UnsupportedFeatureError` on read — never
 guessed output. A missing optional package raises `PackageNotInstalledError` naming the
@@ -623,7 +624,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A truncated or corrupt archive fails at open, not per member — nothing is salvaged | **library** | Stdlib needs a readable central directory before anything is listable. A native reader could walk LFHs forward |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
-| After a seek, no CRC checks a ZipCrypto member, and a wrong password that passed the check byte goes unnoticed on a STORED member | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order, so a seek gives it up (ADR 0014). Keeping it for a read that returns over bytes already hashed, as the AES HMAC does, is tracked internally. A compressed member's decoder usually still objects to a wrong key on the bytes a forward seek decodes; a STORED member has no decoder, so a seek then a read returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
+| After a forward seek in a STORED ZipCrypto member, no CRC checks it, and a wrong password that passed the check byte goes unnoticed | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order. A seek back keeps it, and so does a compressed member's forward seek, whose skipped bytes the verifier reads and hashes (ADR 0014, since 2026-10-10). A STORED member's forward seek jumps, so a read past it gives the CRC up and returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
 | Under an accelerator, a DEFLATE or bzip2 member holding two streams whose size and CRC cover both reads clean; without it, the member is truncated. A bzip2 member whose size and CRC cover only the first stream reads under the standard library and raises under the accelerator | **library** / **archivey** | zlib and `bz2` stop at the first stream's end; `rapidgzip` and its bzip2 decoder read on, and the declared size and CRC decide (§2.3). Only a crafted member does this. A DEFLATE member whose accelerated output passes the declared size finishes on zlib instead, so that case agrees |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
