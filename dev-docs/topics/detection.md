@@ -163,9 +163,12 @@ is named as the image. What a compressed block contains, and why that is not a
 signature detection can use, is on [`formats/dmg.md`](../formats/dmg.md) §1. The read is
 one seek to the last 512 bytes on a path or a plain seekable stream, then a seek back to
 the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end. When
-the length is unknown the far-magic step has already read its window, so an image
-that fits in that window is refused: the block is in the prefix. A longer zlib-first
-image still opens as zlib. A source shorter than 512 bytes skips the read too.
+the source is 512 bytes or more, the receipt records `trailer` as
+`CAPABILITY_UNAVAILABLE`; a shorter source records nothing, as it has no block to
+miss. When the length is unknown the
+far-magic step has already read its window, so an image that fits in that window is
+refused: the block is in the prefix. A longer zlib-first image still opens as zlib. A
+source shorter than 512 bytes skips the read too.
 
 A hit is `DMG` / `CERTAIN` / `magic`. Nothing reads the image. `open_archive` raises
 `UnsupportedFeatureError` naming UDIF. `format_availability` reports `NONE` with an
@@ -247,6 +250,14 @@ general message would tell the caller that some magic byte was wrong.
   `open_archive` probes with the flag off and then replaces the source itself, because it
   must hand the backend the volume's bytes and not the stub's. The receipt covers both
   passes (§4.1).
+- **A path to a volume of a set** goes through `resolve_source` first, as in
+  `open_archive`. Any part of a numbered split set (`set.zip.002`) is detected on the
+  joined parts, and a RAR continuation on volume 1. A middle part has no magic at offset
+  0, so detecting that one file alone refused a path that `open_archive` opens.
+  Resolution runs before detection reads a byte, and raises what `open_archive` raises
+  for the same path: `TruncatedError` for a numbered set with a gap. A lone first part
+  is detected as the format its bytes show, where `open_archive` refuses it as an
+  incomplete set.
 
 ## 3. What the answer claims
 
@@ -406,10 +417,11 @@ A backward seek puts the handle back. It does not re-read the prefix:
 
 | Source | What detection does | What it cannot do |
 | --- | --- | --- |
-| Path | Opens its own handle for detection | Nothing missing |
+| Path | Resolved first, as `open_archive` resolves it (§2.7); then opens its own handle for detection. Resolution's listing and peeks run before the receipt starts, so `cost_receipt` does not count them | Nothing missing |
 | Seekable stream | Reads forward from the caller's position, restores it; the archive is taken to start where the caller positioned it | Nothing missing |
-| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block. Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
+| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when detection reaches that step and the source is 512 bytes or more). Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
 | Non-seekable, raw, to `detect_format` | Reads what it peeks | The caller loses those bytes unless it buffers the stream itself |
+| Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
 | Directory | Nothing | Nothing to do |
 
 Detection never spools a pipe to a temporary file. The one temporary copy the library makes
@@ -431,6 +443,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
 | `detect_format` on a raw pipe leaves the caller without the bytes it read | **archivey** | By design: `open_archive` and `open_stream` keep them (§4.3) |
 | A polyglot opens as whichever format comes first | **archivey** | The tie rule (§3.1); pass `format=` |
+| A bzip2- or xz-compressed `.dmg` read from a pipe or as a member stream detects as `BZ2` / `XZ`, with `trailer` in `unavailable_tiers` | **archivey** | Its `koly` block is at the end, and those sources are not seeked there (§2.4, §4.3) |
 
 ## 6. Decisions
 
@@ -485,6 +498,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) | `tests/test_detection.py::test_open_archive_detects_under_the_config_budget`, `::test_format_argument_stub_checks_detect_under_the_config_budget`, `::test_empty_listing_rescan_detects_under_the_config_budget`, `::test_empty_listing_rescan_stays_internal_under_strict` |
 | A receipt over budget always names a step cut short, for one pass and two (§4.1) | `tests/test_detection_workspace.py::test_over_budget_receipt_always_names_a_cut_short_tier`, `::test_two_pass_receipt_over_budget_also_names_a_cut_short_tier` |
 | A stub-volume detection's receipt keeps the stub pass (§2.7, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
+| A path to any volume of a set is detected on the set `open_archive` reads; a gapped set raises `TruncatedError` (§2.7) | `tests/test_volumes.py::test_detect_format_on_any_numbered_part_agrees_with_open_archive`, `::test_detect_format_on_a_rar_continuation_agrees_with_open_archive`, `::test_detect_format_on_a_gapped_numbered_set_raises_truncated`, `::test_detect_format_on_a_lone_first_part_reports_its_bytes` |
 | The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
 | One forward pass over the prefix. Gzip, ZIP and ISO fetch each byte once and seek backward only to restore the handle. A seekable bzip2 or xz file also reads the 512-byte trailer, then fetches those bytes again when a later tier reads the file (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_seekable_bzip2_rereads_the_trailer_bytes`, `::test_seekable_koly_image_reads_the_trailer_once`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
 | A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) | `tests/test_udif.py` |

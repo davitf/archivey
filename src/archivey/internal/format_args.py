@@ -70,8 +70,8 @@ def _accepted_archive_formats() -> str:
     """The spellings worth recommending, for a refusal message.
 
     Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension,
-    so the check below drops them: ``format="unknown"`` raises
-    ``UnsupportedFeatureError`` and ``format="directory"`` an ``OSError``. ``DMG``
+    so the check below drops them: ``open_archive`` refuses ``format="unknown"``, and
+    ``format="directory"`` opens only a directory path. ``DMG``
     has an extension, and offering it would do the same — the spelling resolves,
     then open refuses the image — so it is excluded by name. Lowercasing keeps the
     list from implying that case is significant, in a message whose subject is a

@@ -151,7 +151,7 @@ def _inflate_rest(
         raise error(exc) from exc
 
 
-@dataclass(order=True)
+@dataclass(order=True, slots=True)
 class SeekPoint:
     """A point from which decompression can resume.
 

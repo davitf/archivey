@@ -67,6 +67,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_byte_size,
     source_name,
     source_size_fact,
+    underlying_stream,
 )
 from archivey.internal.streams.streamtools.locked import LockedStream
 from archivey.internal.streams.streamtools.shared import SharedSource
@@ -112,4 +113,5 @@ __all__ = [
     "source_byte_size",
     "source_size_fact",
     "source_name",
+    "underlying_stream",
 ]

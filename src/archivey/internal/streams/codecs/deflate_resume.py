@@ -50,7 +50,7 @@ from archivey.internal.streams.resume import ResumeReachedStreamEnd
 WINDOW_SIZE = 32 << 10
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DeflateResume:
     """A :class:`SeekPoint` state: a DEFLATE block boundary inside the stream.
 

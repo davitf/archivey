@@ -10,6 +10,7 @@ import struct
 import subprocess
 import zipfile
 import zlib
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,9 +33,10 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.types import CreateSystem, HashAlgorithm, crc32_digest
-from tests.conftest import requires_binary
+from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
+from tests.zip_aes_fixture import build_aes_zip
 from tests.zipcrypto import build_zipcrypto_zip, zip_with_truncated_zipcrypto_header
 
 # ---------------------------------------------------------------------------
@@ -267,6 +269,61 @@ def test_truncated_zipcrypto_header_is_typed_error(
         )
         with pytest.raises(TruncatedError, match="Truncated ZipCrypto header"):
             ar.open(encrypted[0])
+
+
+def _with_declared_compress_size(blob: bytes, size: int) -> bytes:
+    """Set the first member's compressed size to ``size`` in both of its headers.
+
+    Crafted: no producer writes an encrypted member whose declared size cannot hold
+    its encryption header (DR-24 allows a crafted fixture for that). The payload
+    bytes stay in the file, so nothing is cut short.
+    """
+    out = bytearray(blob)
+    struct.pack_into("<I", out, 18, size)  # local file header, compressed size
+    cd_at = out.find(b"PK\x01\x02")
+    assert cd_at > 0
+    struct.pack_into("<I", out, cd_at + 20, size)  # central directory, same field
+    return bytes(out)
+
+
+def _zipcrypto_blob() -> bytes:
+    return build_zipcrypto_zip(
+        b"secret", b"x.txt", b"hello world", compression=zipfile.ZIP_STORED
+    )
+
+
+def _aes_blob() -> bytes:
+    return build_aes_zip([(b"x.txt", b"hello world")], password=b"secret", method=0)
+
+
+@pytest.mark.parametrize(
+    "password", [b"secret", [b"wrong", b"secret"]], ids=["single", "multi"]
+)
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(_zipcrypto_blob, id="zipcrypto"),
+        pytest.param(_aes_blob, id="aes", marks=requires("cryptography")),
+    ],
+)
+def test_encryption_header_larger_than_declared_size_is_corruption(
+    build: Callable[[], bytes], password: bytes | list[bytes]
+) -> None:
+    """A declared size too small for the encryption header is one typed error.
+
+    The file is complete, so this is an impossible header (``CorruptionError``),
+    not a short read, for ZipCrypto and WinZip AES alike, with the member named
+    in the error.
+    """
+    blob = _with_declared_compress_size(build(), 5)
+    with open_archive(
+        io.BytesIO(blob), format=ArchiveFormat.ZIP, password=password
+    ) as ar:
+        member = ar.members()[0]
+        with raises_corruption_not_truncation() as excinfo:
+            ar.open(member)
+    assert excinfo.value.member_name == "x.txt"
+    assert excinfo.value.source_format is ArchiveFormat.ZIP
 
 
 def test_archive_close_waits_for_an_in_flight_member_read() -> None:

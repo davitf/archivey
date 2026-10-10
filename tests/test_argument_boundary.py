@@ -202,7 +202,25 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _read_member(archive, b),
                 label=f"reader.read({bad!r})",
             ),
+            _case(
+                "get",
+                "name",
+                bad,
+                lambda b=bad: _get_member(archive, b),
+                label=f"reader.get({bad!r})",
+            ),
         ]
+    # A member object, which ``open()`` takes: ``get()`` looks up by name only, and
+    # this used to escape as ``TypeError: unhashable type: 'ArchiveMember'``.
+    rows.append(
+        _case(
+            "get",
+            "name",
+            "<ArchiveMember>",
+            lambda: _get_member(archive, None, by_member=True),
+            label="reader.get(<ArchiveMember>)",
+        )
+    )
 
     for bad in ("h.txt", [0], [None], [1.5], 0):
         rows += [
@@ -461,6 +479,13 @@ def _extract_all(archive: Path, dest: Path, members: Any, **kwargs: Any) -> Any:
         return reader.extract_all(dest, members=members, **kwargs)
 
 
+def _get_member(archive: Path, name: Any, *, by_member: bool = False) -> Any:
+    with open_archive(archive) as reader:
+        if by_member:
+            name = reader.members()[0]
+        return reader.get(name)
+
+
 def _read_member(archive: Path, member: Any) -> Any:
     with open_archive(archive) as reader:
         return reader.read(member)
@@ -573,10 +598,9 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_stream", "seekable"): "truthiness flag",
     ("detect_format", "follow_stub_volumes"): "truthiness flag",
     ("extract_all", "dry_run"): "truthiness flag",
-    # ``get`` is mapping-shaped on purpose: like ``dict.get`` it answers with the
-    # default rather than raising, so ``reader.get(0)`` returning ``None`` is the
-    # contract, not an escape. ``reader.open("absent.txt")`` is where a lookup raises.
-    ("get", "name"): "mapping-shaped; returns the default rather than raising",
+    # ``get`` answers an absent *name* with the default, like ``dict.get``. A value
+    # that is not a name at all is swept above: ``get(b"h.txt")`` used to answer
+    # "absent" for a member that exists, which is a wrong answer, not a lookup miss.
     ("get", "default"): "any object is a valid default",
 }
 
@@ -727,6 +751,24 @@ def test_unknown_member_name_still_raises_keyerror(archive: Path) -> None:
     with open_archive(archive) as reader:
         with pytest.raises(KeyError):
             reader.open("nope.txt")
+
+
+def test_get_refuses_a_bytes_name_and_keeps_the_default_for_an_absent_one(
+    archive: Path,
+) -> None:
+    """``get(b"h.txt")`` used to return ``None`` although ``h.txt`` exists.
+
+    The refusal is for the wrong type only: an absent ``str`` name still answers with
+    the default, like ``dict.get``.
+    """
+    sentinel = object()
+    with open_archive(archive) as reader:
+        with pytest.raises(ArchiveyUsageError, match=r"b'h\.txt' \(bytes\)"):
+            reader.get(b"h.txt")  # type: ignore[arg-type]
+        assert reader.get("nope.txt") is None
+        assert reader.get("nope.txt", sentinel) is sentinel  # type: ignore[arg-type]
+        found = reader.get("h.txt")
+        assert found is not None and found.name == "h.txt"
 
 
 def test_extract_all_wrong_typed_members_does_not_create_dest(
