@@ -160,6 +160,10 @@ def run_test(
                             )
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
+                    except BrokenPipeError:
+                        # The -v line or the progress bar lost its reader: not a
+                        # member failure. main() exits 141 for it, with no message.
+                        raise
                     except (ArchiveyError, OSError) as exc:
                         failed += 1
                         print(

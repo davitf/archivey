@@ -10,7 +10,7 @@ import re
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import Any, NamedTuple, NoReturn, TextIO, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 import archivey
 from archivey import (
@@ -42,6 +42,9 @@ from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import display_path, quoted
+
+if TYPE_CHECKING:
+    from _typeshed import SupportsWrite
 
 _TOP_EPILOG = """\
 examples:
@@ -155,6 +158,20 @@ class _ArchiveyArgumentParser(argparse.ArgumentParser):
         if message.startswith(unrecognized):
             message += _unrecognized_hints(message[len(unrecognized) :].split())
         super().error(message)
+
+    def _print_message(
+        self, message: str, file: SupportsWrite[str] | None = None
+    ) -> None:
+        # argparse drops an OSError from writing help or usage, so a reader that
+        # closed the pipe would see exit 0 or 2 for output it never got. Let a
+        # broken pipe reach main(), which exits 141 for it.
+        if message:
+            try:
+                (file or sys.stderr).write(message)
+            except BrokenPipeError:
+                raise
+            except (AttributeError, OSError):
+                pass
 
 
 def _unrecognized_hints(tokens: list[str]) -> str:
@@ -610,8 +627,9 @@ def main(
 ) -> int:
     """CLI entry point. Returns a process exit code.
 
-    ``out`` and ``err`` carry the operation's own output. argparse's usage errors
-    (unknown flags, a missing archive) still print to the process ``sys.stderr``.
+    ``out`` and ``err`` carry the operation's own output. argparse's help and usage
+    errors (unknown flags, a missing archive) still print to the process
+    ``sys.stdout`` and ``sys.stderr``.
     """
     # Archive text (member names, comments) is printable but may not be encodable: a
     # cp1252 console, PYTHONIOENCODING=ascii. The interpreter's stderr already escapes
@@ -620,10 +638,31 @@ def main(
         TextIO, _BackslashReplacingWriter(out if out is not None else sys.stdout)
     )
     err_stream = err if err is not None else sys.stderr
+    try:
+        exit_code = _parse_and_dispatch(argv, out=out_stream, err=err_stream)
+        # Flush here, not at interpreter exit, so a reader that closed the pipe
+        # after the last write is still a broken pipe handled below. Without out=
+        # and err=, these are the process streams, so this also flushes argparse's
+        # buffered help and usage text.
+        out_stream.flush()
+        err_stream.flush()
+        return exit_code
+    except BrokenPipeError:
+        # The verb's output, help and usage text, and the error messages
+        # _parse_and_dispatch prints are all written inside this try. Not 0: the
+        # reader left before all the output arrived, so `test` may not have
+        # verified the whole archive and `list` may not have printed it all. A
+        # usage error whose message is lost also lands here, as 141 rather than 2.
+        _silence_broken_pipe()
+        return EXIT_BROKEN_PIPE
+
+
+def _parse_and_dispatch(argv: Sequence[str] | None, *, out: TextIO, err: TextIO) -> int:
+    """Parse ``argv`` and run the verb; ``BrokenPipeError`` is left to ``main``."""
     raw = list(sys.argv[1:] if argv is None else argv)
 
     if not raw:
-        build_parser().print_help(err_stream)
+        build_parser().print_help(err)
         return EXIT_USAGE
 
     argv_list = _inject_default_list(raw)
@@ -636,37 +675,30 @@ def main(
             return EXIT_OK
         if isinstance(code, int):
             return code
-        print(code, file=err_stream)
+        print(code, file=err)
         return EXIT_USAGE
 
     try:
-        with cli_logging(verbose=bool(args.verbose), err=err_stream):
-            exit_code = _dispatch(args, out=out_stream, err=err_stream)
-            # Flush here, not at interpreter exit, so a reader that closed the pipe
-            # after the last write is still a broken pipe handled below.
-            out_stream.flush()
-            err_stream.flush()
-            return exit_code
+        with cli_logging(verbose=bool(args.verbose), err=err):
+            return _dispatch(args, out=out, err=err)
     except CliError as exc:
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not
         # escape its own message the way ArchiveyError does — and an archive-derived name
         # reaches here inside that message, not as a separate argument.
-        print(escape_member_name(exc.message), file=err_stream)
+        print(escape_member_name(exc.message), file=err)
         return exc.code
     except ArchiveyError as exc:
-        print(format_error_detail(exc), file=err_stream)
+        print(format_error_detail(exc), file=err)
         return EXIT_FAIL
     except BrokenPipeError:
-        # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2).
-        # Not 0: the reader left before the verb finished, so `test` did not verify
-        # the whole archive and `list` did not print it all.
-        _silence_broken_pipe()
-        return EXIT_BROKEN_PIPE
+        # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2), which
+        # would print to the closed pipe and return 1. main() turns it into 141.
+        raise
     except OSError as exc:
-        print(escape_member_name(_format_os_error(exc)), file=err_stream)
+        print(escape_member_name(_format_os_error(exc)), file=err)
         return EXIT_FAIL
     except KeyboardInterrupt:
-        print("interrupted", file=err_stream)
+        print("interrupted", file=err)
         return EXIT_INTERRUPTED
 
 
@@ -710,10 +742,16 @@ def _silence_broken_pipe() -> None:
             stream.flush()
             continue
         except (OSError, ValueError):
+            # Wider than BrokenPipeError on purpose. ValueError is an in-process
+            # caller's closed sys.stdout (a closed StringIO); any other OSError
+            # (ENOSPC on a redirected stdout) would fail the exit flush the same
+            # way. The exit code is already 141, so that second error is dropped.
             pass
         try:
             devnull = os.open(os.devnull, os.O_WRONLY)
         except OSError:
+            # No descriptor to spare means the other stream cannot get one
+            # either, so stop rather than try again for it.
             return
         try:
             os.dup2(devnull, stream.fileno())

@@ -109,6 +109,7 @@ encrypted members fail as if no password had been given.
   pipe closed (see below). Codes `4` to `127` are reserved.
 - When the pipe that stdout or stderr writes to closes (`archivey t big.zip 2>&1 |
   head -1`), every verb stops quietly with exit `141` (128 + 13, the shell's code
-  for SIGPIPE; the same code on Windows). For `test` it means the archive was not
-  fully verified.
+  for SIGPIPE; the same code on Windows). So do `--help` and a usage error whose
+  message is lost. `141` says output was lost: for `test` the archive may not have
+  been fully verified, so treat it as a result you do not have.
 - `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.

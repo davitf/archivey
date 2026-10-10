@@ -1020,6 +1020,44 @@ def test_test_closed_stderr_pipe_mid_pass_exits_broken_pipe(
     assert err.failed
 
 
+class _ProgressPipeClosed:
+    """A progress bar whose stream lost its reader: its first update raises."""
+
+    calls = 0
+
+    def __call__(self, progress: object) -> None:
+        self.calls += 1
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("verb", ["test", "extract"])
+def test_progress_pipe_closed_mid_pass_exits_141(
+    sample_zip: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    """A broken pipe raised inside the member pass is not a member failure.
+
+    ``test`` and ``extract`` each catch ``OSError`` around the pass to report a
+    failed member; a ``BrokenPipeError`` must pass through that to ``main()``. The
+    report stream here stays open, so a handler that swallowed it would print a
+    failure and exit 1 rather than fail again on the closed pipe.
+    """
+    from archivey.cli import extract_cmd
+
+    module = test_cmd if verb == "test" else extract_cmd
+    progress = _ProgressPipeClosed()
+    monkeypatch.setattr(module, "make_progress_callback", lambda **_: progress)
+    argv = [verb, str(sample_zip)]
+    if verb == "extract":
+        argv += ["-d", str(tmp_path / "out")]
+    err = io.StringIO()
+    assert main(argv, out=io.StringIO(), err=err) == EXIT_BROKEN_PIPE
+    assert progress.calls == 1
+    assert err.getvalue() == ""
+
+
 class _ClosedPipeStdout(io.StringIO):
     """A stdout whose every write raises ``BrokenPipeError``, as a closed pipe does."""
 
@@ -1044,7 +1082,7 @@ def test_closed_stdout_pipe_exits_broken_pipe(sample_zip: Path, verb: str) -> No
 
 @pytest.mark.skipif(
     sys.platform == "win32",
-    reason="a write to a pipe with no reader is EINVAL on Windows, not EPIPE",
+    reason="POSIX only: test_reader_leaving_mid_output_exits_141 is the Windows check",
 )
 @pytest.mark.parametrize(
     ("closed", "argv"),
@@ -1052,6 +1090,7 @@ def test_closed_stdout_pipe_exits_broken_pipe(sample_zip: Path, verb: str) -> No
         ("stdout", ["list"]),
         ("stderr", ["test", "-v"]),
         ("stderr", ["test"]),
+        ("stderr", ["extract", "-v", "-d", "out"]),
     ],
 )
 @pytest.mark.parametrize("members", [1, 2000])
@@ -1080,15 +1119,162 @@ def test_closed_pipe_subprocess_exits_141_without_traceback(
         proc = subprocess.run(
             [sys.executable, "-m", "archivey", *argv, str(archive)],
             check=False,
+            cwd=tmp_path,
             **streams,
         )
     finally:
         os.close(write_end)
     other = proc.stderr if closed == "stdout" else proc.stdout
     assert proc.returncode == EXIT_BROKEN_PIPE, other
-    assert b"Traceback" not in other
-    assert b"Exception ignored" not in other
-    assert b"Broken pipe" not in other
+    _assert_no_pipe_noise(other)
+
+
+def _assert_no_pipe_noise(output: bytes) -> None:
+    assert b"Traceback" not in output
+    assert b"Exception ignored" not in output
+    assert b"Broken pipe" not in output
+
+
+@pytest.mark.parametrize(
+    ("closed", "argv"),
+    [
+        ("stdout", ["list"]),
+        ("stderr", ["test", "-v"]),
+        ("stderr", ["extract", "-v", "-d", "out"]),
+    ],
+)
+def test_reader_leaving_mid_output_exits_141(
+    tmp_path: Path, closed: str, argv: list[str]
+) -> None:
+    """``archivey list x | head -1``: the reader takes one line, then closes its end.
+
+    Nothing is closed before the child starts, so this runs on Windows too, where a
+    write to a pipe whose reader has gone fails with ERROR_NO_DATA and CPython raises
+    ``BrokenPipeError`` for it. The child has more to write than a pipe holds, so it
+    is blocked on a write, not finished, when the reader leaves.
+    """
+    import subprocess
+
+    archive = _zip(tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(10000)})
+    other_path = tmp_path / "other.txt"
+    with other_path.open("wb") as other_file:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "archivey", *argv, str(archive)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if closed == "stdout" else other_file,
+            stderr=subprocess.PIPE if closed == "stderr" else other_file,
+            cwd=tmp_path,
+        )
+        reader = proc.stdout if closed == "stdout" else proc.stderr
+        assert reader is not None
+        first = reader.readline()
+        reader.close()
+        returncode = proc.wait(timeout=120)
+    other = other_path.read_bytes()
+    assert first, other
+    assert returncode == EXIT_BROKEN_PIPE, other
+    _assert_no_pipe_noise(other)
+
+
+class _PipeClosedAtFlush(io.StringIO):
+    """A block-buffered pipe whose reader left: writes land, the flush fails."""
+
+    def flush(self) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize("stream_cls", [_ClosedPipeStdout, _PipeClosedAtFlush])
+@pytest.mark.parametrize(
+    ("argv", "closed"),
+    [
+        (["--help"], "stdout"),
+        (["--version"], "stdout"),
+        (["list", "--help"], "stdout"),
+        (["extract", "-o", "x", "a.zip"], "stderr"),
+        (["list"], "stderr"),
+    ],
+)
+def test_help_and_usage_to_closed_pipe_exit_141(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    closed: str,
+    stream_cls: type[io.StringIO],
+) -> None:
+    """argparse writes help and usage to the process streams and drops an OSError
+    from that write. A closed pipe there is still 141, so a usage error whose message
+    was lost is not reported as 2.
+    """
+    dead = stream_cls()
+    monkeypatch.setattr(sys, closed, dead)
+    assert main(argv) == EXIT_BROKEN_PIPE
+
+
+@pytest.mark.parametrize("stream_cls", [_ClosedPipeStdout, _PipeClosedAtFlush])
+def test_no_arguments_help_to_closed_stderr_exits_141(
+    stream_cls: type[io.StringIO],
+) -> None:
+    assert main([], err=stream_cls()) == EXIT_BROKEN_PIPE
+
+
+def test_error_message_to_closed_stderr_exits_141(tmp_path: Path) -> None:
+    """main()'s own error report (here a missing archive) to a closed pipe: 141."""
+    assert (
+        main(["list", str(tmp_path / "missing.zip")], err=_ClosedPipeStdout())
+        == EXIT_BROKEN_PIPE
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX only: the in-process tests above cover the same paths everywhere",
+)
+@pytest.mark.parametrize("unbuffered", ["", "1"])
+@pytest.mark.parametrize(
+    ("closed", "argv", "code_if_open"),
+    [
+        ("stdout", ["--help"], EXIT_OK),
+        ("stderr", ["extract", "-o", "x", "a.zip"], EXIT_USAGE),
+        ("stderr", [], EXIT_USAGE),
+        ("stderr", ["list", "missing.zip"], EXIT_FAIL),
+    ],
+)
+def test_help_and_usage_subprocess_closed_pipe_exits_141(
+    tmp_path: Path,
+    closed: str,
+    argv: list[str],
+    code_if_open: int,
+    unbuffered: str,
+) -> None:
+    """``archivey --help | true`` exits 141, buffered or not (``PYTHONUNBUFFERED``).
+
+    Buffered, the write that fails is the flush; unbuffered, it is argparse's own
+    write. The control run with the pipe open pins that each case does write.
+    """
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    if unbuffered:
+        env["PYTHONUNBUFFERED"] = unbuffered
+    cmd = [sys.executable, "-m", "archivey", *argv]
+    control = subprocess.run(
+        cmd, check=False, cwd=tmp_path, env=env, capture_output=True
+    )
+    assert control.returncode == code_if_open
+    assert getattr(control, closed)
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        streams = (
+            {"stdout": write_end, "stderr": subprocess.PIPE}
+            if closed == "stdout"
+            else {"stdout": subprocess.PIPE, "stderr": write_end}
+        )
+        proc = subprocess.run(cmd, check=False, cwd=tmp_path, env=env, **streams)
+    finally:
+        os.close(write_end)
+    other = proc.stderr if closed == "stdout" else proc.stdout
+    assert proc.returncode == EXIT_BROKEN_PIPE, other
+    _assert_no_pipe_noise(other)
 
 
 def test_test_summary_helper() -> None:
