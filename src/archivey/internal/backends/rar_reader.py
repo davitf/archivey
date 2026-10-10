@@ -2411,9 +2411,22 @@ class RarReader(BaseArchiveReader):
             # holds and reports the rest as missing (``members_report().error``).
             # Raised before the end-block diagnostics below: under a strict policy
             # emitting them first would replace this with a DiagnosticRaisedError
-            # about lesser damage.
+            # about lesser damage. A set can also have a damaged header (the walk
+            # follows a split member past one): one error is raised, so its message
+            # names both.
+            message = self._archive.truncated
+            if self._archive.damaged is not None:
+                message += f"; also {self._archive.damaged}"
             raise TruncatedError(
-                self._archive.truncated,
+                message,
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
+        if self._archive.damaged is not None:
+            # A member header failed its CRC after these members: the same terminal
+            # damage after the prefix, reported as corruption rather than a cut.
+            raise CorruptionError(
+                self._archive.damaged,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )
@@ -2558,7 +2571,7 @@ class RarReader(BaseArchiveReader):
             return None
         if unpacked is None or zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
             return None
-        return _decode_comment_text(unpacked)
+        return _decode_comment_text(unpacked, encoding=self._encoding)
 
     def _to_member(self, info: RarMemberInfo, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration

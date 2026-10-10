@@ -29,7 +29,12 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import ArchiveyError, CorruptionError, ResourceLimitError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from tests.conftest import requires, requires_zstd
 from tests.memory_util import traced_peak
 
@@ -275,6 +280,184 @@ def test_sparse_map_past_packed_data_is_not_served_silently() -> None:
                 stream.read()
 
 
+def _pax_sparse(
+    version: str, entries: list[tuple[int, int]], realsize: int, packed: bytes
+) -> bytes:
+    """A PAX sparse member in encoding ``version`` 0.0, 0.1 or 1.0.
+
+    0.0 repeats the ``GNU.sparse.offset`` / ``GNU.sparse.numbytes`` keys, which
+    tarfile's ``pax_headers`` dict cannot hold, so the 0.x extended headers are
+    written by hand. 1.0 stores the map as text at the head of the data.
+
+    The 0.x data member's header has GNU magic (``_member`` writes
+    ``tarfile.GNU_FORMAT``). tarfile applies the ``GNU.sparse.*`` records whatever
+    the magic, so the tests are sound. GNU tar applies them only on a ustar header:
+    it does not read these 0.x fixtures ("Unexpected EOF in archive", even for a
+    valid map). To compare against GNU tar, write the data member with
+    ``tarfile.USTAR_FORMAT``."""
+    if version == "1.0":
+        body = b"%d\n" % len(entries)
+        body += b"".join(b"%d\n%d\n" % entry for entry in entries)
+        body = body.ljust(-(-len(body) // 512) * 512, b"\0") + packed
+        pax = {
+            "GNU.sparse.major": "1",
+            "GNU.sparse.minor": "0",
+            "GNU.sparse.name": "a",
+            "GNU.sparse.realsize": str(realsize),
+        }
+        return _member("GNUSparseFile.0/a", body, pax_headers=pax)
+    fields = [("GNU.sparse.size", str(realsize))]
+    fields.append(("GNU.sparse.numblocks", str(len(entries))))
+    if version == "0.0":
+        for offset, numbytes in entries:
+            fields += [
+                ("GNU.sparse.offset", str(offset)),
+                ("GNU.sparse.numbytes", str(numbytes)),
+            ]
+    else:
+        flat = ",".join(f"{offset},{numbytes}" for offset, numbytes in entries)
+        fields.append(("GNU.sparse.map", flat))
+    records = b""
+    for key, value in fields:
+        text = f" {key}={value}\n".encode()
+        length = len(text) + len(str(len(text) + 1))
+        records += str(length).encode() + text
+    xhdr = tarfile.TarInfo("./PaxHeaders/a")
+    xhdr.type = tarfile.XHDTYPE
+    xhdr.size = len(records)
+    return (
+        xhdr.tobuf(format=tarfile.USTAR_FORMAT)
+        + records
+        + b"\0" * (-len(records) % 512)
+        + _member("a", packed)
+    )
+
+
+def _sparse_member(
+    encoding: str, entries: list[tuple[int, int]], realsize: int, packed: bytes
+) -> bytes:
+    if encoding == "gnu-old":
+        return _gnu_sparse("a", entries, realsize, packed)
+    return _pax_sparse(encoding.removeprefix("pax-"), entries, realsize, packed)
+
+
+_SPARSE_ENCODINGS = ["gnu-old", "pax-0.0", "pax-0.1", "pax-1.0"]
+_PACKED = b"A" * 512 + b"B" * 512
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+@pytest.mark.parametrize(
+    ("entries", "realsize", "error", "match"),
+    [
+        (
+            [(4096, 512), (0, 512)],
+            8192,
+            UnsupportedFeatureError,
+            "out of order or overlapping",
+        ),
+        (
+            [(0, 512), (256, 512)],
+            2048,
+            UnsupportedFeatureError,
+            "out of order or overlapping",
+        ),
+        (
+            [(0, 512), (4096, 512)],
+            1024,
+            CorruptionError,
+            "ends past the member's size",
+        ),
+        (
+            [(0, 512), (4096, 512), (8193, 0)],
+            8192,
+            CorruptionError,
+            "ends past the member's size",
+        ),
+        ([(0, 512)], 8192, CorruptionError, "accounts for only 512"),
+    ],
+    ids=[
+        "out-of-order",
+        "overlapping",
+        "past-the-end",
+        "empty-entry-past-the-end",
+        "under-stored",
+    ],
+)
+def test_sparse_map_damaged_or_out_of_order_is_refused(
+    entries: list[tuple[int, int]],
+    realsize: int,
+    error: type[ArchiveyError],
+    match: str,
+    encoding: str,
+    streaming: bool,
+) -> None:
+    """tarfile serves each of these maps with no error. Archivey refuses each one.
+
+    tarfile stitches out-of-order or overlapping chunks into one run, where GNU tar
+    1.35 places each chunk at its own offset: the map is valid data that archivey
+    cannot serve, so ``UnsupportedFeatureError`` (DR-4).
+
+    tarfile drops the stored bytes of a non-empty chunk past the logical size, and
+    stored bytes that no chunk accounts for (``B`` in the last case): that is
+    damage, ``CorruptionError`` (DR-3). An empty entry past the logical size loses
+    no bytes in tarfile. It is ``CorruptionError`` because the map contradicts its
+    own declared size, and because tarfile and GNU tar disagree on the extracted
+    length (DR-1).
+
+    GNU tar 1.35 refuses a chunk past the logical size in old GNU and PAX 1.0, and
+    reads it in PAX 0.0 and 0.1. It extracts the under-stored member without the
+    leftover bytes."""
+    data = (
+        _sparse_member(encoding, entries, realsize, _PACKED)
+        + _member("b", b"SECRET")
+        + _TRAILER
+    )
+    with open_archive(io.BytesIO(data), streaming=streaming) as ar:
+        with pytest.raises(error, match=match):
+            if streaming:
+                _drain(ar)
+            else:
+                with ar.open("a") as stream:
+                    stream.read()
+
+
+_IN_ORDER_ENTRIES = [(0, 512), (4096, 512), (8192, 0)]
+_IN_ORDER_EXPECTED = b"A" * 512 + bytes(3584) + b"B" * 512 + bytes(3584)
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_sparse_map_in_order_with_trailing_empty_entry_is_read(
+    encoding: str, streaming: bool
+) -> None:
+    """The same chunks in order are a valid map. GNU tar ends a map with an empty
+    ``(realsize, 0)`` entry when the file ends in a hole, and the old GNU header pads
+    its unused slots with ``(0, 0)``; neither is out of order."""
+    data = (
+        _sparse_member(encoding, _IN_ORDER_ENTRIES, 8192, _PACKED)
+        + _member("b", b"SECRET")
+        + _TRAILER
+    )
+    with open_archive(io.BytesIO(data), streaming=streaming) as ar:
+        got = {m.name: s.read() for m, s in ar.stream_members() if s is not None}
+    assert got == {"a": _IN_ORDER_EXPECTED, "b": b"SECRET"}
+
+
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_sparse_map_in_order_is_read_through_open(encoding: str) -> None:
+    """Random access by name serves the valid map too, the entry point the refusal
+    tests use."""
+    data = (
+        _sparse_member(encoding, _IN_ORDER_ENTRIES, 8192, _PACKED)
+        + _member("b", b"SECRET")
+        + _TRAILER
+    )
+    with open_archive(io.BytesIO(data)) as ar:
+        with ar.open("a") as stream:
+            assert stream.read() == _IN_ORDER_EXPECTED
+
+
 def _sparse_1_0_tar(entries: int) -> bytes:
     body = b"%d\n" % entries + b"0\n0\n" * entries
     pax = {
@@ -290,18 +473,21 @@ def test_sparse_1_0_map_is_weighed_against_max_metadata_bytes() -> None:
     """threat-model O1: listing-time retained metadata is budgeted by
     ``max_metadata_bytes``. Here 30 000 map entries (120 KB of tar, ~200 bytes of
     .tar.gz) are retained as ~2 MB of tuples against a 64 KiB cap. At a million
-    entries a 4 KB .tar.gz retains 64 MB and takes ~2.5 s per member to list."""
+    entries a 4 KB .tar.gz retains 64 MB and takes ~2.5 s per member to list.
+
+    The map is weighed as it is parsed, and the first member's headers are parsed as
+    the archive opens, so the refusal may come from ``open_archive``."""
     data = _sparse_1_0_tar(30_000)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=64 * 1024))
     tracemalloc.start()
     try:
-        with open_archive(io.BytesIO(data), config=config) as ar:
-            try:
+        try:
+            with open_archive(io.BytesIO(data), config=config) as ar:
                 members = ar.members()
-            except ResourceLimitError:
-                return
-            retained, _peak = tracemalloc.get_traced_memory()
-            assert members[0].is_sparse
+                retained, _peak = tracemalloc.get_traced_memory()
+                assert members[0].is_sparse
+        except ResourceLimitError:
+            return
     finally:
         tracemalloc.stop()
     assert retained < 1_000_000, f"listing retained {retained} bytes past a 64 KiB cap"

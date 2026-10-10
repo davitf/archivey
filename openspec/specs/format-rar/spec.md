@@ -129,6 +129,24 @@ name.
 | RAR5 `a\xffq.txt` and `a\xfeq.txt` | Two members, `a\udcffq.txt` and `a\udcfeq.txt`; each reads its own bytes through `unrar`, which reads both names as `a` |
 | 8-bit `b\x81.txt` and `b\x8d.txt` written on Unix | `b\udc81.txt` and `b\udc8d.txt` |
 
+### Requirement: Decode RAR 1.5-4 comments in the order names use
+
+A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`. A RAR 2.9-4 `CMT`
+SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Every other
+RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or
+compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
+and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
+`encoding=` when one was passed, else as windows-1252. A byte the chosen code page
+leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system MUST
+NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it SHALL NOT
+emit `MEMBER_NAME_ENCODING_INFERRED`.
+
+#### Scenario: An undecodable comment byte survives
+
+- **WHEN** an 8-bit comment holds `b"a\x98b"` and the archive is opened with
+  `encoding="cp1251"`, which leaves 0x98 undefined
+- **THEN** the comment is `"a\udc98b"`, the same string a ZIP comment with those bytes gives
+
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
 The RAR reader SHALL accept an archive whose marker (`Rar!\x1a\x07\x00` for RAR4
@@ -1213,8 +1231,8 @@ The type of a header whose CRC failed is not proof either, since one flipped byt
 make a MAIN or FILE header's type read as `ENDARC`. A CRC-failed header SHALL be taken
 as the end block only when its type reads as `ENDARC`, it has an end block's shape (no
 data area, and a header no larger than an end block's), and the file ends right after
-it. Any other CRC-failed header SHALL raise `CorruptionError`, as before this
-requirement.
+it. Any other CRC-failed header SHALL be handled as the next requirement says: the
+members before it list, then `CorruptionError`.
 
 The walk SHALL NOT read the flags of a damaged block, so its next-volume flag SHALL NOT
 chain the walk to another volume. In a multi-volume set the walk SHALL continue past
@@ -1237,14 +1255,61 @@ record has no check value.
 | Case | Expected |
 | --- | --- |
 | Plain RAR 1.5-4 or RAR5, end block CRC mismatch | Full listing; members read; `ARCHIVE_EOF_MARKER_MISSING` after them; strict refuses |
-| MAIN or FILE header whose type byte is flipped to the end block's | `CorruptionError` at open |
-| Damaged end block followed by any byte | `CorruptionError` at open |
-| Damaged last header typed as the end block but with a data area or an oversized header | `CorruptionError` at open |
+| MAIN header whose type byte is flipped to the end block's | `CorruptionError` at open |
+| FILE header whose type byte is flipped to the end block's | Members before it listed; `CorruptionError` after them |
+| Damaged end block followed by any byte | Members before it listed; `CorruptionError` after them |
+| Damaged last header typed as the end block but with a data area or an oversized header | Members before it listed; `CorruptionError` after them |
 | Damaged end block with its next-volume flag set, no member continues | Set ends at that volume; later volumes not read |
 | Volume 1 of a set damaged, its last member continues into volume 2 | Full set listing; one diagnostic naming volume 1 |
 | `-hp` RAR5 with a check value, or `-hp` RAR 1.5-4 after a header whose CRC16 matched | Full listing; `ARCHIVE_EOF_MARKER_MISSING` |
 | `-hp` RAR 1.5-4 whose end block is the first encrypted header | `EncryptionError` ("wrong password?") at open |
 | `-hp` RAR5 without a check value | `EncryptionError` ("wrong password?") at open |
+
+### Requirement: A damaged header after the main header SHALL list the members before it
+
+When a header after the main header fails its CRC, and it is not taken as a damaged end
+block (previous requirement), the archive SHALL open and list the members whose headers
+precede it. The damage SHALL then be reported as `CorruptionError`, as
+`members_report().error` and raised by `members()` and `stream_members()` after the listed
+members; not as `TruncatedError` unless the set is also incomplete (below). This SHALL
+hold for RAR 1.5-4 and RAR5, in both access modes (DR-2: TAR lists the members before a
+damaged header and then raises). In a multi-volume set the message SHALL name the first
+damaged volume. The walk SHALL go on to the next volume only when a member header before
+the damage (CRC intact) says its data continues there, as for a damaged end block: the
+next volume's first header is at its own offset 0, so the damaged header's size is not
+needed to find it. That volume's members SHALL be listed, and the `CorruptionError` SHALL
+follow the whole listing (DR-2, as for a missing middle volume). With no continuing member
+the set ends at the damaged volume. When the next volume is missing, the open SHALL end
+with the incomplete-set `TruncatedError`, whose message also names the damaged header.
+
+The walk SHALL stop at the damaged header. Its size field is not data once the CRC
+fails, so the position of the next header is unknown. `unrar` 7.00 searches past the
+damage and lists the later members too, reporting "the file header is corrupt" and
+exiting 3; archivey does not search.
+
+A damaged main header SHALL still raise `CorruptionError` at open: nothing precedes it,
+and its flags (solid, volume, header encryption) are needed to read anything after it.
+In RAR 1.5-4 the fields of a FILE header are parsed before its CRC is checked, since they
+give the bytes the CRC covers; a field that does not parse in a header whose CRC also
+fails SHALL count as the same damage. A header whose CRC matches but whose fields are
+invalid, and a declared header size that is invalid, SHALL stay `CorruptionError` at
+open (see the cut requirement above).
+
+With encrypted headers the damage is reported this way only once the header password is
+proven, as for a cut. Before that proof a CRC mismatch reads the same as a wrong key, so
+the open SHALL raise the wrong-password `EncryptionError`.
+
+#### Scenario: damaged header matrix
+
+| Case | Expected |
+| --- | --- |
+| Plain RAR 1.5-4 or RAR5, one byte of the second FILE header flipped | First member listed and read; `CorruptionError` after it |
+| Plain, one byte of the MAIN header flipped | `CorruptionError` at open |
+| Plain two-volume set, volume 1's end block damaged and not taken as one, its last member continues into volume 2 | Full set listing; members read; `CorruptionError` naming volume 1 after them |
+| The same set with volume 2 missing | Volume 1's members listed; `TruncatedError` naming volume 2 and the damaged header |
+| `-hp` RAR 1.5-4, a FILE header damaged after one whose CRC16 matched | Members before it listed; `CorruptionError` after them |
+| `-hp` RAR 1.5-4 set, volume 2's first header damaged after volume 1 proved the key | `CorruptionError` naming volume 2 |
+| The same damage with a wrong password | `EncryptionError` ("wrong password?") at open |
 
 ### Requirement: Serve a solid pass's file copies from the source it decoded
 

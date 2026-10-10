@@ -196,14 +196,16 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     Once switched, a data error of the standard library leaves as the codec's typed
     error (``translate``), as it does from the codec's own translator with the
-    accelerator off. ``translate`` stays for that reason: without it the raw error
-    travels on to a different translator (the member's or the enclosing reader's),
-    which need not classify it the same way, so the verdict would depend on whether
-    rapidgzip was engaged. The tests do not pin it while both translators type a
-    ``zlib.error`` alike. Only the DEFLATE family passes ``translate``:
-    bzip2's translator maps every ``ValueError`` to ``TruncatedError``, which inside
-    the stream would claim a usage error (a closed source) that ``ArchiveStream``
-    reports as one.
+    accelerator off. The standard-library DEFLATE-family decoders raise typed errors
+    themselves; ``translate`` covers any raw error left. Without it the raw error would
+    travel on to a different translator (the member's or the enclosing reader's), which
+    need not classify it the same way, or reach the over-run probe of a declared size
+    (``_probe_past_declared``), which reads any error that is not an ``ArchiveyError``
+    as the accelerator's opaque end of input, "no more data". Only the DEFLATE family
+    passes ``translate``: bzip2's accelerated path adds no ``_wrap_accelerated_length``
+    verifier, so no over-run probe sits inside it, and its translator maps every
+    ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage
+    error (a closed source) that ``ArchiveStream`` reports as one.
 
     ``empty_to_stdlib`` hands a stream that ends before its first byte to the standard
     library, which decodes a valid empty stream to nothing as well and raises on a cut
