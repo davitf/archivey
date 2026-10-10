@@ -438,12 +438,15 @@ sniff and an explicit `encoding=` for an unflagged name: when the field is versi
 CRC-32 equals the CRC-32 of the stored name bytes, and its name is non-empty valid UTF-8,
 the member name SHALL be that UTF-8 name, `raw_name` SHALL be its UTF-8 bytes, and
 `extra["alternate_raw_name"]` SHALL hold the stored header bytes. No inference diagnostic
-is emitted, since the field declares the encoding. A field that fails any of those tests
-SHALL be ignored, and the name decoded as above, with one exception owed to stdlib: on
-Python 3.12 and later, `zipfile` refuses the archive while reading the central directory
-when a field with a matching CRC holds invalid UTF-8, and the open fails with
-`CorruptionError`. A field in the local header only SHALL be ignored. `name` is always
-`raw_name` decoded and normalized.
+is emitted, since the field declares the encoding. A field whose CRC does not match or
+whose version is not 1 SHALL be ignored, and the name decoded as above. A malformed field
+SHALL be dropped, the name decoded as above, and `MEMBER_HEADER_RECORD_SKIPPED` emitted on
+the member with `record="unicode_path"` and `record_id=0x7075`: a field shorter than its
+version byte and CRC (5 bytes), or a version-1 field with a matching CRC whose name is
+empty or not valid UTF-8. The outcome SHALL be the same on every supported Python version:
+the archive SHALL open, and no Python `warnings` warning SHALL be raised for the field. A
+field in the local header only SHALL be ignored, and so SHALL the field of a name whose
+UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 
 #### Scenario: UTF-8 bytes without the flag
 
@@ -470,6 +473,7 @@ when a field with a matching CRC holds invalid UTF-8, and the open fails with
 | --- | --- |
 | Unflagged cp866 name `Привет.txt`, central `0x7075` version 1 with a matching CRC | `name == "Привет.txt"`; `raw_name` is its UTF-8 bytes; `extra["alternate_raw_name"]` is the cp866 bytes; no diagnostic |
 | The same, `encoding="latin-1"` | The same: the field outranks `encoding=` |
-| The field's CRC does not match the stored bytes, or its version is not 1, or its name is empty | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
+| The field's CRC does not match the stored bytes, or its version is not 1 | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
 | The field in the local header only | Field ignored |
-| The CRC matches, the name is not valid UTF-8 | Field ignored on Python 3.11; `CorruptionError` at open on 3.12+ (stdlib) |
+| The field is 0 to 4 bytes long, or the CRC matches and the name is empty or not valid UTF-8 | The archive opens on every Python version; field dropped: the name decoded as above, no `alternate_raw_name`, `MEMBER_HEADER_RECORD_SKIPPED` attached to that member only, no Python warning; `DiagnosticPolicy.strict()` refuses |
+| The same malformed field on a name with the UTF-8 flag set | Field not consulted: no diagnostic |

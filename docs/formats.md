@@ -112,7 +112,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
   name. One signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
-  the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones.
+  the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A
+  malformed field (too short, or matching with an empty or non-UTF-8 name) is dropped
+  with a `member_header_record_skipped` diagnostic, and the archive opens on every Python
+  version, where Python 3.12+ `zipfile` alone refuses it.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
   bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
   parsing the central directory, so the failure is archive-wide rather than confined to

@@ -65,6 +65,7 @@ from archivey.cost import (
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
+    MemberHeaderRecordContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -243,12 +244,13 @@ _MAX_DATA_OFFSET = 1 << 40
 # its result are private stdlib API, bound once here so a Python that drops or renames
 # them fails at import rather than silently skipping (or misreading) the end-record
 # checks, which compare against the counts and sizes zipfile actually read with.
-def _zipfile_private(name: str) -> Any:
-    value = getattr(zipfile, name, None)
+def _zipfile_private(name: str, owner: Any = zipfile) -> Any:
+    value = getattr(owner, name, None)
     if value is None:  # pragma: no cover
+        qualified = name if owner is zipfile else f"{owner.__name__}.{name}"
         raise ImportError(
-            f"This Python's `zipfile` module no longer exposes `{name}`, which archivey "
-            "needs to check the ZIP end record. Please report this to archivey (with "
+            f"This Python's `zipfile` module no longer exposes `{qualified}`, which "
+            "archivey needs to read ZIP archives. Please report this to archivey (with "
             "your Python version)."
         )
     return value
@@ -787,7 +789,7 @@ class ZipReader(BaseArchiveReader):
             # not passed as `metadata_encoding`: zipfile would apply it to every
             # unflagged name, valid UTF-8 included, and fail the open on a byte it
             # cannot decode.
-            self._archive: zipfile.ZipFile = zipfile.ZipFile(zip_source, "r")
+            self._archive: zipfile.ZipFile = _ZipFile(zip_source, "r")
         except zipfile.BadZipFile as exc:
             if _looks_like_multivolume(exc):
                 raise UnsupportedFeatureError(
@@ -1024,13 +1026,18 @@ class ZipReader(BaseArchiveReader):
         # header's bytes are kept in extra. The field is authoritative, not a guess, so
         # no member_name_encoding_inferred diagnostic is emitted for a name taken from
         # it; the header's spelling stays visible as extra["alternate_raw_name"].
-        # Only the central directory's field is read:
-        # the listing comes from there, and the local header's name is only checked
-        # against the central one.
+        # A malformed field is dropped with a MEMBER_HEADER_RECORD_SKIPPED diagnostic
+        # and the name decoded as if it were absent (`_unicode_path_name`; stdlib is
+        # kept away from the field by `_ZipFile`). Only the central directory's field is
+        # read: the listing comes from there, and the local header's name is only
+        # checked against the central one.
         alternate_raw_name: bytes | None = None
         unicode_name: bytes | None = None
+        unicode_path_fault: str | None = None
         if not is_utf8_flagged and info.extra:
-            unicode_name = _unicode_path_name(info.extra, raw_name)
+            unicode_path = _unicode_path_name(info.extra, raw_name)
+            unicode_name = unicode_path.name
+            unicode_path_fault = unicode_path.fault
             if unicode_name is not None:
                 name_source = unicode_name.decode("utf-8")
                 if unicode_name != raw_name:
@@ -1135,6 +1142,26 @@ class ZipReader(BaseArchiveReader):
                     f"ZIP member name decoded as {inferred_encoding!r} rather than "
                     f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
                 ),
+            )
+        if unicode_path_fault is not None:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"The Unicode Path extra field (0x7075) of ZIP member "
+                    f"{quoted(member.name)} is malformed and was dropped "
+                    f"({unicode_path_fault}); the name was decoded from the header."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="unicode_path",
+                    record_id=_ZIP_EXTRA_UNICODE_PATH,
+                    reason=unicode_path_fault,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
             )
         emit_member_name_normalized(
             self._diagnostics_collector,
@@ -2428,30 +2455,163 @@ def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
     return _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk)
 
 
-def _unicode_path_name(extra: bytes, stored_name: bytes) -> bytes | None:
-    """The UTF-8 name an Info-ZIP Unicode Path extra field (0x7075) gives, or ``None``.
+@dataclass(frozen=True)
+class _UnicodePath:
+    """What the first Info-ZIP Unicode Path extra field (0x7075) of a name says.
+
+    ``name`` is the UTF-8 name when the field names the member. ``fault`` says why a
+    field that should have named it could not, when it is malformed rather than merely
+    not about this name; the reader drops it and reports that.
+    """
+
+    name: bytes | None = None
+    fault: str | None = None
+
+
+_NO_UNICODE_PATH = _UnicodePath()
+
+
+def _unicode_path_name(extra: bytes, stored_name: bytes) -> _UnicodePath:
+    """Read the Info-ZIP Unicode Path extra field (0x7075) of a name, if any.
 
     The field is version 1, a CRC-32 of the header's name bytes, then the name as UTF-8.
     The CRC ties it to ``stored_name``, so a tool that renamed the entry without
     updating the field leaves a stale field that does not match. Only the first such
-    field counts, as in 7-Zip, and it counts only when it matches, holds valid UTF-8
-    and is not empty; any other field is ignored.
+    field counts, as in 7-Zip. A stale field and an unknown version are not about this
+    name and are ignored like any unknown record. A field too short for its version and
+    CRC, or one whose CRC matches but whose name is empty or not UTF-8, is malformed:
+    it names nothing, and the caller reports it as a dropped record.
     """
     for extra_field in iter_extra_fields(extra):
         if extra_field.tag != _ZIP_EXTRA_UNICODE_PATH:
             continue
         field = extra_field.data
-        if not extra_field.complete or len(field) < 6 or field[0] != 1:
-            return None
-        if struct.unpack_from("<I", field, 1)[0] != zlib.crc32(stored_name):
-            return None
+        if not extra_field.complete:
+            # Unreachable through zipfile, which rejects the directory first.
+            return _NO_UNICODE_PATH
+        if len(field) < 5:
+            return _UnicodePath(
+                fault=f"{len(field)} bytes, shorter than its version and name CRC"
+            )
+        if field[0] != 1 or struct.unpack_from("<I", field, 1)[0] != zlib.crc32(
+            stored_name
+        ):
+            return _NO_UNICODE_PATH
         name = field[5:]
+        if not name:
+            return _UnicodePath(fault="its CRC matches but it holds no name")
         try:
             name.decode("utf-8")
         except UnicodeDecodeError:
-            return None
-        return name
-    return None
+            return _UnicodePath(fault="its CRC matches but its name is not valid UTF-8")
+        return _UnicodePath(name=name)
+    return _NO_UNICODE_PATH
+
+
+# What 0x7075 becomes in the copy of the central directory stdlib parses. stdlib acts on
+# 0x0001 and 0x7075 only, and ignores every other tag.
+_HIDDEN_UNICODE_PATH_TAG = struct.pack("<H", 0xFFFF)
+_UNICODE_PATH_TAG = struct.pack("<H", _ZIP_EXTRA_UNICODE_PATH)
+_CD_SIGNATURE = b"PK\x01\x02"
+
+
+def _hide_unicode_path_fields(directory: bytes) -> tuple[bytes, dict[int, bytes]]:
+    """Retag every Unicode Path field in ``directory`` so stdlib skips it.
+
+    ``directory`` is the central directory as stdlib is about to parse it. Returns the
+    bytes to give stdlib, and each changed entry's original extra field keyed by its
+    position, which is its index in ``ZipFile.filelist``. The tag keeps its length, so
+    every offset stays valid. The walk stops where the directory stops making sense;
+    stdlib reports that itself.
+    """
+    if _UNICODE_PATH_TAG not in directory:
+        return directory, {}
+    patched: bytearray | None = None
+    originals: dict[int, bytes] = {}
+    pos = 0
+    index = 0
+    while (
+        pos + _CD_HEADER_SIZE <= len(directory)
+        and directory[pos : pos + 4] == _CD_SIGNATURE
+    ):
+        name_len, extra_len, comment_len = struct.unpack_from(
+            "<HHH", directory, pos + 28
+        )
+        extra_start = pos + _CD_HEADER_SIZE + name_len
+        extra = directory[extra_start : extra_start + extra_len]
+        field_pos = extra_start
+        for extra_field in iter_extra_fields(extra):
+            if not extra_field.complete:
+                break
+            if extra_field.tag == _ZIP_EXTRA_UNICODE_PATH:
+                if patched is None:
+                    patched = bytearray(directory)
+                patched[field_pos : field_pos + 2] = _HIDDEN_UNICODE_PATH_TAG
+                originals[index] = extra
+            field_pos += 4 + len(extra_field.data)
+        pos = extra_start + extra_len + comment_len
+        index += 1
+    return (directory if patched is None else bytes(patched)), originals
+
+
+class _DirectoryReadFilter:
+    """The handle stdlib reads its central directory through, with 0x7075 retagged.
+
+    From Python 3.12, ``ZipInfo._decodeExtra`` acts on the Unicode Path field while
+    reading the directory: it refuses the whole archive over a field shorter than five
+    bytes or a matching one that is not UTF-8, and prints a ``UserWarning`` for an empty
+    one. Python 3.11 ignores the field. The reader reads the field itself
+    (``_unicode_path_name``) and drops a malformed one with a diagnostic, so stdlib is
+    given the directory with the field hidden, on every version. ``catch_warnings``
+    is no way to silence the warning: it changes process-wide state.
+    """
+
+    def __init__(self, fp: IO[bytes], owner: zipfile.ZipFile) -> None:
+        self._fp = fp
+        self._owner = owner
+        self.originals: dict[int, bytes] = {}
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._fp.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._fp.tell()
+
+    def read(self, size: int = -1) -> bytes:
+        # stdlib sets ``start_dir`` just before it seeks there to read the directory;
+        # the end-record reads before that leave it unset.
+        at_directory = self._fp.tell() == getattr(self._owner, "start_dir", None)
+        data = self._fp.read(size)
+        if at_directory:
+            data, self.originals = _hide_unicode_path_fields(data)
+        return data
+
+
+class _ZipFile(zipfile.ZipFile):
+    """``zipfile.ZipFile`` that leaves the Unicode Path field to archivey.
+
+    See ``_DirectoryReadFilter``. Each entry the filter changed gets its stored extra
+    field back, so ``ZipInfo.extra`` is the archive's bytes.
+    """
+
+    def _RealGetContents(self) -> None:
+        fp = cast(IO[bytes], self.fp)
+        read_filter = _DirectoryReadFilter(fp, self)
+        self.fp = cast(IO[bytes], read_filter)
+        try:
+            _real_get_contents(self)
+        finally:
+            self.fp = fp
+        for index, extra in read_filter.originals.items():
+            self.filelist[index].extra = extra
+
+
+# stdlib's directory parse, which the override above wraps. Bound by name so a Python
+# that renames it fails at import, rather than skipping the override and letting stdlib
+# act on 0x7075 again unseen.
+_real_get_contents: Callable[[zipfile.ZipFile], None] = _zipfile_private(
+    "_RealGetContents", zipfile.ZipFile
+)
 
 
 def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:

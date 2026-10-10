@@ -306,7 +306,8 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     The record was dropped and the member listed without whatever it carried, so
     the field it would have populated is absent rather than wrong. ``record`` names
     the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
-    ``redir``, ``version``); ``record_id`` is its numeric type where the format has
+    ``redir``, ``version``; ZIP's Unicode Path extra field is ``unicode_path``, with
+    ``record_id`` 0x7075); ``record_id`` is its numeric type where the format has
     one, so an unnamed record is still identifiable.
 
     A member header is attacker-sized, so how many records one member may drop is

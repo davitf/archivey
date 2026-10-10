@@ -227,10 +227,27 @@ and an explicit `encoding=` alike, as in 7-Zip, which also consults it only for 
 names and before its code page switch. Info-ZIP `unzip` and stdlib `zipfile` 3.12+
 (`ZipInfo.filename`) use it too. `raw_name` is then the field's UTF-8 bytes, so `name` stays
 `raw_name` decoded, and the header's bytes go to `extra["alternate_raw_name"]`; no
-diagnostic, since the field declares its encoding. A field that fails a test is ignored,
-except that stdlib 3.12+ refuses the archive at open when a CRC-matching field is not valid
-UTF-8 (`CorruptionError`). The local header's copy is not read: the listing comes from the
-central directory, and the local header's name is only compared with the central one.
+diagnostic, since the field declares its encoding. A stale field (CRC mismatch) or an
+unknown version is not about this name and is ignored like any unknown record. A
+**malformed** field is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unicode_path"`,
+`record_id=0x7075`) and the name decoded as if it were absent: one shorter than its
+version byte and CRC, or one whose CRC matches but whose name is empty or not UTF-8. That
+is the RAR5 extra-record ruling ([`rar.md`](rar.md) §6) applied to ZIP's one optional name
+record: one bad record costs that record, not the archive. Only the field of an unflagged
+name is consulted, so a flagged name's field is never read or reported. The local header's
+copy is not read: the listing comes from the central directory, and the local header's
+name is only compared with the central one.
+
+Stdlib never sees the field. From 3.12, `ZipInfo._decodeExtra` acts on it while reading
+the central directory: it raises `BadZipFile` over a field shorter than five bytes
+(whatever its CRC) or a CRC-matching one that is not UTF-8, and calls `warnings.warn` on an
+empty one, outside the diagnostics system; 3.11 ignores it, and so does 7-Zip. The reader
+opens the archive with a `ZipFile` subclass whose `_RealGetContents` hands stdlib the
+directory with every `0x7075` tag retagged to `0xFFFF` (same length, so no offset moves),
+then puts each changed entry's stored extra field back on its `ZipInfo`. The outcome is
+the same on every Python version, and no process-wide warning filter is touched:
+`warnings.catch_warnings` is not thread-safe. The cost is one substring search of the
+directory, plus a walk of its entry headers when the tag's two bytes occur.
 
 Backslashes are normalised on `name` by origin, not globally: a DOS/FAT-origin entry's `\`
 is treated as a path separator and rewritten to `/`; a Unix-origin entry keeps `\` as a
@@ -648,6 +665,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A WinZip AES member every candidate fails on the HMAC raises `CorruptionError`, as one password does | A wrong password passes `pw_verify` once in 65 536, so damage is far likelier, and one error type for both password paths means a symlink with a damaged target lists the same way under either (S28-K4, davi 2026-09-26) | ZipCrypto's ambiguous `EncryptionError`, which fits an 8-bit check but made the same damaged AES member raise two different types depending on how many passwords the caller passed |
 | A damaged symlink target leaves the link listed without a target | One member's damage says nothing about the others, and listing raised for the whole archive. The link is reported (`target_data_damaged`) and raises when opened or extracted; a strict policy still refuses the archive | Raising from `members()`, which took every other member with it |
 | WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
+| A malformed Unicode Path field drops the field, not the archive, on every Python version | The RAR5 extra-record ruling ([`rar.md`](rar.md) §6): an optional record that cannot be parsed costs that record, reported as `MEMBER_HEADER_RECORD_SKIPPED`, and the name it would have given is absent, so the header's bytes name the member. Stdlib 3.12+ refused the archive over two of the shapes and warned outside the diagnostics system over the third, while 3.11 and 7-Zip open it. Hiding the field from stdlib is the one change that makes every version agree | Keeping stdlib's refusal on 3.12+; silencing the warning with `warnings.catch_warnings`, which changes process-wide state and is not thread-safe; dropping the field silently |
 | Leave LZMA1 `lc + lp` over 4 unsupported | 7-Zip writes it only when asked (`lc=8`). Decoding it needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; a pure-Python LZMA1 decoder (very slow); handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma |
 
 ## 7. Open questions
@@ -680,7 +698,8 @@ move.
 | Timestamp precedence; an out-of-range NTFS time is an issue; the extended timestamp, a signed 32-bit field, is always a valid date (pre-1970 included) | `::test_extended_timestamp_beats_ntfs`, `::test_ntfs_timestamps_used_when_no_extended_timestamp`, `::test_extended_timestamp_pre_epoch`, `::test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime`, `tests/test_timestamps.py::test_filetime_out_of_range_is_an_issue`, `::test_unix32_to_datetime_covers_every_32_bit_value` |
 | A bad timestamp's diagnostic names the member field, the creation slot by host | `tests/test_zip.py::test_bad_ntfs_times_name_the_member_field` |
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
-| Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version, empty or local-only field is ignored | `tests/test_audit2_zip.py::test_unicode_path_extra_field_names_the_member` and the four tests after it |
+| Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version or local-only field is ignored | `tests/test_audit2_zip.py::test_unicode_path_extra_field_names_the_member` and the tests after it |
+| A short, empty or non-UTF-8 Unicode Path field is dropped with `MEMBER_HEADER_RECORD_SKIPPED` on every Python version, with no stdlib warning; strict refuses; a flagged name's field is not consulted | `tests/test_audit2_zip.py::test_malformed_unicode_path_field_is_dropped_with_a_diagnostic` and the three tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |
 | Symlink target from member data; encrypted target withheld | `::test_symlink_member`, `::test_encrypted_symlink_listing_without_password` |
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
