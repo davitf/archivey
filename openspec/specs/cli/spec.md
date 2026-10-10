@@ -63,10 +63,19 @@ matching members; a member SHALL be processed when it matches an include (or non
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
 `--include` flag. When one or more include patterns are given, each pattern that
 matches no member SHALL produce a stderr warning
-(`warning: pattern matched no members: '…'`). When every include misses on
-`extract` or `test`, the command SHALL exit `1` after the warning(s). On `list`,
-the same warnings SHALL be emitted but the exit code SHALL remain `0` when the
-archive otherwise listed successfully. On `extract`, when there is exactly one
+(`warning: pattern matched no members: '…'`). When the includes match members
+but `--exclude` removes every one of them, or when there is no include and
+`--exclude` removes every member, the system SHALL warn
+`warning: no members selected: --exclude removed every member…` instead. When the
+patterns select no member in either way on `extract` or `test`, the command SHALL
+exit `1` after the warning(s) and SHALL write nothing, not even the destination
+directory; an archive with no members and only `--exclude` patterns is not such a
+case. On `list`, the same warnings SHALL be emitted but the exit code SHALL remain
+`0` when the archive otherwise listed successfully. The patterns SHALL be checked
+against a member index when the archive has one without a scan, before anything
+is read or written. Otherwise they SHALL be checked in the same pass that tests or
+extracts the members, with the warnings after that pass, and SHALL NOT cost a
+separate pass: on a compressed TAR such a pass decompresses the whole archive. On `extract`, when there is exactly one
 unmatched include that names an existing directory or ends with `/`, the warning
 SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL accept
 exactly **one** archive positional (multi-archive is out of scope for this
@@ -198,6 +207,8 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
+| `archivey test <archive> 'a*' --exclude 'a*'` or `archivey extract <archive> --exclude '*'` | stderr `warning: no members selected: …`; exit `1`; `extract` creates no directory |
+| `archivey test <archive.tar.gz> a.txt` | The archive is decompressed once; no backward-seek warning |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[recommended]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |

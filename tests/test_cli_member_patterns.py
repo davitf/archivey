@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import io
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from archivey import open_archive
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
-from archivey.cli.filters import member_predicate, unmatched_include_patterns
+from archivey.cli.filters import MemberSelection
 from archivey.cli.main import main
 from archivey.types import ArchiveMember
 
 
 def _tar(path: Path, entries: list[tuple[str, bytes | None]]) -> Path:
-    """Write a TAR of ``(name, content)``; ``None`` content is a directory."""
-    with tarfile.open(path, "w") as tar:
+    """Write a TAR of ``(name, content)``; ``None`` content is a directory. A
+    ``.tar.gz`` path gets a gzip-compressed TAR, which has no member index."""
+    mode = "w:gz" if path.name.endswith(".tar.gz") else "w"
+    with tarfile.open(path, mode) as tar:
         for name, content in entries:
             info = tarfile.TarInfo(name)
             if content is None:
@@ -51,7 +54,7 @@ def _selected(
     *,
     windows: bool = False,
 ) -> list[str]:
-    pred = member_predicate(includes, excludes, backslash_is_separator=windows)
+    pred = MemberSelection(includes, excludes, backslash_is_separator=windows).predicate
     assert pred is not None
     return [m.name for m in members if pred(m)]
 
@@ -99,12 +102,14 @@ def test_a_backslash_is_a_separator_only_on_windows(tmp_path: Path) -> None:
 
 
 def test_unmatched_patterns_use_the_same_rule(tmp_path: Path) -> None:
-    members = _members(tmp_path)
-    assert unmatched_include_patterns(
-        ["docs", "src", "docs.txt/", "missing"],
-        members,
+    selection = MemberSelection(
+        ["docs", "src", "docs.txt/", "missing", "docs"],
+        None,
         backslash_is_separator=False,
-    ) == ["docs.txt/", "missing"]
+    )
+    for member in _members(tmp_path):
+        selection(member)
+    assert selection.unmatched_includes() == ["docs.txt/", "missing"]
 
 
 @pytest.mark.parametrize("pattern", ["docs", "docs/"])
@@ -165,3 +170,123 @@ def test_a_pattern_written_with_the_slash_compiles_no_duplicate_form() -> None:
         "docs/",
         "docs/*",
     )
+
+
+# --- One pass, and an empty selection fails the same way -------------------------
+
+# Larger than the 1 MiB rewind that the library warns about, so a second pass over
+# the compressed TAR shows on stderr. Zeros, so the file stays small.
+_BIG = b"\0" * (2 * 1024 * 1024)
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_a_pattern_on_a_compressed_tar_reads_it_once(
+    verb: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A TAR inside gzip has no member index. Finding unmatched patterns must not cost
+    a scan of its own, which then has to seek back and decompress everything again."""
+    archive = _tar(
+        tmp_path / "t.tar.gz", [("a.txt", b"a"), ("big.bin", _BIG), ("z.txt", b"z")]
+    )
+    dest = tmp_path / "out"
+    args = [verb, str(archive), "a.txt", "missing"]
+    if verb == "x":
+        args += ["-d", str(dest)]
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "Backward seek" not in err
+    assert "warning: pattern matched no members: 'missing'" in err
+    if verb == "x":
+        assert sorted(p.name for p in dest.iterdir()) == ["a.txt"]
+
+
+_EMPTY_SELECTIONS = {
+    "every include match excluded": (
+        ["docs"],
+        ["docs"],
+        "warning: no members selected: --exclude removed every member the "
+        "patterns matched",
+    ),
+    "exclude only": (
+        [],
+        ["*"],
+        "warning: no members selected: --exclude removed every member",
+    ),
+    "include misses": (
+        ["missing"],
+        [],
+        "warning: pattern matched no members: 'missing'",
+    ),
+}
+
+
+def _zip(path: Path, entries: list[tuple[str, bytes | None]]) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in entries:
+            if content is None:
+                archive.writestr(name + "/", b"")
+            else:
+                archive.writestr(name, content)
+    return path
+
+
+@pytest.mark.parametrize("case", sorted(_EMPTY_SELECTIONS))
+@pytest.mark.parametrize("kind", ["zip", "tar.gz"])
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_patterns_that_select_nothing_fail_with_a_message(
+    verb: str,
+    kind: str,
+    case: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Exit 1 and a warning, whatever emptied the selection, with an index (ZIP) or
+    without one (TAR inside gzip). ``extract`` leaves nothing on disk, not even the
+    directory it would have extracted into."""
+    includes, excludes, message = _EMPTY_SELECTIONS[case]
+    make = _zip if kind == "zip" else _tar
+    archive = make(tmp_path / f"a.{kind}", [("docs", None), ("docs/a.txt", b"a")])
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    args = [verb, str(archive), *includes]
+    for pattern in excludes:
+        args += ["--exclude", pattern]
+    assert main(args) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert message in err
+    assert "OK," not in err
+    assert "extracted" not in err
+    # A dest named with -d is not left behind either, nor the parents made for it.
+    if verb == "x":
+        assert main([*args, "-d", "made/for/it"]) == EXIT_FAIL
+    assert list(work.iterdir()) == []
+
+
+def test_list_warns_when_patterns_select_nothing_and_exits_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive = _tar(tmp_path / "t.tar", _TREE)
+    assert main(["list", str(archive), "docs", "--exclude", "docs"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "warning: no members selected: --exclude removed every member the "
+        "patterns matched" in captured.err
+    )
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_exclude_on_an_empty_archive_is_not_an_empty_selection(
+    verb: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no members, ``--exclude`` removed nothing: the run is as without it.
+
+    (A TAR with no members has nothing to detect it by, so this uses a ZIP.)"""
+    archive = _zip(tmp_path / "empty.zip", [])
+    args = [verb, str(archive), "--exclude", "*"]
+    if verb == "x":
+        args += ["-d", str(tmp_path / "out")]
+    assert main(args) == EXIT_OK
+    assert "no members selected" not in capsys.readouterr().err
