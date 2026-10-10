@@ -24,6 +24,7 @@ import pytest
 
 from archivey import ArchiveFormat, detect_format
 from archivey.detection_cost import TierSkip, TierSkipReason
+from archivey.exceptions import TruncatedError
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, probe_lzma_dictionary
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.lzma_codec import LzmaAloneCodec
@@ -306,6 +307,42 @@ def test_tar_xz_probe_crosses_streams(written: bytes) -> None:
     assert detect_format(io.BytesIO(written)).format == _tar_of(StreamFormat.XZ)
 
 
+def test_xz_head_walks_a_huge_index_in_bulk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An index record count no input can hold costs a bounded number of reads.
+
+    The stream header is followed by the index indicator, a record count of 2^63 - 1
+    and 1 MiB of zero bytes, each one a whole 1-byte VLI. The walk runs into the end of
+    the input as before, but it scans the records a buffer at a time, not one Python
+    call per byte.
+    """
+    from archivey.internal.streams.codecs import xz_decoder
+
+    header = _xz(b"")[:12]  # stream header, check CRC64
+    count = (1 << 63) - 1
+    vli = bytearray()
+    while count >= 0x80:
+        vli.append(count & 0x7F | 0x80)
+        count >>= 7
+    vli.append(count)
+    payload = header + b"\x00" + bytes(vli) + bytes(1 << 20)
+
+    calls = 0
+    real_take = xz_decoder._HeadInput.take
+
+    def counting_take(self: Any, n: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        return real_take(self, n)
+
+    monkeypatch.setattr(xz_decoder._HeadInput, "take", counting_take)
+    with pytest.raises(TruncatedError):
+        _decode_xz_head(io.BytesIO(payload).read, 512)
+    assert calls < 1000, calls
+    calls = 0
+    assert detect_format(io.BytesIO(payload)).format == ArchiveFormat.XZ
+    assert calls < 1000, calls
+
+
 def test_xz_head_with_filters_ahead_of_lzma2_is_byte_identical() -> None:
     """The clamp's filter allowance holds at a bound past the 4 KiB floor.
 
@@ -313,7 +350,9 @@ def test_xz_head_with_filters_ahead_of_lzma2_is_byte_identical() -> None:
     ``bound`` bytes it asks LZMA2 for a few more. Here the first ``bound + 4`` random
     bytes, ending in x86 call opcodes, repeat at that distance: the bytes LZMA2
     decodes past the bound are a match reaching back ``bound + 4``, which a dictionary
-    of exactly ``bound`` refuses (measured: an allowance of 0 fails this, 1 passes).
+    of exactly ``bound`` refuses: an allowance of 0 fails this. Allowances of 1 to 3
+    pass as well, because liblzma rounds the declared dictionary up to a multiple of
+    16 bytes, so this test does not measure how small the allowance may be.
     """
     bound = 8192
     first = bytearray(random.Random(0).randbytes(bound + 4))

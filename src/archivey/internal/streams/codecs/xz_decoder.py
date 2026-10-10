@@ -1254,33 +1254,64 @@ class _HeadInput:
         return taken
 
 
+# An index byte translated through this: ``E`` where it ends an MBI (high bit clear),
+# ``C`` where the MBI continues.
+_MBI_ENDS = bytes.maketrans(bytes(range(256)), b"E" * 0x80 + b"C" * 0x80)
+# An MBI is at most 9 bytes, so 9 continuation bytes in a row are corrupt.
+_MBI_TOO_LONG = b"C" * 9
+
+
 def _skip_index_and_footer(source: _HeadInput) -> None:
     """Consume a stream's index (its 0x00 indicator already taken) and its footer.
 
-    The index is walked record by record, since only its own record count says where it
-    ends, and its CRC32 is checked; the footer's magic is checked. A count no input can
-    hold runs into the end of the input and is truncated.
+    Only the index's own record count says where it ends, so the records are walked:
+    each is two MBIs, and only where they end matters, not their values. They are
+    counted a buffer at a time, so a count no input can hold costs one pass over the
+    bytes the probe may read before it runs into the end of the input and is truncated.
+    The index CRC32 and the footer magic are checked.
     """
-    index = bytearray(b"\x00")
+    crc = zlib.crc32(b"\x00")
+    length = 1
+
+    def consume(n: int) -> bytes:
+        nonlocal crc, length
+        data = source.take(n)
+        crc = zlib.crc32(data, crc)
+        length += n
+        return data
 
     def vli() -> int:
         value = 0
         for i in range(9):
-            byte = source.take(1)[0]
-            index.append(byte)
+            byte = consume(1)[0]
             value |= (byte & 0x7F) << (7 * i)
             if not byte & 0x80:
                 return value
         raise CorruptionError("XZ index MBI exceeds 9 bytes")
 
-    for _ in range(vli() * 2):  # each record: unpadded size, uncompressed size
-        vli()
-    padding = source.take(-len(index) % 4)
+    left = vli() * 2  # MBIs still to end: unpadded and uncompressed size per record
+    run = 0  # continuation bytes since the last MBI ended
+    while left:
+        if not source.pending and not source.fill(1):
+            raise TruncatedError("XZ stream is truncated")
+        marks = source.pending.translate(_MBI_ENDS)
+        n = len(marks)
+        if marks.count(b"E") >= left:
+            pos = -1
+            for _ in range(left):
+                pos = marks.index(b"E", pos + 1)
+            n = pos + 1
+        if _MBI_TOO_LONG in b"C" * run + marks[:n]:
+            raise CorruptionError("XZ index MBI exceeds 9 bytes")
+        last_end = marks.rfind(b"E", 0, n)
+        run = run + n if last_end < 0 else n - 1 - last_end
+        left -= marks.count(b"E", 0, n)
+        consume(n)
+    padding = consume(-length % 4)
     if any(padding):
         raise CorruptionError("XZ index padding is not zero")
-    index.extend(padding)
     (stored,) = struct.unpack("<I", source.take(4))
-    if zlib.crc32(index) & 0xFFFFFFFF != stored:
+    if crc & 0xFFFFFFFF != stored:
         raise CorruptionError("XZ index CRC32 mismatch")
     if source.take(_STREAM_FOOTER_SIZE)[-2:] != _XZ_FOOTER_MAGIC:
         raise CorruptionError("XZ stream footer magic not found")

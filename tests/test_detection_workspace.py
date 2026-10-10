@@ -655,3 +655,38 @@ def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
     assert within_budget(receipt, budget) or any(
         s.reason in incomplete for s in info.unavailable_tiers
     ), (receipt, info.unavailable_tiers)
+
+
+def _small_tar_bytes() -> bytes:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        t.addfile(info, io.BytesIO(b"hello"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("backend_present", [True, False])
+def test_zero_decode_budget_records_policy_whatever_the_backend(
+    monkeypatch: pytest.MonkeyPatch, backend_present: bool
+) -> None:
+    # A caller who turned decoding off gets NOT_ENABLED_BY_POLICY for the inner-TAR
+    # tier, which does not make the search incomplete. Whether the codec's backend is
+    # installed does not change that: the policy alone decided the tier would not run.
+    from dataclasses import replace
+
+    from archivey.detection_cost import TierSkip
+    from archivey.internal.streams import codecs
+
+    if not backend_present:
+        monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+    budget = replace(BALANCED_BUDGET, max_decode_input=0, max_decode_output=0)
+    info = detect_format(
+        io.BytesIO(gzip.compress(_small_tar_bytes())),
+        config=ArchiveyConfig(detection_budget=budget),
+    )
+    assert info.format == ArchiveFormat.GZ
+    inner = [s for s in info.unavailable_tiers if s.tier == "inner_tar"]
+    assert inner == [TierSkip("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY)]

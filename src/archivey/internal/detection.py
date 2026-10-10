@@ -325,6 +325,8 @@ def _probe_inner_tar(
     header. An absent backend, or a decoder the probe cannot build within its reservation
     (``UnsupportedFeatureError``, ``ResourceLimitError``, ``MemoryError``), records
     ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is "can't tell", not "no TAR".
+    A budget that turns the tier off records ``NOT_ENABLED_BY_POLICY`` first, whatever
+    the backend.
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
     from archivey.internal.config import DecoderLimits, StreamConfig
@@ -338,11 +340,6 @@ def _probe_inner_tar(
         codec = codec_for_stream_format(stream_format)
     except KeyError:
         return False
-    if not is_codec_available(codec):
-        if workspace is not None:
-            workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
-        return False
-
     limit = _INNER_TAR_MAX_PROBE_BYTES
     if workspace is not None:
         budget = workspace.budget
@@ -360,6 +357,12 @@ def _probe_inner_tar(
         ):
             return False
         limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
+    # After the budget gate: a tier the policy turned off is NOT_ENABLED_BY_POLICY
+    # whatever this environment could have run.
+    if not is_codec_available(codec):
+        if workspace is not None:
+            workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
+        return False
 
     source = _BoundedPeekReader(peek_more, limit)
     head = b""

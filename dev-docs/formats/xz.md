@@ -251,7 +251,9 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   each member against its trailer. Callers who need certainty read forward.
 - **An index can declare millions of units.** The seek table is capped and thinned; the xz
   index is walked record by record and never reserved at its declared count, and the lzip
-  trailer walk keeps no per-member state. A 16.8 MB lzip file of 645 277 empty members is
+  trailer walk keeps no per-member state. The detection probe counts index records a
+  buffer at a time, so a count no input can hold costs one pass over the bytes the probe
+  may read. A 16.8 MB lzip file of 645 277 empty members is
   listed in bounded memory.
 - **Padding and the backward scan.** The padding scan reads in growing chunks, so a file of
   megabytes of zeros costs a few reads, not one per four bytes.
