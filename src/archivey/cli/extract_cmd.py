@@ -28,13 +28,7 @@ from archivey.cli.common import (
     reject_salvage,
 )
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
-from archivey.cli.filters import (
-    count_selected,
-    member_predicate,
-    members_for_include_check,
-    unmatched_include_patterns,
-    warn_unmatched_includes,
-)
+from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, escape_path, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
@@ -873,6 +867,25 @@ def _relative_name(path: PurePath | None, target: PurePath) -> str:
         return path.as_posix()
 
 
+def _missing_dirs(target: Path) -> list[Path]:
+    """``target`` and those of its parents that do not exist yet, deepest first."""
+    missing: list[Path] = []
+    path = target
+    while not os.path.lexists(path) and path != path.parent:
+        missing.append(path)
+        path = path.parent
+    return missing
+
+
+def _remove_empty_dirs(paths: list[Path]) -> None:
+    """Remove each directory in ``paths``, deepest first, while it is empty."""
+    for path in paths:
+        try:
+            path.rmdir()
+        except OSError:
+            return
+
+
 def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
     """Map extract outcomes to exit codes (Q8 Option A): FAILED→1, policy-only BLOCKED→3."""
     if not hoist_ok or failed:
@@ -910,7 +923,8 @@ def run_extract(
         reject_empty_path(dest, arg="--dest")
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
-    pred = member_predicate(patterns, exclude)
+    selection = MemberSelection(patterns, exclude)
+    pred = selection.predicate
     policy_enum = from_cli_choice(ExtractionPolicy, policy)
     overwrite_enum = from_cli_choice(OverwritePolicy, overwrite)
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
@@ -918,13 +932,14 @@ def run_extract(
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:
-        # None on forward-only readers: do not consume the sole pass before extract.
-        members_for_filter = members_for_include_check(reader) if patterns else None
-        if patterns and members_for_filter is not None:
-            unmatched = unmatched_include_patterns(patterns, members_for_filter)
-            if unmatched:
-                warn_unmatched_includes(unmatched, err=err, dest_hint=True)
-            if count_selected(members_for_filter, pred) == 0:
+        # A complete free index settles the patterns before anything is written.
+        # Without one, or with one that ends in damage, the extraction's own pass
+        # offers each member to them, and they are judged after it: a separate pass
+        # would decompress the archive a second time.
+        indexed = reader.members_report_if_available() if pred is not None else None
+        if indexed is not None:
+            selection.settle_from(indexed, err=err, dest_hint=True)
+            if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
 
         may_hoist = False
@@ -952,6 +967,10 @@ def run_extract(
         # many members were extracted / blocked before the stop via progress (Q1.5).
         members_extracted = 0
         members_blocked = 0
+
+        # The directories the extraction may create; removed again when it turns
+        # out the patterns selected nothing.
+        missing_dirs = _missing_dirs(target)
 
         def on_progress(progress: ExtractionProgress) -> None:
             nonlocal members_extracted, members_blocked
@@ -993,10 +1012,14 @@ def run_extract(
                 if dry_run:
                     print("dry run: nothing was written", file=err)
                 return EXIT_FAIL
-            # Streaming + patterns: empty report means nothing matched (no pre-scan).
-            if patterns and members_for_filter is None and len(report) == 0:
-                warn_unmatched_includes(patterns, err=err, dest_hint=True)
-                return EXIT_FAIL
+            if pred is not None and not selection.settled:
+                if len(report) == 0 and selection.selects_nothing:
+                    # Removed before the warning, whose -d hint looks for a directory
+                    # named like the pattern.
+                    _remove_empty_dirs(missing_dirs)
+                    selection.report(err=err, dest_hint=True)
+                    return EXIT_FAIL
+                selection.report(err=err, dest_hint=True)
             hoist = _HoistResult(target)
             if may_hoist and dry_run:
                 # The hoist moves what the extraction wrote; a dry run wrote nothing.
