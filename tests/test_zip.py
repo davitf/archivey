@@ -1678,17 +1678,64 @@ def test_unflagged_ascii_name_is_not_an_encoding_override(tmp_path: Path) -> Non
     assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
 
 
-def test_explicit_encoding_disables_sniff() -> None:
-    # An explicit encoding= is authoritative: it is used verbatim and the sniff never runs.
+def test_explicit_encoding_keeps_the_utf8_sniff() -> None:
+    # encoding= replaces only the legacy fallback: an unflagged name whose bytes are
+    # valid UTF-8 is still UTF-8, and the inference is still reported.
     with open_archive(
         _EXTERNAL_DIR / "encoding_infozip_jules.zip", encoding="cp437"
     ) as ar:
         names = {m.name for m in ar.members()}
         counts = ar.diagnostics.counts
-    assert (
-        "Español.txt" not in names
-    )  # decoded as cp437 as asked (mojibake), not sniffed
+    assert "Español.txt" in names
+    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] >= 1
+
+
+def test_explicit_encoding_does_not_decode_valid_utf8() -> None:
+    # c3 a9 is UTF-8 for "é"; as Latin-1 it would be "Ã©".
+    data = _stored_zip(b"\xc3\xa9txt", utf8_flag=False)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+    assert member.name == "étxt"
+    assert member.raw_name == b"\xc3\xa9txt"
+    # The diagnostic names the codec the caller passed, not cp437.
+    (diag,) = member.diagnostics
+    assert diag.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+    assert diag.context.declared_encoding == "latin-1"
+    assert "'latin-1'" in diag.message
+    assert "cp437" not in diag.message
+
+
+def test_utf8_inference_names_the_configured_fallback() -> None:
+    data = _stored_zip(b"\xc3\xa9txt", utf8_flag=False)
+    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
+    with open_archive(io.BytesIO(data), config=cfg) as ar:
+        (member,) = ar.members()
+    (diag,) = member.diagnostics
+    assert diag.context.declared_encoding == "cp1252"
+    assert "'cp1252'" in diag.message
+
+
+def test_explicit_encoding_replaces_the_configured_fallback() -> None:
+    # 0xE9 alone is not valid UTF-8: encoding= decodes it, ahead of the config's
+    # fallback, and no inference is reported because the caller chose the codec.
+    data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
+    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp437")
+    with open_archive(io.BytesIO(data), config=cfg, encoding="latin-1") as ar:
+        (member,) = ar.members()
+        counts = ar.diagnostics.counts
+    assert member.name == "café.txt"
+    assert member.raw_name == b"caf\xe9.txt"
     assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+
+
+def test_explicit_encoding_escapes_bytes_it_cannot_decode() -> None:
+    # The caller's codec is used as the fallback is: bytes it cannot decode become
+    # surrogate escapes rather than failing the open.
+    data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
+    with open_archive(io.BytesIO(data), encoding="ascii") as ar:
+        (member,) = ar.members()
+    assert member.name == "caf\udce9.txt"
+    assert member.raw_name == b"caf\xe9.txt"
 
 
 def test_flag_set_name_is_not_sniffed(tmp_path: Path) -> None:

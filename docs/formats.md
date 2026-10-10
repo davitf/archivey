@@ -104,14 +104,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   extraction skips it. The mode is read only when "version made by" says Unix.
 - **Member-name encoding.** Names flagged UTF-8 decode as UTF-8. For an unflagged name
   (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
-  Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise falls back
-  to a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`,
-  default `cp437`). When UTF-8 is inferred for an unflagged name, a
-  `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
-  `open_archive` is authoritative — it is used verbatim and disables the sniff. One signal
-  outranks it: an Info-ZIP Unicode Path extra field (`0x7075`) whose checksum matches the
-  stored bytes names the member in UTF-8. `raw_name` is then the field's UTF-8 bytes and
-  `extra["alternate_raw_name"]` holds the stored ones.
+  Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise uses the
+  `encoding=` you passed to `open_archive`, or without one a configurable legacy encoding
+  (`ArchiveyConfig.zip_unflagged_fallback_encoding`, default `cp437`). When UTF-8 is
+  inferred for an unflagged name, a `member_name_encoding_inferred` diagnostic records it.
+  So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
+  Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
+  name. One signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
+  whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
+  the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
   bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
   parsing the central directory, so the failure is archive-wide rather than confined to
@@ -398,9 +399,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `'unar'` reads those members by position instead.
 - **Member names.** RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16
   beside an 8-bit copy. A RAR 1.5-4 name that has only the 8-bit bytes does not say
-  which code page they are in. Archivey decodes it with `encoding=` when you pass one.
-  Otherwise it tries UTF-8, then cp437 for a member written on DOS or Windows (WinRAR
-  writes the OEM code page) and windows-1252 for one written elsewhere. `raw_name` is
+  which code page they are in. Archivey tries UTF-8 first. When the bytes are not valid
+  UTF-8, it decodes them with `encoding=` when you pass one, and otherwise with cp437 for
+  a member written on DOS or Windows (WinRAR writes the OEM code page) and windows-1252
+  for one written elsewhere. `raw_name` is
   always the stored bytes. `encoding=` has no effect on a RAR5 name. A RAR 1.5-4
   UTF-16 name can hold a surrogate without its partner, as a 7z name can: archivey
   keeps it in `member.name` and extracts it as it does a 7z name (see 7z above).

@@ -379,7 +379,7 @@ wrong password on an *encrypted* archive is unaffected and still raises.
 | --- | --- |
 | `open_archive(sevenzip, encoding="cp500")` | Opens; one `ENCODING_ARGUMENT_UNUSED`; names unchanged |
 | `open_archive(iso, encoding="cp500")` | No diagnostic; UTF-8 names unchanged, and the encoding applies to a Rock Ridge or plain name that is not valid UTF-8 |
-| `open_archive(zip, encoding="cp500")` | No diagnostic; the encoding is applied |
+| `open_archive(zip, encoding="cp500")` | No diagnostic; UTF-8 names unchanged, and the encoding applies to an unflagged name that is not valid UTF-8 |
 | Auto-detected open with no `encoding=` on a backend that ignores encoding | No diagnostic |
 | `open_archive(tar, password="p")` / `password=["a","b"]` | Both open; one `PASSWORD_ARGUMENT_UNUSED` each; no `ArchiveyUsageError` |
 | `open_archive(tar \| gz \| directory, password=lambda r: "p")` | Opens; no `PASSWORD_ARGUMENT_UNUSED`; the provider is never called |

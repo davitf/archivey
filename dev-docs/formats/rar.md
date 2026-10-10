@@ -616,24 +616,26 @@ used to decode with `replace`, so `a\xffq.txt` and `a\xfeq.txt` both listed as
 `a` (it stops at the first bad byte), and each still reads its own bytes, because the
 mask is built from the stored bytes (§2.3; `tests/test_rar_undecodable_names.py`). A
 RAR 1.5-4 name with only the 8-bit bytes records no code page, so it is decoded like an
-unflagged ZIP name: `encoding=` when the caller passed one, otherwise strict UTF-8, then
-cp437 for a member whose host is MS-DOS, OS/2 or Win32 and windows-1252 for any other
-host (§7 has the evidence). The five bytes windows-1252 leaves undefined decode with
-`surrogateescape` too, so `b\x81.txt` and `b\x8d.txt` stay two names. A Unicode-flagged
-name with no UTF-16 field declares UTF-8, so there `encoding=` applies only when the
-bytes are not valid UTF-8. The 8-bit field is never tried as UTF-16LE: almost any
-even-length byte string decodes that way, so `caf\xe9.txt` used to list as `慣琮瑸`. The
-UTF-16 field decodes with `surrogatepass`, as 7z names do (7z.md §2): a lone surrogate
-stays in `name`, and extraction writes it by the cross-format rule in `safe-extraction`
-("Lone surrogates in a member name"). It used to decode with `replace`, which also left
-the U+D800–U+DFFF arm of `_fix_rar3_astral_truncation` unreachable. 7-Zip 23.01 writes
-such a name as 7z's. `unrar` 7.00 holds the field as UTF-16 code units, one `wchar_t`
-each, so a valid pair is two characters to its `-n` matcher (`-n./pair??.txt` selects
-`pair` U+1F600 `.txt`, `-n./pair?.txt` does not), and `unrar x` on Linux writes the name
-cut at its first surrogate unit (`hi\ud800.txt` → `hi`); both measured. On POSIX the
-mask goes out as UTF-8 bytes, which cannot carry a surrogate unit, so it sends each unit
-as `?`. A member that mask also selects is handled like a stored glob's sibling (§2.3):
-refused by default when it comes earlier, read with
+unflagged ZIP name: strict UTF-8 first, with or without the Unicode flag, then
+`encoding=` when the caller passed one, otherwise cp437 for a member whose host is
+MS-DOS, OS/2 or Win32 and windows-1252 for any other host (§7 has the evidence). So
+`encoding=` applies only to bytes that are not valid UTF-8, as in every format (design
+rules, ruled 2026-10-07), and a name without the Unicode flag that took the UTF-8
+reading over `encoding=` emits `MEMBER_NAME_ENCODING_INFERRED`, as in ZIP and TAR. The
+five bytes windows-1252 leaves undefined decode with `surrogateescape` too, so
+`b\x81.txt` and `b\x8d.txt` stay two names. The 8-bit field is never tried as UTF-16LE:
+almost any even-length byte string decodes that way, so `caf\xe9.txt` used to list as
+`慣琮瑸`. The UTF-16 field decodes with `surrogatepass`, as 7z names do (7z.md §2): a
+lone surrogate stays in `name`, and extraction writes it by the cross-format rule in
+`safe-extraction` ("Lone surrogates in a member name"). It used to decode with
+`replace`, which also left the U+D800–U+DFFF arm of `_fix_rar3_astral_truncation`
+unreachable. 7-Zip 23.01 writes such a name as 7z's. `unrar` 7.00 holds the field as
+UTF-16 code units, one `wchar_t` each, so a valid pair is two characters to its `-n`
+matcher (`-n./pair??.txt` selects `pair` U+1F600 `.txt`, `-n./pair?.txt` does not), and
+`unrar x` on Linux writes the name cut at its first surrogate unit (`hi\ud800.txt` →
+`hi`); both measured. On POSIX the mask goes out as UTF-8 bytes, which cannot carry a
+surrogate unit, so it sends each unit as `?`. A member that mask also selects is handled
+like a stored glob's sibling (§2.3): refused by default when it comes earlier, read with
 `rar_allow_glob_member_concatenation`, and skipped when it comes later. A unit in a
 directory component is refused, since a directory glob cannot be sized. Windows argv is
 UTF-16, so there the mask carries a valid pair as it is; a lone unit is still refused
@@ -641,17 +643,17 @@ there, as in a RAR5 name (what Windows `unrar` does with one is unmeasured). `ra
 is always the stored bytes. A name with no Unicode field goes to `unrar` as its stored
 bytes, so how archivey decodes it never changes which member a read returns (§2.3); a
 name with one goes as the decoded field, as `unrar` reads it. `USES_ENCODING` is true,
-so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`.
-Comments follow `unrar`: a RAR 2.9-4 `CMT` SERVICE header whose attribute field has bit 0
-set (`SUBHEAD_FLAGS_CMT_UNICODE`) is UTF-16LE, read in whole 2-byte units (an odd
-trailing byte is dropped, as `unrar` reads `CmtSize / 2` units) and cut at the first
-U+0000. Every other RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style
-COMMENT subblock, stored or compressed) is 8-bit text cut at the first NUL, decoded as
-strict UTF-8 and then windows-1252, with U+FFFD for the five bytes windows-1252 leaves
-undefined. It is never guessed as UTF-16LE, for the reason names are not: an
-even-length `caf\xe9 ok!` used to list as CJK. `encoding=` does not apply to comments.
-A compressed `CMT` SERVICE header is not decoded: the parser reads only a stored one,
-so such an archive lists with no comment and no diagnostic.
+so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`. Comments follow `unrar`: a RAR 2.9-4
+`CMT` SERVICE header whose attribute field has bit 0 set (`SUBHEAD_FLAGS_CMT_UNICODE`)
+is UTF-16LE, read in whole 2-byte units (an odd trailing byte is dropped, as `unrar`
+reads `CmtSize / 2` units) and cut at the first U+0000. Every other RAR 1.5-4 comment
+(an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or compressed) is
+8-bit text cut at the first NUL, decoded as strict UTF-8 and then windows-1252, with
+U+FFFD for the five bytes windows-1252 leaves undefined. It is never guessed as
+UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to list as
+CJK. `encoding=` does not apply to comments. A compressed `CMT` SERVICE header is not
+decoded: the parser reads only a stored one, so such an archive lists with no comment
+and no diagnostic.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.
@@ -1582,7 +1584,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | An 8-bit RAR3 name is masked with its stored bytes; `unrar` runs under a UTF-8 locale, and without one a non-ASCII name is refused before spawning | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_member_is_readable`, `::test_non_ascii_member_reads_under_the_c_locale`, `tests/test_rar_unrar_argv.py::test_8bit_name_mask_is_the_stored_bytes`, `::test_unrar_child_runs_under_a_utf8_locale`, `::test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning` |
 | Each read returns its own member's bytes when the mask selects others: duplicate names (solid and not), a RAR5 name cut at a bad byte, a name `unrar` reads as empty; an earlier unmodellable name refuses later reads | `tests/test_audit_rar_iso_dir.py::test_invalid_utf8_name_never_reads_a_siblings_bytes`, `::test_duplicate_named_compressed_rar5_members_read_their_own_bytes`, `tests/test_rar_unrar_names.py::test_every_rar5_member_reads_its_own_bytes_or_is_refused`, `::test_duplicate_names_read_by_position`, `::test_invalid_utf8_name_reads_through_the_prefix_unrar_sees`, `::test_name_unrar_reads_as_empty_is_refused`, `::test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads` |
 | The mask selection archivey predicts is the one `unrar` 7.00 makes (Linux) | `tests/test_rar_unrar_names.py::test_rar5_mask_selection_is_the_one_unrar_makes`, `::test_rar3_8bit_mask_selection_is_the_one_unrar_makes`, `tests/test_rar_reader.py::test_unrar_mask_selection_follows_unrar_path_rules`, `::test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name` |
-| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`, `tests/test_rar_unrar_names.py::test_8bit_rar3_name_lists_in_its_writers_code_page`, `::test_encoding_argument_decodes_an_8bit_rar3_name`, `::test_8bit_rar3_name_decoded_with_encoding_still_reads`, `::test_unicode_flagged_rar3_name_without_a_utf16_field`, `::test_encoding_argument_leaves_rar5_names_alone`, `::test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning` |
+| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`, `tests/test_rar_unrar_names.py::test_8bit_rar3_name_lists_in_its_writers_code_page`, `::test_encoding_argument_decodes_an_8bit_rar3_name`, `::test_valid_utf8_rar3_name_wins_over_the_encoding_argument`, `::test_8bit_rar3_name_decoded_with_encoding_still_reads`, `::test_unicode_flagged_rar3_name_without_a_utf16_field`, `::test_encoding_argument_leaves_rar5_names_alone`, `::test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning` |
 | An explicit volume list in separate directories reads as given | `tests/test_audit_rar_iso_dir.py::test_explicit_rar_volume_paths_in_separate_directories_open` |
 | An invalid DOS date or out-of-range FILETIME is `None` plus `MEMBER_TIMESTAMP_INVALID`; a crafted `;n` suffix is not a bare `ValueError` | `tests/test_audit_cross_format.py::test_invalid_timestamp_is_none_and_reported`, `tests/test_audit_rar_iso_dir.py::test_rar3_version_suffix_is_parsed_without_a_bare_value_error` |
 | Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc | `tests/test_rar_reader.py::test_unrar_owned_stream_maps_exit_11_to_encryption_error` and the nine tests after it |

@@ -172,10 +172,9 @@ def test_idna_encoding_does_not_raise_raw_unicode_error() -> None:
         assert [m.name for m in members] == ["hello.txt"]
 
 
-def test_idna_encoding_name_it_cannot_reencode_lists_without_raw_name() -> None:
-    # zipfile decodes "a..b" under idna, but idna cannot encode it back (an empty
-    # label) and refuses surrogateescape outright, so the stored bytes are not
-    # recoverable: raw_name is None (as TAR reports it), and the listing goes on.
+def test_idna_encoding_leaves_ascii_names_and_their_raw_name() -> None:
+    # "a..b" is valid UTF-8, so it is UTF-8 whatever encoding= says, and the idna
+    # codec (which cannot encode the empty label back) never touches it.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a..b", b"x")
@@ -183,9 +182,20 @@ def test_idna_encoding_name_it_cannot_reencode_lists_without_raw_name() -> None:
     with archivey.open_archive(io.BytesIO(buf.getvalue()), encoding="idna") as ar:
         members = ar.members()
     assert [(m.name, m.raw_name) for m in members] == [
-        ("a..b", None),
+        ("a..b", b"a..b"),
         ("ok.txt", b"ok.txt"),
     ]
+
+
+def test_idna_encoding_on_a_legacy_name_keeps_the_fallback() -> None:
+    # A non-UTF-8 unflagged name goes to encoding= with surrogateescape; idna refuses
+    # that handler, so the configured fallback (cp437) decodes it instead.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("cafX.txt", b"x")  # ASCII, so the UTF-8 flag stays clear
+    blob = buf.getvalue().replace(b"cafX.txt", b"caf\x82.txt")  # cp437 0x82 = é
+    with archivey.open_archive(io.BytesIO(blob), encoding="idna") as ar:
+        assert [m.name for m in ar.members()] == ["café.txt"]
 
 
 def test_idna_unflagged_fallback_keeps_the_cp437_name() -> None:

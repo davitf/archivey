@@ -552,8 +552,8 @@ def test_stored_zipcrypto_provider_repeat_terminates(
     """A provider that repeats one wrong password stops after one CRC pass.
 
     Each distinct answer on the STORED path re-reads the member for its CRC-32.
-    ``iter_provider_answers`` ends when the provider repeats an answer, so the
-    second call does not start another pass.
+    ``iter_provider_answers`` skips the provider's repeats and ends after three in a
+    row, so none of the later calls starts another pass.
     """
     password = b"right-password"
     name = b"a.txt"
@@ -585,7 +585,7 @@ def test_stored_zipcrypto_provider_repeat_terminates(
         with open_archive(io.BytesIO(blob), password=provider) as archive:
             archive.read(name.decode())
 
-    assert asks == [1, 2]
+    assert asks == [1, 2, 3, 4]
     assert crc_calls == 1
 
 

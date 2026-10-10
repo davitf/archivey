@@ -623,6 +623,16 @@ class _RunState:
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
     # Directories ``_makedirs`` created this run, as parents of what it wrote.
     created_dirs: set[Path] = field(default_factory=set)
+    # Directory members whose ownership, mode and times wait for the end of the run
+    # (``_apply_directory_metadata``), by the path the directory was written at, in
+    # the order they were last written: the directory's identity on disk (device,
+    # inode) when it was written, the number of ``/`` in its path relative to the
+    # root once the parent is resolved (so a deeper directory sorts first), and the
+    # transformed member. Keyed by path, not identity: some filesystems report inode
+    # 0 for every entry (``_Identity.of`` in the directory reader).
+    pending_dirs: dict[Path, tuple[tuple[int, int], int, ArchiveMember]] = field(
+        default_factory=dict
+    )
     # ``_physical_rel``'s resolved parents, as spelled -> relative to the root with a
     # trailing ``/``. Only a symlink created, replaced or removed changes a
     # resolution, so each of those clears it (``_note_link_change`` and
@@ -1082,6 +1092,10 @@ class ExtractionCoordinator:
             # partial exists for the triggering member — every trigger fires before its
             # write begins, and FILE writes land atomically in any case.
             raise abort.error from None
+        finally:
+            # Also when the run stops early: the directories it did write end with
+            # their stored metadata, as the ones of a completed run do.
+            self._apply_directory_metadata()
 
         if unmatched_pending is not None:
             unmatched_pending.report_unmatched(
@@ -1295,6 +1309,9 @@ class ExtractionCoordinator:
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
             if path.is_dir() and not path.is_symlink():
+                # Random access never writes the superseded copy, so its metadata
+                # is not applied, whether or not the directory stays as a parent.
+                state.pending_dirs.pop(path, None)
                 with contextlib.suppress(OSError):  # not empty: members live under it
                     os.rmdir(path)
                     state.written_paths.discard(path)
@@ -1787,7 +1804,7 @@ class ExtractionCoordinator:
                 if wanted is not None and wanted != current:
                     kept_mode = current
             else:
-                self._apply_metadata(dest_path, transformed)
+                self._defer_directory_metadata(dest_path, transformed)
             if not existed:
                 written_paths.add(dest_path)
             return ExtractionResult(
@@ -2154,6 +2171,8 @@ class ExtractionCoordinator:
         with self._readonly_cleared(dest_path):
             if stat.S_ISDIR(st.st_mode):
                 os.rmdir(dest_path)
+                # Its member's metadata has no directory left to go on.
+                self._state.pending_dirs.pop(dest_path, None)
             else:
                 os.unlink(dest_path)
             if stat.S_ISLNK(st.st_mode):
@@ -2712,7 +2731,10 @@ class ExtractionCoordinator:
         Windows. The attribute is cleared only on a regular file or a directory this run
         wrote (or parked), or a directory it created as a parent that a later member made
         read-only: a read-only entry the caller already had stays protected, as on
-        Windows before. The attribute belongs to the file, not the name, so it is
+        Windows before. A run applies directory modes only when it ends
+        (``_apply_directory_metadata``), so a directory it wrote is read-only during
+        the run only when something else made it so; the directory case is kept for
+        that. The attribute belongs to the file, not the name, so it is
         put back on the other names of a file (hard links this run made) once the block
         is done, and on ``path`` itself if the block fails.
         """
@@ -3056,6 +3078,8 @@ class ExtractionCoordinator:
                 self._note_link_change(dest_path)
                 with self._readonly_cleared(dest_path):
                     os.rmdir(dest_path)
+                # Its member's metadata has no directory left to go on.
+                self._state.pending_dirs.pop(dest_path, None)
                 self._current.removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
@@ -3265,6 +3289,78 @@ class ExtractionCoordinator:
             if not os.path.lexists(candidate):
                 return candidate
 
+    def _defer_directory_metadata(self, path: Path, member: ArchiveMember) -> None:
+        """Keep ``member``'s ownership, mode and times for the directory just made at
+        ``path`` until the run ends (``_apply_directory_metadata``).
+
+        Applied at once, a stored mode without owner write or search permission
+        (``0o555``, ``0o644``) refused every member inside the directory to a non-root
+        user, and each entry written inside moved the directory's mtime. GNU tar,
+        bsdtar and Python's ``tarfile`` defer them the same way.
+        """
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return
+        rel = self._physical_rel(path)
+        depth = (rel if rel is not None else self._rel_name(path)).count("/")
+        pending = self._state.pending_dirs
+        # Moved to the end, so where two spellings reach one directory, the member
+        # written last is applied last (the sort by depth is stable).
+        pending.pop(path, None)
+        pending[path] = ((st.st_dev, st.st_ino), depth, member)
+
+    def _apply_directory_metadata(self) -> None:
+        """Apply the deferred directory metadata (``_defer_directory_metadata``),
+        deepest first, so a parent's mode never stops the run from reaching a
+        directory inside it. Best-effort, as ``_apply_metadata`` is.
+
+        A directory is changed only when the entry at its path is still the directory
+        this run made: a later member may have replaced it, with a symlink to another
+        directory for example. Each ``os.rmdir`` this run makes also drops the entry
+        recorded at that path, which matters where a filesystem reports inode 0 and
+        this check cannot tell two directories apart. Where the platform can, the
+        directory is opened without following a symlink and changed through that
+        descriptor, so nothing put at the path after the check is changed either.
+        Elsewhere (Windows), or when the directory cannot be opened (a umask without
+        owner read), the check is an ``lstat`` and the change goes by path.
+        """
+        pending = self._state.pending_dirs
+        # Windows has no ``os.chown`` and takes no descriptor here.
+        by_fd = hasattr(os, "chown") and all(
+            f in os.supports_fd for f in (os.chmod, os.utime, os.chown)
+        )
+        flags = os.O_RDONLY
+        for extra in ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC"):
+            flags |= getattr(os, extra, 0)
+
+        def is_ours(st: os.stat_result, identity: tuple[int, int]) -> bool:
+            return stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == identity
+
+        for path, (identity, _depth, member) in sorted(
+            pending.items(), key=lambda item: item[1][1], reverse=True
+        ):
+            if by_fd:
+                try:
+                    fd = os.open(path, flags)
+                except PermissionError:
+                    pass
+                except OSError:
+                    continue
+                else:
+                    try:
+                        if is_ours(os.fstat(fd), identity):
+                            self._apply_metadata(fd, member)
+                    finally:
+                        os.close(fd)
+                    continue
+            try:
+                if is_ours(os.lstat(path), identity):
+                    self._apply_metadata(path, member)
+            except OSError:
+                pass
+        pending.clear()
+
     def _effective_mode(self, member: ArchiveMember) -> int | None:
         """The mode to give what ``member`` writes; ``None`` means the creation default.
 
@@ -3278,8 +3374,9 @@ class ExtractionCoordinator:
             return member.mode
         return 0o755 if member.is_dir else 0o644
 
-    def _apply_metadata(self, path: Path, member: ArchiveMember) -> None:
+    def _apply_metadata(self, path: Path | int, member: ArchiveMember) -> None:
         """Best-effort ownership / mode / mtime. Failures are swallowed (best-effort).
+        ``path`` may be an open descriptor, where the platform takes one.
 
         Ownership goes first: Linux ``chown`` clears setuid/setgid on a non-directory
         even when root calls it, so a ``chmod`` before it would lose exactly the bits

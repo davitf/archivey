@@ -869,7 +869,7 @@ def test_executable_prefix_with_a_pe_header_never_becomes_a_stream_codec(
     """A confirmed PE with no archive in the window: an error, never a fake member."""
     path = tmp_path / "plain.exe"
     path.write_bytes(_pe_stub(200_000))
-    with pytest.raises(FormatDetectionError):
+    with pytest.raises(FormatDetectionError, match="executable header"):
         detect_format(path)
 
 

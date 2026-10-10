@@ -69,7 +69,8 @@ archivey decodes and reports with `archive_trailing_data`, as `xz --format=lzma`
 
 Pinned: `test_id3_tagged_mp3_is_not_lzma_alone`,
 `test_ole_magic_then_zeros_is_not_lzma_alone`, and the mechanism itself in
-`test_zero_run_after_an_alone_header_decodes_without_error`.
+`test_zero_run_after_an_alone_header_decodes_without_error`. The OLE case is fixed by the
+OLE signature check in §3.2. The probe itself is unchanged, so the ID3 case stays open.
 
 ### 3.2 Brotli on OLE files: the P12 residual (437 files)
 
@@ -83,6 +84,13 @@ followed by zeros, at 256 KiB.
 Pinned: `test_ole_header_then_zeros_is_not_brotli`. P12 and the spec forbid fixing it with
 a threshold. A fix needs a check that comes from Brotli's own framing, or a recognized
 non-archive signature that stops the probes, as the executable cue does for MZ and ELF.
+
+**Status: fixed for OLE files.** The OLE signature `D0 CF 11 E0 A1 B1 1A E1` now stops
+the content probes, as a `STRONG` executable cue does (`format-detection`: "A known
+non-archive signature stops the content probes"). It does not start the SFX scan. This
+also fixes the OLE case of §3.1: `test_ole_magic_then_zeros_is_not_lzma_alone` passes.
+The AppleDouble `._*` files and the images among the 437 are not OLE files, and the fix
+does not cover them.
 
 ### 3.3-3.5 ZIP: the two copies of a member's header disagree (decisions)
 

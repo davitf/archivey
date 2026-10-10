@@ -10,10 +10,5 @@ When this tree replaces `docs/`, two pointers outside it move too: `SECURITY.md`
 limits at `docs/extracting.md`, and `dev-docs/threat-model.md` names `docs/extracting.md` as its
 public half. Both now live in `security.md` and `extracting.md` here.
 
-`opening.md` describes how names are decoded after a change that hasn't landed: a name that is
-valid UTF-8 stays UTF-8 even with `encoding=`. Today ZIP, USTAR TAR and RAR 1.5-4 8-bit names let
-`encoding=` override it, as the `format-zip` spec requires. This tree can't replace `docs/` until
-the code and that spec change, which is tracked internally.
-
 `security.md` describes both accelerators running in a separate process. Today only the DEFLATE one
 does, and the bzip2 one runs in-process until a change that is tracked internally lands.

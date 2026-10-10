@@ -227,10 +227,20 @@ there both lists grow for the whole pass.
 `encoding=` reaches `tarfile.open`; without it the reader passes `"utf-8"`, not
 tarfile's own default (`tarfile.ENCODING`, the filesystem encoding on POSIX), so a
 listing does not depend on the process locale. tarfile's `surrogateescape` handler
-stays. `encoding=` changes how ustar and GNU names decode. A PAX record is decoded
-strictly as UTF-8 first and falls back to the archive codec (with `surrogateescape`)
-only when that fails, or outright for the member's own `hdrcharset=BINARY`; so
-`encoding=` changes a PAX name only when its bytes are not UTF-8. Because that fallback
+stays. A ustar or GNU name, link target, `uname` or `gname` declares no encoding, so
+when tarfile decoded it with the caller's `encoding=`, `_to_member` takes the stored
+bytes back and uses their UTF-8 reading when they are valid UTF-8, as every format does
+for an undeclared name (design rules, ruled 2026-10-07): `encoding=` changes such a field
+only when its bytes are not valid UTF-8. A name taken that way, where `encoding=` would
+have given a different one, emits `MEMBER_NAME_ENCODING_INFERRED` naming the caller's
+codec, as ZIP and RAR 1.5-4 do. A PAX record is decoded strictly as UTF-8 first
+and falls back to the archive codec (with `surrogateescape`) only when that fails, or
+outright for the member's own `hdrcharset=BINARY`; so `encoding=` changes a PAX name
+only when its bytes are not UTF-8. A `BINARY` record declares no encoding, so it gets
+the same UTF-8 reading as a ustar name. A member block that repeats a global `BINARY`
+cannot be told from one that inherits it (`_pax_field_is_utf8`), so under a non-UTF-8
+`encoding=` its name keeps the codec's reading and `raw_name` is not the stored bytes;
+that needs a crafted archive, and is pinned by a test. Because that fallback
 is the archive codec, the UTF-8 default reaches such PAX names too: without `encoding=`
 their undecodable bytes are surrogate escapes whatever the locale, and `raw_name` is the
 stored bytes.
@@ -424,7 +434,7 @@ extraction checks (§2.4).
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
-| `encoding=` has no effect on some names | **format** | PAX names are UTF-8 by definition; only ustar and GNU names use it (§2.2) |
+| `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
 
 ## 6. Decisions
 
@@ -471,7 +481,7 @@ extraction checks (§2.4).
 | Random access needs a seekable source; streaming works on a pipe, plain and compressed | `::test_non_seekable_tar_fails_fast`, `::test_non_seekable_tar_streaming_opens_without_scanning`, `::test_non_seekable_plain_tar_stream_members`, `::test_non_seekable_tar_gz_streaming` |
 | Metadata mapping, PAX `mtime`, PAX `atime` and `ctime`, libarchive birth time | `::test_member_metadata`, `::test_pax_mtime_override`, `::test_pax_atime_ctime`, `::test_pax_libarchive_creationtime_is_created` |
 | `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` | `::test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding`, `::test_ustar_raw_name_follows_the_archive_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec` |
-| ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` overrides; a PAX record that is not UTF-8 falls back to that same codec | `::test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale`, `::test_utf8_link_target_and_owner_decode_as_utf8_under_a_non_utf8_locale`, `::test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale`, `::test_caller_encoding_overrides_the_utf8_default`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding` |
+| ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec | `::test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale`, `::test_utf8_link_target_and_owner_decode_as_utf8_under_a_non_utf8_locale`, `::test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale`, `::test_utf8_header_name_wins_over_the_caller_encoding`, `::test_utf8_link_target_and_owner_win_over_the_caller_encoding`, `::test_caller_encoding_decodes_header_fields_that_are_not_utf8`, `::test_mixed_header_names_each_decode_by_their_own_bytes`, `::test_binary_pax_path_that_is_valid_utf8_wins_over_the_caller_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding` |
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch | `::test_bad_pax_time_is_reported`, `::test_several_bad_pax_times_on_one_member_are_each_reported`, `::test_pax_mtime_zero_is_the_epoch` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |

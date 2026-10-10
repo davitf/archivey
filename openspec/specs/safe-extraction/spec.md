@@ -551,6 +551,21 @@ non-bypassable safety checks.
 | uid/gid/uname/gname on the transformed member (what a `filter` sees) | Cleared to `None` | Kept as stored | Kept as stored |
 | Ownership applied on disk (`chown`) | Never | Never | Only when running as root; otherwise skipped silently |
 
+A DIRECTORY member's ownership, mode and times SHALL be applied after the last member of
+the run is written, and not when the directory is created, in the same way in streaming
+and random-access mode. Directories SHALL be done deepest first, so a parent's mode never
+stops the run from reaching a directory inside it. This SHALL also happen when the run
+stops early (`OnError.STOP`, an `abort_on` trigger, a limit), for the directories written
+before it stopped. A directory is changed only when the entry at its path is still the
+directory the member wrote: a symlink, or another entry, that a later member put there
+SHALL NOT be changed, and the change SHALL NOT follow a symlink. GNU tar, bsdtar and
+Python's `tarfile` order these changes the same way. With the mode applied at once, a
+stored mode without owner write or search permission refused every member inside the
+directory to a non-root user, and each member written inside changed the directory's
+modification time. One consequence, which GNU tar shares: under `TRUSTED`, the only
+policy that keeps setgid, a setgid directory gets the bit only after its members are
+written, so a non-root run does not give them the directory's group.
+
 #### Scenario: metadata policy matrix
 
 | Case | Expected |
@@ -560,6 +575,10 @@ non-bypassable safety checks.
 | FILE with uid/gid under `TRUSTED` as root | uid/gid applied |
 | FILE with uid/gid under `STANDARD` | A `filter` sees the stored uid/gid; nothing is chowned |
 | Any policy, unsafe path/link/special file | Universal safety rejection still applies |
+| DIRECTORY `d/` stored `0o555` or `0o644` under `STANDARD`, then `d/f`, non-root user | `d/f` `EXTRACTED`; `d` ends with the stored mode |
+| DIRECTORY `d/` with a stored mtime, then `d/f` | `d` ends with the stored mtime |
+| DIRECTORY `d/`, then `d/f`, then a member that stops the run | `d` ends with its stored mode and mtime |
+| DIRECTORY `d/` replaced under `REPLACE` by a symlink `d -> t` | `t` keeps its own mode and mtime |
 
 ### Requirement: Overwrite Policy
 

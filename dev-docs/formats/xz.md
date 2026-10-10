@@ -188,8 +188,8 @@ nearest member.
   (`_peek_alone_header`, replaying it on a non-seekable source). An over-cap stream opens
   as `_RefusedAloneStream`, which refuses on the first read, not at open. The refusal has
   to come on read because a probe-only claim's read errors are stamped
-  `format_unconfirmed`, and that stamp is attached after open: an OLE file whose header
-  bytes read as a 2.7 GiB dictionary would otherwise tell the caller to raise the cap for
+  `format_unconfirmed`, and that stamp is attached after open: a file whose header
+  bytes read as a 2.5 GiB dictionary would otherwise tell the caller to raise the cap for
   a file that is not LZMA at all.
 
 **Errors by cause.** CPython raises every liblzma failure as `LZMAError` and tells them
@@ -236,7 +236,8 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
 | An lzip member followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and the CRC-32 from the trailers. The lzip manual allows trailing data |
-| OLE (`.msi`, old `.doc`) and COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
+| COFF object files, MP3s whose ID3 tag starts with padding | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
+| OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5) |
 
 ## 4. Threat surface
 
@@ -257,9 +258,10 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   megabytes of zeros costs a few reads, not one per four bytes.
 - **LZMA Alone has no check.** Corrupt data that the range coder accepts decodes to wrong
   bytes with no error. That is the format.
-- **The Alone probe claims foreign files.** OLE and COFF headers pass its gate. The claim is
-  `PROBABLE`, and every error from it is stamped `format_unconfirmed`, so a caller can tell
-  a misread file from a damaged one (threat-model O10).
+- **The Alone probe claims foreign files.** COFF headers and ID3 tags followed by padding
+  pass its gate. OLE headers pass it too, but the OLE signature stops the probes first.
+  The claim is `PROBABLE`, and every error from it is stamped `format_unconfirmed`, so a
+  caller can tell a misread file from a damaged one (threat-model O10).
 
 ## 5. Sharp edges
 
