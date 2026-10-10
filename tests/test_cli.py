@@ -2620,10 +2620,9 @@ def _tar_with_dirs(path: Path, names: list[str]) -> Path:
         for name in names:
             info = tarfile.TarInfo(name)
             if name.endswith("/"):
+                # TarInfo's default mode is 0o644, without search permission.
+                # archivey applies it only after the directory's members are written.
                 info.type = tarfile.DIRTYPE
-                # TarInfo defaults to 0o644, and archivey chmods a directory as soon as
-                # it creates it, so a non-root run could not write its children.
-                info.mode = 0o755
                 tf.addfile(info)
             else:
                 info.size = 1

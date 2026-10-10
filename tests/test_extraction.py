@@ -652,6 +652,150 @@ def test_filter_dropping_the_mode_still_gets_the_policy_default(
     assert (dest / "d").stat().st_mode & 0o7777 == 0o755
 
 
+def _tar_with_dir_modes(specs: list[tuple[str, int | None, int]]) -> bytes:
+    """A tar from ``(name, mode, mtime)`` specs: a name ending in ``/`` is a
+    directory, anything else a one-byte file; a ``mode`` of ``None`` is a symlink
+    whose target is that name with the ``->`` part split off (``"l->t"``)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, mode, mtime in specs:
+            if mode is None:
+                link, target = name.split("->")
+                info = tarfile.TarInfo(link)
+                info.type = tarfile.SYMTYPE
+                info.linkname = target
+                tf.addfile(info)
+                continue
+            info = tarfile.TarInfo(name.rstrip("/"))
+            info.mode = mode
+            info.mtime = mtime
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                tf.addfile(info)
+            else:
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
+def _restore_modes(root: Path) -> None:
+    """Make every directory under ``root`` writable again, so pytest can remove it."""
+    for path in [root, *root.rglob("*")]:
+        if path.is_dir() and not path.is_symlink():
+            os.chmod(path, 0o700)
+
+
+_DIR_MTIME = 1_500_000_000
+_SUB_MTIME = 1_400_000_000
+
+
+@_posix_perms
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    ("policy", "stored", "expected"),
+    [
+        (ExtractionPolicy.STANDARD, 0o644, 0o644),
+        (ExtractionPolicy.STANDARD, 0o555, 0o555),
+        (ExtractionPolicy.TRUSTED, 0o000, 0o000),
+        (ExtractionPolicy.STRICT, 0o500, 0o755),
+    ],
+)
+def test_directory_metadata_is_applied_after_its_children(
+    tmp_path: Path,
+    streaming: bool,
+    policy: ExtractionPolicy,
+    stored: int,
+    expected: int,
+) -> None:
+    """A directory stored without owner write or search permission still gets its
+    children, and ends with its stored mode and mtime, as with GNU tar and bsdtar.
+
+    The directory's mode and mtime are applied once the run is done, deepest first:
+    applied at once, the mode refused every child to a non-root user, and every child
+    written moved the mtime. Root skips the permission checks, so there only the
+    final mode and mtime show the order.
+    """
+    archive = _tar_with_dir_modes(
+        [
+            ("etc/", stored, _DIR_MTIME),
+            ("etc/a", 0o644, 0),
+            ("etc/sub/", stored, _SUB_MTIME),
+            ("etc/sub/b", 0o644, 0),
+        ]
+    )
+    dest = tmp_path / "out"
+    try:
+        report = open_and_extract(
+            io.BytesIO(archive), dest, policy=policy, streaming=streaming
+        )
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 4
+        # Each directory is read, then opened up so the one below it can be read: a
+        # chmod leaves the mtime alone.
+        etc, sub = dest / "etc", dest / "etc" / "sub"
+        for directory, mtime in ((etc, _DIR_MTIME), (sub, _SUB_MTIME)):
+            st = directory.stat()
+            assert st.st_mode & 0o7777 == expected
+            assert int(st.st_mtime) == mtime
+            os.chmod(directory, 0o700)
+        assert (etc / "a").read_bytes() == b"x"
+        assert (sub / "b").read_bytes() == b"x"
+    finally:
+        _restore_modes(dest)
+
+
+@_posix_perms
+def test_directory_metadata_is_applied_when_the_run_stops(tmp_path: Path) -> None:
+    """A refused member stops the run (``AbortOn.BLOCKED_MEMBER``), and the
+    directories written before it still end with their stored mode and mtime."""
+    archive = _tar_with_dir_modes(
+        [("d/", 0o555, _DIR_MTIME), ("d/f", 0o644, 0), ("../x", 0o644, 0)]
+    )
+    dest = tmp_path / "out"
+    try:
+        with pytest.raises(FilterRejectionError):
+            open_and_extract(
+                io.BytesIO(archive),
+                dest,
+                policy=ExtractionPolicy.STANDARD,
+                abort_on=[AbortOn.BLOCKED_MEMBER],
+                streaming=True,
+            )
+        assert (dest / "d").stat().st_mode & 0o7777 == 0o555
+        assert int((dest / "d").stat().st_mtime) == _DIR_MTIME
+        assert (dest / "d" / "f").read_bytes() == b"x"
+    finally:
+        _restore_modes(dest)
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_directory_metadata_never_follows_a_symlink(tmp_path: Path) -> None:
+    """A directory replaced by a symlink before the run ends keeps nothing of its
+    member's metadata: the symlink's target is not changed."""
+    archive = _tar_with_dir_modes(
+        [
+            ("t/", 0o755, 0),
+            ("d/", 0o700, _DIR_MTIME),
+            ("d->t", None, 0),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "d").is_symlink()
+    assert (dest / "t").stat().st_mode & 0o7777 == 0o755
+    assert int((dest / "t").stat().st_mtime) != _DIR_MTIME
+
+
 @_posix_perms
 def test_extract_zip_standard_keeps_execute(tmp_path: Path) -> None:
     src = tmp_path / "m.zip"
