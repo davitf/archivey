@@ -95,3 +95,9 @@ name. Archivey keeps them in a few places, depending on what you called:
 
 All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
 records themselves, up to 256 by default.
+
+Each diagnostic is also logged as a warning on the `archivey.diagnostics` logger, so a script that
+calls `logging.basicConfig()` prints a line for each. To handle them as they happen instead, pass a
+function as `on_diagnostic=` in `archivey.ArchiveyConfig`. Archivey calls it with each
+[`Diagnostic`](api.md#archivey.Diagnostic) as it's recorded, the same record the summaries keep. An
+exception it raises stops the operation and reaches your code.
