@@ -19,6 +19,7 @@ import sys
 import tarfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -40,6 +41,9 @@ from tests.streams_util import (
     ShortReadBytesIO,
     ShortReadNonSeekable,
 )
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # Larger than BufferedReader's default so the over-read contrast is a partial
 # fill, not EOF. 3.14 raised DEFAULT_BUFFER_SIZE from 8 KiB to 128 KiB (gh-117151);
@@ -167,7 +171,8 @@ def test_over_returning_inner_after_a_short_read_raises() -> None:
             return self._chunks.pop(0) if self._chunks else b""
 
     wrapped = ArchiveSource.for_stream(_ShortThenOverlong())  # type: ignore[arg-type]  # RawIOBase double
-    with pytest.raises(ValueError, match="inner returned 13 bytes for read\\(10\\)"):
+    # The follow-up asks for the missing 6 bytes and gets 9.
+    with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(6\\)"):
         wrapped.read(10)
 
 
@@ -182,6 +187,46 @@ def test_over_returning_inner_with_a_fact_length_raises() -> None:
     assert wrapped._length is not None
     with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(4\\)"):
         wrapped.read(4)
+
+
+class _OverCountingReadinto(io.BytesIO):
+    """Fills the buffer correctly, then reports ``extra`` more bytes than it wrote.
+
+    With ``short_first``, the first call fills only 2 bytes and reports them
+    truthfully, so the over-count arrives on the follow-up fill.
+    """
+
+    def __init__(self, data: bytes, *, extra: int, short_first: bool = False) -> None:
+        super().__init__(data)
+        self._extra = extra
+        self._short_first = short_first
+
+    def readinto(self, b: WriteableBuffer, /) -> int:  # type: ignore[override]
+        view = memoryview(b).cast("B")
+        if self._short_first:
+            self._short_first = False
+            return super().readinto(view[:2])
+        return super().readinto(view) + self._extra
+
+
+def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
+    """The count is checked, not only the bytes: a lie would move the position past EOF."""
+    wrapped = ArchiveSource.for_stream(_OverCountingReadinto(b"abcdefghij", extra=100))
+    assert wrapped._length is not None
+    with pytest.raises(
+        ValueError, match="inner returned 104 bytes for readinto\\(4\\)"
+    ):
+        wrapped.readinto(bytearray(4))
+
+
+def test_readinto_refuses_an_over_count_on_the_follow_up_fill() -> None:
+    """A short first fill, then an over-count on the re-ask, raises the same way."""
+    inner = _OverCountingReadinto(b"abcdefghij", extra=100, short_first=True)
+    wrapped = ArchiveSource.for_stream(inner)
+    with pytest.raises(
+        ValueError, match="inner returned 102 bytes for readinto\\(2\\)"
+    ):
+        wrapped.readinto(bytearray(4))
 
 
 def test_sized_read_past_eof_returns_the_remainder() -> None:

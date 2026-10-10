@@ -219,7 +219,8 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     """Read up to ``n`` bytes, treating a short non-empty return as "ask again".
 
     Stops only on empty (EOF) or once ``n`` bytes are gathered. That is the
-    ``io.RawIOBase`` contract: a short chunk is not a terminal signal. ``None``
+    ``io.RawIOBase`` contract: a short chunk is not a terminal signal. More than
+    ``n`` bytes in all raises ``ValueError``. ``None``
     (nothing ready on a non-blocking stream) is not EOF either, so it raises
     ``BlockingIOError``, as :func:`read_blocking` does. When ``None`` follows a
     short chunk, that chunk has already left the stream and is not returned.
@@ -288,6 +289,11 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
             break
         chunks.append(chunk)
         gathered += len(chunk)
+    if gathered > n:
+        # The excess is already consumed and cannot be given back, so this refuses
+        # rather than clamps. Off the single-read fast path above, so it costs that
+        # path nothing.
+        raise ValueError(f"inner returned {gathered} bytes for read({n}): {stream!r}")
     return b"".join(chunks)
 
 

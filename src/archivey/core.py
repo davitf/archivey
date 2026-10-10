@@ -681,6 +681,10 @@ def open_stream(
     :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), or ``None`` to
     auto-detect. A container format (ZIP, TAR, …) is rejected — use
     :func:`open_archive` for those.
+
+    A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
+    returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
+    error.
     """
     import archivey.internal.backends  # noqa: F401
 

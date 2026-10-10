@@ -213,6 +213,18 @@ def test_read_exact_refuses_none_after_a_short_chunk() -> None:
     assert stream.calls == 2
 
 
+def test_read_exact_refuses_an_over_read() -> None:
+    """More than ``n`` bytes is a broken stream; the excess cannot be given back."""
+    with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(4\\)"):
+        read_exact(_Scripted([b"abcdefghi"]), 4)
+
+
+def test_read_exact_refuses_an_over_read_after_a_short_chunk() -> None:
+    """The gathered total is checked too, not only the first read."""
+    with pytest.raises(ValueError, match="inner returned 13 bytes for read\\(6\\)"):
+        read_exact(_Scripted([b"abcd", b"EFGHIJKLM"]), 6)
+
+
 def test_read_exact_accepts_readablestream_protocol() -> None:
     assert isinstance(OnlyReadStream(DATA), ReadableStream)
 
