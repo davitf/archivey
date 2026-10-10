@@ -23,7 +23,7 @@ from archivey import (
 )
 from archivey.cli.choices import cli_choices
 from archivey.cli.errors import CliError
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
 from archivey.cli.format import (
     escape_member_name,
@@ -654,7 +654,7 @@ def main(
         return EXIT_FAIL
     except KeyboardInterrupt:
         print("interrupted", file=err_stream)
-        return 130
+        return EXIT_INTERRUPTED
 
 
 class _BackslashReplacingWriter:
