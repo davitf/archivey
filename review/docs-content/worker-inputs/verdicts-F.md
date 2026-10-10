@@ -34,7 +34,7 @@ were executed with `uv run --no-sync` (harness via `uv run --extra all` as docum
 | F-26 | wrong | Guide/claim: AUTO selects “only when” declared seekability **and** known size ≥ 1 MiB. Spec (`seekable-decompressor-streams` demand matrix + AUTO threshold prose): when size is **unknown**, AUTO still selects when otherwise eligible; DEFLATE AUTO also needs a verifiable decompressed size (`config.py` / codecs). Absolute “only when A∧B” overstates. |
 | F-27 | verified | Spec: known size &lt; threshold → stdlib; design intent for many tiny members. Matches guide. |
 | F-28 | verified | Spec: `ON` ignores threshold; `OFF` never selects. `AcceleratorMode` docstring. Spot-check modes. |
-| F-29 | verified | Silence claim true: no guide page states it. **cfg**: monkeypatch `_rapidgzip=None` — `AUTO` opens seekable gzip silently on stdlib; `ON` → `PackageNotInstalledError` naming `rapidgzip`. Matches `AcceleratorMode` + codecs raise path. (`compressed-streams` Missing optional backends is the broader PackageNotInstalledError home.) |
+| F-29 | verified | Silence claim true: no guide page states it. **cfg**: monkeypatch `codecs.deps.rapidgzip` to `None` — `AUTO` opens seekable gzip silently on stdlib; `ON` → `PackageNotInstalledError` naming `rapidgzip`. Matches `AcceleratorMode` + codecs raise path. (`compressed-streams` Missing optional backends is the broader PackageNotInstalledError home.) |
 | F-30 | verified | Spec: seek indexes/accelerators only under declared seek demand. Matches `philosophy.md:40` / cost-page advice. |
 | F-31 | verified | `archive-reading` weak-check confirmation; `format-zip` Confirm multi-candidate ZipCrypto — STORED does a shared full-ciphertext CRC pass (expensive niche). Matches guide + `formats.md:55-56`. |
 | F-32 | verified | Spec rapidgzip-only accelerator; terminate-on-raising-source hazard documented. Matches guide + acknowledgements. |
@@ -56,7 +56,7 @@ were executed with `uv run --no-sync` (harness via `uv run --extra all` as docum
 
 ### Config notes (`cfg`)
 - Everyday verification: **`[all]`** (rapidgzip present).
-- F-20 / F-29 absence path: monkeypatch `_rapidgzip = None` (same mechanism `[core-only]` / no `[seekable]` would hit).
+- F-20 / F-29 absence path: monkeypatch `codecs.deps.rapidgzip` to `None` (same mechanism `[core-only]` / no `[seekable]` would hit).
 - F-2 harness: `uv run --extra all` as the guide writes (not `--no-sync` alone).
 
 ### Cross-cluster / process

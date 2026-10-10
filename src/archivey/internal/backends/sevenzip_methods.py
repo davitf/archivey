@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from archivey.exceptions import UnsupportedFeatureError
-from archivey.internal.streams.arm64 import FILTER_ARM64
 from archivey.internal.streams.codecs import Codec
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.types import CompressionAlgorithm
 
 

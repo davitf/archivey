@@ -30,16 +30,18 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
-from archivey.internal.streams.codecs import (
-    Codec,
-    CodecParams,
-    _AcceleratorStream,
+from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
+from archivey.internal.streams.codecs.gzip_codec import (
     _GzipTruncationCheckStream,
-    _SourceViews,
     _stdlib_gzip,
-    _StdlibOnAcceleratorError,
+)
+from archivey.internal.streams.codecs.rapidgzip_inprocess import (
+    _AcceleratorStream,
     _TrappingSource,
-    open_codec_stream,
+)
+from archivey.internal.streams.codecs.stdlib_takeover import (
+    _SourceViews,
+    _StdlibOnAcceleratorError,
 )
 from tests.corruption_util import (
     is_corruption_not_truncation,
