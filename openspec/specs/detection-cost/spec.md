@@ -78,8 +78,10 @@ that length is the trailer allowance below.
 per tier or per candidate: every tier that decodes draws on what earlier tiers left, so
 adding tiers or candidates cannot multiply the compressed input a budget allows decoded.
 Today four tiers draw on it. `max_decode_output` bounds the inner-TAR probe only; a
-content probe's output is bounded by the codec's own drain (4 KiB, or 64 KiB when the
-whole source is in hand) and is not charged to `decode_output`. Each content probe is
+content probe's output is bounded by the codec's own drain (4 KiB, 64 KiB when the whole
+source is in hand, and the sample length, up to 1 MiB, for the Brotli chain decode) and
+is not charged to `decode_output`. That is deliberate for the chain decode too: its
+output is mostly a copy of the input it was charged for. Each content probe is
 charged the sample it was handed, whether or not a header check turned it away before
 decoding; a probe the remaining allowance cannot cover does not run, and `content_probe`
 is recorded *budget exhausted* (or *not enabled by policy* when `max_decode_input` is 0).
@@ -88,7 +90,8 @@ The completion check is charged the whole source it decodes and records `probe_c
 before any hit asks for completion), and *not enabled by policy* when
 `completion_window_bytes` is 0. The Brotli chain decode is charged the `end` bytes it
 decodes, and records `content_probe_decode` *budget exhausted* when the allowance cannot
-cover them or `end` is past the prefix/far/scan ceiling; the probe's verdict then stands. The inner-TAR probe caps its compressed input at the
+cover them or `end` is past the prefix/far/scan ceiling or the 1 MiB reach; the probe's
+verdict then stands. The inner-TAR probe caps its compressed input at the
 smaller of what is left and 1 MiB, is charged whether its decode succeeds or fails, and
 records `inner_tar` as *budget exhausted* when the cap cut it short or less than one
 512-byte TAR header of output is left. Content-probe `read_at` seeks on cheap

@@ -242,18 +242,31 @@ def test_compressed_first_stream_decodes_nothing_more() -> None:
 
 
 @requires("brotli")
-def test_compressed_block_past_the_reach_is_not_decoded() -> None:
+def test_compressed_block_past_the_reach_is_not_decoded(tmp_path: Path) -> None:
     # A first block longer than the 1 MiB reach: the decode would read past it, so the
-    # probe keeps "cannot disprove" without reading.
+    # probe keeps "cannot disprove" without reading, and detection says it did not run.
     length = PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE + 1
     head = brotli_declared_metablock_header(length, first=True)
     blob = head + bytes(length) + brotli_compressed_metablock_header() + bytes(64)
     _passes_the_earlier_checks(blob)
 
-    def charge(n: int) -> bool:
-        raise AssertionError("past the reach, nothing is decoded")
+    def read_at(offset: int, n: int) -> bytes | None:
+        assert n <= 24, "past the reach, only headers are read"
+        return blob[offset : offset + n]
 
-    assert _probe(blob, charge_decode=charge) is True
+    # Unmetered, the probe applies the reach itself.
+    assert (
+        BrotliCodec().content_probe(
+            blob[:DETECTION_LIMIT], source_length=len(blob), read_at=read_at
+        )
+        is True
+    )
+    # Metered, the detector's ``charge_decode`` applies it, and records the skip.
+    info = _detect_named(tmp_path, blob)
+    assert info.detected_by == "content_probe"
+    assert TierSkip("content_probe_decode", TierSkipReason.BUDGET_EXHAUSTED) in (
+        info.unavailable_tiers
+    )
 
 
 @requires("brotli")

@@ -79,7 +79,11 @@ from archivey.diagnostics import (
 from archivey.exceptions import ArchiveyError, FormatDetectionError
 from archivey.internal.arg_checks import check_config
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
-from archivey.internal.detection_workspace import DETECTION_LIMIT, PrefixWorkspace
+from archivey.internal.detection_workspace import (
+    DETECTION_LIMIT,
+    PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
+    PrefixWorkspace,
+)
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
@@ -973,9 +977,12 @@ def _detect_format_body(
                 return workspace.read_at(offset, n)
 
             def charge_decode(n: int) -> bool:
-                # Brotli's chain decode reads and decodes [0, n): it draws on the
-                # decode allowance, and reads no further than any buffered tier may.
-                if n > workspace.read_ceiling:
+                # Brotli's chain decode reads and decodes the total [0, n): it draws on
+                # the decode allowance, and reads no further than any buffered tier
+                # may, nor past the 1 MiB reach of a probe read.
+                if n > min(
+                    workspace.read_ceiling, PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
+                ):
                     workspace.record_skip(
                         "content_probe_decode", TierSkipReason.BUDGET_EXHAUSTED
                     )
@@ -991,7 +998,8 @@ def _detect_format_body(
                 # Charged at the sample the probe was handed, whether it decodes all of
                 # it or a header check turns it away first: the ceiling of its input.
                 # Its output is not charged: the codec's drain bounds it per probe
-                # (4 KiB, or 64 KiB with the whole source in hand).
+                # (4 KiB, 64 KiB with the whole source in hand, or the sample length,
+                # up to 1 MiB, for Brotli's chain decode).
                 workspace.charge_decode(input_bytes=len(data))
                 if probe(
                     data,

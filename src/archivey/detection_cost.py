@@ -57,9 +57,12 @@ class DetectionBudget:
     would otherwise forbid.
 
     ``max_decode_input`` is one allowance for the whole call, shared by the content
-    probes, the Brotli chain decode, their completion check and the inner-TAR probe. ``max_decode_output`` bounds
-    the inner-TAR probe only; a content probe's output is bounded by the codec's own
-    drain (4 KiB, or 64 KiB with the whole source in hand) and is not charged.
+    probes, the Brotli chain decode, their completion check and the inner-TAR probe.
+    ``max_decode_output`` bounds the inner-TAR probe only. A content probe's output is
+    bounded by the codec's own drain: 4 KiB, 64 KiB with the whole source in hand, and
+    the sample length (up to 1 MiB) for the Brotli chain decode. It is deliberately not
+    charged: the chain decode's output is mostly a copy of input already charged to
+    ``max_decode_input``.
     ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
     against in full (see ``format-detection``); ``0`` turns the check off.
 

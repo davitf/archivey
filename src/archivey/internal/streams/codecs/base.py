@@ -225,9 +225,10 @@ _PROBE_COMPLETENESS_OUTPUT = 64 * 1024
 # past the peeked prefix (``compressed-streams``). ``None`` means the caller declined.
 ProbeReadAt = Callable[[int, int], bytes | None]
 # Optional hook for a probe that decodes more than the sample it was handed (the Brotli
-# chain decode): ``charge_decode(n)`` asks to decode ``n`` compressed bytes. ``True``
-# means the caller's decode allowance covered them and they are charged; ``False``
-# means it did not, and the probe must keep the verdict it has without decoding.
+# chain decode): ``charge_decode(n)`` asks to read and decode the total ``[0, n)`` of
+# the source, and is called before the read, which it also bounds. ``True`` means the
+# caller's budget covers it and ``n`` is charged; ``False`` means it does not, and the
+# probe must keep the verdict it has without reading or decoding.
 ProbeChargeDecode = Callable[[int], bool]
 
 

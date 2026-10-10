@@ -37,8 +37,10 @@ from archivey.types import (
 
 # The chain decode reads ``[0, end)`` and does not run when ``end`` would pass this: the
 # same 1 MiB reach as a non-seekable ``read_at``, applied to seekable sources too, so no
-# source is decoded further for detection. Past it the walk's verdict stands.
-_CHAIN_DECODE_MAX_END = PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
+# source is decoded further for detection. Past it the walk's verdict stands. Under
+# detection the caller's ``charge_decode`` applies this bound with the budget's (and
+# records the skip); the probe applies it itself only when it is not metered.
+CHAIN_DECODE_MAX_END = PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
 
 
 class BrotliCodec(StreamCodec):
@@ -134,16 +136,24 @@ class BrotliCodec(StreamCodec):
         copy of the uncompressed bytes, and a sequential read.
 
         ``True`` (cannot disprove) when the window decode already covered ``end``, when
-        ``end`` is past ``_CHAIN_DECODE_MAX_END``, when ``charge_decode`` refuses the
-        input, or when ``read_at`` declines the bytes. A real stream either keeps
-        decoding or runs out of input, and both are accepted.
+        ``charge_decode`` refuses ``[0, end)`` (or, unmetered, ``end`` is past
+        ``CHAIN_DECODE_MAX_END``), or when ``read_at`` declines the bytes. A real stream
+        either keeps decoding or runs out of input, and both are accepted.
+
+        The charge comes before the read because the read is what the budget bounds: on
+        a seekable source ``read_at`` has no ceiling of its own. The detector's
+        ``read_at`` serves any ``[0, end)`` its ``charge_decode`` accepted, so a granted
+        charge is always spent on a decode.
         """
         if source_length <= len(prefix):
             return True  # the window decode had the whole source
         end = min(compressed_at + CHAIN_DECODE_MARGIN, source_length)
-        if end <= min(len(prefix), DETECTION_LIMIT) or end > _CHAIN_DECODE_MAX_END:
+        if end <= min(len(prefix), DETECTION_LIMIT):
             return True
-        if charge_decode is not None and not charge_decode(end):
+        if charge_decode is None:
+            if end > CHAIN_DECODE_MAX_END:
+                return True
+        elif not charge_decode(end):
             return True
         data = probe_bytes_at(prefix, source_length, 0, end, read_at)
         if data is None:

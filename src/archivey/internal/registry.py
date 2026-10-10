@@ -54,8 +54,9 @@ class ContentProbe(Protocol):
     decode when the whole source is visible. ``read_at`` is an optional bounded read
     facility for probes that follow a self-describing block chain past the peeked
     prefix; absent by default. ``charge_decode(n)`` asks the caller's decode allowance
-    for ``n`` more compressed bytes, for a probe that decodes past its sample (Brotli's
-    chain decode); ``False`` means not covered, and the probe keeps its verdict.
+    for the total ``[0, n)`` of compressed bytes a probe will read and decode past its
+    sample (Brotli's chain decode), before it reads them; ``False`` means not covered,
+    and the probe keeps its verdict.
     """
 
     def __call__(
