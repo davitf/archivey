@@ -17,6 +17,10 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    DiagnosticRaisedError,
     FormatSupport,
     StreamNotSeekableError,
     format_availability,
@@ -51,8 +55,10 @@ _READS_FORWARD = (
 
 
 def _skip_unless_registered(fmt: ArchiveFormat) -> None:
-    # ISO needs pycdlib; without it the open fails as PackageNotInstalledError long
-    # before the seekability check this module is about.
+    # Only the forward-reading formats need this. Their streaming=False refusal comes
+    # after the availability check, so `.lz4` or `.zst` without its package fails as
+    # PackageNotInstalledError first. The seek-only formats are refused before that
+    # check, so their tests run in a core-only install too (ISO without pycdlib).
     availability = format_availability(fmt)
     if availability.support is FormatSupport.NONE:
         pytest.skip(f"{fmt.display_name} has no usable backend here")
@@ -63,7 +69,6 @@ def _skip_unless_registered(fmt: ArchiveFormat) -> None:
 def test_seek_only_format_never_proposes_streaming(
     fmt: ArchiveFormat, streaming: bool
 ) -> None:
-    _skip_unless_registered(fmt)
     with pytest.raises(StreamNotSeekableError) as excinfo:
         open_archive(NonSeekableBytesIO(b""), format=fmt, streaming=streaming)
 
@@ -79,7 +84,6 @@ def test_seek_only_format_never_proposes_streaming(
 @pytest.mark.parametrize("fmt", _NEEDS_SEEK, ids=lambda f: f.display_name)
 def test_seek_only_format_refuses_both_modes_alike(fmt: ArchiveFormat) -> None:
     """Same source, either mode, same answer — the mode was never the problem."""
-    _skip_unless_registered(fmt)
     messages = set()
     for streaming in (False, True):
         with pytest.raises(StreamNotSeekableError) as excinfo:
@@ -96,3 +100,36 @@ def test_forward_only_format_still_proposes_streaming(fmt: ArchiveFormat) -> Non
 
     assert "streaming=True" in str(excinfo.value)
     assert excinfo.value.source_format is fmt
+
+
+_PEDANTIC = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
+
+
+def test_seek_only_refusal_reports_an_unused_password_first() -> None:
+    """Both refusal halves emit the argument diagnostics before they refuse.
+
+    ISO carries no encryption, so ``password=`` is ``PASSWORD_ARGUMENT_UNUSED``, which
+    the pedantic preset raises. The capability refusal runs before the availability
+    check, and the diagnostic still comes first, with or without ``pycdlib``.
+    """
+    with pytest.raises(DiagnosticRaisedError) as excinfo:
+        open_archive(
+            NonSeekableBytesIO(b""),
+            format=ArchiveFormat.ISO,
+            password="x",
+            config=_PEDANTIC,
+        )
+    assert excinfo.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
+
+
+def test_mode_refusal_reports_an_unused_password_first() -> None:
+    """The mode half keeps the same order: the diagnostic, then the refusal."""
+    with pytest.raises(DiagnosticRaisedError) as excinfo:
+        open_archive(
+            NonSeekableBytesIO(b""),
+            format=ArchiveFormat.TAR,
+            streaming=False,
+            password="x",
+            config=_PEDANTIC,
+        )
+    assert excinfo.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED

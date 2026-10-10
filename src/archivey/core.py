@@ -5,8 +5,13 @@
 numbered-volume refuse (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``) then Info-ZIP
 ``.zNN`` (both skipped when ``format=`` is an explicit non-joinable format) →
 detect or accept format (a stub-only ``.exe`` / ``.sfx`` with no archive magic
-follows the split first volume beside it) → other multi-volume checks → backend
-capability gates (password / seekability) → normalize stream origin →
+follows the split first volume beside it) → other multi-volume checks → raw CD
+sector image refusal (ISO, seekable source) → recognised-only refusal (DMG) →
+read-once capability refusal (a non-seekable source for a format that needs seek in
+either mode; its ``password=`` / ``encoding=`` diagnostics are emitted first) →
+backend lookup and availability check (``PackageNotInstalledError``) →
+``password=`` / ``encoding=`` diagnostics → access-mode refusal (a non-seekable
+source with ``streaming=False``) → normalize stream origin →
 ``backend.open_read(...)``.
 """
 
@@ -97,6 +102,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.internal.base_reader import ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 __all__ = [
@@ -444,6 +450,62 @@ class _SourceSlot:
         return source
 
 
+def _note_unused_arguments(
+    backend_cls: type[ReadBackend],
+    resolved_format: ArchiveFormat,
+    *,
+    archive_name: str | None,
+    passwords: _PasswordCandidates,
+    encoding: str | None,
+    collector: DiagnosticCollector,
+) -> None:
+    """Emit the ``password=`` / ``encoding=`` hygiene diagnostics for ``backend_cls``.
+
+    Reads only class attributes, so it runs for a backend whose optional package is
+    missing too. Both access-mode refusals call it first, so a refused open reports the
+    same hygiene whichever half refuses it.
+    """
+    # `password=` and `encoding=` are *resources offered for use if needed*, not
+    # assertions about this archive, so a backend that cannot use one is a diagnostic
+    # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
+    # the assertion, and ``_open_resolved`` still refuses it for a directory path.
+    if passwords.has_concrete_passwords() and not backend_cls.SUPPORTS_PASSWORD:
+        # Every form opens alike: none is refused. Only a concrete value is recorded,
+        # because a provider callable offers a password only if asked, and a format
+        # with no encryption never asks. A caller (the CLI, a batch job) can then pass
+        # one provider everywhere without a warning on every TAR or gzip.
+        collector.emit(
+            code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
+            message=(
+                f"password= was supplied for {resolved_format.display_name}, which "
+                f"carries no encryption a password could unlock; it will not be used."
+            ),
+            context=UnusedArgumentContext(
+                archive_name=archive_name,
+                argument="password",
+                format=resolved_format.display_name,
+                reason="format carries no encryption",
+            ),
+        )
+
+    if encoding is not None and not backend_cls.USES_ENCODING:
+        # Only the caller's explicit encoding: an open that passed none asked for nothing.
+        collector.emit(
+            code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
+            message=(
+                f"encoding={encoding!r} was supplied for "
+                f"{resolved_format.display_name}, which decodes member names without "
+                f"it; the value will not be applied."
+            ),
+            context=UnusedArgumentContext(
+                archive_name=archive_name,
+                argument="encoding",
+                format=resolved_format.display_name,
+                reason="backend decodes member names without a caller-supplied encoding",
+            ),
+        )
+
+
 def _open_resolved(
     slot: _SourceSlot,
     resolved: ResolvedSource,
@@ -600,7 +662,22 @@ def _open_resolved(
     # a second refusal explaining the retry could never have worked. Ahead of the
     # availability check for the same reason: a piped ISO without pycdlib would
     # otherwise be told to install it, and only then that a pipe cannot be read.
+    #
+    # The argument-hygiene diagnostics still run first, as they do ahead of the mode
+    # half below: a refused open reports the same ``password=`` / ``encoding=``
+    # diagnostics whichever half refuses it. They read only class attributes, so they
+    # need no optional package.
     if source_is_read_once and registry.needs_seekable_source(resolved_format):
+        refused_cls = registry.registered_reader(resolved_format)
+        assert refused_cls is not None  # needs_seekable_source is False without one
+        _note_unused_arguments(
+            refused_cls,
+            resolved_format,
+            archive_name=archive_name,
+            passwords=passwords,
+            encoding=encoding,
+            collector=collector,
+        )
         raise StreamNotSeekableError(
             f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
             f"in either access mode (its index/metadata is not at the front of "
@@ -611,45 +688,15 @@ def _open_resolved(
 
     backend_cls = registry.reader_for_format(resolved_format)
 
-    # `password=` and `encoding=` are *resources offered for use if needed*, not
-    # assertions about this archive, so a backend that cannot use one is a diagnostic
-    # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
-    # the assertion, and it is still refused above for a directory path.
-    if passwords.has_concrete_passwords() and not backend_cls.SUPPORTS_PASSWORD:
-        # Every form opens alike: none is refused. Only a concrete value is recorded,
-        # because a provider callable offers a password only if asked, and a format
-        # with no encryption never asks. A caller (the CLI, a batch job) can then pass
-        # one provider everywhere without a warning on every TAR or gzip.
-        collector.emit(
-            code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
-            message=(
-                f"password= was supplied for {resolved_format.display_name}, which "
-                f"carries no encryption a password could unlock; it will not be used."
-            ),
-            context=UnusedArgumentContext(
-                archive_name=archive_name,
-                argument="password",
-                format=resolved_format.display_name,
-                reason="format carries no encryption",
-            ),
-        )
-
-    if encoding is not None and not backend_cls.USES_ENCODING:
-        # Only the caller's explicit encoding: an open that passed none asked for nothing.
-        collector.emit(
-            code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
-            message=(
-                f"encoding={encoding!r} was supplied for "
-                f"{resolved_format.display_name}, which decodes member names without "
-                f"it; the value will not be applied."
-            ),
-            context=UnusedArgumentContext(
-                archive_name=archive_name,
-                argument="encoding",
-                format=resolved_format.display_name,
-                reason="backend decodes member names without a caller-supplied encoding",
-            ),
-        )
+    # The capability half above emits these too, so either refusal half reports them.
+    _note_unused_arguments(
+        backend_cls,
+        resolved_format,
+        archive_name=archive_name,
+        passwords=passwords,
+        encoding=encoding,
+        collector=collector,
+    )
 
     # The mode half of the access-mode refusal; the capability half is above. This one
     # stays after the availability check: the format can be read from a pipe, so the
