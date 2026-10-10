@@ -415,8 +415,16 @@ and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are re
 stored, System Use areas included, not only the text kept. An image right at a cap can
 therefore be refused at open. Below the caps `pycdlib` still builds the whole tree, so
 memory at open stays linear in the records the budget allows: about 0.8 KB per plain
-record measured, so roughly 1 GiB at the default `max_members`. The UDF descriptors
-`pycdlib` also walks are not counted; archivey lists no UDF namespace.
+record measured, so roughly 1 GiB per tree at the default `max_members`. The UDF tree
+`pycdlib` also walks is counted as one more tree, though archivey lists no UDF
+namespace: each File Identifier but the parent entry is a member, and each File
+Identifier and each File Entry, with the extended attributes and allocation descriptors
+it declares, is weighed against `max_metadata_bytes`, the File Entry before `pycdlib`
+parses it. The budget is per tree, and `pycdlib` keeps every tree it walked, so the
+ceiling for one image is the sum: a PVD tree and a Joliet tree at about 1 GiB each,
+plus a UDF tree, where a name weighs at least about 220 bytes and was measured at about
+2.1 KB retained, so `max_metadata_bytes` (64 MiB) stops it near 300,000 names and
+0.6 GiB. That is about 2.6 GiB for an image that carries all three.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
@@ -722,16 +730,18 @@ writes itself) is exercised against mutated and coverage-guided input.
    group only.
 
 pycdlib loops forever when corrupt directory records form a back-edge, in any namespace
-`open_fp` walks. `internal/backends/iso_reader.py`
-`_install_pycdlib_directory_cycle_guard` installs a queue, confined to archivey's own
-`open_fp` call, that drops a directory extent already scheduled; valid trees never
-revisit one.
+`open_fp` walks, UDF included, where it also allocates on every pass. A UDF File
+Identifier naming an ancestor's ICB grew memory by about 65 MB a second under default
+limits. `internal/backends/iso_reader.py`
+`_install_pycdlib_directory_cycle_guard` installs a queue, confined to `pycdlib`'s
+namespace, that drops a directory extent or UDF File Entry already scheduled; valid
+trees never revisit one.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz is [after the first release](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet).
+Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
 
 ### Directory sources changed concurrently
 
