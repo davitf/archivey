@@ -31,6 +31,7 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_name,
 )
+from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.terminal import display_path
 
 if TYPE_CHECKING:
@@ -831,7 +832,9 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 to_read = min(n, available)
                 stream = self._ensure_current_stream()
                 self._seek_current_stream(stream)
-                chunk = stream.read(to_read)
+                # ``None`` is a non-blocking caller stream with nothing ready, not
+                # a volume that ended early: it raises ``BlockingIOError``.
+                chunk = read_blocking(stream, to_read)
                 if not chunk:
                     source = self._volume_items[self._vol_index]
                     archive_name = (

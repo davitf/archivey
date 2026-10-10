@@ -307,6 +307,9 @@ def open_archive(
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
     A non-seekable stream keeps the bytes detection peeked in a replay prefix that the
     backend's first reads drain, so detection never consumes bytes the backend needs.
+    A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
+    returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
+    error.
 
     A seekable stream source is taken to hold the archive **starting at its current
     position**: detection peeks from there and restores the position, and the opener
@@ -687,6 +690,10 @@ def open_stream(
     :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), or ``None`` to
     auto-detect. A container format (ZIP, TAR, …) is rejected — use
     :func:`open_archive` for those.
+
+    A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
+    returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
+    error.
     """
     import archivey.internal.backends  # noqa: F401
 

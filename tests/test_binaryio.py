@@ -193,16 +193,36 @@ def test_read_exact_zero_does_not_touch_the_stream() -> None:
     assert stream.calls == 0
 
 
-def test_read_exact_treats_none_as_eof() -> None:
-    """A non-blocking raw returns ``None``; the gather has always read that as EOF.
+def test_read_exact_refuses_none() -> None:
+    """A non-blocking raw returns ``None`` when nothing is ready; that is not EOF.
 
-    Scripted as None-then-data on purpose: a double that only ever returns ``None``
-    cannot tell "stopped at the falsy read" from "read again and got nothing", which
-    is the distinction this pins.
+    Scripted as None-then-data on purpose: the data was never ready when asked,
+    so a gather that returned ``b""`` here would end the stream early.
     """
     stream = _Scripted([None, b"hello"])
-    assert read_exact(stream, 10) == b""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        read_exact(stream, 10)
     assert stream.calls == 1
+
+
+def test_read_exact_refuses_none_after_a_short_chunk() -> None:
+    """``None`` on a follow-up read raises too; the short chunk is not returned."""
+    stream = _Scripted([b"ab", None, b"cd"])
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        read_exact(stream, 10)
+    assert stream.calls == 2
+
+
+def test_read_exact_refuses_an_over_read() -> None:
+    """More than ``n`` bytes is a broken stream; the excess cannot be given back."""
+    with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(4\\)"):
+        read_exact(_Scripted([b"abcdefghi"]), 4)
+
+
+def test_read_exact_refuses_an_over_read_after_a_short_chunk() -> None:
+    """The gathered total is checked too, not only the first read."""
+    with pytest.raises(ValueError, match="inner returned 13 bytes for read\\(6\\)"):
+        read_exact(_Scripted([b"abcd", b"EFGHIJKLM"]), 6)
 
 
 def test_read_exact_accepts_readablestream_protocol() -> None:
