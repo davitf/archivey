@@ -38,7 +38,7 @@ archives` to classify. These are headers that do not parse:
 | --- | --- |
 | Header block | A bad checksum; a number field that is neither octal nor base-256; a negative size |
 | PAX records | A record length that does not land on its newline |
-| Old GNU sparse | A bad number in an extension block |
+| Old GNU sparse | A map number, in the header or an extension block, that is neither octal nor base-256 or is past 2**63 - 1 |
 | Header chain | An extended header followed by a zero block or by a block that is not a header |
 
 The walk SHALL raise `TruncatedError` when the stream ends inside a header or a data
@@ -51,15 +51,22 @@ not a number.
 | --- | --- |
 | A rejected header after the first member | `CorruptionError` after the members before it, in both access modes |
 | A PAX header followed by the end-of-archive marker | `CorruptionError` after the members before it; never a clean end |
-| The stream ends right after a PAX header | `TruncatedError` |
+| The stream ends right after a PAX header or a GNU long-name header | `TruncatedError` |
 
 ### Requirement: Read GNU sparse maps
 
 Every sparse map SHALL be parsed during the header walk, a PAX 1.0 map from the first
 blocks of the member's data area, and SHALL be charged to the member's
-`max_metadata_bytes` budget, 24 bytes per entry, before its entries are kept. A map that
-does not parse SHALL raise `CorruptionError` during the listing, including a PAX 1.0
-number longer than 20 digits, which GNU tar refuses too.
+`max_metadata_bytes` budget, 24 bytes per entry, before its entries are kept. A PAX
+map (0.0, 0.1 or 1.0) that does not parse SHALL raise `CorruptionError` during the
+listing: a number that is not decimal or is past 2**63 - 1, a 0.0 record with more than
+one number, an odd count of 0.1 numbers, or a 1.0 number longer than 20 digits, which
+GNU tar refuses too. An old GNU map that does not parse is a header that does not
+parse (`Reject TAR headers that do not parse`).
+
+A PAX member whose `GNU.sparse.major` is 1 or more SHALL be read as 1.0, whatever its
+minor version, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
+a number, with no 0.x map SHALL raise `CorruptionError`, never serve the map as content.
 
 Opening a sparse member SHALL raise `CorruptionError` when its map has a negative entry,
 a chunk that ends past the logical size, or chunks that do not add up to exactly the
@@ -74,6 +81,10 @@ order or overlapping.
 | A sparse map out of order or overlapping | `UnsupportedFeatureError` on open |
 | A sparse map whose chunks name 1 to 511 bytes fewer than the member stores | `CorruptionError` on open |
 | A PAX 1.0 map that does not parse | `CorruptionError` during the listing |
+| A PAX 0.1 map holding a number past 2**63 - 1 | `CorruptionError` during the listing |
+| An old GNU extension block with a number that does not parse | The walk stops on a rejected header, as `Detect truncated TAR archives` classifies it |
+| `GNU.sparse.major=2`, `GNU.sparse.minor=0` with a 1.0 map | Read as 1.0 |
+| `GNU.sparse.major=0` with no 0.x map | `CorruptionError` during the listing |
 | A PAX 1.0 map of more entries than the budget allows | `ResourceLimitError` during the listing, before the entries are read |
 
 ## RENAMED Requirements
@@ -153,6 +164,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number is ignored) |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from the PAX `linkpath`, else the GNU long link name, else the header's `linkname` |
+| old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
 | `raw_name` | The stored bytes of whatever supplied the name: the PAX `GNU.sparse.name` or `path` record, else the GNU long name, else the header's `name` (with the `prefix` field joined, under the ustar magic only). Never `None` |
 
 If the header's `mtime` cannot be represented as a Python `datetime`, `modified`
@@ -175,6 +187,7 @@ in every format; the record name appears only in the message.
 | PAX `LIBARCHIVE.creationtime` present (bsdtar, where the OS has a birth time) | `created` is timezone-aware UTC |
 | Neither PAX record | `created is None` and `ctime is None` |
 | `LNKTYPE` entry | `member.type=MemberType.HARDLINK`; `member.link_target=linkname` |
+| `AREGTYPE` entry `d/` with 15 bytes of data, then a file | `d/` is a `DIRECTORY`; the file after it lists and reads, in both access modes. The same holds when the slash comes from a PAX `path` or a GNU long name |
 | PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | PAX `path` holding the non-UTF-8 bytes `caf\xe9.txt`, `encoding="latin-1"` | `raw_name == b"caf\xe9.txt"` |
@@ -336,6 +349,7 @@ diagnostic policy, in both random-access and streaming modes.
 | Zero block, then a non-null block, after at least one member | both | `nonzero` (`expected_marker="second_zero_block"`) | `ARCHIVE_EOF_MARKER_MISSING`; every member listed and read; `extract_all` writes every member; trailing scan runs past the block | `DiagnosticRaisedError` after delivery |
 | Zero block, then a non-null block, no member | both | `nonzero` | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Truncation inside member data / partial header | both | — | `TruncatedError` during iteration | `TruncatedError` during iteration |
+| A size field puts the next header past the largest file the filesystem holds (base-256 size of 2**62): ext4 refuses the seek, APFS and a `BytesIO` take it | both | — | `TruncatedError` during iteration, from every source on every OS | `TruncatedError` during iteration |
 | Corruption during `extract_all` | both | `nonzero` | Salvageable members written, then `CorruptionError` | same |
 | Diagnostic code resolves to `IGNORE`, rejected header | both | `nonzero` | Count increments without delivery; `CorruptionError` raises | same |
 | Diagnostic code resolves to `IGNORE`, `absent`/`short` | both | `absent`/`short` | Count increments without delivery; no error | — |

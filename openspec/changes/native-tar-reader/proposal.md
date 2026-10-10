@@ -22,8 +22,8 @@ The cost is not only lines:
   upstream changed the private functions we hook. Upstream is still changing them.
 
 TAR is the simplest format archivey reads. The case does not rest on line count: the
-backend ends up about the same size (about 2 100 lines against 1 789 on `main`, and
-about 2 140 once the open fix PRs merge; `design.md` §"Module layout"). What goes is the
+backend ends up about the same size (about 2 220 lines against 1 917 on `main` on
+2026-10-10, and about 2 140 once PRs 704 and 716 merge; `design.md` §"Module layout"). What goes is the
 workaround layer: the 20 sites, the 7 private-API hooks, the hash-pinned stdlib copies
 and the ~350 lines the open PRs add. The maintainer moved it into 0.2.0 on 2026-10-10.
 

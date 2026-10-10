@@ -34,12 +34,13 @@ Non-goals (each is a separate, later change):
 
 | Module | Contents | Size |
 | --- | --- | --- |
-| `internal/backends/tar_parser.py` (new) | Header block decode, number fields, checksum, PAX records, GNU sparse maps (all four encodings), the old-style directory rule, and `TarWalker`, the loop over one byte stream. No archivey reader types | 1 022 (stage 2, measured) |
-| `internal/streams/streamtools/sparse.py` (new) | `SparseStream`: a member's logical bytes over its stored bytes, holes as zeros | 132 (stage 3, measured) |
-| `internal/backends/tar_reader.py` (rewritten) | `TarReader` (the `BaseArchiveReader` hooks), EOF and trailing-data policy, metadata mapping | ~950 (estimate), from 1 789 |
+| `internal/backends/tar_parser.py` (new) | Header block decode, number fields, checksum, PAX records, GNU sparse maps (all four encodings), the old-style directory rule, and `TarWalker`, the loop over one byte stream. No archivey reader types | 1 125 (PR 738 at `707d506`) |
+| `internal/streams/streamtools/sparse.py` (new) | `SparseStream`: a member's logical bytes over its stored bytes, holes as zeros | 141 (PR 739 at `5e2f441`) |
+| `internal/backends/tar_reader.py` (rewritten) | `TarReader` (the `BaseArchiveReader` hooks), EOF and trailing-data policy, metadata mapping | ~950 (estimate), from 1 917 |
 
-The total is about 2 100 lines against 1 789 on `main` today, and about 2 140 once the
-open TAR fix PRs merge: about flat, not smaller. What goes is the workaround layer: the
+Sizes as of 2026-10-10. The total is about 2 220 lines against 1 917 on `main` at
+`e670df1` (PR 706 merged), and about 2 140 once PRs 704 and 716 merge: about flat, not
+smaller. What goes is the workaround layer: the
 20 sites in the inventory, the 7 hooks on private tarfile API, the two stdlib function
 bodies PR 704 copies under source-hash pins, and the ~350 lines the open PRs add.
 
@@ -135,8 +136,7 @@ and the spec delta lists it.
 716 checks today, now against exact sizes: entries non-negative, in order and not
 overlapping (an out-of-order or overlapping map stays `UnsupportedFeatureError`: such
 maps are crafted only, and tarfile's reading of them is wrong bytes), every chunk inside
-`realsize`, and the chunks summing to exactly the stored size (minus the 1.0 map's own
-blocks). The last check is what closes the 511-byte padding gap: tarfile overwrites
+`realsize`, and the chunks summing to exactly the stored size. The last check is what closes the 511-byte padding gap: tarfile overwrites
 `size` and leaves only the block-rounded end, so PR 716 can refuse only a shortfall of
 512 bytes or more. A shortfall of 1 to 511 bytes is now refused too (DR-3: bytes inside
 a member that nothing names).
@@ -165,7 +165,9 @@ member is dropped before it is stored (today's `_drop_unweighed_link_name`, now
 structural).
 
 `TarEntry` is what `ArchiveMember._raw` holds: the decoded `HeaderBlock` fields, the
-header offset, `data_offset`, `stored_size` (exact), `size` (logical), the raw name and
+header offset, `data_offset`, `stored_size` (exact, and for a sparse member the chunks
+alone: a 1.0 map's blocks and old GNU extension blocks come before `data_offset`),
+`size` (logical), the raw name and
 link bytes with their source (`ustar`, `gnu_long`, `pax`) and that block's
 `hdrcharset`, the member's own PAX records, a reference to the global records in force,
 and the sparse map or the 1.0 marker.
@@ -198,7 +200,9 @@ One loop, no recursion. `next_entry(budget) -> TarEntry | TarEnd`.
 Which types have a data area follows `tarfile`, so no listing changes: links, devices,
 FIFOs and directories (`1` to `6`) have none, and data declared on them is read as the
 next header. GNU tar does the same for a directory and fails with "Skipping to next
-header" on the others, which is the `CorruptionError` archivey gives today. Every other
+header" on the others, which is the `CorruptionError` archivey gives today. So a
+`DIRTYPE` header that declares a size keeps PR 706's answer: its data is read as the next
+header, which does not parse, and the listing raises `CorruptionError`. Every other
 typeflag, known or not, has its data skipped by size.
 
 On a seekable stream the walker checks that the last byte of the previous member's data
@@ -296,12 +300,12 @@ cleanly and fail only when opened (today it fails the listing, through
 ## Errors
 
 The parser and walker raise archivey types directly, with the member offset in the
-message: `CorruptionError` (a sparse map that does not parse, a PAX `size` that is not
-a number), `TruncatedError` (short read inside a header or data area),
+message: `CorruptionError` (a PAX sparse map that does not parse, a sparse version
+with no map, a PAX `size` that is not a number), `TruncatedError` (short read inside a header or data area),
 `ResourceLimitError` (budget), `UnsupportedFeatureError` (out-of-order or overlapping
 sparse map). Damage that tarfile reports as an invalid header (a block that is no
 header, PAX records that do not parse, an extended header with no member header after
-it) is a rejected `TarEnd`, not an exception, so the reader's EOF policy decides it as
+it, an old GNU sparse map number that does not parse) is a rejected `TarEnd`, not an exception, so the reader's EOF policy decides it as
 today. That deletes `_translate_exception`, `_translate_open_error`,
 `_raised_by_tarfile` and `_passes_through_tarfile`, and with them the traceback-frame
 inspection and the matching of tarfile's message text. An `OSError` from the source
@@ -358,6 +362,7 @@ All of these are fixes; none changes a public name or signature.
 | `raw_name` is the stored bytes in every case, including a block that repeats a global `hdrcharset=BINARY` and a PAX `path` that is not UTF-8 read with `encoding=` (today the UTF-8 re-encoding of `tarfile`'s fallback decode) | DR-1; removes a test-pinned exception |
 | A member that inherits a global `hdrcharset=BINARY` is decoded as one that declares it: its PAX values follow the ustar rule. `name` is unchanged in every case checked on `main` (UTF-8 and Latin-1 bytes, with and without `encoding="latin-1"`), and a valid-UTF-8 value under `encoding=` now emits `MEMBER_NAME_ENCODING_INFERRED`, as it does under the member's own `BINARY` | POSIX scopes `hdrcharset` this way; DR-7 and the valid-UTF-8-wins ruling (2026-10-07) for a field that declares no encoding |
 | A v7 or old GNU header with bytes at 345 to 500 no longer joins them to the name as a `prefix`: a GNU incremental archive (`tar -G`) lists `d/f.txt`, not `15262452373/d/f.txt` | DR-6: GNU tar reads `prefix` only in ustar headers |
+| The stream ending right after an extended header (PAX `x` or `g`, GNU `L` or `K`) raises `TruncatedError`; today it is `CorruptionError` ("empty header", from tarfile parsing the next header inside the extended one) | DR-5: the same error every other mid-walk stream end gives |
 | The member list is the same on every Python 3.11 to 3.15 patch release | DR-5 |
 | A streaming pass holds one list of members, not two | DR-9a; removes a sharp-edges row and threat-model O1's TAR note |
 | Error messages name offsets and fields, not tarfile's wording | Message text is not contract |
