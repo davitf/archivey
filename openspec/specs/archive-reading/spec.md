@@ -500,7 +500,7 @@ escape hatch there.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records and path tables it parses against `max_metadata_bytes` and its count of path-table entries against `max_members` (more than `max_members + 1` entries; each is a directory, a member anyway), which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records and path tables it parses against `max_metadata_bytes` and its count of path-table entries against `max_members` (more than `max_members + 1` entries; each is a directory, a member anyway), which also raise there, and a TAR member whose extended headers and sparse map together weigh more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -538,13 +538,22 @@ from the running total above; the decoded comments are weighed again at registra
 
 A TAR sparse member's map is retained on `_raw` (the member's data is read through it),
 and the archive sizes it: a few kilobytes of compressed PAX sparse 1.0 map hold millions
-of entries. It SHALL be weighed at registration, 24 bytes per entry.
+of entries. It SHALL be weighed at registration, 24 bytes per entry. The parser builds
+the whole map before the member can be registered, so the map SHALL also be weighed
+while it is parsed, from its entry count (a PAX sparse 1.0 map's count line, a 0.1
+map's commas, a 0.0 map's offset records) before its entries are parsed, or as each
+old GNU extension block adds entries: a map weighing more than its member has left
+SHALL raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 A TAR extended header (PAX `x` / `g`, GNU long name or link name) is read whole by the
 parser before any member is registered, so its declared size SHALL be weighed first: one
 that declares more than is left of `max_metadata_bytes` in an enforcing listing, or more
 than the whole cap in any walk (`stream_members()` and `streaming=True` included), SHALL
-raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data.
+raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data. The
+headers ahead of one member form a chain the parser holds whole until the member is
+built, so each header of the chain, and the member's sparse map, SHALL be weighed
+against what the headers before it in the chain left, not against the member's whole
+share.
 
 #### Scenario: metadata accounting matrix
 
@@ -558,6 +567,8 @@ raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data.
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR compressed old-style comments whose declared sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
+| TAR chain of extended headers ahead of one member, each under the cap, together over it | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
+| TAR sparse map whose entries weigh more than the member has left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before its entries are parsed |
 
 ### Requirement: Name lookup and member identity
 

@@ -514,7 +514,9 @@ class MemberExtra(dict[str, object]):
     * ``zip.aes_strength`` (``int``)
     * ``zip.aes_actual_method`` (``int``)
     * ``tar.type`` (``bytes``)
-    * ``tar.pax_headers`` (``dict[str, str]``)
+    * ``tar.pax_headers`` (``dict[str, str]``) — the member's PAX records, the
+      global ones in force included. Members with no records of their own share one
+      dict per set of global records, so treat it as read-only.
     * ``tar.devmajor`` (``int``)
     * ``tar.devminor`` (``int``)
     * ``gzip.original_filename`` (``str``)

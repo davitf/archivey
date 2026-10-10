@@ -59,6 +59,7 @@ rules:
 | `uname`, `gname`, `uid`, `gid` | Directly from `TarInfo` |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from `linkname` |
+| `extra["tar.pax_headers"]` | The member's PAX records, the global (`g`) records in force included. Members with no records of their own share one dict per set of global records: one copy per member cost the global records again for every 512-byte member header. A member with records of its own gets its own dict |
 | `raw_name` | The stored name bytes: a PAX `path` record as UTF-8 (the codec tarfile decoded it with; under `hdrcharset=BINARY`, or when the name holds surrogateescape bytes from tarfile's fallback decode, the archive `encoding`); a ustar or GNU long name with the archive `encoding`. `None` when no codec reproduces the name — never an exception out of the listing |
 
 If `TarInfo.mtime` cannot be represented as a Python `datetime`, `modified`
@@ -86,6 +87,8 @@ in every format; the record name appears only in the message.
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
 | PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the member attribute it would have filled |
 | PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
+| PAX global header, then members with no records of their own | Each member's `extra["tar.pax_headers"]` holds the global records; they share one dict, and a later global header does not change it |
+| PAX sparse 1.0 map holding a number longer than 20 digits | `CorruptionError` while the header is parsed. GNU tar reads each number into a 20-digit buffer and refuses a longer one; this structural bound keeps a number with no newline from growing one buffer for the rest of the archive |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 
 ### Requirement: Extract TAR hardlinks with a pull-based coordinator

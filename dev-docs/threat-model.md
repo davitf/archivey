@@ -366,10 +366,15 @@ archive declares.
   name or link name, whole in one call, so the walk refuses such a header from its
   declared size before that read: in random access when it declares more than is left
   of `max_metadata_bytes`, and in any mode, streaming included, when it declares more
-  than the whole cap. An over-limit tar then costs about the cap plus one ordinary
-  header. A sparse map is weighed only once parsed (24 bytes per entry), so an old GNU
-  sparse member's chain of extension blocks, or a PAX sparse 1.0 map, is held whole for
-  the one member that crosses the cap.
+  than the whole cap. The headers ahead of one member are one chain, which `tarfile`
+  holds whole until the member is built, so each draws from what the ones before it
+  left. A sparse map (24 bytes per entry) is weighed from its entry count before its
+  entries are parsed, or block by block for an old GNU map's extension blocks, against
+  the same budget (`_TarInfo._proc_gnusparse_*`, `_proc_sparse`). An over-limit tar then
+  costs about the cap plus one ordinary header. The PAX global records are held once per
+  global header, not once per member: members with none of their own share one copy
+  (`_TarFile.global_records`). Each member is still charged for them, so the cap counts
+  them as if copied.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An
@@ -429,6 +434,7 @@ record measured, so roughly 1 GiB at the default `max_members`. The UDF descript
 `tests/test_rar_reader.py::test_rar_parser_max_members_at_parse`,
 `::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`,
 `::test_rar5_qo_non_file_records_parse_in_linear_time`; `tests/test_link_target_cap.py`;
+`tests/test_tar_header_memory.py`;
 `tests/test_iso.py::test_listing_limits_count_records_as_pycdlib_parses_them`,
 `::test_listing_limits_count_directory_record_bytes_at_open`;
 `tests/test_audit2_iso_dir_detect.py::test_iso_listing_limits_bound_the_memory_spent_at_open`,
