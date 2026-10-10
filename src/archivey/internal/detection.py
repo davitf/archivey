@@ -26,7 +26,10 @@ them again.
 Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
 at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
 header before decoding). Each probe is a function the backends declare as data — for the
-stream codecs, on the codec descriptor — so the detector stays format-agnostic.
+stream codecs, on the codec descriptor — so the detector stays format-agnostic. Unless
+``ArchiveyConfig.always_probe_content`` is set (``open_stream`` sets it), only the probe of
+a format the source's extension names runs: on a nameless source a probe would be the only
+evidence, and real binary files pass them.
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
 magic → content probes → extension. Both signals ahead of the probes are there for the
@@ -429,6 +432,23 @@ def _probe_completes(
     return probe(whole, source_length=length, read_at=read_at)
 
 
+# Short aliases that name a probe-only codec besides the one the extension map gives.
+# ``.tlz`` maps to TAR x LZIP, but lzma-utils wrote ``.tlz`` for TAR x LZMA Alone before
+# lzip took the name; lzip has exact magic, so only the Alone reading needs a probe.
+_ALSO_NAMES_STREAM: dict[str, StreamFormat] = {".tlz": StreamFormat.LZMA_ALONE}
+
+
+def _streams_named_by(
+    ext_match: tuple[ArchiveFormat, str] | None,
+) -> frozenset[StreamFormat]:
+    """The stream formats whose content probe the source's extension allows."""
+    if ext_match is None:
+        return frozenset()
+    fmt, ext = ext_match
+    also = _ALSO_NAMES_STREAM.get(ext)
+    return frozenset({fmt.stream} if also is None else {fmt.stream, also})
+
+
 def _brotli_probe_confidence(
     prefix: bytes,
     ext_match: tuple[ArchiveFormat, str] | None,
@@ -641,7 +661,8 @@ def _scan_for_sfx_payload(
 
 
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
-    """The library default config carrying only ``config``'s detection budget.
+    """The library default config carrying only ``config``'s detection settings
+    (``detection_budget`` and ``always_probe_content``).
 
     For a detection whose result is internal (a stub check, the rescan that words an
     empty-listing advisory): it spends what the caller allowed, but its diagnostics
@@ -650,12 +671,16 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     deliver a discarded probe's findings as the reader's, and a ``strict()`` policy
     would raise inside the probe.
     """
-    if (
-        config is None
-        or config.detection_budget is DEFAULT_ARCHIVEY_CONFIG.detection_budget
+    if config is None or (
+        config.detection_budget is DEFAULT_ARCHIVEY_CONFIG.detection_budget
+        and config.always_probe_content == DEFAULT_ARCHIVEY_CONFIG.always_probe_content
     ):
         return DEFAULT_ARCHIVEY_CONFIG
-    return replace(DEFAULT_ARCHIVEY_CONFIG, detection_budget=config.detection_budget)
+    return replace(
+        DEFAULT_ARCHIVEY_CONFIG,
+        detection_budget=config.detection_budget,
+        always_probe_content=config.always_probe_content,
+    )
 
 
 def directory_format_info() -> FormatInfo:
@@ -689,6 +714,11 @@ def detect_format(
     What detection may read and decode is ``config.detection_budget``
     (:attr:`ArchiveyConfig.detection_budget`), ``BALANCED`` by default — the same
     budget :func:`~archivey.open_archive` detects under for that config.
+
+    LZMA Alone, zlib and Brotli have no magic. Their content probes run only when the
+    source's name ends in that format's extension, unless
+    :attr:`ArchiveyConfig.always_probe_content` is set; a nameless raw stream of these
+    formats raises :class:`FormatDetectionError`.
 
     A stub-only ``.exe`` / ``.sfx`` (no archive magic) beside a 7-Zip split first
     volume is detected as that volume's format when ``follow_stub_volumes`` is true
@@ -740,18 +770,23 @@ def detect_format_into(
         detection_wm = collector.watermark()
 
     resolved_budget = effective_config.detection_budget
+    always_probe = effective_config.always_probe_content
     # One receipt across both passes: the stub pass is usually the expensive one (a
     # strong executable cue runs the full SFX scan), so the sibling-volume answer
     # carries its cost and its skips too. ``passes`` says there were two.
     receipt = MutableDetectionCostReceipt()
     try:
-        info = _detect_format_body(source, collector, resolved_budget, receipt)
+        info = _detect_format_body(
+            source, collector, resolved_budget, receipt, always_probe=always_probe
+        )
     except FormatDetectionError:
         alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
         if alt is None:
             raise
         receipt.passes += 1
-        info = _detect_format_body(alt, collector, resolved_budget, receipt)
+        info = _detect_format_body(
+            alt, collector, resolved_budget, receipt, always_probe=always_probe
+        )
     diagnostics = (
         collector.snapshot()
         if owned_collector
@@ -789,6 +824,8 @@ def _detect_format_body(
     collector: DiagnosticCollector,
     budget: DetectionBudget,
     receipt: MutableDetectionCostReceipt | None = None,
+    *,
+    always_probe: bool = False,
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
@@ -921,13 +958,24 @@ def _detect_format_body(
                 _ConflictEvidence.MAGIC,
             )
 
-        # 5. Content probes.
+        # 5. Content probes. Unless the config asks for all of them, only the probe of
+        # the format the extension names runs: a probe is the weakest evidence, and on
+        # an unnamed source it is the only evidence. With a matching extension the probe
+        # can only confirm what the name already claims.
+        probes = registry.content_probes()
+        if not always_probe:
+            named = _streams_named_by(ext_match)
+            probes = [(f, p) for f, p in probes if f.stream in named]
+            if not probes:
+                workspace.record_skip(
+                    "content_probe", TierSkipReason.NOT_ENABLED_BY_POLICY
+                )
         if cue is not ExecutableCue.STRONG:
 
             def read_at(offset: int, n: int) -> bytes | None:
                 return workspace.read_at(offset, n)
 
-            for probe_fmt, probe in registry.content_probes():
+            for probe_fmt, probe in probes:
                 if not _decode_allowance_covers(workspace, len(data), "content_probe"):
                     break
                 # Charged at the sample the probe was handed, whether it decodes all of
@@ -968,8 +1016,15 @@ def _detect_format_body(
                 "source is empty, or already positioned at its end).",
                 archive_name=name,
             )
-        raise FormatDetectionError(
+        message = (
             "Could not detect archive format: no magic bytes, content probe or file "
-            "extension matched.",
-            archive_name=name,
+            "extension matched."
         )
+        if not always_probe:
+            message = (
+                "Could not detect archive format: no magic bytes or file extension "
+                "matched. A raw LZMA Alone, zlib or Brotli stream has no magic and is "
+                "only recognised by its extension; pass format=, use open_stream(), "
+                "or set ArchiveyConfig(always_probe_content=True)."
+            )
+        raise FormatDetectionError(message, archive_name=name)

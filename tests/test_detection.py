@@ -25,6 +25,11 @@ from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
 
+# LZMA Alone, zlib and Brotli are recognised only by a content probe, and by default a
+# probe runs only when the source's name carries that format's extension. Tests of the
+# probes themselves (nameless BytesIO, or a name that points elsewhere) turn them all on.
+ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
+
 
 def _zip_bytes() -> bytes:
     buf = io.BytesIO()
@@ -275,7 +280,7 @@ def test_brotli_detected_by_content_probe() -> None:
     import brotli
 
     data = brotli.compress(b"some brotli payload to decode")
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.BROTLI
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
@@ -299,7 +304,7 @@ def test_brotli_probe_skipped_when_backend_missing(
 
 def test_zlib_weak_magic_confirmed_by_content_probe() -> None:
     data = zlib.compress(b"zlib payload")
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
     # The weak 2-byte header is confirmed by a content probe -> PROBABLE / content_probe.
     assert info.confidence == DetectionConfidence.PROBABLE
@@ -311,7 +316,7 @@ def test_zlib_probe_wins_over_misleading_extension(tmp_path: Path) -> None:
     # extension does not override it.
     path = tmp_path / "thing.xz"
     path.write_bytes(zlib.compress(b"payload"))
-    info = detect_format(path)
+    info = detect_format(path, config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
     assert info.detected_by == "content_probe"
 
@@ -330,7 +335,7 @@ def test_lzma_alone_detected_by_content_probe() -> None:
     import lzma
 
     data = lzma.compress(b"lzma alone payload " * 20, format=lzma.FORMAT_ALONE)
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
@@ -346,7 +351,7 @@ def test_lzma_alone_probe_does_not_claim_lzip() -> None:
 
 def test_lzma_alone_probe_does_not_steal_zlib() -> None:
     data = zlib.compress(b"zlib payload that must stay zlib")
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
 
 
@@ -444,7 +449,7 @@ def test_inner_tar_over_lzma_alone_is_tar_lzma() -> None:
     from archivey.types import ContainerFormat, StreamFormat
 
     data = lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE)
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
 
 
@@ -468,7 +473,7 @@ def test_tlz_alone_content_wins_with_extension_conflict(tmp_path: Path) -> None:
 
     path = tmp_path / "compat_lzma.tlz"
     path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
-    info = detect_format(path)
+    info = detect_format(path, config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
     assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
 
@@ -698,7 +703,7 @@ def test_zlib_detected_at_every_legal_window_size(wbits: int) -> None:
     # Six of the seven windows were missed by the four-entry header allow-list.
     compressor = zlib.compressobj(6, zlib.DEFLATED, wbits)
     data = compressor.compress(b"zlib payload " * 100) + compressor.flush()
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
     assert info.detected_by == "content_probe"
 
@@ -761,7 +766,7 @@ def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> Non
     known = bytearray(lzma.compress(payload, format=lzma.FORMAT_ALONE))
     known[5:13] = len(payload).to_bytes(8, "little")
     assert lzma.decompress(bytes(known), format=lzma.FORMAT_ALONE) == payload
-    info = detect_format(io.BytesIO(bytes(known)))
+    info = detect_format(io.BytesIO(bytes(known)), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
 
@@ -798,7 +803,7 @@ def test_lzma_alone_with_zero_dictionary_size_is_detected() -> None:
     data[1:5] = b"\x00\x00\x00\x00"
     payload = bytes(data)
     assert lzma.decompress(payload, format=lzma.FORMAT_ALONE)  # the decoder accepts it
-    info = detect_format(io.BytesIO(payload))
+    info = detect_format(io.BytesIO(payload), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
 
@@ -947,11 +952,11 @@ def test_unknown_length_short_source_falls_through_to_the_extension(
 # so the wording cannot drift back to a single hardcoded claim.
 
 
-def _conflict_message(path: Path) -> str:
+def _conflict_message(path: Path, config: ArchiveyConfig | None = None) -> str:
     """The one ``FORMAT_EXTENSION_CONFLICT`` message ``detect_format`` emitted."""
     from archivey.diagnostics import DiagnosticCode
 
-    info = detect_format(path)
+    info = detect_format(path, config=config)
     messages = [
         d.message
         for d in info.diagnostics.retained
@@ -990,7 +995,7 @@ def test_content_probe_conflict_names_the_probe_not_magic(tmp_path: Path) -> Non
     # one a reader deciding whether to believe us is most entitled to doubt.
     path = tmp_path / "compat_lzma.tlz"  # the extension says TAR_LZIP
     path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
-    message = _conflict_message(path)
+    message = _conflict_message(path, ALWAYS_PROBE)
     _assert_names_only(message, "content inspection indicates")
     # Stricter than the shared check on this branch alone: the word itself is the lie.
     assert "magic" not in message
@@ -1363,7 +1368,9 @@ def test_content_probes_share_one_decode_allowance() -> None:
         receipt = MutableDetectionCostReceipt()
         collector = collector_from_config(DEFAULT_ARCHIVEY_CONFIG)
         try:
-            info = _detect_format_body(io.BytesIO(data), collector, budget, receipt)
+            info = _detect_format_body(
+                io.BytesIO(data), collector, budget, receipt, always_probe=True
+            )
         except FormatDetectionError:
             info = None
         return info, receipt

@@ -6,6 +6,9 @@ built from the structure that the real files shared, never from their content.
 
 Each test asserts the behaviour a fix should give and is marked ``xfail(strict=True)``
 while the defect stands; the ``reason`` names it. Remove the marker when the fix lands.
+
+The probe reproducers pass ``always_probe_content=True``: by default a nameless source
+runs no content probe, so the defect is only reachable with every probe on.
 """
 
 from __future__ import annotations
@@ -14,12 +17,15 @@ import io
 import lzma
 import struct
 import zlib
+from collections.abc import Callable
 
 import pytest
 
 import archivey
-from archivey import FormatDetectionError
+from archivey import ArchiveyConfig, FormatDetectionError
 from tests.conftest import requires
+
+ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 # --- LZMA Alone: zero runs decode as an endless stream of zero literals. -------------
 #
@@ -52,6 +58,25 @@ def _id3v23_mp3_with_padding() -> bytes:
 _OLE_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 
 
+def _ole_magic_then_zeros() -> bytes:
+    """The OLE compound file magic, then a zero run.
+
+    0xD0 is legal Alone properties (lc=1, lp=3, pb=4). OLE files (.doc, .xls, .msi,
+    Thumbs.db) are sector-aligned and often hold long zero runs early on.
+    """
+    return _OLE_MAGIC + b"\0" * 4088
+
+
+def _ole_header_then_zeros() -> bytes:
+    """The first 32 bytes every version-3 compound file starts with, then zeros.
+
+    Magic, a zero CLSID, minor version 0x3E, major version 3, byte-order mark 0xFFFE,
+    sector shift 9.
+    """
+    header = _OLE_MAGIC + b"\0" * 16 + struct.pack("<HHHH", 0x3E, 3, 0xFFFE, 9)
+    return header + b"\0" * (256 * 1024 - len(header))
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(
@@ -61,7 +86,9 @@ _OLE_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 )
 def test_id3_tagged_mp3_is_not_lzma_alone() -> None:
     with pytest.raises(FormatDetectionError):
-        archivey.detect_format(io.BytesIO(_id3v23_mp3_with_padding()))
+        archivey.detect_format(
+            io.BytesIO(_id3v23_mp3_with_padding()), config=ALWAYS_PROBE
+        )
 
 
 @pytest.mark.xfail(
@@ -72,11 +99,8 @@ def test_id3_tagged_mp3_is_not_lzma_alone() -> None:
     ),
 )
 def test_ole_magic_then_zeros_is_not_lzma_alone() -> None:
-    # 0xD0 is legal Alone properties (lc=1, lp=3, pb=4). OLE files (.doc, .xls, .msi,
-    # Thumbs.db) are sector-aligned and often hold long zero runs early on.
-    data = _OLE_MAGIC + b"\0" * 4088
     with pytest.raises(FormatDetectionError):
-        archivey.detect_format(io.BytesIO(data))
+        archivey.detect_format(io.BytesIO(_ole_magic_then_zeros()), config=ALWAYS_PROBE)
 
 
 def test_zero_run_after_an_alone_header_decodes_without_error() -> None:
@@ -101,12 +125,24 @@ def test_zero_run_after_an_alone_header_decodes_without_error() -> None:
     ),
 )
 def test_ole_header_then_zeros_is_not_brotli() -> None:
-    # The first 32 bytes every version-3 compound file starts with: magic, a zero CLSID,
-    # minor version 0x3E, major version 3, byte-order mark 0xFFFE, sector shift 9.
-    header = _OLE_MAGIC + b"\0" * 16 + struct.pack("<HHHH", 0x3E, 3, 0xFFFE, 9)
-    data = header + b"\0" * (256 * 1024 - len(header))
     with pytest.raises(FormatDetectionError):
-        archivey.detect_format(io.BytesIO(data))
+        archivey.detect_format(
+            io.BytesIO(_ole_header_then_zeros()), config=ALWAYS_PROBE
+        )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [_id3v23_mp3_with_padding, _ole_magic_then_zeros, _ole_header_then_zeros],
+    ids=["id3-mp3", "ole-magic-zeros", "ole-header-zeros"],
+)
+def test_default_config_runs_no_probe_on_a_nameless_source(
+    build: Callable[[], bytes],
+) -> None:
+    # The three false positives above, with the default config: a nameless source runs
+    # no content probe, so nothing claims them.
+    with pytest.raises(FormatDetectionError):
+        archivey.detect_format(io.BytesIO(build()))
 
 
 # --- ZIP: the central directory and the local header disagree. ---------------------

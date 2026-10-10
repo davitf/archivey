@@ -148,7 +148,13 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   lives inside a member header, so an empty one has nothing to match and reaches the TAR
   reader only by file extension or an explicit `format=`.
   → [Errors and diagnostics](errors-and-diagnostics.md)
-- **Brotli without a `.br` name is identified by a content probe.** When the source
+- **A raw LZMA Alone, zlib or Brotli stream needs its extension.** With no name, or a
+  name for another format, `open_archive` and `detect_format` do not try these formats
+  and raise `FormatDetectionError`. Pass `format=`, use `open_stream()`, or set
+  `ArchiveyConfig(always_probe_content=True)`.
+  → [Formats — Detection](formats.md#detection)
+- **With `always_probe_content=True`, Brotli without a `.br` name is identified by a
+  content probe.** When the source
   length is known, a framing check rejects declared lengths that cannot fit; on a
   non-seekable stream of unknown length the gate is skipped. A residual can still open
   as a single fabricated member. If nothing corroborated the probe (no matching

@@ -426,7 +426,11 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             )
         )
     # Guard switches: "false" is truthy, so a string would turn a refusal off.
-    for field_name in ("rar_allow_glob_member_concatenation", "read_link_targets"):
+    for field_name in (
+        "rar_allow_glob_member_concatenation",
+        "read_link_targets",
+        "always_probe_content",
+    ):
         for bad in ("false", 0, 1, None):
             rows.append(
                 _case(

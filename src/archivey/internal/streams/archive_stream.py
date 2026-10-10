@@ -128,8 +128,10 @@ class ArchiveStream(ReadOnlyIOStream):
         verify_member: ArchiveMember | None = None,
         archive_name: str | None = None,
         verifier: MemberVerifier | None = None,
+        name: str | None = None,
     ) -> None:
         super().__init__()
+        self._name = name
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
         self._translate = translate
         self._stamp = stamp if stamp is not None else _noop_stamp
@@ -175,6 +177,20 @@ class ArchiveStream(ReadOnlyIOStream):
             )
         if not lazy:
             self._ensure_open()
+
+    @property
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a member stream has a name
+        """The member's name inside its archive, or raise ``AttributeError``.
+
+        A member stream carries the name its archive gives it, as ``zipfile``'s
+        ``ZipExtFile`` does, so ``open_archive(reader.open(member))`` can match the
+        member's extension during detection (``.tar.br`` and other formats found only by
+        name). It is a member name, not a filesystem path. A stream with no member
+        (``open_stream``) has no name and raises, as ``io.BytesIO`` does.
+        """
+        if self._name is None:
+            raise AttributeError("name")
+        return self._name
 
     def _attach_finalizer(self) -> None:
         """Safety-net finalizer: release the lease if the caller never closed us.

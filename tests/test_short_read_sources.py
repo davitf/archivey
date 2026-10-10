@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive, open_stream
+from archivey import ArchiveyConfig, open_archive, open_stream
 from archivey.exceptions import ArchiveyError
 from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.types import ArchiveFormat, ContainerFormat, MemberType
@@ -43,6 +43,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # The password every generated encrypted fixture uses (see tests/fixtures/rar/README.md);
 # harmless for the unencrypted ones, and it lets the encrypted-header archives list.
 FIXTURE_PASSWORD = "password"
+
+# Every source here is nameless, so the magic-less formats (zlib, Brotli, LZMA Alone and
+# their TAR forms) are recognised only with every content probe on.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 # One archive per format is enough: the bug is in how the container's headers are read,
@@ -80,7 +84,11 @@ def _probe(
     the same bytes.
     """
     with open_archive(
-        source, password=passwords or None, streaming=streaming, format=format
+        source,
+        password=passwords or None,
+        streaming=streaming,
+        format=format,
+        config=_ALWAYS_PROBE,
     ) as reader:
         rows: list[tuple] = []
         if streaming:

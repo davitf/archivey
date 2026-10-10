@@ -820,6 +820,10 @@ def _resolve_stream_format(
     # which is the silent fall-through this function's boundary check exists to close.
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
+    # The caller says the source is a compressed stream, so a probe answers only which
+    # codec it is, never whether it is an archive: every probe runs, whatever its name.
+    if not config.always_probe_content:
+        config = replace(config, always_probe_content=True)
     detected = detect_format_into(open_source, config=config, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:
         # Detection found a container, not a compressed stream: to open_stream that is

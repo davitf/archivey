@@ -971,6 +971,7 @@ class BaseArchiveReader(ArchiveReader):
                 verify_member=verify_member,
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
+                name=member_name,
             )
 
         assert inner is not None
@@ -993,6 +994,7 @@ class BaseArchiveReader(ArchiveReader):
             digest_transforms=digest_transforms,
             verify_member=verify_member,
             archive_name=self._archive_name,
+            name=member_name,
             rewind_warning=rewind_warning,
         )
 

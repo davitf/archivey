@@ -597,10 +597,18 @@ immutable operation-filtered diagnostic snapshot:
 class ArchiveStream(BinaryIO):
     @property
     def diagnostics(self) -> DiagnosticSummary: ...
+    @property
+    def name(self) -> str: ...  # member streams only; else AttributeError
 
 def read(self, member: str | ArchiveMember) -> bytes: ...
 def open(self, member: str | ArchiveMember) -> ArchiveStream: ...
 ```
+
+A stream from `open()` or `stream_members()` SHALL have `name` equal to the member's
+`name`, as `zipfile`'s `ZipExtFile` does, so `open_archive(reader.open(member))` matches
+the member's extension during detection (`format-detection`: a probe-only format runs its
+probe only for a matching name). It is a member name, not a filesystem path. A stream with
+no member (`open_stream`) SHALL raise `AttributeError` for `name`, as `io.BytesIO` does.
 
 Unknown name → `KeyError`; foreign `ArchiveMember` → `ValueError`. `read()`
 materializes the full payload without extraction bomb checks (small trusted
@@ -625,6 +633,8 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | Case | Expected |
 | --- | --- |
 | `open("data.bin")` succeeds | `ArchiveStream` as `BinaryIO`; `stream.diagnostics` = that operation only |
+| `open("dir/inner.zz").name` | `"dir/inner.zz"`; `open_archive` on it detects `ZLIB` by name and probe |
+| `open_stream(src).name` | `AttributeError` |
 | Reader-owned stream emits rewind diagnostic | Visible on stream and reader snapshots; retained once |
 | `read("readme.txt")` | Full uncompressed `bytes` |
 | `open(member)` from a different reader | `ValueError` |
@@ -1059,6 +1069,7 @@ class ArchiveyConfig:
     decoder_limits: DecoderLimits = DecoderLimits()
     spool_limits: SpoolLimits = SpoolLimits()
     detection_budget: DetectionBudget = BALANCED_BUDGET
+    always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
@@ -1099,6 +1110,10 @@ auto-detection itself, and under `format=` the stub-volume check and the rescan 
 confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
 fields beside it: a preset member or its name is converted at construction, so the field
 always holds a budget.
+`always_probe_content` SHALL decide whether `detect_format` and `open_archive` run every
+content probe or only the probe of the format the source's extension names
+(`format-detection`); `open_stream` SHALL run every probe whatever it holds. Like the other
+switches it SHALL be a real `bool`.
 `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set and across attempts: a copy refused once SHALL stay refused for that reader
@@ -1133,6 +1148,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`) |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
+| `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, no child process possible | `ResourceLimitError` on the first read |

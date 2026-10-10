@@ -20,11 +20,13 @@ behaviour and links the row.
 | Digests | None. Brotli has no checksum |
 | Metadata | None beyond the shared fields |
 | Truncation | Raised as `TruncatedError` when the decoder never reaches the last meta-block |
-| Detection | By a content probe only, `PROBABLE` or `GUESS` (§2.1); a failed read of a probe-only match is stamped `format_unconfirmed` |
+| Detection | By a content probe only, which runs for a `.br` name, under `open_stream`, or with `always_probe_content=True`; `PROBABLE` or `GUESS` (§2.1); a failed read of a probe-only match is stamped `format_unconfirmed` |
 
 **Four things a reader might expect and will not find.** A Brotli file with no extension is
-found by decoding, not by a signature, and a small share of non-Brotli files are still
-claimed (§3). A file named `.brotli` gets no help from its name: only `.br` and `.tar.br`
+not found by `open_archive` or `detect_format` by default: the probe runs only for a `.br`
+or `.tar.br` name, or with `always_probe_content=True`, or under `open_stream`. Where it
+runs, Brotli is found by decoding, not by a signature, and a small share of non-Brotli
+files are still claimed (§3). A file named `.brotli` gets no help from its name: only `.br` and `.tar.br`
 are registered. Damaged Brotli data can decode to wrong bytes with no error, since there
 is no checksum. And a read of a misidentified file can deliver up to 64 KiB of invented
 bytes before it raises (§4).
