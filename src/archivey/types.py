@@ -493,14 +493,29 @@ class _ReadOnlyDict(dict[str, str]):
     def _refuse(self, *args: object, **kwargs: object) -> NoReturn:
         raise TypeError("extra['tar.pax_headers'] is read-only; copy it with dict()")
 
-    __setitem__ = _refuse  # type: ignore[assignment]
-    __delitem__ = _refuse  # type: ignore[assignment]
-    __ior__ = _refuse  # type: ignore[assignment]
-    clear = _refuse  # type: ignore[assignment]
-    pop = _refuse  # type: ignore[assignment]
-    popitem = _refuse  # type: ignore[assignment]
-    setdefault = _refuse  # type: ignore[assignment]
-    update = _refuse  # type: ignore[assignment]
+    def __setitem__(self, key: str, value: str, /) -> NoReturn:
+        self._refuse()
+
+    def __delitem__(self, key: str, /) -> NoReturn:
+        self._refuse()
+
+    def __ior__(self, value: object, /) -> NoReturn:
+        self._refuse()
+
+    def clear(self) -> NoReturn:
+        self._refuse()
+
+    def pop(self, key: object, /, *default: object) -> NoReturn:
+        self._refuse()
+
+    def popitem(self) -> NoReturn:
+        self._refuse()
+
+    def setdefault(self, key: str, default: str = "", /) -> NoReturn:
+        self._refuse()
+
+    def update(self, *args: object, **kwargs: object) -> NoReturn:
+        self._refuse()
 
     def __reduce__(self) -> tuple[type[dict[str, str]], tuple[dict[str, str]]]:
         return (dict, (dict(self),))

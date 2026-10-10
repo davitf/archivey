@@ -75,10 +75,16 @@ def _literal_keys(mapping_cls: type) -> set[str]:
 
 
 def _type_as_doc(ann: object) -> str:
+    """Render an annotation as the docstring writes it: bare class names, so the text
+    is the same on every Python (3.14 and some 3.11 builds render ``Mapping[str, str]``
+    with its module)."""
     origin = typing.get_origin(ann)
-    if origin is dict:
-        key_t, val_t = typing.get_args(ann)
-        return f"dict[{_type_as_doc(key_t)}, {_type_as_doc(val_t)}]"
+    if isinstance(origin, type):
+        args = ", ".join(
+            "..." if arg is Ellipsis else _type_as_doc(arg)
+            for arg in typing.get_args(ann)
+        )
+        return f"{origin.__name__}[{args}]"
     if isinstance(ann, type):
         return ann.__name__
     return str(ann)

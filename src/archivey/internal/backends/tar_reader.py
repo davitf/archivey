@@ -372,10 +372,14 @@ class _TarInfo(tarfile.TarInfo):
                 tarfile.stopped_on_zero_block = True
             raise
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
-        # the end of this member's data area. For a header preceded by GNU long-name or
-        # PAX headers this runs once per header, innermost first; the outermost call
-        # runs last and sees the final offset, which a PAX ``size`` record may change,
-        # and the final ``linkname``, which a long link name or PAX linkpath sets.
+        # the end of this member's data area. On current CPython patch releases this
+        # runs once per member, after any chain of GNU long-name or PAX headers ahead
+        # of it: ``_proc_pax`` and ``_proc_gnulong`` fetch the next header through the
+        # private ``_fromtarfile``, so the chained headers do not pass through here.
+        # (Older patch releases recursed through this public method instead; the
+        # outermost call ran last, with the same outcome.) Either way this call sees
+        # the final offset, which a PAX ``size`` record may change, and the final
+        # ``linkname``, which a long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
         _drop_unweighed_link_name(info)
         return info
@@ -429,9 +433,14 @@ class _TarInfo(tarfile.TarInfo):
         """Parse an old GNU sparse header and its extension blocks, weighing the map
         as each block adds to it.
 
-        The same parse as ``tarfile``'s, which reads every extension block the
-        archive chains before anything can weigh the map. A short block, which
-        ``tarfile`` met with a raw ``IndexError``, is a truncated archive.
+        A copy of stdlib's private ``TarInfo._proc_sparse``, which reads every
+        extension block the archive chains before anything can weigh the map, with
+        the weighing added. A short block, which ``tarfile`` met with a raw
+        ``IndexError``, is a truncated archive. It does not call ``super()``, so a
+        change to stdlib's body is shadowed, not inherited: the copied body was
+        compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
+        ``tests/test_tar_header_memory.py`` fails when stdlib's source changes. A
+        divergence has to be re-checked and carried over, not assumed harmless.
         """
         # Set by ``TarInfo.frombuf`` for a sparse header; typeshed does not declare it.
         structs, isextended, origsize = self._sparse_structs  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
@@ -494,6 +503,12 @@ class _TarInfo(tarfile.TarInfo):
         with no newline into one buffer that grows for as long as the archive lasts.
         Here the count is weighed before any entry is read, and a number longer than
         any GNU tar reads is corruption.
+
+        This replaces stdlib's private ``TarInfo._proc_gnusparse_10`` without calling
+        it, so a change to stdlib's parse is shadowed, not inherited. Stdlib's body
+        was compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
+        ``tests/test_tar_header_memory.py`` fails when its source changes. A
+        divergence has to be re-checked against this parse, not assumed harmless.
         """
         fileobj = tarfile.fileobj
         buf = b""
