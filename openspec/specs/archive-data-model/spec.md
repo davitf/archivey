@@ -89,6 +89,17 @@ it as an empty regular file (unzip, 7-Zip): an empty file in its place would hid
 the archive said it was. `MemberType.ANTI` SHALL be a deletion/tombstone
 marker (`is_file` false, no payload); it SHALL NOT be treated as `OTHER`.
 
+A directory entry whose header declares data (ZIP, RAR; no format gives a directory
+content) SHALL stay `MemberType.DIRECTORY` with `size` as declared, SHALL be reported
+with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`) once per member at
+listing, and SHALL be created as a directory by extraction, as every official tool
+does. `open()` SHALL refuse a member for having no data rather than for its type:
+`ANTI`, `OTHER` and a directory declaring no size raise `ArchiveyUsageError`, while a
+directory declaring data opens and delivers the bytes, so they are never out of reach.
+`stream_members()` SHALL still yield `None` for a directory. A directory whose declared
+size is zero SHALL NOT be reported whatever its compressed size (the Java `jar` tool
+deflates an empty body for every directory).
+
 A link the source filesystem held as a Windows reparse point — a junction, a Windows
 directory symlink or a Windows file symlink — SHALL additionally carry
 `extra["is_reparse_point"] == True`, exposed as `ArchiveMember.is_reparse_point`. It
@@ -107,6 +118,8 @@ link keeps the flag alongside its re-typed `MemberType`.
 | --- | --- |
 | TAR contains a device node or FIFO † | `member.type == MemberType.OTHER` |
 | ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set) | `member.type == MemberType.OTHER`; `size` keeps the stored value |
+| ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes; extraction creates the directory; `strict()` raises |
+| ZIP directory entry with compressed size 2 and size 0 (the `jar` shape) | `DIRECTORY`; no diagnostic; `read()` → `ArchiveyUsageError` |
 | ZIP whose member carries a junction's reparse data † | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True`; `link_target` is the buffer's substitute name |
 | ZIP whose member has the reparse bit and no reparse data | `member.type == MemberType.SYMLINK`; `link_target is None`; `is_junction` unset, the tag that would establish it being in the data that was not written |
 | 7z ANTI-bit entry † | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |

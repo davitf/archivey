@@ -74,6 +74,7 @@ class DiagnosticCode(StrEnum):
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
+    MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
@@ -358,6 +359,23 @@ class DigestContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class DirectoryDataContext(_JsonSafeContext):
+    """A directory entry declares member data, which extraction does not write.
+
+    ``size`` is the declared uncompressed size and ``compressed_size`` the stored
+    one (``None`` where the format does not record it). The directory is still
+    created; the bytes are reachable through ``open()`` / ``read()``.
+    """
+
+    kind: Literal["directory_data"] = "directory_data"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    size: int = 0
+    compressed_size: int | None = None
+
+
+@dataclass(frozen=True)
 class EncryptedVerificationContext(_JsonSafeContext):
     """An encrypted member's stream closed before its digest checked the password.
 
@@ -448,6 +466,7 @@ DiagnosticContext = (
     | MemberHeaderRecordContext
     | SymlinkTargetContext
     | DigestContext
+    | DirectoryDataContext
     | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
@@ -474,6 +493,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
@@ -497,6 +517,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
+        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
     }
 )
@@ -860,6 +881,7 @@ __all__ = [
     "DiagnosticPolicy",
     "DiagnosticSummary",
     "DigestContext",
+    "DirectoryDataContext",
     "EmptyArchiveContext",
     "EncryptedVerificationContext",
     "ExtractionReport",

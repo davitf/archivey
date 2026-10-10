@@ -248,6 +248,7 @@ def test_public_symbols_are_in_all() -> None:
     demoted_but_importable = {
         "ArchiveEofContext",
         "DigestContext",
+        "DirectoryDataContext",
         "EmptyArchiveContext",
         "EncryptedVerificationContext",
         "FormatConflictContext",

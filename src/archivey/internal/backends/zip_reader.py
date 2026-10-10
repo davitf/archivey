@@ -1153,6 +1153,10 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
+        if member.type is MemberType.DIRECTORY and info.file_size > 0:
+            # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
+            # the directory and drop the bytes silently. Say so; read() delivers them.
+            self._emit_directory_data_ignored(member, index)
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))

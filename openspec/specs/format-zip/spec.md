@@ -192,7 +192,7 @@ rules:
 | --- | --- |
 | `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
-| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints |
+| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints. A directory marker with `file_size > 0` stays `DIRECTORY` and emits `MEMBER_DIRECTORY_DATA_IGNORED`; `open()` on it decodes the data like a file's |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
 | `is_encrypted` | `flag_bits & 0x1 != 0` |
 

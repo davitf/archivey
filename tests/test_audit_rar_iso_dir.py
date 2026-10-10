@@ -26,13 +26,14 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, MemberType, open_archive
+from archivey import ArchiveyConfig, DiagnosticCode, MemberType, open_archive
 from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
     ResourceLimitError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import parse_rar_archive
@@ -964,3 +965,77 @@ def test_unrar_solid_walk_follows_the_main_solid_flag(
     )
     count = rar_reader._unrar_dictionary_costs(archive)[1].count
     assert count == (min(4 * 2**30, _3_GIB) if main_solid else 0)
+
+
+# --- a directory entry that declares data ---------------------------------------------
+
+
+def _rar_with_directory_data(tmp_path: Path, *, stored: bool) -> Path:
+    """The fixture's second member rewritten as a directory (``FHFL_DIRECTORY``) that
+    keeps its data. ``rar`` never writes one, so the header is edited in the test."""
+    blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
+    files = _rar5_file_blocks(blocks)
+    files[1]["file_flags"] |= 1  # FHFL_DIRECTORY
+    if stored:
+        files[1]["data"] = b"stored dir data"
+        files[1]["unpacked"] = len(files[1]["data"])
+        files[1]["crc"] = struct.pack("<I", zlib.crc32(files[1]["data"]))
+        files[1]["cinfo"] = 0  # method 0 (stored), version 0
+    path = tmp_path / ("dir_stored.rar" if stored else "dir_compressed.rar")
+    path.write_bytes(_rar5_build(blocks))
+    return path
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("stored", [True, False], ids=["stored", "compressed"])
+def test_directory_data_is_reported_and_the_directory_created(
+    tmp_path: Path, stored: bool
+) -> None:
+    """unrar creates the directory and skips its data silently; archivey does the same
+    on extraction and reports ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing."""
+    payloads = _hostile_argv_payloads()
+    path = _rar_with_directory_data(tmp_path, stored=stored)
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        members = archive.members()
+        assert [m.type for m in members] == [
+            MemberType.FILE,
+            MemberType.DIRECTORY,
+            MemberType.FILE,
+        ]
+        assert members[1].name == "-inul/"
+        assert members[1].size == (15 if stored else len(payloads["-inul"]))
+        diags = [
+            d
+            for d in archive.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert len(diags) == 1
+        assert diags[0].context is not None
+        context = diags[0].context.to_dict()
+        assert context["member_name"] == "-inul/"
+        assert context["member_id"] == 1
+        assert context["size"] == members[1].size
+        assert context["compressed_size"] == members[1].compressed_size
+        archive.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "-inul").is_dir()
+    assert not any((tmp_path / "out" / "-inul").iterdir())
+    assert (tmp_path / "out" / "@atfile").read_bytes() == payloads["@atfile"]
+
+
+@requires_binary("unrar")
+def test_stored_directory_data_reads_and_compressed_is_refused(tmp_path: Path) -> None:
+    """Stored directory data is sliced by archivey itself, so ``read()`` returns it.
+    unrar emits nothing for a directory entry, so compressed directory data cannot be
+    decoded and ``read()`` says why instead of returning nothing."""
+    payloads = _hostile_argv_payloads()
+    with open_archive(
+        _rar_with_directory_data(tmp_path, stored=True), config=_UNRAR_ONLY
+    ) as archive:
+        assert archive.read("-inul/") == b"stored dir data"
+        assert archive.read("@atfile") == payloads["@atfile"]
+    with open_archive(
+        _rar_with_directory_data(tmp_path, stored=False), config=_UNRAR_ONLY
+    ) as archive:
+        with pytest.raises(UnsupportedFeatureError, match="compressed data"):
+            archive.read("-inul/")
+        assert archive.read("@atfile") == payloads["@atfile"]

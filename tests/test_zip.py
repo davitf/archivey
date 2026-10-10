@@ -20,6 +20,8 @@ from archivey import (
     ArchiveyConfig,
     CompressionAlgorithm,
     DiagnosticCode,
+    DiagnosticPolicy,
+    ExtractionStatus,
     MemberType,
     open_archive,
 )
@@ -27,6 +29,7 @@ from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
+    DiagnosticRaisedError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -1899,3 +1902,85 @@ def test_device_bits_from_a_non_unix_writer_are_ignored(tmp_path: Path) -> None:
         zf.writestr(info, b"x")
     with open_archive(path) as ar:
         assert ar.members()[0].type is MemberType.FILE
+
+
+# --- a directory entry that declares data ---------------------------------------------
+
+
+def _zip_with_directory_data(path: Path, compress_type: int) -> None:
+    """``d/`` carrying 12 bytes (APPNOTE gives a directory none), a file under it and
+    the Java ``jar`` shape: a deflated empty directory body (compressed size 2)."""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(zipfile.ZipInfo("d/"), b"hidden data!", compress_type=compress_type)
+        z.writestr("d/f.txt", b"visible")
+        z.writestr(zipfile.ZipInfo("jar/"), b"", compress_type=zipfile.ZIP_DEFLATED)
+
+
+@pytest.mark.parametrize(
+    "compress_type",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflate"],
+)
+def test_directory_data_is_reported_and_readable_but_not_extracted(
+    tmp_path: Path, compress_type: int
+) -> None:
+    """The entry stays a directory (every official tool creates one) with its declared
+    size, ``MEMBER_DIRECTORY_DATA_IGNORED`` names the bytes extraction drops, and
+    ``read()`` still delivers them, so nothing in the archive is out of reach."""
+    path = tmp_path / "dirdata.zip"
+    _zip_with_directory_data(path, compress_type)
+    with open_archive(path) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["d/"].type is MemberType.DIRECTORY
+        assert by_name["d/"].size == 12
+        assert by_name["jar/"].type is MemberType.DIRECTORY
+        assert by_name["jar/"].size == 0
+        assert by_name["jar/"].compressed_size == 2
+        diags = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+        ]
+        assert [d.context.to_dict() if d.context else None for d in diags] == [
+            {
+                "kind": "directory_data",
+                "archive_name": str(path),
+                "member_name": "d/",
+                "member_id": 0,
+                "size": 12,
+                "compressed_size": by_name["d/"].compressed_size,
+            }
+        ]
+        assert "12 bytes" in diags[0].message
+        assert ar.read("d/") == b"hidden data!"
+        assert ar.read("d/f.txt") == b"visible"
+        with pytest.raises(ArchiveyUsageError, match="not a file"):
+            ar.read("jar/")
+        report = ar.extract_all(tmp_path / "out")
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["d/"] is ExtractionStatus.EXTRACTED
+    assert (tmp_path / "out" / "d").is_dir()
+    assert (tmp_path / "out" / "d" / "f.txt").read_bytes() == b"visible"
+    assert (tmp_path / "out" / "jar").is_dir()
+
+
+def test_directory_data_is_refused_by_strict(tmp_path: Path) -> None:
+    """The shape is a spec violation that hides bytes, so strict refuses it (DR-3),
+    while the jar shape, which declares no data, passes."""
+    path = tmp_path / "dirdata.zip"
+    _zip_with_directory_data(path, zipfile.ZIP_STORED)
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with (
+        open_archive(path, config=config) as ar,
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+    ):
+        ar.members()
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+
+    jar_only = tmp_path / "jar.zip"
+    with zipfile.ZipFile(jar_only, "w") as z:
+        z.writestr(zipfile.ZipInfo("jar/"), b"", compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("jar/f.txt", b"visible")
+    with open_archive(jar_only, config=config) as ar:
+        assert [m.name for m in ar.members()] == ["jar/", "jar/f.txt"]
+        assert not ar.diagnostics.retained

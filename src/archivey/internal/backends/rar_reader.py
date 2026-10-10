@@ -2651,6 +2651,10 @@ class RarReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_header_record_diagnostics(info, member.name, member, index)
+        if info.is_directory and member.size:
+            # rar writes directories with no data and unrar skips any it finds (its
+            # directory branch returns before the data). Say so; read() delivers it.
+            self._emit_directory_data_ignored(member, index)
         if info.rar3_utf8_over_encoding:
             assert self._encoding is not None
             self._emit_name_encoding_inferred(
@@ -3796,6 +3800,18 @@ class RarReader(BaseArchiveReader):
         if unknown_version is not None:
             raise self._unknown_compression_error(member, unknown_version)
 
+        if raw.is_directory and not self._is_directly_sliceable(raw):
+            # unrar emits nothing for a directory entry (``extract.cpp`` returns from
+            # the directory branch before any data), so only stored directory data,
+            # which archivey slices itself, can be delivered.
+            raise UnsupportedFeatureError(
+                f"Directory {quoted(member.name)} declares compressed data; unrar does "
+                "not decode data stored under a directory entry, so only stored "
+                "(uncompressed) directory data can be read.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
         if self._can_direct_read(raw):
             if raw.compress_size != raw.file_size:
                 # A plaintext stored member packs exactly its own bytes; only encryption

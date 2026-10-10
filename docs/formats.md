@@ -94,6 +94,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
   restore method 2. Under ZipCrypto both read as the password-or-damage
   ``EncryptionError`` instead, because those settings are encrypted.
+- A directory entry that declares data (APPNOTE gives a directory none) is listed as a
+  directory with that size and reported with ``MEMBER_DIRECTORY_DATA_IGNORED``;
+  extraction creates the directory, as unzip and 7-Zip do, and ``read()`` returns the
+  bytes. Strict refuses the archive. The Java ``jar`` tool's deflated empty directory
+  body (compressed size 2, size 0) is not reported.
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
@@ -260,6 +265,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - An entry from a Unix host whose mode is a device, FIFO or socket lists as
   `MemberType.OTHER`, so extraction skips it. `rar` itself skips such files when
   archiving.
+- A directory entry that declares data (`rar` never writes one) is reported with
+  `MEMBER_DIRECTORY_DATA_IGNORED`; extraction creates the directory, as `unrar` does.
+  `read()` returns the bytes when they are stored; compressed directory data raises
+  `UnsupportedFeatureError`, because `unrar` emits nothing for a directory entry.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
   archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
