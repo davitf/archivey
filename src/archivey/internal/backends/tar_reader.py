@@ -388,9 +388,13 @@ def _raised_by_tarfile(exc: BaseException) -> bool:
     escapes as a plain ``ValueError``. Where it was raised is what separates that from
     a ``ValueError`` of the stream under ``tarfile``, which is raised in that stream's
     own code and is not this translator's to map. The closed-handle case among those
-    (``I/O operation on closed file``) never gets here: the shared reader boundary
-    (``BaseArchiveReader._raise_translated``) maps it to ``ArchiveyUsageError``
-    first. What is left for this check is ``tarfile``'s own header-parse
+    (``I/O operation on closed file``) is mapped to ``ArchiveyUsageError`` by the
+    error boundary above this translator before this check runs:
+    ``ArchiveStream._raise_translated`` for a member read,
+    ``BaseArchiveReader._raise_translated`` for the reader's own work. The check is
+    also reached from ``_translate_open_error`` while the reader is constructed,
+    behind neither boundary; it returns ``False`` there on its own, because the
+    innermost frame is ``io``'s, not ``tarfile``'s. What is left for this check is ``tarfile``'s own header-parse
     ``ValueError``s; any other stream ``ValueError`` propagates unchanged.
     """
     tb = exc.__traceback__

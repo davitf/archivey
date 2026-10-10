@@ -49,6 +49,7 @@ from archivey.internal.streams.verify import (
     build_member_verifier,
     note_raised_seek,
 )
+from archivey.terminal import quoted
 from archivey.types import HashAlgorithm
 
 if TYPE_CHECKING:
@@ -93,7 +94,7 @@ def _noop_stamp(_exc: ArchiveyError) -> None:
     return None
 
 
-_ARCHIVE_SOURCE_CLOSED = "Cannot read the archive: its source has been closed."
+_ARCHIVE_SOURCE_CLOSED = "Cannot read this stream: its source has been closed."
 
 
 def closed_source_error(member_name: str | None = None) -> ArchiveyUsageError:
@@ -103,12 +104,13 @@ def closed_source_error(member_name: str | None = None) -> ArchiveyUsageError:
     boundaries, inside a member stream (``ArchiveStream._raise_translated``) and in the
     reader's own work (``BaseArchiveReader._raise_translated``), so the two give the
     same answer. ``member_name`` is the member being read, or ``None`` when no member
-    is involved (listing).
+    is involved (listing, or a bare stream from ``open_stream``); that wording names no
+    archive, because ``open_stream`` has none.
     """
     if member_name is None:
         return ArchiveyUsageError(_ARCHIVE_SOURCE_CLOSED)
     return ArchiveyUsageError(
-        f"Cannot read member {member_name!r}: the archive source has been closed."
+        f"Cannot read member {quoted(member_name)}: the archive source has been closed."
     )
 
 
@@ -120,10 +122,12 @@ def as_closed_source_error(
     Matches the ``io`` closed-handle ``ValueError`` itself, and also the no-member
     error that a boundary below this one already raised for it. A codec stream under a
     member (a ``.tar.gz`` decoder, a 7z folder) has no member name, so its boundary
-    says "the archive"; the member boundary above it knows the member and names it.
+    says "this stream"; the member boundary above it knows the member and names it.
     """
     if is_closed_file_error(exc):
         return closed_source_error(member_name)
+    # Reachable because ArchiveyUsageError is not an ArchiveyError, so the callers'
+    # already-typed arm does not claim it first.
     if (
         member_name is not None
         and type(exc) is ArchiveyUsageError

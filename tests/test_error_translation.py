@@ -20,7 +20,7 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import open_archive
+from archivey import open_archive, open_stream
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -301,20 +301,39 @@ def test_source_closed_before_a_member_opens_is_a_usage_error(
                         stream.read()
 
 
-def test_source_closed_before_listing_is_a_usage_error_naming_no_member(
-    tmp_path: Path,
-) -> None:
-    """The caller closes the source before a TAR is listed; no member is involved.
-
-    TAR lists lazily, so listing reads the closed source. The listing runs through the
-    same reader boundary as a member open, with no member name, and the message must
-    not name or imply one.
-    """
+def _list_tar_after_close(tmp_path: Path) -> None:
     source = io.BytesIO(_tar("w")(tmp_path))
     with open_archive(source) as reader:
         source.close()
-        with pytest.raises(
-            ArchiveyUsageError,
-            match=r"^Cannot read the archive: its source has been closed\.$",
-        ):
-            list(reader.members())
+        list(reader.members())
+
+
+def _read_open_stream_after_close(_tmp_path: Path) -> None:
+    source = io.BytesIO(gzip.compress(_PAYLOAD))
+    with open_stream(source) as stream:
+        source.close()
+        stream.read()
+
+
+@pytest.mark.parametrize(
+    "act",
+    [
+        pytest.param(_list_tar_after_close, id="tar-listing"),
+        pytest.param(_read_open_stream_after_close, id="open_stream-gz"),
+    ],
+)
+def test_source_closed_with_no_member_is_a_usage_error_naming_no_member(
+    tmp_path: Path, act: Callable[[Path], None]
+) -> None:
+    """The caller closes the source where no member is involved.
+
+    TAR lists lazily, so listing reads the closed source; it runs through the same
+    reader boundary as a member open, with no member name. ``open_stream`` hands back
+    a bare codec stream with no archive at all. Neither message may name or imply a
+    member or an archive.
+    """
+    with pytest.raises(
+        ArchiveyUsageError,
+        match=r"^Cannot read this stream: its source has been closed\.$",
+    ):
+        act(tmp_path)
