@@ -314,19 +314,21 @@ def open_winzip_aes_member(
     ``raw`` is the full member payload (salt + verify + ciphertext + HMAC) of length
     ``compress_size``. Raises ``EncryptionError`` on a wrong password (fast-fail on the
     2-byte verification value) and ``PackageNotInstalledError`` when ``cryptography``
-    (the ``[recommended]`` extra) is absent.
+    (the ``[recommended]`` extra) is absent, unless the header is impossible.
     """
-    if not _crypto_available():
-        raise PackageNotInstalledError(
-            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
-        )
     salt_len = aes.salt_len
     overhead = salt_len + 2 + _HMAC_LEN
     # A declared size too small for the envelope is an impossible header, not a short
     # read, so it stays CorruptionError; the four short reads below are TruncatedError.
+    # It runs before the availability gate: no library can read such a member, so the
+    # error type does not depend on the install (DR-5).
     if compress_size < overhead:
         raise CorruptionError(
             f"WinZip AES member too short for salt/verify/HMAC ({compress_size} < {overhead})"
+        )
+    if not _crypto_available():
+        raise PackageNotInstalledError(
+            CRYPTO_REQUIREMENT.message("WinZip AES decryption")
         )
     salt = read_exact(raw, salt_len)
     if len(salt) != salt_len:
