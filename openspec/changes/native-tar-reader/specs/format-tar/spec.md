@@ -71,10 +71,23 @@ A PAX member whose `GNU.sparse.major` is 1 or more SHALL be read as 1.0, whateve
 minor version, as GNU tar 1.35 reads it. A `GNU.sparse.major` of 0, or one that is not
 a number, with no 0.x map SHALL raise `CorruptionError`, never serve the map as content.
 
-Opening a sparse member SHALL raise `CorruptionError` when its map has a negative entry,
-a chunk that ends past the logical size, or chunks that do not add up to exactly the
-bytes stored for them, and `UnsupportedFeatureError` when an undamaged map is out of
-order or overlapping.
+A sparse member's map SHALL be checked before any of its data is returned: when the
+member is opened, or in a streaming pass on its first read, so a consumer that skips
+the member is unaffected. The check SHALL raise `CorruptionError` when the map has a
+negative entry, a chunk (empty or not) that ends past the logical size, or chunks that
+do not add up to exactly the bytes stored for them, or when the logical size is past
+2**63 - 1. GNU tar 1.26 to 1.35 and bsdtar write the exact sum in every encoding, so
+bytes the map does not name are damage (DR-3). An empty chunk past the logical size
+loses no bytes, but the map contradicts its own declared size (DR-1).
+
+The check SHALL raise `UnsupportedFeatureError` when a non-empty chunk starts before the
+previous non-empty chunk ends (out of order or overlapping) and the map has none of the
+damage above. GNU tar 1.35 reads such a map, placing each chunk at the offset the map
+gives, but serving the chunks in logical order on the streaming path would need
+buffering up to the logical size (DR-9). The map is valid data archivey does not serve
+(DR-4). An empty entry is exempt from the order check, because GNU tar ends a map with
+`(realsize, 0)` when the file ends in a hole and the old GNU header pads its unused
+slots with `(0, 0)`.
 
 #### Scenario: sparse map matrix
 
@@ -82,6 +95,10 @@ order or overlapping.
 | --- | --- |
 | A sparse member | Logical bytes with holes as zeros; never bytes past the member's stored size |
 | A sparse map out of order or overlapping | `UnsupportedFeatureError` on open |
+| A chunk, empty or not, that ends past the logical size | `CorruptionError` on open |
+| Chunks that add up to more than the member stores | `CorruptionError` on open |
+| A negative offset or length | `CorruptionError` on open |
+| A logical size past 2**63 - 1 | `CorruptionError` on open |
 | A sparse map whose chunks name 1 to 511 bytes fewer than the member stores | `CorruptionError` on open |
 | A PAX 1.0 map that does not parse | `CorruptionError` during the listing |
 | A PAX 0.1 map holding a number past 2**63 - 1 | `CorruptionError` during the listing |
@@ -89,6 +106,17 @@ order or overlapping.
 | `GNU.sparse.major=2`, `GNU.sparse.minor=0` with a 1.0 map | Read as 1.0 |
 | `GNU.sparse.major=0` with no 0.x map | `CorruptionError` during the listing |
 | A PAX 1.0 map of more entries than the budget allows | `ResourceLimitError` during the listing, before the entries are read |
+
+## REMOVED Requirements
+
+### Requirement: Refuse a sparse map tarfile would misread
+
+**Reason**: The native parser reads every sparse map itself, so no map reaches
+`tarfile`. The checks move into `Read GNU sparse maps`, which also refuses 1 to 511
+stored bytes that the map does not name.
+
+**Migration**: None for callers. Every map this requirement refused is still refused
+with the same error type.
 
 ## RENAMED Requirements
 
@@ -168,6 +196,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from the PAX `linkpath`, else the GNU long link name, else the header's `linkname` |
 | old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
+| `extra["tar.pax_headers"]` | The member's PAX records, the global (`g`) records in force included. Read-only: a change raises `TypeError`. Members with no records of their own share one per set of global records: one copy per member cost the global records again for every 512-byte member header. Read-only so the sharing cannot be seen: a change through one member could otherwise show on the others. It is a `dict` subclass, so `json.dumps` takes it, and a copy, deep copy or pickle round trip gives a plain `dict` |
 | `raw_name` | The stored bytes of whatever supplied the name: the PAX `GNU.sparse.name` or `path` record, else the GNU long name, else the header's `name` (with the `prefix` field joined, under the ustar magic only). Never `None` |
 
 If the header's `mtime` cannot be represented as a Python `datetime`, `modified`
@@ -195,6 +224,8 @@ in every format; the record name appears only in the message.
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | PAX `path` holding the non-UTF-8 bytes `caf\xe9.txt`, `encoding="latin-1"` | `raw_name == b"caf\xe9.txt"` |
 | Old GNU or v7 header with bytes at offsets 345 to 500 (GNU incremental `tar -G` fills `atime` there) | Not joined to the name: `d/f.txt`, not `15262452373/d/f.txt` |
+| PAX global header, then members with no records of their own | Each member's `extra["tar.pax_headers"]` holds the global records, and a later global header does not change it. Changing it raises `TypeError` |
+| PAX sparse 1.0 map holding a number longer than 20 digits | `CorruptionError` while the header is parsed. GNU tar reads each number into a 20-digit buffer and refuses a longer one; this structural bound keeps a number with no newline from growing one buffer for the rest of the archive |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
 | PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the member attribute it would have filled |
 | PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
