@@ -41,6 +41,16 @@ class Deflate64Decoder(BaseDecoder):
     throughput): 1→514 B / ~320 MiB/s; 64→19 KiB / ~700 MiB/s; 256→70 KiB /
     ~710 MiB/s; 64 KiB→18 MiB / ~460 MiB/s. 64 keeps peaks under a 64 KiB
     read budget while recovering most of the speed of larger feeds.
+
+    ``inflate64`` drops input after the end of the stream without a word: it has no
+    ``unused_data``, and an ``inflate`` after ``eof`` returns ``b""``. Its ``eof`` turns
+    True only once the stream's last byte is in, so the last byte of the input so far
+    is held back (``_last``) until more input or ``flush`` comes. When ``eof`` is
+    already True by then, that byte and anything after it lie past the end, and
+    :meth:`_past_end` accounts for them, as :class:`ZlibDecoder` does with
+    ``unused_data``. Input after the end inside the same ``inflate`` call is not
+    counted, so :attr:`trailing_bytes` can be low; whether any input follows the end
+    is exact.
     """
 
     # Compressed bytes per inflate() under a max_length budget. See class docstring.
@@ -52,22 +62,32 @@ class Deflate64Decoder(BaseDecoder):
         self._decomp: _Inflate64Inflater = inflate64.Inflater()
         self._pending = b""
         self._pending_out = b""
+        # The last input byte, held back from inflate64 (see the class docstring).
+        self._last = b""
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Deflate64Decoder:
         del point, inner
         return Deflate64Decoder()
 
+    def _inflate(self, data: bytes) -> bytes:
+        if self._decomp.eof:
+            self._past_end(data)
+            return b""
+        return self._decomp.inflate(data)
+
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
-        data = self._pending + chunk
+        data = self._pending + self._last + chunk
         self._pending = b""
+        self._last = data[-1:]
+        data = data[:-1]
         if max_length < 0:
             if self._pending_out:
-                data = self._pending_out + (self._decomp.inflate(data) if data else b"")
+                data = self._pending_out + (self._inflate(data) if data else b"")
                 self._pending_out = b""
                 return DecodeOut(data)
             if not data:
                 return DecodeOut(b"")
-            return DecodeOut(self._decomp.inflate(data))
+            return DecodeOut(self._inflate(data))
 
         out = bytearray()
         if self._pending_out:
@@ -80,7 +100,7 @@ class Deflate64Decoder(BaseDecoder):
 
         step = self._BUDGETED_FEED
         while data and len(out) < max_length:
-            produced = self._decomp.inflate(data[:step])
+            produced = self._inflate(data[:step])
             data = data[step:]
             room = max_length - len(out)
             if len(produced) > room:
@@ -92,10 +112,15 @@ class Deflate64Decoder(BaseDecoder):
         return DecodeOut(bytes(out))
 
     def flush(self) -> DecodeOut:
-        # Flush remaining state with an empty feed (mirrors py7zr's Deflate64Decompressor).
+        data = self._pending + self._last
+        self._pending = self._last = b""
         out = self._pending_out
         self._pending_out = b""
+        if data:
+            out += self._inflate(data)
         if not self._decomp.eof:
+            # Flush remaining state with an empty feed (mirrors py7zr's
+            # Deflate64Decompressor).
             out += self._decomp.inflate(b"")
         if not self.finished:
             self._pending_error = TruncatedError(truncated_message("deflate64"))
@@ -113,12 +138,14 @@ class Deflate64Decoder(BaseDecoder):
 def Deflate64DecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
     *,
+    refuse_input_after_end: bool = False,
     collector: DiagnosticCollector | None = None,
 ) -> DecompressorStream:
     """Decode a Deflate64 stream (forward-only)."""
     return DecompressorStream(
         path,
         make_decoder=lambda _p, _i: Deflate64Decoder(),
-        collector=collector,
         codec_name="deflate64",
+        collector=collector,
+        refuse_input_after_end=refuse_input_after_end,
     )

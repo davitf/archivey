@@ -29,6 +29,7 @@ import pytest
 from archivey import open_archive, open_stream
 from archivey.exceptions import ArchiveyError
 from archivey.internal.backends.rar_parser import parse_rar_archive
+from archivey.internal.format_args import outer_stream_format
 from archivey.types import ArchiveFormat, ContainerFormat, MemberType
 from tests.sample_archives import CORPUS, FORMAT_KEYS, CorpusEntry, skip_unless_runnable
 from tests.sample_archives import corpus_archive_path as _corpus_archive_path
@@ -123,10 +124,11 @@ def test_corpus_archive_opens_from_short_read_source(
     _assert_short_read_parity(data, entry.passwords)
 
 
+# Every format open_stream accepts: the raw streams and the compressed tars, whose
+# outer codec it peels. Compressed tars run the inner-tar probe through the replay
+# prefix, which a raw-stream magic match does not.
 _STREAM_KEYS = [
-    key
-    for key, fmt in FORMAT_KEYS.items()
-    if fmt.container is ContainerFormat.RAW_STREAM
+    key for key, fmt in FORMAT_KEYS.items() if outer_stream_format(fmt) is not None
 ]
 
 

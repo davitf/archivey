@@ -71,7 +71,9 @@ says `nothing` — that is an answer, not an omission.
 Now open the narrative and contracts:
 
 1. PR description + linked issue / full OpenSpec change (proposal, delta specs,
-   `design.md`) / `review/` brief or finding.
+   `design.md`) / `review/` brief or finding. Check each claim the PR body makes (what it
+   fixes, tests, leaves alone) against the diff; a claim the diff does not bear out is a
+   finding.
 2. Applicable sections below (VISION ranking, contract checks, domain checklist)
    and the authoritative sources `SKILL.md` §1 lists when a finding touches them. For a
    contract-moving change, run the **values & contracts consistency check** — the same
@@ -141,6 +143,9 @@ When reviewing cross-backend changes, ask:
 - [ ] If a backend cannot provide it, is emptiness / `None` documented and asserted?
 - [ ] Would a caller branching on the field trip on a format-specific surprise?
 - [ ] Should the declarative corpus / conformance sweep grow an assertion?
+- [ ] Does an existing sentinel (`None`, an empty value, an enum member) take on a
+  **second meaning**? Callers branching on the old meaning now misread it; a new meaning
+  gets a new value.
 
 Parity hot spots from past reviews: `member.hashes`, `ListingCost` / `AccessCost`,
 `MemberStreams` / `StreamCapability`, timestamps/mode/links/`MemberType` (incl. `ANTI`),
@@ -175,6 +180,9 @@ those rules PRs in this repo actually break, and how to label a break. Violating
   `dev-docs/design-rules.md` settles — neither author nor reviewer silently picks a winner
 - [ ] **Comments** explain *why*, carry no history, point at nothing the diff removed, and
   claim nothing stronger than the code guarantees
+- [ ] **Every deletion is accounted for.** Each removed block is part of the change's
+  intent or moved (say where); otherwise it was lost. A removed check, `raise` or branch
+  whose behaviour the PR keeps still needs a test that covers it
 - [ ] **A preview or summary reports from the run's own state**, not a re-derivation from
   per-item results; where the state is handed across the public boundary, the hand-off is
   public or a recorded spec exception
@@ -185,6 +193,15 @@ Stale and overclaiming comments are the largest finding category in this repo by
 margin, and they are deliberately not automated: the wording is what makes them wrong, so a
 grep would miss the ones that matter and fire on the ones that do not. Read the comments
 *around* every hunk, not only the changed lines.
+
+### Text that shrinks or moves keeps its guards
+
+When a PR shortens, merges or moves prose (a docstring, spec, doc page, skill or agent
+guide), compare old and new sentence by sentence. Every guard ("unless", "only when"),
+quantifier ("most", "at least", "every") and scope word ("on seekable sources", "for ZIP")
+in the old text needs an equivalent in the new. A shortened rule tends to become an
+absolute that forbids what the old one allowed. A word diff (`--word-diff`) shows the
+dropped words.
 
 ### Pre-existing bugs — settled, do not re-escalate
 
@@ -227,6 +244,14 @@ tests; do not re-run the suite (`SKILL.md` §6).
   reason" and "the fixture never reaches this path" are the recurring shapes here
 - [ ] A finding that depends on extras says which config it needs: `[all]`,
   `[all-lowest]`, `[core-only]`
+- [ ] **A change to a gate is reviewed for green-while-broken**: CI workflows,
+  `scripts/check.sh` / `test.sh`, `review-loop.yml`, the skip markers in
+  `tests/conftest.py`, `scripts/setup-dev-env.sh`. Ask what the gate reports on a broken
+  tree after the change. A skip counts as a pass: a missing `unrar` or `7z` already skips
+  about a hundred tests while the suite stays green
+- [ ] **Hard to test means badly shaped.** If the behaviour can only be reached through a
+  monkeypatch of internals or a test-only hook, ask what should be extracted so it can be
+  tested directly
 
 "No test in the suite catches this" is usually a **strategy** gap — property, fuzz,
 fault-injection — not one missing example. Flag thin coverage honestly.
@@ -263,6 +288,8 @@ looking for. Severity: 🔴 blocking / 🟡 important / 🟢 nit.
   `review/archive/2026-07-19-api-coherence/`
 - [ ] Format backends stay behind the uniform reader contracts
 - [ ] Sync-first: no accidental async public API
+- [ ] No test-only seam in production code: a parameter, hook or `__all__` export that
+  exists only so a test can reach in
 
 ### Specs & docs (quick)
 

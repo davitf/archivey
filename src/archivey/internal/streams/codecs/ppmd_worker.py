@@ -20,9 +20,10 @@ Protocol, all integers little-endian, over the child's stdin and stdout:
   allocating its model (between the two replies) from one that never started.
 - Then, per request: ``<iI`` (length, data size) and the data bytes. The child calls
   ``decode(data, length)``.
-- Every reply, including the two to the opening message: ``<BBBI`` (status, eof,
-  needs_input, payload size) and the payload. Status 0 carries the decoded bytes;
-  status 1 carries ``"<exception type name>\\n<message>"`` in UTF-8.
+- Every reply, including the two to the opening message: ``<BBBII`` (status, eof,
+  needs_input, length of the decoder's ``unused_data``, payload size) and the
+  payload. Status 0 carries the decoded bytes; status 1 carries
+  ``"<exception type name>\\n<message>"`` in UTF-8.
 - The parent closes stdin to end the child.
 """
 
@@ -33,9 +34,11 @@ import struct
 import sys
 from typing import IO
 
-_OPEN = struct.Struct("<BBIB")
-_REQUEST = struct.Struct("<iI")
-_REPLY = struct.Struct("<BBBI")
+# The protocol's three messages. ``ppmd_child.py`` imports them from here, which
+# imports nothing back.
+OPEN = struct.Struct("<BBIB")
+REQUEST = struct.Struct("<iI")
+REPLY = struct.Struct("<BBBII")
 
 
 def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
@@ -52,7 +55,8 @@ def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
 def _reply(out: IO[bytes], status: int, decoder: object, payload: bytes) -> None:
     eof = bool(getattr(decoder, "eof", False))
     needs_input = bool(getattr(decoder, "needs_input", True))
-    out.write(_REPLY.pack(status, eof, needs_input, len(payload)))
+    unused = len(getattr(decoder, "unused_data", b"") or b"")
+    out.write(REPLY.pack(status, eof, needs_input, unused, len(payload)))
     out.write(payload)
     out.flush()
 
@@ -100,10 +104,10 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
-    header = _read_exact(stdin, _OPEN.size)
+    header = _read_exact(stdin, OPEN.size)
     if header is None:
         return
-    variant, order, mem_size, restore_method = _OPEN.unpack(header)
+    variant, order, mem_size, restore_method = OPEN.unpack(header)
     decoder = None
     try:
         import pyppmd
@@ -121,10 +125,10 @@ def main() -> None:
         return
     _reply(stdout, 0, decoder, b"")
     while True:
-        request = _read_exact(stdin, _REQUEST.size)
+        request = _read_exact(stdin, REQUEST.size)
         if request is None:
             return
-        length, size = _REQUEST.unpack(request)
+        length, size = REQUEST.unpack(request)
         data = _read_exact(stdin, size) if size else b""
         if data is None:
             return

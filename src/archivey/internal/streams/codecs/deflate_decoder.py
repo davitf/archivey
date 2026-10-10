@@ -260,6 +260,7 @@ def ZlibDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
+    refuse_input_after_end: bool = False,
 ) -> DecompressorStream:
     """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
     return DecompressorStream(
@@ -268,6 +269,7 @@ def ZlibDecompressorStream(
         collector=collector,
         codec_name=_zlib_label(wbits),
         report_trailing_data=report_trailing_data,
+        refuse_input_after_end=refuse_input_after_end,
     )
 
 
