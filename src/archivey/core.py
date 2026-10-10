@@ -41,7 +41,6 @@ from archivey.internal.arg_checks import (
     check_path_not_empty,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
-from archivey.internal.backends.udif import UDIF_UNSUPPORTED_MESSAGE
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -541,17 +540,19 @@ def _open_resolved(
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
-    # Detection claims DMG so this refusal can name the image and carry
-    # ``archive_name``. ``reader_for_format`` and ``UdifBackend.open_read`` raise
-    # the same error for a caller that reaches them, and neither has the name.
-    if resolved_format == ArchiveFormat.DMG:
+    # Detection claims a recognised-only format (DMG) so this refusal can name it and
+    # carry ``archive_name``. It comes before ``reader_for_format``, which raises the
+    # same text but takes no archive name. Such a backend's own ``open_read`` must
+    # raise the same refusal too, as ``UdifBackend`` does; nothing provides that.
+    registry = get_registry()
+    unread_message = registry.unread_format_message(resolved_format)
+    if unread_message is not None:
         raise UnsupportedFeatureError(
-            UDIF_UNSUPPORTED_MESSAGE,
+            unread_message,
             source_format=resolved_format,
             archive_name=archive_name,
         )
 
-    registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)
 
     # `password=` and `encoding=` are *resources offered for use if needed*, not
