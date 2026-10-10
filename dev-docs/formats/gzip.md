@@ -170,7 +170,27 @@ What crosses the boundary:
 - **How the child ended**, when it dies: its exit status and its standard error, scanned
   for `rapidgzip`'s abort message. An abort that names the truncation is `TruncatedError`,
   another crash `CorruptionError`, `SIGKILL` `ResourceLimitError` (usually the
-  out-of-memory killer), anything else `ReadError`. Every later call raises the same error.
+  out-of-memory killer), the exit status `MEMORY_LIMIT_EXIT` `ResourceLimitError` (the
+  memory cap below), anything else `ReadError`. Every later call raises the same error.
+
+**Memory.** `rapidgzip` keeps decoded chunks in memory, and a chunk is as large as its
+output, so its memory follows what the data decodes to: zeros compressed to 255 KB held
+285 MB, and a 1 MB file brought in the out-of-memory killer. No `rapidgzip` setting bounds
+it. `chunk_size` changed the peak but did not stop it growing with four threads. An
+address-space limit (`RLIMIT_AS`, `RLIMIT_DATA`) cannot bound it either: the allocator
+reserves about 2 GB of address space before the first byte (1.5 GB with one thread), and a
+decode under a smaller limit ends in a segmentation fault. So the child watches its own peak
+resident memory from a thread, every millisecond, once the source is open, and exits with
+`MEMORY_LIMIT_EXIT` when it has grown by more than `DecoderLimits.max_decoder_memory`
+(`watch_memory` in `rapidgzip_worker.py`). The parent marks that death like a crash on the
+data, so the standard library takes over from the last index point and reads the rest in
+bounded memory. Measured on 64 MiB of zeros, the child's peak was its start-up memory plus
+the cap plus about 17 MB, for caps of 8, 16 and 32 MiB; without a cap it was 87 MB. On a
+busy machine the watching thread can wait for a processor, and the peak passes the cap by
+more. Ordinary
+data on four threads held about 55 MB over start-up, so the 2 GiB default leaves room for
+about 140 threads. The peak is read with `getrusage` (Linux, macOS) or
+`GetProcessMemoryInfo` (Windows); where neither works, no cap applies.
 
 Where no child can start — a frozen application, no `sys.executable`, archivey imported
 from a zip so the worker is not a file, or a spawn or temporary file the system refuses —

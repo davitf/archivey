@@ -135,6 +135,15 @@ warning per process on the `archivey.streams` logger naming the reason and
 `ResourceLimitError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
 in-process.
 
+rapidgzip keeps decoded chunks in memory, so its memory grows with what the data decodes to,
+not with the size of the file. The child's memory SHALL be capped by
+`DecoderLimits.max_decoder_memory`, counted from when the child has opened the source: a child
+whose peak resident memory grows past the cap SHALL be stopped, and the stdlib backend SHALL
+read the rest of the stream, so the bytes delivered and the errors match `OFF`. The check MAY
+run at intervals, so the peak MAY pass the cap by what the decoder allocates between two
+checks. `None` sets no cap. Where the platform does not report the child's peak memory, no cap
+applies.
+
 rapidgzip over-reads past a DEFLATE end-of-stream looking for a concatenated member, so the
 codec SHALL feed it an exactly-bounded input (e.g. the container's `SlicingStream` sized to
 the member's compressed length); an unbounded or over-long stream MAY raise a spurious
@@ -154,6 +163,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | A raw DEFLATE stream cut before any output (`03`), `ON`, with or without a declared size | `TruncatedError`, as with `OFF` |
 | A raw DEFLATE stream cut after a whole block or inside its last one, `ON`, with or without a declared size equal to the output before the cut | `TruncatedError`, as with `OFF` |
 | A `deflate` or `zlib` stream declared empty that does not decode, `ON` | `CorruptionError`, as with `OFF` |
+| A gzip, zlib or `deflate` stream whose decode takes the child past `max_decoder_memory`, `ON` | The child is stopped; the stdlib backend delivers the rest, the same bytes as `OFF` |
 
 ### Requirement: Accelerator errors translate uniformly
 

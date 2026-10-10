@@ -59,6 +59,8 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     ARG_MIN,
     ERR,
     FRAME,
+    MAX_MEMORY_ENV,
+    MEMORY_LIMIT_EXIT,
     OK,
     OPEN,
     OPEN_PATH,
@@ -184,13 +186,16 @@ _CRASHED = "_archivey_rapidgzip_child_crashed"
 
 
 def crashed_on_data(exc: BaseException) -> bool:
-    """Whether ``exc`` reports a rapidgzip child that crashed while decoding.
+    """Whether ``exc`` reports a rapidgzip child that crashed while decoding, or that
+    was stopped over its memory limit.
 
     rapidgzip 0.16 aborts on a stream that ends early, so a crash is a verdict on the
     data (``TruncatedError``, or ``CorruptionError`` when the abort gave no reason)
     that the standard-library decoder can give more precisely, and it can read the
-    data before the fault that rapidgzip's read-ahead lost. A child killed from
-    outside, or one that ended after the caller's source failed, is not marked.
+    data before the fault that rapidgzip's read-ahead lost. A child over its memory
+    limit (``ResourceLimitError``) was stopped by what the data decodes to, and the
+    standard-library decoder reads the same data in bounded memory. A child killed
+    from outside, or one that ended after the caller's source failed, is not marked.
     """
     return getattr(exc, _CRASHED, False) is True
 
@@ -243,6 +248,13 @@ def _reported_error(payload: bytes) -> Exception:
             exc.errno = int(errno)
         return exc
     return RapidgzipChildReportedError(f"{name}: {message}")
+
+
+def _child_environment(max_memory: int | None) -> dict[str, str] | None:
+    """The child's environment: this process's, with the memory limit when there is one."""
+    if max_memory is None:
+        return None
+    return {**os.environ, MAX_MEMORY_ENV: str(max_memory)}
 
 
 def _reap(
@@ -306,13 +318,22 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     trip: the position is kept here.
 
     ``label`` names the codec in error messages (``gzip``, ``zlib``, ``deflate``).
+    ``max_memory`` is ``DecoderLimits.max_decoder_memory``: the child is ended when its
+    memory grows by more than that many bytes after the open (``watch_memory`` in the
+    worker), and every later call raises ``ResourceLimitError``. ``None`` sets no
+    limit.
     """
 
     def __init__(
-        self, source: str | os.PathLike[str] | BinaryIO, *, label: str
+        self,
+        source: str | os.PathLike[str] | BinaryIO,
+        *,
+        label: str,
+        max_memory: int | None = None,
     ) -> None:
         # Everything close() reads is assigned before anything that can raise.
         self._label = label
+        self._max_memory = max_memory
         self._proc: subprocess.Popen[bytes] | None = None
         self._stderr: IO[bytes] | None = None
         self._finalizer: weakref.finalize | None = None
@@ -363,7 +384,13 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             raise _start_error(str(exc)) from exc
         self._stderr = stderr
         try:
-            self._proc = spawn(argv, _start_error, stdin=subprocess.PIPE, stderr=stderr)
+            self._proc = spawn(
+                argv,
+                _start_error,
+                stdin=subprocess.PIPE,
+                stderr=stderr,
+                env=_child_environment(max_memory),
+            )
         except RapidgzipChildStartError:
             stderr.close()
             raise
@@ -565,6 +592,15 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 f"the rapidgzip decoder process for this {label} stream ended ({how}) "
                 f"after a read from the source failed: {caused_by_source!r}"
             )
+        elif returncode == MEMORY_LIMIT_EXIT:
+            cls = ResourceLimitError
+            message = (
+                f"the rapidgzip decoder process for this {label} stream was stopped: "
+                "its memory grew past DecoderLimits.max_decoder_memory="
+                f"{self._max_memory}. The decoder keeps decoded chunks in memory, and "
+                "this stream decodes to large chunks. Raise the limit if the data is "
+                "trusted, or set use_rapidgzip=AcceleratorMode.OFF."
+            )
         elif is_crash(returncode) and truncated:
             cls = TruncatedError
             message = (
@@ -593,7 +629,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 "be valid; try reading it again."
             )
         self._death = (cls, message)
-        self._crashed = caused_by_source is None and is_crash(returncode)
+        self._crashed = caused_by_source is None and (
+            is_crash(returncode) or returncode == MEMORY_LIMIT_EXIT
+        )
         return self._death_error()
 
     # --- the stream -----------------------------------------------------------------

@@ -686,7 +686,10 @@ decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib and raw DEFLATE (`internal/streams/codecs/rapidgzip_child.py`), and
 PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
 `internal/streams/codecs/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
-costs only the member.
+costs only the member. The rapidgzip child's memory is capped at
+`DecoderLimits.max_decoder_memory`: rapidgzip keeps decoded chunks, so a small file of
+zeros could otherwise take gigabytes, and the standard library takes over from a child
+stopped at the cap.
 
 **Residual.** `MemoryError` passes through, and an in-process native decoder can still
 abort the process ([accepted](#a-native-decoder-crash-or-memoryerror)).

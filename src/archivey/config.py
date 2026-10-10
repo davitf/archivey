@@ -397,6 +397,15 @@ class DecoderLimits:
     dictionary bounds how much of the output the decoder keeps, and the archive
     picks it.
 
+    ``max_decoder_memory`` also caps the rapidgzip accelerator for gzip, zlib and raw
+    DEFLATE, though no archive declares a size there. rapidgzip keeps whole decoded
+    chunks in memory, so a 1 MB gzip file of zeros made it hold close to 1 GiB. Its
+    child process is stopped when its memory grows past the cap, and the standard
+    library reads the rest of the stream, so the result does not change; only the
+    speed does. The check runs every millisecond, so the peak can pass the cap by what
+    the decoder allocates in that time (measured, about 17 MB on four cores, and more
+    on a busy machine, where the check can wait for a processor).
+
     The same shape holds for key derivation, which costs time rather than memory:
     RAR5 and 7z headers say how many hashing rounds turn a password into a key,
     and :attr:`max_key_derivation_rounds` caps their total over one open archive.
