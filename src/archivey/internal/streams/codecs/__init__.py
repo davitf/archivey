@@ -40,6 +40,15 @@ The package, one module per codec plus the shared pieces:
 This module re-exports the names other modules use.
 """
 
+# Imported so ``codecs.deps`` and the rapidgzip modules are attributes of this package
+# whatever the codec modules import: tests patch through them.
+from archivey.internal.streams.codecs import (  # noqa: F401
+    deflate_family_codec,
+    deps,
+    rapidgzip_inprocess,
+    rapidgzip_select,
+    stdlib_takeover,
+)
 from archivey.internal.streams.codecs.base import (
     LZMA_FILTER_IDS,
     Codec,

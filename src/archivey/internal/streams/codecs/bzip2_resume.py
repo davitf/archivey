@@ -24,7 +24,7 @@ and the stdlib's own :class:`~archivey.exceptions.TruncatedError` is the verdict
 
 The caller is ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py``, which
 takes over a read from rapidgzip's bzip2 decoder; the points come from
-``_bzip2_resume_points`` there.
+``_bzip2_resume_points`` in ``codecs/bzip2_codec.py``.
 """
 
 from __future__ import annotations

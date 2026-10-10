@@ -3,7 +3,7 @@
 On a free-threaded CPython, importing an extension module that has not declared
 free-thread support re-enables the GIL for the whole process. pyppmd, inflate64, brotli
 and rapidgzip are such modules, so ``codecs/deps.py`` finds them without importing them and
-imports each one only when a stream needs it (``_LazyOptional``). These tests run a
+imports each one only when a stream needs it (``LazyOptional``). These tests run a
 fresh interpreter, because this pytest process has imported them already.
 """
 

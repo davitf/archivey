@@ -1,6 +1,7 @@
 """rapidgzip for the DEFLATE family and bzip2: whether to use it, opening it in a child
-process, translating its errors, and the wrappers that keep the standard library's
-seek and length contract around it.
+process for the DEFLATE family (bzip2 runs in process, see ``rapidgzip_inprocess``),
+translating its errors, and the wrappers that keep the standard library's seek and length
+contract around it.
 """
 
 from __future__ import annotations
