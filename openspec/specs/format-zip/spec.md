@@ -127,7 +127,9 @@ declared size, `CorruptionError` otherwise). AE-2 members SHALL surface no
 members SHALL surface and verify `crc32` in addition to the HMAC. AES
 decryption requires `cryptography` (`[recommended]`); when it is absent an AE member SHALL raise
 `PackageNotInstalledError` (detection still identifies the member as
-AES-encrypted). With several possible passwords, WinZip AES candidates SHALL be
+AES-encrypted), except that a member no library can read, one whose declared size cannot
+hold salt, verification value and HMAC, SHALL raise `CorruptionError` with or without
+`cryptography`. With several possible passwords, WinZip AES candidates SHALL be
 confirmed as "Confirm multi-candidate ZipCrypto passwords" describes, not accepted on
 the verification value alone.
 
@@ -140,10 +142,12 @@ the verification value alone.
 | Tampered ciphertext, correct password | HMAC mismatch → `CorruptionError` at terminal read |
 | Tampered ciphertext, several candidates including the correct one | `CorruptionError` naming the member as most likely damaged |
 | Declared size past the stored data, one password or several | `TruncatedError` |
+| Declared size too small for the encryption header | `CorruptionError` naming the member |
 | Tampered ciphertext, partial read then `close()` | Quiet; `close()` is teardown, not a verdict (ADR 0014) |
 | AE-2 member | `crc32` absent; no CRC check; HMAC is the integrity signal |
 | AE-1 member | `crc32` present and verified alongside the HMAC |
 | AES member without `cryptography` installed | `PackageNotInstalledError`; still reported as encrypted |
+| Same, declared size too small for the encryption header | `CorruptionError` |
 | Several candidates, a wrong one passing the verification value first | Wrong candidate rejected by the confirm; the right one reads |
 
 ### Requirement: Refuse PKWARE Strong Encryption
@@ -411,6 +415,7 @@ Rejected-candidate streams SHALL be closed before trying the next candidate.
 | WinZip AES candidates all fail after passing `pw_verify` | `CorruptionError` (`TruncatedError` for a short member); no bytes returned |
 | `OSError` from the source | Propagates unchanged; failed stream is closed |
 | Structural local-header damage | `CorruptionError`; no further password iteration |
+| Declared size too small for the encryption header | `CorruptionError` naming the member |
 | One distinct static candidate, stream closed before EOF | Data returned; `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`) |
 | Several candidates, STORED or compressed member within the prefix, stream closed before EOF | No diagnostic (the CRC confirmed the winner) |
 | Several candidates, compressed member past the prefix, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`); winner not added to known-good |

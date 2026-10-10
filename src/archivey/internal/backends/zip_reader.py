@@ -1187,7 +1187,8 @@ class ZipReader(BaseArchiveReader):
         """Read the 12-byte ZipCrypto header from the start of ``raw``, the payload.
 
         A declared size too small for the header is an impossible header,
-        ``CorruptionError``, as for WinZip AES. A payload the file cuts short is
+        ``CorruptionError``, as for WinZip AES. The STORED confirm pass is gated above
+        this size, so only the decrypt stage reaches that check. A payload the file cuts short is
         ``TruncatedError`` on every password path. ``raw`` is left open, positioned at
         the ciphertext body.
         """
@@ -2472,7 +2473,7 @@ def _unicode_path_name(extra: bytes, stored_name: bytes) -> bytes | None:
 
 
 def _is_encrypted_entry(info: zipfile.ZipInfo) -> bool:
-    """True when ``info`` needs a password: bit 0, or WinZip AES (method 99).
+    """True when ``info``'s data is encrypted: bit 0, or method 99 (WinZip AES).
 
     Writers set bit 0 on WinZip AES members too, but method 99 alone means the data
     is encrypted, so listing and opening both ask this one predicate.

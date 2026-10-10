@@ -21,6 +21,7 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_aes import (
     ExtraField,
@@ -494,18 +495,19 @@ def test_aes_multi_password_selects_winner() -> None:
         assert ar.read(ar.members()[0]) == _PAYLOAD
 
 
-def _minimal_aes_zip_bytes() -> bytes:
+def _minimal_aes_zip_bytes(body: bytes | None = None) -> bytes:
     """A tiny method-99 ZIP with a valid 0x9901 extra (no cryptography needed to build).
 
     The ciphertext body is garbage — only used to exercise the cryptography-absent path,
-    which fails before decryption.
+    which fails before decryption. ``body`` replaces it; the declared sizes follow.
     """
     name = b"x.txt"
     # AE-2, strength 1 (128), actual method STORED
     aes_extra = struct.pack("<H2sBH", 2, b"AE", 1, 0)
     extra = struct.pack("<HH", 0x9901, len(aes_extra)) + aes_extra
-    # salt(8) + verify(2) + cipher(1) + hmac(10)
-    body = b"\0" * (8 + 2 + 1 + 10)
+    if body is None:
+        # salt(8) + verify(2) + cipher(1) + hmac(10)
+        body = b"\0" * (8 + 2 + 1 + 10)
     flags = 0x1
     local = struct.pack(
         "<IHHHHHIIIHH",
@@ -557,6 +559,28 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         assert member.is_encrypted  # detection still works
         with pytest.raises(PackageNotInstalledError, match="cryptography"):
             ar.read(member)
+
+
+@pytest.mark.parametrize(
+    "password", [_PASSWORD, [b"wrong", _PASSWORD]], ids=["single", "multi"]
+)
+def test_aes_header_too_short_is_corruption_without_crypto(
+    monkeypatch: pytest.MonkeyPatch, password: bytes | list[bytes]
+) -> None:
+    """An impossible AES header is ``CorruptionError`` whether or not ``cryptography`` is installed.
+
+    No library can read a member whose declared size cannot hold salt, verification
+    value and HMAC, so the missing package is not the reason it fails (DR-5).
+    """
+    import archivey.internal.backends.zip_aes as zip_aes_module
+
+    monkeypatch.setattr(zip_aes_module, "_crypto_available", lambda: False)
+    data = _minimal_aes_zip_bytes(body=b"\0" * 5)
+    with open_archive(io.BytesIO(data), password=password) as ar:
+        (member,) = ar.members()
+        with raises_corruption_not_truncation() as excinfo:
+            ar.open(member)
+    assert excinfo.value.member_name == "x.txt"
 
 
 def test_parse_aes_extra_roundtrip() -> None:
@@ -992,3 +1016,14 @@ def test_method_99_without_encryption_flag_lists_as_encrypted() -> None:
             ar.read(member)
     with open_archive(io.BytesIO(bytes(blob)), password=_PASSWORD) as ar:
         assert ar.read(ar.members()[0]) == _PAYLOAD
+    # Without a 0x9901 extra no password is asked for, but the data is still
+    # encrypted, so the listing still says so.
+    no_extra = bytes(blob).replace(
+        struct.pack("<H", 0x9901) + b"\x07\x00", b"\xfe\xca\x07\x00"
+    )
+    assert no_extra.count(b"\xfe\xca\x07\x00") == 2  # local and central headers
+    with open_archive(io.BytesIO(no_extra), password=_PASSWORD) as ar:
+        member = ar.members()[0]
+        assert member.is_encrypted
+        with pytest.raises(UnsupportedFeatureError, match="0x9901"):
+            ar.open(member)
