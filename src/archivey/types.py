@@ -682,9 +682,11 @@ class ArchiveMember:
     ``name`` is ``raw_name`` decoded and normalized. Where the archive stores the
     name twice, ``raw_name`` is the spelling the name was decoded from: a ZIP name
     taken from its Info-ZIP Unicode Path extra field (0x7075) has that field's UTF-8
-    bytes here, and the header's bytes in ``extra["alternate_raw_name"]``. One
-    exception remains: an ISO Rock Ridge name that is not UTF-8 and takes its Joliet
-    name keeps the Rock Ridge bytes here."""
+    bytes here, and the header's bytes in ``extra["alternate_raw_name"]``. Two
+    exceptions remain: an ISO Rock Ridge name that is not UTF-8 and takes its Joliet
+    name keeps the Rock Ridge bytes here; and a gzip file's member is named after the
+    archive file, while ``raw_name`` holds the original file name stored in the gzip
+    header (``FNAME``), also in ``extra["gzip.original_filename"]``."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""

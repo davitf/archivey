@@ -55,7 +55,7 @@ permissions gets written as it is:
 | `policy` | Names | Permissions |
 |---|---|---|
 | `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders always `rwxr-xr-x` |
-| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits |
+| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, write access for group and others included, but without setuid, setgid and sticky bits |
 | `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root |
 
 `overwrite` decides what happens when a file is already where a member would go:

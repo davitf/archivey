@@ -193,7 +193,8 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   archive-wide static ratio, **live** ratio for unknown-size/pipe sources, and an entry
   count cap — the global guards halt even under `OnError.CONTINUE`.
 - **Permission hygiene:** setuid/setgid/sticky stripped except under `TRUSTED`;
-  ownership applied only under `TRUSTED` as root.
+  ownership applied only under `TRUSTED` as root. `STANDARD` keeps group and other
+  write bits, unlike `tarfile`'s `data` filter.
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
@@ -297,7 +298,7 @@ read `ExtractionResult.presented_name` and let extraction finish.
 | Policy | Intent |
 | --- | --- |
 | `STRICT` | Untrusted archives (default) |
-| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
+| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute and group or other write included (the umask does not apply, so a stored `0o666` file stays `0o666`), but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
 | `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
 
 Selective extract:
