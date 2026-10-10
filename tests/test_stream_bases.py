@@ -341,7 +341,7 @@ def _import_all_archivey_modules() -> None:
             continue
         try:
             importlib.import_module(module.name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any import-time failure is this check
             raise ImportError(
                 f"{module.name} failed to import while walking archivey modules "
                 "for the ReadOnlyIOStream resume-offset inventory. This walk also "
@@ -389,31 +389,31 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     """
     _import_all_archivey_modules()
 
+    import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_copy_sources as rar_copy_sources
+    import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
+    import archivey.internal.backends.tar_reader as tar_reader
+    import archivey.internal.backends.zip_aes as zip_aes
+    import archivey.internal.backends.zip_reader as zip_reader
+    import archivey.internal.backends.zipcrypto as zipcrypto
+    import archivey.internal.detection as detection
+    import archivey.internal.external.cli as cli
+    import archivey.internal.external.unar as unar
+    import archivey.internal.password_confirm as password_confirm
     import archivey.internal.source as source_mod
+    import archivey.internal.streams.archive_stream as archive_stream
+    import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.codecs.bcj2_filter as bcj2
+    import archivey.internal.streams.codecs.rapidgzip_child as rapidgzip_child
+    import archivey.internal.streams.counting as counting
+    import archivey.internal.streams.crypto as crypto
+    import archivey.internal.streams.decompressor_stream as decompressor_stream
+    import archivey.internal.streams.streamtools.locked as locked
     import archivey.internal.streams.streamtools.slice as slice_mod
-    from archivey.internal import detection, password_confirm
-    from archivey.internal.backends import (
-        iso_reader,
-        rar_copy_sources,
-        rar_reader,
-        sevenzip_pipeline,
-        tar_reader,
-        zip_aes,
-        zip_reader,
-        zipcrypto,
-    )
-    from archivey.internal.external import cli, unar
-    from archivey.internal.streams import (
-        archive_stream,
-        codecs,
-        counting,
-        crypto,
-        decompressor_stream,
-        verify,
-    )
-    from archivey.internal.streams.codecs import rapidgzip_child
-    from archivey.internal.streams.streamtools import locked, solid, sparse
+    import archivey.internal.streams.streamtools.solid as solid
+    import archivey.internal.streams.streamtools.sparse as sparse
+    import archivey.internal.streams.verify as verify
 
     forwards_or_owns = {
         archive_stream.ArchiveStream,
@@ -595,17 +595,18 @@ def test_delegating_stream_close_inventory() -> None:
     """
     _import_all_archivey_modules()
 
-    from archivey.internal import password_confirm
-    from archivey.internal.backends import (
-        iso_reader,
-        rar_copy_sources,
-        rar_reader,
-        sevenzip_pipeline,
-        zip_reader,
-    )
-    from archivey.internal.external import cli, unar
-    from archivey.internal.streams import codecs, counting
-    from archivey.internal.streams.streamtools import locked, sparse
+    import archivey.internal.backends.iso_reader as iso_reader
+    import archivey.internal.backends.rar_copy_sources as rar_copy_sources
+    import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
+    import archivey.internal.backends.zip_reader as zip_reader
+    import archivey.internal.external.cli as cli
+    import archivey.internal.external.unar as unar
+    import archivey.internal.password_confirm as password_confirm
+    import archivey.internal.streams.codecs as codecs
+    import archivey.internal.streams.counting as counting
+    import archivey.internal.streams.streamtools.locked as locked
+    import archivey.internal.streams.streamtools.sparse as sparse
 
     owns_via_base = {
         locked.LockedStream,
@@ -760,7 +761,7 @@ def test_delegating_stream_peel_inventory() -> None:
     ``source_byte_size`` from its own ``size`` rather than by being peeled.
     """
     _import_all_archivey_modules()
-    from archivey.internal.streams import counting
+    import archivey.internal.streams.counting as counting
 
     found = _delegating_stream_subclasses()
     peels = {cls for cls in found if cls.peel_for_source_size is True}
