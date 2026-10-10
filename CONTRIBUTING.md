@@ -177,6 +177,8 @@ maintainer.
 
 - **Keep it simple and well typed.** Prefer straightforward code over cleverness; type
   everything that's part of, or feeds, the public API.
+- **Share code that must agree; copy code that agrees by coincidence** (DR-23a). Before
+  factoring out duplicated code, ask whether a change to one copy must reach the other.
 - **Don't accumulate debt — clean as you go** (DR-23). When you touch something, leave it
   in the shape it *should* have: a rename, a moved file, an updated doc or spec, or a small
   refactor goes in this change. Renaming a type or changing a contract updates the prose
