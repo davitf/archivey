@@ -145,7 +145,7 @@ What is filled in on the member, and where from:
 | --- | --- |
 | `name` | The source's filename, as in §1 |
 | `size` | xz: the stream index; lzip: the member trailers; LZMA Alone: the header, when it is not the "unknown" marker. `None` for every other codec |
-| `compressed_size` | The source's length, from one `seek(0, SEEK_END)` on any seekable source. `None` on a pipe |
+| `compressed_size` | The source's length: its cheap size (a path's `stat`, a `BytesIO`, a member stream's advertised `size`), else one `seek(0, SEEK_END)` on a seekable source. `None` on a pipe, and on a member stream that advertises no length |
 | `modified` | gzip's `MTIME`, when non-zero. `None` for every other codec |
 | `raw_name`, `extra["gzip.original_filename"]` | gzip's `FNAME` ([`gzip.md`](gzip.md) §2.2) |
 | `hashes` | lzip only: the CRC-32 of the whole content, combined from each member's trailer ([`xz.md`](xz.md) §2.2) |
@@ -155,6 +155,15 @@ source. That peek is decided by the source's shape, not by `seekable_members`: t
 declaration is about seeking the member stream, and the peek hands nobody a stream. Tying
 it to the flag would make the same `.xz` report `size=None` on a plain open and its size
 with the flag. The peeks run with the accelerators off, since they decode nothing.
+
+A source whose seek may re-decode is not peeked: another archive's member stream, for
+example a `.xz` stored deflated in a ZIP and passed to `open_archive(member_stream)`
+(`seek_is_expensive`, the same test detection uses, [`topics/detection.md`](../topics/detection.md)).
+A seek to its end decompresses the whole member, and the restore decompresses it again.
+Such a source reports `size=None`, no lzip `CRC32`, and a `compressed_size` only when
+the member stream advertises its length. These fields are metadata: the decoder still
+checks the xz index and the lzip trailers when the member is read. The gzip codec's own
+ISIZE peek at codec open ([`gzip.md`](gzip.md) §2.3) is separate and still runs.
 
 `ArchiveInfo` has `member_count=1`, `format_version=None`, `comment=None` and
 `is_solid=False`.

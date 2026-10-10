@@ -109,6 +109,16 @@ an indexed decompressor backend and resolve accelerator `AUTO`, and they MUST NO
 what metadata a member reports. A seekable source SHALL yield the same `member.size` with
 and without the declaration; a non-seekable source SHALL yield `None` for every
 index/trailer-derived size, and no probe SHALL force a decompression pass to obtain one.
+A source whose seek may re-decode (another archive's member stream, bare or under a
+pass-through buffer: `seek_is_expensive`) counts as one that cannot reach its end
+cheaply: the xz index and the lzip trailers sit at the end, and reaching them would
+decompress the whole member, so the size is `None`.
+
+`member.compressed_size` SHALL be the source's length when that is cheap to learn: the
+source's cheap size (a path's `stat`, a `BytesIO`'s buffer, a member stream's advertised
+`size`), else one `seek(0, SEEK_END)` on a seekable source whose seek is cheap. A pipe,
+and a source whose seek may re-decode and that advertises no length, SHALL report `None`
+rather than seek to the end.
 
 When a decoder learns the true uncompressed size after EOF, the member MAY be
 updated to that byte count.
@@ -123,6 +133,10 @@ updated to that byte count.
 | `.lz` opened from a seekable source | Size is available from the trailer |
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None`; no decode pass is forced |
+| `.xz` / `.lz` opened from another archive's member stream | Size is `None`; the member is not seeked to its end |
+| `.gz` from a path or `BytesIO` | `compressed_size` is the source's length |
+| `.gz` from a member stream that advertises its length | `compressed_size` is that length; no seek to the end |
+| `.gz` from a member stream with no advertised length | `compressed_size` is `None`; no seek to the end |
 | Alone stream with known header size | `member.size` equals that size |
 | Alone stream with unknown-size marker | Size is `None` until EOF may update it |
 | Truncated `.Z` with nonzero leftover bits | Available bytes delivered; next `read()` raises `TruncatedError` |
@@ -208,8 +222,8 @@ caller does a plain `open_archive()` and never asks to `seek()`.
   `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
   each member's exact uncompressed `data_size` (combine algebra). Single-member
   degenerates to the trailer CRC.
-- **Non-seekable source:** omit digests that require a trailer/index peek (no forced
-  decode).
+- **Non-seekable source, or one whose seek may re-decode** (a member stream): omit
+  digests that require a trailer/index peek (no forced decode).
 - **BZ2, XZ, ZLIB, BR, `.Z`:** no cheap whole-member stored digest — omit. (Zlib's
   RFC 1950 Adler-32 trailer is verified by the decompressor on read; it is not surfaced
   on `member.hashes` because the wrapper has no size fields for a reliable
@@ -226,6 +240,7 @@ caller does a plain `open_archive()` and never asks to `seek()`.
 | Multi-member `.lz`, seekable source | `CRC32` present (= combine of per-member trailers) |
 | `.lz` seekable, with and without `seekable_members=True` | Same `hashes` both ways |
 | `.lz` from a pipe | no digest key |
+| `.lz` opened from another archive's member stream | no digest key |
 | `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | no digest key |
 | Any of the above, full `read()` | verification unchanged; hashes are metadata only |
 
