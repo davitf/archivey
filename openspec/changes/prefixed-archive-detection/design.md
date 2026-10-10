@@ -250,10 +250,11 @@ workload exists.
 JPEG/PNG/PDF magic list to classify prefixes. `PrefixKind` is `NONE` / `EXECUTABLE` /
 `SCRIPT` / `UNKNOWN`. A prefix that is not an executable or a shebang is `UNKNOWN`,
 whether the offset came from the tail probe, the cued scan, or the exhaustive scan —
-those are `detected_by` values, not kinds. `#274` (`archive-origin-reporting`, since
-deleted as stale) listed `OTHER_FORMAT` and also uses `UNKNOWN` for *origin not established*
+those are `detected_by` values, not kinds. `archive-origin-reporting` (#274) listed
+`OTHER_FORMAT` and also used `UNKNOWN` for *origin not established*
 (`payload_offset is None`); the second meaning stays on the `int | None` axis, not on a
-fifth enum member. That PR rebases onto this enum.
+fifth enum member. That change was retired unimplemented on 2026-10-10
+(`openspec/changes/archive/2026-10-10-archive-origin-reporting/`).
 
 **Makeself / compressor needles are a later block, and opening them needs backend
 work this change's tasks originally omitted.** TAR and the single-file codecs currently
@@ -437,14 +438,10 @@ the keyword (task 3.1). There is no `exhaustive_prefix_scan` bool. Exhaustive sc
 the ZIP tail remain budget numbers (`max_scan_bytes`, `max_tail_bytes` / `max_seeks`).
 `open_archive` already takes `config=`; detection reads the field from there.
 
-> `archive-origin-reporting` was deleted as stale on 2026-10-10. Reporting the payload
-> origin on `ArchiveInfo` would need a new change; the paragraph below is kept as history.
+**What a forced `format=ZIP` reports.** Under the default decided above it does not run
+the tail probe to fill `payload_offset`: `UNKNOWN` + `payload_offset is None` stays the
+honest forced-ZIP answer unless the caller opted into a budget that grants `TAIL`.
 
-**`archive-origin-reporting` (#274) is sequenced after this change** because it reuses
-`PrefixKind` on `ArchiveInfo`. It also unifies the RAR/7z origin resolver onto `MagicHit`
-and asks whether forced `format=ZIP` should run the tail probe to fill
-`payload_offset`. Under the default decided above the answer is no: `UNKNOWN` +
-`payload_offset is None` stays the honest forced-ZIP answer unless the caller opted into
-a budget that grants `TAIL`. The "drop `OTHER_FORMAT`" instruction lives on that PR's
-thread, not in this tree — `#274` is unmerged, so there is no in-repo change to annotate.
-(As of `fe45330` on that branch the merge is already applied.)
+The follow-up that would have reused `PrefixKind` on `ArchiveInfo`,
+`archive-origin-reporting`, was retired on 2026-10-10; its archived proposal lists what a
+later change would still have to carry.

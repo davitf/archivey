@@ -1,7 +1,7 @@
 # Fold `_HeaderDecryptStream` into `AesDecryptStream`
 
-> **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). Nothing here is in
-> progress. The release does not need this change, and the drafted design stays here so a
+> **Parked, not part of 0.2.0** (maintainer decision, 2026-10-07). No further work is
+> scheduled. The release does not need this change, and the drafted design stays here so a
 > later change can pick it up. It is tracked internally.
 
 **Prerequisite: `rar-archive-offset-and-aes-cursor`.** That change carries what was §1 and
