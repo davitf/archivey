@@ -66,7 +66,6 @@ from archivey.types import (
     ExtractionResult,
     ExtractionStatus,
     MemberFilter,
-    MemberSelectorArg,
     MemberType,
     OnError,
     OverwritePolicy,
@@ -851,9 +850,9 @@ class ExtractionCoordinator:
         self._on_error = on_error
         self._abort_on = frozenset(abort_on)
         self._on_progress = on_progress
-        # Already normalized by ``extract_all()``, which owns the caller's argument: a
-        # one-shot iterable can be read only once, so normalizing it again here would
-        # see it empty and select nothing.
+        # A predicate, never the caller's raw ``members=``: that argument may be a
+        # one-shot iterable, so only the public entry point reads it, and the caller
+        # passes the normalized result here.
         self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
@@ -1106,7 +1105,7 @@ class ExtractionCoordinator:
     def _run_pass(
         self,
         reader: BaseArchiveReader,
-        stream_selector: MemberSelectorArg,
+        stream_selector: Callable[[ArchiveMember], bool] | None,
         selected_total: int | None,
     ) -> None:
         """The forward pass and the orphan second pass, appending into the results.

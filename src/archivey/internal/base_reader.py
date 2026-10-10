@@ -2905,11 +2905,11 @@ class BaseArchiveReader(ArchiveReader):
         # the extraction is under way; a non-callable there reads as
         # ``TypeError: 'int' object is not callable`` with nothing naming the argument.
         check_callable(filter, call="extract_all(filter=…)")
-        # ``members=`` used to be checked inside the coordinator, after dest was
-        # created. Same reason as filter: a refusal that has already touched the disk
-        # is a side effect of a call the caller got wrong. Normalized here once and
-        # the result passed on: ``members`` may be a one-shot iterable, which a second
-        # normalization would read empty and so select nothing.
+        # ``members=`` is checked before dest is created, for the same reason as
+        # filter: a refusal that has already touched the disk is a side effect of a
+        # call the caller got wrong. It is normalized here once and only the result is
+        # passed on, because ``members`` may be a one-shot iterable that a second read
+        # would find empty.
         selector = normalize_member_selector(members)
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all

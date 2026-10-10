@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import tarfile
 import zipfile
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -259,22 +258,24 @@ def test_extract_all_with_a_free_list_collects_by_default(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
-@pytest.mark.parametrize("make", [_zip, _tar], ids=["zip", "tar"])
+@pytest.mark.parametrize("fmt", ["zip", "tar"])
 def test_extract_all_reads_a_one_shot_iterable_once(
-    tmp_path: Path, make: Callable[[list[tuple[str, bytes]]], bytes], streaming: bool
+    tmp_path: Path, fmt: str, streaming: bool
 ) -> None:
     """A generator passed as ``members=`` selects the same members as a list.
 
-    ``extract_all()`` used to iterate the selector once to check it and hand the
-    exhausted generator on, so nothing was extracted and nothing was reported.
+    A generator can be read once, so ``extract_all()`` must read it once: a second
+    read finds it empty, extracts nothing and reports nothing.
 
     Mutant: normalize the caller's ``members`` again inside the coordinator and the
     report is empty, with no unmatched entry.
     """
-    data = make([("a.txt", b"a"), ("b.txt", b"b")])
-    wanted = iter(["a.txt", "typo.txt"])
+    if fmt == "zip":
+        data = _zip([("a.txt", b"a"), ("b.txt", b"b")])
+    else:
+        data = _tar([("a.txt", b"a"), ("b.txt", b"b")])
     with open_archive(io.BytesIO(data), streaming=streaming) as ar:
-        report = ar.extract_all(tmp_path, members=(n for n in wanted))
+        report = ar.extract_all(tmp_path, members=(n for n in ["a.txt", "typo.txt"]))
     assert [r.member.name for r in report] == ["a.txt"]
     assert (tmp_path / "a.txt").read_bytes() == b"a"
     assert not (tmp_path / "b.txt").exists()
@@ -283,8 +284,9 @@ def test_extract_all_reads_a_one_shot_iterable_once(
 
 def test_stream_members_reads_a_one_shot_iterable_once() -> None:
     with open_archive(io.BytesIO(_zip([("a.txt", b"a"), ("b.txt", b"b")]))) as ar:
-        wanted = iter(["b.txt", "typo.txt"])
-        selected = [m.name for m, _s in ar.stream_members(n for n in wanted)]
+        selected = [
+            m.name for m, _s in ar.stream_members(n for n in ["b.txt", "typo.txt"])
+        ]
         assert selected == ["b.txt"]
         assert _unmatched(ar.diagnostics) == [("typo.txt", "name")]
 
