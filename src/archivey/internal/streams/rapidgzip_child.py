@@ -21,7 +21,7 @@ start the child and import rapidgzip, and about 70 µs per round trip. A full re
 than the stdlib engine.
 
 bzip2 is not here: rapidgzip's bzip2 decoder has not been seen to abort on truncated
-input, and it stays in-process (``_AcceleratorStream`` in ``codecs.py``).
+input, and it stays in-process (``_AcceleratorStream`` in ``codecs/rapidgzip_inprocess.py``).
 """
 
 from __future__ import annotations

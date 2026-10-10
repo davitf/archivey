@@ -349,7 +349,7 @@ def test_the_next_lzma_stream_rule_matches_what_liblzma_decodes() -> None:
             decodes = True
         except lzma.LZMAError:
             decodes = False
-        assert codecs._alone_props_liblzma_decodes(props) is decodes, props
+        assert codecs.lzma_codec._alone_props_liblzma_decodes(props) is decodes, props
 
 
 @requires_zstd()

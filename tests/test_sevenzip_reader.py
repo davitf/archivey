@@ -1417,7 +1417,7 @@ def test_unknown_folder_method_is_rejected() -> None:
 def test_ppmd_without_pyppmd_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = _reader_for_unit_tests()
     monkeypatch.setattr(
-        codecs, "_pyppmd", codecs._LazyOptional("pyppmd", present=False)
+        codecs.deps, "pyppmd", codecs.deps.LazyOptional("pyppmd", present=False)
     )
     properties = struct.pack("<BL", 6, 1 << 20)
 
@@ -2467,7 +2467,7 @@ def test_map_files_to_folders_solid_and_nonsolid() -> None:
 
 def test_lz4_without_lz4_package_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = _reader_for_unit_tests()
-    monkeypatch.setattr(codecs, "_lz4_frame", None)
+    monkeypatch.setattr(codecs.deps, "lz4_frame", None)
 
     with pytest.raises(PackageNotInstalledError, match="lz4"):
         _open_pipeline(

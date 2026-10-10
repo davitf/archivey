@@ -169,7 +169,7 @@ caller's own stream that fails or is closed mid-read:
   raises (a failed read is an end of input); this process serves the reads from the
   caller's stream and raises the caller's exception itself.
 - bzip2 decodes in-process and reads a caller-owned stream through `_TrappingSource` in
-  `codecs.py`, which parks the callback's exception and returns an EOF-shaped value.
+  `codecs/rapidgzip_inprocess.py`, which parks the callback's exception and returns an EOF-shaped value.
   `_AcceleratorStream` re-raises it after the call, marked as the caller's, so an
   `EOFError` from a dropped network stream stays an `EOFError`
   ([`topics/exception-handlers.md`](topics/exception-handlers.md) §C-boundary trap).

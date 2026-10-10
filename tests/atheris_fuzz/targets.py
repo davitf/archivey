@@ -23,11 +23,11 @@ from archivey.internal.backends.rar_unrar import find_rarlab_unrar
 from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs import (
-    _MEMBER_PROBE_INPUT,
     Codec,
     is_codec_available,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.gzip_codec import _MEMBER_PROBE_INPUT
 from archivey.types import FormatSupport
 from tests.atheris_fuzz.crc_fixup import (
     fixup_rar_header_crcs,
@@ -450,8 +450,8 @@ def accelerator_available(codec: Codec) -> Callable[[], bool]:
     """Whether ``codec``'s accelerator can run here (rapidgzip installed, child spawnable)."""
 
     def _check() -> bool:
-        from archivey.internal.streams.codecs import (
-            _bzip2_uses_accelerator,
+        from archivey.internal.streams.codecs.bzip2_codec import _bzip2_uses_accelerator
+        from archivey.internal.streams.codecs.rapidgzip_select import (
             _deflate_family_uses_accelerator,
         )
         from archivey.internal.streams.rapidgzip_child import (

@@ -38,9 +38,11 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import (
     Codec,
-    _deflate_family_uses_accelerator,
     gzip_has_additional_member,
     open_codec_stream,
+)
+from archivey.internal.streams.codecs.rapidgzip_select import (
+    _deflate_family_uses_accelerator,
 )
 from archivey.internal.streams.rapidgzip_child import (
     rapidgzip_child_unavailable_reason,
@@ -497,7 +499,7 @@ def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts
     early (three or more members, or a last member longer than its probe); never a
     single member, padded or not; and not the small last member of two, which the
     backstop catches and the target should notice if it stopped."""
-    from archivey.internal.streams.codecs import _MEMBER_PROBE_INPUT
+    from archivey.internal.streams.codecs.gzip_codec import _MEMBER_PROBE_INPUT
     from tests.atheris_fuzz.targets import _gzip_ignoring_lengths
 
     def member(content: bytes, *, wrong_isize: bool = False) -> bytes:
@@ -566,13 +568,17 @@ def test_a_real_further_gzip_member_needs_no_second_decode(
     expected, and the confirmed member keeps the standard library out of it. A healthy
     one-member file matches its trailer, and its decode reaches the end of the source."""
     handovers: list[object] = []
-    original = codecs._StdlibOnAcceleratorError.switch_to_stdlib
+    original = codecs.stdlib_takeover._StdlibOnAcceleratorError.switch_to_stdlib
 
-    def spy(self: codecs._StdlibOnAcceleratorError, *args: object) -> None:
+    def spy(
+        self: codecs.stdlib_takeover._StdlibOnAcceleratorError, *args: object
+    ) -> None:
         handovers.append(args)
         original(self, *args)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(codecs._StdlibOnAcceleratorError, "switch_to_stdlib", spy)
+    monkeypatch.setattr(
+        codecs.stdlib_takeover._StdlibOnAcceleratorError, "switch_to_stdlib", spy
+    )
     got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
     assert error is None
     assert got == gzip.decompress(blob)
@@ -658,9 +664,9 @@ def test_gzip_member_probe_output_stays_within_its_bound(monkeypatch) -> None:
         def __getattr__(self, name: str) -> object:
             return getattr(self._decoder, name)
 
-    monkeypatch.setattr(codecs.zlib, "decompressobj", _Counting)
-    assert codecs._gzip_member_at(io.BytesIO(member), 0, 1 << 20)[0] is True
-    assert produced == codecs._MEMBER_PROBE_OUTPUT
+    monkeypatch.setattr(codecs.gzip_codec.zlib, "decompressobj", _Counting)
+    assert codecs.gzip_codec._gzip_member_at(io.BytesIO(member), 0, 1 << 20)[0] is True
+    assert produced == codecs.gzip_codec._MEMBER_PROBE_OUTPUT
 
 
 # --- a seek that meets a data error is handed over -------------------------------------

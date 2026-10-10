@@ -417,15 +417,15 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     forwards_or_owns = {
         archive_stream.ArchiveStream,
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
-        codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
+        codecs.rapidgzip_inprocess._AcceleratorStream,  # owns rapidgzip available_block_offsets
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
-        codecs._DeflateEndCheckStream,
-        codecs._GzipTruncationCheckStream,
-        codecs._ZlibAdlerCheckStream,
-        codecs._Bzip2EmptyStreamCheck,
-        codecs._StdlibOnAcceleratorError,
-        codecs._StdlibSeekContract,
-        codecs._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
+        codecs.zlib_codec._DeflateEndCheckStream,
+        codecs.gzip_codec._GzipTruncationCheckStream,
+        codecs.zlib_codec._ZlibAdlerCheckStream,
+        codecs.bzip2_codec._Bzip2EmptyStreamCheck,
+        codecs.stdlib_takeover._StdlibOnAcceleratorError,
+        codecs.rapidgzip_select._StdlibSeekContract,
+        codecs.lzma_codec._LzmaEndAtSize,  # the slice starts at the codec's 0: same offsets
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -467,7 +467,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         detection._BoundedPeekReader,
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
         # bytes and has no seek-point table to forward to.
-        codecs._RefusedAloneStream,
+        codecs.lzma_codec._RefusedAloneStream,
         # Sits under tarfile, which hands out member data through its own
         # ExFileObject: nothing above it can ask it for a resume offset.
         tar_reader._EofProbeStream,
@@ -605,13 +605,13 @@ def test_delegating_stream_close_inventory() -> None:
         counting.OutputCountingStream,
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
-        codecs._DeflateEndCheckStream,
-        codecs._GzipTruncationCheckStream,
-        codecs._ZlibAdlerCheckStream,
-        codecs._Bzip2EmptyStreamCheck,
-        codecs._StdlibOnAcceleratorError,
-        codecs._StdlibSeekContract,
-        codecs._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
+        codecs.zlib_codec._DeflateEndCheckStream,
+        codecs.gzip_codec._GzipTruncationCheckStream,
+        codecs.zlib_codec._ZlibAdlerCheckStream,
+        codecs.bzip2_codec._Bzip2EmptyStreamCheck,
+        codecs.stdlib_takeover._StdlibOnAcceleratorError,
+        codecs.rapidgzip_select._StdlibSeekContract,
+        codecs.lzma_codec._LzmaEndAtSize,  # owns the slice, which owns the decoder stream
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
@@ -621,7 +621,7 @@ def test_delegating_stream_close_inventory() -> None:
         cli.ProcessOutputStream,
         rar_reader._UnrarOwnedStream,
         unar.UnarOutputStream,
-        codecs._AcceleratorStream,
+        codecs.rapidgzip_inprocess._AcceleratorStream,
     }
     found = _delegating_stream_subclasses()
     leftover = found - owns_via_base - subclass_closes_inner
