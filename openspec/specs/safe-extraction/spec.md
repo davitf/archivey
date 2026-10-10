@@ -562,7 +562,9 @@ SHALL NOT be changed, and the change SHALL NOT follow a symlink. GNU tar, bsdtar
 Python's `tarfile` order these changes the same way. With the mode applied at once, a
 stored mode without owner write or search permission refused every member inside the
 directory to a non-root user, and each member written inside changed the directory's
-modification time.
+modification time. One consequence, which GNU tar shares: under `TRUSTED`, the only
+policy that keeps setgid, a setgid directory gets the bit only after its members are
+written, so a non-root run does not give them the directory's group.
 
 #### Scenario: metadata policy matrix
 

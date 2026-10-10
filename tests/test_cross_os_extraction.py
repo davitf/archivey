@@ -34,7 +34,7 @@ from archivey.exceptions import (
 from archivey.internal import extraction
 from archivey.internal.filters import apply_name_policy
 from archivey.types import ArchiveMember, MemberType
-from tests.extract_util import open_and_extract
+from tests.extract_util import lock_directories_at_once, open_and_extract
 
 _PORTABLE = pytest.mark.parametrize(
     "policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD]
@@ -609,7 +609,9 @@ def test_replace_over_a_read_only_directory_this_run_wrote(
     """A directory stored ``0o555`` (kept under ``STANDARD``), then a file of the same
     name. Simulated: POSIX removes such a directory, so the refusal is patched in.
     What this shows is that the coordinator clears the mode before ``os.rmdir``, not
-    that Windows refuses the call."""
+    that Windows refuses the call. The run applies directory modes when it ends, so
+    the mode is applied at once here to make the directory read-only in time."""
+    lock_directories_at_once(monkeypatch)
     _refuse_read_only(monkeypatch)
     dest = tmp_path / "out"
     report = open_and_extract(
@@ -631,8 +633,10 @@ def test_replace_over_a_read_only_directory_first_created_as_a_parent(
 ) -> None:
     """``d`` is created as the parent of ``d/x``, emptied when the streaming pass
     removes the parked ``d/x`` for a blocked duplicate, then given ``0o555`` by a
-    ``d`` directory member. It is in ``created_dirs``, never ``written_paths``, and
-    the later file ``d`` still replaces it."""
+    ``d`` directory member (applied at once here, as in the test above). It is in
+    ``created_dirs``, never ``written_paths``, and the later file ``d`` still replaces
+    it."""
+    lock_directories_at_once(monkeypatch)
     _refuse_read_only(monkeypatch)
     dest = tmp_path / "out"
     report = open_and_extract(

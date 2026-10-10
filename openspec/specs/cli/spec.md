@@ -144,7 +144,11 @@ the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
 under the wrapper, and exit nonzero — mirroring the failure a direct extraction
 would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
-containing `src/`) SHALL be flattened in place, not treated as a collision.
+containing `src/`) SHALL be flattened in place, not treated as a collision, and the
+wrapper SHALL then take that root's mode and times. A directory stored without owner
+write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
+and search permission for the move and then puts its mode back, as a direct extraction
+into the cwd would have succeeded.
 Container-name collisions SHALL be resolved by the overwrite policy, with one
 exception: a symlink at the container name, dangling or live, SHALL be treated
 as taken under every overwrite policy and the next free `<stem> (N)` used,

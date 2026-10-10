@@ -624,11 +624,13 @@ class _RunState:
     # Directories ``_makedirs`` created this run, as parents of what it wrote.
     created_dirs: set[Path] = field(default_factory=set)
     # Directory members whose ownership, mode and times wait for the end of the run
-    # (``_apply_directory_metadata``), by the directory's identity on disk (device,
-    # inode), so a directory reached by two spellings is one entry and the last
-    # member for it wins: the path it was written at, its physical depth below the
-    # root, and the transformed member.
-    pending_dirs: dict[tuple[int, int], tuple[Path, int, ArchiveMember]] = field(
+    # (``_apply_directory_metadata``), by the path the directory was written at, in
+    # the order they were last written: the directory's identity on disk (device,
+    # inode) when it was written, the number of ``/`` in its path relative to the
+    # root once the parent is resolved (so a deeper directory sorts first), and the
+    # transformed member. Keyed by path, not identity: some filesystems report inode
+    # 0 for every entry (``_Identity.of`` in the directory reader).
+    pending_dirs: dict[Path, tuple[tuple[int, int], int, ArchiveMember]] = field(
         default_factory=dict
     )
     # ``_physical_rel``'s resolved parents, as spelled -> relative to the root with a
@@ -1307,6 +1309,9 @@ class ExtractionCoordinator:
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
             if path.is_dir() and not path.is_symlink():
+                # Random access never writes the superseded copy, so its metadata
+                # is not applied, whether or not the directory stays as a parent.
+                state.pending_dirs.pop(path, None)
                 with contextlib.suppress(OSError):  # not empty: members live under it
                     os.rmdir(path)
                     state.written_paths.discard(path)
@@ -2167,7 +2172,7 @@ class ExtractionCoordinator:
             if stat.S_ISDIR(st.st_mode):
                 os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop((st.st_dev, st.st_ino), None)
+                self._state.pending_dirs.pop(dest_path, None)
             else:
                 os.unlink(dest_path)
             if stat.S_ISLNK(st.st_mode):
@@ -2726,7 +2731,10 @@ class ExtractionCoordinator:
         Windows. The attribute is cleared only on a regular file or a directory this run
         wrote (or parked), or a directory it created as a parent that a later member made
         read-only: a read-only entry the caller already had stays protected, as on
-        Windows before. The attribute belongs to the file, not the name, so it is
+        Windows before. A run applies directory modes only when it ends
+        (``_apply_directory_metadata``), so a directory it wrote is read-only during
+        the run only when something else made it so; the directory case is kept for
+        that. The attribute belongs to the file, not the name, so it is
         put back on the other names of a file (hard links this run made) once the block
         is done, and on ``path`` itself if the block fails.
         """
@@ -3019,10 +3027,9 @@ class ExtractionCoordinator:
         must be created at its final name for the escape re-validation's cycle check, and
         a directory cannot be renamed over a file at all."""
         try:
-            st = os.lstat(dest_path)
+            existing = os.lstat(dest_path).st_mode
         except (OSError, ValueError):  # the same errors ``os.path.lexists`` absorbs
             return True
-        existing = st.st_mode
         # Replacing a symlink or a directory can move where an earlier link resolves;
         # the member's handler rechecks the links once the member is done.
         moves_links = stat.S_ISLNK(existing) or stat.S_ISDIR(existing)
@@ -3072,7 +3079,7 @@ class ExtractionCoordinator:
                 with self._readonly_cleared(dest_path):
                     os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop((st.st_dev, st.st_ino), None)
+                self._state.pending_dirs.pop(dest_path, None)
                 self._current.removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
@@ -3297,7 +3304,11 @@ class ExtractionCoordinator:
             return
         rel = self._physical_rel(path)
         depth = (rel if rel is not None else self._rel_name(path)).count("/")
-        self._state.pending_dirs[(st.st_dev, st.st_ino)] = (path, depth, member)
+        pending = self._state.pending_dirs
+        # Moved to the end, so where two spellings reach one directory, the member
+        # written last is applied last (the sort by depth is stable).
+        pending.pop(path, None)
+        pending[path] = ((st.st_dev, st.st_ino), depth, member)
 
     def _apply_directory_metadata(self) -> None:
         """Apply the deferred directory metadata (``_defer_directory_metadata``),
@@ -3306,14 +3317,19 @@ class ExtractionCoordinator:
 
         A directory is changed only when the entry at its path is still the directory
         this run made: a later member may have replaced it, with a symlink to another
-        directory for example. Where the platform can, the directory is opened without
-        following a symlink and changed through that descriptor, so nothing put at the
-        path after the check is changed either. Elsewhere (Windows), or when the
-        directory cannot be opened (a umask without owner read), the check is an
-        ``lstat`` and the change goes by path.
+        directory for example. Each ``os.rmdir`` this run makes also drops the entry
+        recorded at that path, which matters where a filesystem reports inode 0 and
+        this check cannot tell two directories apart. Where the platform can, the
+        directory is opened without following a symlink and changed through that
+        descriptor, so nothing put at the path after the check is changed either.
+        Elsewhere (Windows), or when the directory cannot be opened (a umask without
+        owner read), the check is an ``lstat`` and the change goes by path.
         """
         pending = self._state.pending_dirs
-        by_fd = os.chmod in os.supports_fd and os.utime in os.supports_fd
+        # Windows has no ``os.chown`` and takes no descriptor here.
+        by_fd = hasattr(os, "chown") and all(
+            f in os.supports_fd for f in (os.chmod, os.utime, os.chown)
+        )
         flags = os.O_RDONLY
         for extra in ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC"):
             flags |= getattr(os, extra, 0)
@@ -3321,7 +3337,7 @@ class ExtractionCoordinator:
         def is_ours(st: os.stat_result, identity: tuple[int, int]) -> bool:
             return stat.S_ISDIR(st.st_mode) and (st.st_dev, st.st_ino) == identity
 
-        for identity, (path, _depth, member) in sorted(
+        for path, (identity, _depth, member) in sorted(
             pending.items(), key=lambda item: item[1][1], reverse=True
         ):
             if by_fd:

@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
@@ -43,3 +45,19 @@ def open_and_extract(
         config=config,
     ) as reader:
         return reader.extract_all(dest, **extract_kwargs)
+
+
+def lock_directories_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apply each directory member's mode when the directory is created.
+
+    Extraction applies it when the run ends, so an archive alone cannot leave a
+    directory the run wrote read-only while the run goes on. A test that needs that
+    state (a write refused, a read-only directory replaced) uses this.
+    """
+    from archivey.internal.extraction import ExtractionCoordinator
+
+    monkeypatch.setattr(
+        ExtractionCoordinator,
+        "_defer_directory_metadata",
+        ExtractionCoordinator._apply_metadata,
+    )

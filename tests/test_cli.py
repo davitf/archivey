@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import os
+import stat
 import sys
 import tarfile
 import zipfile
@@ -1005,6 +1007,130 @@ def test_hoist_single_file_named_like_wrapper(
     assert main(["extract", str(archive)]) == EXIT_OK
     assert (tmp_path / "src").read_bytes() == b"solo"
     assert not (tmp_path / "src (1)").exists()
+
+
+def _tar_with_locked_dirs(path: Path, names: list[str]) -> Path:
+    """A tar whose directory members (a trailing ``/``) are stored ``0o555``."""
+    with tarfile.open(path, "w") as tf:
+        for name in names:
+            info = tarfile.TarInfo(name.rstrip("/"))
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o555
+                tf.addfile(info)
+            else:
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+    return path
+
+
+def _refuse_renames_as_non_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``os.rename`` refuse what POSIX refuses a non-root user: moving an entry
+    out of a directory without owner write, or a directory without owner write to
+    another parent (its ``..`` changes). Root skips these checks, and CI may run as
+    either."""
+    rename = os.rename
+
+    def no_write(path: Path) -> bool:
+        st = os.lstat(path)
+        return stat.S_ISDIR(st.st_mode) and not st.st_mode & stat.S_IWUSR
+
+    def checked(src: str | Path, dst: str | Path) -> None:
+        src, dst = Path(src), Path(dst)
+        moves_dir = no_write(src) and src.parent.resolve() != dst.parent.resolve()
+        if no_write(src.parent) or moves_dir:
+            raise PermissionError(13, "Permission denied", str(src))
+        rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", checked)
+
+
+def _unlock(root: Path) -> None:
+    for path in [root, *root.rglob("*")]:
+        if path.is_dir() and not path.is_symlink():
+            os.chmod(path, 0o755)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real"])
+def test_hoist_moves_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    """The root's stored ``0o555`` is applied when extraction ends, before the hoist
+    moves it: the move still succeeds, as the dry run says, and the root keeps the
+    mode."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    archive = _tar_with_locked_dirs(tmp_path / "bundle.tar", ["pkg/", "pkg/a"])
+    args = ["extract", str(archive), "--policy", "standard"]
+    try:
+        assert main([*args, "--dry-run"] if dry_run else args) == EXIT_OK
+        if not dry_run:
+            assert stat.S_IMODE((tmp_path / "pkg").stat().st_mode) == 0o555
+            assert (tmp_path / "pkg" / "a").read_bytes() == b"x"
+            assert not (tmp_path / "bundle").exists()
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_hoist_merges_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merged into a directory that was there: the entries move out of the locked
+    root, and the existing directory keeps its own mode."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    (tmp_path / "pkg").mkdir(mode=0o750)
+    archive = _tar_with_locked_dirs(
+        tmp_path / "bundle.tar", ["pkg/", "pkg/a", "pkg/sub/", "pkg/sub/b"]
+    )
+    try:
+        assert main(["extract", str(archive), "--policy", "standard"]) == EXIT_OK
+        assert stat.S_IMODE((tmp_path / "pkg").stat().st_mode) == 0o750
+        assert stat.S_IMODE((tmp_path / "pkg" / "sub").stat().st_mode) == 0o555
+        assert (tmp_path / "pkg" / "sub" / "b").read_bytes() == b"x"
+        assert not (tmp_path / "bundle").exists()
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_hoist_renames_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    (tmp_path / "pkg").write_bytes(b"MINE")
+    archive = _tar_with_locked_dirs(tmp_path / "bundle.tar", ["pkg/", "pkg/a"])
+    try:
+        args = ["extract", str(archive), "--policy", "standard", "--overwrite"]
+        assert main([*args, "rename"]) == EXIT_OK
+        assert stat.S_IMODE((tmp_path / "pkg (1)").stat().st_mode) == 0o555
+        assert (tmp_path / "pkg (1)" / "a").read_bytes() == b"x"
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_hoist_flattens_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``pkg.tar`` holding ``pkg/``: the wrapper takes the root's place, and its
+    mode."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    archive = _tar_with_locked_dirs(
+        tmp_path / "pkg.tar", ["pkg/", "pkg/a", "pkg/sub/", "pkg/sub/b"]
+    )
+    try:
+        assert main(["extract", str(archive), "--policy", "standard"]) == EXIT_OK
+        assert stat.S_IMODE((tmp_path / "pkg").stat().st_mode) == 0o555
+        assert stat.S_IMODE((tmp_path / "pkg" / "sub").stat().st_mode) == 0o555
+        assert (tmp_path / "pkg" / "sub" / "b").read_bytes() == b"x"
+        assert (tmp_path / "pkg" / "a").read_bytes() == b"x"
+    finally:
+        _unlock(tmp_path)
 
 
 def _seed_existing_root(tmp_path: Path) -> None:

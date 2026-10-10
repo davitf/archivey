@@ -743,6 +743,53 @@ def test_directory_metadata_is_applied_after_its_children(
         _restore_modes(dest)
 
 
+class _NoInode:
+    """A stat result that reports inode 0, as some FUSE and network mounts do."""
+
+    def __init__(self, st: os.stat_result) -> None:
+        self._st = st
+
+    @property
+    def st_ino(self) -> int:
+        return 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._st, name)
+
+
+@_posix_perms
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_directory_metadata_is_applied_where_inodes_are_zero(
+    tmp_path: Path, streaming: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every directory gets its own member's metadata on a filesystem that reports
+    inode 0 for every entry: two directories are not taken for one."""
+    lstat, fstat = os.lstat, os.fstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    monkeypatch.setattr(os, "fstat", lambda fd: _NoInode(fstat(fd)))
+    archive = _tar_with_dir_modes(
+        [("one/", 0o555, _DIR_MTIME), ("two/", 0o551, _SUB_MTIME)]
+    )
+    dest = tmp_path / "out"
+    try:
+        open_and_extract(
+            io.BytesIO(archive),
+            dest,
+            policy=ExtractionPolicy.STANDARD,
+            streaming=streaming,
+        )
+        monkeypatch.undo()
+        for name, mode, mtime in (
+            ("one", 0o555, _DIR_MTIME),
+            ("two", 0o551, _SUB_MTIME),
+        ):
+            st = (dest / name).stat()
+            assert (name, st.st_mode & 0o7777, int(st.st_mtime)) == (name, mode, mtime)
+    finally:
+        monkeypatch.undo()
+        _restore_modes(dest)
+
+
 @_posix_perms
 def test_directory_metadata_is_applied_when_the_run_stops(tmp_path: Path) -> None:
     """A refused member stops the run (``AbortOn.BLOCKED_MEMBER``), and the
