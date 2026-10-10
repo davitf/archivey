@@ -27,9 +27,10 @@ import shutil
 import stat
 import tempfile
 import uuid
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, Iterator, assert_never
+from typing import TYPE_CHECKING, BinaryIO, assert_never
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
@@ -310,7 +311,7 @@ class BombTracker:
         ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
         max_entries: int | None = DEFAULT_MAX_ENTRIES,
         *,
-        source: "BaseArchiveReader | None" = None,
+        source: BaseArchiveReader | None = None,
     ) -> None:
         self._max_bytes = max_bytes
         self._max_ratio = max_ratio
@@ -497,7 +498,7 @@ def _report_stored_spelling(
 
 
 def _until_listing_damage(
-    reader: "BaseArchiveReader",
+    reader: BaseArchiveReader,
     pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
     found: list[CorruptionError],
 ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
@@ -861,7 +862,7 @@ class ExtractionCoordinator:
     # --- entry point ---------------------------------------------------------------
 
     def run(
-        self, reader: "BaseArchiveReader", dest: str | Path
+        self, reader: BaseArchiveReader, dest: str | Path
     ) -> list[ExtractionResult]:
         """Extract into ``dest``; under ``dry_run``, into a private scratch directory.
 
@@ -971,7 +972,7 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.rebase_os_error(exc)
 
-    def _run(self, reader: "BaseArchiveReader", dest: Path) -> list[ExtractionResult]:
+    def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
         forward_only = reader._streaming
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -1090,7 +1091,7 @@ class ExtractionCoordinator:
 
     def _run_pass(
         self,
-        reader: "BaseArchiveReader",
+        reader: BaseArchiveReader,
         stream_selector: MemberSelectorArg,
         selected_total: int | None,
     ) -> None:
@@ -1400,7 +1401,7 @@ class ExtractionCoordinator:
         )
 
     def _hardlink_chain_end(
-        self, reader: "BaseArchiveReader", member: ArchiveMember
+        self, reader: BaseArchiveReader, member: ArchiveMember
     ) -> ArchiveMember | None:
         """The first member that is not a HARDLINK on ``member``'s hard-link chain, or
         ``None`` for a cycle or a dead end.
@@ -2431,7 +2432,7 @@ class ExtractionCoordinator:
 
     # --- orphan (second pass) ------------------------------------------------------
 
-    def _resolve_orphans(self, reader: "BaseArchiveReader") -> None:
+    def _resolve_orphans(self, reader: BaseArchiveReader) -> None:
         orphans_by_source: dict[int, list[_Orphan]] = {}
         for orphan in self._state.orphans:
             orphans_by_source.setdefault(orphan.source.member_id, []).append(orphan)

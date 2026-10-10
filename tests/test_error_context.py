@@ -13,8 +13,8 @@ import gzip
 import io
 import tarfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pytest
 

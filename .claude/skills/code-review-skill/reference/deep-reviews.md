@@ -19,23 +19,12 @@ A commissioned deep review inherits
    practical.
 5. **Pause and ask** — spec/design conflicts go to `QUESTIONS.md`, not silent fixes
    (including “the spec is wrong; here’s the better contract”).
-6. **Don’t re-litigate settled ground** — check archive tables + `STATUS.md` for
-   already-closed findings before spending budget.
+6. **Don’t re-litigate settled ground** — check the archived reviews' `SUMMARY.md`
+   files for already-closed findings before spending budget.
 7. **Archive lifecycle** — only move a review to `review/archive/` when every
-   actionable item is fixed or consciously deferred (`STATUS.md` / `backlog.md`).
+   actionable item is fixed or consciously deferred (deferred work is tracked internally).
 
-Review themes to know. **`review/STATUS.md` is the live index — read it rather than this
-table**, which records lenses, not state. A theme listed as archived means findings in
-that area are *re-reviews*: check the archive tables first so you do not re-litigate
-settled ground (`review/backlog.md` carries the deferred topics and their reasons).
-
-| Review | Lens | State |
-|--------|------|-------|
-| `docs/` | Documentation IA, then content accuracy/gaps (Topic 8) | **In flight** — see `STATUS.md` |
-| `api-coherence/` | Uniform interface, surface size, CLI-as-consumer gaps | Archived |
-| `performance/` | ≤1.3× budget, gate efficacy, solid/listing hotspots | Archived |
-| `debt-ledger/` | Freeze-cost debt; corpus matrix (`corpus-matrix.md`) | Archived |
-| `stream-layering/` | Wrapper correctness + collapse | Archived |
-| `cli-product/` | CLI UX / grammar / exit codes (product, not correctness) | Archived |
-| `simplicity-consistency/` | Topic 9 — duplicated concepts, inconsistent surfaces | Archived 2026-08-15 |
-| Security round | Hostile input, crypto, RAR, stream decoder | Archived |
+**Which reviews are open:** the top level of `review/`
+([`review/README.md`](../../../../review/README.md)). A theme already archived means
+findings in that area are *re-reviews*: read its `review/archive/<date>-<name>/SUMMARY.md`
+first.

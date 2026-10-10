@@ -19,9 +19,9 @@ import os
 import tarfile
 import traceback
 import zipfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
 
 import pytest
 
@@ -955,7 +955,7 @@ def test_zip_member_fuses_verify_no_verifying_stream_layer(tmp_path: Path) -> No
     """STORED ZIP: public ArchiveStream verifies directly over SlicingStream.
 
     After verify-fusion, the codec ArchiveStream collapses through and there is
-    no VerifyingStream in the chain (review/stream-layering collapse design).
+    no VerifyingStream in the chain (review/archive/2026-07-19-stream-layering/collapse-design.md).
     """
     from archivey.internal.streams.archive_stream import ArchiveStream
     from archivey.internal.streams.streamtools.slice import SlicingStream

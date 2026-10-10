@@ -57,7 +57,7 @@ class CountingReader(DelegatingStream):
         self._bytes_read += len(data)
         return data
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
             # No usable inner readinto (missing, or advertised and refused): fill from
@@ -77,7 +77,7 @@ class OutputCountingStream(DelegatingStream):
     and member-level wrappers can share one archive total when needed.
     """
 
-    def __init__(self, inner: BinaryIO, counter: "ByteCounter") -> None:
+    def __init__(self, inner: BinaryIO, counter: ByteCounter) -> None:
         super().__init__(inner)
         self._counter = counter
 
@@ -86,7 +86,7 @@ class OutputCountingStream(DelegatingStream):
         self._counter.add(len(data))
         return data
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._inner, b)
         if n is None:
             # Same fallback as CountingReader: self.read() already counts.
@@ -113,7 +113,7 @@ class SeekCountingStream(DelegatingStream):
 
     peel_for_source_size = True
 
-    def __init__(self, inner: BinaryIO, counter: "SeekCounter") -> None:
+    def __init__(self, inner: BinaryIO, counter: SeekCounter) -> None:
         super().__init__(inner)
         self._counter = counter
 

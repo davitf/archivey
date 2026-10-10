@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import gc
 import tracemalloc
-from typing import Callable
+from collections.abc import Callable
 
 
 def traced_peak(action: Callable[[], object]) -> int:

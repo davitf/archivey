@@ -22,8 +22,9 @@ is gone; pass ``lock`` to :class:`SharedView`.
 from __future__ import annotations
 
 import io
-from contextlib import nullcontext
-from typing import BinaryIO, Callable, ContextManager
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
+from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.internal.streams.streamtools.binaryio import (
@@ -133,7 +134,7 @@ class SlicingStream(ReadOnlyIOStream):
         start: int | None,
         length: int | None,
         *,
-        io_guard: ContextManager[object],
+        io_guard: AbstractContextManager[object],
         seek_before_read: bool,
         check_open: Callable[[], None] | None,
         owns_inner: bool,
@@ -382,7 +383,7 @@ class SharedView(SlicingStream):
         start: int | None = None,
         length: int | None = None,
         *,
-        lock: ContextManager[object],
+        lock: AbstractContextManager[object],
         check_open: Callable[[], None] | None = None,
         source_size: int | None = None,
         probe_source_size: bool = True,

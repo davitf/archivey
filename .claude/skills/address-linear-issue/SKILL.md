@@ -24,9 +24,6 @@ GitHub Actions job runs `code-review-skill` in a Claude session that has none of
 this one’s context and posts to the pull request. This skill’s job is to get the
 pull request into that loop, not to spawn a reviewer of its own.
 
-Runs on Cursor desktop, Cursor Cloud Agent, and Claude Code. The handoff is the
-same everywhere, because it happens on GitHub rather than in this session.
-
 ## 1. Read the issue
 
 Identify the Linear identifier (`ABC-123`) from the user, a URL
@@ -58,15 +55,8 @@ Standard repo loop: `dev-docs/code-map.md` for where to start,
 needs a handbook note or a thin brief. Red–green for bug fixes. Specs and
 published docs move with the contract, in the same PR.
 
-Gates **before pushing**:
-
-```bash
-./scripts/check.sh --fix
-./scripts/test.sh
-uv run python scripts/review_prep.py   # before the review label, below
-```
-
-`--all-configs` when extras or versions matter (`CONTRIBUTING.md` §"Before pushing…").
+Gates **before pushing**: `./scripts/check.sh --fix` and `./scripts/test.sh`
+(`AGENTS.md` §Every task; `--all-configs` when extras or versions matter).
 
 Then push a branch and open a PR. If the issue already names a PR or branch,
 continue there instead of opening a second one.
@@ -86,12 +76,9 @@ unless the user asked.
 2. **Post a comment on the issue with the PR URL** (`save_comment`), so a person
    reading the issue can see where the work went.
 
-**Keep the tracker out of the pull request body.** This repository is public and
-the tracker is not, so no issue key and no tracker URL belongs in PR text —
-`AGENTS.md` §"Nothing from the internal tracker goes into PR text" is the rule,
-and a tool that appends a `Linear Issue:` footer for you needs that footer turned
-off (davitf, 2026-09-20). That footer used to be what made Linear link the pull
-request, which is why step 1 now has to be done deliberately.
+**Keep the tracker out of the pull request text** (`AGENTS.md` §Review workflow,
+"Nothing from the internal tracker goes into PR text"). A tool that appends a
+`Linear Issue:` footer for you needs that footer turned off.
 
 ## 3. Hand the pull request to the review loop
 
@@ -103,20 +90,15 @@ lists docs still naming what you removed and lines left unwrapped, and its
 `red-on-base` table backs any "fails on `main`" line in the PR body.
 
 **Add the `review` label when you are finished pushing.** Adding it is what
-starts the review, and everything pushed before it is what gets read:
-
-```bash
-gh pr edit <number> --add-label review
-```
-
-Through the GitHub MCP instead, `issue_write` `update` replaces the whole label set:
-read the pull request's labels first and write them back with `review` appended.
+starts the review, and everything pushed before it is what gets read. From a shell,
+`gh pr edit <number> --add-label review`; through the GitHub MCP, mind the label-set
+trap in [`review-loop.md`](../../../dev-docs/review-loop.md) §How it works.
 
 That is the whole handoff. `code-review-skill` runs against the PR in a separate
 Claude session, posts the review there, and closes the round with a comment that
 says whether it wants to see the fixes.
 
-Two consequences worth stating, because they change what this session does next:
+What that changes for this session:
 
 - **Nothing here waits for the review.** It arrives on the pull request minutes
   later, on GitHub, not as a return value. Say in your reply that the loop has
@@ -124,9 +106,8 @@ Two consequences worth stating, because they change what this session does next:
 - **Stop pushing once you have added the label.** A push after it may land after
   the review has read the branch, and then nothing reviews it until someone adds
   the label again.
-- **Check the label came off.** If it is still on the pull request a few minutes
-  later, no round started: resolve any merge conflict or merge `main`, then remove
-  the label and add it again.
+- **Check the label came off.** Still on a few minutes later means no round
+  started; `review-loop.md` says what to do.
 
 If the loop is not available — no GitHub Actions, or a fork, where the workflow
 has no secrets — say so and stop rather than reviewing your own work. A review
@@ -144,11 +125,8 @@ the label anyway if a fix grew beyond what the review saw. That skill's §7 has
 both cases.
 
 Only one agent works a branch. If someone else picked it up, leave it alone:
-two agents pushing to one branch is worse than a slower round. Steward skips a
-second round only when a disposition comment (opener names
-`address-review-findings`) is already on those finding IDs. Two agents can still
-start in the same minute before either replies; that race is accepted — do not
-invent a label or marker to close it.
+two agents pushing to one branch is worse than a slower round. The race with a
+watching session is in [`steward`](../steward/SKILL.md).
 
 The review stops asking for rounds once it no longer needs to see the result,
 or the moment it raises a question only the maintainer can answer. Whether a

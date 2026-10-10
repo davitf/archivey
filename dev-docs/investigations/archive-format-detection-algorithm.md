@@ -276,7 +276,7 @@ API change and migration, not an incidental type widening in this design.
 > default (never turn unknown into zero), which holds whichever way the question resolves. The related question of whether `payload_offset > 0` should keep
 > meaning "self-extracting archive" is a naming one and is taken up under *The public
 > surface* below; whether a caller should care what is *inside* a given archive is a
-> separate post-1.0 idea, parked in [`dev-docs/IDEAS.md`](../IDEAS.md).
+> separate post-1.0 idea, in [`dev-docs/IDEAS.md`](../IDEAS.md).
 
 ### The public surface: who sees the ledger, and in what form
 
@@ -368,7 +368,7 @@ directly, per §6 and §9.
 > archive *is* the program and is meant to be run, not extracted), and junk prepended to a
 > tar. `detected_by="sfx_scan"` is simply wrong for three of those four. Nothing here needs
 > to classify the stub — `PrefixKind` already reports what the prefix *is*, and whether a
-> caller should care about the payload is a separate post-1.0 question parked in
+> caller should care about the payload is a separate post-1.0 question in
 > [`dev-docs/IDEAS.md`](../IDEAS.md) — but the *name* should stop asserting intent.
 > `prefixed_scan` or `embedded_scan` costs nothing now and is a public-value migration once
 > this redesign ships.
@@ -660,8 +660,8 @@ Two adjacent behaviours, both real, neither needing a rule of its own:
   member, and the read raises `TruncatedError` with `format_unconfirmed=False`. Under §6 the
   flag becomes true, which is correct — only the filename ever claimed gzip.
 
-  That the open succeeds at all is a separate confirmed bug, P15 in
-  [`dev-docs/open-issues.md`](../open-issues.md): `SingleFileReader`'s eager probe opens and
+  That the open succeeds at all was a separate confirmed bug (since fixed by
+  `2026-09-25-single-file-open-time-validation`): `SingleFileReader`'s eager probe opens and
   closes a codec stream without reading, and every stdlib codec validates on first read.
   Verified causally here: a zero-byte file opens cleanly under **all ten** single-file
   codecs today (gz, bz2, xz, zst, lz4, zlib, brotli, lzma-alone, lzip, Z), and patching the
@@ -1361,9 +1361,10 @@ failure. That is what makes the decode-failure side the one worth getting right.
 
 > **Interacts with a shipped bug.** The single-file cases above reach *read* rather than
 > *open* only because `SingleFileReader`'s eager open-time validation opens and closes a
-> codec stream without reading, and every stdlib codec validates on first read. See
-> `dev-docs/open-issues.md` P15. Fixing that moves these failures to open time; it does not
-> by itself make them honest, which is what this rule is for.
+> codec stream without reading, and every stdlib codec validates on first read (since
+> fixed by `2026-09-25-single-file-open-time-validation`). Fixing that moves these
+> failures to open time; it does not by itself make them honest, which is what this rule
+> is for.
 
 `format_unconfirmed` must mean "the bytes did not confirm this identity", not "the
 identity is probably wrong". A genuinely truncated `x.br` may therefore carry the flag:
@@ -1413,8 +1414,8 @@ at all) while leaving the filename rule in place via confidence.
 
 The 98.9% figure — of 1,303 files under `/usr` carrying an extension archivey knows,
 1,289 were already answered by near magic at step 2, leaving 2 where an extension and a
-content probe agree (recorded in `dev-docs/IDEAS.md`, *Extension-first detection
-ordering*) — argues **against** an extension-agreement shortcut as a
+content probe agree (recorded in `dev-docs/IDEAS.md`, *Extension-first detection,
+and stopping early on agreement*) — argues **against** an extension-agreement shortcut as a
 default optimization: near evidence has already captured almost the entire population
 where agreement is cheap. The two residual files are too small a sample to justify a new
 control-flow rule.

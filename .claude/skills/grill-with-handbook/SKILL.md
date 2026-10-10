@@ -24,9 +24,14 @@ archivey’s source of truth is organised handbook pages, not an append-only ADR
 
 1. **Facts are your job.** Run commands, read code, spawn explore subagents. Never ask the
    maintainer for something you can measure.
-2. **Decisions are theirs.** Put each product/contract fork to them with a recommendation.
-3. **One frontier round at a time.** Ask every currently unblocked question in one message
-   (numbered). Wait for answers before the next round.
+2. **Rules first, then decisions.** Check
+   [`dev-docs/design-rules.md`](../../../dev-docs/design-rules.md) before asking: a fork a
+   rule settles is not a question, so apply the rule and name it. Put each fork no rule
+   settles to the maintainer with a recommendation.
+3. **One question per turn.** Ask the most blocking unblocked question and wait for the
+   answer before the next, as everywhere else in this repo (`AGENTS.md` §Working with the
+   maintainer). You may list the titles of the questions still open so the maintainer
+   sees what is coming.
 4. **Do not implement** during the grill unless they explicitly end grilling and ask to
    build.
 5. **Prefer handbook over new ADRs.** Mint `dev-docs/decisions/NNNN-*.md` only for rare
@@ -39,17 +44,15 @@ archivey’s source of truth is organised handbook pages, not an append-only ADR
 
 ➡️ Recommendation: <your answer>
 
----
-
-❓ **Q2** — …
+Still open after this: Q2 <title> · Q3 <title>
 ```
 
 ## Where to write (when a decision settles)
 
 | Kind | Write to |
 | --- | --- |
-| Format behaviour / consequences | `dev-docs/formats/<format>.md` — create if missing; page structure is TBD until `zip.md` settles it (pair-workflow §Living handbook) |
-| Cross-cutting behaviour | `dev-docs/topics/<topic>.md` — same; **link** `threat-model.md` `O*` rows, never restate that register |
+| Format behaviour / consequences | `dev-docs/formats/<format>.md` — create if missing; follow pair-workflow §Format page structure (`zip.md` is the worked example) |
+| Cross-cutting behaviour | `dev-docs/topics/<topic>.md` — same; **link** the relevant `threat-model.md` section, never restate the threat model (its old `O*` ids are only an index now) |
 | Glossary / overloaded term | Short **Terms** subsection on the relevant format/topic page |
 | Heavy evidence | New or updated file under `dev-docs/investigations/`; link from the handbook page |
 | Irreversible repo-wide policy | ADR under `dev-docs/decisions/` (exception path) |

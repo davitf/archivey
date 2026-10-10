@@ -39,7 +39,7 @@ import stat
 import struct
 import zipfile
 import zlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -49,9 +49,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
-    Iterator,
     Literal,
-    Mapping,
     NoReturn,
     TypeVar,
     cast,
@@ -1270,8 +1268,8 @@ class ZipReader(BaseArchiveReader):
                     fname_str = local_name.decode(self._encoding or "cp437")
                 if fname_str != info.orig_filename:
                     raise zipfile.BadZipFile(
-                        "File name in directory %r and header %r differ."
-                        % (info.orig_filename, local_name)
+                        f"File name in directory {info.orig_filename!r} and header "
+                        f"{local_name!r} differ."
                     )
                 data_start = info.header_offset + 30 + name_len + extra_len
                 if data_start < 0 or data_start > _MAX_DATA_OFFSET:

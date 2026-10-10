@@ -181,7 +181,7 @@ no.
 
 There is exactly one written statement of an admission rule anywhere in the repository,
 and it is not in a spec. It lives in a review observation file
-(`review/docs/observations.md`, O-23) and reads:
+(`review/archive/2026-10-06-docs/observations.md`, O-23) and reads:
 
 > Diagnostics are archive-related, not usage-related.
 

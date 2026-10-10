@@ -8,19 +8,15 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from contextlib import contextmanager, nullcontext
+from collections.abc import Callable, Collection, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     BinaryIO,
-    Callable,
     ClassVar,
-    Collection,
-    ContextManager,
-    Iterator,
     Literal,
-    Mapping,
     NamedTuple,
     NoReturn,
     Self,
@@ -330,7 +326,7 @@ class ReadBackend(ABC):
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
         start_offset: int = 0,
-    ) -> "BaseArchiveReader":
+    ) -> BaseArchiveReader:
         """Open ``source`` as ``format`` (the resolved format the registry selected this
         backend for — either detected by ``open_archive`` or supplied by the caller).
 
@@ -368,7 +364,7 @@ class WriteBackend(ABC):
         compression: object | None,
         password: bytes | None,
         encoding: str | None,
-    ) -> "ArchiveWriter": ...
+    ) -> ArchiveWriter: ...
 
 
 class ArchiveWriter(ABC):
@@ -544,7 +540,7 @@ class BaseArchiveReader(ArchiveReader):
         # handle to serialize (default readers, path-per-open backends).
         self._handle_lock: threading.Lock | None = None
 
-    def _handle_guard(self) -> ContextManager[object]:
+    def _handle_guard(self) -> AbstractContextManager[object]:
         """Hold the backend's shared-handle lock if one is set, else a no-op context.
 
         Collapses the repeated ``if self._handle_lock is not None: with lock: … else: …``
@@ -585,7 +581,7 @@ class BaseArchiveReader(ArchiveReader):
         member_name: str | None = None,
         *,
         stamp_encryption: bool = True,
-    ) -> ContextManager[None]:
+    ) -> AbstractContextManager[None]:
         """Context manager routing any exception from the body through ``_raise_translated``.
 
         Backends wrap every direct call into their underlying library with this instead
@@ -1595,7 +1591,7 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._progressive_enforce_listing_limits = previous
 
-    def _extraction_listing(self) -> ContextManager[None]:
+    def _extraction_listing(self) -> AbstractContextManager[None]:
         """Apply ``ListingLimits`` for an extraction over this random-access reader.
 
         Called by the extraction coordinator before its pass, which it runs inside the
@@ -1894,7 +1890,7 @@ class BaseArchiveReader(ArchiveReader):
     def _read_link_target_data(
         self,
         member: ArchiveMember,
-        open_data: Callable[[], ContextManager[ReadableStream]],
+        open_data: Callable[[], AbstractContextManager[ReadableStream]],
         *,
         is_reparse_point: bool,
     ) -> bytes | None:
@@ -1965,7 +1961,7 @@ class BaseArchiveReader(ArchiveReader):
     def _link_target_from_data(
         self,
         member: ArchiveMember,
-        open_data: Callable[[], ContextManager[ReadableStream]],
+        open_data: Callable[[], AbstractContextManager[ReadableStream]],
         *,
         reparse_fallback: MemberType | None,
     ) -> None:

@@ -22,6 +22,104 @@ holds only what has generalised across formats.
 To test a question against concrete callers, use [`scenarios.md`](scenarios.md): who we
 imagine using archivey and what would hurt each of them.
 
+## Index
+
+One line per rule, to find the one that applies. The rule text below is what
+binds.
+
+- [DR-0](#dr-0-fix-the-class-not-the-instance). **Fix the class, not the instance.** A bug
+  in one format is a question about every format and shared path.
+- [DR-1](#dr-1-a-wrong-answer-is-the-worst-failure). **A wrong answer is the worst
+  failure.** Reported absence beats a refusal, a refusal beats silent loss, and a wrong
+  value is worst.
+- [DR-2](#dr-2-deliver-everything-recoverable-then-raise). **Deliver everything
+  recoverable, then raise.** On damage, deliver every intact member, then raise at the
+  point of damage.
+- [DR-3](#dr-3-hidden-bytes-are-errors-inside-a-member-warnings-outside-it). **Hidden
+  bytes are errors inside a member, warnings outside it.** Leftover bytes inside a
+  member's data are corruption; outside it, a warning.
+- [DR-4](#dr-4-unsupported-is-not-corrupt). **Unsupported is not corrupt.** A valid
+  feature archivey cannot decode is `UnsupportedFeatureError`, not corruption.
+- [DR-4a](#dr-4a-the-integrity-guarantee-is-for-a-start-to-end-read). **The integrity
+  guarantee is for a start-to-end read.** Integrity checks are promised for a start-to-end
+  read without seeks.
+- [DR-5](#dr-5-same-input-same-outcome). **Same input, same outcome.** One archive gives
+  one result across formats, access modes, sources and OSes.
+- [DR-5a](#dr-5a-malformed-corner-cases-may-differ-a-little). **Malformed corner cases may
+  differ a little.** A malformed, crafted-only shape may keep per-format behaviour when
+  matching costs code.
+- [DR-6](#dr-6-when-the-semantics-are-open-match-the-formats-official-tool). **When the
+  semantics are open, match the format's official tool.** For an open format-specific
+  question, test the reference tool and match it.
+- [DR-7](#dr-7-trust-self-validating-data-over-caller-hints). **Trust self-validating data
+  over caller hints.** Use what the archive can verify; a caller hint fills only the gap.
+- [DR-8](#dr-8-defaults-are-complete-and-consistent-laziness-is-an-explicit-opt-in).
+  **Defaults are complete and consistent; laziness is an explicit opt-in.** Defaults give
+  full, consistent information; a cheaper partial behaviour is an opt-in.
+- [DR-9](#dr-9-every-cost-is-bounded-by-a-public-raisable-limit). **Every cost is bounded
+  by a public, raisable limit.** Every resource bound is a public, raisable limit, checked
+  before the cost is paid.
+- [DR-9a](#dr-9a-the-upload-server-test). **The upload-server test.** No archive may cause
+  unbounded memory or disk, an unbounded hang, or a crash.
+- [DR-10](#dr-10-costly-or-risky-capability-is-declared-and-a-declaration-is-a-guarantee).
+  **Costly or risky capability is declared, and a declaration is a guarantee.** A costly
+  or risky capability is off until asked for, and then guaranteed.
+- [DR-10a](#dr-10a-read-sequentially-seek-only-when-the-format-needs-it). **Read
+  sequentially; seek only when the format needs it.** Read forward in few large reads;
+  seek only where the format needs it.
+- [DR-11](#dr-11-environment-trouble-falls-back-explicit-requests-fail-loudly).
+  **Environment trouble falls back; explicit requests fail loudly.** An `AUTO` choice
+  falls back on environment trouble; an explicit request fails loudly.
+- [DR-12](#dr-12-before-the-first-release-remove-rather-than-keep). **Before the first
+  release, remove rather than keep.** Until 0.2.0 ships, a breaking cleanup goes in now.
+- [DR-13](#dr-13-a-public-name-earns-its-place). **A public name earns its place.** A
+  public name or exception type exists only if a caller would use it differently.
+- [DR-14](#dr-14-one-obvious-way-and-one-mechanism-per-job). **One obvious way, and one
+  mechanism per job.** No convenience wrapper for a short chain of public calls; one
+  mechanism per job.
+- [DR-14a](#dr-14a-easy-to-explain-easy-to-use-right-the-first-time). **Easy to explain,
+  easy to use right the first time.** Between designs that meet principles 1 and 2, pick
+  the easier to explain and use.
+- [DR-15](#dr-15-usage-errors-are-for-what-the-types-cannot-rule-out). **Usage errors are
+  for what the types cannot rule out.** A wrong argument raises `TypeError` or
+  `ValueError`; `ArchiveyUsageError` is for misuse the signature cannot express.
+- [DR-15a](#dr-15a-translate-archive-problems-let-io-problems-through). **Translate
+  archive problems; let I/O problems through.** Archive-content errors become archivey
+  errors; I/O failures pass through.
+- [DR-15b](#dr-15b-fail-at-open-but-do-no-expensive-work-there). **Fail at open, but do no
+  expensive work there.** Raise a cheap-to-detect problem at open, but do no work
+  proportional to the archive there.
+- [DR-16](#dr-16-a-feature-must-deliver-its-promise). **A feature must deliver its
+  promise.** An advertised capability works in every format that claims it, or the format
+  says it does not.
+- [DR-17](#dr-17-extracting-beats-refusing-refuse-only-what-is-unsafe). **Extracting beats
+  refusing; refuse only what is unsafe.** Refuse a member only when writing it is unsafe
+  or the outcome differs by OS.
+- [DR-18](#dr-18-extraction-never-damages-what-it-did-not-create). **Extraction never
+  damages what it did not create.** Extraction never changes or removes what it did not
+  create.
+- [DR-19](#dr-19-prefer-one-structural-invariant-over-many-string-checks). **Prefer one
+  structural invariant over many string checks.** Replace several ad-hoc checks for one
+  hazard with one structural invariant.
+- [DR-20](#dr-20-parse-in-python-isolate-native-code-that-can-crash). **Parse in Python;
+  isolate native code that can crash.** Parsers are pure Python; a native codec that can
+  crash runs in a child process.
+- [DR-21](#dr-21-defer-a-fix-that-a-planned-rewrite-absorbs-and-document-it). **Defer a
+  fix that a planned rewrite absorbs, and document it.** A fix that a planned rewrite
+  absorbs waits for it, documented meanwhile.
+- [DR-21a](#dr-21a-dont-ship-what-cant-be-tested). **Don't ship what can't be tested.**
+  Refuse and document a case no tool can produce and archivey cannot test.
+- [DR-22](#dr-22-docs-say-what-is-true-now-with-reasons). **Docs say what is true now,
+  with reasons.** Docs say what is true now, with reasons.
+- [DR-22a](#dr-22a-a-caveat-in-the-docs-is-a-question-for-the-code). **A caveat in the
+  docs is a question for the code.** Before writing a caveat, ask whether the code can
+  change instead.
+- [DR-23](#dr-23-zero-debt-in-the-code-you-touch). **Zero debt in the code you touch.**
+  Leave no debt in the code you touch; existing code is no justification.
+- [DR-24](#dr-24-tests-pin-behaviour-against-real-producers). **Tests pin behaviour
+  against real producers.** A bug fix starts red; tests check behaviour against fixtures
+  from real tools.
+
 ## The principles
 
 The maintainer's own summary of what he focuses on consistently (2026-10-09, in his
@@ -795,8 +893,10 @@ reaches him.
 - A **clash between consistency and the official tool** where the factors split.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
-- Merging a **tricky** pull request: a behaviour trade-off, a design reversal, a public
-  API removal, or a very large diff.
+- Merging a **tricky** pull request: a behaviour trade-off, a design reversal, removing
+  or renaming a public name (before 0.2.0 too), a very large diff, or anything an open
+  decision touches. A straightforward one an agent may merge once its review approves and
+  CI is green.
 
 How to ask is in `AGENTS.md` §Working with the maintainer.
 

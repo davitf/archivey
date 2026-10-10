@@ -379,8 +379,7 @@ the `_identity_stat` seam rather than by timing. A junction needs Windows: `cmd 
 - Code: `internal/backends/directory_reader.py` · `internal/source.py` (`for_path`) ·
   `internal/detection.py` (`directory_format_info`) · `core.py` (the `format=` refusal)
 - Registers: [`threat-model.md`](../threat-model.md) O21 (the tree changing between listing
-  and reading, closed) and the shared extraction filter ·
-  [`open-issues.md`](../open-issues.md) P8 (the `format=` refusal, closed)
+  and reading, closed) and the shared extraction filter
 - Handbook: [`tar.md`](tar.md) (the hardlink shape this reader copies, and the other
   `REQUIRES_SCANNING` backend) ·
   [`topics/stream-ownership.md`](../topics/stream-ownership.md)

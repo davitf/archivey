@@ -54,7 +54,8 @@ as replies on its existing threads rather than as new ones].
   `SWEPT` marker you owe for every file**.
 - `dev-docs/formats/<format>.md` — the handbook page, if the subsystem has one. A finding that
   contradicts a §6 decision is a finding about the decision, not about the code — say so.
-- `dev-docs/open-issues.md` — `<the P-numbers already registered here>`. Do not re-raise them.
+- `dev-docs/known-issues.md` and the handbook page's §7 — the defects and open questions
+  already recorded. Do not re-raise them.
 - `dev-docs/code-map.md` §"Where the answers live" before deriving anything that feels like it
   should already be settled.
 

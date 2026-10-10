@@ -13,11 +13,11 @@ description: |
 # Write user docs
 
 How the `new_docs/` rewrite was written (PR #523, started 2026-09-29), kept so the next
-pages are written the same way. The rewritten pages live in `new_docs/` (on #523's branch
-until it merges), and `docs/` stays the live site until `new_docs/` replaces it. The maintainer found the old `docs/` too flat, too
-prescriptive and too detailed. This process fixed that by working in small agreed steps
-and by putting "reads as if a person wrote it" above the sentence rules, below only
-being true and being impossible to misread.
+pages are written the same way. The rewritten pages live in `new_docs/` on `main`, and
+`docs/` stays the live site until `new_docs/` replaces it. The maintainer found the old
+`docs/` too flat, too prescriptive and too detailed. This process fixed that by working
+in small agreed steps and by putting "reads as if a person wrote it" above the sentence
+rules, below only being true and being impossible to misread.
 
 This skill sets the voice for **all user docs prose**, in `docs/` and `new_docs/`. Its loop
 is for writing or rewriting a page with the maintainer. For a one-sentence fix, use the
@@ -110,6 +110,16 @@ Rulings from the maintainer in #523's thread:
 
 ## Shaping a page
 
+- **One Diátaxis mode per page.** Don't mix modes on a page; split and link. Grounding
+  still wins over the mode on a usage page (see below).
+
+  | Mode | When | Voice |
+  | --- | --- | --- |
+  | Tutorial | Learning by doing | "we"; every step shows a result |
+  | How-to | Goal-directed steps for a competent reader | Imperatives; no teaching digressions |
+  | Reference | Lookup facts | Dry, complete, no persuasion |
+  | Explanation | Why and trade-offs | Opinion allowed; one bounded topic |
+
 - **Code and tables before prose.** "The code is immediately understandable, more than a
   paragraph." Give an example for each form an argument takes (a list, a function), a
   table of values and effects for each option, and a table of examples when behaviour
@@ -154,7 +164,7 @@ what was kept from each.
 | mattpocock `writing-shape` | process | The same loop per paragraph, including the argument about format. Grounding: no block leans on an idea the reader hasn't met |
 | blader `humanizer` | style | The top goal: the result must sound like a person. Its tell catalogue, ranked by strength |
 | pstack `unslop` | style | Cuts puffery, throat-clearing and ornaments. Already in this repo as [`unslop`](../unslop/SKILL.md) |
-| pstack `technical-writing` | style | Pick a Diátaxis mode per page, short everyday words, conditions before instructions. Already here as [`technical-writing`](../technical-writing/SKILL.md) |
+| pstack `technical-writing` | style | Pick a Diátaxis mode per page (the table in Shaping a page), short everyday words, conditions before instructions |
 
 Where they conflicted, this is how it was settled:
 

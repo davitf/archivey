@@ -37,7 +37,7 @@ cannot close from inside — a caller who must decide *before* opening.
 - Classifying a prefix beyond the small enumerated kinds. Archivey is not a general file-type
   detector, and no rule branches on the value.
 - Deciding whether a caller should care what is *inside* a given archive — the archive-*role*
-  idea parked in `dev-docs/IDEAS.md`, post-1.0.
+  idea in `dev-docs/IDEAS.md`, post-1.0.
 
 ## Investigations
 
@@ -74,7 +74,7 @@ different things, and the label is wrong for three:
 | junk prepended to a tar | no |
 
 **`corroborated: bool` cannot become public, for a reason already recorded.**
-`dev-docs/IDEAS.md` notes that `False` means both "a probe with nothing corroborating it" and
+It is already recorded that `False` means both "a probe with nothing corroborating it" and
 "not a probe at all", so a ZIP named `a.zip` and one named `b.tar` produce identical output —
 `magic` / `certain` / `False` — as do an extensionless Brotli probe hit and one whose `.zip`
 name contradicts it. The replacement is the ledger, not a wider bool.

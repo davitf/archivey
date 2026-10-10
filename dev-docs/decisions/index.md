@@ -37,6 +37,6 @@ not fully recovered yet.
 Related long-form material (not ADRs):
 
 - [Codec library analysis](../library-analysis.md)
-- [Threat model + gap register](../threat-model.md)
+- [Threat model](../threat-model.md) (the security design)
 - Maintainer vision: `VISION.md` at the repository root
 - Historical comparison / architecture prose: [history](../history/index.md)

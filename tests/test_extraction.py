@@ -15,9 +15,10 @@ import tarfile
 import unicodedata
 import warnings
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterator, cast
+from typing import cast
 
 import pytest
 

@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone, tzinfo
+from datetime import UTC, datetime, tzinfo
 from enum import Enum, Flag, StrEnum, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    Callable,
     ClassVar,
-    Collection,
     Final,
     Literal,
-    Mapping,
     NamedTuple,
     cast,
     overload,
@@ -322,7 +320,7 @@ class MagicSignature(NamedTuple):
 
     offset: int
     magic: bytes
-    format: "ArchiveFormat"
+    format: ArchiveFormat
 
 
 class TrailerSignature(NamedTuple):
@@ -335,8 +333,8 @@ class TrailerSignature(NamedTuple):
 
     length: int
     magic: bytes
-    format: "ArchiveFormat"
-    preempts: tuple["ArchiveFormat", ...] = ()
+    format: ArchiveFormat
+    preempts: tuple[ArchiveFormat, ...] = ()
 
 
 class MemberType(Enum):
@@ -698,7 +696,7 @@ class ArchiveMember:
 
     # compare=False: identity is path/type/metadata, not the resolved peer object
     # (resolution is late-bound and would make equality order-dependent).
-    link_target_member: "ArchiveMember | None" = field(default=None, compare=False)
+    link_target_member: ArchiveMember | None = field(default=None, compare=False)
     """For a link, the resolved target member within this archive, if found. For a
     ``FILE`` that is a stored copy (``extra["is_file_copy"]``), the member whose bytes
     it repeats."""
@@ -790,7 +788,7 @@ class ArchiveMember:
     # be hashable while every hash fails.
 
     @property
-    def diagnostics(self) -> tuple["Diagnostic", ...]:
+    def diagnostics(self) -> tuple[Diagnostic, ...]:
         """Read-only tuple of diagnostics attached to this member (may be empty)."""
         return cast("tuple[Diagnostic, ...]", self._diagnostics)
 
@@ -820,7 +818,7 @@ class ArchiveMember:
                 dt = dt.replace(tzinfo=tz_for_naive)
             else:
                 dt = dt.astimezone()  # naive -> assume local timezone
-        return dt.astimezone(timezone.utc)
+        return dt.astimezone(UTC)
 
     @property
     def is_file(self) -> bool:
@@ -877,7 +875,7 @@ class ArchiveMember:
         """
         return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
 
-    def replace(self, **kwargs: object) -> "ArchiveMember":
+    def replace(self, **kwargs: object) -> ArchiveMember:
         """Return a copy with the given fields changed; never mutates self.
 
         ``object`` is not a check: neither the keyword names nor the value types are
@@ -914,7 +912,7 @@ class ArchiveInfo:
     is_multivolume: bool
     """Whether the archive spans multiple volumes."""
 
-    cost: "CostReceipt"
+    cost: CostReceipt
     """Listing/access cost receipt for the archive (see the ``access-mode-and-cost`` capability)."""
 
     extra: ArchiveInfoExtra = field(default_factory=ArchiveInfoExtra, compare=False)

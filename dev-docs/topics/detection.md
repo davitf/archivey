@@ -131,7 +131,7 @@ scan cannot stop at the short hit's own end: a decoy inside the stub ends before
 payload starts, so that bound would open the decoy. A 7z SFX with data after the archive
 (an Authenticode signature, for example) therefore reads the whole window to detect, the
 same as a miss. The cost stays inside `max_scan_bytes`. A tighter bound for PE stubs, the
-end of the stub's last section, is parked in [`IDEAS.md`](../IDEAS.md).
+end of the stub's last section, is in [`IDEAS.md`](../IDEAS.md).
 
 ### 2.3 Far magic
 
@@ -197,7 +197,7 @@ The guards reduce false claims. They do not remove them: some structured binary 
 probe hit with nothing to corroborate it is stamped, and when a read fails, the error has
 `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. The open is not refused on
 that basis, because a real extensionless stream that the probe identified correctly must
-still be readable. Status is in threat-model O10 and `open-issues.md` P12.
+still be readable. Status is in threat-model O10.
 
 **Corroboration** is either a matching extension or an inner-TAR upgrade. The upgrade
 counts because reaching it took two independent things: the decode produced output, and
@@ -403,7 +403,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
 | A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | The one tail read is the 512-byte `koly` block (§2.4), not a ZIP trailer. `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
 | An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
-| Some binary files (OLE/CFB, COFF) detect as LZMA Alone and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). O10, P12 |
+| Some binary files (OLE/CFB, COFF) detect as LZMA Alone and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). Threat-model O10 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.6) |
 | A v7 tar inside gzip, named `.tar.gz`, opens as bare `GZ` | **format** | No `ustar`, so no inner-TAR upgrade. [`formats/tar.md`](../formats/tar.md) §2.1 |
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |
@@ -425,7 +425,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | `confidence` grades evidence only; `format_unconfirmed` keys on corroboration | A grade chosen to steer an exception stops being a grade (§3.2) | Stamping on `GUESS` |
 | Extension-only read failures are stamped too | A filename is weaker evidence than a probe, so it gets at least the same warning | Stamping probe hits only |
 | `confidence` provisional, `detected_by` an open set | Lets a later release grade more finely or add a step without breaking callers | Freezing the grades and values in 0.2.0; renaming `sfx_scan` to `prefixed_scan` |
-| A short 7z hit keeps the scan going to the end of the window | The short hit's own end would stop before a real payload that follows a decoy | Stopping at the first hit; bounding at the PE overlay now (parked in `IDEAS.md`) |
+| A short 7z hit keeps the scan going to the end of the window | The short hit's own end would stop before a real payload that follows a decoy | Stopping at the first hit; bounding at the PE overlay now (an idea in [`IDEAS.md`](../IDEAS.md)) |
 | The reader keeps the `FormatInfo` its open detected (`reader.format_info`) | `archivey info` prints it instead of detecting a second time, and a second detection could differ from the first | Detecting again in the CLI |
 | Internal detections run under `probe_config(config)` | They spend what the caller allowed, but their diagnostics are not the caller's | Passing the caller's config through |
 
@@ -489,8 +489,7 @@ To see what a detection spent, print `info.cost_receipt` and `info.unavailable_t
 - Investigations:
   [`archive-format-detection-algorithm.md`](../investigations/archive-format-detection-algorithm.md)
   · [`brotli-content-probe-results.md`](../investigations/brotli-content-probe-results.md)
-- Registers: [`threat-model.md`](../threat-model.md) O10, O11 ·
-  [`open-issues.md`](../open-issues.md) P12, P18
+- Registers: [`threat-model.md`](../threat-model.md) O10, O11
 - Code: `internal/detection.py` (the steps, `_detect_format_body`) ·
   `internal/detection_workspace.py` (`PrefixWorkspace`) · `detection_cost.py` (budget,
   presets, receipt) · `detection.py` (`FormatInfo`, `DetectionConfidence`) ·

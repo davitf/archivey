@@ -8,7 +8,7 @@ two orthogonal gates — the access mode (``streaming=True`` is forward-only) an
 from __future__ import annotations
 
 import io
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 

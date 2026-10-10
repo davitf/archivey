@@ -56,11 +56,10 @@ Do these in order — the `archivey` name must be free before this repo can take
     - Configure Trusted Publishing on **PyPI** for owner `davitf`, repo `archivey`,
       workflow `publish.yml`, environment `pypi`.
     - Create the GitHub `pypi` environment with a protection rule (required reviewer).
-    - After the rename, the workflow's `testpypi` job (gated on `archivey-2`) stops
-      matching — drop it or repoint it to the renamed repo.
-6. **Local prose references** (safe to do at rename time; left as-is until then because
-   they are correct while the repo is still named `archivey-2`):
-    - `CLAUDE.md` line ~3 — "This repo (`archivey-2`) …" → `archivey`.
+    - Done: the workflow no longer routes on the `archivey-2` name; a `v*` tag goes to
+      PyPI and a manual run picks `testpypi` or `pypi` (see the header of `publish.yml`).
+6. **Local prose references** — done: `CLAUDE.md` and `AGENTS.md` no longer name
+   `archivey-2`.
     - `dev-docs/history/COMPARISON.md` — leave unchanged; it is a historical record of the
       repo-strategy decision where `archivey-2` is the accurate name.
 7. **Local clones.** `git remote set-url origin …/archivey.git` (GitHub auto-redirects

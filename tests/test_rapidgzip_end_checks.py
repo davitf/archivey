@@ -38,8 +38,12 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import (
     Codec,
+    _deflate_family_uses_accelerator,
     gzip_has_additional_member,
     open_codec_stream,
+)
+from archivey.internal.streams.rapidgzip_child import (
+    rapidgzip_child_unavailable_reason,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires
@@ -237,6 +241,314 @@ def test_gzip_bytes_after_the_data_are_reported_with_the_accelerator(tmp_path) -
         with open_archive(path, config=config, seekable_members=True) as reader:
             reader.read(reader.members()[0])
             assert reader.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
+
+
+@requires("rapidgzip")
+def test_appended_length_bytes_do_not_hide_a_wrong_gzip_isize() -> None:
+    """Four bytes after a wrong ISIZE are not the trailer, even when they equal the length.
+
+    The backstop compares the decoded length with the last four bytes of the file.
+    Appending the real length there makes that comparison succeed, and the accelerator
+    returns the payload. The standard library still raises on the real trailer. Those
+    four bytes are not a trailer: the backstop finds it by the CRC-32 of the output.
+    The ``gzip_accel`` fuzz target found this shape.
+    """
+    payload = b"atheris seed payload\n" * 8
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    blob[-1] ^= 0x01
+    blob += len(payload).to_bytes(4, "little")
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    ("wrong_isize", "after"),
+    [
+        (False, b""),
+        (False, bytes(4)),
+        (False, bytes(100_000)),
+        (True, b""),
+        (True, bytes(4)),
+        (True, bytes(100_000)),
+        (True, bytes(5) + (168).to_bytes(4, "little")),
+        (False, b"junk"),
+    ],
+    ids=[
+        "valid",
+        "valid-padded",
+        "valid-long-padding",
+        "wrong-isize",
+        "wrong-isize-padded",
+        "wrong-isize-long-padding",
+        "wrong-isize-padding-then-length",
+        "valid-then-junk",
+    ],
+)
+def test_gzip_last_isize_is_judged_as_with_the_accelerator_off(
+    wrong_isize: bool, after: bytes
+) -> None:
+    """A wrong ISIZE on the last member raises whatever follows it; a right one reads
+    with or without zero padding. The trailer is found by its CRC-32, so neither the
+    padding nor the bytes after a wrong trailer decide."""
+    payload = b"atheris seed payload\n" * 8
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    if wrong_isize:
+        blob[-1] ^= 0x01
+    blob = bytes(blob) + after
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    if wrong_isize:
+        assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    "case",
+    [
+        "valid",
+        "valid-padded",
+        "last-wrong-isize",
+        "last-wrong-isize-then-length",
+        "cut-last",
+    ],
+)
+def test_gzip_concatenated_members_are_judged_as_with_the_accelerator_off(
+    case: str,
+) -> None:
+    """The output's CRC-32 is not the last member's, so it never finds a trailer in a
+    concatenated file; the further-member scan decides, as before. With two small members,
+    a wrong ISIZE on the last one raises, as the scan does not confirm a member whose own
+    ISIZE is wrong (see the limitation test below for when it does)."""
+    first, second = b"first member payload\n" * 5, b"second member payload\n" * 7
+    member1 = gzip.compress(first, mtime=0)
+    member2 = bytearray(gzip.compress(second, mtime=0))
+    after = b""
+    if case == "valid-padded":
+        after = bytes(9)
+    elif case.startswith("last-wrong-isize"):
+        member2[-1] ^= 0x01
+        if case.endswith("length"):
+            after = len(second).to_bytes(4, "little")
+    elif case == "cut-last":
+        del member2[-6:]
+    blob = member1 + bytes(member2) + after
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert (off[1] is not None) == (case not in ("valid", "valid-padded"))
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
+def _require_the_accelerator_in_use() -> None:
+    """Skip where ``ON`` would decode with the standard library: a comparison of the two
+    modes then compares nothing."""
+    if not _deflate_family_uses_accelerator(_config(_ON)):
+        pytest.skip("the accelerator is not selected here")
+    reason = rapidgzip_child_unavailable_reason()
+    if reason is not None:
+        pytest.skip(reason)
+
+
+def _assert_error_or_the_known_clean_read(blob: bytes, content: bytes) -> None:
+    """The standard library raises. The accelerator either raises too, or reads exactly
+    ``content`` clean: the data is right, and only the verdict on a wrong length differs.
+
+    Whether it raises depends on the rapidgzip build, not on archivey. rapidgzip 0.16.0
+    has two chunk decoders: the inflate-wrapper one (ISA-L, in the Linux wheels) appends a
+    member's footer without comparing its size, and its own decoder raises "Mismatching
+    size" for a stream that lies wholly inside one chunk. CI saw the accelerator raise on
+    the macOS wheels and on a Python 3.15 build, and read clean on the Linux wheels.
+    """
+    _require_the_accelerator_in_use()
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert off[1] is not None
+    on = _outcome(Codec.GZIP, blob, _ON, _no_seek)
+    assert on == off or on == (content, None)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("case", ["three-members", "large-last-member"])
+def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
+    case: str,
+) -> None:
+    """Known limitation (``compressed-streams``): the further-member scan stands down at
+    the first further member it confirms, and a candidate counts once zlib has decoded
+    64 KiB of its input, so the last member's wrong ISIZE can be missed with three or
+    more members, or when the last one is large. Where the rapidgzip build does not
+    compare the size itself, the accelerator reads clean; the data is right, as every
+    member's CRC-32 is checked. Not worth finding the last member's start for."""
+    contents = [b"first member payload\n" * 5]
+    if case == "three-members":
+        contents += [b"middle member payload\n" * 7, b"last member payload\n" * 3]
+    else:
+        contents += [random.Random(1).randbytes(300_000)]
+    members = [gzip.compress(c, mtime=0) for c in contents]
+    members[-1] = members[-1][:-1] + bytes([members[-1][-1] ^ 0x01])
+    _assert_error_or_the_known_clean_read(b"".join(members), b"".join(contents))
+
+
+def _with_crc(prefix: bytes, target: int, suffix: bytes = b"") -> bytes:
+    """``prefix``, four chosen bytes and ``suffix``, with the CRC-32 ``target``.
+
+    The CRC-32 is affine in the four bytes over GF(2) and the map is invertible, so the
+    bytes come out of a 32-by-32 elimination. A forger picks the CRC-32 this way, which is
+    why no rule here may lean on a CRC-32 being unlikely to repeat itself."""
+
+    def crc(x: int) -> int:
+        return zlib.crc32(prefix + x.to_bytes(4, "little") + suffix)
+
+    zero = crc(0)
+    basis: dict[int, tuple[int, int]] = {}  # pivot bit -> (vector, bits of x behind it)
+
+    def reduce(vector: int, combo: int) -> tuple[int, int]:
+        for pivot in sorted(basis, reverse=True):
+            if vector >> pivot & 1:
+                vector ^= basis[pivot][0]
+                combo ^= basis[pivot][1]
+        return vector, combo
+
+    for bit in range(32):
+        vector, combo = reduce(crc(1 << bit) ^ zero, 1 << bit)
+        if vector:
+            basis[vector.bit_length() - 1] = (vector, combo)
+    rest, x = reduce(target ^ zero, 0)
+    assert rest == 0
+    out = prefix + x.to_bytes(4, "little") + suffix
+    assert zlib.crc32(out) == target
+    return out
+
+
+def _gzip_with_a_forged_trailer_after_the_real_one(shift: int) -> bytes:
+    """A one-member gzip whose ISIZE is wrong, and whose last eight bytes are exactly the
+    output's CRC-32 and length, starting ``shift`` bytes after the real trailer.
+
+    Below 4 the copy overlaps the real CRC-32, which then has to repeat itself at that
+    distance, so the payload is forced to a CRC-32 that does. From 4 to 8 the copy starts
+    in the ISIZE field, and the field's leading bytes are free. Past 8 the copy is wholly
+    appended, after ``shift - 8`` other bytes. The CRC-32 and the free bytes are chosen so
+    that the CRC-32 occurs nowhere else by accident."""
+    target = {1: 0x5A5A5A5A, 2: 0x3C5A3C5A, 3: 0x5A12345A}.get(shift, 0x12345678)
+    payload = _with_crc(random.Random(shift).randbytes(2000), target)
+    crc = zlib.crc32(payload).to_bytes(4, "little")
+    want = crc + len(payload).to_bytes(4, "little")
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    if shift < 4:
+        assert crc[shift:] == want[: 4 - shift]
+        blob[-4:] = want[4 - shift : 8 - shift]
+        blob += want[8 - shift :]
+    elif shift <= 8:
+        blob[-4:] = b"\xa5" * (shift - 4) + want[: 8 - shift]
+        blob += want[8 - shift :]
+    else:
+        blob[-1] ^= 0x01
+        blob += b"\xa5" * (shift - 8) + want
+    assert blob[-8:] == want
+    return bytes(blob)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("shift", [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 70])
+def test_gzip_forged_trailer_after_the_real_one_is_not_a_trailer(shift: int) -> None:
+    """The eight bytes CRC-32 + length may be built out of the real trailer's tail, its
+    ISIZE field and appended bytes. Up to 56 bytes past the end of the real trailer (shift
+    64 for a length with no trailing zero byte), the real CRC-32 is a second occurrence in
+    the range the lookup searches, and the candidate is turned down. Past that the lookup
+    does not exclude the copy; only rapidgzip's own error does. Ten or more appended bytes
+    (shifts past 9) never reach the lookup on rapidgzip 0.16, which raises on them. Shift
+    12 is within the lookup's range; shift 70 is past it, a tripwire for that rapidgzip
+    error: a rapidgzip that stops raising would make it read clean, and this test fail."""
+    _require_the_accelerator_in_use()
+    blob = _gzip_with_a_forged_trailer_after_the_real_one(shift)
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+
+
+@requires("rapidgzip")
+def test_gzip_forged_trailer_reaching_back_into_the_compressed_data_is_not_one() -> (
+    None
+):
+    """The copy may also sit before the real trailer, inside the compressed data. A
+    stored deflate block ends with the payload's own bytes, so a payload that ends with
+    CRC-32 + length, with the CRC-32 forced to zero, puts the copy there; the real
+    trailer after it then holds a zero CRC-32 and a zero ISIZE, which is wrong, and the
+    file ends in zeros. The real CRC-32 is a second occurrence, so this is turned down."""
+    _require_the_accelerator_in_use()
+    size = 40 * 21 + 12
+    payload = _with_crc(
+        b"atheris seed payload\n" * 40, 0, bytes(4) + size.to_bytes(4, "little")
+    )
+    assert len(payload) == size
+    compressor = zlib.compressobj(0, zlib.DEFLATED, 31)
+    blob = bytearray(compressor.compress(payload) + compressor.flush())
+    assert blob[-16:-8] == bytes(4) + size.to_bytes(4, "little")
+    blob[-4:] = bytes(4)  # ISIZE 0: wrong
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
+
+
+def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts_it() -> (
+    None
+):
+    """The ``gzip_accel`` fuzz target excuses a clean accelerated read of a file the
+    standard library rejects for its length only as far as the spec accepts it: a member
+    another member follows; the last member when the further-member scan can stand down
+    early (three or more members, or a last member longer than its probe); never a
+    single member, padded or not; and not the small last member of two, which the
+    backstop catches and the target should notice if it stopped."""
+    from archivey.internal.streams.codecs import _MEMBER_PROBE_INPUT
+    from tests.atheris_fuzz.targets import _gzip_ignoring_lengths
+
+    def member(content: bytes, *, wrong_isize: bool = False) -> bytes:
+        blob = bytearray(gzip.compress(content, mtime=0))
+        if wrong_isize:
+            blob[-1] ^= 0x01
+        return bytes(blob)
+
+    a, b, c = b"a" * 50, b"b" * 70, b"c" * 30
+    large = random.Random(3).randbytes(_MEMBER_PROBE_INPUT + 1000)
+    one = member(a, wrong_isize=True)
+    assert _gzip_ignoring_lengths(one) is None
+    assert _gzip_ignoring_lengths(one + bytes(4)) is None
+    assert _gzip_ignoring_lengths(one + len(a).to_bytes(4, "little")) is None
+    assert _gzip_ignoring_lengths(member(a, wrong_isize=True) + member(b)) == a + b
+    assert _gzip_ignoring_lengths(member(a) + member(b, wrong_isize=True)) is None
+    three_wrong_last = member(a) + member(b) + member(c, wrong_isize=True)
+    assert _gzip_ignoring_lengths(three_wrong_last) == a + b + c
+    assert _gzip_ignoring_lengths(three_wrong_last + bytes(7)) == a + b + c
+    large_last = member(a) + member(large, wrong_isize=True)
+    assert _gzip_ignoring_lengths(large_last) == a + large
+
+    # At the probe's edge the oracle follows the scan: a last member whose span is the
+    # probe has its trailer fed, so the scan does not stand down and nothing is excused.
+    for span in (_MEMBER_PROBE_INPUT - 1, _MEMBER_PROBE_INPUT, _MEMBER_PROBE_INPUT + 1):
+        content = random.Random(span).randbytes(span - 28)
+        compressor = zlib.compressobj(0, zlib.DEFLATED, 31)
+        last = bytearray(compressor.compress(content) + compressor.flush())
+        assert len(last) == span
+        last[-1] ^= 0x01
+        blob = member(a) + bytes(last)
+        scan_stands_down = gzip_has_additional_member(io.BytesIO(blob))
+        assert scan_stands_down == (span > _MEMBER_PROBE_INPUT)
+        excused = _gzip_ignoring_lengths(blob)
+        assert excused == (a + content if scan_stands_down else None)
+
+
+@requires("rapidgzip")
+def test_gzip_wrong_isize_after_a_seek_that_skipped_output_is_still_caught() -> None:
+    """With bytes skipped there is no CRC-32 of the output; the last four bytes of the
+    file stand in for the ISIZE, which still catches a plain wrong ISIZE."""
+    payload = b"atheris seed payload\n" * 8
+    blob = bytearray(gzip.compress(payload, mtime=0))
+    blob[-1] ^= 0x01
+
+    def skip(s: BinaryIO) -> None:
+        s.seek(len(payload) - 1)
+
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, skip)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, skip), off)
 
 
 @requires("rapidgzip")

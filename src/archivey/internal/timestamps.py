@@ -15,14 +15,14 @@ never sink the whole listing. A 32-bit Unix field cannot hold one, so
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from archivey.terminal import quoted
 
 # The NTFS FILETIME epoch.
-_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=UTC)
 # The Unix epoch.
-_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def unix_to_datetime(seconds: float) -> datetime | None:

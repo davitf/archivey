@@ -12,7 +12,8 @@ the PR. The shapes that recur:
 
 - **A claim the fix moved and did not carry.** An exception type corrected in two of four
   spec places, then three of four the next round (#437); a re-typing rule added to the spec
-  and missing from `docs/extracting.md` and the CHANGELOG (#423).
+  and missing from `docs/extracting.md` (#423). The CHANGELOG is not one of those places:
+  PRs never edit it, so a missing entry is not a finding.
 - **A gap narrowed rather than closed.** "The third round in a row where 'narrow the gap
   between two writes' left a smaller gap" (#437); a cap on width that was not a cap on
   count (#409).

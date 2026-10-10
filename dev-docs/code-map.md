@@ -43,7 +43,7 @@ Two boundaries carry most of the design weight:
 
 - **`archivey/` vs `archivey/internal/`.** The former is frozen surface; the latter is
   not. **The CLI importing from `internal/` is a smell** — it usually means the public API
-  has a gap, and that is a finding, not a shortcut (`review/api-coherence/`).
+  has a gap, and that is a finding, not a shortcut (`review/archive/2026-07-19-api-coherence/`).
 - **`backends/` vs `streams/`.** A backend parses a *container* — headers, member
   metadata, layout. It does not call codec libraries; it composes the uniform pull-based
   decoder layer in `streams/`. A change that makes a backend import `lzma` directly is
@@ -148,15 +148,15 @@ often they turn out to be the right place:
 | How should we work this change? | `dev-docs/pair-workflow.md` |
 | How would the maintainer settle this design question? | `dev-docs/design-rules.md` |
 | Why is a review round running, or not running, on this PR? | `dev-docs/review-loop.md` |
-| What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`pair-workflow.md`](pair-workflow.md)) |
+| What is true *here* for a format / topic? | `dev-docs/formats/<format>.md` / `dev-docs/topics/<topic>.md` when present; else code-map + threat model + ADRs/investigations — create the handbook page in the PR that needs it ([`formats/README.md`](formats/README.md)) |
 | What is the authoritative agent/CI contract? | `openspec/specs/<capability>/spec.md` — capability map in `openspec/project.md` (not the primary human reading surface) |
 | Why was this chosen? (legacy / repo-wide) | `dev-docs/decisions/` (ADR log, `index.md` first); new answers prefer handbook pages |
 | Is this a known defect / upstream bug? | `dev-docs/known-issues.md`, `dev-docs/investigations/` |
-| Is this a known unfixed gap? | `dev-docs/known-issues.md` for defects, `dev-docs/threat-model.md` §5 for open design gaps, `dev-docs/open-issues.md` |
-| Has this already been reviewed? | `review/STATUS.md`, then the archive tables under `review/archive/` |
-| Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape |
-| Was this deliberately deferred? | `review/backlog.md`, `dev-docs/IDEAS.md` |
-| What is open right now? | The open OpenSpec changes under `openspec/changes/` and their `tasks.md`; open pull requests; `review/STATUS.md` |
+| Is this a known unfixed gap? | `dev-docs/known-issues.md` for defects, `dev-docs/threat-model.md` §5 for open design gaps, §7 of the format page for open questions, `docs/gotchas.md` for what users are told |
+| Has this already been reviewed? | The `SUMMARY.md` of each review under `review/archive/` |
+| Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) (closed 2026-10-02) record the first pass — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape. The formal sweep is planned for after the release |
+| Was this deliberately deferred? | The format page's §6 Decisions and §7 Open questions for the reasoning. The work itself is tracked internally, not in the repo; ideas are in `dev-docs/IDEAS.md` |
+| What is open right now? | The open OpenSpec changes under `openspec/changes/` and their `tasks.md`; open pull requests. Everything else is tracked internally |
 | Was this discussed but not settled? | `dev-docs/discussions/` |
 | What does the user-facing story say? | `docs/` (published guide only) |
 
