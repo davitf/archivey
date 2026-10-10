@@ -41,7 +41,8 @@ class AcceleratorMode(Enum):
       input size to reach :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (see
       :meth:`enabled_for`) **and** a verifiable decompressed size
       (``StreamConfig.expected_decompressed_size``, or gzip ISIZE) so truncation
-      cannot be silently short-read.
+      cannot be silently short-read. For ``use_indexed_bzip2``, AUTO requires the known
+      compressed input size to reach :data:`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`.
     """
 
     AUTO = "auto"
@@ -130,6 +131,17 @@ class RarDecompressor(Enum):
 # a lot gains from rapidgzip's index sooner, and can set ``ON``. See the
 # rapidgzip-deflate-child-process design note.
 RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
+
+# Minimum known compressed input size (bytes) before ``use_indexed_bzip2`` AUTO selects
+# rapidgzip's bzip2 decoder. ``ON`` ignores this; unknown size keeps pre-threshold AUTO.
+#
+# The bzip2 decoder runs in a child process too, so each accelerated stream pays about
+# 45 ms to start the child. The standard library decodes bzip2 slowly, so the child pays
+# for itself much sooner than for DEFLATE: a full read broke even near 0.6 MiB
+# compressed with 4 cores, and near 2 MiB with one (``scripts/bench_bzip2_child.py``).
+# 1 MiB sits between the two. A caller that seeks backward a lot gains from the index
+# sooner, and can set ``ON``.
+INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 
 
 # How many decompressed bytes a backward seek must re-decode before
@@ -654,7 +666,16 @@ class ArchiveyConfig:
     """
 
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    """Whether to use rapidgzip's bundled bzip2 backend for random access into bzip2."""
+    """Whether to use rapidgzip's bundled bzip2 backend for random access into bzip2.
+
+    Under ``AUTO`` it is used only when the compressed input is known to be at least
+    ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). Like the
+    gzip decoder, it runs in a child Python process, one per open stream, so that a
+    crash in its native code costs the stream and not your program. Where no child can
+    be started, ``AUTO`` uses the standard library, logging one warning per process on
+    the ``archivey.streams`` logger, and ``ON`` raises
+    :class:`~archivey.exceptions.ResourceLimitError`.
+    """
 
     zip_unflagged_fallback_encoding: str = "cp437"
     """Encoding for a ZIP member name that is neither flagged nor valid UTF-8.

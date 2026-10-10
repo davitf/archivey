@@ -446,11 +446,20 @@ _BZ_ACCELERATED = [
     pytest.param(
         {"config": ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)}, id="on"
     ),
-    # The default AUTO engages the accelerator on declared seeking, at any size.
+    # The default AUTO engages the accelerator on declared seeking, from its size
+    # threshold, which _bzip2_auto_at_any_size lowers for these small members.
     pytest.param({"seekable_members": True}, id="auto-seekable"),
 ]
 
 
+@pytest.fixture
+def _bzip2_auto_at_any_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    from archivey.internal.streams import codecs
+
+    monkeypatch.setattr(codecs, "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE", 0)
+
+
+@pytest.mark.usefixtures("_bzip2_auto_at_any_size")
 @requires("rapidgzip")
 @pytest.mark.parametrize("open_kwargs", _BZ_ACCELERATED)
 def test_bzip2_accelerator_reads_a_second_stream_the_declared_crc_covers(
@@ -463,6 +472,7 @@ def test_bzip2_accelerator_reads_a_second_stream_the_declared_crc_covers(
     )
 
 
+@pytest.mark.usefixtures("_bzip2_auto_at_any_size")
 @requires("rapidgzip")
 @pytest.mark.parametrize("open_kwargs", _BZ_ACCELERATED)
 def test_bzip2_accelerator_raises_on_output_past_the_declared_size(
@@ -474,6 +484,7 @@ def test_bzip2_accelerator_raises_on_output_past_the_declared_size(
     assert _is_corruption(_outcome(blob, **open_kwargs))
 
 
+@pytest.mark.usefixtures("_bzip2_auto_at_any_size")
 @requires("rapidgzip")
 @pytest.mark.parametrize("open_kwargs", [{}, *_BZ_ACCELERATED])
 def test_bzip2_second_stream_that_breaks_the_crc_raises(

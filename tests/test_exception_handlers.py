@@ -12,19 +12,18 @@ import subprocess
 import sys
 import textwrap
 import zipfile
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING
 
 import pytest
 
 import archivey
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.reader_state import LifecycleState
-from archivey.internal.streams.codecs import _AcceleratorStream, _TrappingSource
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
 
 if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
+    pass
 
 
 def _zip_with_corrupt_deflate_body() -> bytes:
@@ -126,104 +125,6 @@ def test_bzip2_accelerator_traps_a_failing_caller_source() -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert "raised disk gone" in proc.stdout
-
-
-class _FailingSource(io.BytesIO):
-    """A caller's stream whose ``read`` fails; the shim parks the failure."""
-
-    def read(self, n: int | None = -1) -> bytes:
-        raise OSError("disk gone")
-
-
-def _accelerator_over_failing_source(
-    raised: BaseException,
-) -> tuple[_AcceleratorStream, _TrappingSource]:
-    """An ``_AcceleratorStream`` whose decoder reads the real shim, gets its EOF-shaped
-    answer, then raises ``raised`` from every read / readinto / seek."""
-    trap = _TrappingSource(_FailingSource())
-
-    class _Accel(io.BytesIO):
-        def _fail(self) -> NoReturn:
-            assert trap.read(16) == b""  # the shim parks the OSError
-            raise raised
-
-        def read(self, n: int | None = -1) -> bytes:
-            self._fail()
-
-        def readinto(self, b: WriteableBuffer, /) -> int:
-            self._fail()
-
-        def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-            self._fail()
-
-    return _AcceleratorStream(_Accel(), trap=trap), trap
-
-
-def _call(stream: _AcceleratorStream, how: str) -> None:
-    if how == "read":
-        stream.read(10)
-    elif how == "readinto":
-        stream.readinto(bytearray(10))
-    else:
-        stream.seek(5)
-
-
-@pytest.mark.parametrize("how", ["read", "readinto", "seek"])
-def test_parked_source_fault_wins_over_the_accelerator_error(how: str) -> None:
-    """codecs.py ``_AcceleratorStream``: when the accelerator raises its own error on
-    the shim's EOF-shaped answer, the parked source fault is what propagates."""
-    stream, _ = _accelerator_over_failing_source(RuntimeError("Unexpected end of file"))
-    with pytest.raises(OSError, match="disk gone") as info:
-        _call(stream, how)
-    assert isinstance(info.value.__context__, RuntimeError)
-    stream.close()
-
-
-@pytest.mark.parametrize("how", ["read", "readinto", "seek"])
-def test_an_interrupt_is_not_replaced_by_a_parked_fault(how: str) -> None:
-    """The parked fault wins only over an ``Exception``: an interrupt propagates as
-    itself, and the fault stays parked for the next boundary."""
-    stream, trap = _accelerator_over_failing_source(KeyboardInterrupt())
-    with pytest.raises(KeyboardInterrupt):
-        _call(stream, how)
-    assert isinstance(trap.trapped, OSError)
-    stream.close()
-
-
-def test_fault_parked_during_accelerator_open_raises_at_open() -> None:
-    """codecs.py ``_open_accelerator``: a fault seen while the decoder opens (through
-    the shim's ``seekable``/``tell``) raises there, not on a later read."""
-    from archivey.internal.streams.codecs import _open_accelerator
-
-    class _Broken(io.BytesIO):
-        def seekable(self) -> bool:
-            raise KeyboardInterrupt
-
-    def _open_ok(source: io.RawIOBase, parallelization: int) -> io.BytesIO:
-        source.seekable()  # parked by the shim; the open itself succeeds
-        return io.BytesIO(b"data")
-
-    def _open_fails(source: io.RawIOBase, parallelization: int) -> io.BytesIO:
-        source.seekable()
-        raise ValueError("has no valid fileno")
-
-    with pytest.raises(KeyboardInterrupt):
-        _open_accelerator(_open_ok, _Broken())
-    with pytest.raises(KeyboardInterrupt) as info:
-        _open_accelerator(_open_fails, _Broken())
-    assert isinstance(info.value.__context__, ValueError)
-
-    # An interrupt from the open itself is never replaced by a different parked fault.
-    class _FailingSeekable(io.BytesIO):
-        def seekable(self) -> bool:
-            raise OSError("disk gone")
-
-    def _open_interrupted(source: io.RawIOBase, parallelization: int) -> io.BytesIO:
-        source.seekable()
-        raise KeyboardInterrupt
-
-    with pytest.raises(KeyboardInterrupt):
-        _open_accelerator(_open_interrupted, _FailingSeekable())
 
 
 def test_interrupted_teardown_still_marks_the_lifecycle_complete(

@@ -22,9 +22,9 @@ Registers keep the status; this page states the behaviour and links the row.
 | Refuses | Nothing bzip2-specific |
 
 **Two things a reader might expect and will not find.** `member.size` is `None` until the
-whole stream has been read: nothing in the file records it. And the accelerator has no size
-threshold the way `rapidgzip` has for gzip: under `AUTO` it is used for any bzip2 stream
-where seeking was declared, however small.
+whole stream has been read: nothing in the file records it. And the accelerator's `AUTO` size
+threshold is 1 MiB, not gzip's 16 MiB: the standard library decodes bzip2 slowly, so the
+accelerator's child process pays for its start much sooner.
 
 ## 1. Shape
 
@@ -98,17 +98,23 @@ default:
 | Mode | bzip2 |
 | --- | --- |
 | `OFF` | The standard library, always |
-| `ON` | `rapidgzip.IndexedBzip2File`, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
-| `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable and `rapidgzip` is installed. Otherwise the standard library, silently |
+| `ON` | `rapidgzip.IndexedBzip2File` in a child process, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`), or `ResourceLimitError` where no child process can start |
+| `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable, `rapidgzip` is installed and the compressed input is at least `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` (1 MiB) or of unknown size. Otherwise the standard library, silently; where no child process can start, with one warning per process |
 
 The same rules hold for a bzip2 ZIP member. There the standard library stops at the first
 stream's end and the accelerator reads a second stream as content; the member's declared
 size and CRC decide, so the two differ only on a crafted member ([`zip.md`](zip.md) §2.3).
 
-There is no size threshold and no child process, unlike the DEFLATE family
-([`gzip.md`](gzip.md) §2.3). The in-process decoder has not been seen to abort on a cut or
-corrupt stream: 40 runs of the truncation sweep and the corpus mutation harness produced
-Python exceptions only. So it runs in the caller's process, with these guards around it.
+The decoder runs in a child process, as the DEFLATE family's does ([`gzip.md`](gzip.md)
+§2.3): `RapidgzipChildStream` with `bzip2=True`, which runs `rapidgzip_worker.py bzip2`. It
+has not been seen to abort on a cut or corrupt stream (40 runs of the truncation sweep, the
+corpus mutation harness and `scripts/accelerator_crash_search.py` produced Python
+exceptions only), but it shares rapidgzip's C++ code, and in the caller's process a crash
+would end the program. A child that crashes on the data hands the read to the standard
+library, like any data error (§2.3 below). The child costs about 45 ms per stream, which
+the 1 MiB `AUTO` threshold accounts for: a full read broke even near 0.6 MiB compressed with
+4 cores and near 2 MiB with one (`scripts/bench_bzip2_child.py`). The guards below sit
+around the child's stream.
 
 - **A corrupt source must not read as empty.** The bundled decoder returns no output and no
   error for input that is not bzip2 at all: 40 000 zero bytes, a zero-byte file, a bare
@@ -165,13 +171,15 @@ Python exceptions only. So it runs in the caller's process, with these guards ar
   padding, and leaves a cut or damaged empty stream alone), so the standard library takes
   over at the end and gives the verdict instead of a trailing-data report.
 - **An exception from the caller's source must not abort the process.** `rapidgzip` calls
-  `std::terminate` when a Python file object it reads from raises. The source is wrapped in
-  `_TrappingSource`, which parks the exception, hands the decoder an end of data, and lets
-  `_AcceleratorStream` raise the parked exception to the caller after the call returns,
-  unchanged and not translated.
+  `std::terminate` when a Python file object it reads from raises. The child reads the
+  caller's stream through this process, and its own source object never raises: a failed
+  read is an end of data there, and `RapidgzipChildStream` raises the caller's exception
+  when the call ends, unchanged and not translated. The stream is then given up, since the
+  decoder took the fault for the end of its input.
 - **An unclosed decoder must not abort at shutdown.** `rapidgzip` threads outlive an object
-  that was never closed and abort the interpreter at exit. `_AcceleratorStream` closes it
-  through `weakref.finalize`.
+  that was never closed and abort the interpreter at exit. The worker closes its stream
+  before it exits and then skips finalization (`os._exit`); this process reaps the child
+  when the stream is closed or collected.
 
 The input is also clipped to the known compressed length (`_bound_rapidgzip_source`).
 Otherwise a 7z AES stage's padding after the end marker reaches the decoder, which prints
@@ -230,11 +238,12 @@ accelerator `OFF` and `ON`.
 
 bzip2-specific only; the shared items are [`single-file.md`](single-file.md) §4.
 
-- **The accelerator is native code in the caller's process.** Unlike the DEFLATE family,
-  nothing contains an abort from the bzip2 decoder. None has been seen on cut or mutated
-  input, and a raising Python source is trapped (§2.3), but a new abort would end the
-  caller. The Atheris `bzip2_accel` target fuzzes it, and `SECURITY.md` tells callers who
-  need that guarantee to keep it off for untrusted input (threat-model O5).
+- **The accelerator is native code, contained in a child process.** An abort from the bzip2
+  decoder costs the stream, and the standard library takes over and gives the verdict
+  (§2.3). None has been seen on cut or mutated input. The Atheris `bzip2_accel` target
+  fuzzes it through archivey, and `scripts/accelerator_crash_search.py` runs it in-process
+  on damaged input to tell whether the isolation is still needed (threat-model O5). A busy
+  loop in the child is not bounded by a timeout.
 - **A small file costs a whole block.** Each block expands up to 900 kB before the first
   output byte, and detection's inner-TAR probe reads up to 1 MiB of compressed input to
   reach it. Both are bounded by the block size; the detection budget bounds the probe
@@ -265,10 +274,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | The bzip2 accelerator is `rapidgzip`'s bundled decoder (ADR 0008) | `indexed_bzip2` and `rapidgzip` loaded together corrupt the heap on macOS; `rapidgzip` covers both codecs | The separate `indexed_bzip2` package |
-| Keep the bzip2 accelerator in-process (PR #493) | It has not been seen to abort on cut or corrupt input, and a child costs a process start per stream | Moving it to the child with the DEFLATE family |
+| Run the bzip2 accelerator in a child process, like the DEFLATE family (2026-10-10, reversing PR #493) | No crash has been seen, but in-process one would end the caller's program, and the docs had to warn about a crash nobody found. `scripts/accelerator_crash_search.py` keeps checking whether the isolation is still needed | Keeping it in-process (PR #493); a config option for process isolation, which `use_indexed_bzip2=OFF` already covers |
 | Fall back to the standard library on a first empty read (PR #461) | The decoder's own state cannot tell garbage from an empty stream, and an accelerator must not change whether a corrupt source raises | Trusting the empty result; checking the magic by hand, which misses a valid header followed by garbage |
-| Trap the caller's source exception (PR #462) | `rapidgzip` terminates the process when a Python source raises | Letting the exception cross the native boundary |
-| No size threshold for `AUTO` | The in-process decoder costs no child start; seeking was asked for | Reusing the 16 MiB DEFLATE gate |
+| Serve the caller's source from this process (PR #462 trapped it in-process) | `rapidgzip` terminates the process when a Python source raises; the child's source never raises | Letting the exception cross the native boundary |
+| A 1 MiB size threshold for `AUTO` | The child costs a process start; the standard library is slow enough that the child pays for itself from about 1 MiB | No threshold (the in-process decoder cost no start); reusing the 16 MiB DEFLATE gate |
 | Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
 | Find the accelerator's end from its compressed position and scan the source | Its warning goes to standard error, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
 | A stream header after the data hands the end to the standard library | An accelerator changes speed, not behaviour; the 2026-10-03 ruling below applies that to cut and damaged files, and a stream after zero padding is the same file read two ways. The decoder stops at zero padding and reports a damaged empty stream as trailing bytes | Reporting a stream after padding as trailing data, which read a short file with only a warning |
@@ -310,7 +319,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A cut or damaged stream delivers the same bytes and error with the accelerator off, `AUTO` and `ON`, for a cut in the first block, a later block, the end marker and a second stream; seeks after a takeover | `tests/test_accelerator_takeover.py::test_a_cut_bzip2_reads_as_it_does_with_the_accelerator_off`, `::test_a_damaged_bzip2_block_reads_as_it_does_with_the_accelerator_off`, `::test_after_a_bzip2_takeover_seeks_back_and_forward_read_the_data` |
 | A resume from any block reproduces the data and never gives a verdict at the stream's end | `tests/test_bzip2_resume.py::test_every_block_resumes_to_the_stream_end`, `::test_the_bit_shifter_matches_a_whole_shift` |
 | The caller's source exception reaches the caller unchanged | `::test_bzip2_callers_source_exception_reaches_the_caller_unchanged`, `tests/test_exception_handlers.py::test_bzip2_accelerator_traps_a_failing_caller_source` |
-| bzip2 stays in-process | `tests/test_accelerator_truncation_abort.py::test_bzip2_stays_in_process` |
+| bzip2 runs in a child process; the caller's process never imports rapidgzip | `tests/test_accelerator_truncation_abort.py::test_bzip2_runs_in_a_child_process` |
+| A crash of the child on the data hands the read to the standard library | `tests/test_accelerator_truncation_abort.py::test_after_a_child_crash_the_standard_library_reads_on` |
 | The rewind report with the accelerator off; `ON` without the package | `tests/test_seekable_streams.py::test_bzip2_accelerator_off_warns_on_rewind`, `::test_bzip2_accelerator_on_without_package_raises` |
 | A `.tar.bz2` with a large first block is found, from a pipe too; a bare one stays `BZ2` | `tests/test_detection.py::test_inner_tar_over_bzip2_large_block_is_tar_bz2`, `::test_inner_tar_over_bzip2_large_block_non_seekable`, `::test_bare_bzip2_large_block_stays_bare_bz2` |
 
@@ -330,6 +340,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §bzip2
 - Code: `internal/streams/codecs.py` (`Bzip2Codec`, `_Bzip2EmptyStreamCheck`,
-  `_TrappingSource`, `_AcceleratorStream`, `_bound_rapidgzip_source`)
+  `_bound_rapidgzip_source`), `internal/streams/rapidgzip_child.py`
+  (`RapidgzipChildStream`), `internal/streams/rapidgzip_worker.py`
 - Handbook: [`single-file.md`](single-file.md) · [`gzip.md`](gzip.md) (the DEFLATE side of
   `rapidgzip`) · [`tar.md`](tar.md) (`.tar.bz2`)

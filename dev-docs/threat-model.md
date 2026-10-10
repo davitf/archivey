@@ -683,7 +683,7 @@ that are not errors are `Diagnostic` values with stable codes and a per-code pol
 (`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
 the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
-accelerator for gzip, zlib and raw DEFLATE (`internal/streams/rapidgzip_child.py`), and
+accelerator for gzip, zlib, raw DEFLATE and bzip2 (`internal/streams/rapidgzip_child.py`), and
 PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
 `internal/streams/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
 costs only the member.
@@ -917,10 +917,10 @@ worker they can kill. Public: [known and accepted limits](../docs/extracting.md#
 
 ### A native decoder crash or MemoryError
 
-The stdlib `zlib`, `bz2` and `lzma`, pyppmd below 16 MiB (handed the member whole, which
-avoids the input pattern known to crash it) and the bzip2 accelerator run in-process. A
-crash nobody has found yet would abort the process. The bzip2 accelerator stays
-in-process because no crash has been seen in it. `MemoryError` is not translated, so
+The stdlib `zlib`, `bz2` and `lzma` and pyppmd below 16 MiB (handed the member whole, which
+avoids the input pattern known to crash it) run in-process. A crash nobody has found yet
+would abort the process. Both rapidgzip decoders run in a child process;
+`scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
 [known and accepted limits](../docs/extracting.md#known-and-accepted-limits).

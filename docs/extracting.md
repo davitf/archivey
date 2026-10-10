@@ -47,14 +47,13 @@ These are the places where the guarantees above stop. Each one is a trade-off th
 chosen, not a bug waiting for a fix, so please don't report them as vulnerabilities.
 
 - **A native decoder that crashes can take the process with it.** Decoders written in
-  C run inside your process: the standard library's `zlib`, `bz2` and `lzma`, pyppmd
-  for PPMd members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB by default),
-  and the optional bzip2 accelerator. The known crashes have been designed around: the
-  rapidgzip accelerator for gzip, zlib and raw DEFLATE runs in a child process, a larger
-  PPMd member is decoded in a child process, and a smaller one is handed to pyppmd whole,
-  which avoids the input pattern that crashes it. A crash nobody has found yet in an
-  in-process decoder would still abort the process. The bzip2 accelerator stays
-  in-process because no crash has been seen in it.
+  C run inside your process: the standard library's `zlib`, `bz2` and `lzma`, and pyppmd
+  for PPMd members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB by default).
+  The known crashes have been designed around: the rapidgzip accelerator (gzip, zlib, raw
+  DEFLATE and bzip2) runs in a child process, a larger PPMd member is decoded in a child
+  process, and a smaller one is handed to pyppmd whole, which avoids the input pattern
+  that crashes it. A crash nobody has found yet in an in-process decoder would still
+  abort the process.
 - **`MemoryError` is not translated.** It passes through as itself, so that running out
   of memory is never mistaken for a damaged archive. The `DecoderLimits` and
   `ListingLimits` caps are there to keep a hostile archive from getting that far.
@@ -512,10 +511,9 @@ members as archives, bound the depth and the cumulative size yourself.
 decoder) are a performance path. The fuzz harness decodes each input with them and
 without them, and fails when the bytes or the verdict differ. The default is
 `AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
-a caller asks for seeking, so turning them off is something you do yourself. The
-gzip, zlib and raw DEFLATE decoder runs in a child process, so a native abort there
-costs only the member; a busy loop in that child is not bounded by a timeout. The bzip2
-decoder runs in-process. Third-party C++ can busy-loop on crafted input in a way Python
+a caller asks for seeking, so turning them off is something you do yourself. Both
+decoders run in a child process, so a native abort there costs only the member; a busy
+loop in that child is not bounded by a timeout. Third-party C++ can busy-loop on crafted input in a way Python
 timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
 latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
 set to `AcceleratorMode.OFF`) or enforce their own resource limits.

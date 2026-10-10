@@ -10,8 +10,8 @@ interpreter finalizes trips their guard and aborts the process with SIGABRT (exi
     terminate called without an active exception
 
 We found that ``join_threads()`` does NOT stop the thread — only ``close()`` does — and fixed
-archivey's ``weakref.finalize`` guard to close the object (``_AcceleratorStream`` in
-``archivey.internal.streams.codecs``). In isolation that makes leaked / cyclically-collected /
+archivey's ``weakref.finalize`` guard to close the object (since removed: archivey now
+runs rapidgzip only in a child process, ``rapidgzip_worker.py``). In isolation that makes leaked / cyclically-collected /
 never-closed streams shut down cleanly on Linux **and** macOS.
 
 But the *full* test suite on macOS still aborts at shutdown once accelerators are active
@@ -78,7 +78,7 @@ def _open_raw(module: str, data: bytes):
 
 
 def _open_archivey(module: str, data: bytes):
-    """Open through archivey's full path (ArchiveStream -> _AcceleratorStream guard), forced ON."""
+    """Open through archivey's full path (ArchiveStream -> the rapidgzip child), forced ON."""
     from archivey.internal.config import AcceleratorMode, StreamConfig
     from archivey.internal.streams.codecs import Codec, open_codec_stream
 

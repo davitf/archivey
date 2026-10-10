@@ -234,10 +234,9 @@ per the author, "has more memory overhead and might be slightly slower"). Archiv
 
 - `scripts/dual_accelerator_repro.py` confirms the two-library crash (§7) and that routing
   both codecs through rapidgzip alone is safe.
-- `scripts/accel_leak_trace.py` runs the test suite with the accelerators force-enabled,
-  records each accelerator stream's creation stack, and reports any left unclosed at
-  shutdown. Per-test process and owning-stream leaks are a different gate:
-  `tests/leak_oracle.py`.
+- `scripts/accelerator_crash_search.py` runs both decoders in-process on damaged input,
+  in a process it watches, and reports every crash by its signature, so it shows which
+  crashes are still there after a rapidgzip upgrade.
 - `scripts/macos_accelerator_debug.py` characterises the finalization behaviour (§6) across
   raw and guarded objects × cleanup strategies, each in its own subprocess.
 

@@ -51,8 +51,9 @@ ROLE_MARKER = 'class="sphinx-role"'
 # anchor or its last role goes away.
 UNRESOLVED_OK = {
     # Not public API, so deliberately not on the API page: outside `archivey.__all__`
-    # (RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE is importable but "advanced; not in __all__"),
-    # or reachable only through an internal module path.
+    # (the two AUTO thresholds are importable but "advanced; not in __all__"), or
+    # reachable only through an internal module path.
+    "archivey.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
     "archivey.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
     "archivey.exceptions.raw_message_of",
     # Members the page shows in a table or not at all, so they get no heading anchor.

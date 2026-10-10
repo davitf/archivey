@@ -27,6 +27,7 @@ import pytest
 from archivey.config import AcceleratorMode
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import StreamConfig
+from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from tests.conftest import requires
@@ -34,6 +35,13 @@ from tests.conftest import requires
 pytestmark = requires("rapidgzip")
 
 _MODES = [AcceleratorMode.AUTO, AcceleratorMode.ON]
+
+
+@pytest.fixture(autouse=True)
+def _bzip2_auto_takes_small_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bzip2 payload here compresses to under the shipped AUTO threshold (1 MiB);
+    ``AUTO`` must still take the accelerator for the tests to reach the takeover."""
+    monkeypatch.setattr(codecs_module, "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE", 0)
 
 
 @functools.cache

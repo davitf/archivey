@@ -33,12 +33,10 @@ from archivey.internal.config import (
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
-    _AcceleratorStream,
     _GzipTruncationCheckStream,
     _SourceViews,
     _stdlib_gzip,
     _StdlibOnAcceleratorError,
-    _TrappingSource,
     open_codec_stream,
 )
 from tests.corruption_util import (
@@ -49,8 +47,6 @@ from tests.corruption_util import (
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import BinaryIO
-
-    from _typeshed import WriteableBuffer
 
     from archivey.internal.streams.codecs import CodecSource
 
@@ -476,9 +472,10 @@ class _Source(io.BytesIO):
 def test_indexed_bzip2_frees_a_stream_source_after_close(
     damaged: bool, closed: bool
 ) -> None:
-    """rapidgzip keeps the Python file object it reads from after ``close()``; the shim
-    between them drops the source, so an ``io.BytesIO`` and its buffer are freed. A
-    stream nobody closed releases it too, through the finalize guard."""
+    """rapidgzip 0.16 keeps the Python file object it reads from after ``close()``. The
+    decoder runs in a child process, which reads the caller's source through this
+    process, so an ``io.BytesIO`` and its buffer are freed once the stream is closed or
+    dropped."""
     pytest.importorskip("rapidgzip")
     data = bytearray(bz2.compress(b"payload " * 400))
     if damaged:
@@ -536,211 +533,6 @@ def test_bzip2_failed_read_keeps_tell_at_the_bytes_delivered(
         assert s.tell() == len(got)
         assert s.seek(0) == 0
         assert s.read(1000) == payload[:1000]
-
-
-class _SourceFailingOnce(io.BytesIO):
-    """A caller's stream whose reads fail while ``failing`` is set."""
-
-    failing = False
-
-    def read(self, size: int | None = -1, /) -> bytes:
-        if self.failing:
-            raise OSError("disk gone")
-        return super().read(size)
-
-
-class _Decoder(io.BytesIO):
-    """Stands in for the in-process accelerator: a read decodes up to 100 bytes ahead,
-    then raises (or, with ``fail=False``, returns them), reading the caller's source
-    through the shim when there is one. ``seeks`` records every seek the wrapper asks
-    for; with ``seek_faults_source`` a seek makes the source fail and then reads it."""
-
-    def __init__(
-        self,
-        source: _SourceFailingOnce | None = None,
-        *,
-        fail: bool = True,
-        tell_raises: bool = False,
-        seek_raises: bool = False,
-        seek_faults_source: bool = False,
-    ) -> None:
-        super().__init__(bytes(1000))
-        self.source = source
-        self.trap = None if source is None else _TrappingSource(source)
-        self.fail = fail
-        self.tell_raises = tell_raises
-        self.seek_raises = seek_raises
-        self.seek_faults_source = seek_faults_source
-        self.seeks: list[int] = []
-
-    def read(self, size: int | None = -1, /) -> bytes:
-        data = super().read(100 if size is None or size < 0 else min(100, size))
-        if self.trap is not None:
-            self.trap.read(16)
-        if self.fail:
-            raise RuntimeError("corrupt block")
-        return data
-
-    def readinto(self, b: WriteableBuffer, /) -> int:
-        view = memoryview(b)
-        data = self.read(len(view))
-        view[: len(data)] = data
-        return len(data)
-
-    def tell(self) -> int:
-        if self.tell_raises:
-            raise RuntimeError("no position")
-        return super().tell()
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        self.seeks.append(offset)
-        if (
-            self.seek_faults_source
-            and self.source is not None
-            and self.trap is not None
-        ):
-            self.source.failing = True
-            self.trap.read(16)
-        if self.seek_raises:
-            raise RuntimeError("cannot seek there")
-        return super().seek(offset, whence)
-
-
-def _wrap(decoder: _Decoder) -> _AcceleratorStream:
-    return _AcceleratorStream(decoder, trap=decoder.trap)
-
-
-_SOURCE_FAULT = r"a read from the stream's source failed \(OSError\('disk gone'\)\)"
-_REWIND_FAILED = r"moving the decoder back to where that read started failed too"
-_START_UNKNOWN = r"the decoder's position before it was not known"
-
-
-def _assert_given_up(stream: _AcceleratorStream, cause: str) -> None:
-    for call in (
-        lambda: stream.read(10),
-        lambda: stream.readinto(bytearray(10)),
-        lambda: stream.seek(0),
-        stream.tell,
-    ):
-        with pytest.raises(ReadError, match=f"{cause}.*cannot be read further"):
-            call()
-
-
-@pytest.mark.parametrize("how", ["read", "readinto"])
-def test_accelerator_rewinds_after_a_failed_read(how: str) -> None:
-    """The decoder is moved back to where the failed read started, and stays usable."""
-    decoder = _Decoder()
-    stream = _wrap(decoder)
-    call = (
-        (lambda: stream.read(10))
-        if how == "read"
-        else (lambda: stream.readinto(bytearray(10)))
-    )
-    with pytest.raises(RuntimeError, match="corrupt block"):
-        call()
-    assert decoder.seeks == [0]
-    assert stream.tell() == 0
-    with pytest.raises(RuntimeError, match="corrupt block"):
-        call()
-    stream.close()
-
-
-def test_accelerator_gives_up_when_the_rewind_raises() -> None:
-    """A rewind that fails leaves the decoder past bytes nobody received, so the stream
-    raises from then on instead of reading on from there. The read's error comes first."""
-    stream = _wrap(_Decoder(seek_raises=True))
-    with pytest.raises(RuntimeError, match="corrupt block"):
-        stream.read(10)
-    _assert_given_up(stream, _REWIND_FAILED)
-    stream.close()
-
-
-def test_accelerator_gives_up_when_the_start_is_unknown() -> None:
-    """With no known start there is nothing to move back to: the stream is given up
-    without a seek."""
-    decoder = _Decoder(tell_raises=True)
-    stream = _wrap(decoder)
-    with pytest.raises(RuntimeError, match="corrupt block"):
-        stream.read(10)
-    assert decoder.seeks == []
-    _assert_given_up(stream, _START_UNKNOWN)
-    stream.close()
-
-
-@pytest.mark.parametrize(
-    "seek_raises", [False, True], ids=["seek_returns", "seek_raises"]
-)
-def test_accelerator_gives_up_when_the_rewind_faults_the_source(
-    seek_raises: bool,
-) -> None:
-    """A source fault parked by the rewind does not replace the read's error, and the
-    stream is given up naming that fault, also when the rewind's seek raised as well."""
-    decoder = _Decoder(
-        _SourceFailingOnce(b"compressed"),
-        seek_faults_source=True,
-        seek_raises=seek_raises,
-    )
-    stream = _wrap(decoder)
-    with pytest.raises(RuntimeError, match="corrupt block"):
-        stream.read(10)
-    assert decoder.trap is not None and decoder.trap.trapped is None
-    _assert_given_up(stream, _SOURCE_FAULT)
-    stream.close()
-
-
-@pytest.mark.parametrize("how", ["read", "readinto"])
-@pytest.mark.parametrize("fail", [True, False], ids=["read_raises", "read_returns"])
-def test_accelerator_never_rewinds_through_a_faulted_source(
-    fail: bool, how: str
-) -> None:
-    """When the caller's source faults during a read, that fault is raised, the decoder
-    is not driven through the source again, and every later call raises: a second read
-    cannot reach the source and park a fault that replaces nothing, or hand out bytes
-    from past the gap."""
-    source = _SourceFailingOnce(b"compressed")
-    source.failing = True
-    decoder = _Decoder(source, fail=fail)
-    stream = _wrap(decoder)
-    with pytest.raises(OSError, match="disk gone"):
-        stream.read(10) if how == "read" else stream.readinto(bytearray(10))
-    assert decoder.seeks == []
-    source.failing = False  # the caller's source recovers; the position is still lost
-    _assert_given_up(stream, _SOURCE_FAULT)
-    assert decoder.seeks == []
-    stream.close()
-
-
-def test_accelerator_stays_usable_after_a_seek_that_raises_alone() -> None:
-    """A caller's seek that raises without faulting the source does not give the stream
-    up: its error propagates, and ``tell()`` still answers, so ``ArchiveStream`` can follow
-    the decoder to where the failed seek left it."""
-    stream = _wrap(_Decoder(seek_raises=True))
-    with pytest.raises(RuntimeError, match="cannot seek there"):
-        stream.seek(0)
-    assert stream.tell() == 0
-    stream.close()
-
-
-@pytest.mark.parametrize(
-    "seek_raises", [False, True], ids=["seek_returns", "seek_raises"]
-)
-def test_accelerator_gives_up_when_a_seek_faults_the_source(seek_raises: bool) -> None:
-    """A caller's seek that faults the source raises that fault, and the stream is
-    given up as after a read: the caller never learned where the decoder ended up."""
-    decoder = _Decoder(
-        _SourceFailingOnce(b"compressed"),
-        fail=False,
-        seek_raises=seek_raises,
-        seek_faults_source=True,
-    )
-    stream = _wrap(decoder)
-    assert stream.read(10) == bytes(10)
-    with pytest.raises(OSError, match="disk gone"):
-        stream.seek(0)
-    assert decoder.source is not None
-    decoder.source.failing = False
-    _assert_given_up(stream, _SOURCE_FAULT)
-    stream.close()
 
 
 # The bundled bzip2 decoder ends the stream with no output and no error when the input is
@@ -898,10 +690,11 @@ class _SourceFailingMidway(io.BytesIO):
 def test_bzip2_callers_source_exception_reaches_the_caller_unchanged(
     error: type[Exception],
 ) -> None:
-    """The in-process bzip2 decoder reads a caller's stream through a shim that parks
-    its exception and re-raises it after the call. That exception is the caller's, not
-    a verdict on the data: an ``EOFError`` (a dropped network file object) must not be
-    translated to ``TruncatedError`` as bzip2's own ``EOFError`` would be."""
+    """The bzip2 decoder process reads a caller's stream through this process, which
+    keeps the stream's exception and raises it when the call ends. That exception is
+    the caller's, not a verdict on the data: an ``EOFError`` (a dropped network file
+    object) must not be translated to ``TruncatedError`` as bzip2's own ``EOFError``
+    would be."""
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     payload = bytes(random.Random(1).randbytes(3_000_000))
     failure = error("caller source failed")
@@ -913,7 +706,7 @@ def test_bzip2_callers_source_exception_reaches_the_caller_unchanged(
                 pass
         # The decoder read ahead of what it delivered, over a source that just faulted:
         # the stream is given up rather than read on from an unknown position.
-        with pytest.raises(ReadError, match="cannot be read further"):
+        with pytest.raises(ReadError, match="cannot continue"):
             stream.read(1 << 16)
     assert info.value is failure
 
