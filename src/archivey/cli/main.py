@@ -6,7 +6,6 @@ import argparse
 import errno
 import functools
 import os
-import re
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
@@ -61,6 +60,11 @@ _VERB_FLAG_HINTS = {
     "-t": "t",
     "-i": "i",
 }
+# Letters a tar flag bundle is made of: the verb letters above, tar's lowercase
+# modifiers (-v, -f, the -z/-j/-J/-a compressors, -k, -p, -m, -h) and GNU tar's
+# uppercase short options (-Z compress, -C, -O, -P, -S, -W and the rest). Other
+# lowercase letters stay out so a mistyped long option (``-exclude``) is no bundle.
+_TAR_BUNDLE_LETTERS = frozenset("xltivfzjJakpmh" + "ABCFGKLMNOPRSTUVWXZ")
 
 
 # The include-pattern positional's metavar; ``_ArchiveyArgumentParser.error`` matches it.
@@ -155,9 +159,19 @@ def _unrecognized_hints(tokens: list[str]) -> str:
     """Hints for unrecognized options: a tar-style verb flag, a verb's own flag."""
     opts = [tok.split("=", 1)[0] for tok in tokens]
     hints = ""
-    # Tar users type -x/-l/-t, often bundled (-xvf); verbs here are bare words. Only a
-    # single-dash bundle of letters counts, so ``--my-list`` is not ``-l``.
-    bundles = [o[1:] for o in opts if re.fullmatch(r"-[A-Za-z]+", o)]
+    # Tar users type -x/-l/-t, often bundled (-xvf, -zxf); verbs here are bare words.
+    # Only a single-dash bundle of tar letters counts, so ``--my-list`` is not ``-l``
+    # and a mistyped long option such as ``-exclude`` or ``-file`` is not ``-x``/``-i``.
+    # A bundle is one letter (``-x``) or names the archive with ``f`` (``-xvf``), so a
+    # word such as ``-max`` or ``-tail`` gets no hint either.
+    bundles = [
+        o[1:]
+        for o in opts
+        if len(o) > 1
+        and o[0] == "-"
+        and set(o[1:]) <= _TAR_BUNDLE_LETTERS
+        and (len(o) == 2 or "f" in o[1:])
+    ]
     flags = [f"-{ch}" for bundle in bundles for ch in bundle]
     verb = next((_VERB_FLAG_HINTS[f] for f in flags if f in _VERB_FLAG_HINTS), None)
     if verb is not None:
@@ -419,7 +433,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-d",
         "--dest",
         default=None,
-        help="destination directory (default: smart enclosing dir; use -d . for cwd)",
+        help=(
+            "destination directory. By default, extract into a new folder named "
+            "after the archive, or into the current directory when the archive holds "
+            "a single top-level folder. Pass -d . to extract into the current "
+            "directory in any case."
+        ),
     )
     p_extract.add_argument(
         "--policy",
@@ -576,20 +595,39 @@ def _parse_cli_args(
     (``archivey x a.zip -d out '*.py'``). Fold those tokens back so the
     documented flag/pattern order works.
 
-    Tokens after an explicit ``--`` are always positionals — including names
-    that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
+    Tokens after the first ``--`` are always positionals, including ``--`` itself
+    and names that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
     """
-    args, rest = parser.parse_known_args(argv_list)
-    after_double_dash = bool(rest and rest[0] == "--")
-    if after_double_dash:
-        rest = rest[1:]
+    # The separator is handled here, not by argparse: 3.11 and 3.12 drop a ``--``
+    # from every positional group they consume, so ``x a.zip -- --`` lost the
+    # pattern ``--`` there while ``x a.zip -d out -- --`` kept it. argparse sees
+    # one ``--`` and opaque stand-ins for the tail, which it cannot strip or read
+    # as options, and the stand-ins are swapped back after parsing. A real argv word
+    # can never collide with a stand-in, because a process argv cannot carry ``\0``:
+    # execve rejects an embedded NUL, and os.exec*/subprocess raise ValueError.
+    cut = argv_list.index("--") if "--" in argv_list else len(argv_list)
+    head, tail = argv_list[:cut], argv_list[cut + 1 :]
+    stand_ins = {f"\0archivey-tail-{i}\0": tok for i, tok in enumerate(tail)}
+    args, rest = parser.parse_known_args(
+        [*head, "--", *stand_ins.keys()] if tail else head
+    )
+    for name, value in vars(args).items():
+        if isinstance(value, str) and value in stand_ins:
+            setattr(args, name, stand_ins[value])
+        elif isinstance(value, list):
+            setattr(args, name, [stand_ins.get(v, v) for v in value])
+    # A ``--`` left in ``rest`` is the one passed above; tail tokens are positionals.
+    rest = [tok for tok in rest if tok != "--"]
+    unknown_opts = [
+        tok
+        for tok in rest
+        if tok not in stand_ins and tok.startswith("-") and tok != "-"
+    ]
+    if unknown_opts:
+        parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
+    rest = [stand_ins.get(tok, tok) for tok in rest]
     if not rest:
         return args
-    if not after_double_dash:
-        # Without ``--``, dash-prefixed leftovers are unknown options (not patterns).
-        unknown_opts = [tok for tok in rest if tok.startswith("-") and tok != "-"]
-        if unknown_opts:
-            parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
     if not hasattr(args, "patterns"):
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     args.patterns = list(args.patterns or ()) + list(rest)
