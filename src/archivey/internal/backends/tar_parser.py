@@ -1045,13 +1045,19 @@ class TarWalker:
             # Sparse records on a link, device, FIFO or directory describe no data
             # area: the member is not sparse. Without PAX records it has none.
             pass
-        elif pax(b"GNU.sparse.map") is not None:
+        # Each encoding is chosen by the presence of the records that define its map,
+        # not by pax(), which drops an empty value: a sparse record whose value is
+        # empty is damage, and reading the member as a plain file would serve its
+        # compacted data as the content.
+        elif b"GNU.sparse.map" in merged:
             sparse_format = SparseFormat.PAX_0_1
             sparse = sparse_map_0_1(
                 merged[b"GNU.sparse.map"].value, charge.name, charge
             )
             size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif pax(b"GNU.sparse.size") is not None:
+        elif b"GNU.sparse.size" in merged or any(
+            key == b"GNU.sparse.offset" for key, _ in own_records
+        ):
             sparse_format = SparseFormat.PAX_0_0
             sparse = sparse_map_0_0(own_records, charge.name, charge)
             size = _pax_int(merged, b"GNU.sparse.size") or 0

@@ -98,7 +98,7 @@ _SIZE = str(2**63 - 997)  # room for a 3-byte chunk at _NEAR_MAX
 def _sparse_seeds() -> list[bytes]:
     end = bytes(2 * BLOCKSIZE)
     pax_0_0 = _pax_member(
-        [("GNU.sparse.size", _SIZE), ("GNU.sparse.numoffsets", "2")]
+        [("GNU.sparse.size", _SIZE), ("GNU.sparse.numblocks", "2")]
         + [("GNU.sparse.offset", "0"), ("GNU.sparse.numbytes", "5")]
         + [("GNU.sparse.offset", _NEAR_MAX), ("GNU.sparse.numbytes", "3")],
         b"abcdexyz",
