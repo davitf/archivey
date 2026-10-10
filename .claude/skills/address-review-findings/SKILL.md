@@ -45,21 +45,25 @@ push without asking, and what stops for a human) that this skill does not state.
 
 ## Anti-patterns (read these first)
 
-They sit at the top so they survive when a long session trims this file.
+They sit at the top because the compound-engineering plugin reports that a long session
+may keep only the start of a skill (not measured here). Each names the section it comes
+from.
 
-- Reading only the top-level comment and missing the inline threads (or vice versa).
-- Treating a maintainer's inline question as a finding to be closed rather than answered.
-- "Fixed in `a1b2c3d`" with no statement of what was wrong or how it was verified.
-- Fixing a false positive to make a comment go away.
-- Batching every open decision into one wall of numbered questions.
+- Reading only the top-level comment and missing the inline threads, or the reverse (§1).
+- Treating a maintainer's inline question as a finding to be closed rather than answered
+  (§1 "Who actually said this").
+- "Fixed in `a1b2c3d`" with no statement of what was wrong or how it was verified (§7).
+- Fixing a false positive to make a comment go away (§3).
+- Batching every open decision into one wall of numbered questions (§6).
 - Getting a decision from the maintainer in chat and never posting it, so the PR still shows
-  an open question and the implementor re-opens it.
+  an open question and the implementor re-opens it (§6 "A settled decision is not settled
+  until it is on the PR").
 - Writing a settled maintainer decision as if it were the reviewer's suggestion — or your
-  own un-ruled preference as if it were settled.
-- Pushing after `ruff` without `pyrefly` / `ty` / `pytest`.
+  own un-ruled preference as if it were settled (§6).
+- Pushing after `ruff` without `pyrefly` / `ty` / `pytest` (§5).
 - Marking a change complete and leaving it unarchived, or checking the last box early to
-  look finished.
-- Claiming a finding "does not reproduce" without showing what you ran.
+  look finished (§5).
+- Claiming a finding "does not reproduce" without showing what you ran (§3).
 
 ---
 
