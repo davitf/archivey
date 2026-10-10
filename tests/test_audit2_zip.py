@@ -55,6 +55,7 @@ class _Entry:
     external_attr: int = 0o100644 << 16
     flags: int = 0  # general-purpose bit flags, both headers
     create_system: int = 3  # "version made by" high byte; 3 is Unix
+    date: int = 0x21  # DOS date, both headers: 1980-01-01
 
 
 def _build_zip(entries: list[_Entry]) -> bytes:
@@ -73,7 +74,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             e.flags,
             e.method,
             0,  # time
-            0x21,  # date: 1980-01-01
+            e.date,
             crc,
             len(e.data),
             min(usize, 0xFFFFFFFF),
@@ -97,7 +98,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             e.flags,
             e.method,
             0,
-            0x21,
+            e.date,
             crc,
             len(e.data),
             min(usize, 0xFFFFFFFF),
@@ -802,23 +803,72 @@ def test_messages_name_the_member_as_listed_on_every_host(
     assert invalid.message == f"Invalid NTFS timestamp for 'a/': {2**64 - 1}"
 
 
+_DOS_MONTH_13 = (13 << 5) | 1  # 1980-13-01: no such date
+
+
 @pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
-def test_directory_overrun_names_the_entry_as_stored_on_every_host(
+def test_dos_date_message_names_the_member_as_listed_on_every_host(
     monkeypatch: pytest.MonkeyPatch, windows: bool
 ) -> None:
-    # No archivey decode exists when the directory is checked, so the report uses the
-    # stored name, which stdlib rewrites to "a/" on Windows in ZipInfo.filename.
-    blob = bytearray(_build_zip([_Entry(b"a\\", b"hi")]))
+    # The DOS date_time branch of the same message: stdlib's ZipInfo.filename is "a\\"
+    # on POSIX and "a/" on Windows, and the message names archivey's "a/" on both.
+    blob = _build_zip(
+        [
+            _Entry(
+                b"a\\",
+                b"",
+                create_system=_FAT,
+                external_attr=_FILE_ATTRIBUTE_ARCHIVE,
+                date=_DOS_MONTH_13,
+            )
+        ]
+    )
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        (invalid,) = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
+    assert member.name == "a/"
+    assert invalid.message == "Invalid ZIP date_time for 'a/': (1980, 13, 1, 0, 0, 0)"
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+@pytest.mark.parametrize(
+    ("stored", "listed", "quoted_name"),
+    [
+        # A Unix "a\\" keeps its backslash; stdlib's filename is "a/" on Windows.
+        (b"a\\", "a\\", r"'a\\'"),
+        # UTF-8 bytes with the UTF-8 flag clear: stdlib decodes them as cp437
+        # ("\u251c\u2310.txt"), archivey as UTF-8.
+        ("\u00e9.txt".encode(), "\u00e9.txt", "'\u00e9.txt'"),
+    ],
+    ids=["backslash", "unflagged_utf8"],
+)
+def test_directory_overrun_names_the_entry_as_listed_on_every_host(
+    monkeypatch: pytest.MonkeyPatch,
+    windows: bool,
+    stored: bytes,
+    listed: str,
+    quoted_name: str,
+) -> None:
+    # The report names the entry from archivey's decode, the name the listing shows,
+    # not from either of stdlib's names for it.
+    blob = bytearray(_build_zip([_Entry(stored, b"hi")]))
     entry = blob.rfind(b"PK\x01\x02")
     struct.pack_into("<H", blob, entry + 32, 3000)  # comment length past the end
     if windows:
         _pretend_zipfile_runs_on_windows(monkeypatch)
     with archivey.open_archive(io.BytesIO(bytes(blob))) as ar:
-        assert [m.name for m in ar.members()] == ["a\\"]
+        assert [m.name for m in ar.members()] == [listed]
         (finding,) = [
             d
             for d in ar.diagnostics.retained
             if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
         ]
-    # The message escapes the stored backslash, so it reads as two.
-    assert finding.message.startswith(r"ZIP central directory entry 'a\\' declares")
+    assert finding.message.startswith(
+        f"ZIP central directory entry {quoted_name} declares"
+    )

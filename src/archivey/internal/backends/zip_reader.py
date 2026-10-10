@@ -669,6 +669,19 @@ def _zip_timestamp_field(create_system: CreateSystem, slot: str) -> str:
     return {"mtime": "modified", "atime": "accessed"}[slot]
 
 
+class _EndRecordFinding(NamedTuple):
+    """One disagreement between the end record and the central directory.
+
+    When ``entry_index`` is set, ``message`` holds a ``{name}`` placeholder for that
+    entry's name. It is filled in when the finding is emitted, after the walk, from
+    archivey's own decode of the name, so the message names the member as the listing
+    does."""
+
+    message: str
+    context: ArchiveEofContext
+    entry_index: int | None = None
+
+
 class _DecodedName(NamedTuple):
     """A ZIP entry's name as archivey reads it, before normalization. A tuple, not a
     dataclass: one is built per member on the listing hot path."""
@@ -894,7 +907,7 @@ class ZipReader(BaseArchiveReader):
         # Computed here rather than there because the handle is still private to
         # ``__init__``: these seeks need no ``_handle_guard()``, while the same reads
         # at the end of the walk would race member reads under ``CONCURRENT``.
-        self._end_record_findings: list[tuple[str, ArchiveEofContext]] = (
+        self._end_record_findings: list[_EndRecordFinding] = (
             _end_record_findings(
                 fp,
                 start_dir=self._archive.start_dir,
@@ -960,7 +973,18 @@ class ZipReader(BaseArchiveReader):
         # The end record and the central directory disagree. Info-ZIP unzip and 7-Zip
         # list and test every member, then report the damage; so does this, once the
         # members are out, and a strict policy refuses the archive.
-        for message, context in self._end_record_findings:
+        infos = self._archive.infolist()
+        for message, context, entry_index in self._end_record_findings:
+            if entry_index is not None:
+                # The entry is named here rather than when the directory was checked,
+                # because only now is archivey's decode at hand. The decode reports
+                # nothing, so the member's own diagnostics are not repeated.
+                name = (
+                    quoted(self._decode_member_name(infos[entry_index]).text)
+                    if entry_index < len(infos)
+                    else f"#{entry_index}"
+                )
+                message = message.format(name=name)
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
                 message=message,
@@ -2358,7 +2382,7 @@ def _end_record_findings(
     start_dir: int,
     infos: Sequence[zipfile.ZipInfo],
     archive_name: str | None,
-) -> list[tuple[str, ArchiveEofContext]]:
+) -> list[_EndRecordFinding]:
     """Where the end record and the central directory disagree, as diagnostics.
 
     stdlib zipfile reads entries until it has consumed the directory size the end
@@ -2378,7 +2402,7 @@ def _end_record_findings(
         endrec = _end_rec_data(fp)
         if endrec is None:
             return []
-        findings: list[tuple[str, ArchiveEofContext]] = []
+        findings: list[_EndRecordFinding] = []
         eocd_offset = endrec[_ECD_LOCATION]
         is_zip64 = endrec[_ECD_SIGNATURE] != b"PK\x05\x06"
 
@@ -2391,7 +2415,7 @@ def _end_record_findings(
         if declared != (read if is_zip64 else read & 0xFFFF):
             record = "ZIP64 end of central directory" if is_zip64 else "end record"
             findings.append(
-                (
+                _EndRecordFinding(
                     f"ZIP {record} declares {declared} entries, but the central "
                     f"directory holds {read}.",
                     ArchiveEofContext(
@@ -2413,7 +2437,7 @@ def _end_record_findings(
         available = len(endrec[_ECD_COMMENT])
         if comment_length > available:
             findings.append(
-                (
+                _EndRecordFinding(
                     f"ZIP archive comment is declared as {comment_length} bytes, "
                     f"but the file ends {available} bytes after the end record; "
                     f"the comment is cut short.",
@@ -2433,15 +2457,17 @@ def _end_record_findings(
         )
         if overrun is not None:
             index, field, entry_end = overrun
-            # orig_filename, not filename: stdlib rewrites filename by host and
-            # Python version, and no archivey decode exists yet at this point.
-            name = infos[index].orig_filename if index < len(infos) else f"#{index}"
+            # The entry's name is left as a {name} placeholder: no archivey decode
+            # exists yet, and stdlib's names (filename, orig_filename) differ from
+            # member.name by host, Python version and name encoding. _iter_members
+            # fills it in.
             article = "an" if field.startswith("extra") else "a"
             findings.append(
-                (
-                    f"ZIP central directory entry {quoted(name)} declares {article} "
-                    f"{field} that runs {entry_end - endrec[_ECD_SIZE]} bytes past "
-                    f"the central directory's end; its {field} is cut short.",
+                _EndRecordFinding(
+                    "ZIP central directory entry {name} declares "
+                    f"{article} {field} that runs {entry_end - endrec[_ECD_SIZE]} "
+                    f"bytes past the central directory's end; its {field} is cut "
+                    "short.",
                     ArchiveEofContext(
                         archive_name=archive_name,
                         format="zip",
@@ -2450,6 +2476,7 @@ def _end_record_findings(
                         observed_bytes=entry_end,
                         observed_kind="nonzero",
                     ),
+                    entry_index=index,
                 )
             )
         return findings
