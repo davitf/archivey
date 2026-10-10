@@ -427,7 +427,7 @@ separate and stays reserved (below).
 | `archivey test <tar-fifo>` | Verifies every file member in one pass; exit `0` |
 | `archivey extract <tar-fifo> -d out` | Extracts every member into `out`; exit `0` |
 | `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
-| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first |
+| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first. When the format's optional package is not installed (ISO without `pycdlib`), the message names the missing package instead |
 | `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
 
 ### Requirement: the stdin token `-` is reserved, not supported in v1
