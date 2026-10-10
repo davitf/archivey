@@ -93,9 +93,10 @@ def run_test(
             # count as FAIL and still reach the summary (F4). Once the generator raises,
             # further next() yields StopIteration — remaining members are lost (library
             # limitation for solid / poisoned streams); report them as "not tested" (P8).
-            # ``closing`` ends the pass when anything else leaves the loop (Ctrl-C, a
-            # broken stderr pipe), so the reader can close and the original error
-            # reaches ``main()``; a pass still suspended would refuse that close.
+            # ``closing`` ends the pass here, deterministically, whatever leaves the
+            # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
+            # pass for ``reader.close()`` or the garbage collector to end while the
+            # error travels up to ``main()``.
             with closing(_closable(reader.stream_members(pred))) as it:
                 while True:
                     try:

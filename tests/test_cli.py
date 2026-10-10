@@ -20,7 +20,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cli import test_cmd
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.main import _inject_default_list, main
 from archivey.diagnostics import DiagnosticSummary
@@ -878,6 +878,11 @@ class _StderrFailingAtFirstOk(io.StringIO):
         self._every_later_write = every_later_write
         self._failed = False
 
+    @property
+    def failed(self) -> bool:
+        """Whether the injected error has been raised."""
+        return self._failed
+
     def write(self, s: str) -> int:
         if (s.startswith("OK   ") and not self._failed) or (
             self._failed and self._every_later_write
@@ -894,9 +899,41 @@ def test_test_ctrl_c_mid_pass_exits_interrupted(sample_zip: Path) -> None:
     that pass must not then stop the reader from closing.
     """
     err = _StderrFailingAtFirstOk(KeyboardInterrupt(), every_later_write=False)
-    assert main(["test", "-v", str(sample_zip)], err=err) == 130
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_INTERRUPTED
     assert "interrupted" in err.getvalue()
-    assert "ArchiveyUsageError" not in err.getvalue()
+    assert "Cannot close the archive reader" not in err.getvalue()
+
+
+def test_extract_ctrl_c_mid_pass_exits_interrupted(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ctrl-C during the extraction pass ends as ``interrupted`` and 130.
+
+    The progress callback runs inside the extraction loop while the member pass is
+    suspended, so an interrupt raised there must not leave that pass blocking the
+    reader's close.
+    """
+    import archivey.cli.extract_cmd as extract_mod
+
+    class _InterruptingProgress:
+        calls = 0
+
+        def __call__(self, progress: object) -> None:
+            self.calls += 1
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            pass
+
+    progress = _InterruptingProgress()
+    monkeypatch.setattr(extract_mod, "make_progress_callback", lambda **_: progress)
+    dest = tmp_path / "out"
+    assert main(["extract", str(sample_zip), "-d", str(dest)]) == EXIT_INTERRUPTED
+    assert progress.calls == 1
+    assert "interrupted" in capsys.readouterr().err
 
 
 def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
@@ -913,6 +950,8 @@ def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
         BrokenPipeError(32, "Broken pipe"), every_later_write=True
     )
     assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+    # The pipe did close mid-pass: without this, a clean run passes the test too.
+    assert err.failed
 
 
 def test_test_summary_helper() -> None:
