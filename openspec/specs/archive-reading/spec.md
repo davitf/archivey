@@ -1179,8 +1179,9 @@ Value shape, retention budget, watermarks, and attachment rules: `diagnostics`.
 
 ### Requirement: Collection form of MemberSelector
 
-`MemberSelector` SHALL accept a predicate or `Collection[str | ArchiveMember]`,
-normalized to a predicate at the API boundary:
+`MemberSelector` SHALL accept a predicate or any `Iterable[str | ArchiveMember]`,
+normalized to a predicate at the API boundary. The boundary SHALL read the iterable
+exactly once, so a generator selects the same members as the equivalent list:
 
 - `str` matches **every** member with that normalized name (duplicates all match;
   extraction keeps sequential last-wins-on-disk)
