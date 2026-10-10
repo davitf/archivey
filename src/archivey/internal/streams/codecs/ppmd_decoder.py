@@ -613,7 +613,6 @@ def PpmdDecompressorStream(
     pack_size: int | None = None,
     in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
     collector: DiagnosticCollector | None = None,
-    report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
@@ -637,5 +636,4 @@ def PpmdDecompressorStream(
         ),
         collector=collector,
         codec_name="ppmd",
-        report_trailing_data=report_trailing_data,
     )

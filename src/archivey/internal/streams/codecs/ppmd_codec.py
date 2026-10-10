@@ -105,7 +105,6 @@ class PpmdCodec(StreamCodec):
                 pack_size=pack_size,
                 in_process_max_input=in_process_max_input,
                 collector=config.collector,
-                report_trailing_data=config.report_trailing_data,
             )
         order, mem_size = parse_ppmd_var_h_properties(params.properties)
         check_decoder_memory(
@@ -121,7 +120,6 @@ class PpmdCodec(StreamCodec):
             pack_size=pack_size,
             in_process_max_input=in_process_max_input,
             collector=config.collector,
-            report_trailing_data=config.report_trailing_data,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

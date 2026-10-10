@@ -118,7 +118,6 @@ def Deflate64DecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
     *,
     collector: DiagnosticCollector | None = None,
-    report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Decode a Deflate64 stream (forward-only)."""
     return DecompressorStream(
@@ -126,5 +125,4 @@ def Deflate64DecompressorStream(
         make_decoder=lambda _p, _i: Deflate64Decoder(),
         collector=collector,
         codec_name="deflate64",
-        report_trailing_data=report_trailing_data,
     )
