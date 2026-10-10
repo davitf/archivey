@@ -1408,6 +1408,13 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   opens the member for its content. A streaming pass has already passed that content,
   so it SHALL fail the member under `OnError`; it SHALL NOT report it as a link with no
   target.
+- A 7z `stream_members()` pass under `read_link_targets=True` reads a reparse-flagged
+  member's data when it reaches the member, in either access mode. When that data is
+  no reparse buffer, the pass SHALL re-type the member there, as listing would, and
+  yield it with a stream of its whole content. It SHALL NOT yield it as a link with no
+  stream and re-type it after: the folder decoder cannot go back, so that content
+  would be lost with no error. `extract_all` over such a pass therefore writes the
+  member as a file in both access modes.
 
 #### Scenario: link-target setting matrix
 
@@ -1424,6 +1431,9 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | ZIP symlink, `read_link_targets=False`, password supplied, `reader.open("link")` | The target is read, then the link is followed |
 | Streaming `extract_all()` over a ZIP symlink, default config | The target is read before the link is written; the link is extracted |
 | ZIP member flagged as a reparse point whose data is no reparse buffer, `read_link_targets=False`, `extract_all()` | The filter sees it as a link, then again as a file; random access writes its content; a streaming pass fails it under `OnError` |
+| 7z member flagged as a reparse point whose data is no reparse buffer, default config, `stream_members()` in either access mode | Yielded as `FILE` with a stream of all its content; the next member in the folder reads correctly |
+| Same 7z archive, default config, streaming `extract_all()` | Written as a file |
+| Same 7z archive, `read_link_targets=False`, `stream_members()` | Yielded as `SYMLINK` with no stream, as `members()` lists it; not re-typed later |
 
 ### Requirement: A damaged data-stored link target leaves the listing intact
 
