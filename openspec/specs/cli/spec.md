@@ -278,7 +278,10 @@ also print the raw cost axes (`listing`, `access_cost`, `stream`,
 
 `info` SHALL detect once: the identity lines come from the reader's
 `format_info`, not from a separate `detect_format` call before the open. Only
-when the open fails does it call `detect_format`, to print what it can.
+when the open fails does it call `detect_format`, to print what it can, and not
+when the path is a pipe, a character device or a socket. Detection opens the path
+again, and those are read once, so a second open gets different bytes or waits for
+a writer that never comes; on those `info` prints the open error alone.
 
 #### Scenario: info vs list
 
@@ -289,6 +292,7 @@ when the open fails does it call `detect_format`, to print what it can.
 | `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey info <archive>` that opens | Detection runs once, inside the open |
+| `archivey info <fifo>` whose open fails | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 
 ### Requirement: version reports package identity and optional format matrix
@@ -347,9 +351,13 @@ always-stop / hoist failure) SHALL exit `1`. When `extract` **completes**
 and no member `FAILED`, the system SHALL exit `3` (refused by safety policy —
 safe members are on disk). Because `OnError.STOP` / `--stop-on-error` never
 halts on a policy block, a STOP+policy abort cannot occur; exit `3` MUST NOT
-be used for an aborted STOP-path failure. Exit codes `≥4` SHALL remain
-reserved. Documentation SHALL direct callers to treat any nonzero code other
-than `2` as a failure and MUST NOT assume `1` is the only failure code.
+be used for an aborted STOP-path failure. Exit codes `4` to `127` SHALL remain
+reserved.
+Codes `128` and above follow the shell's `128 + N` convention for signal `N`
+and are not in the reserved range: a command interrupted by Ctrl-C (SIGINT)
+SHALL print `interrupted` and exit `130`.
+Documentation SHALL direct callers to treat any nonzero code other than `2` as
+a failure and MUST NOT assume `1` is the only failure code.
 
 #### Scenario: exit codes
 
@@ -367,6 +375,8 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
+| Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
+| Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `0`, even when `test` had not finished verifying |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 
@@ -380,6 +390,21 @@ filesystem entry literally named `-`.
 | --- | --- |
 | `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
 | `archivey extract -` | Same |
+
+### Requirement: an empty path argument is a usage error
+
+The system SHALL refuse an empty string given as the archive argument of any verb, or
+as `extract --dest`, with a usage error (exit `2`) and a message, before anything is
+read or written. `Path("")` is `Path(".")`, so an unset shell variable
+(`"$ARCHIVE"`, `-d "$OUT"`) would otherwise read or extract into the working
+directory; `.` remains the way to name it.
+
+#### Scenario: empty path
+
+| Case | Expected |
+| --- | --- |
+| `archivey list ""`, `test ""`, `info ""`, `extract ""` | Exit `2`; message names the empty path; no traceback |
+| `archivey extract a.zip -d ""` | Exit `2`; nothing is written to the working directory |
 
 ### Requirement: The CLI uses only public API
 

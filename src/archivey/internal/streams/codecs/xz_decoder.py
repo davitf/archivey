@@ -22,6 +22,7 @@ XZ spec: https://tukaani.org/xz/xz-file-format.txt
 
 from __future__ import annotations
 
+import itertools
 import lzma
 import os
 import struct
@@ -66,14 +67,14 @@ def _round_up_4(n: int) -> int:
     return (n + 3) & ~3
 
 
-def _decode_mbi(data: bytes, offset: int) -> tuple[int, int]:
-    """Decode a multi-byte integer at ``offset``; return ``(value, bytes_consumed)``."""
+def _decode_mbi(data: Iterator[int]) -> tuple[int, int]:
+    """Decode a multi-byte integer from ``data``; return ``(value, bytes_consumed)``."""
     value = 0
     shift = 0
     for i in range(9):  # XZ spec: max 9 bytes per MBI
-        if offset + i >= len(data):
+        byte = next(data, None)
+        if byte is None:
             raise CorruptionError("XZ index MBI truncated")
-        byte = data[offset + i]
         value |= (byte & 0x7F) << shift
         if not (byte & 0x80):
             if byte == 0 and i > 0:
@@ -98,7 +99,7 @@ def _encode_mbi(value: int) -> bytes:
     return bytes(result)
 
 
-@dataclass
+@dataclass(slots=True)
 class _XzBlockBounds:
     """One block's place in the file, and what resuming from it needs.
 
@@ -174,25 +175,35 @@ def _parse_xz_index(data: bytes) -> list[tuple[int, int]]:
 
 
 def _iter_xz_index(data: bytes) -> Iterator[tuple[int, int]]:
+    """:func:`_walk_xz_index` over an index held in memory."""
+    return _walk_xz_index(iter(data), len(data))
+
+
+def _walk_xz_index(data: Iterator[int], length: int) -> Iterator[tuple[int, int]]:
     """Yield one stream's ``(unpadded_size, uncompressed_size)`` records, validating.
 
-    A record can be as small as two bytes, so callers that may meet millions walk the
-    records rather than store them. The length and padding checks run after the last
-    record, so a caller must exhaust the iterator for the index to count as valid.
+    ``data`` gives the index bytes (without its CRC32) one at a time and ``length`` is
+    how many there are, so the backward scan can feed an index from the file in bounded
+    chunks (:class:`_XzIndexSource`) instead of holding it whole. A ``data`` that ends
+    early is a truncated index. A record can be as small as two bytes, so callers that
+    may meet millions walk the records rather than store them. The length and padding
+    checks run after the last record, so a caller must exhaust the iterator for the
+    index to count as valid.
     """
-    if not data or data[0] != 0x00:
+    indicator = next(data, None)
+    if indicator != 0x00:
         raise CorruptionError(
-            f"XZ index indicator byte expected 0x00, got {data[0]:#04x}"
-            if data
+            f"XZ index indicator byte expected 0x00, got {indicator:#04x}"
+            if indicator is not None
             else "XZ index is empty"
         )
     offset = 1
-    num_records, consumed = _decode_mbi(data, offset)
+    num_records, consumed = _decode_mbi(data)
     offset += consumed
     for _ in range(num_records):
-        unpadded_size, consumed = _decode_mbi(data, offset)
+        unpadded_size, consumed = _decode_mbi(data)
         offset += consumed
-        uncompressed_size, consumed = _decode_mbi(data, offset)
+        uncompressed_size, consumed = _decode_mbi(data)
         offset += consumed
         if unpadded_size == 0:
             raise CorruptionError("XZ index: unpadded_size must be > 0")
@@ -201,19 +212,121 @@ def _iter_xz_index(data: bytes) -> Iterator[tuple[int, int]]:
     # must fill it exactly: fewer records than the index carries, or padding cut short,
     # is a malformed index (liblzma, which does the decoding, rejects both).
     padded_len = _round_up_4(offset)
-    if padded_len != len(data):
+    if padded_len != length:
         raise CorruptionError(
             f"XZ index length mismatch: records end at {padded_len}, "
-            f"index is {len(data)} bytes"
+            f"index is {length} bytes"
         )
     for i in range(offset, padded_len):
-        if data[i] != 0:
+        byte = next(data, None)
+        if byte is None:
+            raise CorruptionError("XZ index truncated")
+        if byte != 0:
+            raise CorruptionError(f"XZ index padding byte {i} is non-zero: {byte:#04x}")
+
+
+# The backward scan reads a stream's index from the file at most this many bytes at a
+# time. Only the 12-byte footer must be valid for its backward size to be believed, so
+# an index declared larger than this is never read whole: a footer can claim an index
+# as large as the file. A real index takes a few bytes per block, so below about
+# 200 000 blocks it is one read.
+_INDEX_READ_CHUNK = 1 << 20
+
+
+def _index_chunks(stream: BinaryIO, start: int, length: int) -> Iterator[bytes]:
+    """Yield ``length`` bytes of ``stream`` from ``start``, at most a chunk at a time.
+
+    The stream is moved before each read, so another walk may use it in between.
+    """
+    end = start + length
+    while start < end:
+        stream.seek(start)
+        chunk = stream.read(min(_INDEX_READ_CHUNK, end - start))
+        if not chunk:
+            raise CorruptionError("XZ index truncated")
+        start += len(chunk)
+        yield chunk
+
+
+class _XzIndexSource:
+    """One stream's index (without its CRC32) in the file, checked and walked.
+
+    An index declared at most :data:`_INDEX_READ_CHUNK` bytes long is read once and
+    kept; a larger one is re-read from the file, a chunk at a time, by every pass. The
+    choice keys on the declared length, never on how much a read returned.
+    """
+
+    def __init__(self, stream: BinaryIO, start: int, size_with_crc: int) -> None:
+        self._stream = stream
+        self._start = start
+        self.length = size_with_crc - 4
+        self._held: bytes | None = None
+        self._held_crc = b""
+        if self.length <= _INDEX_READ_CHUNK:
+            stream.seek(start)
+            data = stream.read(size_with_crc)
+            if len(data) < size_with_crc:
+                raise CorruptionError("XZ index truncated")
+            self._held = data[: self.length]
+            self._held_crc = data[self.length :]
+
+    def _chunks(self) -> Iterator[bytes]:
+        if self._held is not None:
+            return iter((self._held,))
+        return _index_chunks(self._stream, self._start, self.length)
+
+    def check_crc(self) -> None:
+        """Raise :class:`CorruptionError` unless the index matches its CRC32."""
+        computed = 0
+        for chunk in self._chunks():
+            computed = zlib.crc32(chunk, computed)
+        if self._held is not None:
+            stored_bytes = self._held_crc
+        else:
+            self._stream.seek(self._start + self.length)
+            stored_bytes = self._stream.read(4)
+            if len(stored_bytes) < 4:
+                raise CorruptionError("XZ index truncated")
+        stored = struct.unpack("<I", stored_bytes)[0]
+        if stored != computed:
             raise CorruptionError(
-                f"XZ index padding byte {i} is non-zero: {data[i]:#04x}"
+                f"XZ index CRC32 mismatch: stored {stored:#010x}, "
+                f"computed {computed:#010x}"
             )
 
+    def records(self) -> Iterator[tuple[int, int]]:
+        """:func:`_walk_xz_index` over the index; each call walks it from the start."""
+        if self._held is not None:
+            return _walk_xz_index(iter(self._held), self.length)
+        return _walk_xz_index(
+            itertools.chain.from_iterable(self._chunks()), self.length
+        )
 
-# Stream padding is scanned backwards this many bytes per read; a multiple of 4.
+
+def _stream_padding_length(data: bytes | bytearray, offset: int = 0) -> int:
+    """How many bytes of stream padding (4-byte groups of zeros) start at ``offset``.
+
+    The forward decoder (``_XzState``) and :func:`_data_end` both use it, so they agree
+    on where the next stream header starts. No padding, the common case, costs one byte
+    compare; a run of zeros is measured with ``lstrip`` over slices of at most
+    :data:`_PADDING_SCAN_CHUNK`, so the cost follows the run, not the buffer.
+    """
+    if data[offset : offset + 1] != b"\x00":
+        return 0
+    run = 0
+    pos = offset
+    while pos < len(data):
+        piece = data[pos : pos + _PADDING_SCAN_CHUNK]
+        rest = len(piece.lstrip(b"\x00"))
+        run += len(piece) - rest
+        if rest:
+            break
+        pos += len(piece)
+    return run - run % 4
+
+
+# Stream padding is scanned backwards this many bytes per read, and measured forwards
+# this many bytes per slice; a multiple of 4.
 _PADDING_SCAN_CHUNK = 64 * 1024
 
 
@@ -297,10 +410,7 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
                 pass
             else:
                 after = at + 2
-                # Same padding rule as _XzState._process (_NEED_HEADER); the two
-                # must agree on where the next header starts.
-                while window[after : after + 4] == b"\x00\x00\x00\x00":
-                    after += 4
+                after += _stream_padding_length(window, after)
                 if window[after : after + 6] == _XZ_STREAM_MAGIC:
                     raise CorruptionError(
                         f"XZ stream starting at offset {start + after} has no valid "
@@ -363,25 +473,12 @@ def _read_xz_index_backwards(
         if index_with_crc_start < 0:
             raise CorruptionError("XZ index extends before start of file")
 
-        stream.seek(index_with_crc_start)
-        index_with_crc = stream.read(index_size_bytes)
-        if len(index_with_crc) < index_size_bytes:
-            raise CorruptionError("XZ index truncated")
-
-        raw_index = index_with_crc[:-4]
-        stored_index_crc = struct.unpack_from(
-            "<I", index_with_crc, len(index_with_crc) - 4
-        )[0]
-        computed_index_crc = zlib.crc32(raw_index) & 0xFFFFFFFF
-        if stored_index_crc != computed_index_crc:
-            raise CorruptionError(
-                f"XZ index CRC32 mismatch: stored {stored_index_crc:#010x}, "
-                f"computed {computed_index_crc:#010x}"
-            )
+        index = _XzIndexSource(stream, index_with_crc_start, index_size_bytes)
+        index.check_crc()
 
         blocks_compressed_total = 0
         stream_size = 0
-        for unpadded_size, uncompressed_size in _iter_xz_index(raw_index):
+        for unpadded_size, uncompressed_size in index.records():
             blocks_compressed_total += _round_up_4(unpadded_size)
             stream_size += uncompressed_size
         stream_header_start = (
@@ -409,7 +506,7 @@ def _read_xz_index_backwards(
         block_compressed_start = stream_header_start + _STREAM_HEADER_SIZE
         block_decompressed_start = 0
         last: _XzBlockBounds | None = None
-        for unpadded_size, uncompressed_size in _iter_xz_index(raw_index):
+        for unpadded_size, uncompressed_size in index.records():
             last = _XzBlockBounds(
                 compressed_start=block_compressed_start,
                 decompressed_start=block_decompressed_start,
@@ -665,15 +762,8 @@ class _XzState:
             if self._state == self._NEED_HEADER:
                 # XZ spec §2.2 "Stream Padding": concatenated streams may be separated by
                 # null bytes whose length is a multiple of four (to keep streams 4-byte
-                # aligned). Strip all leading 4-byte runs in one delete. _data_end
-                # applies the same rule when it checks for a stream after a footer;
-                # the two must agree.
-                padding = 0
-                while (
-                    padding + 4 <= len(self._buf)
-                    and bytes(self._buf[padding : padding + 4]) == b"\x00\x00\x00\x00"
-                ):
-                    padding += 4
+                # aligned). Strip all leading 4-byte runs in one delete.
+                padding = _stream_padding_length(self._buf)
                 if padding:
                     del self._buf[:padding]
                     self._padding_before_stream += padding

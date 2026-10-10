@@ -18,8 +18,8 @@ from archivey import (
     ListingLimits,
     open_archive,
 )
-from archivey.config import _check_limit_fields
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.arg_checks import check_limit_fields
 from archivey.internal.config import stream_config_from_archivey
 from archivey.types import ArchiveFormat
 from tests.extract_util import open_and_extract
@@ -150,7 +150,7 @@ def test_limit_field_with_an_unknown_annotation_is_refused() -> None:
         max_things: Optional[int] = None  # noqa: UP045
 
     with pytest.raises(AssertionError, match=r"_Limits\.max_things"):
-        _check_limit_fields(_Limits(), cls="_Limits")  # type: ignore[arg-type]
+        check_limit_fields(_Limits(), cls="_Limits")
 
 
 def test_limits_subclass_error_names_the_documented_class() -> None:

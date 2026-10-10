@@ -67,6 +67,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.rar_copy_sources import FileCopySources
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
+    _RAR3_M0,
     RAR5_ID,
     RAR5_UNPLACED_BYTES,
     RAR_ID,
@@ -463,7 +464,6 @@ _RAR_HOST_OS_UNIX = 3
 # until someone says so, since its slot would otherwise flow into ``created``.
 _RAR_BIRTH_TIME_HOSTS = frozenset({0, 1, _RAR_HOST_OS_WIN32, 4, 5})
 
-_RAR_METHOD_STORED = 0x30
 # The extract version of a RAR3/4 member whose data is AES-128 encrypted (RAR 2.9 and
 # later). Earlier versions used RAR 2.0's own cipher, which archivey does not decrypt.
 _RAR3_AES_EXTRACT_VERSION = 29
@@ -512,15 +512,15 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
     CompressionMethod(algo=CompressionAlgorithm.STORED),
 )
 _COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
-    _RAR_METHOD_STORED: _STORED_COMPRESSION,
+    _RAR3_M0: _STORED_COMPRESSION,
     **{
         method: (
             CompressionMethod(
                 algo=CompressionAlgorithm.RAR,
-                level=method - _RAR_METHOD_STORED,
+                level=method - _RAR3_M0,
             ),
         )
-        for method in range(_RAR_METHOD_STORED + 1, _RAR_METHOD_MAX + 1)
+        for method in range(_RAR3_M0 + 1, _RAR_METHOD_MAX + 1)
     },
 }
 
@@ -639,10 +639,7 @@ def _password_as_str(password: bytes | str | None) -> str | None:
 
 
 def _compression_for(info: RarMemberInfo) -> tuple[CompressionMethod, ...]:
-    method = info.compress_type
-    if method is None:
-        return ()
-    cached = _COMPRESSION_BY_METHOD.get(method)
+    cached = _COMPRESSION_BY_METHOD.get(info.compress_type)
     if cached is not None:
         return cached
     # Outside M0–M5: UNKNOWN with no level. ``level`` is the M1–M5 method-byte
@@ -1154,7 +1151,6 @@ _SERVICE_PAYLOAD_LOST = {
 class RarReader(BaseArchiveReader):
     """Reads RAR archives: native metadata parse + RARLAB ``unrar`` for data."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(
@@ -2131,7 +2127,7 @@ class RarReader(BaseArchiveReader):
             # A wrong RAR3/4 key fails the decoder within the prefix for only about
             # two in three candidates (dev-docs/formats/rar.md §2.2), so surviving it
             # is evidence, never proof; the stored case is handled natively above.
-            codec_rejects=raw.compress_type != _RAR_METHOD_STORED,
+            codec_rejects=not raw.is_stored,
         )
         full: PasswordConfirmPlan | None = None
         if not bounded.confirms and crc is not None:
@@ -2162,7 +2158,7 @@ class RarReader(BaseArchiveReader):
         return (
             self._archive.version == 4
             and _crypto_available()
-            and raw.compress_type == _RAR_METHOD_STORED
+            and raw.is_stored
             and raw.rar3_salt is not None
             and raw.extract_version is not None
             and raw.extract_version >= _RAR3_AES_EXTRACT_VERSION
@@ -3327,7 +3323,7 @@ class RarReader(BaseArchiveReader):
         # The member's own solid flag does not matter here: a stored member's bytes
         # are plaintext where they sit, even inside a solid stream (``rar -s -ms``),
         # and its parts, when split across volumes, are joined in order.
-        return info.compress_type == _RAR_METHOD_STORED and _data_is_reachable(info)
+        return info.is_stored and _data_is_reachable(info)
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
         # ``encryption_unknown`` is excluded here rather than refused: slicing the
@@ -3467,7 +3463,7 @@ class RarReader(BaseArchiveReader):
             return
         # RAR4: symlink target stored as M0 member data (even when file_solid).
         if (
-            raw.compress_type == _RAR_METHOD_STORED
+            raw.is_stored
             and not raw.is_encrypted
             and not raw.encryption_unknown
             # Either size: a header where only one is zero is damage, refused below,
@@ -3545,7 +3541,7 @@ class RarReader(BaseArchiveReader):
             reason = "target_data_split_across_volumes"
             detail = "its data is split across volumes and not every part was found"
             in_archive = True
-        elif raw.compress_type != _RAR_METHOD_STORED:
+        elif not raw.is_stored:
             reason = "target_data_compressed"
             detail = "its data is compressed rather than stored"
             in_archive = True
@@ -4083,7 +4079,7 @@ class RarReader(BaseArchiveReader):
         """The refusal for a member only an external program can read, under ``NONE``."""
         if raw.is_encrypted:
             why = "it is encrypted"
-        elif raw.compress_type != _RAR_METHOD_STORED:
+        elif not raw.is_stored:
             why = "it is compressed"
         else:
             # A stored member whose parts were not all found: a split member missing

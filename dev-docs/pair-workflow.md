@@ -68,7 +68,8 @@ Enough for a cold agent or a cold you:
 4. **Verify** — commands/tests that prove it
 5. Out of scope
 
-Prefer this as the PR body. Use `openspec new change … --schema minimalist` when main
+Prefer this as the PR body, and cut from it what the diff already shows (a file list, a
+line-by-line recap). Use `openspec new change … --schema minimalist` when main
 specs must change; keep scenario farms out of what you are asked to read.
 
 ---
