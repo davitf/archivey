@@ -171,7 +171,7 @@ def _read_only_member(data: bytes) -> bytes:
 def _materialize(header: bytes) -> SevenZipArchive:
     block = parse_header_block(header)
     assert isinstance(block, PlainHeader)
-    signature = sevenzip_parser.SignatureInfo(0, 4, header)
+    signature = sevenzip_parser.SignatureInfo(0, 4, header, end_offset=0)
     return materialize_archive(signature, block)
 
 

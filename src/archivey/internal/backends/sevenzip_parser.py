@@ -327,9 +327,10 @@ class SignatureInfo:
     major_version: int
     minor_version: int
     header_data: bytes  # empty when nextHeaderSize == 0
-    # Where the archive ends, counted from the signature header: the end of the next
-    # header. Bytes after it are not part of the archive.
-    end_offset: int = SIGNATURE_HEADER_SIZE
+    # The end of the next header, counted from the signature header. The archive ends
+    # here or at its last packed stream, whichever is later (the reader takes the max
+    # once the header has parsed).
+    end_offset: int
 
 
 @dataclass(slots=True)
@@ -721,6 +722,16 @@ def _require_header_consumed(cur: _Cursor) -> None:
     """
     if cur.remaining():
         raise CorruptionError(f"7z header has {cur.remaining()} bytes after its END")
+
+
+def packed_streams_end(streams: _StreamsInfo) -> int:
+    """Where a header's packed streams end, counted from the signature header.
+
+    Packed streams are contiguous from ``pack_pos``. 7-Zip writes them before the next
+    header, but the format allows them after it, so the archive's end is the later of
+    the two.
+    """
+    return SIGNATURE_HEADER_SIZE + streams.pack_pos + sum(streams.pack_sizes or [])
 
 
 def materialize_archive(

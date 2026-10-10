@@ -262,7 +262,8 @@ class ArchiveEofContext(_JsonSafeContext):
       archive's end within the first MiB past it, so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
       the TAR trailer (complete, or its second block damaged and reported as
-      ``"second_zero_block"`` first), ``"7z"`` for a 7z archive's next header.
+      ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
+      header and its last packed stream.
       ``observed_bytes`` is that byte's offset past the end.
     - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
       zstd and the other stream codecs) decoded to its end, and bytes follow that end
