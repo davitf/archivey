@@ -21,6 +21,7 @@ from archivey.internal.config import (
     StreamConfig,
     check_decoder_memory,
     exceeds_decoder_memory,
+    probe_lzma_dictionary,
 )
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import RewindWarning
@@ -38,6 +39,7 @@ from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
 from archivey.internal.streams.codecs.xz_decoder import (
     XzDecompressorStream,
     lzma_error_to_archivey,
+    open_xz_head,
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
@@ -87,6 +89,10 @@ class XzCodec(_SizedLzmaCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        if config.probe_read_bound is not None:
+            # Probes decode from a bounded in-memory or peek reader, never a path.
+            assert not isinstance(source, (str, os.PathLike))
+            return open_xz_head(source, config.probe_read_bound)
         return XzDecompressorStream(
             source,
             collector=config.collector,
@@ -110,6 +116,7 @@ class LzipCodec(_SizedLzmaCodec):
             seekable=config.seekable,
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
+            probe_read_bound=config.probe_read_bound,
         )
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
@@ -305,6 +312,55 @@ class _RefusedAloneStream(ReadOnlyIOStream):
     # without ever meeting the refusal.
 
 
+class _ClampedAloneDecompressor:
+    """An Alone decompressor whose header's dictionary size is clamped before liblzma sees it.
+
+    liblzma reserves the dictionary the 13-byte header declares when it reads the
+    header, so a detection probe (``StreamConfig.probe_read_bound``) rewrites bytes 1-4
+    of its own copy to :func:`~archivey.internal.config.probe_lzma_dictionary` first.
+    The output up to the bound is the same bytes. Each stream of a concatenated
+    ``.lzma`` gets a new one, so every header the probe reaches is clamped.
+    """
+
+    def __init__(self, read_bound: int) -> None:
+        self._read_bound = read_bound
+        self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+        self._header: bytes | None = b""
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._header is not None:
+            header = self._header + data
+            if len(header) < _ALONE_HEADER_SIZE:
+                self._header = header
+                return b""
+            self._header = None
+            dict_size = probe_lzma_dictionary(
+                int.from_bytes(header[1:5], "little"), self._read_bound
+            )
+            data = header[:1] + dict_size.to_bytes(4, "little") + header[5:]
+        return self._dec.decompress(data, max_length)
+
+    @property
+    def eof(self) -> bool:
+        return self._dec.eof
+
+    @property
+    def unused_data(self) -> bytes:
+        return self._dec.unused_data
+
+    @property
+    def needs_input(self) -> bool:
+        return self._header is not None or self._dec.needs_input
+
+
+def _new_alone_decompressor(
+    read_bound: int | None,
+) -> lzma.LZMADecompressor | _ClampedAloneDecompressor:
+    if read_bound is None:
+        return lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+    return _ClampedAloneDecompressor(read_bound)
+
+
 class LzmaAloneCodec(_LzmaErrorCodec):
     """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW."""
 
@@ -325,7 +381,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         # rewind_warning).
         return FramedDecompressorStream(
             source,
-            lambda: lzma.LZMADecompressor(format=lzma.FORMAT_ALONE),
+            functools.partial(_new_alone_decompressor, config.probe_read_bound),
             codec_name="lzma",
             magic=functools.partial(_starts_alone_stream, limits=config.decoder_limits),
             collector=config.collector,

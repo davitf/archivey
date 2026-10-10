@@ -20,8 +20,9 @@ from archivey import (
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.internal.backends.rar_unrar import find_rarlab_unrar
-from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from archivey.internal.config import StreamConfig
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import (
     Codec,
     is_codec_available,
@@ -86,13 +87,16 @@ _MAX_ZIP_READ_MEMBERS = 8
 _MAX_ZIP_READ_BYTES = 64 * 1024
 _MAX_STREAM_READ_BYTES = 256 * 1024
 
-# Empty + common corpus password for encrypted ZIP seeds.
-_ZIP_PASSWORD_CANDIDATES: list[str | bytes] = ["", "password"]
+# Empty + common corpus password for the encrypted ZIP and 7z seeds.
+_PASSWORD_CANDIDATES: list[str | bytes] = ["", "password"]
 
 
 def sevenzip_header_one(data: bytes) -> None:
+    # With a password, an AES-coded encoded header reaches the folder pipeline and
+    # the O8 check; with none, the open stops at "Password required".
+    passwords = _PasswordCandidates.from_input(_PASSWORD_CANDIDATES)
     try:
-        parse_sevenzip_archive(io.BytesIO(data))
+        load_sevenzip_archive(io.BytesIO(data), passwords=passwords)
     except ArchiveyError:
         return
 
@@ -113,9 +117,14 @@ def sevenzip_open_one(data: bytes) -> None:
 def detect_format_one(data: bytes) -> None:
     from archivey.detection_cost import BALANCED_BUDGET
 
+    # The fuzzer has no file name to give, so by default no content probe would run;
+    # always_probe_content keeps the probe decoders under the fuzzer.
     try:
         info = detect_format(
-            io.BytesIO(data), config=ArchiveyConfig(detection_budget=BALANCED_BUDGET)
+            io.BytesIO(data),
+            config=ArchiveyConfig(
+                detection_budget=BALANCED_BUDGET, always_probe_content=True
+            ),
         )
     except ArchiveyError:
         return
@@ -133,7 +142,7 @@ def zip_open_one(data: bytes) -> None:
             io.BytesIO(fixed),
             format=ArchiveFormat.ZIP,
             config=_FUZZ_CONFIG,
-            password=_ZIP_PASSWORD_CANDIDATES,
+            password=_PASSWORD_CANDIDATES,
         ) as arc:
             reads = 0
             for i, member in enumerate(arc):

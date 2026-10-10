@@ -24,8 +24,7 @@ Plain header (property-tagged nesting)::
 
 Call graph: ``read_signature_and_next_header`` → ``parse_header_block`` → (maybe
 ``EncodedHeader``) → ``materialize_archive``. End-to-end open with encoded-header
-decode lives in :func:`sevenzip_pipeline.parse_sevenzip_archive` /
-:class:`SevenZipReader`.
+decode lives in :func:`sevenzip_reader.load_sevenzip_archive`.
 
 In-memory header walking uses a byte cursor over ``memoryview`` (not ``BytesIO``);
 ``read_signature_and_next_header`` stays on the real file stream.
@@ -271,6 +270,9 @@ class SevenZipArchive:
     is_solid: bool
     is_header_encrypted: bool
     has_encrypted_folders: bool
+    #: Signature-relative end of the archive: the later of the next header's end and
+    #: the end of the last packed stream, an encoded header's own streams included.
+    end_offset: int
 
 
 @dataclass(slots=True)
@@ -389,7 +391,8 @@ def _require_folder_graph_count(count: int, limit: int, what: str) -> None:
 def _require_header_count(count: int, header_size: int, what: str) -> None:
     if count > header_size:
         raise CorruptionError(
-            f"7z {what} count {count} exceeds the {header_size}-byte header"
+            f"7z {what} count {count} exceeds the {header_size}-byte header "
+            f"(each item needs at least one byte of metadata)"
         )
 
 
@@ -739,8 +742,13 @@ def materialize_archive(
     plain: PlainHeader,
     *,
     is_header_encrypted: bool = False,
+    encoded_streams_end: int = 0,
 ) -> SevenZipArchive:
-    """Build the final archive object from a fully decoded plain header."""
+    """Build the final archive object from a fully decoded plain header.
+
+    ``encoded_streams_end`` is :func:`packed_streams_end` of the encoded header the
+    plain header was decoded from, if any; it counts toward ``end_offset``.
+    """
     streams = plain.streams
     pack_sizes = streams.pack_sizes or []
     pack_positions = streams.pack_positions or _pack_positions(pack_sizes)
@@ -773,6 +781,9 @@ def materialize_archive(
         is_solid=any(n > 1 for n in num_unpackstreams_folders),
         is_header_encrypted=is_header_encrypted,
         has_encrypted_folders=any(folder_is_encrypted(folder) for folder in folders),
+        end_offset=max(
+            signature.end_offset, packed_streams_end(streams), encoded_streams_end
+        ),
     )
 
 
@@ -793,6 +804,7 @@ def empty_archive(signature: SignatureInfo) -> SevenZipArchive:
         is_solid=False,
         is_header_encrypted=False,
         has_encrypted_folders=False,
+        end_offset=signature.end_offset,
     )
 
 
@@ -857,7 +869,6 @@ def compression_method_for_coder(coder: SevenZipCoder) -> CompressionMethod:
     return CompressionMethod(algo, properties=coder.properties)
 
 
-# Re-export for callers that historically imported these from the parser.
 __all__ = [
     "MAGIC_7Z",
     "MAX_NEXT_HEADER_SIZE",
@@ -875,7 +886,6 @@ __all__ = [
     "check_bind_pairs",
     "check_packed_indices",
     "compression_method_for_coder",
-    "crc32",
     "empty_archive",
     "encoded_header_slice",
     "find_signature_offset",
@@ -1191,20 +1201,11 @@ def _read_files_info(
     cur: _Cursor, *, max_members: int | None
 ) -> tuple[list[SevenZipFileRecord], str | None]:
     num_files = cur.uint64()
-    # Bound the file count against the header size before pre-allocating one object per
-    # claimed file. See threat-model O1 / review L1. CRC does NOT make the header
-    # trustworthy: an attacker crafting the archive computes a matching CRC.
-    header_size = len(cur.buf)
-    if num_files > header_size:
-        raise CorruptionError(
-            f"7z file count {num_files} exceeds the {header_size}-byte header "
-            f"(each file needs at least one byte of metadata)"
-        )
-    if max_members is not None and num_files > max_members:
-        raise ResourceLimitError(
-            f"Listing limit reached: max_members={max_members} "
-            f"(7z header claims {num_files} files)"
-        )
+    # Bound the file count against the header size and the listing budget before
+    # pre-allocating one object per claimed file. See threat-model O1 / review L1.
+    # CRC does NOT make the header trustworthy: an attacker crafting the archive
+    # computes a matching CRC.
+    _require_member_scaled_count(num_files, len(cur.buf), max_members, "file")
     files = [_FileProps() for _ in range(num_files)]
     num_empty_streams = 0
     comment: str | None = None
@@ -1552,21 +1553,6 @@ def _read_digests(cur: _Cursor, count: int) -> tuple[list[bool], list[int | None
 def _read_boolean(cur: _Cursor, count: int, *, check_all: bool = False) -> list[bool]:
     result, cur.pos = _load_boolean(cur.buf, cur.pos, count, check_all=check_all)
     return result
-
-
-def _read_utf16(cur: _Cursor) -> str:
-    """Read one null-terminated UTF-16LE string.
-
-    Unused on the current ``kName`` path (prefer :func:`_decode_utf16_names`); kept
-    as a single-name helper for tests / future properties.
-    """
-    chunks = bytearray()
-    for _ in range(_MAX_UTF16_CHARS):
-        unit = cur.read(2, "7z UTF-16 name")
-        if unit == b"\x00\x00":
-            return bytes(chunks).decode("utf-16le", errors="surrogatepass")
-        chunks.extend(unit)
-    raise CorruptionError("7z UTF-16 string is not null-terminated")
 
 
 def _read_section_property(cur: _Cursor, context: str) -> _Property:

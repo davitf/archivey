@@ -415,10 +415,12 @@ def source_name(source: object) -> str | None:
     """Best-effort human-readable name for a source, for error messages and metadata.
 
     A path-like source yields its string form; a file-like stream yields its ``name``
-    attribute when that is a path (``open()`` sets it, ``BytesIO`` does not). ``open()``
-    with a bytes path stores ``name`` as bytes — typeshed notes this — and this
-    decodes it with ``os.fsdecode`` rather than widening the return type. An integer
-    fd stored as ``name`` yields ``None``.
+    attribute when it has one (``open()`` sets it, ``BytesIO`` does not). That is a path
+    for a file object, but a member stream from ``ArchiveReader.open`` yields the
+    member's name, which is not a filesystem path. ``open()`` with a bytes path stores
+    ``name`` as bytes — typeshed notes this — and this decodes it with ``os.fsdecode``
+    rather than widening the return type. An integer fd stored as ``name`` yields
+    ``None``.
     """
     if is_filename(source):
         return os.fsdecode(source)
