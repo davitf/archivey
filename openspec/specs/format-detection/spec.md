@@ -227,7 +227,9 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 ### Requirement: Magic-less formats are detected by a content probe
 
 When the magic-byte table yields no match, the system SHALL run each registered
-content probe on the peeked prefix (consumes nothing). This covers Brotli (no
+content probe on the peeked prefix (consumes nothing), except after a strong executable
+cue or a known non-archive signature (see *A known non-archive signature stops the content
+probes*). This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
 properties byte is too weak for exact magic). Probes typically decode a bounded
 prefix; MAY gate on cheap structural bytes first; and MAY consult the source length
@@ -478,6 +480,42 @@ produced.
 | **Strong** executable cue (validated PE / ELF), no archive needle in the window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | Executable-shaped prefix, no archive needle, probe correctly rejects | Extension guess or `FormatDetectionError` — not a fabricated member |
 
+### Requirement: A known non-archive signature stops the content probes
+
+A content probe is the weakest evidence detection has, and some common non-archive files
+hold what the probes accept: a constant header, then long zero runs. When the source starts
+with a recognized **non-archive signature**, detection SHALL NOT run the content probes. It
+falls through to the extension guess or `FormatDetectionError`, as after a strong
+executable cue (*Executable-looking prefixes must not silently become a wrong stream
+format*). The magic tiers (near, far, trailer) run as before.
+
+Today the one such signature is the OLE / Compound File Binary signature
+`D0 CF 11 E0 A1 B1 1A E1` at offset 0 (`.doc`, `.xls`, `.ppt`, `.msi`, `Thumbs.db`). A
+scan of a real backup drive found 437 such files claimed as Brotli and none of them decoded;
+OLE files are also claimed by the LZMA Alone probe. Neither probe can reject them on its
+own framing: the OLE header is a fitting Brotli chain, and a range coder decodes zero bytes
+without error.
+
+This is not the threshold that *Executable-looking prefixes must not silently become a
+wrong stream format* forbids. It does not tune a probe against a false-positive rate: it
+is positive evidence of another format. An eight-byte signature at offset 0 is as specific
+as an archive's exact magic, so a real stream that starts with it is not a case to keep.
+A two-byte prefix such as `MZ` is not specific enough for this rule.
+
+A non-archive signature SHALL NOT start the SFX scan. The scan is for an archive appended
+to an executable stub, and these files are not stubs: an archive stored inside an OLE file
+(an embedded object) is part of the document, and reporting it as the file's payload would
+be a wrong answer.
+
+#### Scenario: non-archive signature matrix
+
+| Case | Expected |
+| --- | --- |
+| OLE header followed by zeros, 256 KiB, no extension | `FormatDetectionError` — not `BROTLI` |
+| OLE signature followed by zeros, 4 KiB, no extension | `FormatDetectionError` — not `LZMA_ALONE` |
+| OLE file named `x.br` | `BROTLI` / `GUESS` / `extension` — the extension fallback still runs |
+| OLE file that holds a ZIP inside it, no extension | `FormatDetectionError` — no SFX scan, so the embedded ZIP is not reported |
+
 ### Requirement: ISO 9660 requires an extended peek window
 
 The system SHALL raise the peek window to 32774 bytes when `.iso` or ISO
@@ -674,8 +712,8 @@ prohibition on knobs.
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
 | Arbitrary data whose first declared block happens to fit | Probe may still accept at *this* requirement's floor; the residual is then narrowed by *A content probe SHALL follow a format's self-describing block chain* below |
-| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
-| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
+| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` does not run the probes: the OLE signature stops them (*A known non-archive signature stops the content probes*) |
+| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Brotli gate accepts. End-to-end `BROTLI` at `GUESS`: the Alone probe declines the header's zero uncompressed size |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
 | Non-seekable source of unknown length (≥ `DETECTION_LIMIT` peek) | Gate skipped; today's behaviour |
 | Non-seekable source shorter than the detection peek | Length inferred from the short peek; gate applies |
@@ -781,7 +819,7 @@ SHALL NOT decompress.
 | 16 MiB source whose first declared block fits trivially (MLEN ceiling) | Walk decides; first-block check alone would have accepted |
 | Chain longer than the link bound | Verdict unchanged from the earlier rules; **not** a rejection |
 | Non-seekable `read_at` past the 1 MiB offset ceiling | Declined → cannot disprove; earlier verdict stands |
-| OLE/CFB file ≥ 7425 bytes | Still accepted — its constant magic yields a fitting chain. Known residual, unchanged |
+| OLE/CFB file ≥ 7425 bytes | The probe still accepts it — its constant magic yields a fitting chain. Detection does not run the probe on it (*A known non-archive signature stops the content probes*) |
 
 ### Requirement: A read failure on probe-only evidence names its provenance
 

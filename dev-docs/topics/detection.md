@@ -177,7 +177,7 @@ ZIP appended to a JPEG is still not found (§5).
 ### 2.5 Content probes
 
 The probes run in registry order (LZMA Alone, zlib, Brotli), and the first to accept wins.
-Four guards keep a probe from claiming bytes that are not its format. The codec side of each
+Five guards keep a probe from claiming bytes that are not its format. The codec side of each
 guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
 
 - **The probe decodes the whole 4 KiB window.** A shorter sample lets ordinary text pass:
@@ -189,12 +189,21 @@ guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
   decode that still asks for input at the end of the source. The window alone cannot tell a
   stream that goes on from one that turns invalid after 4 KiB.
 - **A `STRONG` executable cue turns the step off** (§2.2).
+- **A known non-archive signature turns the step off.** Today that is the OLE compound
+  file signature `D0 CF 11 E0 A1 B1 1A E1` (`.doc`, `.xls`, `.ppt`, `.msi`, `Thumbs.db`).
+  These files are a constant header followed by zero runs, which the Brotli and LZMA Alone
+  probes both accept: a scan of a backup drive found 437 claimed as Brotli, and none
+  decoded. Neither probe's own framing can reject them, and the spec forbids a threshold.
+  An eight-byte signature is as specific as archive magic, so it costs no real stream.
+  Unlike an executable cue, it does not start the SFX scan: an OLE file is not a stub, and
+  a ZIP stored inside a document is not the document's payload.
 - **Framing that the source cannot hold is rejected** when the source length is known.
   This check is the Brotli probe's own, on [`formats/brotli.md`](../formats/brotli.md).
 
 The guards reduce false claims. They do not remove them: some structured binary files
-(OLE/CFB, COFF) still pass the LZMA Alone probe. What bounds the damage is provenance. A
-probe hit with nothing to corroborate it is stamped, and when a read fails, the error has
+(COFF objects, MP3s whose ID3 tag starts with padding) still pass a probe. What bounds
+the damage is provenance. A probe hit with nothing to corroborate it is stamped, and when
+a read fails, the error has
 `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. The open is not refused on
 that basis, because a real extensionless stream that the probe identified correctly must
 still be readable. Status is in threat-model O10.
@@ -403,7 +412,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
 | A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | The one tail read is the 512-byte `koly` block (§2.4), not a ZIP trailer. `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
 | An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
-| Some binary files (OLE/CFB, COFF) detect as LZMA Alone and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). Threat-model O10 |
+| Some binary files (COFF, ID3-tagged MP3) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). Threat-model O10 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.6) |
 | A v7 tar inside gzip, named `.tar.gz`, opens as bare `GZ` | **format** | No `ustar`, so no inner-TAR upgrade. [`formats/tar.md`](../formats/tar.md) §2.1 |
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |

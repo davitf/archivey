@@ -371,8 +371,10 @@ agreed**, a decoding failure while reading that member SHALL:
 **A limit trip counts as a decoding failure here.** A `ResourceLimitError` raised while
 reading such a member SHALL be stamped the same way. The case that forces it is the LZMA
 dictionary cap (`DecoderLimits`): the Alone probe claims bytes that are not LZMA at all —
-an OLE/CFB header over zero padding is the measured example — and reads four arbitrary
-header bytes as a dictionary size, 2.7 GiB for that header. Left unstamped, the refusal
+a file header over zero padding, such as an ID3-tagged MP3 — and reads four arbitrary
+header bytes as a dictionary size, 2.7 GiB for the measured OLE/CFB header. (The OLE
+signature now stops the content probes, but other headers over zero runs still reach the
+Alone probe.) Left unstamped, the refusal
 tells the caller the archive asked for too much and to raise the cap if it is trusted,
 about a file that was never an archive of that format. Whether the probe's claim was the
 only evidence is the same question for every error the read raises.

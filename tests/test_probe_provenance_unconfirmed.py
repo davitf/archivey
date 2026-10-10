@@ -72,9 +72,17 @@ def _probable_brotli_probe_only_residual() -> bytes:
     return blob
 
 
-def _ole_lzma_alone_residual() -> bytes:
-    """OLE/CFB header padded past the detection peek — Alone at ``PROBABLE``."""
-    return bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
+def _lzma_alone_zero_run_residual() -> bytes:
+    """An LZMA Alone header over a zero run, past the detection peek — ``PROBABLE``.
+
+    Properties ``0xD0`` are legal (lc=1, lp=3, pb=4), bytes 1-4 declare a 2.7 GiB
+    dictionary, and the declared 1 MiB size is more than the zeros decode to before
+    the input ends. These are the first five bytes of an OLE header; the full OLE
+    signature is not used, because it stops the content probes.
+    """
+    return (
+        bytes.fromhex("D0CF11E0A1") + (1 << 20).to_bytes(8, "little") + b"\x00" * 8000
+    )
 
 
 def _chain_surviving_guess_residual() -> bytes:
@@ -110,14 +118,14 @@ def test_compressed_first_probable_failure_sets_format_unconfirmed() -> None:
 
 
 def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
-    blob = _ole_lzma_alone_residual()
+    blob = _lzma_alone_zero_run_residual()
     info = detect_format(io.BytesIO(blob))
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
-    # The OLE header's bytes 1-4 read as a 2.7 GiB dictionary, over the default cap;
+    # Bytes 1-4 declare a 2.7 GiB dictionary, over the default cap;
     # this case lifts the cap to reach the decode failure, and the next one keeps it.
     config = ArchiveyConfig(decoder_limits=DecoderLimits.UNLIMITED)
     diagnostics: list[Diagnostic] = []
@@ -132,11 +140,11 @@ def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
 def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
     """A decoder-limit refusal on probe-only evidence is stamped like a decode failure.
 
-    The dictionary the refusal names is four bytes of an OLE header, so the ordinary
+    The dictionary the refusal names is four bytes of a fabrication, so the ordinary
     "raise the cap if the archive is trusted" advice would be about a file that was
     never ``.lzma``.
     """
-    blob = _ole_lzma_alone_residual()
+    blob = _lzma_alone_zero_run_residual()
     diagnostics: list[Diagnostic] = []
     with pytest.raises(ResourceLimitError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics)
@@ -155,7 +163,7 @@ def test_lzma_alone_limit_refusal_with_extension_is_not_stamped(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "x.lzma"
-    path.write_bytes(_ole_lzma_alone_residual())
+    path.write_bytes(_lzma_alone_zero_run_residual())
     with pytest.raises(ResourceLimitError) as caught:
         _open_and_read(path)
     assert caught.value.format_unconfirmed is False

@@ -26,7 +26,10 @@ them again.
 Formats without an exact magic are recognized by a **content probe**: Brotli (no signature
 at all) and zlib (a 2-byte header too unspecific to trust, so its probe gates on that
 header before decoding). Each probe is a function the backends declare as data — for the
-stream codecs, on the codec descriptor — so the detector stays format-agnostic.
+stream codecs, on the codec descriptor — so the detector stays format-agnostic. The probes
+do not run on a prefix that is evidence of a non-archive file: a structurally confirmed
+executable (``ExecutableCue.STRONG``) or a known non-archive signature
+(``_PROBE_STOPPING_SIGNATURES``, today OLE compound files).
 
 The steps run strongest-signal-first: near magic → SFX scan → **far magic** → trailer
 magic → content probes → extension. Both signals ahead of the probes are there for the
@@ -127,6 +130,20 @@ _INNER_TAR_PROBE_BYTES = 512
 # stream is block-based too, with blocks of up to 8 MiB: one whose first block compresses
 # to more than this bound is left un-upgraded, by choice (handbook ``zstd-lz4.md`` §2.1).
 _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
+
+# Leading signatures of non-archive formats that stop the content probes, the same way a
+# structurally confirmed executable does (``ExecutableCue.STRONG``). A content probe is
+# the weakest evidence detection has, and these files hold what the probes accept: a
+# constant header, then zero runs. An 8-byte signature at offset 0 is as specific as an
+# archive's exact magic, so a real stream that starts with it is not a case to keep.
+#
+# Unlike an executable cue, a signature here does not start the SFX scan. These files
+# are not executable stubs, so an archive the scan finds in one is an object stored
+# inside the document, and reporting it as the file's payload would be a wrong answer.
+_PROBE_STOPPING_SIGNATURES: tuple[bytes, ...] = (
+    # OLE / Compound File Binary: .doc, .xls, .ppt, .msi, Thumbs.db.
+    bytes.fromhex("d0cf11e0a1b11ae1"),
+)
 
 
 class _BoundedPeekReader(ReadOnlyIOStream):
@@ -921,8 +938,11 @@ def _detect_format_body(
                 _ConflictEvidence.MAGIC,
             )
 
-        # 5. Content probes.
-        if cue is not ExecutableCue.STRONG:
+        # 5. Content probes, unless the prefix is a confirmed executable or a known
+        # non-archive signature.
+        if cue is not ExecutableCue.STRONG and not data.startswith(
+            _PROBE_STOPPING_SIGNATURES
+        ):
 
             def read_at(offset: int, n: int) -> bytes | None:
                 return workspace.read_at(offset, n)

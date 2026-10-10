@@ -266,8 +266,9 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
         BrotliCodec().content_probe(prefix, source_length=len(ole), read_at=read_at)
         is True
     )
-    ole_info = detect_format(io.BytesIO(ole))
-    assert ole_info.format in (ArchiveFormat.LZMA_ALONE, ArchiveFormat.BROTLI)
+    # The probe accepts it, but detection does not run the probes on an OLE signature.
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(ole))
 
     coff_header = bytes.fromhex("6486100100")
     framing = parse_metablock(coff_header)
