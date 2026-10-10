@@ -294,7 +294,8 @@ included — it does not leave FILE after the old QO.
    Only the first MAIN of a volume is asked. `unrar` 7.00 accepts a repeated MAIN
    (`unrar lb` lists past it), and each try reads a QO payload of up to 16 MiB, so
    following every MAIN's locator let a crafted archive buy that read again with
-   each 17-byte MAIN (13 bytes at the format minimum): measured at about 50 ms of parse per extra MAIN (DR-9a).
+   each 17-byte MAIN (13 bytes at the format minimum): measured at about 50 ms of
+   parse per extra MAIN (DR-9a).
 2. Seek back to after MAIN and walk. `CMT` is a normal SERVICE. When `tell()`
    is a FILE in the map, emit those copies in order and seek to the end of
    the consecutive run (the chain is in memory; one seek). AUTO holes — small
