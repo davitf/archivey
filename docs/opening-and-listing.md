@@ -363,6 +363,11 @@ differs from Python's `zipfile`
 `metadata_encoding` and from `unzip -O`, which apply the encoding to every ZIP name
 without the flag.
 
+Comments follow the same rule. A ZIP member comment decodes as its name would (the
+UTF-8 flag covers both), and the archive comment, which has no flag, decodes as a name
+without one. A RAR 1.5-4 comment decodes as UTF-8 when it is valid, otherwise with your
+`encoding=`, and otherwise as windows-1252.
+
 The cost is that a legacy name whose bytes happen to form valid UTF-8 is read as UTF-8.
 For example, the Latin-1 name `Ã©.txt` is stored as the bytes `c3 a9 2e 74 78 74`,
 which are also the UTF-8 for `é.txt`. Archivey lists it as `'é.txt'` even with

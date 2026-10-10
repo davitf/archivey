@@ -1774,6 +1774,101 @@ def test_invalid_utf8_default_fallback_is_cp437_without_diagnostic() -> None:
     assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
 
 
+# Comments carry no encoding of their own: APPNOTE puts a member comment under the
+# same UTF-8 flag as its name, and the archive comment under none. An unflagged
+# comment therefore decodes as an unflagged name does.
+_CP1251_ARCHIVE_COMMENT = "Привет мир"
+_CP1251_MEMBER_COMMENT = "Ответ"
+
+
+def _commented_zip(archive_comment: bytes, member_comment: bytes) -> bytes:
+    """An ASCII-named member, so stdlib leaves the UTF-8 flag clear on it."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("a.txt")
+        info.comment = member_comment
+        z.writestr(info, b"x")
+        z.comment = archive_comment
+    assert zipfile.ZipFile(buf).infolist()[0].flag_bits & 0x800 == 0
+    return buf.getvalue()
+
+
+@requires_binary("zip")
+def test_unflagged_comments_decode_with_explicit_encoding(tmp_path: Path) -> None:
+    # Info-ZIP zip stores the comment bytes it reads as they are, with no flag.
+    path = tmp_path / "comments.zip"
+    (tmp_path / "a.txt").write_bytes(b"hi\n")
+    subprocess.run(["zip", "-q", path.name, "a.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["zip", "-q", "-z", path.name],
+        cwd=tmp_path,
+        input=_CP1251_ARCHIVE_COMMENT.encode("cp1251"),
+        check=True,
+    )
+    subprocess.run(
+        ["zip", "-q", "-c", path.name, "a.txt"],
+        cwd=tmp_path,
+        input=_CP1251_MEMBER_COMMENT.encode("cp1251") + b"\n",
+        check=True,
+    )
+    with zipfile.ZipFile(path) as z:
+        assert z.infolist()[0].flag_bits & 0x800 == 0
+        assert z.comment == _CP1251_ARCHIVE_COMMENT.encode("cp1251")
+    with open_archive(path, encoding="cp1251") as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
+        assert member.comment == _CP1251_MEMBER_COMMENT
+
+
+def test_unflagged_comments_take_the_configured_fallback() -> None:
+    data = _commented_zip(
+        _CP1251_ARCHIVE_COMMENT.encode("cp1251"),
+        _CP1251_MEMBER_COMMENT.encode("cp1251"),
+    )
+    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1251")
+    with open_archive(io.BytesIO(data), config=cfg) as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
+        assert member.comment == _CP1251_MEMBER_COMMENT
+
+
+def test_unflagged_comments_default_to_cp437() -> None:
+    data = _commented_zip(
+        _CP1251_ARCHIVE_COMMENT.encode("cp1251"),
+        _CP1251_MEMBER_COMMENT.encode("cp1251"),
+    )
+    with open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT.encode("cp1251").decode(
+            "cp437"
+        )
+        assert member.comment == _CP1251_MEMBER_COMMENT.encode("cp1251").decode("cp437")
+
+
+def test_unflagged_utf8_comments_win_over_explicit_encoding() -> None:
+    data = _commented_zip(
+        _CP1251_ARCHIVE_COMMENT.encode(), _CP1251_MEMBER_COMMENT.encode()
+    )
+    with open_archive(io.BytesIO(data), encoding="cp1251") as ar:
+        (member,) = ar.members()
+        assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
+        assert member.comment == _CP1251_MEMBER_COMMENT
+        # A comment is not a name: no name diagnostic is reported for it.
+        assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in ar.diagnostics.counts
+
+
+def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> None:
+    # stdlib sets the UTF-8 flag for a non-ASCII name; the flag covers the comment too.
+    path = tmp_path / "flagged.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        info = zipfile.ZipInfo("café.txt")
+        info.comment = _CP1251_MEMBER_COMMENT.encode()
+        z.writestr(info, b"x")
+    with open_archive(path, encoding="cp1251") as ar:
+        (member,) = ar.members()
+    assert member.comment == _CP1251_MEMBER_COMMENT
+
+
 def test_encoding_inference_is_escalatable() -> None:
     # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
     # refuses to trust the guess can escalate it to an error.

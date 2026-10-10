@@ -165,8 +165,9 @@ from archivey.types import (
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
-# Comment decoding: try UTF-8 first, else fall back to cp437 (the ZIP appnote default,
-# which maps every byte and therefore never fails — no further fallbacks are reachable).
+# Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
+# default, which maps every byte and therefore never fails). An unflagged comment goes
+# through `_sniff_unflagged_name`, as an unflagged name does.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is
@@ -967,6 +968,13 @@ class ZipReader(BaseArchiveReader):
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
 
+    def _decode_unflagged_comment(self, raw: bytes) -> str:
+        """Decode a comment with no UTF-8 flag the way an unflagged name is decoded.
+
+        A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
+        """
+        return self._sniff_unflagged_name(raw, raw.decode("cp437"))[0]
+
     def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
         full_mode = info.external_attr >> 16
         is_unix = info.create_system == 3
@@ -1112,7 +1120,12 @@ class ZipReader(BaseArchiveReader):
         if info.flag_bits & _ZIP_MASK_ENCRYPTED:
             member.is_encrypted = True
         if info.comment:
-            member.comment = _decode_with_fallback(info.comment)
+            # APPNOTE puts the member comment under the name's UTF-8 flag.
+            member.comment = (
+                _decode_with_fallback(info.comment)
+                if is_utf8_flagged
+                else self._decode_unflagged_comment(info.comment)
+            )
         if create_system is not None:
             member.create_system = create_system
         # Each report below names the member by its position in the walk, because
@@ -2219,7 +2232,8 @@ class ZipReader(BaseArchiveReader):
             format_version=None,
             is_solid=False,  # ZIP is never solid: each member has an independent offset
             member_count=len(self._archive.infolist()),
-            comment=_decode_with_fallback(comment) if comment else None,
+            # The archive comment has no UTF-8 flag of its own.
+            comment=self._decode_unflagged_comment(comment) if comment else None,
             is_encrypted=False,  # ZIP has per-member encryption, not header-level
             # True for a rejoined 7-Zip `.zip.NNN` set: it arrived as several files,
             # which is what a caller checking this wants to know. It says nothing

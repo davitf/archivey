@@ -123,6 +123,25 @@ name.
 | RAR5 `a\xffq.txt` and `a\xfeq.txt` | Two members, `a\udcffq.txt` and `a\udcfeq.txt`; each reads its own bytes through `unrar`, which reads both names as `a` |
 | 8-bit `b\x81.txt` and `b\x8d.txt` written on Unix | `b\udc81.txt` and `b\udc8d.txt` |
 
+### Requirement: Decode RAR 1.5-4 comments in the order names use
+
+A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`. A RAR 2.9-4 `CMT`
+SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Every other
+RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or
+compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
+and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
+`encoding=` when one was passed, else as windows-1252. Bytes the chosen code page leaves
+undefined SHALL become U+FFFD. The system MUST NOT decode an 8-bit comment as UTF-16LE.
+
+#### Scenario: RAR comment decoding matrix
+
+| Case | Expected |
+| --- | --- |
+| Archive comment and member comments (`CMT` and old-style subblock) in cp1251, `encoding="cp1251"` | The cp1251 text |
+| The same in cp866 or Shift-JIS, with that `encoding=` | The text |
+| The same comments in UTF-8, `encoding="cp1251"` | The UTF-8 text |
+| cp1251 comments, no `encoding=` | Decoded as windows-1252 |
+
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
 The RAR reader SHALL accept an archive whose marker (`Rar!\x1a\x07\x00` for RAR4

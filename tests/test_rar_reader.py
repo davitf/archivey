@@ -1622,7 +1622,7 @@ def test_rar3_parser_drops_encrypted_old_style_comment(
         )
         + body
     )
-    assert rp._parse_rar3_old_comment_subblocks(block, 0) is None
+    assert rp._parse_rar3_old_comment_subblocks(block, 0, encoding=None) is None
 
 
 def test_rar3_service_comment_maps_to_member_comment() -> None:
@@ -1701,7 +1701,7 @@ def test_rar3_old_style_comment_is_not_guessed_as_utf16() -> None:
 
     text = b"caf\xe9 ok!"
     block = _rar3_old_comment_subblock(text)
-    assert _parse_rar3_old_comment_subblocks(block, 0) == "caf\xe9 ok!"
+    assert _parse_rar3_old_comment_subblocks(block, 0, encoding=None) == "caf\xe9 ok!"
 
 
 def test_rar3_old_style_comment_is_cut_at_the_first_nul() -> None:
@@ -1716,8 +1716,101 @@ def test_rar3_old_style_comment_is_cut_at_the_first_nul() -> None:
     )
 
     block = _rar3_old_comment_subblock(b"hi\0rest")
-    assert _parse_rar3_old_comment_subblocks(block, 0) == "hi"
-    assert _decode_comment_text(b"caf\xe9\0\xff") == "caf\xe9"
+    assert _parse_rar3_old_comment_subblocks(block, 0, encoding=None) == "hi"
+    assert _decode_comment_text(b"caf\xe9\0\xff", encoding=None) == "caf\xe9"
+
+
+# A RAR 1.5-4 comment, like a RAR 1.5-4 8-bit name, does not record its code page, so
+# ``encoding=`` decodes the bytes that are not valid UTF-8 in place of windows-1252.
+# These archives are built by hand: RAR 7, the available writer, no longer writes the
+# RAR 1.5-4 format.
+_CP1251_COMMENT = "Привет мир"
+
+
+@pytest.mark.parametrize(
+    ("stored", "encoding", "expected"),
+    [
+        pytest.param(
+            _CP1251_COMMENT.encode("cp1251"), "cp1251", _CP1251_COMMENT, id="cp1251"
+        ),
+        pytest.param(
+            _CP1251_COMMENT.encode("cp866"), "cp866", _CP1251_COMMENT, id="cp866"
+        ),
+        pytest.param(
+            "日本語".encode("shift_jis"), "shift_jis", "日本語", id="shift-jis"
+        ),
+        # Valid UTF-8 wins over encoding=, as it does for a name.
+        pytest.param(
+            _CP1251_COMMENT.encode(), "cp1251", _CP1251_COMMENT, id="utf8-wins"
+        ),
+        # Without encoding=, the windows-1252 fallback stays.
+        pytest.param(
+            _CP1251_COMMENT.encode("cp1251"),
+            None,
+            _CP1251_COMMENT.encode("cp1251").decode("windows-1252"),
+            id="no-encoding",
+        ),
+    ],
+)
+def test_rar3_comments_decode_with_explicit_encoding(
+    stored: bytes, encoding: str | None, expected: str
+) -> None:
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_FILE_COMMENT,
+        _RAR3_FILE_SOLID,
+    )
+
+    main_hdr, end_hdr = _rar3_main_and_end()
+    # The archive comment, as a stored CMT SERVICE header.
+    archive_cmt = _rar3_file_block(
+        b"CMT", flags=0, pack_lo=len(stored), unp_lo=len(stored), block_type=0x7A
+    )
+    # One member comment as an old-style COMMENT subblock (RAR 1.5-2.x) ...
+    old_style = _rar3_file_block(
+        b"old.txt",
+        flags=_RAR3_FILE_COMMENT,
+        pack_lo=0,
+        unp_lo=0,
+        trailing_subblock=_rar3_old_comment_subblock(stored),
+    )
+    # ... and one as a solid CMT SERVICE header after its member (RAR 2.9-4).
+    service = _rar3_file_block(b"svc.txt", flags=0, pack_lo=0, unp_lo=0)
+    service_cmt = _rar3_file_block(
+        b"CMT",
+        flags=_RAR3_FILE_SOLID,
+        pack_lo=len(stored),
+        unp_lo=len(stored),
+        block_type=0x7A,
+    )
+    data = (
+        RAR_ID
+        + main_hdr
+        + archive_cmt
+        + stored
+        + old_style
+        + service
+        + service_cmt
+        + stored
+        + end_hdr
+    )
+    with open_archive(io.BytesIO(data), encoding=encoding) as archive:
+        assert archive.info.comment == expected
+        old_member = archive.get("old.txt")
+        service_member = archive.get("svc.txt")
+        assert old_member is not None and service_member is not None
+        assert old_member.comment == expected
+        assert service_member.comment == expected
+
+
+def test_rar3_compressed_comment_text_takes_explicit_encoding() -> None:
+    """A compressed comment, once unpacked, goes through the same decode."""
+    from archivey.internal.backends.rar_parser import _decode_comment_text
+
+    stored = _CP1251_COMMENT.encode("cp1251") + b"\0rest"
+    assert _decode_comment_text(stored, encoding="cp1251") == _CP1251_COMMENT
+    assert _decode_comment_text(stored, encoding=None) == stored[
+        : stored.index(b"\0")
+    ].decode("windows-1252")
 
 
 def test_rar5_comment_service_stays_archive_only() -> None:
