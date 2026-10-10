@@ -242,8 +242,8 @@ the meta-block header parser.
 - Investigation: [`brotli-content-probe-results.md`](../investigations/brotli-content-probe-results.md)
 - Registers: [`threat-model.md`](../threat-model.md) O10, O11
 - Decisions: [`library-analysis.md`](../library-analysis.md) §brotli
-- Code: `internal/streams/codecs.py` (`BrotliCodec`) · `internal/streams/brotli_framing.py`
-  · `internal/streams/decompress.py` (`BrotliDecoder`) · `internal/detection.py`
+- Code: `internal/streams/codecs/` (`brotli_codec.py`: `BrotliCodec`;
+  `brotli_framing.py`; `brotli_decoder.py`: `BrotliDecoder`) · `internal/detection.py`
   (`_brotli_probe_confidence`)
 - Handbook: [`single-file.md`](single-file.md) · [`xz.md`](xz.md) (the LZMA Alone probe) ·
   [`tar.md`](tar.md)

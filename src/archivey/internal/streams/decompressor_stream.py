@@ -4,12 +4,10 @@
 algorithm. Codecs plug in through the :class:`Decoder` protocol (feed / flush /
 recreate / index discovery) — not by subclassing the stream.
 
-Where the decoders live (easy to mix with this file's name):
-
-- :mod:`archivey.internal.streams.decompress` — zlib/deflate, Brotli, PPMd, BCJ,
-  Deflate64 adapters
-- :mod:`archivey.internal.streams.xz` / ``lzip`` / ``unix_compress`` — larger
-  format-specific decoders (index scan / LZW)
+The decoders live next to their codec in :mod:`archivey.internal.streams.codecs`, as
+``<name>_decoder.py`` (``deflate_decoder``, ``brotli_decoder``, ``ppmd_decoder``,
+``xz_decoder``, ``lzip_decoder``, ``unix_compress_decoder``, …), with
+``framed_decoder`` for the one-shot decompressors (bzip2, zstd, LZ4).
 
 ``codecs.StreamCodec.open`` wires those into an ``ArchiveStream``; this module is
 only the shared engine underneath.
