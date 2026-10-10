@@ -558,7 +558,11 @@ stops the run from reaching a directory inside it. This SHALL also happen when t
 stops early (`OnError.STOP`, an `abort_on` trigger, a limit), for the directories written
 before it stopped. A directory is changed only when the entry at its path is still the
 directory the member wrote: a symlink, or another entry, that a later member put there
-SHALL NOT be changed, and the change SHALL NOT follow a symlink. GNU tar, bsdtar and
+SHALL NOT be changed, and the change SHALL NOT follow a symlink. A directory that a
+member reaches through a symlink the archive wrote SHALL be taken by where it physically
+is, with its parents resolved: that place sets its depth, the change reaches it from the
+root through that place only, and a later member that removes it by any name drops its
+pending metadata. GNU tar, bsdtar and
 Python's `tarfile` order these changes the same way. With the mode applied at once, a
 stored mode without owner write or search permission refused every member inside the
 directory to a non-root user, and each member written inside changed the directory's
@@ -579,6 +583,8 @@ written, so a non-root run does not give them the directory's group.
 | DIRECTORY `d/` with a stored mtime, then `d/f` | `d` ends with the stored mtime |
 | DIRECTORY `d/`, then `d/f`, then a member that stops the run | `d` ends with its stored mode and mtime |
 | DIRECTORY `d/` replaced under `REPLACE` by a symlink `d -> t` | `t` keeps its own mode and mtime |
+| `s -> .`, DIRECTORY `s/d/` `0o700`, then `REPLACE` removes `d` for a refused symlink `d -> d`, then `d/x` | `d` is a plain parent: it does not get `0o700` or the stored mtime |
+| DIRECTORY `t/`, DIRECTORY `a/b/c/` `0o000`, `a/b/c/s -> ../../../t`, DIRECTORY `a/b/c/s/u/` `0o750`, non-root user | `t/u` ends with `0o750` and its stored mtime |
 
 ### Requirement: Overwrite Policy
 

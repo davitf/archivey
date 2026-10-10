@@ -624,12 +624,16 @@ class _RunState:
     # Directories ``_makedirs`` created this run, as parents of what it wrote.
     created_dirs: set[Path] = field(default_factory=set)
     # Directory members whose ownership, mode and times wait for the end of the run
-    # (``_apply_directory_metadata``), by the path the directory was written at, in
-    # the order they were last written: the directory's identity on disk (device,
-    # inode) when it was written, the number of ``/`` in its path relative to the
-    # root once the parent is resolved (so a deeper directory sorts first), and the
-    # transformed member. Keyed by path, not identity: some filesystems report inode
-    # 0 for every entry (``_Identity.of`` in the directory reader).
+    # (``_apply_directory_metadata``), by where the directory physically is (its
+    # parent resolved, as ``_Claim.physical``), in the order they were last written:
+    # the directory's identity on disk (device, inode) when it was written, the number
+    # of ``/`` in that physical path relative to the root (so a deeper directory sorts
+    # first), and the transformed member. Keyed by path, not identity: some
+    # filesystems report inode 0 for every entry (``_Identity.of`` in the directory
+    # reader). Keyed by the physical path, not the spelled one: a removal through
+    # another spelling then drops the entry, two spellings of one directory share it,
+    # and the metadata pass opens the directory through shallower directories only,
+    # which it has not changed yet.
     pending_dirs: dict[Path, tuple[tuple[int, int], int, ArchiveMember]] = field(
         default_factory=dict
     )
@@ -1311,7 +1315,7 @@ class ExtractionCoordinator:
             if path.is_dir() and not path.is_symlink():
                 # Random access never writes the superseded copy, so its metadata
                 # is not applied, whether or not the directory stays as a parent.
-                state.pending_dirs.pop(path, None)
+                self._drop_pending_dir(path)
                 with contextlib.suppress(OSError):  # not empty: members live under it
                     os.rmdir(path)
                     state.written_paths.discard(path)
@@ -2091,6 +2095,13 @@ class ExtractionCoordinator:
             resolved_parents[parent] = rel_parent
         return rel_parent + name
 
+    def _physical_path(self, path: Path) -> Path:
+        """Where ``path`` is, under the destination as given, with its parent
+        resolved (``_physical_rel``); ``path`` itself when that parent does not resolve
+        inside the root."""
+        rel = self._physical_rel(path)
+        return self._state.dest / rel if rel is not None else path
+
     def _collision_key(self, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
 
@@ -2172,7 +2183,7 @@ class ExtractionCoordinator:
             if stat.S_ISDIR(st.st_mode):
                 os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop(dest_path, None)
+                self._drop_pending_dir(dest_path)
             else:
                 os.unlink(dest_path)
             if stat.S_ISLNK(st.st_mode):
@@ -3079,7 +3090,7 @@ class ExtractionCoordinator:
                 with self._readonly_cleared(dest_path):
                     os.rmdir(dest_path)
                 # Its member's metadata has no directory left to go on.
-                self._state.pending_dirs.pop(dest_path, None)
+                self._drop_pending_dir(dest_path)
                 self._current.removed_existing = True
                 # A directory member of this run that wrote it no longer has it. This is
                 # not a collision event (directories are never claimed), so only the
@@ -3302,13 +3313,19 @@ class ExtractionCoordinator:
             st = os.lstat(path)
         except OSError:
             return
-        rel = self._physical_rel(path)
-        depth = (rel if rel is not None else self._rel_name(path)).count("/")
+        physical = self._physical_path(path)
+        depth = self._rel_name(physical).count("/")
         pending = self._state.pending_dirs
         # Moved to the end, so where two spellings reach one directory, the member
-        # written last is applied last (the sort by depth is stable).
-        pending.pop(path, None)
-        pending[path] = ((st.st_dev, st.st_ino), depth, member)
+        # written last is the one applied.
+        pending.pop(physical, None)
+        pending[physical] = ((st.st_dev, st.st_ino), depth, member)
+
+    def _drop_pending_dir(self, path: Path) -> None:
+        """Drop the deferred metadata of the directory at ``path``, which is being
+        removed: by its physical path, as ``_defer_directory_metadata`` keyed it, so a
+        removal through another spelling of the directory finds it."""
+        self._state.pending_dirs.pop(self._physical_path(path), None)
 
     def _apply_directory_metadata(self) -> None:
         """Apply the deferred directory metadata (``_defer_directory_metadata``),

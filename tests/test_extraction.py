@@ -844,6 +844,85 @@ def test_deferred_directory_metadata_never_follows_a_symlink(tmp_path: Path) -> 
 
 
 @_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_metadata_of_a_directory_removed_by_another_spelling_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``s/d/`` is written through the archive's own ``s -> .``, so it is the
+    directory ``d``. REPLACE removes that empty directory for the symlink ``d -> d``,
+    which is then refused, and ``d/x`` creates ``d`` again as a plain parent. The
+    removed member's mode and mtime must not land on that new directory.
+
+    The removal names ``d`` and the member named ``s/d``: the pending metadata was
+    kept under the spelled path, so the removal did not drop it. Inodes are reported
+    as 0 here, so the identity check cannot tell the two directories apart, as on a
+    filesystem that reuses the freed inode."""
+    lstat, fstat = os.lstat, os.fstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    monkeypatch.setattr(os, "fstat", lambda fd: _NoInode(fstat(fd)))
+    archive = _tar_with_dir_modes(
+        [("s->.", None, 0), ("s/d/", 0o700, _DIR_MTIME), ("d->d", None, 0)]
+        + [("d/x", 0o644, 0)]
+    )
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error="continue",
+    )
+    monkeypatch.undo()
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    st = (dest / "d").stat()
+    assert st.st_mode & 0o7777 != 0o700
+    assert int(st.st_mtime) != _DIR_MTIME
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_metadata_reaches_a_directory_through_a_locked_spelling(
+    tmp_path: Path,
+) -> None:
+    """``a/b/c/s/u/`` is written through the archive's own ``a/b/c/s -> ../../../t``,
+    so it is the directory ``t/u``. ``a/b/c`` is stored ``0o000`` and is deeper, so
+    its mode is applied first. ``t/u`` still gets its stored mode and mtime: it is
+    opened as ``t/u``, not through ``a/b/c``, which the owner can no longer search."""
+    probe = tmp_path / "probe"
+    probe.mkdir(mode=0o000)
+    try:
+        os.listdir(probe)
+    except PermissionError:
+        pass
+    else:
+        pytest.skip("permission checks are bypassed here (root with DAC override)")
+    archive = _tar_with_dir_modes(
+        [
+            ("t/", 0o755, 0),
+            ("a/b/c/", 0o000, _SUB_MTIME),
+            ("a/b/c/s->../../../t", None, 0),
+            ("a/b/c/s/u/", 0o750, _DIR_MTIME),
+        ]
+    )
+    dest = tmp_path / "out"
+    try:
+        report = open_and_extract(
+            io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
+        )
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 4
+        st = (dest / "t" / "u").stat()
+        assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _DIR_MTIME)
+        assert (dest / "a" / "b" / "c").stat().st_mode & 0o7777 == 0o000
+    finally:
+        _restore_modes(dest)
+
+
+@_posix_perms
 def test_extract_zip_standard_keeps_execute(tmp_path: Path) -> None:
     src = tmp_path / "m.zip"
     _write_zip(src, {"x.sh": b"#!/bin/sh"}, mode=0o755)
