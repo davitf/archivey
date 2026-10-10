@@ -45,7 +45,6 @@ The RAR backend SHALL expose these properties:
 | --- | --- |
 | Open non-header-encrypted RAR without `unrar`/`rar` | Listing and metadata still work through the native parser |
 | Open from a non-seekable source | Open fails because RAR header parsing requires seek |
-| Attempt to create/write RAR | `UnsupportedFeatureError` |
 
 ### Requirement: Parse RAR headers natively (RAR 1.5 through RAR5)
 

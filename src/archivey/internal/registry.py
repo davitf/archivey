@@ -1,4 +1,4 @@
-"""Backend registry: maps ArchiveFormat to ReadBackend/WriteBackend classes.
+"""Backend registry: maps ArchiveFormat to ReadBackend classes.
 
 Registration is **unconditional**: every known backend — core and optional alike —
 registers when its module is imported. Availability is then derived centrally from the
@@ -17,7 +17,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from archivey.internal.base_reader import ReadBackend, WriteBackend
+    from archivey.internal.base_reader import ReadBackend
 
 from archivey.cost import StreamCapability
 from archivey.exceptions import (
@@ -79,7 +79,6 @@ __all__ = [
     "list_known_formats",
     "list_supported_formats",
     "register_reader",
-    "register_writer",
 ]
 
 
@@ -130,11 +129,10 @@ def _optional(name: str) -> ModuleType | None:
 
 
 class BackendRegistry:
-    """Central registry mapping formats to their read and write backends."""
+    """Central registry mapping formats to their read backends."""
 
     def __init__(self) -> None:
         self._readers: dict[ArchiveFormat, type[ReadBackend]] = {}
-        self._writers: dict[ArchiveFormat, type[WriteBackend]] = {}
         # Unique reader classes in registration order (a class may serve several formats).
         self._reader_classes: list[type[ReadBackend]] = []
         self._extension_map_cache: dict[str, ArchiveFormat] | None = None
@@ -145,10 +143,6 @@ class BackendRegistry:
         for fmt in backend_cls.FORMATS:
             self._readers[fmt] = backend_cls
         self._extension_map_cache = None
-
-    def register_writer(self, backend_cls: type[WriteBackend]) -> None:
-        for fmt in backend_cls.FORMATS:
-            self._writers[fmt] = backend_cls
 
     # --- detection tables (aggregated from two sources) ----------------------------------
     # The container format backends (`ReadBackend.MAGIC`/`EXTENSIONS`/`CONTENT_PROBES`) and
@@ -367,14 +361,6 @@ class BackendRegistry:
             )
         return self._readers[fmt]
 
-    def writer_for_format(self, fmt: ArchiveFormat) -> type[WriteBackend]:
-        if fmt not in self._writers:
-            raise UnsupportedFeatureError(
-                f"No write backend registered for format {fmt.display_name}",
-                source_format=fmt,
-            )
-        return self._writers[fmt]
-
     # --- queries -------------------------------------------------------------------------
 
     def list_known_formats(self) -> list[ArchiveFormat]:
@@ -389,9 +375,6 @@ class BackendRegistry:
             if self.format_availability(fmt).support is not FormatSupport.NONE
         ]
 
-    def list_writable_formats(self) -> list[ArchiveFormat]:
-        return list(self._writers.keys())
-
 
 # Module-level singleton
 _registry = BackendRegistry()
@@ -399,10 +382,6 @@ _registry = BackendRegistry()
 
 def register_reader(backend_cls: type[ReadBackend]) -> None:
     _registry.register_reader(backend_cls)
-
-
-def register_writer(backend_cls: type[WriteBackend]) -> None:
-    _registry.register_writer(backend_cls)
 
 
 def get_registry() -> BackendRegistry:
