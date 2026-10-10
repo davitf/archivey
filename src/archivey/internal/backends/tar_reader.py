@@ -34,6 +34,7 @@ Note: after the header walk, ``tarfile`` has typically already consumed the
 
 from __future__ import annotations
 
+import errno
 import stat
 import tarfile
 import threading
@@ -278,8 +279,10 @@ class _TarFile(tarfile.TarFile):
 
     stopped_on_zero_block: bool = False
 
-
-_BLOCK = tarfile.BLOCKSIZE
+    header_depth: int = 0
+    """How many :meth:`_TarInfo.fromtarfile` calls are running. A GNU long name or a
+    PAX header parses the header after it from inside its own call on Pythons without
+    the 2025 tarfile fixes, so 0 after a call returns means the member is final."""
 
 
 class _TarInfo(tarfile.TarInfo):
@@ -291,8 +294,8 @@ class _TarInfo(tarfile.TarInfo):
     where the map claims more than the member stores and the read runs on into the
     next header. :func:`_sparse_map_error` compares the map to this end.
 
-    It also skips the data of an old-style directory, as GNU tar does: see
-    :meth:`_note_old_style_directory`.
+    It also decides old-style directories itself, as GNU tar does: see
+    :meth:`_mark_old_style_directory`.
     """
 
     __slots__ = ("old_style_directory", "stored_end")
@@ -301,14 +304,14 @@ class _TarInfo(tarfile.TarInfo):
     """The offset where the member's data area ends, rounded up to whole blocks."""
 
     old_style_directory: bool
-    """The header is a regular file (``AREGTYPE``, typeflag NUL) whose name ends in
-    ``/``, which ``tarfile`` turned into a directory."""
+    """The header is a regular file (``AREGTYPE``, typeflag NUL) whose final name ends
+    in ``/``, listed as a directory. ``type`` is then ``DIRTYPE``."""
 
     @classmethod
     def frombuf(cls, buf: bytes | bytearray, encoding: str, errors: str) -> Self:
         # Python versions before the 2025 tarfile security fixes call this one.
         info = super().frombuf(buf, encoding, errors)
-        info._note_old_style_directory(buf)
+        info._undo_stdlib_directory_check(buf)
         return info
 
     @classmethod
@@ -320,26 +323,49 @@ class _TarInfo(tarfile.TarInfo):
         *,
         dircheck: bool = True,
     ) -> Self:
-        # Later versions call this one, with ``dircheck=False`` for the header after a
-        # GNU long name or a PAX header, where no AREGTYPE becomes a directory.
-        # typeshed does not declare tarfile's private TarInfo._frombuf.
+        # Later versions call this one. typeshed does not declare tarfile's private
+        # TarInfo._frombuf.
         info: Self = super()._frombuf(buf, encoding, errors, dircheck=dircheck)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-        info._note_old_style_directory(buf)
+        info._undo_stdlib_directory_check(buf)
         return info
 
-    def _note_old_style_directory(self, buf: bytes | bytearray) -> None:
-        """Record whether ``tarfile`` turned an AREGTYPE header into a directory.
+    def _undo_stdlib_directory_check(self, buf: bytes | bytearray) -> None:
+        """Keep an ``AREGTYPE`` header a regular file while its member is parsed.
 
         Old (v7) tars mark a directory as a regular file whose name ends in ``/``.
-        ``tarfile`` lists such a header as a directory, and then does not skip its
-        data, because a directory has none: a header that declares a size has its data
-        blocks read as the next header. GNU tar 1.35 and 7-Zip list it as a directory
-        and skip the data. A ``DIRTYPE`` header that declares a size is not marked:
-        GNU tar reports that one as an error too.
+        ``tarfile`` decides that from the header's own name field: on every header
+        before the 2025 fixes, and after them only on a header with no GNU long name
+        or PAX header before it. It then does not skip the data, because a directory
+        has none, so a header that declares a size has its data read as the next
+        header. Undone here, so ``tarfile`` skips the data as for any regular file,
+        with the final size, and :meth:`_mark_old_style_directory` decides on the
+        final name once the member is complete.
         """
-        self.old_style_directory = (
-            buf[156:157] == tarfile.AREGTYPE and self.type == tarfile.DIRTYPE
-        )
+        self.old_style_directory = False
+        if buf[156:157] == tarfile.AREGTYPE and self.type == tarfile.DIRTYPE:
+            self.type = tarfile.AREGTYPE
+            # ``tarfile`` stripped the slash, before adding the ustar prefix.
+            self.name += "/"
+
+    def _mark_old_style_directory(self) -> None:
+        """Make an ``AREGTYPE`` member whose final name ends in ``/`` a directory.
+
+        The final name is the one after a PAX ``path`` or a GNU long name, as GNU tar
+        1.35 and 7-Zip read it. Both list such a member as a directory and skip its
+        data. ``tarfile`` strips the slash from a PAX ``path``, so the record is read
+        again. A ``DIRTYPE`` header that declares a size is not this case: it has no
+        data area.
+        """
+        if self.type != tarfile.AREGTYPE:
+            return
+        name_is_dir = self.name.endswith("/")
+        pax_path = self.pax_headers.get("path")
+        if pax_path is not None and self.name == pax_path.rstrip("/"):
+            name_is_dir = pax_path.endswith("/")
+        if name_is_dir:
+            self.type = tarfile.DIRTYPE
+            self.name = self.name.rstrip("/")
+            self.old_style_directory = True
 
     @classmethod
     def fromtarfile(cls, tarfile: tarfile.TarFile) -> Self:
@@ -348,12 +374,16 @@ class _TarInfo(tarfile.TarInfo):
         # the error passes through (see :class:`_TarFile`).
         if isinstance(tarfile, _TarFile):
             tarfile.stopped_on_zero_block = False
+            tarfile.header_depth += 1
         try:
             info = super().fromtarfile(tarfile)
         except _EOFHeaderError:
             if isinstance(tarfile, _TarFile):
                 tarfile.stopped_on_zero_block = True
             raise
+        finally:
+            if isinstance(tarfile, _TarFile):
+                tarfile.header_depth -= 1
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
         # the end of this member's data area. For a header preceded by GNU long-name or
         # PAX headers this runs once per header, innermost first; the outermost call
@@ -361,6 +391,8 @@ class _TarInfo(tarfile.TarInfo):
         # and the final ``linkname``, which a long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
         _drop_unweighed_link_name(info)
+        if not isinstance(tarfile, _TarFile) or tarfile.header_depth == 0:
+            info._mark_old_style_directory()
         return info
 
     def _proc_member(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
@@ -383,12 +415,7 @@ class _TarInfo(tarfile.TarInfo):
                     f"{max(left, 0)} left)"
                 )
         # typeshed does not declare tarfile's private TarInfo._proc_member.
-        info = super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
-        # Runs again for the outer PAX header, after its ``size`` record has reset the
-        # offset, so the skip uses the final size.
-        if isinstance(info, _TarInfo) and info.old_style_directory:
-            tarfile.offset = info.offset_data + -(-info.size // _BLOCK) * _BLOCK
-        return info
+        return super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
 
 
 def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
@@ -654,12 +681,20 @@ class _EofProbeStream(ReadOnlyIOStream):
         # base-256 size can put that past what a seek can take, and the stream under
         # would raise OverflowError, ValueError or OSError(EINVAL) depending on its
         # type. Refused here, so none of those is taken for a fault of the stream.
+        # A filesystem refuses a smaller offset too, past its largest file size (about
+        # 16 TiB on ext4), with EINVAL or EOVERFLOW.
+        too_far = CorruptionError(
+            f"TAR archive is corrupt: a size field puts data at byte {offset}, "
+            "past the largest offset any file can have"
+        )
         if whence == SEEK_SET and offset > _MAX_SEEK_OFFSET:
-            raise CorruptionError(
-                f"TAR archive is corrupt: a size field puts data at byte {offset}, "
-                "past the largest offset any file can have"
-            )
-        self._inner.seek(offset, whence)
+            raise too_far
+        try:
+            self._inner.seek(offset, whence)
+        except OSError as e:
+            if whence == SEEK_SET and e.errno in (errno.EINVAL, errno.EOVERFLOW):
+                raise too_far from e
+            raise
         self._pos = self._inner.tell()
         return self._pos
 
@@ -1558,7 +1593,14 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        extra = MemberExtra({"tar.type": info.type})
+        # The typeflag as stored: NUL for an old-style directory, whose ``type`` is
+        # DIRTYPE.
+        stored_type = (
+            tarfile.AREGTYPE
+            if getattr(info, "old_style_directory", False)
+            else info.type
+        )
+        extra = MemberExtra({"tar.type": stored_type})
         if info.pax_headers:
             extra["tar.pax_headers"] = dict(info.pax_headers)
         if info.isdev():

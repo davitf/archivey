@@ -59,7 +59,7 @@ rules:
 | `uname`, `gname`, `uid`, `gid` | Directly from `TarInfo` |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from `linkname` |
-| old-style directory | An `AREGTYPE` (typeflag NUL) header whose stored name ends in `/` is a `DIRECTORY`, and the data blocks its `size` declares are skipped, as GNU tar does. A `DIRTYPE` header that declares a size has no data area: its "data" is read as the next header |
+| old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
 | `raw_name` | The stored name bytes: a PAX `path` record as UTF-8 (the codec tarfile decoded it with; under `hdrcharset=BINARY`, or when the name holds surrogateescape bytes from tarfile's fallback decode, the archive `encoding`); a ustar or GNU long name with the archive `encoding`. `None` when no codec reproduces the name — never an exception out of the listing |
 
 If `TarInfo.mtime` cannot be represented as a Python `datetime`, `modified`
@@ -82,7 +82,7 @@ in every format; the record name appears only in the message.
 | PAX `LIBARCHIVE.creationtime` present (bsdtar, where the OS has a birth time) | `created` is timezone-aware UTC |
 | Neither PAX record | `created is None` and `ctime is None` |
 | `LNKTYPE` entry | `member.type=MemberType.HARDLINK`; `member.link_target=linkname` |
-| `AREGTYPE` entry `d/` with 15 bytes of data, then a file | `d/` is a `DIRECTORY`; the file after it lists and reads, in both access modes |
+| `AREGTYPE` entry `d/` with 15 bytes of data, then a file | `d/` is a `DIRECTORY`; the file after it lists and reads, in both access modes. The same holds when the slash comes from a PAX `path` or a GNU long name |
 | PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
