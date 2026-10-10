@@ -43,7 +43,11 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.config import DecoderLimits, check_decoder_memory
+from archivey.internal.config import (
+    DecoderLimits,
+    check_decoder_memory,
+    probe_lzma_dictionary,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams.decompressor_stream import (
@@ -56,6 +60,8 @@ from archivey.internal.streams.decompressor_stream import (
     SpacedCollector,
     _StreamChecksumError,
     build_index_backwards,
+    damaged_stream_error,
+    near_stream_magic,
 )
 
 _MAGIC = b"LZIP"
@@ -81,7 +87,7 @@ def _check_version(header: bytes, offset: int) -> None:
     if len(header) >= _HEADER_SIZE and header[4] != _VERSION:
         raise UnsupportedFeatureError(
             f"Unsupported lzip version {header[4]} in the member at offset {offset}: "
-            f"only version {_VERSION} is read"
+            f"only version {_VERSION} is read; a damaged header reads the same way"
         )
 
 
@@ -151,6 +157,8 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     trailing data on both paths. A member there whose version is not 1 is refused as
     unsupported (:func:`_check_version`), as the forward decoder refuses it, before its
     trailer is judged: a version-0 trailer has no member size, so it is never found.
+    A magic damaged in a few places (:func:`near_stream_magic`) after the member is
+    corruption too, as the forward decoder finds it, and as ``lzip`` reports it.
     """
     if _member_ends_at(stream, file_size, stop_at):
         return file_size
@@ -175,6 +183,8 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
                     f"Lzip member starting at offset {base + end} has no valid "
                     "trailer at the end of the file"
                 )
+            if near_stream_magic(window[end : end + len(_MAGIC)], _MAGIC):
+                raise damaged_stream_error(base + end)
             return base + end
     raise CorruptionError(
         "Lzip trailer not found at the end of the file or in the "
@@ -301,8 +311,11 @@ class _LzipState:
     _IN_MEMBER = 1
     _NEED_TRAILER = 2
 
-    def __init__(self, limits: DecoderLimits, offset: int) -> None:
+    def __init__(
+        self, limits: DecoderLimits, offset: int, read_bound: int | None = None
+    ) -> None:
         self._limits = limits
+        self._read_bound = read_bound
         # Source offset of the current member's header, for error messages.
         self._comp_offset = offset
         self._state = self._NEED_HEADER
@@ -346,6 +359,8 @@ class _LzipState:
             if head == _MAGIC:
                 self.truncated = True
                 return b"", []
+            if near_stream_magic(head, _MAGIC):
+                raise damaged_stream_error(self._comp_offset)
             self._end_at(bytes(self._buf))
             return b"", []
         out, units = self._process(max_length=-1)
@@ -444,6 +459,9 @@ class _LzipState:
                 raise CorruptionError(
                     f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
                 )
+            if near_stream_magic(header, _MAGIC):
+                # lzip's own rule: "corrupt header in multimember file".
+                raise damaged_stream_error(self._comp_offset)
             return False  # lzip spec §7: trailing data after members is allowed
         _check_version(header, self._comp_offset)
         exp = header[5] & 0x1F
@@ -457,7 +475,9 @@ class _LzipState:
         check_decoder_memory(
             dict_size, limits=self._limits, what="lzip dictionary size"
         )
-        lzma_alone_header = _PROPS_BYTE + struct.pack("<I", dict_size) + _UNKNOWN_SIZE
+        # A detection probe decodes with only the dictionary its read needs.
+        decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
+        lzma_alone_header = _PROPS_BYTE + struct.pack("<I", decode_dict) + _UNKNOWN_SIZE
         try:
             self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
             self._dec.decompress(lzma_alone_header)
@@ -501,9 +521,11 @@ class LzipDecoder(BaseDecoder):
         decomp_cursor: int,
         collector: DiagnosticCollector | None,
         limits: DecoderLimits,
+        read_bound: int | None = None,
     ) -> None:
         self._state = state
         self._limits = limits
+        self._read_bound = read_bound
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
         self._collector = collector
@@ -511,11 +533,12 @@ class LzipDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(self._limits, point.compressed_offset),
+            _LzipState(self._limits, point.compressed_offset, self._read_bound),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=self._collector,
             limits=self._limits,
+            read_bound=self._read_bound,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -572,21 +595,25 @@ def LzipDecompressorStream(
     seekable: bool = True,
     decoder_limits: DecoderLimits = DecoderLimits(),
     report_trailing_data: bool = False,
+    probe_read_bound: int | None = None,
 ) -> DecompressorStream:
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
     ``decoder_limits`` caps each member header's dictionary size; it defaults to the
-    public default, not to no cap.
+    public default, not to no cap. ``probe_read_bound`` is
+    ``StreamConfig.probe_read_bound``: each member decodes with only the dictionary
+    that read needs.
     """
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(decoder_limits, point.compressed_offset),
+            _LzipState(decoder_limits, point.compressed_offset, probe_read_bound),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=collector,
             limits=decoder_limits,
+            read_bound=probe_read_bound,
         )
 
     return DecompressorStream(

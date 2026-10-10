@@ -89,8 +89,11 @@ not read, because it describes one frame and nothing says the file has one (§7)
 
 Both codecs run in archivey's engine as `FramedDecompressorStream`
 (`internal/streams/codecs/framed_decoder.py`): one library decompressor per frame, and a new one
-only when the next bytes are a frame or skippable-frame magic. Anything else after a
-frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
+only when the next bytes are a frame or skippable-frame magic. Bytes that hold one of
+those magics in at least half of its positions, but not all, are a frame with a damaged
+magic and raise `CorruptionError`; a run of one to three zeros counts as the magic's
+first bytes there, since a damaged byte can be a zero. Anything else after a frame is
+trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
 ([`single-file.md`](single-file.md) §2.3). The file-level readers the libraries offer
 (`compression.zstd.open`, `lz4.frame.open`) cannot do that: they take any bytes after a
 frame for the next frame and fail on them.
@@ -142,6 +145,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `zstd --long=31` on a file | Reads: the window is sized to the input |
 | `zstd --long=31` from standard input (2 GiB window) | Reads under the default 2 GiB cap; `ResourceLimitError` under a smaller one |
 | A zstd file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; `zstd -t` refuses it |
+| Two zstd or LZ4 frames, one byte of the second frame's magic damaged | `CorruptionError` on a read and a seek |
 | One bit flipped mid-file, `zstd` / `zstd --no-check` | `CorruptionError` from the checksum / **read with no error** |
 | `lz4`, `lz4 -BD`, two frames concatenated | Reads |
 | `lz4 --content-size` | Reads; `size=None` |
@@ -175,13 +179,20 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   `LZ4_COMPRESSBOUND(8 MiB)` ends the stream instead, so the input held for one block
   stays under about 8 MiB and each block decodes into an 8 MiB buffer. Both numbers are
   the format's, so `DecoderLimits` has nothing to cap here.
-- **Detection lifts the cap.** The detection probes decode a sample with
+- **Detection lifts the cap, not the window.** The inner-TAR probe decodes with
   `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs/base.py`, the same rule as
-  liblzma's dictionary), so a probe decodes with `window_log_max` at libzstd's ceiling.
-  libzstd reserves the declared window on the first read: an 18-byte frame declaring
-  2 GiB reserves 2 GiB of address space during `open_archive` whatever
-  `max_decoder_memory` says. Under overcommit that costs nothing resident; under
-  `RLIMIT_AS` or a strict commit limit it is a `MemoryError` at detection.
+  liblzma's dictionary), but with `window_log_max` at libzstd's default 27 (128 MiB),
+  what `zstd -d` decodes without `--long`. libzstd reserves the declared window of a
+  frame without a content size when it reads the header (measured: a 2 GiB window under
+  a 256 MiB `RLIMIT_AS` fails with "Allocation error"), and a window cannot be shrunk to
+  what the read needs the way an LZMA dictionary can. A frame over 128 MiB is "can't
+  tell": detection reports a bare `.zst`, records `inner_tar` as
+  `CAPABILITY_UNAVAILABLE`, and the open applies the caller's limit. The alternative was to
+  keep libzstd's 2 GiB ceiling and let its own allocation refusal ("Allocation error", a
+  `CorruptionError` to the probe) be the "can't tell" under memory pressure; that keeps
+  `--long=28` and up detected where memory allows. The cap was chosen because a 2 GiB
+  reservation per `detect_format` is a cost in itself (threat model O11) and `--long`
+  frames are rare beside the 8 MiB window of `zstd -19`.
 - **The decoders are native code.** Both run in the caller's process. `compression.zstd`
   is the standard library's; `lz4` is a C extension. Neither is fuzzed by archivey's own
   harness beyond the corpus.

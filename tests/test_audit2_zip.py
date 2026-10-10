@@ -601,6 +601,8 @@ def test_zero_size_member_with_wrong_crc_does_not_extract_clean(tmp_path: Path) 
 def test_zero_declared_size_with_data_raises_rather_than_serving_it(
     method: int,
 ) -> None:
+    # A body that is not DEFLATE: test_exception_handlers.py
+    # ::test_overrun_probe_raises_a_typed_decoder_error.
     data = b"hello" if method == 0 else _raw_deflate(b"hello")
     blob = _build_zip([_Entry(b"a", data, method=method, plain=b"", usize=0)])
     with archivey.open_archive(io.BytesIO(blob)) as ar:

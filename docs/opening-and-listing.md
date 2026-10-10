@@ -39,8 +39,12 @@ archivey.open_stream("access.log.gz")  # a stream: the decompressed bytes
 ```
 
 `open_archive` works on a plain `.gz` too — you get an archive with exactly one
-member, named after the file. Use `open_stream` when you just want the bytes and
-know there is no tar inside.
+member, named after the file. Use `open_stream` when you just want the decompressed
+bytes. On a `.tar.gz`, `.tar.xz` and the other compressed tars, `open_stream` removes
+the compression only and gives you the tar bytes, as `gzip.open` does, whether it
+detects the format or you pass `format=ArchiveFormat.TAR_GZ`. To read the files inside,
+use `open_archive`. `open_stream` refuses a ZIP, 7z, RAR, ISO or plain
+`.tar`, because there is no compression layer around them to remove.
 
 ## Which options to set
 
@@ -373,6 +377,13 @@ reading where your `encoding=` would have given a different name, a
 differs from Python's `zipfile`
 `metadata_encoding` and from `unzip -O`, which apply the encoding to every ZIP name
 without the flag.
+
+Comments follow the same rule. A ZIP member comment decodes as its name would (the
+UTF-8 flag covers both), and the archive comment, which has no flag, decodes as a name
+without one. A RAR 1.5-4 comment decodes as UTF-8 when it is valid, otherwise with your
+`encoding=`, and otherwise as windows-1252. In both formats a byte the chosen encoding
+does not define becomes a surrogate escape, as in a name, so a comment can raise
+`UnicodeEncodeError` where a name can.
 
 The cost is that a legacy name whose bytes happen to form valid UTF-8 is read as UTF-8.
 For example, the Latin-1 name `Ã©.txt` is stored as the bytes `c3 a9 2e 74 78 74`,

@@ -254,7 +254,7 @@ into datetime fields — archivey does both from the values `ZipInfo` exposes.
 | `compression` | `compress_type` → `CompressionMethod` | — |
 | `is_encrypted` | `flag_bits & 0x1`, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
 | `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
-| `comment` | CDH member comment | The entry stores none, which is the common case |
+| `comment` | CDH member comment. APPNOTE puts it under the name's bit 11, so it decodes as the name would: UTF-8 when flagged; unflagged, the same sniff as an unflagged name (UTF-8 if valid, else `encoding=`, else `zip_unflagged_fallback_encoding`), with no diagnostic; a byte the codec leaves undefined survives as a lone surrogate. `ArchiveInfo.comment` (the end record's, which has no flag) decodes as an unflagged one | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
 | `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members, plus `is_reparse_point` from the attribute bit and `is_junction` when a stored reparse buffer says so (§2.2.1) | — |
 

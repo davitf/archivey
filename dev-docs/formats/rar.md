@@ -230,9 +230,9 @@ header's type into `ENDARC` (RAR5 `5`, RAR3 `0x7b`). A CRC-failed header is take
 the end block only when its type reads as `ENDARC`, its shape is an end block's (RAR5:
 no extra or data area, nothing after the end-of-archive flags; RAR3: no `LONG_BLOCK`
 flag, header at most 20 bytes), and the file ends right after it. A FILE header fails
-the shape, and a MAIN header, which can pass it, has blocks after it. Anything else
-stays `CorruptionError`, including a damaged end block followed by any byte, since RAR
-has no trailing-data rule to allow one. unrar 7.00 is laxer here: with the second FILE
+the shape, and a MAIN header, which can pass it, has blocks after it. Anything else is
+a damaged header (the rule after this one), including a damaged end block followed by any byte,
+since RAR has no trailing-data rule to allow one. unrar 7.00 is laxer here: with the second FILE
 header's type byte flipped to `ENDARC` in either `basic_nonsolid__` fixture, `unrar l`
 lists only `file1.txt` and `unrar t` tests it OK and exits 3, dropping the other five
 members. These checks bound accidental damage, not a crafted file, and that is enough:
@@ -258,12 +258,53 @@ damaged end block the diagnostic above. Unproven, a CRC mismatch reads the same 
 wrong key, so it stays the wrong-password `EncryptionError`: a RAR 1.5-4 `-hp` archive
 whose end block is the first encrypted header (no members), and any RAR5 `-hp` archive
 whose encryption record has no check value. A damaged block whose type byte is itself
-the damaged byte is not recognised as `ENDARC` and stays `CorruptionError`.
+the damaged byte is not recognised as `ENDARC`, so it falls under the damaged-header
+rule below.
 
 *Ordering with a cut.* When the merged listing is also truncated (a later volume cut),
 the reader raises `TruncatedError` before it reaches this diagnostic, as it does for the
 missing-block one. That is deliberate: under a strict policy, emitting first would
 replace the `TruncatedError` with a `DiagnosticRaisedError` about lesser damage.
+
+**A damaged header after MAIN lists the members before it** (DR-2). Any header after
+the main header whose CRC fails, other than one taken as the end block above, ends the
+walk of its volume there: the parser records it in `RarArchive.damaged` (walks catch
+the private `_RarHeaderCrcError`), and the reader lists the members before it and then
+raises `CorruptionError`. This is the path the reader uses for `RarArchive.truncated`,
+with `CorruptionError` in place of `TruncatedError`. TAR does the same for a damaged
+header after its first member. Before this, the walk raised at open and listed nothing.
+Measured on unrar 7.00 with the last byte of the second FILE header flipped in
+`basic_nonsolid__rar4.rar` and `basic_nonsolid__.rar`: `unrar lb` lists `file1.txt`,
+reports "empty_file.txt - the file header is corrupt", lists the other four members,
+and exits 3. archivey stops at the damaged header and does not search for the next one:
+the damaged header's size is not data, and a search would trust bytes no CRC has
+checked yet. A damaged MAIN header still raises at open, since its flags are needed to
+read the rest.
+
+*Fields parsed before the CRC.* RAR 1.5-4 parses a FILE header's fields before the CRC
+check, because they give the bytes the CRC covers, so a parse error in a header whose
+CRC also fails counts as the same damage. With the fields unparsed the true CRC range is
+unknown, so that check uses the whole header, a deliberate approximation: it is exact
+except for a header with old comment subblocks (`FILE_COMMENT`), whose CRC stops before
+them. A bad declared size, and an invalid field under a matching CRC, still fail the
+open.
+
+*Volume sets.* The damaged header's size is not needed to find the next volume: its
+first header is at offset 0 of a separate file. So `needs_next_volume` is whatever the
+member headers before the damage (CRCs intact) said, as for a damaged end block: a
+member whose data continues chains the walk to the next volume, whose members are
+listed, and the `CorruptionError` follows the whole listing and names the first damaged
+volume. This is the missing-middle-volume ruling (DR-2: "read past the gap. list
+everything in all available parts, then raise at the end"), and a damaged end block
+then lists the same set whichever of its bytes was hit; only the report differs. In
+practice such a header is the volume's end block, since a member that continues is the
+volume's last. With no continuing member the set ends at the damaged volume. When the
+next volume is also missing, the reader raises the usual `TruncatedError` and its
+message names the damaged header as well.
+
+*Encrypted headers.* As for a cut and a damaged end block, this needs the header
+password proven. Unproven, a CRC mismatch reads the same as a wrong key, so it stays the
+wrong-password `EncryptionError`.
 
 ### 1.1 Quick Open (QO)
 
@@ -658,17 +699,21 @@ so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`. Comments follow `unrar`: a RA
 is UTF-16LE, read in whole 2-byte units (an odd trailing byte is dropped, as `unrar`
 reads `CmtSize / 2` units) and cut at the first U+0000. Every other RAR 1.5-4 comment
 (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or compressed) is
-8-bit text cut at the first NUL, decoded as strict UTF-8 and then windows-1252, with
-U+FFFD for the five bytes windows-1252 leaves undefined. It is never guessed as
-UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to list as
-CJK. `encoding=` does not apply to comments. A compressed `CMT` SERVICE header is not
-decoded: the parser reads only a stored one, so such an archive lists with no comment
-and no diagnostic. A stored `CMT` is read from the span the walk skips after its
-header, which is its PACK_SIZE whether or not LONG_BLOCK is set, as `unrar` reads it.
-So no byte is read both as comment data and as a later header; a read that could
-overlap the next headers would let a stack of 35-byte `CMT` headers each re-read the
-rest of the archive (DR-9a). A stored `CMT` whose PACK_SIZE runs past the end of the
-file is a `CorruptionError`, with LONG_BLOCK set or clear.
+8-bit text cut at the first NUL, decoded as strict UTF-8, then with the caller's
+`encoding=` when one was passed, then windows-1252. A byte the code page leaves undefined
+(five in windows-1252) survives as a lone surrogate (`surrogateescape`). That is the
+order and the error handler an 8-bit name uses, and the ones a ZIP comment uses, because
+a comment records its code page no more than a name does; only the last fallback differs
+from a name's (`unrar`'s windows-1252 rather than the host's OEM code page). It is never
+guessed as UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to
+list as CJK. A compressed `CMT` SERVICE header is not decoded: the parser reads only a
+stored one, so such an archive lists with no comment and no diagnostic. A stored `CMT` is
+read from the span the walk skips after its header, which is its PACK_SIZE whether or not
+LONG_BLOCK is set, as `unrar` reads it. So no byte is read both as comment data and as a
+later header; a read that could overlap the next headers would let a stack of 35-byte
+`CMT` headers each re-read the rest of the archive (DR-9a). A stored `CMT` whose
+PACK_SIZE runs past the end of the file is a `CorruptionError`, with LONG_BLOCK set or
+clear.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.
