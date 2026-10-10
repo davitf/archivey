@@ -346,8 +346,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   reads normally, and archivey emits `ARCHIVE_EOF_MARKER_MISSING` with
   `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
   is what `unrar t` does: each member tests OK, then it reports one error. A damaged
-  header counts as the end block only if it has an end block's shape and the file ends
-  right after it; any other damaged header lists the members before it and then raises
+  header counts as the end block only if it has an end block's shape and nothing but
+  zeros follows it within 1 MiB (`rar` pads a volume cut at exactly the `-v` size with
+  zeros); any other damaged header lists the members before it and then raises
   `CorruptionError`. The damaged block's next-volume flag is not trusted, so a volume
   set goes on to the next volume only when a member's own header says its data
   continues there. With encrypted headers this needs the password proven, as above;

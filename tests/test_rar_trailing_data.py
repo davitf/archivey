@@ -13,6 +13,7 @@ import shutil
 import struct
 import subprocess
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -212,12 +213,56 @@ def test_zeros_rar_writes_after_a_non_last_volume_are_silent(tmp_path: Path) -> 
     assert _trailing(first, None) == []
 
 
-def test_data_area_an_end_block_declares_is_part_of_the_archive() -> None:
-    # RAR5 end block rewritten with a 4-byte data area (header flags 0x06: data area,
-    # skip if unknown). rar writes none, but every other block ends past its data area.
+def _rar4_end_block_with_data() -> tuple[str, int, bytes]:
+    # RAR 1.5-4 end block with a 4-byte data area (flags 0xC000: long block, skip if
+    # unknown; ADD_SIZE 4). The fixture's own end block is the 7-byte plain one.
+    body = struct.pack("<BHHI", 0x7B, 0xC000, 11, 4)
+    crc = zlib.crc32(body) & 0xFFFF
+    return "basic_nonsolid__rar4.rar", 7, struct.pack("<H", crc) + body
+
+
+def _rar5_end_block_with_data() -> tuple[str, int, bytes]:
+    # RAR5 end block with a 4-byte data area (header flags 0x06: data area, skip if
+    # unknown).
     body = b"\x04\x05\x06\x04\x00"  # header size, ENDARC, flags, data size, end flags
-    end_block = struct.pack("<I", zlib.crc32(body)) + body
-    data = _data("basic_nonsolid__.rar")[:-8] + end_block + b"DATA"
+    return "basic_nonsolid__.rar", 8, struct.pack("<I", zlib.crc32(body)) + body
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(_rar4_end_block_with_data, id="rar4"),
+        pytest.param(_rar5_end_block_with_data, id="rar5"),
+    ],
+)
+def test_data_area_an_end_block_declares_is_part_of_the_archive(
+    build: Callable[[], tuple[str, int, bytes]],
+) -> None:
+    # rar writes none, but every other block ends past its data area.
+    name, old_size, end_block = build()
+    original = _data(name)
+    assert len(original) > old_size
+    data = original[:-old_size] + end_block + b"DATA"
     assert _trailing(io.BytesIO(data), None) == []
     (context,) = _trailing(io.BytesIO(data + b"\x00\x00JUNK"), None)
     assert context.observed_bytes == 2
+
+
+@pytest.mark.parametrize(
+    ("name", "flip"),
+    [
+        pytest.param("basic_nonsolid__rar4.rar", -7, id="rar4"),
+        pytest.param("basic_nonsolid__.rar", -1, id="rar5"),
+    ],
+)
+def test_damaged_end_block_check_stops_at_the_scan_bound(name: str, flip: int) -> None:
+    # The zeros-only test shares the trailing scan's bound: a byte at 1 MiB past the
+    # damaged block is unseen, so the block is taken for the end block and nothing
+    # reports that byte.
+    data = bytearray(_data(name))
+    data[flip] ^= 0x02
+    tail = bytes(MAX_TRAILING_SCAN) + b"JUNK"
+    with open_archive(io.BytesIO(bytes(data) + tail)) as reader:
+        assert reader.members()
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert codes == [DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING]

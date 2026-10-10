@@ -1213,8 +1213,11 @@ The type of a header whose CRC failed is not proof either, since one flipped byt
 make a MAIN or FILE header's type read as `ENDARC`. A CRC-failed header SHALL be taken
 as the end block only when its type reads as `ENDARC`, it has an end block's shape (no
 data area, and a header no larger than an end block's), and nothing but zero bytes
-follows it in the volume (the padding `rar` writes, as for an intact end block). Any other CRC-failed header SHALL be handled as the next requirement says: the
-members before it list, then `CorruptionError`.
+follows it in the volume (the padding `rar` writes, as for an intact end block). That
+check looks at most 1 MiB past the block, the bound of the trailing-data check: a
+non-zero byte at 1 MiB or more past it goes unseen, and the block is then taken for the
+end block with no `ARCHIVE_TRAILING_DATA`. Any other CRC-failed header SHALL be handled
+as the next requirement says: the members before it list, then `CorruptionError`.
 
 The walk SHALL NOT read the flags of a damaged block, so its next-volume flag SHALL NOT
 chain the walk to another volume. In a multi-volume set the walk SHALL continue past
@@ -1239,7 +1242,8 @@ record has no check value.
 | Plain RAR 1.5-4 or RAR5, end block CRC mismatch | Full listing; members read; `ARCHIVE_EOF_MARKER_MISSING` after them; strict refuses |
 | MAIN header whose type byte is flipped to the end block's | `CorruptionError` at open |
 | FILE header whose type byte is flipped to the end block's | Members before it listed; `CorruptionError` after them |
-| Damaged end block followed by a non-zero byte | Members before it listed; `CorruptionError` after them |
+| Damaged end block followed by a non-zero byte within 1 MiB | Members before it listed; `CorruptionError` after them |
+| Damaged end block followed by 1 MiB of zeros, then a non-zero byte | Full listing; `ARCHIVE_EOF_MARKER_MISSING` only (past the scan bound) |
 | Damaged end block followed by zero bytes only (a padded volume) | Full listing; `ARCHIVE_EOF_MARKER_MISSING` after them, as with nothing after it |
 | Damaged last header typed as the end block but with a data area or an oversized header | Members before it listed; `CorruptionError` after them |
 | Damaged end block with its next-volume flag set, no member continues | Set ends at that volume; later volumes not read |

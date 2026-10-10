@@ -580,22 +580,23 @@ class RarArchive:
     #: ``truncated`` already reports the cut, nor for RAR 1.5-4, whose writers
     #: may omit the block.
     end_block_missing_volumes: list[int] = field(default_factory=list)
-    #: 0-based volume index -> byte offset, within that volume, where its
-    #: end-of-archive block starts (its salt or IV first, when headers are
-    #: encrypted), for the volumes whose end block failed its header CRC. A header whose
-    #: CRC failed is taken for the end block only if all three hold: its type reads
-    #: as the end block, it has an end block's shape (no data area, a header no
-    #: larger than an end block's), and nothing but zero padding follows it in the
-    #: volume. One flipped byte cannot make a MAIN or FILE header pass: either the
-    #: shape fails or blocks follow it. Anything else stays a ``CorruptionError``. The block sits
-    #: after the last member, so the walk keeps the members before it and stops
-    #: there; the reader reports the damage as ``ARCHIVE_EOF_MARKER_MISSING`` after
-    #: the members, and a strict policy refuses. The block's flags are not data once
-    #: its CRC fails, so its next-volume flag is not read: ``needs_next_volume`` is
+    #: 0-based volume index -> byte offset, within that volume, where its end-of-archive
+    #: block starts (its salt or IV first, when headers are encrypted), for the volumes
+    #: whose end block failed its header CRC. A header whose CRC failed is taken for the
+    #: end block only if all three hold: its type reads as the end block, it has an end
+    #: block's shape (no data area, a header no larger than an end block's), and nothing
+    #: but zero padding follows it in the volume, as far as the 1 MiB trailing scan
+    #: looks. One flipped byte cannot make a FILE header pass the shape; a MAIN header
+    #: with no extra or data area can, and is then kept out only by the blocks after it
+    #: (see ``dev-docs/formats/rar.md``). Anything else stays a ``CorruptionError``. The
+    #: block sits after the last member, so the walk keeps the members before it and
+    #: stops there; the reader reports the damage as ``ARCHIVE_EOF_MARKER_MISSING``
+    #: after the members, and a strict policy refuses. The block's flags are not data
+    #: once its CRC fails, so its next-volume flag is not read: ``needs_next_volume`` is
     #: then set only by a member header (CRC intact) whose data continues, as for a
-    #: volume with no end block. Both formats. Never set where the header password
-    #: is unproven: there a CRC mismatch reads the same as a wrong key, so the walk
-    #: raises the wrong-password ``EncryptionError`` instead.
+    #: volume with no end block. Both formats. Never set where the header password is
+    #: unproven: there a CRC mismatch reads the same as a wrong key, so the walk raises
+    #: the wrong-password ``EncryptionError`` instead.
     end_block_damaged_volumes: dict[int, int] = field(default_factory=dict)
     #: 0-based volume index -> offset, counted from the end of that volume's
     #: end-of-archive block, of the first non-zero byte within
@@ -1056,8 +1057,8 @@ def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
 def _only_zeros_after(source: BinaryIO, pos: int) -> bool:
     """Whether nothing but zero padding follows ``pos``; the read position is kept.
 
-    The same test an intact end block's tail gets, so a damaged end block on a volume
-    ``rar`` padded with zeros is still recognised as one.
+    The same test an intact end block's tail gets, with the same 1 MiB bound, so a
+    damaged end block on a volume ``rar`` padded with zeros is still recognised as one.
     """
     here = source.tell()
     try:
@@ -2145,8 +2146,8 @@ def _parse_rar3(
         if block_type == _RAR3_ENDARC:
             # The type was read from the same unverified bytes, so a MAIN or FILE
             # header with one flipped byte reads as ENDARC too. Only a header shaped
-            # as an end block, with nothing but zeros after it, is one. Damage after the last
-            # member keeps the listing, and the flags, the next-volume flag among
+            # as an end block, with nothing but zeros after it, is one. Damage after
+            # the last member keeps the listing, and the flags, the next-volume flag among
             # them, are not read. unrar lists such an archive and tests every member
             # OK, then reports one error. An unproven key still reads as a wrong
             # password, through _check_rar3_crc.
@@ -2181,7 +2182,9 @@ def _parse_rar3(
                 raise UnsupportedFeatureError(
                     "Need first volume of multi-volume RAR archive"
                 )
-            trailing_at = _scan_after_end_block(source, data_offset + add_size)
+            trailing_at = _scan_after_end_block(
+                source, _packed_span_end(data_offset, add_size)
+            )
             break
 
         if block_type in (_RAR3_FILE, _RAR3_SUB):
@@ -3071,7 +3074,9 @@ def _parse_rar5(
             endarc_flags, _ = load_vint(hdata, pos)
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             end_block_seen = True
-            trailing_at = _scan_after_end_block(source, data_offset + add_size)
+            trailing_at = _scan_after_end_block(
+                source, _packed_span_end(data_offset, add_size)
+            )
             break
 
         if block_type in (_RAR5_FILE, _RAR5_SERVICE):

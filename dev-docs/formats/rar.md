@@ -229,15 +229,17 @@ whose CRC failed, so it is not proof on its own: one flipped byte turns a MAIN o
 header's type into `ENDARC` (RAR5 `5`, RAR3 `0x7b`). A CRC-failed header is taken as
 the end block only when its type reads as `ENDARC`, its shape is an end block's (RAR5:
 no extra or data area, nothing after the end-of-archive flags; RAR3: no `LONG_BLOCK`
-flag, header at most 20 bytes), and nothing but zero bytes follows it. A FILE header
-fails the shape, and a MAIN header, which can pass it, has blocks after it. Anything
-else is a damaged header (the rule after this one), including a damaged end block
-followed by a non-zero byte. Zeros count as nothing because `rar` pads a volume with
-them (§2.2, trailing data), so the same damage gives the same outcome on a padded and
-an unpadded volume. That widens the spoof window by one shape: a CRC-failed FILE header
-whose type byte reads `ENDARC`, shaped as an end block and followed by zeros only, is
-taken for a damaged end block. The listed prefix is the same either way; only the
-warning-against-error outcome differs. unrar 7.00 is laxer here: with the second FILE
+flag, header at most 20 bytes), and nothing but zero bytes follows it, as far as the
+trailing-data scan's 1 MiB looks; a non-zero byte past that is unseen, as after an
+intact block. A FILE header fails the shape. A MAIN header with no extra and no data
+area passes it and is kept out only by the blocks after it, so a damaged one at the end
+of the file lists as an empty archive with `ARCHIVE_EOF_MARKER_MISSING`; `rar` 7.00's
+MAIN headers carry a locator record, which fails the shape. Anything else is a damaged
+header (the rule after this one), including a damaged end block followed by a non-zero
+byte. Zeros count as nothing because `rar` pads a volume with them (§2.2, trailing
+data), so the same damage gives the same outcome on a padded and an unpadded volume.
+What that adds to the window is the tail, not a shape: the damaged MAIN case above now
+also holds when only zeros follow it. unrar 7.00 is laxer here: with the second FILE
 header's type byte flipped to `ENDARC` in either `basic_nonsolid__` fixture, `unrar l`
 lists only `file1.txt` and `unrar t` tests it OK and exits 3, dropping the other five
 members. These checks bound accidental damage, not a crafted file, and that is enough:
@@ -271,13 +273,16 @@ data area it declares, as for every other block, and past its AES padding under 
 as the walk's `data_offset` is a ciphertext offset) and keeps the first non-zero byte's
 offset in `RarArchive.trailing_data_volumes`. The reader reports each volume's as
 `ARCHIVE_TRAILING_DATA` (`expected_marker="zeros_to_eof"`) after the members, DR-3.
-Zeros pass. `unrar t` 7.00 exits 0 on such a file; 7-Zip warns, for zeros too. Measured on the committed `rar` 7.00 sets (`tests/fixtures/rar/README.md`): a volume
-that comes out at exactly the `-v` size is padded with zeros up to it, and one that
-overshoots carries none. `tinyvol_hp.part1-3` (`-v900b -hp`, 900 bytes) has 142 zero
-bytes after its end block and `tinyvol_cut.part1-3` (`-v1500b`, 1 500 bytes) has 77;
-`tinyvol`, `tinyvol_m3` and `tinyvol_cut_solid` overshoot (917, 917, 923 bytes) and have
-none. So the zero rule is what keeps an untouched padded set clean. The 9 zero bytes at
-the end of `tinyvol_rnn.rar` (RAR 1.5-4) are inside its end block, not after it. Tests:
+Zeros pass. An end block declaring a data area past the seekable range is
+`CorruptionError`, as a FILE header's is. `unrar t` 7.00 exits 0 on such a file; 7-Zip
+warns, for zeros too. Measured on the committed `rar` 7.00 sets
+(`tests/fixtures/rar/README.md`): a volume that comes out at exactly the `-v` size is
+padded with zeros up to it, and one that overshoots carries none. `tinyvol_hp.part1-3`
+(`-v900b -hp`, 900 bytes) has 142 zero bytes after its end block and
+`tinyvol_cut.part1-3` (`-v1500b`, 1 500 bytes) has 77; `tinyvol`, `tinyvol_m3` and
+`tinyvol_cut_solid` overshoot (917, 917, 923 bytes) and have none. So the zero rule is
+what keeps an untouched padded set clean. The 9 zero bytes at the end of
+`tinyvol_rnn.rar` (RAR 1.5-4) are inside its end block, not after it. Tests:
 `tests/test_rar_trailing_data.py`.
 
 *Ordering with a cut.* When the merged listing is also truncated (a later volume cut),
