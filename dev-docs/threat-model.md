@@ -454,7 +454,7 @@ the source really has.
 sizes come straight from the archive. Measured without a bound: a 10 KB tar asked for
 6 GiB, and a 51 KB ISO asked for 4 GiB, both dying on a bare `MemoryError`. So both
 libraries read through archivey's source (`internal/source.py` `ArchiveSource`) or
-decompressor (`tar_reader.py` `_EofProbeStream`), and both apply
+decompressor (`tar_reader.py` `_BoundedTarFileobj`), and both apply
 `streams/streamtools/binaryio.py` `read_within_reach`: where the remaining length is a
 fact (a path's `stat`, a `BytesIO` buffer, a regular file's `fstat`) the read is clamped
 to it; otherwise it is served in bounded steps, so the peak tracks the bytes that exist.
@@ -476,6 +476,14 @@ continuation areas `pycdlib` builds from those reads is the listing budget's
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
 40 MiB member arrives as one 40 MiB request.
 
+The xz footer's backward size is a third case, in archivey's own code: only the 12-byte
+footer has to be valid for it to be believed, and it can claim an index as large as the
+file. `xz_decoder.py` `_XzIndexSource` reads an index declared at most
+`_INDEX_READ_CHUNK` (1 MiB) long once, and re-reads a larger one from the file a chunk at
+a time for the CRC-32 check and for each record walk, so the peak is one chunk. Reading
+it whole cost about twice the file: a 128 MiB sparse file grew peak RSS by 244 MiB at
+open.
+
 **Tests.** `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`;
 `tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
 `::test_a_path_source_refuses_the_same_image`,
@@ -483,7 +491,9 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 `tests/test_iso_metadata_bounds.py`:
 `::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
 `::test_a_chained_continuation_area_past_its_block_is_refused_before_the_read`,
-`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`.
+`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`;
+`tests/test_seekable_streams.py::test_xz_index_scan_reads_a_huge_declared_index_in_chunks`,
+`::test_xz_open_archive_with_a_huge_declared_index_stays_small`.
 
 #### Decoder memory
 
@@ -849,7 +859,9 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
-  later overruns or trailing bytes found by a bounded block-chain walk. It decodes the
+  later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
+  to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
+  which rejects data that only declares a long uncompressed run. It decodes the
   whole 4 KiB prefix (256 bytes let 7 of 800 Perl modules through; 4,096 let none),
   and re-checks a hit against the whole source up to `completion_window_bytes` (64 KiB
   under `BALANCED`, off under `FAST`). Probe-only confidence is `GUESS` for the
