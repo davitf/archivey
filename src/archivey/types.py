@@ -688,10 +688,11 @@ class ArchiveMember:
 
     - An ISO Rock Ridge name that is not UTF-8 and takes its Joliet name keeps the
       Rock Ridge bytes here.
-    - A gzip file's member is named after the archive file; ``raw_name`` holds the
-      original file name from the gzip header (``FNAME``), also in
-      ``extra["gzip.original_filename"]``.
-    - A 7z member stored with no name is named after the archive file, and
+    - A gzip file's member is named after the archive source (``"data"`` when the
+      source has no file name); ``raw_name`` holds the original file name from the
+      gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those
+      bytes decoded as Latin-1.
+    - A 7z member stored with no name is named after the archive source, and
       ``raw_name`` is ``b""``.
     - A RAR5 file-version-history member gets a ``;n`` suffix in ``name`` (as
       WinRAR and ``unrar`` show it); ``raw_name`` is the stored name without it."""
