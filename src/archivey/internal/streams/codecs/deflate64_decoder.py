@@ -12,6 +12,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    truncated_message,
 )
 
 
@@ -122,7 +123,7 @@ class Deflate64Decoder(BaseDecoder):
             # Deflate64Decompressor).
             out += self._decomp.inflate(b"")
         if not self.finished:
-            self._pending_error = TruncatedError("File is truncated")
+            self._pending_error = TruncatedError(truncated_message("deflate64"))
         return DecodeOut(out)
 
     @property

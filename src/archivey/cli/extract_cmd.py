@@ -38,7 +38,7 @@ from archivey.exceptions import ArchiveyError
 # Two naming rules the CLI must apply exactly as extraction does; the ``cli`` spec's
 # public-API requirement records the exception.
 from archivey.internal.filters import is_rooted, numbered_name
-from archivey.reader import ArchiveReader
+from archivey.reader import ForwardArchiveReader
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -140,7 +140,7 @@ class _SmartDestPlan:
 
 
 def resolve_smart_dest(
-    reader: ArchiveReader,
+    reader: ForwardArchiveReader,
     archive: Path,
     *,
     pred: Callable[[ArchiveMember], bool] | None,
@@ -149,8 +149,9 @@ def resolve_smart_dest(
 
     - Single-file / raw-stream → cwd.
     - Indexed archive → tops on the **filtered** member set (wrap / cwd).
-    - No cheap index (tar, future stdin, …) → always a new ``./<stem>/``, then
-      :func:`maybe_hoist_single_root` may lift a single extracted top entry to cwd.
+    - No cheap index (tar, an archive read from a pipe, …) → always a new
+      ``./<stem>/``, then :func:`maybe_hoist_single_root` may lift a single
+      extracted top entry to cwd.
     """
     fmt = reader.format
     if fmt.container == ContainerFormat.RAW_STREAM:

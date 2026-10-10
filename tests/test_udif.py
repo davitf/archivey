@@ -18,6 +18,7 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
     StreamCapability,
     UnsupportedFeatureError,
     detect_format,
@@ -33,6 +34,8 @@ from tests.streams_util import NonSeekableBytesIO
 # 7-Zip's ``IsKoly``: "koly", version 4, header size 512, all big-endian.
 _KOLY = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
 _TRAILER = 512
+# zlib has no magic, so a nameless pipe reaches it only with every content probe on.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 def _udif(payload: bytes) -> bytes:
@@ -150,7 +153,9 @@ def test_a_non_seekable_source_cannot_see_the_trailer() -> None:
     payload = b"piped"
     compressed = zlib.compress(payload)
     blob = _udif(compressed + b"\x00" * 40_000)
-    with open_archive(NonSeekableBytesIO(blob), streaming=True) as reader:
+    with open_archive(
+        NonSeekableBytesIO(blob), streaming=True, config=_ALWAYS_PROBE
+    ) as reader:
         assert reader.format == ArchiveFormat.ZLIB
         for _member, stream in reader.stream_members():
             assert stream is not None

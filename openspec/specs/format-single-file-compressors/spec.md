@@ -36,7 +36,7 @@ The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.br`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, or `.Z` (case-insensitive) | Strip exactly that recognized compression extension |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` |
 | Has a filename but no recognized compressor extension | Append `.uncompressed`; do not strip arbitrary extensions |
 | Anonymous stream | `data` |
@@ -400,3 +400,4 @@ split carries the general rule).
 | zstd frame compressed with a dictionary | `UnsupportedFeatureError` |
 | `.Z` with maximum code width 17 or 31 | `UnsupportedFeatureError` |
 | gzip header CRC mismatch | `CorruptionError` |
+| zlib stream whose CM is 7 (zlib: "unknown compression method") | `CorruptionError` |
