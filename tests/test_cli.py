@@ -22,6 +22,7 @@ from archivey import (
 from archivey.cli import test_cmd
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import _report_extraction
+from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, main
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError
@@ -465,8 +466,8 @@ def test_info_on_a_fifo_reports_the_open_error_without_reopening(
 ) -> None:
     """A failed open on a FIFO must not run ``detect_format`` on the path again.
 
-    The open already drained the pipe, so a second open waits for a writer that never
-    comes. ``info`` must print the open error and return.
+    A pipe is read once, so a second open waits for a writer that never comes.
+    ``info`` must print the open error and return.
     """
     import threading
 
@@ -493,6 +494,30 @@ def test_info_on_a_fifo_reports_the_open_error_without_reopening(
     assert result == [EXIT_FAIL]
     captured = capsys.readouterr()
     assert "open:" in captured.err
+    # The detected format is named plainly, not as an enum repr.
+    assert "ArchiveFormat." not in captured.err
+
+
+def test_can_reread_skips_only_read_once_paths(tmp_path: Path) -> None:
+    """The fallback detection runs on anything but a FIFO, char device or socket.
+
+    A block device rereads the same bytes, so it stays eligible; the case needs root and
+    is not in the suite, so the predicate is pinned directly here.
+    """
+    regular = tmp_path / "a.zip"
+    regular.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    assert _can_reread(str(regular))
+    assert _can_reread(str(tmp_path))
+    assert not _can_reread(str(tmp_path / "missing"))
+    if os.path.exists(os.devnull) and stat.S_ISCHR(os.stat(os.devnull).st_mode):
+        assert not _can_reread(os.devnull)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_can_reread_rejects_a_fifo(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    assert not _can_reread(str(fifo))
 
 
 def test_info_on_a_directory_reports_the_directory_format(

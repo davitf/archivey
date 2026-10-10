@@ -603,7 +603,7 @@ def _open_resolved(
         # a second refusal explaining the retry could never have worked.
         if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
             raise StreamNotSeekableError(
-                f"Format {resolved_format!r} cannot be read from a non-seekable source "
+                f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
                 f"in either access mode (its index/metadata is not at the front of "
                 f"the stream). Buffer it to disk or a BytesIO and reopen.",
                 source_format=resolved_format,
@@ -613,7 +613,7 @@ def _open_resolved(
             raise StreamNotSeekableError(
                 f"Random access (streaming=False) requires a seekable source. Open with "
                 f"streaming=True for a single forward pass over this "
-                f"{resolved_format!r} stream, "
+                f"{resolved_format.display_name} stream, "
                 f"or buffer it to disk or a BytesIO and reopen.",
                 source_format=resolved_format,
                 archive_name=archive_name,

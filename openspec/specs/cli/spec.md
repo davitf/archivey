@@ -278,10 +278,10 @@ also print the raw cost axes (`listing`, `access_cost`, `stream`,
 
 `info` SHALL detect once: the identity lines come from the reader's
 `format_info`, not from a separate `detect_format` call before the open. Only
-when the open fails does it call `detect_format`, to print what it can, and only
-when the path is a regular file or a directory. Detection opens the path again,
-and a FIFO or device has already been drained by the failed open, so on those
-`info` prints the open error alone instead of waiting for more input.
+when the open fails does it call `detect_format`, to print what it can, and not
+when the path is a pipe, a character device or a socket. Detection opens the path
+again, and those are read once, so a second open gets different bytes or waits for
+a writer that never comes; on those `info` prints the open error alone.
 
 #### Scenario: info vs list
 
