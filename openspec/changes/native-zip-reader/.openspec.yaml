@@ -1,0 +1,7 @@
+schema: library
+created: 2026-10-10
+
+# The design and the stage plan. Each stage PR edits the format-zip spec (and the
+# handbook page) directly for the behaviour it changes, as the ZIP fix PRs do, so this
+# change carries no spec delta of its own.
+skip_specs: true
