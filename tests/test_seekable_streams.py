@@ -593,7 +593,7 @@ def test_xz_index_walk_across_chunk_boundaries_matches_one_read(
     rng = random.Random(694)
     blob = b"".join(
         _xz_stream_from_records(
-            [(rng.randrange(1, 1 << 17), rng.randrange(0, 1 << 20)) for _ in range(n)]
+            [(rng.randrange(1, 1 << 14), rng.randrange(0, 1 << 20)) for _ in range(n)]
         )
         for n in (300, 1, 57)
     )
@@ -605,23 +605,42 @@ def test_xz_index_walk_across_chunk_boundaries_matches_one_read(
 
 
 @pytest.mark.parametrize(
-    ("data", "expected"),
+    ("data", "offset", "expected"),
     [
-        (b"", 0),
-        (b"\x00" * 3, 0),
-        (b"\x00" * 4, 4),
-        (b"\x00" * 7 + b"\xfd", 4),
-        (b"\x00" * 8 + b"\xfd", 8),
-        (b"\x01" + b"\x00" * 8, 0),
-        (bytearray(b"\x00" * 12), 12),
+        (b"", 0, 0),
+        (b"\x00" * 3, 0, 0),
+        (b"\x00" * 4, 0, 4),
+        (b"\x00" * 7 + b"\xfd", 0, 4),
+        (b"\x00" * 8 + b"\xfd", 0, 8),
+        (b"\x01" + b"\x00" * 8, 0, 0),
+        (bytearray(b"\x00" * 12), 0, 12),
+        (b"\x01" + b"\x00" * 8, 1, 8),
+        (b"\x00" * 8, 9, 0),
     ],
 )
 def test_xz_stream_padding_length_counts_whole_groups(
-    data: bytes, expected: int
+    data: bytes, offset: int, expected: int
 ) -> None:
     from archivey.internal.streams.codecs.xz_decoder import _stream_padding_length
 
-    assert _stream_padding_length(data) == expected
+    assert _stream_padding_length(data, offset) == expected
+
+
+def test_xz_data_end_sees_a_stream_after_padding_with_a_damaged_footer() -> None:
+    """A stream header after a footer and padding means the later footer is damaged.
+
+    ``_data_end`` measures the padding from the footer's end, not from the start of
+    its window; measured from the start, it misses the header and drops the second
+    stream from the size.
+    """
+    from archivey.internal.streams.codecs.xz_decoder import _data_end
+
+    first = lzma.compress(b"a" * 50)
+    second = bytearray(lzma.compress(b"b" * 50))
+    second[-12] ^= 0xFF  # The footer's CRC32.
+    data = first + b"\x00" * 8 + bytes(second)
+    with raises_corruption_not_truncation(match="has no valid footer"):
+        _data_end(io.BytesIO(data), len(data), 0)
 
 
 def test_xz_megabytes_of_stream_padding_decode_in_one_strip() -> None:

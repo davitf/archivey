@@ -183,11 +183,12 @@ def _walk_xz_index(data: Iterator[int], length: int) -> Iterator[tuple[int, int]
     """Yield one stream's ``(unpadded_size, uncompressed_size)`` records, validating.
 
     ``data`` gives the index bytes (without its CRC32) one at a time and ``length`` is
-    how many there are; a ``data`` that ends early is a truncated index. This is so the backward scan can feed an index from the file in bounded
-    chunks (:class:`_XzIndexSource`) instead of holding it whole. A record can be as small
-    as two bytes, so callers that may meet millions walk the records rather than store
-    them. The length and padding checks run after the last record, so a caller must
-    exhaust the iterator for the index to count as valid.
+    how many there are, so the backward scan can feed an index from the file in bounded
+    chunks (:class:`_XzIndexSource`) instead of holding it whole. A ``data`` that ends
+    early is a truncated index. A record can be as small as two bytes, so callers that
+    may meet millions walk the records rather than store them. The length and padding
+    checks run after the last record, so a caller must exhaust the iterator for the
+    index to count as valid.
     """
     indicator = next(data, None)
     if indicator != 0x00:
@@ -260,16 +261,18 @@ class _XzIndexSource:
         self._start = start
         self.length = size_with_crc - 4
         self._held: bytes | None = None
+        self._held_crc = b""
         if self.length <= _INDEX_READ_CHUNK:
             stream.seek(start)
             data = stream.read(size_with_crc)
             if len(data) < size_with_crc:
                 raise CorruptionError("XZ index truncated")
-            self._held = data
+            self._held = data[: self.length]
+            self._held_crc = data[self.length :]
 
-    def _chunks(self) -> Iterator[bytes | memoryview]:
+    def _chunks(self) -> Iterator[bytes]:
         if self._held is not None:
-            return iter((memoryview(self._held)[: self.length],))
+            return iter((self._held,))
         return _index_chunks(self._stream, self._start, self.length)
 
     def check_crc(self) -> None:
@@ -278,7 +281,7 @@ class _XzIndexSource:
         for chunk in self._chunks():
             computed = zlib.crc32(chunk, computed)
         if self._held is not None:
-            stored_bytes = self._held[self.length :]
+            stored_bytes = self._held_crc
         else:
             self._stream.seek(self._start + self.length)
             stored_bytes = self._stream.read(4)
@@ -293,6 +296,8 @@ class _XzIndexSource:
 
     def records(self) -> Iterator[tuple[int, int]]:
         """:func:`_walk_xz_index` over the index; each call walks it from the start."""
+        if self._held is not None:
+            return _walk_xz_index(iter(self._held), self.length)
         return _walk_xz_index(
             itertools.chain.from_iterable(self._chunks()), self.length
         )

@@ -473,6 +473,9 @@ it against `max_metadata_bytes` too). This bounds one read; how many records and
 continuation areas `pycdlib` builds from those reads is the listing budget's
 ([Listing](#listing)).
 
+A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
+40 MiB member arrives as one 40 MiB request.
+
 The xz footer's backward size is a third case, in archivey's own code: only the 12-byte
 footer has to be valid for it to be believed, and it can claim an index as large as the
 file. `xz_decoder.py` `_XzIndexSource` reads an index declared at most
@@ -480,9 +483,6 @@ file. `xz_decoder.py` `_XzIndexSource` reads an index declared at most
 a time for the CRC-32 check and for each record walk, so the peak is one chunk. Reading
 it whole cost about twice the file: a 128 MiB sparse file grew peak RSS by 244 MiB at
 open.
-
-A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
-40 MiB member arrives as one 40 MiB request.
 
 **Tests.** `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`;
 `tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
