@@ -446,7 +446,7 @@ the source really has.
 sizes come straight from the archive. Measured without a bound: a 10 KB tar asked for
 6 GiB, and a 51 KB ISO asked for 4 GiB, both dying on a bare `MemoryError`. So both
 libraries read through archivey's source (`internal/source.py` `ArchiveSource`) or
-decompressor (`tar_reader.py` `_EofProbeStream`), and both apply
+decompressor (`tar_reader.py` `_BoundedTarFileobj`), and both apply
 `streams/streamtools/binaryio.py` `read_within_reach`: where the remaining length is a
 fact (a path's `stat`, a `BytesIO` buffer, a regular file's `fstat`) the read is clamped
 to it; otherwise it is served in bounded steps, so the peak tracks the bytes that exist.

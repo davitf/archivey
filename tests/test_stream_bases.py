@@ -470,7 +470,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.lzma_codec._RefusedAloneStream,
         # Sits under tarfile, which hands out member data through its own
         # ExFileObject: nothing above it can ask it for a resume offset.
-        tar_reader._EofProbeStream,
+        tar_reader._BoundedTarFileobj,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
     }
