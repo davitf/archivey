@@ -110,7 +110,8 @@ class FramedDecoder(BaseDecoder):
         self._fed = False
         # Past a stream's end, looking for the next one.
         self._between = False
-        # Past a stream's end, zeros have been skipped (``padding_ends_data``).
+        # Past a stream's end, zeros have been skipped. Read only with
+        # ``padding_ends_data``, where it is sticky: no stream follows zeros there.
         self._padded = False
         # Input not yet handed on: kept when an output budget ran out, or a prefix of
         # the next stream's magic waiting for its remaining bytes (``_need_more``).
@@ -148,7 +149,6 @@ class FramedDecoder(BaseDecoder):
         if state:
             self._decomp = self._new()
             self._between = False
-            self._padded = False
             return rest
         self._past_end(rest)
         self._done = True

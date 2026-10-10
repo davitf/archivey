@@ -89,9 +89,9 @@ class GzipDecoder(BaseDecoder):
     reports.
 
     Python's ``gzip`` differs on two of these: ``GzipFile`` raises on junk, and it
-    skips NULs before a further member and reads that member. GNU ``gzip``, 7-Zip and
-    rapidgzip stop at the NULs (``dev-docs/formats/gzip.md`` §6 says why archivey
-    follows them).
+    skips NULs before a further member and reads that member. GNU ``gzip`` and 7-Zip
+    stop at the NULs, and rapidgzip raises there ("Invalid gzip/zlib wrapper");
+    ``dev-docs/formats/gzip.md`` §6 says why archivey follows them.
 
     Cross-``feed`` NUL runs and a lone trailing ``1f`` are retained until the next
     byte (or ``flush``) resolves them.

@@ -596,6 +596,12 @@ _BZ2_MODES = [
     pytest.param(AcceleratorMode.ON, id="accelerator", marks=requires("rapidgzip")),
     pytest.param(AcceleratorMode.OFF, id="stdlib"),
 ]
+# Every accelerator mode, for a result that must not depend on it (DR-5).
+_ACCELERATOR_MODES = [
+    pytest.param(AcceleratorMode.OFF, id="off"),
+    pytest.param(AcceleratorMode.AUTO, id="auto"),
+    pytest.param(AcceleratorMode.ON, id="on", marks=requires("rapidgzip")),
+]
 
 
 def _tar_of(payload: bytes) -> bytes:
@@ -745,7 +751,7 @@ def test_a_damaged_stream_after_the_last_raises_in_both_modes(
             reader.read(reader.members()[0])
 
 
-@pytest.mark.parametrize("mode", _BZ2_MODES)
+@pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
 @pytest.mark.parametrize(
     ("between", "reported_at"),
     [
@@ -763,7 +769,7 @@ def test_a_damaged_stream_after_the_last_raises_in_both_modes(
         ),
     ],
 )
-def test_what_follows_zero_padding_is_trailing_data_in_both_modes(
+def test_what_follows_zero_padding_is_trailing_data_in_every_mode(
     tmp_path: Path, mode: AcceleratorMode, between: bytes, reported_at: int
 ) -> None:
     compressed = bz2.compress(_PAYLOAD)
@@ -783,20 +789,15 @@ _NUL_CODECS = [
     pytest.param(".bz2", bz2.compress, id="bz2"),
     pytest.param(".gz", gzip.compress, id="gz"),
 ]
-_ACCELERATOR_MODES = [
-    pytest.param(AcceleratorMode.OFF, id="off"),
-    pytest.param(AcceleratorMode.AUTO, id="auto"),
-    pytest.param(AcceleratorMode.ON, id="on", marks=requires("rapidgzip")),
-]
 
 
 def _accelerator_config(
     mode: AcceleratorMode, policy: DiagnosticPolicy | None = None
 ) -> ArchiveyConfig:
-    if policy is None:
-        return ArchiveyConfig(use_indexed_bzip2=mode, use_rapidgzip=mode)
     return ArchiveyConfig(
-        use_indexed_bzip2=mode, use_rapidgzip=mode, diagnostic_policy=policy
+        use_indexed_bzip2=mode,
+        use_rapidgzip=mode,
+        diagnostic_policy=policy or DiagnosticPolicy(),
     )
 
 

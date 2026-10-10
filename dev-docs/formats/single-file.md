@@ -72,11 +72,11 @@ luck by `.Z` ([`unix-compress.md`](unix-compress.md)).
 **Most of them allow concatenation.** gzip members, bzip2 streams, xz streams (with zero
 padding between them), lzip members, zstd frames and LZ4 frames can each follow one
 another in one file, and the file's content is all of them joined. archivey reads every
-codec's concatenation as one payload. For gzip and bzip2 that means segments with
-nothing between them: zero bytes there end the data, as in GNU `gzip`, `bzip2` and
-7-Zip ([`gzip.md`](gzip.md) §6, [`bzip2.md`](bzip2.md) §6). The consequence is that a trailer describes its own
-segment, not the file: gzip's ISIZE is the last member's size, which is why archivey
-never reports it as the file's size.
+codec's concatenation as one payload. For gzip and bzip2 that means segments with nothing
+between them: zero bytes there end the data, as in GNU `gzip`, `bzip2` and 7-Zip
+([`gzip.md`](gzip.md) §6, [`bzip2.md`](bzip2.md) §6). The consequence is that a trailer
+describes its own segment, not the file: gzip's ISIZE is the last member's size, which is
+why archivey never reports it as the file's size.
 
 **Decoding runs forward, and random access needs points to resume from.** A decoder
 reaches offset N by decoding everything before it, unless the stream has places where

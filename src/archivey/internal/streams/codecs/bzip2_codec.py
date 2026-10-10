@@ -132,10 +132,11 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     end, falls back there: the error arrives at the seek, as it would at a read.
 
     The decoder also skips what it cannot read between blocks. It finds blocks by their
-    magic, so junk before the first stream, a stream whose header is damaged, or one
-    whose block and end-of-stream magics are both damaged is passed over with no error,
-    and the output goes on with the next block it recognises: measured on rapidgzip
-    0.16, ``BZh9`` and forty zero bytes before a stream read as that stream, and three
+    magic, so junk between a stream header at the start of the file and the first
+    block, a stream whose header is damaged, or one whose block and end-of-stream
+    magics are both damaged is passed over with no error, and the output goes on with
+    the next block it recognises: measured on rapidgzip 0.16, ``BZh9`` and forty zero
+    bytes before a stream read as that stream, and three
     streams with two bytes flipped in the second read as the first and the third. The
     combined CRC check below does not see it, since nothing of the skipped region is in
     the index. Before a read returns, :class:`_Bzip2Layout` checks the index built so
@@ -327,10 +328,11 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         skips such bytes. Report it, or, when a stream header starts there with no zero
         bytes before it, hand the read to the standard library.
 
-        rapidgzip's bzip2 decoder stops at them with a warning on stderr and no error.
-        After the last read its compressed position is the end of the last stream that
-        produced data (see ``compressed_position``), so empty streams after that one are
-        not counted in it. The bytes from there to the end of the source are read (a
+        rapidgzip's bzip2 decoder reads empty streams after the last stream with data,
+        but does not count them in its compressed position: after the last read, that
+        position is the end of the last stream that produced data (see
+        ``compressed_position``). It stops at zero bytes and at junk, with a warning on
+        stderr and no exception. The bytes from there to the end of the source are read (a
         fresh view, so the decoder's cursor does not move) by
         :meth:`_first_trailing_byte`, which accepts what the standard-library path
         accepts. Where a stream header follows with no zeros before it, the standard
@@ -496,9 +498,12 @@ class _Bzip2Layout:
     are not checked here (the combined CRC covers them); what is checked is where each
     stream starts. The first starts at offset 0. Each later one starts where the end of
     the one before it is rounded up to a byte, after any empty streams, which the
-    standard library also accepts there. A zero byte there is not accepted: the
-    standard library ends the data at it. A stream starts with its four-byte
-    header, and its first block follows the header.
+    standard library also accepts there. A zero byte there is not accepted, because
+    the standard library ends the data at it. That rejection is a guard: rapidgzip 0.16
+    has not been seen to index a block after a zero byte. After a stream it stops at
+    the zeros, and a file that starts with zeros fails its header check, which hands
+    the read to the standard library (``dev-docs/formats/bzip2.md`` §2.3). A stream
+    starts with its four-byte header, and its first block follows the header.
 
     :meth:`first_gap` is called with the index as it grows; entries already walked are
     not read again. rapidgzip lists the index in ascending bit order and only appends to

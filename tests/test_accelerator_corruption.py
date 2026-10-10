@@ -941,6 +941,12 @@ def _bz2_without_markers(fill: bytes) -> bytes:
 
 _BZ2_LAYOUT_CASES = {
     "junk-before-the-first-stream": b"BZh9" + bytes(40) + _bz2_stream(b"A"),
+    # Zero bytes before the first stream, or after an empty one, end the data with the
+    # accelerator off. rapidgzip 0.16 fails its header check on the first and stops at
+    # the zeros on the second, so the layout walk's zero rejection is not what decides
+    # either; these pin the result, whichever path gives it.
+    "zeros-before-the-first-stream": bytes(40) + _bz2_stream(b"A"),
+    "empty-stream-then-zeros-then-stream": _BZ2_EMPTY + bytes(4) + _bz2_stream(b"A"),
     "junk-stream-between-streams": _bz2_stream(b"A")
     + b"BZh9"
     + bytes(40)
@@ -1045,12 +1051,14 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
     # as SEEK_SET.
     [(0, io.SEEK_END), (1500, io.SEEK_SET), (2500, io.SEEK_SET), (1500, io.SEEK_CUR)],
 )
-def test_bzip2_accelerator_seeks_past_padding_as_off(
+def test_bzip2_accelerator_seek_to_its_end_reports_what_follows_padding(
     tail: Callable[[bytes], bytes], target: int, whence: int
 ) -> None:
-    # Both engines end the data at zero padding, whatever follows it: a seek that
-    # reaches the decoder's end runs the end check, which reports what follows the
-    # padding as trailing data rather than handing it to the standard library.
+    # Both engines end the data at zero padding, whatever follows it: a valid stream, a
+    # cut one or a bare header. A seek that reaches the decoder's end runs the end
+    # check, which reports what follows the padding as trailing data. It does not hand
+    # the end to the standard library, as it does for a stream header right after the
+    # data with no zeros before it. The 1500 and 2500 targets land past the end.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     # Every offset of the second stream holds a different byte from its neighbours, so
     # a read from the wrong place does not pass.

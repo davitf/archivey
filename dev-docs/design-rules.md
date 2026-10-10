@@ -935,6 +935,12 @@ Questions no rule here settles yet.
 
 - **The official tool for ZIP and ISO.** DR-6 names none. Asked on 2026-10-02 and not
   answered.
+- **Zero bytes between zstd, LZ4 and LZMA Alone streams.** A bare `.bz2` or `.gz` stops
+  at zero bytes between streams (DR-6 rulings, 2026-10-10). zstd, LZ4 and LZMA Alone
+  still read a stream after zero bytes, because that ruling named only bzip2 and gzip.
+  Whether they should follow it is open: `lz4 -dc` refuses three zero bytes after a
+  legacy stream, where archivey reads them clean
+  ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §3). Asked on 2026-10-10.
 - **The stricter `DecoderLimits` preset.** The numbers are chosen (256 MiB, 2**24); the
   name, and whether it should be a mode rather than numbers, are open.
 
