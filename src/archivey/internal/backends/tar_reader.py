@@ -416,9 +416,12 @@ def _raised_by_tarfile(exc: BaseException) -> bool:
     ``ArchiveStream._raise_translated`` for a member read,
     ``BaseArchiveReader._raise_translated`` for the reader's own work. The check is
     also reached from ``_translate_open_error`` while the reader is constructed,
-    behind neither boundary; it returns ``False`` there on its own, because the
-    innermost frame is ``io``'s, not ``tarfile``'s. What is left for this check is ``tarfile``'s own header-parse
-    ``ValueError``s; any other stream ``ValueError`` propagates unchanged.
+    behind neither boundary; it returns ``False`` there on its own, because the stream
+    under ``tarfile`` is always one of archivey's own wrappers (``_BoundedTarFileobj``
+    for ``r:``, the ``ArchiveSource`` for ``r|``), so a closed-handle ``ValueError``
+    is raised in that wrapper's frame, not ``tarfile``'s. What is left for this check
+    is ``tarfile``'s own header-parse ``ValueError``s; any other stream ``ValueError``
+    propagates unchanged.
     """
     tb = exc.__traceback__
     if tb is None:
