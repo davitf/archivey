@@ -263,11 +263,32 @@ expansion correct without a second implementation. What differs is what sits und
 map's chunks one after another from the start of the data area and does not know how
 much the member stores, so a map claiming more reads the next header and member as this
 member's content. The reader records where each member's data area ends as tarfile
-parses the header, and refuses a map whose chunks add up to more, or that has a negative
-entry, or a logical size past 2**63 - 1 (no file's size), with `CorruptionError` when
-the member is opened (streaming: on its first read,
-so a consumer that skips it is unaffected). The end is known only in whole blocks, so up
-to 511 bytes of the member's own padding can still read as data.
+parses the header, and refuses a map whose chunks add up to more. The end is known only
+in whole blocks, so up to 511 bytes of the member's own padding can still read as data.
+The same bound runs the other way: a map that accounts for more than 511 bytes fewer
+than the member stores is refused too, because tarfile never serves the bytes no chunk
+names, and leftover bytes inside a member are damage (DR-3); GNU tar 1.35 extracts such
+a member without them. A negative entry, a chunk that ends past the logical size (even
+an empty one) and a logical size past 2**63 - 1 (no file's size) are refused as well.
+tarfile drops the stored bytes of a non-empty chunk past the logical size (DR-3). An
+empty entry past it loses no bytes in tarfile; it is refused because the map contradicts
+its own declared size, and because the readers disagree on the extracted length (DR-1).
+GNU tar 1.35 refuses a chunk past the logical size in old GNU and PAX 1.0, and reads it
+in PAX 0.0 and 0.1, where it extracts a longer file than tarfile serves. Each of these is
+`CorruptionError` when the member is opened (streaming: on its first read, so a
+consumer that skips it is unaffected).
+
+**An out-of-order or overlapping map is `UnsupportedFeatureError`.** GNU tar 1.35 reads
+both, writing each chunk at the offset the map gives. tarfile stitches the chunks into
+one run instead, which is a wrong answer (DR-1), and serving them in logical order on
+the streaming path would mean buffering up to the member's logical size (DR-9). The map
+is valid data archivey cannot serve, so it is unsupported, not corrupt (DR-4); a map
+that is also damaged raises `CorruptionError`. Only crafted archives are known to hold
+such a map, and there is no plan to support it; revisit if a real archive appears (§6). Empty entries are exempt from the order
+check, since GNU tar ends a map with `(realsize, 0)` and the old GNU header pads its
+slots with `(0, 0)`. One function makes all of these checks for the four encodings (old
+GNU and PAX 0.0, 0.1, 1.0), since tarfile turns each into the same list of
+`(offset, numbytes)` pairs.
 
 **A seek the filesystem refuses reads as the end of the data.** tarfile seeks to offsets
 it adds up from size fields, and a PAX or base-256 size can put one anywhere. An offset
@@ -453,6 +474,7 @@ extraction checks (§2.4).
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
 | A hardlink placed before the only member it names does not extract | **format** | A hardlink refers to an earlier member, as tarfile and `tar(1)` read it; `LinkTargetNotFoundError` in both modes (§2.3) |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
+| GNU tar extracts a sparse file and archivey refuses it with `UnsupportedFeatureError` | **archivey** | The sparse map is out of order or overlapping. tarfile stitches such chunks into one run, a wrong answer, so archivey refuses the map (§2.3). Only crafted archives are known to hold one. By design (§6); there is no plan to support it, and it is revisited if a real archive appears |
 | A `0` (`REGTYPE`) entry named `d/` that holds data lists as the file `d`; GNU tar 1.35 and 7-Zip make it a directory | **archivey** | The `AREGTYPE` form of the same entry is a directory (§2.2), and so is a ZIP entry `d/` with data (tracked internally) |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
@@ -471,6 +493,7 @@ extraction checks (§2.4).
 | Report trailing data, do not read past it | Two archives in one file is a fact worth reporting, and listing both would present members from an archive the caller did not name | `ignore_zeros=True`, which is how `tar -i` reads concatenated archives |
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
 | Count a sparse member's holes as output (maintainer ruling, 2026-09-25) | Extraction writes them as zeros, so they cost the disk what any decompressed byte costs, and the ratio guard is what protects the disk. Revisit if extraction ever preserves holes, as `tar -x` does, since the disk would then hold only the data | Counting only the data blocks, which would let a few hundred bytes of sparse map fill the disk |
+| Refuse an out-of-order or overlapping sparse map with `UnsupportedFeatureError` (maintainer decision, 2026-10-10) | GNU tar 1.35 reads such a map, so it is valid data that archivey cannot serve, and DR-4 types that as unsupported. tarfile's `extractfile()` stitches the chunks into one run, a wrong answer (DR-1). To serve the map right, archivey would place the chunks itself, and the streaming path would buffer up to the member's logical size (DR-9). No real writer is known to produce such a map; only crafted archives hold one. Reopen if a real producer writes such maps, or if the sparse read path no longer goes through `extractfile()` | Reading the map as GNU tar does, which needs that placement and buffering. `CorruptionError`, as the first version of the check raised, dropped because DR-4 types a layout the reference tool reads as unsupported |
 | Keep `extractfile()`, under one lock | It is the only sparse expansion in the tree, and it is stdlib's | Reading member bytes directly, which would need a sparse implementation |
 | A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there. Extraction under `STRICT` and `STANDARD` still writes it as `a/b`, the tree Windows would create, and rewrites a link target the same way so a link to that member follows it; the result is the same on every OS | Treating it as a separator in `name` the way the ZIP and 7z backends do |
 | Walk headers in batches sized by what the caps have left | The cap then bounds what tarfile parses, not only what archivey keeps, at the speed of one dense pass | `getmembers()`, which parsed the whole file before the first member was counted; one header per lock hold, which alternated parsing with member construction and was slower |
