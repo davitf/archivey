@@ -34,6 +34,12 @@ from archivey.internal.reader_state import (
 )
 from archivey.reader import ArchiveReader
 from archivey.types import MemberStreams
+from tests.test_concurrent_cooperative import (
+    _assert_wound_down_once_in_order,
+    _interrupt_close_at,
+    _open_under_suspended_pass,
+    _zip_with_files,
+)
 
 REENTRY = "re-entered from inside its own"
 CLOSE_FROM_INSIDE = "from inside one of its own calls"
@@ -325,50 +331,40 @@ def test_interrupted_close_is_finished_by_the_next_close(
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
-def test_close_interrupted_after_the_stream_shutdown_claim_is_finished_by_the_next_close(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "point",
+    [
+        # Just after close() took the stream-shutdown claim, before it took the closer:
+        # the retry runs the closer.
+        "claim",
+        # Inside the closer, after its real work: the closer is gone, so the retry
+        # skips the wind-down and only closes the streams and drops the lease.
+        "closer",
+    ],
+)
+def test_close_interrupted_in_the_stream_shutdown_step_is_finished_by_the_next_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
 ) -> None:
-    """Ctrl-C just after close() took the stream-shutdown claim, with a pass suspended.
+    """Ctrl-C inside close()'s stream-shutdown step, with a pass suspended.
 
     The close transition took the pass wind-down lease. The interrupted close() must
-    hand the claim back, so the next close() can wind the pass down, drop that lease
-    and tear the archive down. A spent claim would strand the lease for good.
+    hand the claim back, so the next close() can finish the step, drop that lease and
+    tear the archive down. A spent claim would strand the lease for good. The pass is
+    wound down exactly once, before teardown, at either point.
     """
-    path = tmp_path / "two.zip"
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("a.txt", b"aaa")
-        zf.writestr("b.txt", b"bbb")
-    reader = open_archive(path)
-    assert isinstance(reader, BaseArchiveReader)
-    state = reader._state
-    source = reader._source
-    assert source is not None
-    real_claim = state.claim_stream_shutdown
-    claims: list[bool] = []
-
-    def interrupt_after_the_claim(*args: object) -> bool:
-        claimed = real_claim(*args)
-        claims.append(claimed)
-        if len(claims) == 1:
-            raise KeyboardInterrupt
-        return claimed
-
-    monkeypatch.setattr(state, "claim_stream_shutdown", interrupt_after_the_claim)
-    it = reader.stream_members()
-    stream = next(s for _m, s in it if s is not None)
-    assert stream.read() == b"aaa"
+    p = _open_under_suspended_pass(_zip_with_files(tmp_path), False, monkeypatch)
+    state = p.reader._state
+    _interrupt_close_at(state, point, monkeypatch)
     with pytest.raises(KeyboardInterrupt):
-        reader.close()
-    assert claims == [True]
+        p.reader.close()
     assert state.lifecycle is LifecycleState.READER_CLOSED
-    reader.close()
+    p.reader.close()
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
-    assert source.closed
-    assert stream.closed
-    # The retry took the claim back.
-    assert claims == [True, True]
+    _assert_wound_down_once_in_order(p.events)
+    assert p.source is None or p.source.closed
+    assert p.stream.closed
     with pytest.raises(ArchiveyUsageError, match="closed"):
-        next(it)
+        next(p.it)
 
 
 # ---------------------------------------------------------------------------

@@ -180,7 +180,8 @@ class ReaderState:
         # that lease is a flag read by _outstanding_leases_locked, so taking and dropping
         # it are one store each, and it is tracked apart from the closer so close() can
         # drop it even when an interrupt lost the closer. Only the holder of the
-        # stream-shutdown claim drops it, in :meth:`finish_stream_shutdown`.
+        # stream-shutdown claim drops it, in :meth:`finish_stream_shutdown`; that is a
+        # close() or, after an interrupted one, the suspended pass's own finally.
         self._pass_wind_down: Callable[[], None] | None = None
         self._pass_wind_down_lease = False
         # Library-internal open windows (extract_all's coordinator, first-touch link
@@ -591,8 +592,10 @@ class ReaderState:
         for good: a ``close()`` whose wind-down or stream shutdown raises an
         ``Exception`` still finishes, and the step is not retried. An interrupt is
         different: the ``close()`` hands the claim back with
-        :meth:`abandon_stream_shutdown`, so the next ``close()`` retakes it and drops
-        the pass wind-down lease that the interrupted one still held.
+        :meth:`abandon_stream_shutdown`, so the next caller of the step retakes it
+        and drops the pass wind-down lease that the interrupted one still held: a later
+        ``close()``, or the suspended pass's own ``finally`` when its iterator is
+        closed or collected.
         """
         with self._lock:
             if self._stream_shutdown_done or self._stream_shutdown_owner is not None:
@@ -615,11 +618,17 @@ class ReaderState:
             self._pass_wind_down_lease = False
             self._stream_shutdown_done = True
 
+    def stream_shutdown_done(self) -> bool:
+        """Whether the stream-shutdown step finished and its claim is spent."""
+        with self._lock:
+            return self._stream_shutdown_done
+
     def abandon_stream_shutdown(self, ticket: object) -> None:
         """Hand back the claim ``ticket`` holds, unless it was spent. For an interrupt.
 
         The pass wind-down lease, and the closer if nobody took it, stay: the next
-        ``close()`` retakes the claim, runs what is left and drops the lease.
+        ``close()``, or the pass's own ``finally``, retakes the claim, runs what is
+        left and drops the lease.
         """
         with self._lock:
             if self._stream_shutdown_owner is ticket and not self._stream_shutdown_done:

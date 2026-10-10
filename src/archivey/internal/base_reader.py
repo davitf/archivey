@@ -85,7 +85,11 @@ from archivey.internal.naming import (
 )
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
-from archivey.internal.reader_state import LiveStreamReservation, ReaderState
+from archivey.internal.reader_state import (
+    LifecycleState,
+    LiveStreamReservation,
+    ReaderState,
+)
 from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
@@ -2853,6 +2857,12 @@ class BaseArchiveReader(ArchiveReader):
             if current is not None:
                 current.close()
             self._state.release_pass(token)
+            # A close() interrupted inside its stream-shutdown step handed the step
+            # back with the pass wind-down lease still held. Finish it here, so
+            # dropping this iterator still reaches teardown without another close().
+            # A no-op when close() finished the step, or the reader is still open.
+            if self._state.lifecycle is not LifecycleState.OPEN:
+                self._maybe_teardown(self._finish_stream_shutdown_step())
 
     def _check_extraction_dest(self, dest: Path) -> None:
         """Refuse a destination this reader's own source would read back.
@@ -2970,11 +2980,32 @@ class BaseArchiveReader(ArchiveReader):
         # closed only once the transition has actually happened. Its "run teardown now"
         # result is not needed: _maybe_teardown() below asks claim_teardown() directly.
         # Every step below is idempotent on its own (a spent claim refuses), so
-        # ``_closed`` is set only at the end: an interrupt in between leaves teardown
-        # reachable instead of short-circuited by the check above -- by the next close()
-        # when no stream lease survives, and otherwise by the last stream's own close,
-        # whose lease callback runs _maybe_teardown().
+        # ``_closed`` is set only at the end, and only once the stream-shutdown step is
+        # spent: an interrupt in between, or a peer close() that found the step's
+        # holder still working, leaves teardown reachable instead of short-circuited by
+        # the check above. The next close() reaches it, and so does the suspended
+        # pass's own finally (see _finish_stream_shutdown_step()).
         self._state.mark_reader_closed()
+        pending = self._finish_stream_shutdown_step()
+        # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
+        # so this is a no-op wherever mark_reader_closed() returned False for a good
+        # reason. It is not a no-op after a close() interrupted just past the transition:
+        # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
+        # although nothing tore the archive down. With teardown already claimed, it
+        # still raises ``pending``.
+        self._maybe_teardown(pending)
+        if self._state.stream_shutdown_done():
+            self._closed = True
+
+    def _finish_stream_shutdown_step(self) -> Exception | None:
+        """Wind a suspended pass down and close member streams, if this call may.
+
+        Returns a held ``Exception`` from either, for ``_maybe_teardown()`` to raise.
+        Called by ``close()`` and, once the reader is closed, by the ``finally`` of a
+        ``stream_members()`` pass: the pass wind-down lease has no other releaser, so
+        a pass dropped after an interrupted ``close()`` must still be able to finish
+        the step itself.
+        """
         # Exactly one caller winds the pass down and closes the streams.
         # mark_reader_closed() returns False both when this thread transitioned with
         # leases outstanding and when a peer had already closed, so it cannot tell the
@@ -2984,10 +3015,11 @@ class BaseArchiveReader(ArchiveReader):
         pending: Exception | None = None
         # This call's claim on the step. The claim is the single store of this ticket in
         # the state, and it is taken inside the try below, so an interrupt anywhere
-        # after it reaches the except arm, which hands the claim back. The next close()
-        # then retakes it and drops the pass wind-down lease, which only the holder of
-        # the claim may drop: a peer close() sees the claim held and must not drop a
-        # lease while the holder's closer runs.
+        # after it reaches the except arm, which hands the claim back. Whoever calls
+        # this next -- a later close(), or the pass's own finally -- then retakes it and
+        # drops the pass wind-down lease, which only the holder of the claim may drop:
+        # a peer sees the claim held and must not drop a lease while the holder's
+        # closer runs.
         ticket = object()
         try:
             if self._state.claim_stream_shutdown(ticket):
@@ -2995,14 +3027,14 @@ class BaseArchiveReader(ArchiveReader):
                 # pass iterator first, whose finally closes its last stream and then
                 # frees the pass's own resources. The transition took a lease with the
                 # closer, so no stream close in here can claim teardown; it runs at
-                # _maybe_teardown() below, after finish_stream_shutdown() drops the
-                # lease. An Exception from the wind-down or the stream shutdown is held
-                # and handed to _maybe_teardown(), which raises it after teardown.
+                # the caller's _maybe_teardown(), after finish_stream_shutdown() drops
+                # the lease. An Exception from the wind-down or the stream shutdown is
+                # held and returned for _maybe_teardown() to raise after teardown.
                 try:
                     closer = self._state.take_pass_wind_down()
                     if closer is not None:
                         closer()
-                except Exception as exc:  # noqa: BLE001 - raised by _maybe_teardown below
+                except Exception as exc:  # noqa: BLE001 - raised by _maybe_teardown
                     pending = exc
                 finally:
                     try:
@@ -3022,14 +3054,7 @@ class BaseArchiveReader(ArchiveReader):
             # An interrupt: hand the claim back unless it was spent, then propagate.
             self._state.abandon_stream_shutdown(ticket)
             raise
-        # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
-        # so this is a no-op wherever mark_reader_closed() returned False for a good
-        # reason. It is not a no-op after a close() interrupted just past the transition:
-        # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
-        # although nothing tore the archive down. With teardown already claimed, it
-        # still raises ``pending``.
-        self._maybe_teardown(pending)
-        self._closed = True
+        return pending
 
     def _close_public_streams(self) -> None:
         """Close member streams that are still open, in the order they were opened.
