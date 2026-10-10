@@ -164,9 +164,11 @@ class _StdlibSeekContract(DelegatingStream):
     before the start clamps to 0; only a negative ``SEEK_SET`` raises. rapidgzip clamps
     a target past the end to the size, and the gzip child refuses a relative underflow
     with ``ValueError``. An accelerator changes speed, not behaviour, so this outermost
-    layer resolves the target itself and remembers a position past the end. A read there
-    still goes to the stream below, which is at its end: the end-of-data checks under it
-    run as they would for any read at the end.
+    layer resolves the target itself and remembers a position past the end. The seek
+    that the stream below clamped has already run the end-of-data checks under it
+    (``_seek_reached_end`` in ``stdlib_takeover.py``); where those handed the stream to
+    the standard library, that seek returned the target and nothing is remembered here.
+    A read past the end still goes to the stream below, which is at its end.
     """
 
     def __init__(self, inner: BinaryIO) -> None:

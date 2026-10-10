@@ -331,8 +331,12 @@ def open_archive(
     ``encoding``, and ``encoding`` replaces only the format's fallback (cp437 or
     ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
     RAR 1.5-4, surrogate escapes for TAR and ISO). ``member.raw_name`` keeps the stored
-    bytes. 7z, directory and single-file sources decode names another way, ignore it,
-    and record ``ENCODING_ARGUMENT_UNUSED``.
+    bytes. A ZIP comment without the UTF-8 flag (the archive comment always) and an
+    8-bit RAR 1.5-4 comment decode the same way as a name without a declared encoding,
+    and a byte the codec does not define survives as a lone surrogate. The one
+    difference is that a RAR comment's last fallback is always windows-1252. 7z,
+    directory and single-file sources decode names another way, ignore it, and record
+    ``ENCODING_ARGUMENT_UNUSED``.
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
@@ -888,6 +892,10 @@ def _resolve_stream_format(
     # which is the silent fall-through this function's boundary check exists to close.
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
+    # The caller says the source is a compressed stream, so a probe answers only which
+    # codec it is, never whether it is an archive: every probe runs, whatever its name.
+    if not config.always_probe_content:
+        config = replace(config, always_probe_content=True)
     detected = detect_format_into(open_source, config=config, collector=collector)
     outer = outer_stream_format(detected.format)
     if outer is None:

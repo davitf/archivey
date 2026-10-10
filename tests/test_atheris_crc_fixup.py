@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from archivey.exceptions import ArchiveyError, CorruptionError
-from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from tests.atheris_fuzz.crc_fixup import (
     fixup_sevenzip_header_crcs,
     fixup_zip_local_and_cd_crc,
@@ -47,7 +47,7 @@ def test_fixup_sevenzip_restores_crcs_after_bitflip(basic_7z: bytes) -> None:
 
     # Without fixup the next-header CRC must fail.
     with raises_corruption_not_truncation(match="next header CRC"):
-        parse_sevenzip_archive(io.BytesIO(broken))
+        load_sevenzip_archive(io.BytesIO(broken))
 
     fixed = fixup_sevenzip_header_crcs(broken, broken=False)
     # Signature + next-header CRCs must match recomputed values.
@@ -59,7 +59,7 @@ def test_fixup_sevenzip_restores_crcs_after_bitflip(basic_7z: bytes) -> None:
 
     # Fixed-up blob must pass the CRC gate (may still raise typed errors for content).
     try:
-        parse_sevenzip_archive(io.BytesIO(fixed))
+        load_sevenzip_archive(io.BytesIO(fixed))
     except CorruptionError as exc:
         assert "next header CRC" not in str(exc)
         assert "signature header CRC" not in str(exc)
@@ -73,7 +73,7 @@ def test_fixup_sevenzip_broken_mode_still_rejects(basic_7z: bytes) -> None:
     flipped[start] ^= 0x02
     fixed_broken = fixup_sevenzip_header_crcs(bytes(flipped), broken=True)
     with raises_corruption_not_truncation(match="next header CRC"):
-        parse_sevenzip_archive(io.BytesIO(fixed_broken))
+        load_sevenzip_archive(io.BytesIO(fixed_broken))
 
 
 def test_fixup_sevenzip_noop_on_non_magic() -> None:

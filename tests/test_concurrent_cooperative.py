@@ -7,20 +7,30 @@ Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
 from __future__ import annotations
 
 import contextvars
+import gc
 import gzip
 import io
+import sys
+import tarfile
 import threading
+import zipfile
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from archivey import (
+    ArchiveMember,
     ArchiveyError,
     ArchiveyUsageError,
     open_archive,
 )
 from archivey.internal.password import _PasswordCandidates
+from archivey.internal.reader_state import LifecycleState
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.reader import ArchiveReader
+from tests.conftest import binary_refusal
 
 pytestmark = pytest.mark.concurrent_reader
 
@@ -110,14 +120,479 @@ def test_iterate_rejected_during_active_pass(tmp_path: Path) -> None:
         list(it)
 
 
-def test_close_during_stream_members_raises(tmp_path: Path) -> None:
+# --- Closing while a pass is suspended at a yield ---------------------------------------
+#
+# A pass whose generator is suspended at a yield is not running: the caller holds the
+# iterator. close() closes the reader anyway, like zipfile.ZipFile.close() with member
+# handles open, and resuming the iterator afterwards raises ArchiveyUsageError.
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+_RAR_FIXTURE = _FIXTURES / "rar" / "basic_solid__.rar"
+_SEVENZIP_FIXTURE = _FIXTURES / "sevenzip" / "links_mid_folder_solid.7z"
+
+
+def _zip_with_files(tmp_path: Path) -> Path:
+    path = tmp_path / "files.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", b"aaa")
+        zf.writestr("b.txt", b"bbb")
+    return path
+
+
+def _tar_gz_with_files(tmp_path: Path) -> Path:
+    path = tmp_path / "files.tar.gz"
+    with tarfile.open(path, "w:gz") as tf:
+        for name, data in (("a.txt", b"aaa"), ("b.txt", b"bbb")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+def _rar_fixture(_tmp: Path) -> Path:
+    return _RAR_FIXTURE
+
+
+def _sevenzip_fixture(_tmp: Path) -> Path:
+    return _SEVENZIP_FIXTURE
+
+
+_SUSPENDED_SOURCES = [
+    pytest.param(_dir_with_files, False, id="dir"),
+    pytest.param(_zip_with_files, False, id="zip"),
+    pytest.param(_zip_with_files, True, id="zip-streaming"),
+    pytest.param(_tar_gz_with_files, True, id="tar.gz-streaming"),
+    pytest.param(_rar_fixture, False, id="rar-solid"),
+    pytest.param(_rar_fixture, True, id="rar-solid-streaming"),
+    pytest.param(_sevenzip_fixture, False, id="7z-solid"),
+    pytest.param(_sevenzip_fixture, True, id="7z-solid-streaming"),
+]
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_close_while_stream_members_suspended_closes_reader(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    reader = open_archive(make_source(tmp_path), streaming=streaming)
+    it = reader.stream_members()
+    # Stop at the first file, so a stream is open mid-pass.
+    stream = next(s for _m, s in it if s is not None)
+    reader.close()
+    # The yielded stream went with the reader, and the reader takes no new calls.
+    assert stream.closed
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.stream_members()
+    # Resuming the suspended pass reports the close instead of reading on.
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+    with pytest.raises(StopIteration):
+        next(it)
+    reader.close()  # idempotent
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_with_exit_closes_reader_with_suspended_stream_members(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    """The iterator kept in a variable: leaving the block closes the reader cleanly."""
+    with open_archive(make_source(tmp_path), streaming=streaming) as reader:
+        it = reader.stream_members()
+        next(it)
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.stream_members()
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_body_exception_survives_with_exit_over_suspended_stream_members(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    """A wrapped pass held in a variable is still alive at exit; the body's error wins."""
+    with pytest.raises(RuntimeError, match="boom") as excinfo:  # noqa: PT012
+        with open_archive(make_source(tmp_path), streaming=streaming) as reader:
+            numbered = enumerate(reader.stream_members())
+            for _i, (_member, _stream) in numbered:
+                raise RuntimeError("boom")
+    assert excinfo.value.__context__ is None
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.stream_members()
+
+
+@pytest.mark.parametrize(
+    ("make_source", "streaming"),
+    [p for p in _SUSPENDED_SOURCES if p.values[1]],
+)
+def test_close_while_streaming_iteration_suspended_closes_reader(
+    tmp_path: Path, make_source, streaming: bool
+) -> None:
+    """Streaming ``iter(reader)`` holds the same kind of pass as ``stream_members()``."""
+    reader = open_archive(make_source(tmp_path), streaming=streaming)
+    it = iter(reader)
+    next(it)
+    reader.close()
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+
+
+# Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
+# may lack. Listing it does not, so only the tests that read are gated, keyed on the
+# fixture function rather than the row id. Not requires_binary("unrar"): that checks
+# only shutil.which, and binary_refusal also applies archivey's RARLAB policy.
+_UNRAR_REFUSAL = binary_refusal("unrar")
+_READ_SOURCES = [
+    pytest.param(
+        *p.values,
+        id=p.id,
+        marks=pytest.mark.skipif(
+            _UNRAR_REFUSAL is not None, reason=f"needs unrar: {_UNRAR_REFUSAL}"
+        ),
+    )
+    if p.values[0] is _rar_fixture
+    else p
+    for p in _SUSPENDED_SOURCES
+]
+
+
+@dataclass
+class _SuspendedPass:
+    reader: ArchiveReader
+    it: Iterator[tuple[ArchiveMember, ArchiveStream | None]]
+    stream: ArchiveStream
+    source: object
+    events: list[str]
+
+
+def _open_under_suspended_pass(
+    path: Path,
+    streaming: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail: frozenset[str] = frozenset(),
+) -> _SuspendedPass:
+    """A reader whose ``stream_members()`` pass is suspended after a member was read.
+
+    A member is read so the pass holds its resources (a solid block, an ``unrar``
+    pipe). The backend's pass iterator, ``_close_public_streams`` and ``_close_archive``
+    are wrapped to record when each has run; each step named in ``fail`` raises after
+    it has done its real work: ``"wind-down"`` (the pass's own ``finally``),
+    ``"streams"`` and ``"teardown"``.
+    """
+    events: list[str] = []
+    reader = open_archive(path, streaming=streaming)
+    real_pass = reader._iter_with_data
+    real_close_streams = reader._close_public_streams
+    real_close_archive = reader._close_archive
+
+    def recorded_pass(*args, **kwargs):  # noqa: ANN202 - a generator wrapper
+        try:
+            yield from real_pass(*args, **kwargs)
+        finally:
+            events.append("pass wound down")
+            if "wind-down" in fail:
+                raise RuntimeError("wind-down failed")
+
+    def recorded_close_streams() -> None:
+        real_close_streams()
+        events.append("streams closed")
+        if "streams" in fail:
+            raise OSError("stream close failed")
+
+    def recorded_close_archive() -> None:
+        events.append("archive closed")
+        real_close_archive()
+        if "teardown" in fail:
+            raise OSError("teardown failed")
+
+    monkeypatch.setattr(reader, "_iter_with_data", recorded_pass)
+    monkeypatch.setattr(reader, "_close_public_streams", recorded_close_streams)
+    monkeypatch.setattr(reader, "_close_archive", recorded_close_archive)
+    it = reader.stream_members()
+    stream = next(s for m, s in it if s is not None and m.size)
+    assert stream.read()
+    return _SuspendedPass(reader, it, stream, reader._source, events)
+
+
+_CLOSE_ORDER = ["pass wound down", "streams closed", "archive closed"]
+
+
+@pytest.mark.parametrize(("make_source", "streaming"), _READ_SOURCES)
+def test_close_winds_down_suspended_pass_before_teardown(
+    tmp_path: Path,
+    make_source,
+    streaming: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """close() finishes the backend's pass and the streams before it closes the archive.
+
+    The pass end is recorded once the backend iterator's own ``finally`` (last stream
+    close, then pass cleanup) has run.
+    """
+    p = _open_under_suspended_pass(make_source(tmp_path), streaming, monkeypatch)
+    p.reader.close()
+    assert p.events == _CLOSE_ORDER
+    assert p.source is None or p.source.closed
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(p.it)
+
+
+def _messages(group: BaseExceptionGroup) -> list[str]:
+    return [f"{type(e).__name__}: {e}" for e in group.exceptions]
+
+
+_FAILING_STEPS = {
+    "wind-down": frozenset({"wind-down"}),
+    "streams": frozenset({"streams"}),
+    "both": frozenset({"wind-down", "streams"}),
+    "wind-down+teardown": frozenset({"wind-down", "teardown"}),
+}
+
+
+@pytest.mark.parametrize("fail", list(_FAILING_STEPS))
+@pytest.mark.parametrize(("make_source", "streaming"), _READ_SOURCES)
+def test_close_tears_down_when_a_close_step_fails(
+    tmp_path: Path,
+    make_source,
+    streaming: bool,
+    fail: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing wind-down or stream close propagates, and the archive is torn down.
+
+    The wind-down lease keeps teardown back until both steps have run; a step that
+    raises must not leave the archive and its source open.
+    """
+    p = _open_under_suspended_pass(
+        make_source(tmp_path), streaming, monkeypatch, fail=_FAILING_STEPS[fail]
+    )
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - checked per case below
+        p.reader.close()
+    exc = excinfo.value
+    if fail == "wind-down":
+        assert type(exc) is RuntimeError
+        assert str(exc) == "wind-down failed"
+    elif fail == "streams":
+        assert type(exc) is OSError
+        assert str(exc) == "stream close failed"
+    else:
+        assert isinstance(exc, ExceptionGroup)
+        if fail == "both":
+            assert exc.message == (
+                "winding down the pass and closing member streams both failed"
+            )
+            assert _messages(exc) == [
+                "RuntimeError: wind-down failed",
+                "OSError: stream close failed",
+            ]
+        else:
+            assert exc.message == "close-time cleanup and archive teardown both failed"
+            assert _messages(exc) == [
+                "RuntimeError: wind-down failed",
+                "OSError: teardown failed",
+            ]
+    assert p.events == _CLOSE_ORDER
+    assert p.source is None or p.source.closed
+    assert p.stream.closed
+    p.reader.close()  # idempotent after the failed close
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(p.it)
+
+
+def _interrupt_close_at(
+    state: object,
+    point: str,
+    monkeypatch: pytest.MonkeyPatch,
+    then: Callable[[], None] | None = None,
+) -> None:
+    """Make the next ``close()`` raise ``KeyboardInterrupt`` inside its stream-shutdown step.
+
+    ``"claim"``: just after it took the claim, before it took the closer. ``"closer"``:
+    inside the closer, after the closer's real work (the pass wound down). ``then``
+    runs just before the interrupt. Later calls are not interrupted.
+    """
+    fired: list[int] = []
+
+    def interrupt() -> None:
+        if not fired:
+            fired.append(1)
+            if then is not None:
+                then()
+            raise KeyboardInterrupt
+
+    if point == "claim":
+        real_claim = state.claim_stream_shutdown
+
+        def claim(ticket: object) -> bool:
+            claimed = real_claim(ticket)
+            interrupt()
+            return claimed
+
+        monkeypatch.setattr(state, "claim_stream_shutdown", claim)
+    else:
+        real_take = state.take_pass_wind_down
+
+        def take() -> Callable[[], None] | None:
+            closer = real_take()
+            if closer is None:
+                return None
+
+            def closer_then_interrupt() -> None:
+                closer()
+                interrupt()
+
+            return closer_then_interrupt
+
+        monkeypatch.setattr(state, "take_pass_wind_down", take)
+
+
+def _assert_wound_down_once_in_order(events: list[str]) -> None:
+    """The close order held, and the pass was wound down exactly once.
+
+    An interrupt inside the closer still closes the streams on its way out (the step's
+    ``finally``), and the retry closes them again, a no-op; so "streams closed" may be
+    recorded twice.
+    """
+    assert events.count("pass wound down") == 1
+    assert events.count("archive closed") == 1
+    assert list(dict.fromkeys(events)) == _CLOSE_ORDER
+
+
+@pytest.mark.parametrize("point", ["claim", "closer"])
+def test_close_after_a_peer_close_and_an_interrupt_still_tears_down(
+    tmp_path: Path, point: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A peer close() that ran while the step's holder worked must not end the close.
+
+    The peer finds the claim held and teardown refused, and returns. The holder is then
+    interrupted and hands the claim back. A later close() must still retake it, drop the
+    pass wind-down lease and tear the archive down.
+    """
+    p = _open_under_suspended_pass(_zip_with_files(tmp_path), False, monkeypatch)
+    state = p.reader._state
+    peer_errors: list[BaseException] = []
+
+    def peer_close() -> None:
+        def run() -> None:
+            try:
+                p.reader.close()
+            except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+                peer_errors.append(exc)
+
+        peer = threading.Thread(target=run)
+        peer.start()
+        peer.join(10)
+        assert not peer.is_alive()
+
+    _interrupt_close_at(state, point, monkeypatch, then=peer_close)
+    with pytest.raises(KeyboardInterrupt):
+        p.reader.close()
+    assert peer_errors == []
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    p.reader.close()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    _assert_wound_down_once_in_order(p.events)
+    assert p.source is None or p.source.closed
+
+
+@pytest.mark.parametrize("point", ["claim", "closer"])
+@pytest.mark.parametrize(("make_source", "streaming"), _READ_SOURCES)
+def test_interrupted_close_tears_down_when_the_pass_iterator_goes(
+    tmp_path: Path,
+    make_source,
+    streaming: bool,
+    point: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no later close(), dropping the suspended pass still reaches teardown.
+
+    The interrupted close() handed the claim back with the pass wind-down lease still
+    held. The pass iterator's own ``finally`` must then finish the step.
+    """
+    p = _open_under_suspended_pass(make_source(tmp_path), streaming, monkeypatch)
+    state = p.reader._state
+    _interrupt_close_at(state, point, monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        p.reader.close()
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    p.it.close()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    _assert_wound_down_once_in_order(p.events)
+    assert p.source is None or p.source.closed
+    assert p.stream.closed
+
+
+_RECOVERED_STEP_FAILURES = {
+    "wind-down": (frozenset({"wind-down"}), RuntimeError, "wind-down failed"),
+    "teardown": (frozenset({"teardown"}), OSError, "teardown failed"),
+}
+
+
+@pytest.mark.parametrize("route", ["generator close", "collect"])
+@pytest.mark.parametrize("fail", list(_RECOVERED_STEP_FAILURES))
+def test_failure_in_a_step_the_pass_iterator_finished_comes_out_of_it(
+    tmp_path: Path, fail: str, route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing step finished by the pass iterator surfaces where the iterator ended.
+
+    An interrupted close() handed the step back; the pass iterator then finishes it.
+    Closed explicitly, the failure comes out of its ``close()``. Collected, there is no
+    caller to raise to, so it goes to ``sys.unraisablehook``. Teardown runs on both.
+    """
+    steps, exc_type, message = _RECOVERED_STEP_FAILURES[fail]
+    p = _open_under_suspended_pass(
+        _zip_with_files(tmp_path), False, monkeypatch, fail=steps
+    )
+    state = p.reader._state
+    _interrupt_close_at(state, "claim", monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        p.reader.close()
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    if route == "generator close":
+        with pytest.raises(exc_type, match=message):
+            p.it.close()
+    else:
+        unraisable: list[BaseException | None] = []
+        monkeypatch.setattr(
+            sys, "unraisablehook", lambda args: unraisable.append(args.exc_value)
+        )
+        del p.it
+        gc.collect()
+        assert [(type(e), str(e)) for e in unraisable] == [(exc_type, message)]
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    _assert_wound_down_once_in_order(p.events)
+    assert p.source is None or p.source.closed
+    assert p.stream.closed
+
+
+def test_close_still_refused_while_pass_runs_on_another_thread(tmp_path: Path) -> None:
+    """Only a pass suspended at a yield is closed underneath; a running one still blocks."""
     root = _dir_with_files(tmp_path)
     reader = open_archive(root)
-    it = reader.stream_members()
-    next(it)
-    with pytest.raises(ArchiveyUsageError, match="is active"):
-        reader.close()
-    list(it)
+    entered = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+
+    def selector(_member: object) -> bool:
+        entered.set()
+        release.wait(10)
+        return True
+
+    def run() -> None:
+        try:
+            list(reader.stream_members(selector))
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assert below
+            errors.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(10)
+        with pytest.raises(ArchiveyUsageError, match="is active"):
+            reader.close()
+    finally:
+        release.set()
+        worker.join(10)
+    assert errors == []
     reader.close()
 
 

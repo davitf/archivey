@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from archivey.reader import ArchiveReader
+    from archivey.reader import ForwardArchiveReader
 
 _ENABLED: ContextVar[bool] = ContextVar("archivey_measurement_enabled", default=False)
 
@@ -105,7 +105,7 @@ class IoStats:
     """Number of ``seek()`` calls on the instrumented archive source."""
 
 
-def io_stats(reader: ArchiveReader) -> IoStats | None:
+def io_stats(reader: ForwardArchiveReader) -> IoStats | None:
     """The counters of ``reader``, or ``None`` when it was opened outside
     :func:`enable_measurement` or is not a library reader."""
     # Lazy: base_reader imports this module.
