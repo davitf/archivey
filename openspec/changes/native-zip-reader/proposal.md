@@ -36,6 +36,8 @@ directory is the simplest of the three.
 - `ZipReader` reads through the parser and drops every use of `zipfile`. The member
   data path (decrypt stages, codec layer, password ladder, fused verifier) does not
   change.
+- `streaming=True` reads a ZIP from a non-seekable source with no seek, by walking the
+  local headers forward and applying the central directory at the end of the pass.
 - Behaviour that changes, each in its own stage PR: a lying UTF-8 flag costs one name,
   not the archive; a damaged directory lists its intact members and then raises; the
   outcome no longer depends on the Python version.

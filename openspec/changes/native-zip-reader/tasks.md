@@ -5,7 +5,7 @@
 - [ ] 0.1 The three ZIP fix PRs from the October code sweep have merged (trailing bytes
       after a codec's end, malformed Unicode Path field, comment decoding). Rebase on
       main; their tests are acceptance tests from here on.
-- [ ] 0.2 Open questions A and B in `design.md` have answers, or stages 3 and 4 wait.
+- [ ] 0.2 Open questions A and C in `design.md` have answers, or stages 3 and 5 wait (B is answered).
 - [ ] 0.3 `openspec validate --strict native-zip-reader`.
 
 ## 1. Parser (PR 1)
@@ -39,28 +39,43 @@
       §5, §6; `dev-docs/IDEAS.md`; `docs/formats.md`.
 - [ ] 2.9 `./scripts/test.sh --all-configs`; benchmark listing against the baseline.
 
-## 3. Names (PR 3)
+## 3. Streaming (PR 3)
 
-- [ ] 3.1 A flagged name that is not valid UTF-8 decodes as an unflagged name, with
+- [ ] 3.0 Question C answered (seekable sources under `streaming=True`).
+- [ ] 3.1 `parse_local_header` / `parse_central_header` on bytes, shared by both walks;
+      `LocalHeaderWalk` over a forward reader; data descriptor parsing (signature
+      optional, 4- or 8-byte sizes).
+- [ ] 3.2 Member end per row of `design.md` §"Where a member's data ends", including the
+      STORED + bit 3 descriptor scan; tests with stdlib `zipfile` writing to a pipe.
+- [ ] 3.3 End-of-pass reconciliation: members updated from the directory; extraction
+      applies modes, symlinks and `OTHER` removal; unreferenced local entries removed
+      and reported; missing ones raise.
+- [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
+      same files on disk.
+- [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; spec, handbook §1, §2.2, §5, §6.
+
+## 4. Names (PR 4)
+
+- [ ] 4.1 A flagged name that is not valid UTF-8 decodes as an unflagged name, with
       `MEMBER_NAME_ENCODING_INFERRED` (`declared_encoding="utf-8"`); tests from a real
       writer where one exists (DR-24), else hand-built.
-- [ ] 3.2 Collisions, per the answer to question B.
-- [ ] 3.3 Spec, handbook §2.2 and §5, `docs/formats.md`.
+- [ ] 4.2 Collisions stay ordinary duplicates (question B: keep); a test pins it.
+- [ ] 4.3 Spec, handbook §2.2 and §5, `docs/formats.md`.
 
-## 4. Header disagreement (PR 4, after question A)
+## 5. Header disagreement (PR 5, after question A)
 
-- [ ] 4.1 Turn the three `xfail(strict)` tests in `tests/test_audit_backup_scan.py`
+- [ ] 5.1 Turn the three `xfail(strict)` tests in `tests/test_audit_backup_scan.py`
       into the ruled behaviour.
 
-## 5. ZIPs over 4 GiB without ZIP64 (PR 5)
+## 6. ZIPs over 4 GiB without ZIP64 (PR 6)
 
-- [ ] 5.1 Offset correction in `CentralDirectoryWalk`, gated on a matching local header
+- [ ] 6.1 Offset correction in `CentralDirectoryWalk`, gated on a matching local header
       at the corrected offset; CRC kept; diagnostic.
-- [ ] 5.2 Test with a small archive whose stored offsets are reduced by 2³².
+- [ ] 6.2 Test with a small archive whose stored offsets are reduced by 2³².
 
-## 6. Shrink and Implode (PR 6)
+## 7. Shrink and Implode (PR 7)
 
-- [ ] 6.1 Pure-Python decoders for methods 1 and 6, registered with the codec layer.
-- [ ] 6.2 Fixtures from a real writer (Info-ZIP `zip` 1.x / PKZIP 1.x output or the
+- [ ] 7.1 Pure-Python decoders for methods 1 and 6, registered with the codec layer.
+- [ ] 7.2 Fixtures from a real writer (Info-ZIP `zip` 1.x / PKZIP 1.x output or the
       scan's archives, if their licence allows), checked against `unzip`.
-- [ ] 6.3 The new `CompressionAlgorithm` members go to the maintainer before merging.
+- [ ] 7.3 The new `CompressionAlgorithm` members go to the maintainer before merging.
