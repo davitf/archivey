@@ -86,7 +86,9 @@ longer zlib-first image on a pipe opens as zlib.
 `UDIF_UNSUPPORTED_MESSAGE`, and the exception carries `archive_name`.
 `reader_for_format` and `UdifBackend.open_read` raise the same text for a
 caller that reaches them. Neither has the archive name, which is why the open
-path raises before it asks the registry.
+path raises first. It does not test for DMG: it raises for any format whose
+backend sets `READ_IMPLEMENTED` false, with the text from the registry's
+`unread_format_message`.
 
 `format_availability` is `NONE` with an empty `missing`. `archivey --version -v`
 prints `dmg: none — recognised, not readable`. `required_source` is

@@ -1310,26 +1310,9 @@ class IsoReader(BaseArchiveReader):
             raise
 
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:
-        if _pycdlib_exc is not None and isinstance(exc, _pycdlib_exc.PyCdlibException):
-            return CorruptionError(f"Error reading ISO image: {exc!r}")
-        # pycdlib does not wrap every parse failure in its own exception type: a truncated
-        # or crafted image can raise a bare IndexError/struct.error/ValueError from deep in
-        # its header parsing (e.g. `data[offset]` off the end of a short path table). Those
-        # are corruption in the ISO structure, not archivey/runtime bugs, so translate them
-        # rather than letting a raw IndexError escape. (Found by the corpus mutation harness.)
-        if isinstance(
-            exc,
-            (
-                IndexError,
-                struct.error,
-                UnicodeDecodeError,
-                AttributeError,
-                KeyError,
-                ValueError,
-            ),
-        ):
-            # pycdlib choked on corrupt structure (see the _PYCDLIB_ERRORS note). Never a
-            # genuine OSError — that is not in this set and propagates unchanged.
+        # pycdlib choked on corrupt structure; ``_PYCDLIB_ERRORS`` says why the set is
+        # this broad. A genuine OSError is not in it and propagates unchanged.
+        if isinstance(exc, _PYCDLIB_ERRORS):
             return CorruptionError(f"Error reading ISO image: {exc!r}")
         return None
 
