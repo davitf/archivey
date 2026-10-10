@@ -95,8 +95,9 @@ requirement): the child opens a path source itself, a stream source stays in the
 process, a child that dies on the data is a verdict the standard library takes over from,
 and where no child can be started `AUTO` decodes with the stdlib backend, logging one
 warning per process that names `use_indexed_bzip2=OFF`, and `ON` raises
-`ResourceLimitError`. No crash of that decoder has been seen; the isolation keeps one from
-ending the caller's program. A maintainer script SHALL run each rapidgzip decoder
+`ResourceLimitError`. No crash of that decoder has been seen; it is isolated as a precaution,
+because it comes from the same library as the DEFLATE decoder, whose crashes cannot always be
+avoided. A maintainer script SHALL run each rapidgzip decoder
 in-process on damaged input in a watched process and report every crash by its
 signature, so that whether the isolation is still needed stays measurable.
 

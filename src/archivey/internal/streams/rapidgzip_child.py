@@ -21,10 +21,12 @@ start the child and import rapidgzip, and about 70 µs per round trip. A full re
 than the stdlib engine.
 
 rapidgzip's bzip2 decoder (``IndexedBzip2File``) runs in the same kind of child, one
-per stream (``bzip2=True``). It has not been seen to abort, but it shares rapidgzip's
-C++ code, and in this process a crash in it would end the caller's program.
-``scripts/accelerator_crash_search.py`` looks for such crashes, by running both
-decoders on damaged input in a process it watches.
+per stream (``bzip2=True``), as a precaution: it has not been seen to abort, but it
+comes from the same library as the DEFLATE decoder, which does. Being native code is
+not by itself a reason to isolate a decoder (the standard library's are not);
+an observed crash that cannot always be avoided is. ``scripts/accelerator_crash_search.py``
+keeps looking for crashes in both, by running them on damaged input in a process it
+watches, so whether the isolation is still needed stays known.
 """
 
 from __future__ import annotations

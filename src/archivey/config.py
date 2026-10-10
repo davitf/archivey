@@ -670,8 +670,9 @@ class ArchiveyConfig:
 
     Under ``AUTO`` it is used only when the compressed input is known to be at least
     ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). Like the
-    gzip decoder, it runs in a child Python process, one per open stream, so that a
-    crash in its native code costs the stream and not your program. Where no child can
+    gzip decoder, it runs in a child Python process, one per open stream. No crash has
+    been seen in it; it is isolated as a precaution, because it comes from the same
+    library as the gzip decoder, which does crash on some input. Where no child can
     be started, ``AUTO`` uses the standard library, logging one warning per process on
     the ``archivey.streams`` logger, and ``ON`` raises
     :class:`~archivey.exceptions.ResourceLimitError`.

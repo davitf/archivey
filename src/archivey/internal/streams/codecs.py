@@ -778,8 +778,8 @@ def _open_rapidgzip(
 
     rapidgzip 0.16 aborts the process on a gzip, zlib or raw DEFLATE stream that ends
     early, so it never decodes one in this process: see ``rapidgzip_child``. Its bzip2
-    decoder runs in a child too: no abort has been seen in it, but a crash there would
-    end the caller's program. A path source is opened by the child; a stream source is
+    decoder runs in a child too, as a precaution: no abort has been seen in it, but it
+    comes from the same library. A path source is opened by the child; a stream source is
     read for the child here, so the caller's own exception from it still reaches the
     caller.
 

@@ -201,9 +201,9 @@ raises `Unexpected end of file when getting block ...` instead. bzip2
 (`IndexedBzip2File`) never aborted in 110 tries, nor in the crash search below.
 
 **What archivey does.** gzip, zlib and raw DEFLATE decode through rapidgzip in a child
-process (`rapidgzip_child.py` running `rapidgzip_worker.py`). bzip2 does too: its decoder
-has not been seen to abort, but it shares rapidgzip's C++ code, and in-process a crash
-would end the caller's program. The abort ends the child, and
+process (`rapidgzip_child.py` running `rapidgzip_worker.py`). bzip2 does too, as a
+precaution: its decoder has not been seen to abort, but it comes from the same library.
+The abort ends the child, and
 the parent reports it by how the child ended: an abort naming this truncation is
 `TruncatedError`, another crash `CorruptionError`, SIGKILL `ResourceLimitError`, anything
 else `ReadError`. `tests/test_accelerator_truncation_abort.py` pins the reporting and

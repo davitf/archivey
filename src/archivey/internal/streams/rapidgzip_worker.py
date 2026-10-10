@@ -3,9 +3,8 @@
 rapidgzip 0.16 aborts the whole process (``std::terminate``) when it decodes a gzip,
 zlib or raw DEFLATE stream that ends early; see ``dev-docs/known-issues.md``. So
 archivey runs it in a child process that runs this file, and an abort costs the
-member and not the caller. Its bzip2 decoder (``IndexedBzip2File``) runs here too: it
-has not been seen to abort, but it is the same C++ code base, and a crash in it would
-otherwise end the caller's process.
+member and not the caller. Its bzip2 decoder (``IndexedBzip2File``) runs here too, as
+a precaution: it has not been seen to abort, but it comes from the same library.
 
 This file is run as a script (``python -P rapidgzip_worker.py [bzip2]``): with the
 ``bzip2`` argument it opens the source with ``rapidgzip.IndexedBzip2File``, and

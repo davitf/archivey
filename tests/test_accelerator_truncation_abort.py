@@ -460,8 +460,8 @@ def test_rewind_offset_comes_from_the_childs_index() -> None:
 
 def test_bzip2_runs_in_a_child_process() -> None:
     """rapidgzip's bzip2 decoder has not been seen to abort, but it runs in a child
-    process too, so a crash in it would cost the stream and not this process. This
-    process never imports rapidgzip for it."""
+    process too, as a precaution, since it comes from the same library as the DEFLATE
+    decoder. This process never imports rapidgzip for it."""
     code = """
         import bz2, io, sys
         from archivey.internal.config import AcceleratorMode, StreamConfig
