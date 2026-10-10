@@ -2907,8 +2907,10 @@ class BaseArchiveReader(ArchiveReader):
         check_callable(filter, call="extract_all(filter=…)")
         # ``members=`` used to be checked inside the coordinator, after dest was
         # created. Same reason as filter: a refusal that has already touched the disk
-        # is a side effect of a call the caller got wrong.
-        normalize_member_selector(members)
+        # is a side effect of a call the caller got wrong. Normalized here once and
+        # the result passed on: ``members`` may be a one-shot iterable, which a second
+        # normalization would read empty and so select nothing.
+        selector = normalize_member_selector(members)
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
@@ -2934,7 +2936,7 @@ class BaseArchiveReader(ArchiveReader):
             on_error=on_error,
             abort_on=abort_on,
             on_progress=on_progress,
-            members=members,
+            selector=selector,
             filter=filter,
             limits=effective_limits,
             dry_run=dry_run,

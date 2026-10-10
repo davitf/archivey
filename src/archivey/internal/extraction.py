@@ -55,10 +55,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
-from archivey.internal.selection import (
-    CollectionSelector,
-    normalize_member_selector,
-)
+from archivey.internal.selection import CollectionSelector
 from archivey.terminal import display_path, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -842,7 +839,7 @@ class ExtractionCoordinator:
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_error: OnError = OnError.STOP,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
-        members: MemberSelectorArg = None,
+        selector: Callable[[ArchiveMember], bool] | None = None,
         filter: MemberFilter | None = None,
         limits: ExtractionLimits | None = None,
         abort_on: Collection[AbortOn] = (),
@@ -854,7 +851,10 @@ class ExtractionCoordinator:
         self._on_error = on_error
         self._abort_on = frozenset(abort_on)
         self._on_progress = on_progress
-        self._members = members
+        # Already normalized by ``extract_all()``, which owns the caller's argument: a
+        # one-shot iterable can be read only once, so normalizing it again here would
+        # see it empty and select nothing.
+        self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
         # Placeholders until ``run()`` builds the run's state, so the attribute is never
@@ -992,7 +992,7 @@ class ExtractionCoordinator:
             source=reader,
         )
 
-        selector = normalize_member_selector(self._members)
+        selector = self._selector
 
         # Progress totals cover what this call will actually attempt: when a member list
         # is free (an upfront index) and a selector is given, totals count only the

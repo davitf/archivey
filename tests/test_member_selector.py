@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import tarfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,37 @@ def test_extract_all_with_a_free_list_collects_by_default(tmp_path: Path) -> Non
         report = ar.extract_all(tmp_path, members=["typo.txt", "a.txt"])
     assert [r.member.name for r in report] == ["a.txt"]
     assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+@pytest.mark.parametrize("make", [_zip, _tar], ids=["zip", "tar"])
+def test_extract_all_reads_a_one_shot_iterable_once(
+    tmp_path: Path, make: Callable[[list[tuple[str, bytes]]], bytes], streaming: bool
+) -> None:
+    """A generator passed as ``members=`` selects the same members as a list.
+
+    ``extract_all()`` used to iterate the selector once to check it and hand the
+    exhausted generator on, so nothing was extracted and nothing was reported.
+
+    Mutant: normalize the caller's ``members`` again inside the coordinator and the
+    report is empty, with no unmatched entry.
+    """
+    data = make([("a.txt", b"a"), ("b.txt", b"b")])
+    wanted = iter(["a.txt", "typo.txt"])
+    with open_archive(io.BytesIO(data), streaming=streaming) as ar:
+        report = ar.extract_all(tmp_path, members=(n for n in wanted))
+    assert [r.member.name for r in report] == ["a.txt"]
+    assert (tmp_path / "a.txt").read_bytes() == b"a"
+    assert not (tmp_path / "b.txt").exists()
+    assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
+
+
+def test_stream_members_reads_a_one_shot_iterable_once() -> None:
+    with open_archive(io.BytesIO(_zip([("a.txt", b"a"), ("b.txt", b"b")]))) as ar:
+        wanted = iter(["b.txt", "typo.txt"])
+        selected = [m.name for m, _s in ar.stream_members(n for n in wanted)]
+        assert selected == ["b.txt"]
+        assert _unmatched(ar.diagnostics) == [("typo.txt", "name")]
 
 
 def test_strict_policy_does_not_raise_on_an_unmatched_entry(tmp_path: Path) -> None:
