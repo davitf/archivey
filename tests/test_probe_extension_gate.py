@@ -172,3 +172,29 @@ def test_an_open_stream_has_no_name() -> None:
     # Its output is decompressed bytes with no name of their own, like io.BytesIO.
     with archivey.open_stream(io.BytesIO(_zlib())) as stream:
         assert not hasattr(stream, "name")
+
+
+@pytest.mark.parametrize("name", ["data.zlib", "data.tar.zlib"])
+def test_the_zlib_alias_runs_the_zlib_probe(tmp_path: Path, name: str) -> None:
+    is_tar = name.endswith(".tar.zlib")
+    path = tmp_path / name
+    path.write_bytes(zlib.compress(_tar_bytes() if is_tar else _PAYLOAD))
+    info = detect_format(path)
+    container = ContainerFormat.TAR if is_tar else ContainerFormat.RAW_STREAM
+    assert info.format == ArchiveFormat(container, StreamFormat.ZLIB)
+    assert info.detected_by == "content_probe"
+    assert info.corroborated
+
+
+@requires("brotli")
+def test_the_brotli_alias_runs_the_brotli_probe(tmp_path: Path) -> None:
+    import brotli
+
+    path = tmp_path / "page.html.brotli"
+    path.write_bytes(brotli.compress(_PAYLOAD))
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.BROTLI
+    assert info.confidence == DetectionConfidence.PROBABLE
+    assert info.corroborated
+    with archivey.open_archive(path) as reader:
+        assert [m.name for m in reader.members()] == ["page.html"]

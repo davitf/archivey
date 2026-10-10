@@ -3076,6 +3076,10 @@ class StreamCodec:
     # The optional-dependency requirement (package / extra / hint + unlocked capability);
     # ``None`` for codecs served by the stdlib, which are always available.
     requirement: ClassVar[MissingComponent | None] = None
+    # Other extensions files of this format are commonly given, besides the canonical one.
+    # They matter most for the formats only a content probe recognises, whose probe runs
+    # only for a name that claims the format.
+    extension_aliases: ClassVar[tuple[str, ...]] = ()
 
     # --- derived single-file identity ---
 
@@ -3093,14 +3097,13 @@ class StreamCodec:
 
     @property
     def extensions(self) -> tuple[str, ...]:
-        """Standalone file extension(s), derived from the format (e.g. ``GZIP`` → ``.gz``).
-
-        One canonical extension per codec, taken from ``ArchiveFormat.file_extension()``.
-        Extension *aliases* (e.g. ``.zstd``) are intentionally not a per-codec concern; they
-        belong in a format-level alias map if/when they are needed.
+        """Standalone file extension(s): the canonical one, derived from the format (e.g.
+        ``GZIP`` → ``.gz``) by ``ArchiveFormat.file_extension()``, then ``extension_aliases``.
         """
         fmt = self.single_file_format
-        return (f".{fmt.file_extension()}",) if fmt is not None else ()
+        if fmt is None:
+            return ()
+        return (f".{fmt.file_extension()}", *self.extension_aliases)
 
     # --- behavior (overridden by subclasses) ---
 
@@ -4217,6 +4220,7 @@ def _zlib_header_plausible(prefix: bytes) -> bool:
 class ZlibCodec(_ZlibErrorCodec):
     codec = Codec.ZLIB
     stream_format = StreamFormat.ZLIB
+    extension_aliases = (".zlib",)
     # No exact magic: zlib's 2-byte header is too unspecific, so it is recognized by a content
     # probe that gates on that header before decoding.
 
@@ -4443,6 +4447,7 @@ class Lz4Codec(StreamCodec):
 class BrotliCodec(StreamCodec):
     codec = Codec.BROTLI
     stream_format = StreamFormat.BROTLI
+    extension_aliases = (".brotli",)
     # Brotli has no signature; the detector recognizes it by decoding a bounded prefix.
     requirement = MissingComponent(
         "brotli", "pip install archivey[recommended]", ("brotli",)

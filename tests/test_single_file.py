@@ -913,7 +913,8 @@ def test_open_validation_table_covers_every_single_file_codec() -> None:
     # makes it fail here until the tables below cover it too.
     from archivey.internal.streams.codecs import SINGLE_FILE_CODECS
 
-    suffixes = {ext for codec in SINGLE_FILE_CODECS for ext in codec.extensions}
+    # The canonical extension only: an alias (``.brotli``) is the same codec.
+    suffixes = {codec.extensions[0] for codec in SINGLE_FILE_CODECS if codec.extensions}
     assert suffixes == set(_SINGLE_FILE_CODECS)
 
 
