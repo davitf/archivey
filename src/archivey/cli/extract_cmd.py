@@ -36,7 +36,7 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
-from archivey.reader import ArchiveReader
+from archivey.reader import ForwardArchiveReader
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -129,7 +129,7 @@ class _SmartDestPlan:
 
 
 def resolve_smart_dest(
-    reader: ArchiveReader,
+    reader: ForwardArchiveReader,
     archive: Path,
     *,
     pred: Callable[[ArchiveMember], bool] | None,

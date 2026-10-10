@@ -458,6 +458,44 @@ def test_info_prints_identity_once_when_the_open_fails(
     assert "open:" in captured.err
 
 
+def _tar_bytes(entries: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, data in entries.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            tf.addfile(member, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _zip_bytes(entries: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def _main_on_fifo(fifo: Path, argv: list[str]) -> int:
+    """Run ``main(argv)`` in a thread and fail the test if it blocks on ``fifo``."""
+    import threading
+
+    result: list[int] = []
+    worker = threading.Thread(target=lambda: result.append(main(argv)), daemon=True)
+    worker.start()
+    worker.join(10)
+    if worker.is_alive():
+        # Unblock a stuck second open so the thread can finish, then fail.
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(5)
+        pytest.fail(f"archivey {argv[0]} blocked on a FIFO")
+    return result[0]
+
+
+_FIFO_TAR = {"a.txt": b"hello", "b/c.txt": b"see"}
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
 def test_info_on_a_fifo_reports_the_open_error_without_reopening(
     tmp_path: Path,
@@ -467,35 +505,104 @@ def test_info_on_a_fifo_reports_the_open_error_without_reopening(
     """A failed open on a FIFO must not run ``detect_format`` on the path again.
 
     A pipe is read once, so a second open waits for a writer that never comes.
-    ``info`` must print the open error and return.
+    ``info`` must print the open error and return. A ZIP cannot be read in one
+    forward pass, so its open fails even in the streaming mode the CLI picks.
     """
-    import threading
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tf:
-        member = tarfile.TarInfo("a.txt")
-        member.size = 5
-        tf.addfile(member, io.BytesIO(b"hello"))
-    fifo = tmp_path / "pipe.tar"
-    named_fifo_with_writer(fifo, buf.getvalue())
-
-    result: list[int] = []
-    worker = threading.Thread(
-        target=lambda: result.append(main(["info", str(fifo)])), daemon=True
-    )
-    worker.start()
-    worker.join(10)
-    if worker.is_alive():
-        # Unblock the stuck second open so the thread can finish, then fail.
-        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
-        os.close(fd)
-        worker.join(5)
-        pytest.fail("archivey info blocked on a FIFO")
-    assert result == [EXIT_FAIL]
+    fifo = tmp_path / "pipe.zip"
+    named_fifo_with_writer(fifo, _zip_bytes({"a.txt": b"hello"}))
+    assert _main_on_fifo(fifo, ["info", str(fifo)]) == EXIT_FAIL
     captured = capsys.readouterr()
     assert "open:" in captured.err
+    assert "Copy the archive to a regular file first" in captured.err
+    # The user cannot pass streaming=True, so the message must not suggest it.
+    assert "streaming=True" not in captured.err
     # The detected format is named plainly, not as an enum repr.
     assert "ArchiveFormat." not in captured.err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_info_on_a_tar_fifo_opens_in_streaming_mode(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    assert _main_on_fifo(fifo, ["info", str(fifo)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "format:" in out
+    assert "forward-only source" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("verb", ["list", "l"])
+def test_list_on_a_tar_fifo_lists_every_member(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    assert _main_on_fifo(fifo, [verb, str(fifo)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "a.txt" in out
+    assert "b/c.txt" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("patterns", [[], ["b/*"]])
+def test_test_on_a_tar_fifo_verifies_in_one_pass(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    patterns: list[str],
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    argv = ["test", "--hide-progress", str(fifo), *patterns]
+    assert _main_on_fifo(fifo, argv) == EXIT_OK
+    expected = "1 OK, 0 failed" if patterns else "2 OK, 0 failed"
+    assert expected in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("patterns", [[], ["b/*"]])
+def test_extract_on_a_tar_fifo_streams_the_members_out(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    patterns: list[str],
+) -> None:
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    dest = tmp_path / "out"
+    argv = ["extract", "--hide-progress", str(fifo), "-d", str(dest), *patterns]
+    assert _main_on_fifo(fifo, argv) == EXIT_OK
+    assert (dest / "b" / "c.txt").read_bytes() == b"see"
+    assert (dest / "a.txt").exists() == (not patterns)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("verb", ["list", "test", "extract"])
+def test_verbs_on_a_zip_fifo_say_to_copy_it_to_a_file(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+) -> None:
+    """A ZIP needs to seek, so no mode can read it from a pipe: the message must name
+    what a CLI user can do, not a ``streaming=True`` they cannot pass.
+    """
+    fifo = tmp_path / "pipe.zip"
+    named_fifo_with_writer(fifo, _zip_bytes({"a.txt": b"hello"}))
+    argv = [verb, str(fifo)]
+    if verb == "extract":
+        argv += ["-d", str(tmp_path / "out")]
+    assert _main_on_fifo(fifo, argv) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "ZIP cannot be read from a pipe or device" in err
+    assert "Copy the archive to a regular file first" in err
+    assert "streaming=True" not in err
 
 
 def test_can_reread_skips_only_read_once_paths(tmp_path: Path) -> None:

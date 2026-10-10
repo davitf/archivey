@@ -292,7 +292,7 @@ a writer that never comes; on those `info` prints the open error alone.
 | `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey info <archive>` that opens | Detection runs once, inside the open |
-| `archivey info <fifo>` whose open fails | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
+| `archivey info <fifo>` whose open fails (a ZIP, say) | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 
 ### Requirement: version reports package identity and optional format matrix
@@ -377,6 +377,28 @@ a failure and MUST NOT assume `1` is the only failure code.
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
 | Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
 | Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `0`, even when `test` had not finished verifying |
+
+### Requirement: read-once paths open in streaming mode
+
+When the archive path is a pipe (FIFO), a character device or a socket, which can be
+read only once, every verb that opens the archive (`list`, `test`, `extract`, `info`)
+SHALL open it in streaming mode, because the user has no option to choose the mode.
+`list` SHALL list the members in one pass, `test` SHALL verify them in one pass and
+`extract` SHALL extract them in one pass. When the format cannot be read in one
+forward pass (ZIP, 7z, RAR, ISO), the verb SHALL exit `1` with a message that names
+the format and tells the user to copy the input to a regular file first. The message
+MUST NOT suggest `streaming=True` or a `BytesIO`, which a CLI user cannot pass. A
+block device rereads the same bytes and opens as a regular file does.
+
+#### Scenario: read-once paths
+
+| Case | Expected |
+| --- | --- |
+| `archivey list <tar-fifo>` | Lists every member; exit `0` |
+| `archivey test <tar-fifo>` | Verifies every file member in one pass; exit `0` |
+| `archivey extract <tar-fifo> -d out` | Extracts every member into `out`; exit `0` |
+| `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
+| `archivey list <zip-fifo>` (also `test`, `extract`, `info`) | Exit `1`; message names ZIP and says to copy the input to a regular file first |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 

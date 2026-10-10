@@ -12,7 +12,7 @@ from archivey.cost import StreamCapability
 from archivey.types import ArchiveMember
 
 if TYPE_CHECKING:
-    from archivey.reader import ArchiveReader
+    from archivey.reader import ForwardArchiveReader
 
 
 class _Pattern:
@@ -165,7 +165,9 @@ def count_selected(
     return sum(1 for member in members if pred(member))
 
 
-def members_for_include_check(reader: ArchiveReader) -> list[ArchiveMember] | None:
+def members_for_include_check(
+    reader: ForwardArchiveReader,
+) -> list[ArchiveMember] | None:
     """Member list for unmatched-include / empty-selection checks, if safe.
 
     Prefer a cheap index. On a forward-only (streaming) reader, return ``None``

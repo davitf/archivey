@@ -7,7 +7,7 @@ from collections.abc import Generator, Iterator
 from contextlib import closing
 from typing import TextIO, TypeVar
 
-from archivey import ArchiveReader, ExtractionProgress
+from archivey import ArchiveReader, ExtractionProgress, ForwardArchiveReader
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import (
@@ -252,8 +252,12 @@ def _link_needs_verification(member: ArchiveMember) -> bool:
     )
 
 
-def _verify_link(reader: ArchiveReader, member: ArchiveMember) -> None:
+def _verify_link(reader: ForwardArchiveReader, member: ArchiveMember) -> None:
     """Read ``member``'s stored target again, raising what the read raises.
+
+    Only 7z and RAR4 leave a link to verify after the pass, and neither opens in the
+    streaming mode the CLI uses for a pipe, so ``reader`` here is open for random
+    access.
 
     ``open()`` reads a link's target before it follows the link, and that read raises
     the fault that listing only reported. Once the target is read, the rest is about
@@ -262,6 +266,8 @@ def _verify_link(reader: ArchiveReader, member: ArchiveMember) -> None:
     a member of its own. Those three are the only errors ignored; any other error is
     raised, such as a target member that cannot be opened or a usage error.
     """
+    # Every reader is an ArchiveReader at run time; this narrows the type for ``open``.
+    assert isinstance(reader, ArchiveReader)
     try:
         reader.open(member).close()
     except (ReadError, ArchiveyUsageError) as exc:
