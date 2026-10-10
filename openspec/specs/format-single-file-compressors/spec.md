@@ -397,3 +397,4 @@ that does not match.
 | zstd frame compressed with a dictionary | `UnsupportedFeatureError` |
 | `.Z` with maximum code width 17 or 31 | `UnsupportedFeatureError` |
 | gzip header CRC mismatch | `CorruptionError` |
+| zlib stream whose CM is 7 (zlib: "unknown compression method") | `CorruptionError` |

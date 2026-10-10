@@ -41,6 +41,8 @@ from archivey.internal.streams.decompressor_stream import (
     DecodeOut,
     Decoder,
     SeekPoint,
+    _inflate,
+    _inflate_rest,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 
@@ -141,40 +143,6 @@ def _resume_decompressor(resume: DeflateResume) -> zlib._Decompress:
     if resume.window:
         return zlib.decompressobj(-15, zdict=resume.window)
     return zlib.decompressobj(-15)
-
-
-def _inflate(
-    decomp: zlib._Decompress,
-    data: bytes,
-    max_length: int,
-    error: Callable[[zlib.error], Exception],
-) -> bytes:
-    """One inflate step: ``data`` to at most ``max_length`` output bytes, the rest kept
-    in ``unconsumed_tail``. A negative ``max_length`` is no limit, and so is 0 (zlib's
-    reading): the stream never asks for 0 bytes. A ``zlib.error`` leaves as ``error``
-    maps it."""
-    try:
-        if max_length < 0:
-            return decomp.decompress(data)
-        return decomp.decompress(data, max_length)
-    except zlib.error as exc:
-        raise error(exc) from exc
-
-
-def _inflate_rest(
-    decomp: zlib._Decompress, error: Callable[[zlib.error], Exception]
-) -> bytes:
-    """At the end of the input: the output of what ``decomp`` still holds.
-
-    The caller checks ``decomp.eof`` after: when it is false, the stream is truncated.
-    """
-    out = b""
-    if decomp.unconsumed_tail:
-        out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
-    try:
-        return out + decomp.flush()
-    except zlib.error as exc:
-        raise error(exc) from exc
 
 
 def _splice(bit: int, chunk: bytes) -> bytes:

@@ -2546,15 +2546,40 @@ def test_zlib_decompressor_stream_raises_typed_errors(wbits: int) -> None:
     from archivey.internal.streams.codecs.deflate_resume import DeflateResume
     from archivey.internal.streams.decompressor_stream import SeekPoint
 
+    label = "zlib" if wbits > 0 else "deflate"
     bad = b"\xff" * 64 if wbits < 0 else zlib.compress(b"x")[:2] + b"\xff" * 64
     with ZlibDecompressorStream(io.BytesIO(bad), wbits=wbits) as stream:
-        with pytest.raises(CorruptionError):
+        with pytest.raises(CorruptionError, match=f"Error reading {label} stream"):
             stream.read()
     resumed = ZlibDecoder(wbits).recreate(
         SeekPoint(0, 0, DeflateResume(0, b"")), io.BytesIO()
     )
-    with pytest.raises(CorruptionError):
+    with pytest.raises(CorruptionError, match=f"Error reading {label} stream"):
         resumed.feed(b"\xff" * 64)
+
+
+@pytest.mark.parametrize(
+    ("codec", "label"),
+    [
+        (Codec.ZLIB, "zlib"),
+        (Codec.DEFLATE, "deflate"),
+        pytest.param(Codec.DEFLATE64, "deflate64", marks=requires("inflate64")),
+    ],
+)
+def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
+    """A cut stream's ``TruncatedError`` says "<format> stream is truncated"."""
+    if codec is Codec.DEFLATE64:
+        import inflate64
+
+        deflater = inflate64.Deflater()
+        data = deflater.deflate(CONTENT) + deflater.flush()
+    else:
+        data = zlib.compress(CONTENT)
+        data = data if codec is Codec.ZLIB else data[2:-4]
+    source = io.BytesIO(data[: len(data) // 2])
+    with open_codec_stream(codec, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(TruncatedError, match=f"^{label} stream is truncated"):
+            stream.read()
 
 
 @requires("lz4")

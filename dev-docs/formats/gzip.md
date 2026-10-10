@@ -21,7 +21,7 @@ behaviour and links the row.
 | Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too; under `rapidgzip`, archivey checks the Adler-32 when the stream is read to its end (§2.3) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
 | Truncation | Always raised by the standard library engine. Through `rapidgzip`, raised by a backstop that a seek does not turn off. It stands down only when it finds a further member that zlib confirms, so it is best-effort for a multi-member gzip (§2.3) |
-| Refuses | A member whose method is not 8 (deflate) or whose header sets a reserved FLG bit, as `UnsupportedFeatureError` (gzip: "-- not supported"; `gzip_error`). A zlib stream with a preset dictionary fails to decode, since archivey holds no dictionary |
+| Refuses | A member whose method is not 8 (deflate) or whose header sets a reserved FLG bit, as `UnsupportedFeatureError` (gzip: "-- not supported"; `gzip_error`). A zlib stream whose CM is not 8 is `CorruptionError`, not unsupported (`zlib_error`): zlib reports it as damage ("unknown compression method"), RFC 1950 defines no other method, and DR-4 covers only valid features (duplicate-check thread, 2026-10-10; reopen if a zlib method other than 8 is ever defined). A zlib stream with a preset dictionary fails to decode, since archivey holds no dictionary |
 
 **Four things a reader might expect and will not find.** The gzip trailer's CRC-32 is not
 in `member.hashes`, even for a one-member file: proving there is one member means reading

@@ -174,11 +174,12 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     ``bzip2_resume``).
 
     Once switched, a data error of the standard library leaves as the codec's typed
-    error (``translate``), as it does from the outer translator with the accelerator
-    off. A raw ``zlib.error`` would be taken for the accelerator's opaque end-of-input
-    error by the over-run probe of a declared size (``_probe_past_declared``), which
-    reads it as "no more data": a ZIP member declared empty with a body that is not
-    DEFLATE read as empty, where the accelerator off raises. Only the DEFLATE family
+    error (``translate``), as with the accelerator off. The over-run probe of a
+    declared size (``_probe_past_declared``) reads any error that is not an
+    ``ArchiveyError`` as the accelerator's opaque end of input, "no more data", so a
+    raw error here would let a ZIP member declared empty, with a body that is not
+    DEFLATE, read as empty. The standard-library DEFLATE-family decoders raise typed
+    errors themselves; ``translate`` covers any raw error left. Only the DEFLATE family
     passes ``translate``: bzip2's accelerated path adds no ``_wrap_accelerated_length``
     verifier, so no over-run probe sits inside it, and its translator maps every
     ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage

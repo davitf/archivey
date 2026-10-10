@@ -12,8 +12,6 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.deflate_resume import (
     DeflateResume,
     DeflateResumeDecoder,
-    _inflate,
-    _inflate_rest,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -21,6 +19,8 @@ from archivey.internal.streams.decompressor_stream import (
     Decoder,
     DecompressorStream,
     SeekPoint,
+    _inflate,
+    _inflate_rest,
     gzip_error,
     truncated_message,
     zlib_error,

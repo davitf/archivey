@@ -8,6 +8,7 @@ are ``dev-docs/topics/exception-handlers.md``.
 from __future__ import annotations
 
 import io
+import struct
 import subprocess
 import sys
 import textwrap
@@ -91,6 +92,38 @@ def test_overrun_probe_still_reads_an_opaque_decoder_error_as_the_end() -> None:
     inner = _ExactThenFails(b"x" * 10, RuntimeError("std::exception"))
     with VerifyingStream(inner, {}, expected_size=10) as stream:
         assert stream.read() == b"x" * 10
+
+
+def _zip_declared_empty_with_garbage_body() -> bytes:
+    """A one-member ZIP: DEFLATE, declared size 0 and CRC 0, and a 64-byte body that is
+    not DEFLATE."""
+    name, body = b"a.txt", b"\xff" * 64
+    fields = struct.pack("<HHHHHIII", 20, 0, 8, 0, 0, 0, len(body), 0)
+    local = b"PK\x03\x04" + fields + struct.pack("<HH", len(name), 0) + name
+    central = (
+        b"PK\x01\x02"
+        + struct.pack("<H", 20)
+        + fields
+        + struct.pack("<HHHHHII", len(name), 0, 0, 0, 0, 0, 0)
+        + name
+    )
+    offset = len(local) + len(body)
+    end = b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, 1, 1, len(central), offset, 0)
+    return local + body + central + end
+
+
+def test_overrun_probe_raises_a_typed_decoder_error() -> None:
+    """verify.py ``_probe_past_declared``: the standard-library DEFLATE decoder raises
+    a typed ``CorruptionError`` past the declared size, and the probe lets it through.
+    A garbage body behind a member declared empty is not read as an empty member."""
+    blob = _zip_declared_empty_with_garbage_body()
+    with (
+        archivey.open_archive(io.BytesIO(blob)) as reader,
+        reader.open(reader.get("a.txt")) as stream,
+        pytest.raises(CorruptionError, match="deflate stream") as info,
+    ):
+        stream.read()
+    assert not isinstance(info.value, TruncatedError)
 
 
 @requires("rapidgzip")
