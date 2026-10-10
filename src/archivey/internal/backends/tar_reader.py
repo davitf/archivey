@@ -165,13 +165,13 @@ _EofFinding = Literal[
     "absent", "short", "damaged_second_block", "rejected_header", "no_member"
 ]
 
-# Typeflags ``tarfile.isreg()`` accepts: regular (``0`` and the old NUL), contiguous
-# (``7``) and old GNU sparse (``S``). Every other typeflag that is not a directory or
-# a link lists as OTHER, its data skipped by size.
+# Typeflags whose member is a file: regular (``0`` and the old NUL), contiguous (``7``)
+# and old GNU sparse (``S``) all carry the file's data. Every other typeflag that is not
+# a directory or a link lists as OTHER, its data skipped by size.
 _FILE_TYPES = frozenset((b"0", b"\x00", b"7", b"S"))
 # The random-access walk's read-ahead. Fixed rather than io's default, which Python 3.14
-# raised from 8 KiB to 128 KiB: on a compressed tar a larger read-ahead decodes further
-# past the end-of-archive marker, into a damaged codec tail the listing does not need.
+# raised from 8 KiB to 128 KiB: a larger read-ahead reads and decodes further past what
+# the listing needs, so listing costs and source reads would differ by Python version.
 _WALK_BUFFER = 8 * 1024
 
 # GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
@@ -357,8 +357,8 @@ class TarReader(BaseArchiveReader):
         # explicitly: left to the garbage collector, a stream held by a failed open's
         # traceback kept its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
-        # The walker's own buffered view in random access (see _new_walker).
-        self._walker_streams: list[BinaryIO] = []
+        # The current walk's own buffered view in random access (see _new_walker).
+        self._walker_view: BinaryIO | None = None
         # The last PAX records a member without records of its own was built from,
         # and the ``extra["tar.pax_headers"]`` every such member shares
         # (:meth:`_extra_pax_headers`).
@@ -402,16 +402,21 @@ class TarReader(BaseArchiveReader):
     def _release_owned_stream(self) -> None:
         """Close the streams this reader opened, if any. Safe to call more than once."""
         try:
-            for stream in self._walker_streams:
-                stream.close()
-            self._walker_streams = []
+            # A random-access reader has a walk view and a streaming one has the
+            # buffer; never both.
+            self._close_walker_view()
             if self._owned_stream is not None:
-                self._owned_stream.close()
-                self._owned_stream = None
+                owned, self._owned_stream = self._owned_stream, None
+                owned.close()
         finally:
             if self._owned_codec_stream is not None:
-                self._owned_codec_stream.close()
-                self._owned_codec_stream = None
+                codec, self._owned_codec_stream = self._owned_codec_stream, None
+                codec.close()
+
+    def _close_walker_view(self) -> None:
+        if self._walker_view is not None:
+            view, self._walker_view = self._walker_view, None
+            view.close()
 
     def _open_byte_stream(
         self,
@@ -454,6 +459,12 @@ class TarReader(BaseArchiveReader):
                 collector=self._diagnostics_collector,
             )
             self._owned_codec_stream = stream
+            if not streaming:
+                # Each walk buffers its own view (_new_walker). A second buffer here
+                # would fill the first one in a loop, and a loop that reaches a damaged
+                # codec tail raises and drops the bytes already decoded, though the
+                # walk may need none of the tail.
+                return stream
             # The walker reads 512-byte blocks: a buffer in front makes each one a copy
             # from memory, not a decoder call. The cast is typeshed's split:
             # BufferedIOBase is not BinaryIO there, but is at runtime.
@@ -484,7 +495,10 @@ class TarReader(BaseArchiveReader):
                 SharedView(self._stream, 0, lock=self._io_guard()), _WALK_BUFFER
             ),
         )
-        self._walker_streams.append(view)
+        # Only one walk runs at a time, and a pass's member streams are closed when it
+        # ends, so a walk started over replaces the last one's view.
+        self._close_walker_view()
+        self._walker_view = view
         return TarWalker(view, seekable=True)
 
     def _io_guard(self) -> AbstractContextManager[object]:

@@ -1,8 +1,8 @@
 """Native TAR header parser and header walker (structure only: no member mapping).
 
-Reads TAR headers one at a time from a byte stream and returns small data objects.
-``tar_reader.py`` still parses headers with stdlib ``tarfile``; nothing reads through
-this module yet. Its tests compare it with ``tarfile`` and GNU tar.
+Reads TAR headers one at a time from a byte stream and returns small data objects;
+``tar_reader.py`` maps them to members. Its tests compare it with ``tarfile`` and GNU
+tar.
 
 On-disk layout this parser assumes::
 
@@ -341,21 +341,35 @@ class PaxValue:
     binary: bool
 
 
-def parse_pax_records(
-    data: bytes, *, binary_default: bool
-) -> list[tuple[bytes, PaxValue]]:
-    """Parse ``"<length> <key>=<value>\\n"`` records, in order.
+@dataclass(slots=True)
+class PaxRecords:
+    """One PAX block's records.
+
+    ``values`` holds the last value of each key. ``sparse_offsets`` and
+    ``sparse_numbytes`` hold the ``GNU.sparse.offset`` and ``GNU.sparse.numbytes``
+    values in order: a PAX sparse 0.0 map is the only record order that matters.
+    """
+
+    values: dict[bytes, PaxValue]
+    sparse_offsets: list[bytes]
+    sparse_numbytes: list[bytes]
+
+
+def parse_pax_records(data: bytes, *, binary_default: bool) -> PaxRecords:
+    """Parse ``"<length> <key>=<value>\\n"`` records.
 
     ``length`` is decimal and counts the whole record, itself and the newline
     included; it must land on the newline. Parsing stops at a NUL byte where a record
     would start, which is the block padding. ``hdrcharset`` in the same block applies
     to every name value in it (POSIX); ``binary_default`` is the global one in force.
     Raises :class:`CorruptionError` on a record that does not parse.
+
+    A repeated key keeps one value, so a block of many records of one key holds no
+    object per record.
     """
-    raw: list[tuple[bytes, bytes]] = []
-    # One bytes object per distinct key: a sparse 0.0 map repeats two keys once per
-    # entry.
-    keys: dict[bytes, bytes] = {}
+    raw: dict[bytes, bytes] = {}
+    offsets: list[bytes] = []
+    numbytes: list[bytes] = []
     binary = binary_default
     pos = 0
     end = len(data)
@@ -380,13 +394,17 @@ def parse_pax_records(
             )
         if key == b"hdrcharset":
             binary = value == b"BINARY"
-        raw.append((keys.setdefault(key, key), value))
+        elif key == b"GNU.sparse.offset":
+            offsets.append(value)
+        elif key == b"GNU.sparse.numbytes":
+            numbytes.append(value)
+        raw[key] = value
         pos = record_end
-    # Each record is replaced in place, so the list is never held twice.
-    records = cast("list[tuple[bytes, PaxValue]]", raw)
-    for i, (key, value) in enumerate(raw):
-        records[i] = (key, PaxValue(value, binary))
-    return records
+    # Each value is replaced in place, so the dict is never held twice.
+    values = cast("dict[bytes, PaxValue]", raw)
+    for key, value in raw.items():
+        values[key] = PaxValue(value, binary)
+    return PaxRecords(values, offsets, numbytes)
 
 
 def _pax_int(records: Mapping[bytes, PaxValue], key: bytes) -> int | None:
@@ -467,12 +485,11 @@ def sparse_map_0_1(value: bytes, name: str, charge: Charge) -> SparseMap:
 
 
 def sparse_map_0_0(
-    records: list[tuple[bytes, PaxValue]], name: str, charge: Charge
+    offsets: list[bytes], lengths: list[bytes], name: str, charge: Charge
 ) -> SparseMap:
-    """PAX sparse 0.0: repeated ``GNU.sparse.offset`` / ``GNU.sparse.numbytes``
-    records, in order. Charged from the record count before parsing."""
-    offsets = [v.value for k, v in records if k == b"GNU.sparse.offset"]
-    lengths = [v.value for k, v in records if k == b"GNU.sparse.numbytes"]
+    """PAX sparse 0.0: the values of the repeated ``GNU.sparse.offset`` /
+    ``GNU.sparse.numbytes`` records, in order. Charged from the record count before
+    parsing."""
     if len(offsets) != len(lengths):
         raise CorruptionError(
             f"TAR sparse map of {name} (GNU.sparse.offset/numbytes) has "
@@ -846,7 +863,9 @@ class TarWalker:
         unchecked = self._unchecked_data_end
         self._unchecked_data_end = None
         own: dict[bytes, PaxValue] = {}
-        own_records: list[tuple[bytes, PaxValue]] = []
+        # This member's PAX sparse 0.0 map records, in order, across its x headers.
+        sparse_offsets: list[bytes] = []
+        sparse_numbytes: list[bytes] = []
         long_name: bytes | None = None
         long_link: bytes | None = None
         # Where the last x or L header of this member's chain starts, once there is
@@ -917,10 +936,11 @@ class TarWalker:
                         # which the reader classifies like any rejected block.
                         return self._reject(header_at, str(exc))
                     if parsed.typeflag == PAX_GLOBAL_TYPE:
-                        self._apply_global(records)
+                        self._apply_global(records.values)
                     else:
-                        own_records.extend(records)
-                        own.update(records)
+                        own.update(records.values)
+                        sparse_offsets += records.sparse_offsets
+                        sparse_numbytes += records.sparse_numbytes
                 continue
             try:
                 entry = self._resolve(
@@ -928,7 +948,7 @@ class TarWalker:
                     start,
                     offset,
                     own,
-                    own_records,
+                    (sparse_offsets, sparse_numbytes),
                     long_name,
                     long_link,
                     charge,
@@ -944,8 +964,8 @@ class TarWalker:
         self.end = TarEnd(TarEndKind.REJECTED, offset, reason=reason)
         return self.end
 
-    def _apply_global(self, records: list[tuple[bytes, PaxValue]]) -> None:
-        for key, value in records:
+    def _apply_global(self, records: dict[bytes, PaxValue]) -> None:
+        for key, value in records.items():
             if key == b"hdrcharset":
                 self._global_binary = value.value == b"BINARY"
             if value.value:
@@ -961,7 +981,7 @@ class TarWalker:
         start: int,
         offset: int,
         own: dict[bytes, PaxValue],
-        own_records: list[tuple[bytes, PaxValue]],
+        own_sparse: tuple[list[bytes], list[bytes]],
         long_name: bytes | None,
         long_link: bytes | None,
         charge: _Charger,
@@ -1055,11 +1075,9 @@ class TarWalker:
                 merged[b"GNU.sparse.map"].value, charge.name, charge
             )
             size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif b"GNU.sparse.size" in merged or any(
-            key == b"GNU.sparse.offset" for key, _ in own_records
-        ):
+        elif b"GNU.sparse.size" in merged or own_sparse[0]:
             sparse_format = SparseFormat.PAX_0_0
-            sparse = sparse_map_0_0(own_records, charge.name, charge)
+            sparse = sparse_map_0_0(*own_sparse, charge.name, charge)
             size = _pax_int(merged, b"GNU.sparse.size") or 0
         elif b"GNU.sparse.major" in merged or b"GNU.sparse.realsize" in merged:
             # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the

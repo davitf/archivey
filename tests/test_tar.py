@@ -5,6 +5,7 @@ end-of-archive verification."""
 from __future__ import annotations
 
 import errno
+import gzip
 import io
 import logging
 import os
@@ -2401,12 +2402,32 @@ def test_close_releases_the_codec_stream_when_its_buffer_close_raises(
         info = tarfile.TarInfo("a")
         info.size = 1
         t.addfile(info, io.BytesIO(b"x"))
-    ar: Any = open_archive(path)
+    # Streaming: random access buffers each walk's view, not the codec stream.
+    ar: Any = open_archive(path, streaming=True)
     codec = ar._owned_codec_stream
     with mock.patch.object(ar._owned_stream, "close", side_effect=OSError("boom")):
         with pytest.raises(OSError):
             ar.close()
     assert codec.closed
+
+
+def test_a_retried_listing_keeps_one_walk_view() -> None:
+    """A random-access listing that fails and is retried starts a new walk; the last
+    walk's buffered view is closed, not kept until the reader closes."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for i in range(20):
+            tar.addfile(tarfile.TarInfo(f"m{i}"), io.BytesIO())
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
+    ar: Any = open_archive(io.BytesIO(buf.getvalue()), config=config)
+    with ar:
+        views = []
+        for _ in range(3):
+            with pytest.raises(ResourceLimitError):
+                ar.members()
+            views.append(ar._walker_view)
+        assert len({id(view) for view in views}) == 3
+        assert [view.closed for view in views] == [True, True, False]
 
 
 def test_global_pax_path_wins_over_a_gnu_long_name() -> None:
@@ -2738,6 +2759,26 @@ def test_a_pass_reads_no_member_data_the_consumer_does_not_reach(
         assert reads_after(2) >= big
     else:
         assert reads_after(2) < 1 * 2**20  # random access seeks past the data
+
+
+@pytest.mark.parametrize("padding", [0, 4096, 32 * 1024])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_cut_second_gzip_member_after_the_trailer_still_lists(
+    padding: int, streaming: bool
+) -> None:
+    """A .tar.gz whose second gzip member is cut, after the tar trailer and some zero
+    padding, lists its member: the cut is past everything the listing needs, and a
+    read-ahead into it must not fail the open."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        info = tarfile.TarInfo("f.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    plain = buf.getvalue()[: 4 * 512]  # header, data block, two-block trailer
+    data = gzip.compress(plain + bytes(padding)) + b"\x1f\x8b\x08\x00" + bytes(8)
+    with open_archive(io.BytesIO(data), streaming=streaming) as archive:
+        names = [member.name for member, _ in archive.stream_members()]
+    assert names == ["f.txt"]
 
 
 def test_gnu_dumpdir_entry_is_a_directory(tmp_path: Path) -> None:

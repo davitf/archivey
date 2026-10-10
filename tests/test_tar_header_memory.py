@@ -1,9 +1,10 @@
-"""TAR header structures that ``tarfile`` expands before any listing limit sees them.
+"""TAR header structures that expand before any listing limit sees them.
 
-Each test builds a small crafted archive whose headers make ``tarfile`` allocate far more
-than the archive's size: a chain of extended headers, a sparse map, or a PAX global
-header copied into every member. Each must be bounded by ``max_metadata_bytes`` in both
-access modes (DR-9a), and an honest archive of the same shape must still list.
+Each test builds a small crafted archive whose headers could make the parser allocate
+far more than the archive's size: a chain of extended headers, a sparse map, many PAX
+records of one key, or a PAX global header copied into every member. Each must be
+bounded by ``max_metadata_bytes`` in both access modes (DR-9a), and an honest archive of
+the same shape must still list.
 """
 
 from __future__ import annotations
@@ -279,6 +280,21 @@ def test_global_records_are_held_once_not_once_per_member(streaming: bool) -> No
 
     walk()
     assert traced_peak(walk) < 8 * 2**20
+
+
+@_MODES
+def test_repeated_pax_records_hold_one_value(streaming: bool) -> None:
+    """A member's ``x`` header of 400 000 records of one key (3.6 MB of text) keeps
+    one value, not an object per record: the records cost far more than their text,
+    and ``max_metadata_bytes`` weighs the text."""
+    body = b"9 a=bbbb\n" * 400_000
+    data = _extended(body, tarfile.XHDTYPE) + _plain("f") + _TRAILER
+
+    def walk() -> None:
+        assert _names(data, None, streaming=streaming) == ["f"]
+
+    walk()
+    assert traced_peak(walk) < 4 * len(body)
 
 
 def test_global_records_apply_to_the_members_after_them_only() -> None:

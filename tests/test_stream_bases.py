@@ -479,9 +479,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.lzma_codec._RefusedAloneStream,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
-        # A member's stored bytes, read forward from a forward-only walk's stream
-        # (for .tar.gz, the decompressed stream). TAR stores member data as is, so
-        # no codec above it has a table, and a forward-only walk resumes nowhere.
+        # A member's stored bytes, read forward from the walk's stream (for .tar.gz,
+        # the decompressed stream) in one pass. TAR stores member data as is, so no
+        # codec above it has a table, and a pass's member streams are forward-only.
         tar_parser._ForwardSlice,
         # A 7z pass's member stream, forward-only like the folder decode under it:
         # nothing seeks it, so nothing asks it for a resume offset.
