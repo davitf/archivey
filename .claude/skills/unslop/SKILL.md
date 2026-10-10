@@ -40,8 +40,9 @@ Three rules on top of the list:
 
 - **Every source fact survives.** A rewrite keeps each number, name, path, qualifier,
   quote and link of the original. Plain text that drops a qualifier has failed.
-- **When editing existing text, change only the sentences that fail a check.** A sentence that passes
-  stays as written, so a second pass over your output changes nothing.
+- **When editing existing text, change only the sentences that fail a check.** A
+  sentence that passes stays as written, so a second pass over your output changes
+  nothing.
 - **Flag a passage only at three or more patterns**, or one pattern repeated across
   passages. One device is a choice, not a tell. This is advice, not a gate
   ([`AGENTS.md`](../../../AGENTS.md) §Writing English).
