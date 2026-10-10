@@ -333,7 +333,10 @@ class ListingLimits:
     is an escape hatch.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
-    member anyway, so real images never notice.
+    member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``
+    parses against ``max_members`` too, one per UDF name, although ``members()`` does
+    not list UDF: an image whose UDF tree has more names than its ISO 9660 tree can be
+    refused for the UDF tree.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than the whole ``max_metadata_bytes``, before reading it.
     """

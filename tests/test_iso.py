@@ -521,15 +521,18 @@ def _udf_image_with_links(count: int) -> bytes:
 def test_listing_limits_count_udf_entries_as_pycdlib_parses_them() -> None:
     """``max_members`` counts the UDF tree pycdlib parses at open, per tree.
 
-    The ISO 9660 tree holds one file and the UDF tree twenty names, so a budget of
-    five fits the tree archivey lists. pycdlib still parses every UDF entry inside
-    ``open_fp``, so the UDF tree is held to the same cap.
+    The ISO 9660 tree holds one file and the UDF tree twenty names. pycdlib parses 21
+    File Identifiers in the UDF root, the parent entry and the twenty names, and only
+    the twenty count: the parent entry is not a member. So a cap of exactly 20 opens,
+    which is what pins that exclusion.
     """
     image = _udf_image_with_links(20)
     fits = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
     with open_archive(io.BytesIO(image), config=fits) as reader:
         assert [m.name for m in reader.members()] == ["F.TXT"]
 
+    # A cap of five fits the one-member tree archivey lists, but pycdlib still parses
+    # every UDF entry inside ``open_fp``, so the UDF tree is held to the same cap.
     below = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     with pytest.raises(ResourceLimitError, match="max_members=5.*UDF"):
         open_archive(io.BytesIO(image), config=below)
@@ -548,6 +551,29 @@ def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
         open_archive(io.BytesIO(image), config=tight)
     with open_archive(io.BytesIO(_udf_image_with_links(1)), config=tight) as reader:
         assert [m.name for m in reader.members()] == ["F.TXT"]
+
+
+@pytest.mark.parametrize(
+    ("tag", "fixed"),
+    [pytest.param(261, 176, id="file-entry"), pytest.param(266, 216, id="extended")],
+)
+def test_a_udf_file_entry_is_weighed_by_the_lengths_it_declares(
+    tag: int, fixed: int
+) -> None:
+    """The weight of a File Entry is its fixed part plus ``L_EA`` plus ``L_AD``.
+
+    ECMA-167 puts the two lengths in the last 8 bytes of the fixed part: 176 bytes for
+    a File Entry (4/14.9) and 216 for an Extended File Entry (4/14.17). pycdlib writes
+    only File Entries, so the Extended one is a synthetic header here; it fails if
+    tag 266 is read at the File Entry's offsets. The weight is capped by the bytes read.
+    """
+    from archivey.internal.backends.iso_reader import _udf_file_entry_size
+
+    header = bytearray(fixed)
+    struct.pack_into("<H", header, 0, tag)
+    struct.pack_into("<LL", header, fixed - 8, 10, 48)
+    assert _udf_file_entry_size(bytes(header) + bytes(1000)) == fixed + 58
+    assert _udf_file_entry_size(bytes(header) + bytes(20)) == fixed + 20
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:

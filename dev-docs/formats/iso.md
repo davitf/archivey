@@ -363,8 +363,9 @@ ISO-specific only. General extraction and name hazards are §2.4.
   allocates on every pass (about 65 MB a second under default limits, from a 600 KB
   image). Two guards cover it: `_install_pycdlib_directory_cycle_guard` replaces
   `collections` inside `pycdlib.pycdlib` with a proxy whose `deque` drops an
-  already-scheduled directory extent or UDF File Entry (two sets, as the two are
-  numbered in different spaces), and
+  already-scheduled directory extent or UDF File Entry (two sets: both are absolute
+  blocks of the image, so a crafted image can give a UDF File Entry an ISO directory's
+  block, and one shared set would let one tree's guard drop the other tree's entry), and
   archivey's own `_walk_records` enters each extent once. The first is process-global
   within `pycdlib`: `import archivey` imports the ISO backend eagerly to register it, and
   that import installs the guard once and for good, confined to `pycdlib`'s namespace
