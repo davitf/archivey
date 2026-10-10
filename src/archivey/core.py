@@ -55,6 +55,7 @@ from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
+    outer_stream_format,
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import OpenSite, capture_open_site
@@ -688,16 +689,18 @@ def open_stream(
     ``AUTO``, loud slow rewinds on the non-accelerated path).
 
     ``format`` accepts a :class:`~archivey.StreamFormat`, a raw-stream
-    :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), or ``None`` to
-    auto-detect. A container format passed here (ZIP, TAR, ``TAR_GZ``, …) is rejected
-    — use :func:`open_archive` for those.
+    :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), a compressed-tar
+    :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.TAR_GZ``), or ``None`` to
+    auto-detect.
 
-    When auto-detection finds a compressed tar (``.tar.gz``, ``.tar.xz``, …), the
-    returned stream removes the compression layer only and yields the tar bytes, as
-    ``gzip.open`` does; ``open_archive(open_stream(p), streaming=True)`` then lists the
-    same members as ``open_archive(p)``. Detection that finds any other container (ZIP,
-    7z, RAR, ISO, an uncompressed tar) raises
-    :class:`~archivey.FormatDetectionError`: there is no compression layer to remove.
+    For a compressed tar (``.tar.gz``, ``.tar.xz``, …), whether detected or passed as
+    ``format=ArchiveFormat.TAR_GZ`` and so on, the returned stream removes the
+    compression layer only and yields the tar bytes, as ``gzip.open`` does;
+    ``open_archive(open_stream(p), streaming=True)`` then lists the same members as
+    ``open_archive(p)``. Any other container (ZIP, 7z, RAR, ISO, an uncompressed tar)
+    has no compression layer to remove: detecting one raises
+    :class:`~archivey.FormatDetectionError`, and passing one as ``format=`` raises
+    :class:`~archivey.ArchiveyUsageError`. Use :func:`open_archive` for those.
 
     A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
     returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
@@ -822,13 +825,14 @@ def _resolve_stream_format(
     if isinstance(format, StreamFormat):
         return format
     if isinstance(format, ArchiveFormat):
-        if format.container is not ContainerFormat.RAW_STREAM:
+        outer = outer_stream_format(format)
+        if outer is None:
             raise ArchiveyUsageError(
                 f"open_stream does not accept container format {format!r}; "
-                "pass a StreamFormat or a raw-stream ArchiveFormat "
-                "(e.g. ArchiveFormat.GZ), or use open_archive."
+                "pass a StreamFormat, a raw-stream ArchiveFormat "
+                "(e.g. ArchiveFormat.GZ) or a compressed tar, or use open_archive."
             )
-        return format.stream
+        return outer
 
     # The invariant the docstring states, enforced rather than described: without it a
     # future caller of this private helper would auto-detect a value it was handed,
@@ -836,19 +840,12 @@ def _resolve_stream_format(
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
     detected = detect_format_into(open_source, config=config, collector=collector)
-    if (
-        detected.format.container is ContainerFormat.TAR
-        and detected.format.stream is not StreamFormat.UNCOMPRESSED
-    ):
-        # A compressed tar is a tar inside a single-file compressed stream: the pair's
-        # stream half is that outer codec (the detector built the pair from it). Peel
-        # that layer only and return the tar bytes, as gzip.open does for a .tar.gz.
-        return detected.format.stream
-    if detected.format.container is not ContainerFormat.RAW_STREAM:
+    outer = outer_stream_format(detected.format)
+    if outer is None:
         # Detection found a container, not a compressed stream: to open_stream that is
         # the same answer as finding nothing it can open.
         raise FormatDetectionError(
             f"Detected {detected.format!r}, which is not a single-file compressed "
             "stream. Use open_archive for archive containers."
         )
-    return detected.format.stream
+    return outer

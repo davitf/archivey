@@ -51,30 +51,32 @@ parameter because the API returns one stream.
 | Open compressed source without `seekable=True` | Reads forward; `seekable()` false; `seek()` unsupported; no index |
 | Open same source with `seekable=True` | Seekable behavior follows `seekable-decompressor-streams` |
 
-### Requirement: open_stream peels the compression layer of a detected compressed tar
+### Requirement: open_stream peels the compression layer of a compressed tar
 
-When `open_stream` auto-detects (`format=None`) a compressed tar — any
-`(TAR, <codec>)` pair whose codec is not `UNCOMPRESSED`, such as `TAR_GZ`, `TAR_XZ` or
-`(TAR, LZIP)` — it SHALL open that codec's stream and return the decompressed tar bytes,
-the same bytes the raw-stream format of the same codec returns (`format="gz"` for a
-`.tar.gz`). The codec SHALL be the pair's stream half, the one the detector built the
-pair from, not a second table. This is what `gzip.open` does for a `.tar.gz`, and the
-migration guide offers `open_stream` as its replacement.
+When `open_stream` is given a compressed tar — any `(TAR, <codec>)` pair whose codec is
+not `UNCOMPRESSED`, such as `TAR_GZ`, `TAR_XZ` or `(TAR, LZIP)` — it SHALL open that
+codec's stream and return the decompressed tar bytes, the same bytes the raw-stream
+format of the same codec returns (`format="gz"` for a `.tar.gz`). This SHALL hold
+whether auto-detection (`format=None`) found the pair or the caller passed it as
+`format=`: how the format was chosen does not change what the file is. The codec SHALL
+be the pair's stream half, the one the detector built the pair from, read through one
+shared rule rather than a second table. This is what `gzip.open` does for a `.tar.gz`,
+and the migration guide offers `open_stream` as its replacement.
 
-Detection of any other container — ZIP, 7z, RAR, ISO, DMG, a directory, or an
-uncompressed tar — SHALL still raise `FormatDetectionError`: it has no compression
-layer to remove. An explicit container `format=`, compressed tar included, stays an
-`ArchiveyUsageError` (`backend-registry`).
+Any other container — ZIP, 7z, RAR, ISO, DMG, a directory, or an uncompressed tar —
+has no compression layer to remove. Detecting one SHALL raise `FormatDetectionError`;
+passing one as `format=` SHALL raise `ArchiveyUsageError` (`backend-registry`).
 
 #### Scenario: compressed tar through open_stream
 
 | Case | Expected |
 | --- | --- |
 | `open_stream("a.tar.gz")` | Returns the tar bytes; equal to `open_stream("a.tar.gz", format="gz").read()` |
+| `open_stream("a.tar.gz", format=ArchiveFormat.TAR_GZ)` or `format="tar.gz"` | The same tar bytes |
 | `open_archive(open_stream(p, seekable=True))` for every compressed-tar corpus fixture | Same members (every compared field) and data as `open_archive(p)`; `format` is `TAR` |
 | `open_archive(open_stream(p), streaming=True)` | Same `stream_members()` pass as `open_archive(p, streaming=True)` |
 | `open_stream("a.tar")`, `open_stream("a.zip")` | `FormatDetectionError` |
-| `open_stream(p, format=ArchiveFormat.TAR_GZ)` | `ArchiveyUsageError` |
+| `open_stream(p, format=ArchiveFormat.TAR)`, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError` |
 
 ### Requirement: One StreamCodec descriptor describes each codec
 

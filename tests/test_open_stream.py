@@ -65,10 +65,9 @@ def test_open_stream_archive_format_raw_stream() -> None:
         assert stream.read() == CONTENT
 
 
-@pytest.mark.parametrize("fmt", [ArchiveFormat.ZIP, ArchiveFormat.TAR_GZ])
-def test_open_stream_rejects_container_format(fmt: ArchiveFormat) -> None:
-    # Only detection peels a compressed tar; a caller naming the container asked for
-    # an archive, and open_archive is the call for that.
+@pytest.mark.parametrize("fmt", [ArchiveFormat.ZIP, ArchiveFormat.TAR, "tar"])
+def test_open_stream_rejects_container_format(fmt: ArchiveFormat | str) -> None:
+    # An uncompressed tar is refused like a ZIP: it has no compression layer to peel.
     with pytest.raises(ArchiveyUsageError, match="container format"):
         open_stream(io.BytesIO(b"PK"), format=fmt)
 
@@ -161,10 +160,18 @@ def test_open_stream_peels_compressed_tar(
         assert peeled.format == ArchiveFormat.TAR
         assert _stream_snapshot(peeled) == expected_pass
 
-    # The explicit raw-stream format reads the same bytes as the detected peel.
+    # Detected, explicit compressed-tar and explicit raw-stream formats all peel the
+    # same layer and read the same bytes.
     raw_format = ArchiveFormat(ContainerFormat.RAW_STREAM, tar_format.stream)
-    with open_stream(path) as detected, open_stream(path, format=raw_format) as raw:
-        assert detected.read() == raw.read()
+    with open_stream(path, format=raw_format) as raw:
+        expected_bytes = raw.read()
+    formats: list[ArchiveFormat | str | None] = [None, tar_format]
+    if hasattr(ArchiveFormat, tar_format.display_name):
+        # Only the named pairs have string spellings (backend-registry).
+        formats.append(tar_format.file_extension())
+    for fmt in formats:
+        with open_stream(path, format=fmt) as stream:
+            assert stream.read() == expected_bytes, fmt
 
 
 def test_open_stream_path_roundtrip(tmp_path: Path) -> None:

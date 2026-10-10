@@ -85,20 +85,42 @@ def _accepted_archive_formats() -> str:
     return ", ".join(repr(s) for s in spellings)
 
 
+def outer_stream_format(fmt: ArchiveFormat) -> StreamFormat | None:
+    """The codec ``open_stream`` decodes for ``fmt``, or ``None`` when it has none.
+
+    A raw stream is its codec. A compressed tar is a tar inside a single-file
+    compressed stream, and the pair's stream half is that outer codec (detection
+    builds the pair from it): ``open_stream`` peels that layer only and returns the tar
+    bytes, as ``gzip.open`` does for a ``.tar.gz``. One rule for an explicit
+    ``format=``, a detected format and the accepted-spellings message, so the three
+    cannot disagree. Every other container, an uncompressed tar included, has no
+    compression layer to remove.
+    """
+    if fmt.container is ContainerFormat.RAW_STREAM:
+        return fmt.stream
+    if (
+        fmt.container is ContainerFormat.TAR
+        and fmt.stream is not StreamFormat.UNCOMPRESSED
+    ):
+        return fmt.stream
+    return None
+
+
 def _accepted_stream_formats() -> str:
     """The spellings worth recommending for ``open_stream``, which is a narrower set.
 
     ``coerce_stream_or_archive_format`` resolves every archive spelling, so it used to
     borrow this message from ``coerce_archive_format`` — and then recommended ``zip``,
-    ``tar`` and the eight other container spellings to a call that refuses them one
-    frame later. Only the raw-stream pairs open here. ``uncompressed`` coerces but is
-    refused by ``open_stream``, which needs a compressed stream, so it is left out for
-    the same reason ``DIRECTORY`` and ``UNKNOWN`` are left out above.
+    ``tar`` and the other container spellings to a call that refuses them one frame
+    later. Only the formats ``outer_stream_format`` gives a codec for open here.
+    ``uncompressed`` coerces but is refused by ``open_stream``, which needs a
+    compressed stream, so it is left out for the same reason ``DIRECTORY`` and
+    ``UNKNOWN`` are left out above.
     """
     spellings = sorted(
         fmt.file_extension().lower()
         for fmt in _FORMAT_NAMES
-        if fmt.container is ContainerFormat.RAW_STREAM and fmt.file_extension()
+        if outer_stream_format(fmt) is not None and fmt.file_extension()
     )
     return ", ".join(repr(s) for s in spellings)
 
@@ -156,7 +178,7 @@ def coerce_stream_or_archive_format(
     """Return ``value`` as one of the two format types, or raise ``ArchiveyUsageError``.
 
     ``open_stream``'s wider argument is deliberate, not an inconsistency to iron out:
-    the thing it opens has no container, so the codec alone identifies it.
+    the layer it opens has no container, so the codec alone identifies it.
     """
     if value is None:
         return None

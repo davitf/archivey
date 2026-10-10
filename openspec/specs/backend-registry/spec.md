@@ -313,11 +313,14 @@ resolving, peeking or reading the source:
 | --- | --- | --- |
 | `format_availability(format)` | `ArchiveFormat`, its spelling | `ArchiveyUsageError` |
 | `open_archive(source, format=…)` | `ArchiveFormat`, its spelling, `None` (auto-detect) | `ArchiveyUsageError` |
-| `open_stream(source, format=…)` | `StreamFormat`, raw-stream `ArchiveFormat`, either spelling, `None` | `ArchiveyUsageError` |
+| `open_stream(source, format=…)` | `StreamFormat`, raw-stream or compressed-tar `ArchiveFormat`, either spelling, `None` | `ArchiveyUsageError` |
 
 `open_stream`'s wider argument is by design, not an inconsistency to remove: a raw
-compressed stream has no container, so the codec alone identifies it. A container
-`ArchiveFormat` there remains a usage error for the separate reason it already was.
+compressed stream has no container, so the codec alone identifies it. A compressed-tar
+`ArchiveFormat` (`TAR_GZ`, `(TAR, LZIP)`, …) is accepted too: `open_stream` decodes its
+outer codec and returns the tar bytes (`compressed-streams`). Any other container
+`ArchiveFormat`, an uncompressed `TAR` included, remains a usage error, because it has
+no compression layer for `open_stream` to remove.
 
 An `ArchiveFormat` is a `(container, stream)` pair rather than an `Enum`, so it has no
 `value` to spell. Its spellings SHALL be its **file extension** (`"zip"`, `"tar.gz"`)
@@ -372,6 +375,8 @@ a separate table, so a codec added later is named here without a second edit.
 | `open_archive(path, format=StreamFormat.ZSTD)` | `ArchiveyUsageError`, not `AttributeError: 'StreamFormat' object has no attribute 'container'` |
 | `open_stream(src, format=object())` | `ArchiveyUsageError`; the source is not read and detection does not run |
 | `open_stream(src, format=StreamFormat.GZIP \| ArchiveFormat.GZ \| None)` | Opens as before |
+| `open_stream(src, format=ArchiveFormat.TAR_GZ)` | Opens the gzip layer; returns the tar bytes |
+| `open_stream(src, format=ArchiveFormat.TAR \| ArchiveFormat.ZIP)` | `ArchiveyUsageError` |
 | `open_archive(path, format=ArchiveFormat.ZIP \| None)` | Opens as before |
 | `except ArchiveyError` around any of the refusals | Does not catch it |
 
