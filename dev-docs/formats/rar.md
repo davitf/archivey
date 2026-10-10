@@ -632,10 +632,10 @@ lone surrogate stays in `name`, and extraction writes it by the cross-format rul
 unreachable. 7-Zip 23.01 writes such a name as 7z's. `unrar` 7.00 holds the field as
 UTF-16 code units, one `wchar_t` each, so a valid pair is two characters to its `-n`
 matcher (`-n./pair??.txt` selects `pair` U+1F600 `.txt`, `-n./pair?.txt` does not), and
-`unrar x` on Linux writes the name cut at its first surrogate unit (`hi\ud800.txt` → `hi`); both measured. On POSIX the
-mask goes out as UTF-8 bytes, which cannot carry a surrogate unit, so it sends each unit
-as `?`. A member that mask also selects is handled like a stored glob's sibling (§2.3):
-refused by default when it comes earlier, read with
+`unrar x` on Linux writes the name cut at its first surrogate unit (`hi\ud800.txt` →
+`hi`); both measured. On POSIX the mask goes out as UTF-8 bytes, which cannot carry a
+surrogate unit, so it sends each unit as `?`. A member that mask also selects is handled
+like a stored glob's sibling (§2.3): refused by default when it comes earlier, read with
 `rar_allow_glob_member_concatenation`, and skipped when it comes later. A unit in a
 directory component is refused, since a directory glob cannot be sized. Windows argv is
 UTF-16, so there the mask carries a valid pair as it is; a lone unit is still refused
@@ -643,17 +643,17 @@ there, as in a RAR5 name (what Windows `unrar` does with one is unmeasured). `ra
 is always the stored bytes. A name with no Unicode field goes to `unrar` as its stored
 bytes, so how archivey decodes it never changes which member a read returns (§2.3); a
 name with one goes as the decoded field, as `unrar` reads it. `USES_ENCODING` is true,
-so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`.
-Comments follow `unrar`: a RAR 2.9-4 `CMT` SERVICE header whose attribute field has bit 0
-set (`SUBHEAD_FLAGS_CMT_UNICODE`) is UTF-16LE, read in whole 2-byte units (an odd
-trailing byte is dropped, as `unrar` reads `CmtSize / 2` units) and cut at the first
-U+0000. Every other RAR 1.5-4 comment (an unflagged stored `CMT`, or an old-style
-COMMENT subblock, stored or compressed) is 8-bit text cut at the first NUL, decoded as
-strict UTF-8 and then windows-1252, with U+FFFD for the five bytes windows-1252 leaves
-undefined. It is never guessed as UTF-16LE, for the reason names are not: an
-even-length `caf\xe9 ok!` used to list as CJK. `encoding=` does not apply to comments.
-A compressed `CMT` SERVICE header is not decoded: the parser reads only a stored one,
-so such an archive lists with no comment and no diagnostic.
+so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`. Comments follow `unrar`: a RAR 2.9-4
+`CMT` SERVICE header whose attribute field has bit 0 set (`SUBHEAD_FLAGS_CMT_UNICODE`)
+is UTF-16LE, read in whole 2-byte units (an odd trailing byte is dropped, as `unrar`
+reads `CmtSize / 2` units) and cut at the first U+0000. Every other RAR 1.5-4 comment
+(an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or compressed) is
+8-bit text cut at the first NUL, decoded as strict UTF-8 and then windows-1252, with
+U+FFFD for the five bytes windows-1252 leaves undefined. It is never guessed as
+UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to list as
+CJK. `encoding=` does not apply to comments. A compressed `CMT` SERVICE header is not
+decoded: the parser reads only a stored one, so such an archive lists with no comment
+and no diagnostic.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.
