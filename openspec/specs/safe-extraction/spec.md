@@ -417,11 +417,12 @@ with the destination empty, or revise an already-deleted member to `OVERWRITTEN`
 ### Requirement: Symlink Escape Re-Validated at Extraction Time
 
 The system SHALL validate a SYMLINK member after `os.symlink(link_target,
-dest_path)` creates the link on disk. It resolves the created link target with
-`Path.resolve()` and, if the resolved path escapes `dest`, immediately unlinks the
-new link and raises `FilterRejectionError`. Resolution failures from symlink loops
-or platform equivalents (`OSError` such as `ELOOP`, or `RuntimeError`) SHALL fail
-safe the same way: unlink the just-created link and reject the member.
+dest_path)` creates the link on disk. It resolves the created link target through
+the real filesystem and, if the resolved path escapes `dest`, immediately unlinks the
+new link and raises `FilterRejectionError`. Any failure to resolve the created link
+(`OSError`, such as `ELOOP` or its platform equivalent) SHALL fail safe the same way:
+unlink the just-created link and reject the member. A symlink loop SHALL be detected
+on every supported Python version.
 
 This post-creation check SHALL catch chained symlink attacks where earlier archive
 members influence later target resolution, without allowing writes through an
@@ -443,7 +444,7 @@ waiting are removed unresolved and the run stops with `ResourceLimitError`. Test
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
-| Cyclic links (`a -> b`, `b -> a`) make `Path.resolve()` raise | Just-created link is unlinked; `FilterRejectionError`; no uncaught OS/runtime error |
+| Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError`; no uncaught OS/runtime error; same on every Python version |
 
 ### Requirement: Hardlink Two-Pass Extraction
 
@@ -1010,6 +1011,8 @@ are the per-result outcome.
 | User filter returns `None` | No `ExtractionResult`; no result-count impact (like a selector exclusion) |
 | User filter returns anything but an `ArchiveMember` or `None` | `TypeError` naming what it returned; the call ends (a caller bug, not a member outcome) |
 | `extract_all()` on a directory source with `dest` inside that directory | `ExtractionError` before anything is created (the pass would read its own output) |
+| `extract_all()` with `dest` under a symlink loop, any format | `OSError` (`ELOOP`), as `mkdir` raises it, before anything is created |
+| `extract_all()` with `dest` itself a symlink loop, any format | `ExtractionError`, as for any `dest` that exists and is not a directory; nothing created |
 | Selector excludes member | No `ExtractionResult`; no result-count impact |
 | Member blocked by `FilterRejectionError` under `CONTINUE` | Result is `BLOCKED` with matching error; no diagnostic emitted |
 | Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error; no diagnostic emitted |

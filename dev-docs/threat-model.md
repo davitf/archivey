@@ -329,10 +329,10 @@ archive declares.
   keep the same 64. A larger cap let a small header drive the planner and the nested
   decode streams into a raw `RecursionError`.
 - 7z decodes one encoded-header layer and raises `CorruptionError` if the result is
-  another encoded header (`internal/backends/sevenzip_pipeline.py`
+  another encoded header (`internal/backends/sevenzip_parser.py`
   `parse_decoded_header`); a COPY header that decodes to itself would otherwise loop.
-  The running total of encoded-header folder unpack sizes is capped at
-  `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
+  An encoded header must have exactly one folder, as in 7-Zip, and its unpack size is
+  capped at `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
 - RAR checks `max_members` while parsing the member table at `open_archive`. It weighs
   the summed declared sizes of compressed RAR 1.5/2.x comments against
   `max_metadata_bytes` before decoding any, because the decode is the cost (one `unrar`
@@ -367,10 +367,15 @@ archive declares.
   name or link name, whole in one call, so the walk refuses such a header from its
   declared size before that read: in random access when it declares more than is left
   of `max_metadata_bytes`, and in any mode, streaming included, when it declares more
-  than the whole cap. An over-limit tar then costs about the cap plus one ordinary
-  header. A sparse map is weighed only once parsed (24 bytes per entry), so an old GNU
-  sparse member's chain of extension blocks, or a PAX sparse 1.0 map, is held whole for
-  the one member that crosses the cap.
+  than the whole cap. The headers ahead of one member are one chain, which `tarfile`
+  holds whole until the member is built, so each draws from what the ones before it
+  left. A sparse map (24 bytes per entry) is weighed from its entry count before its
+  entries are parsed, or block by block for an old GNU map's extension blocks, against
+  the same budget (`_TarInfo._proc_gnusparse_*`, `_proc_sparse`). An over-limit tar then
+  costs about the cap plus one ordinary header. The PAX global records are held once per
+  global header, not once per member: members with none of their own share one copy
+  (`_TarFile.global_records`). Each member is still charged for them, so the cap counts
+  them as if copied.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An
@@ -446,6 +451,7 @@ record.
 `tests/test_rar_reader.py::test_rar_parser_max_members_at_parse`,
 `::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`,
 `::test_rar5_qo_non_file_records_parse_in_linear_time`; `tests/test_link_target_cap.py`;
+`tests/test_tar_header_memory.py`;
 `tests/test_iso.py::test_listing_limits_count_records_as_pycdlib_parses_them`,
 `::test_listing_limits_count_directory_record_bytes_at_open`;
 `tests/test_audit2_iso_dir_detect.py::test_iso_listing_limits_bound_the_memory_spent_at_open`,
@@ -695,18 +701,22 @@ never reported as success. Public:
   index.
 - 7z header encryption has no check value, so a wrong key is caught by the encoded-header
   folder CRC when the writer stored one (7-Zip does; py7zr does not), then by the parse
-  failing. About 1 in 256 wrong keys decode to a leading `END` (or `HEADER`+`END`) that
-  parses as an empty archive (measured about 0.3% of py7zr salts). Legitimate writers
-  never encrypt an empty header, so `SevenZipReader._decode_encoded_header_block`
-  rejects a decoded header with zero file records as `EncryptionError`.
+  failing. The decoded header must start with `HEADER` and end at its final `END`
+  (`parse_decoded_header`), so a wrong key still parses as an empty archive only when it
+  decodes to a `HEADER` block with no file records, such as exactly `HEADER`+`END`.
+  Before those two checks, about 1 in 256 wrong keys decoded to a leading `END` or
+  `HEADER`+`END` that parsed as empty (measured about 0.3% of py7zr salts); that figure
+  is now an upper bound and has not been re-measured. Legitimate writers never encrypt an
+  empty header, so `SevenZipReader._decode_encoded_header_block` rejects a decoded header
+  with zero file records as `EncryptionError`.
 - A password only a weak check accepted, or none tested (RAR3/4 encrypted data has no
   check), is confirmed by the member's own CRC at EOF. Closing such a stream early emits
   `ENCRYPTED_MEMBER_UNVERIFIED`.
 
-**Residual.** Wrong-key 7z header garbage that parses into a non-empty plausible header
-survives in principle. Rejecting trailing bytes in the decoded header, or py7zr writing
-the encoded-header CRC, would narrow it further. Bytes returned before an error are of
-unknown quality.
+**Residual.** Wrong-key 7z header garbage survives in principle when it parses into a
+non-empty plausible header that also ends exactly at the end of the decoded buffer.
+py7zr writing the encoded-header CRC would narrow it further. Bytes returned before an
+error are of unknown quality.
 
 **Tests.**
 `tests/test_codecs.py::test_verify_mismatch_raises_at_eof_without_losing_final_chunk`,

@@ -92,7 +92,11 @@ from archivey.internal.selection import (
 )
 from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.archive_stream import (
+    ArchiveStream,
+    RewindWarning,
+    as_closed_source_error,
+)
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -538,15 +542,22 @@ class BaseArchiveReader(ArchiveReader):
 
         The single backend-side error boundary (the out-of-stream counterpart of
         ``ArchiveStream._fail``): an already-typed ``ArchiveyError`` is stamped and
-        re-raised as-is; a raw exception the translator recognizes is stamped and raised
-        chained to the original; an unrecognized exception propagates unchanged (the
-        catch-all-free rule in CONTRIBUTING). ``stamp_encryption=False`` skips member
-        stamping for ``EncryptionError`` (ZIP's password errors carry their own message
-        and must not be reattributed).
+        re-raised as-is; a closed source (``as_closed_source_error``) raises a usage
+        error naming ``member_name``, as it does inside a member stream; a
+        raw exception the translator recognizes is stamped and raised chained to the
+        original; an unrecognized exception propagates unchanged (the catch-all-free
+        rule in CONTRIBUTING). ``stamp_encryption=False`` skips member stamping for
+        ``EncryptionError`` (ZIP's password errors carry their own message and must
+        not be reattributed).
         """
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
+        closed = as_closed_source_error(exc, member_name)
+        if closed is not None:
+            # Checked before the backend's translator, which may map every ValueError
+            # to corruption (ZIP's bad-offset rule, ISO's pycdlib rule).
+            raise closed from exc
         translated = self._translate_exception(exc)
         if translated is None:
             raise exc
@@ -947,6 +958,7 @@ class BaseArchiveReader(ArchiveReader):
                 verify_member=verify_member,
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
+                member_name=member_name,
             )
 
         assert inner is not None
@@ -970,6 +982,7 @@ class BaseArchiveReader(ArchiveReader):
             verify_member=verify_member,
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
+            member_name=member_name,
         )
 
     @abstractmethod
