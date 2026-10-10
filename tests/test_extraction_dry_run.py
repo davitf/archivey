@@ -86,9 +86,14 @@ def _normalize(text: str, dest: Path, cwd: Path) -> str:
     labels = {resolved: "<resolved>", absolute: "<abs>"}
     if dest.is_absolute():
         labels.setdefault(str(dest), "<given>")
+    # Messages render paths through ``display_path`` (``/``-separated), so on Windows a
+    # spelling also shows up in its posix form.
+    for spelling, label in list(labels.items()):
+        labels.setdefault(display_path(spelling), label)
     for spelling in sorted(labels, key=len, reverse=True):
         text = text.replace(spelling, labels[spelling])
-    text = text.replace(str(cwd.resolve()), "<cwd>")
+    for spelling in (str(cwd.resolve()), display_path(cwd.resolve())):
+        text = text.replace(spelling, "<cwd>")
     if not dest.is_absolute():
         text = re.sub(rf"(?<=['\"]){re.escape(str(dest))}(?=['\"/\\])", "<rel>", text)
     # The staging file's random suffix is the one thing two runs never share.
@@ -255,6 +260,14 @@ _FILESYSTEM_CASES = {
         ("../m", "hard", "f"),
         ("via", "hard", "../m"),
     ],
+    # A hard link that STRICT and STANDARD fold onto its own source's path.
+    "hardlink-onto-own-source": [("a", "file", b"data"), ("A", "hard", "a")],
+    # A hard link listed twice: the superseded copy is parked at the same name.
+    "hardlink-listed-twice": [
+        ("a", "file", b"data"),
+        ("b", "hard", "a"),
+        ("b", "hard", "a"),
+    ],
     # Duplicate names and a file where a directory was.
     "duplicates": [
         ("a", "file", b"one"),
@@ -289,6 +302,32 @@ def test_filesystem_dependent_outcomes_match(
             lambda: io.BytesIO(blob),
             work,
             relative=relative,
+            policy=policy,
+            overwrite=overwrite,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    "overwrite",
+    [OverwritePolicy.ERROR, OverwritePolicy.RENAME, OverwritePolicy.REPLACE],
+)
+def test_orphan_links_folded_onto_each_other_match(
+    overwrite: OverwritePolicy, streaming: bool, tmp_path: Path
+) -> None:
+    # Two selected links that fold together, their source excluded: the second pass
+    # writes the source's content at the first and REPLACE routes the second onto it.
+    blob = _tar([("src", "file", b"data"), ("L", "hard", "src"), ("l", "hard", "src")])
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        real, dry = _both(
+            lambda: io.BytesIO(blob),
+            work,
+            members=["L", "l"],
             policy=policy,
             overwrite=overwrite,
             open_kwargs={"streaming": streaming},

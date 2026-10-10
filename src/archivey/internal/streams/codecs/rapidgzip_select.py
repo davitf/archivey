@@ -283,6 +283,11 @@ def _open_rapidgzip(
     standard library, as ``AUTO`` does when rapidgzip is absent. Each of those fails
     before the child reads any of ``source``, so the caller's source is where it was.
     ``ON`` raises ``ResourceLimitError`` rather than decode in-process.
+
+    The child's memory is capped at ``DecoderLimits.max_decoder_memory``: rapidgzip
+    keeps decoded chunks, so a small file that decodes to gigabytes would otherwise
+    take that much. A child over the cap is stopped, and the standard library reads
+    the rest of the stream (``_StdlibOnAcceleratorError``).
     """
     reason = (
         f"the rapidgzip accelerator runs in a child process, and none can be started "
@@ -293,7 +298,11 @@ def _open_rapidgzip(
     if unavailable is not None:
         raise ResourceLimitError(f"{reason} ({unavailable}).")
     try:
-        return RapidgzipChildStream(source, label=label)
+        return RapidgzipChildStream(
+            source,
+            label=label,
+            max_memory=config.decoder_limits.max_decoder_memory,
+        )
     except RapidgzipChildStartError as exc:
         if config.use_rapidgzip is not AcceleratorMode.AUTO:
             raise ResourceLimitError(f"{reason} ({exc}).") from exc

@@ -38,6 +38,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     gzip_corruption,
+    input_after_end_error,
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
@@ -82,6 +83,7 @@ def _stdlib_zlib(
         wbits=wbits,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
+        refuse_input_after_end=config.refuse_input_after_end,
     )
 
 
@@ -377,6 +379,13 @@ class _DeflateEndCheckStream(DelegatingStream):
     - zlib does not reach a final block (a cut or damaged stream): the read goes to the
       standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
       inside), which gives the verdict it gives with the accelerator off.
+    - With ``refuse_input_after_end`` (a ZIP member), zlib follows on through the
+      streams rapidgzip read, to the one that ends at the offset, and any byte of the
+      source after that one, a zero too, raises ``CorruptionError``, as the standard
+      library does. A second stream rapidgzip read whole still reads here (the
+      ``compressed-streams`` exception above), where the standard library refuses it:
+      telling it apart would need a decode from the start, since the resume point can
+      lie after the first stream's end.
 
     The check costs a decode of the output between the resume point and the end, paid by
     the read or the seek that reaches the end, so a bare ``seek(0, SEEK_END)`` size
@@ -413,12 +422,17 @@ class _DeflateEndCheckStream(DelegatingStream):
     readinto_passthrough = False
 
     def __init__(
-        self, inner: _StdlibOnAcceleratorError, *, views: _SourceViews
+        self,
+        inner: _StdlibOnAcceleratorError,
+        *,
+        views: _SourceViews,
+        refuse_input_after_end: bool = False,
     ) -> None:
         super().__init__(inner)
         # The same object as ``_inner``, typed: the handover calls it.
         self._takeover = inner
         self._views = views
+        self._refuse_input_after_end = refuse_input_after_end
         self._checked = False
 
     def read(self, size: int = -1, /) -> bytes:
@@ -457,8 +471,13 @@ class _DeflateEndCheckStream(DelegatingStream):
         resume_point = getattr(self._takeover.accelerator, "resume_point", None)
         point = resume_point(end) if resume_point is not None else None
         with self._views.view() as f:
-            if stream_end(f, point, end) is not None:
-                return False
+            found, input_after = stream_end(
+                f, point, end, check_input_after=self._refuse_input_after_end
+            )
+        if found is not None:
+            if input_after:
+                raise input_after_end_error("deflate")
+            return False
         self._takeover.switch_to_stdlib()
         return True
 
@@ -484,6 +503,8 @@ class DeflateCodec(_ZlibErrorCodec):
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
+        # Under rapidgzip it is also the takeover's decoder, so bytes after the stream
+        # that rapidgzip fails on are refused there too (refuse_input_after_end).
         return _stdlib_zlib(source, config, wbits=-15)
 
     def _open_accelerated(
@@ -505,7 +526,10 @@ class DeflateCodec(_ZlibErrorCodec):
         accel_source: CodecSource,
         views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
-        return lambda stream: _DeflateEndCheckStream(stream, views=views)
+        refuse = config.refuse_input_after_end
+        return lambda stream: _DeflateEndCheckStream(
+            stream, views=views, refuse_input_after_end=refuse
+        )
 
     def _accelerated_limit(
         self, params: CodecParams, config: StreamConfig

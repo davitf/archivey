@@ -41,7 +41,6 @@ MUST NOT implicitly buffer or copy the image to make it seekable.
 | Case | Expected |
 | --- | --- |
 | Open valid ISO | `cost.listing_cost=INDEXED`, `cost.access_cost=DIRECT`, `cost.stream_capability=SEEKABLE` |
-| Attempt to create/write ISO | `UnsupportedFeatureError` |
 | Open from non-seekable source | Seekability error at open; no implicit buffering |
 
 ### Requirement: Auto-select the richest available namespace

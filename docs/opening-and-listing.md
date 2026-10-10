@@ -113,7 +113,10 @@ Its other limitations:
 | A sequence of paths or streams | The volumes of one multi-volume archive — see below |
 
 Passing a `format=` that says anything other than a directory, for a path that is one,
-raises `ArchiveyUsageError` rather than quietly reading the directory tree instead.
+raises `ArchiveyUsageError` rather than quietly reading the directory tree instead. The
+reverse, `format=ArchiveFormat.DIRECTORY` for a file or a stream, raises
+`ArchiveyUsageError` too. A path that cannot be reached at all raises the operating
+system's own error, such as `FileNotFoundError`, whatever `format=` says.
 
 **A seekable stream is read from wherever it currently is**, through to the end.
 Archivey treats the current position as byte 0 of the archive, so an archive stored
