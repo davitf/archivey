@@ -98,11 +98,13 @@ def test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it(
 def test_a_path_table_over_max_metadata_bytes_is_refused_before_pycdlib_parses_it() -> (
     None
 ):
-    """The path tables are weighed with the tree they index, before pycdlib reads them."""
+    """Path tables are weighed with the rest of the image, before pycdlib reads them."""
     data = _with_path_table_size(2**20, image_size=2 * 2**20)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2**19))
 
-    with pytest.raises(ResourceLimitError, match=r"max_metadata_bytes=524288 .*path"):
+    with pytest.raises(
+        ResourceLimitError, match=r"max_metadata_bytes=524288 .*a path table"
+    ):
         open_archive(io.BytesIO(data), config=config)
     peak = _peak_at_open(data, config, ResourceLimitError)
     assert peak < 2 * len(data), (peak, len(data))
@@ -120,7 +122,7 @@ def test_both_path_tables_count_against_max_metadata_bytes() -> None:
     limits = ListingLimits(max_metadata_bytes=budget)
     with pytest.raises(
         ResourceLimitError,
-        match=f"max_metadata_bytes={budget} .*has {34 + 2 * size} bytes of path tables",
+        match=f"max_metadata_bytes={budget} .*has {34 + 2 * size} bytes.*a path table",
     ):
         open_archive(io.BytesIO(data), config=ArchiveyConfig(listing_limits=limits))
 

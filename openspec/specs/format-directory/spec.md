@@ -3,8 +3,14 @@
 ## Purpose
 
 A filesystem directory is exposed as a pseudo-archive through the unified
-`ArchiveReader` API so conversion pipelines and callers can treat a live
-directory like any other readable archive.
+`ArchiveReader` API so callers can treat a live directory like any other
+readable archive.
+
+Writing is not shipped for any format, so this spec states nothing about feeding a
+directory reader to a writer. A requirement that a writer's `add_members(reader)`
+stream a directory in one forward pass, without buffering the tree, was removed
+because no writer exists to hold or test it. It belongs to the OpenSpec change that
+adds writing (see `dev-docs/investigations/archive-writing-design.md`).
 
 ## Related specs
 
@@ -13,7 +19,7 @@ directory like any other readable archive.
 | `archive-reading` | Reader API and uniform member-stream constraints |
 | `access-mode-and-cost` | Cost receipt and method legality |
 | `diagnostics` | Directory scan-race diagnostic values / policy |
-| `safe-extraction` | Directory reader as extraction/conversion source |
+| `safe-extraction` | Directory reader as extraction source |
 
 ## Requirements
 
@@ -70,20 +76,6 @@ MUST NOT retain `DirEntry`, `Path`, exception, or filesystem handle objects.
 | Subdirectory vanishes and code resolves to `RAISE` | `DiagnosticRaisedError` halts scan |
 | Walking subdirectory raises `PermissionError` | Original error propagates unchanged; no vanished-path diagnostic substitutes |
 | Listed subdirectory, or a parent of it, replaced by a symlink before its scan (POSIX) | `OSError` with `errno.ESTALE`; nothing from the link target is listed |
-
-### Requirement: Support conversion pipelines without archive-wide buffering
-
-The directory backend SHALL allow a directory reader to act as the source for
-conversion via `writer.add_members(reader)`. Members SHALL stream into the target
-archive in a single forward pass without buffering the full directory content to
-intermediate storage.
-
-#### Scenario: directory conversion matrix
-
-| Case | Expected |
-| --- | --- |
-| Directory reader passed to `writer.add_members(reader)` | All members stream into the target archive in one forward pass |
-| Large directory conversion | No intermediate on-disk buffering of the full directory content |
 
 ### Requirement: Keep directory reader constraints as strict as archive readers
 

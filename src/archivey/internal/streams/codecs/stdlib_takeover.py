@@ -33,6 +33,27 @@ from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import SharedView
 
 
+def _seek_reached_end(offset: int, whence: int, result: int) -> bool:
+    """Whether a seek of an accelerated stream stopped at the end of the accelerator's
+    output: a seek to the end, or one that ``result`` shows was clamped short of
+    ``offset``.
+
+    rapidgzip can end a stream that is cut or damaged without an error, and that end is
+    where it clamps such a seek. So the wrappers that check the end of rapidgzip's
+    output (gzip, raw DEFLATE, bzip2) run, on such a seek, the check that a read at the
+    end runs, before they return a position. When the standard library then takes over,
+    they seek it again to ``offset``: it raises, or returns the caller's position.
+
+    ``whence`` is ``SEEK_SET`` or ``SEEK_END``: ``_StdlibSeekContract``, outermost,
+    resolves a relative seek itself. With ``SEEK_CUR``, ``result < offset`` would
+    compare a position with a distance."""
+    assert whence != io.SEEK_CUR, "a relative seek must be resolved above this layer"
+    # A SEEK_END lands at the end only at offset 0. Elsewhere ``result`` is not the end,
+    # and the callers' end checks (and the gzip read-through) would treat it as the end.
+    assert whence != io.SEEK_END or offset == 0, "only seek(0, SEEK_END) reaches here"
+    return whence == io.SEEK_END or result < offset
+
+
 @dataclass(frozen=True)
 class _SourceViews:
     """Fresh views of an accelerator's source at offset 0 that leave its cursor alone.
@@ -175,14 +196,16 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     Once switched, a data error of the standard library leaves as the codec's typed
     error (``translate``), as it does from the codec's own translator with the
-    accelerator off. ``translate`` stays for that reason: without it the raw error
-    travels on to a different translator (the member's or the enclosing reader's),
-    which need not classify it the same way, so the verdict would depend on whether
-    rapidgzip was engaged. The tests do not pin it while both translators type a
-    ``zlib.error`` alike. Only the DEFLATE family passes ``translate``:
-    bzip2's translator maps every ``ValueError`` to ``TruncatedError``, which inside
-    the stream would claim a usage error (a closed source) that ``ArchiveStream``
-    reports as one.
+    accelerator off. The standard-library DEFLATE-family decoders raise typed errors
+    themselves; ``translate`` covers any raw error left. Without it the raw error would
+    travel on to a different translator (the member's or the enclosing reader's), which
+    need not classify it the same way, or reach the over-run probe of a declared size
+    (``_probe_past_declared``), which reads any error that is not an ``ArchiveyError``
+    as the accelerator's opaque end of input, "no more data". Only the DEFLATE family
+    passes ``translate``: bzip2's accelerated path adds no ``_wrap_accelerated_length``
+    verifier, so no over-run probe sits inside it, and its translator maps every
+    ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage
+    error (a closed source) that ``ArchiveStream`` reports as one.
 
     ``empty_to_stdlib`` hands a stream that ends before its first byte to the standard
     library, which decodes a valid empty stream to nothing as well and raises on a cut
@@ -332,6 +355,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         the newest of ``points``, in ascending order, at or before it. A point past it
         would only serve a later seek: the seek here ignores it."""
         stdlib = self._open_stdlib(self._views.for_stdlib())
+        # A view of a seekable source gives a seekable decoder. The wrappers above this
+        # stream cached seekable() from the accelerator, and the seek below needs it.
+        assert is_seekable(stdlib), "a standard-library fallback must be seekable"
         if points and isinstance(stdlib, DecompressorStream):
             stdlib.add_seek_points(points)
         try:
@@ -353,6 +379,31 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """
         assert self.switched, "only a standard-library decoder resumes"
         self._replace_inner(self._open_stdlib_at())
+
+
+# How much output an end check asks the decoder for in one call while it reads ahead:
+# the drain of a completing ``read()`` (:func:`_drain_into`), and the zlib check's
+# read-through on a seek.
+_DRAIN_CHUNK = 1 << 20
+
+
+def _drain_into(
+    inner: BinaryIO, buf: bytearray, count: Callable[[bytes], None] | None = None
+) -> None:
+    """Read ``inner`` to its end in ``_DRAIN_CHUNK`` pieces, pass each to ``count``, and
+    append it to ``buf``.
+
+    The end checks around rapidgzip (gzip, zlib, raw DEFLATE) run on the read that meets
+    the end of the output (ADR 0014: never from ``close()``), so a completing ``read()``
+    drains the rest itself before it returns. No read here asks ``inner`` for an
+    unbounded size, so ``inner`` never builds the whole rest as one more copy. The
+    caller owns ``buf`` and makes the one ``bytes`` it returns from it, so the rest is
+    held once while it drains, not as pieces and then as their join.
+    """
+    while more := inner.read(_DRAIN_CHUNK):
+        if count is not None:
+            count(more)
+        buf += more
 
 
 class _OutputChecksum:

@@ -24,26 +24,33 @@ import gzip
 import io
 import os
 import zipfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, BinaryIO
 
 import pytest
 
-from archivey import detect_format
+from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig
+from archivey.detection import FormatInfo
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     THOROUGH_BUDGET,
     DetectionBudget,
+    TierSkip,
     TierSkipReason,
 )
+from archivey.internal import detection_workspace
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
     ScanNeedle,
     candidate_origin_for_hit,
-    find_magic_in_prefix,
     iter_magic_in_prefix,
 )
 from archivey.internal.source import ArchiveSource
+from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.volumes import resolve_source
 from archivey.types import ArchiveFormat
 from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import NonSeekableBytesIO
@@ -203,6 +210,195 @@ def test_seekable_koly_image_reads_the_trailer_once() -> None:
     assert src.tell() == 0
 
 
+def _koly_image() -> bytes:
+    """A bzip2 stream with a UDIF ``koly`` block after it, larger than any prefix.
+
+    The bzip2 magic is a near-magic hit that yields to the trailer, so detection of these
+    bytes reads the last 512 when it can: ``DMG`` from a file or a ``BytesIO``.
+    """
+    trailer = bytearray(512)
+    trailer[:12] = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
+    return bz2.compress(os.urandom(64 * 1024)) + bytes(trailer)
+
+
+_TRAILER_DECLINED = TierSkip("trailer", TierSkipReason.CAPABILITY_UNAVAILABLE)
+
+
+def _zip_of(members: dict[str, bytes]) -> io.BytesIO:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    buf.seek(0)
+    return buf
+
+
+@dataclass(frozen=True)
+class _Seek:
+    stream: int  # ``id`` of the ``ArchiveStream`` that was seeked
+    before: int
+    after: int
+
+
+def _seek_spy(patch: pytest.MonkeyPatch) -> list[_Seek]:
+    """Record every ``ArchiveStream.seek`` as (stream, position before, position after)."""
+    seeks: list[_Seek] = []
+    real_seek = ArchiveStream.seek
+
+    def spy(self: ArchiveStream, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        before = self.tell()
+        pos = real_seek(self, offset, whence)
+        seeks.append(_Seek(id(self), before, pos))
+        return pos
+
+    patch.setattr(ArchiveStream, "seek", spy)
+    return seeks
+
+
+def _assert_detection_seeks_are_cheap(
+    seeks: list[_Seek], sizes: dict[int, int]
+) -> None:
+    """Backward seeks: 0, not counting the exit restore (format-detection matrix).
+
+    Each member here is freshly opened, so its entry position is 0. A stream may be
+    seeked backward once, and only onto that entry position: the restore. Any other
+    backward seek re-decodes the member from its start. ``sizes`` maps each member's
+    ``id`` to its length: a seek that moves into a member's last 512 bytes is the
+    trailer read, which decodes the whole member on the way (a no-op seek that a read
+    makes at its own position is free and is not counted).
+    """
+    backward = [s for s in seeks if s.after < s.before]
+    assert all(s.after == 0 for s in backward), seeks
+    per_stream = [s.stream for s in backward]
+    assert len(per_stream) == len(set(per_stream)), seeks
+    forward = [s for s in seeks if s.after > s.before]
+    assert all(s.after < sizes[s.stream] - 512 for s in forward), seeks
+
+
+def test_koly_image_detects_as_dmg_when_the_tail_is_cheap() -> None:
+    # The control for the member-stream tests below: the same bytes, where the trailer
+    # read is allowed, answer DMG with nothing skipped.
+    info = detect_format(io.BytesIO(_koly_image()))
+    assert info.format == ArchiveFormat.DMG
+    assert info.unavailable_tiers == ()
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda m: m,
+        ArchiveSource.for_stream,
+        io.BufferedReader,
+        lambda m: ArchiveSource.for_stream(io.BufferedReader(m)),
+    ],
+    ids=["bare", "archive_source", "buffered", "archive_source_over_buffer"],
+)
+def test_member_stream_is_not_seeked_to_its_tail(
+    monkeypatch: pytest.MonkeyPatch, wrap: Callable[[BinaryIO], BinaryIO]
+) -> None:
+    # A seek to the end of a member stream decodes the whole member, and the seek back
+    # decodes it again. Detection must not make one, whatever pass-through layer sits on
+    # top: ``open_archive`` puts an ``ArchiveSource`` there, a caller a buffer.
+    image = _koly_image()
+    with (
+        open_archive(_zip_of({"m.dmg": image}), seekable_members=True) as reader,
+        reader.open("m.dmg") as member,
+        monkeypatch.context() as patch,
+    ):
+        assert member.seekable()
+        member_id = id(member)
+        seeks = _seek_spy(patch)
+        info = detect_format(wrap(member))
+    # The trailer step was reached and declined, so the guard is what kept the seek
+    # off. The answer is the near-magic one.
+    assert info.format == ArchiveFormat.BZ2
+    assert _TRAILER_DECLINED in info.unavailable_tiers
+    _assert_detection_seeks_are_cheap(seeks, {member_id: len(image)})
+
+
+def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only detection's seeks count here: the backend that opens the result afterwards
+    # has its own access shape.
+    import archivey.core
+
+    image = _koly_image()
+    detection_seeks: list[_Seek] = []
+    real_detect = archivey.core.detect_format_into
+
+    def detect_and_snapshot(*args: Any, **kwargs: Any) -> FormatInfo:
+        info = real_detect(*args, **kwargs)
+        detection_seeks.extend(seeks)
+        return info
+
+    with (
+        open_archive(_zip_of({"m.dmg": image}), seekable_members=True) as reader,
+        reader.open("m.dmg") as member,
+        monkeypatch.context() as patch,
+    ):
+        member_id = id(member)
+        seeks = _seek_spy(patch)
+        patch.setattr(archivey.core, "detect_format_into", detect_and_snapshot)
+        with open_archive(member) as nested:
+            assert nested.format_info.format == ArchiveFormat.BZ2
+            assert _TRAILER_DECLINED in nested.format_info.unavailable_tiers
+    assert detection_seeks, "the spy saw no seek during detection"
+    _assert_detection_seeks_are_cheap(detection_seeks, {member_id: len(image)})
+
+
+def test_volume_list_of_member_streams_is_not_seeked_to_its_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Joining the volumes sizes each one with a seek to its end; that is the join's
+    # cost. Detection over the join must not add a read near the end of the last one.
+    image = _koly_image()
+    half = len(image) // 2
+    archive = _zip_of({"a.001": image[:half], "a.002": image[half:]})
+    with (
+        open_archive(archive, seekable_members=True, concurrent_members=True) as reader,
+        reader.open("a.001") as first,
+        reader.open("a.002") as second,
+    ):
+        sizes = {id(first): half, id(second): len(image) - half}
+        resolved = resolve_source([first, second])
+        with resolved.source as source, monkeypatch.context() as patch:
+            assert source.seek_is_expensive
+            seeks = _seek_spy(patch)
+            info = detect_format(source)
+    assert info.format == ArchiveFormat.BZ2
+    assert _TRAILER_DECLINED in info.unavailable_tiers
+    _assert_detection_seeks_are_cheap(seeks, sizes)
+
+
+def test_pipe_records_the_trailer_it_could_not_read() -> None:
+    info = detect_format(NonSeekableBytesIO(_koly_image()))
+    assert info.format == ArchiveFormat.BZ2
+    assert _TRAILER_DECLINED in info.unavailable_tiers
+
+
+@pytest.mark.parametrize(
+    ("data", "expected", "skipped"),
+    [
+        # Magic settles a ZIP before the trailer step: nothing is skipped.
+        (_zip_bytes(), ArchiveFormat.ZIP, ()),
+        # Plain bzip2, no ``koly`` block: the trailer step is reached and declined.
+        (bz2.compress(os.urandom(64 * 1024)), ArchiveFormat.BZ2, (_TRAILER_DECLINED,)),
+        # Shorter than the 512-byte block: there is no block to miss.
+        (bz2.compress(b"hi"), ArchiveFormat.BZ2, ()),
+    ],
+    ids=["zip", "bz2", "bz2_under_512"],
+)
+def test_pipe_receipt_matches_the_pipe_behaviour_rows(
+    data: bytes, expected: ArchiveFormat, skipped: tuple[TierSkip, ...]
+) -> None:
+    # The *pipe behaviour* rows in ``detection-cost``: a pipe's ``unavailable_tiers``
+    # is empty only when detection does not reach the trailer step.
+    info = detect_format(NonSeekableBytesIO(data))
+    assert info.format == expected
+    assert info.unavailable_tiers == skipped
+
+
 def test_path_detection_access_shape(tmp_path: Path) -> None:
     path = tmp_path / "a.gz"
     path.write_bytes(_gzip_bytes())
@@ -318,14 +514,20 @@ def test_negative_candidate_origin_is_discarded() -> None:
     def peek_more_decoy(n: int) -> bytes:
         return (b"\x00" * 100 + b"ustar" + b"\x00" * 400)[:n]
 
-    hit = find_magic_in_prefix(peek_more_decoy, (ScanNeedle(b"ustar", 257),), limit=512)
+    hit = next(
+        iter_magic_in_prefix(peek_more_decoy, (ScanNeedle(b"ustar", 257),), limit=512),
+        None,
+    )
     assert hit is None
 
     # ustar at absolute 257 → candidate origin 0.
     def peek_more_tar(n: int) -> bytes:
         return (b"\x00" * 257 + b"ustar" + b"\x00" * 400)[:n]
 
-    hit = find_magic_in_prefix(peek_more_tar, (ScanNeedle(b"ustar", 257),), limit=1024)
+    hit = next(
+        iter_magic_in_prefix(peek_more_tar, (ScanNeedle(b"ustar", 257),), limit=1024),
+        None,
+    )
     assert hit is not None
     assert hit.candidate_origin == 0
     assert hit.needle == b"ustar"
@@ -520,15 +722,13 @@ def test_read_at_buffered_fallback_stays_inside_the_budget(
 ) -> None:
     # S19-K2: the buffered fallback used to grow the prefix to the 1 MiB constant
     # whatever the budget said, so FAST (256 KiB scan ceiling) went over budget with no
-    # skip. ``_seek_is_expensive`` stands in for an ``ArchiveStream``.
+    # skip. Patching ``seek_is_expensive`` stands in for an ``ArchiveStream``.
     from archivey.detection_cost import FAST_BUDGET
     from archivey.internal.detection_workspace import (
         PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
     )
 
-    monkeypatch.setattr(
-        PrefixWorkspace, "_seek_is_expensive", staticmethod(lambda stream: True)
-    )
+    monkeypatch.setattr(detection_workspace, "seek_is_expensive", lambda stream: True)
     payload = io.BytesIO(b"\x00" * (PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE + 100))
     with PrefixWorkspace(payload, FAST_BUDGET) as ws:
         assert ws.read_at(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE - 24, 24) is None
@@ -673,3 +873,70 @@ def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
     assert within_budget(receipt, budget) or any(
         s.reason in incomplete for s in info.unavailable_tiers
     ), (receipt, info.unavailable_tiers)
+
+
+def _small_tar_bytes() -> bytes:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        t.addfile(info, io.BytesIO(b"hello"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("backend_present", "budget_change", "reason"),
+    [
+        pytest.param(
+            True,
+            {"max_decode_input": 0, "max_decode_output": 0},
+            TierSkipReason.NOT_ENABLED_BY_POLICY,
+            id="off-backend-present",
+        ),
+        pytest.param(
+            False,
+            {"max_decode_input": 0, "max_decode_output": 0},
+            TierSkipReason.NOT_ENABLED_BY_POLICY,
+            id="off-backend-absent",
+        ),
+        pytest.param(
+            False,
+            {"max_decode_output": 256},
+            TierSkipReason.CAPABILITY_UNAVAILABLE,
+            id="short-budget-backend-absent",
+        ),
+        pytest.param(
+            True,
+            {"max_decode_output": 256},
+            TierSkipReason.BUDGET_EXHAUSTED,
+            id="short-budget-backend-present",
+        ),
+    ],
+)
+def test_inner_tar_skip_reason_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    backend_present: bool,
+    budget_change: dict[str, int],
+    reason: TierSkipReason,
+) -> None:
+    # The inner-TAR tier records one reason, in this order: the policy turned it off
+    # (NOT_ENABLED_BY_POLICY, which does not make the search incomplete), then the
+    # backend is absent (CAPABILITY_UNAVAILABLE: more budget would not help), then the
+    # budget cannot cover the probe (BUDGET_EXHAUSTED).
+    from dataclasses import replace
+
+    from archivey.detection_cost import TierSkip
+    from archivey.internal.streams import codecs
+
+    if not backend_present:
+        monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+    budget = replace(BALANCED_BUDGET, **budget_change)
+    info = detect_format(
+        io.BytesIO(gzip.compress(_small_tar_bytes())),
+        config=ArchiveyConfig(detection_budget=budget),
+    )
+    assert info.format == ArchiveFormat.GZ
+    inner = [s for s in info.unavailable_tiers if s.tier == "inner_tar"]
+    assert inner == [TierSkip("inner_tar", reason)]

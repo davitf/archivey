@@ -50,6 +50,10 @@ class DetectionCostReceipt:
     passes: int            # detection passes summed (2 after following a stub), each under the full budget
 ```
 
+Every `DetectionBudget` field SHALL be a non-negative `int`, checked at construction
+with the same field check as the `*Limits` types (`error-handling`): a `bool`, a
+`float`, `None` or a negative value raises `ArchiveyUsageError` naming the field.
+
 The budget SHALL be set through `ArchiveyConfig.detection_budget`, which takes a
 `DetectionBudget`, a `DetectionBudgetPreset` or its string spelling, and the same budget
 SHALL govern `detect_format` and the detection `open_archive` / `open_stream` run. The
@@ -130,6 +134,8 @@ short. The library does not expose this check; the test suite asserts it.
 | ISO under a `max_far_bytes` smaller than the `CD001` span | Extension `GUESS`; `far_magic` recorded *budget exhausted*; `far_bytes` 0 |
 | `.tar.bz2` whose first block exceeds `FAST`'s decode input | Bare `BZ2`; `decode_input` ≤ 64 KiB; `inner_tar` recorded *budget exhausted*; within `FAST` |
 | Expensive-seek source, content probe asks past the budget ceiling | `read_at` returns `None`; `content_probe_read_at` recorded *budget exhausted*; within budget |
+| Pipe or member stream that reaches the trailer step (a bzip2 stream with a `koly` block after it) | Tail not read; `trailer` recorded *capability unavailable*; the near-magic answer (`BZ2`) stands |
+| Source shorter than the 512-byte trailer block | Tail not read; nothing recorded: there is no block to miss |
 | Stub-only `vol.exe` beside `vol.7z.001` | `SEVEN_Z`; the receipt includes the stub pass's SFX scan; `passes` 2; within two budgets, not one; a skip both passes record is kept once |
 | `max_decode_output` below one 512-byte TAR header | Inner-TAR probe not run; `inner_tar` recorded *budget exhausted*; nothing charged |
 | `max_decode_input` 0, zlib stream | No content probe runs; `content_probe` recorded *not enabled by policy*; `decode_input` 0; detection fails |
@@ -224,5 +230,6 @@ content probe that would read past what the budget lets a pipe buffer SHALL be r
 
 | Case | Expected |
 | --- | --- |
-| Pipe, default budget | Prefix tiers run; `unavailable_tiers` empty; no unbounded buffering |
+| Pipe, default budget, settled before the trailer step (ZIP, gzip) | Prefix tiers run; `unavailable_tiers` empty; no unbounded buffering |
+| Pipe, default budget, reaches the trailer step (bzip2, xz or zlib, 512 bytes or more) | Prefix tiers run; tail not read; `trailer` recorded *capability unavailable* (see *receipt reflects the source kind*); no unbounded buffering |
 | Detection finds a format whose backend cannot consume the source | `open_archive` raises the capability error rather than opening |
