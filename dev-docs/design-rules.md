@@ -931,10 +931,15 @@ Questions no rule here settles yet.
 
 - **The official tool for ZIP and ISO.** DR-6 names none. Asked on 2026-10-02 and not
   answered.
-- **bzip2 after zero padding.** The standard library reads both streams; `bzip2` 1.0.8
-  and the accelerator stop after the first. The factors split: nothing hides (the second
-  stream is reported as trailing data), the shape is unusual but not crafted, and only
-  the standard-library path differs. Raised 2026-10-08.
+- **bzip2 after zero padding.** For a stream, zero bytes, then another stream, archivey
+  reads both streams with the accelerator on and off: the accelerator stops at the
+  zeros, and the standard library takes over at the end and reads the rest (PR 634, so
+  DR-5 holds). `bzip2` 1.0.8 writes the first payload only, warns "trailing garbage
+  after EOF ignored" and exits 0. The open question is only whether both modes should
+  stop there as `bzip2` does (DR-6) and report the rest as trailing data. Against that:
+  under the default policy a warning would be the only sign of a payload not
+  delivered (DR-1, DR-2), and xz reads past zero padding between streams. Raised
+  2026-10-08, restated 2026-10-10.
 - **The stricter `DecoderLimits` preset.** The numbers are chosen (256 MiB, 2**24); the
   name, and whether it should be a mode rather than numbers, are open.
 
