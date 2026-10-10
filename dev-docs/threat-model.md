@@ -683,9 +683,9 @@ that are not errors are `Diagnostic` values with stable codes and a per-code pol
 (`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
 the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
-accelerator for gzip, zlib and raw DEFLATE (`internal/streams/rapidgzip_child.py`), and
+accelerator for gzip, zlib and raw DEFLATE (`internal/streams/codecs/rapidgzip_child.py`), and
 PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
-`internal/streams/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
+`internal/streams/codecs/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
 costs only the member.
 
 **Residual.** `MemoryError` passes through, and an in-process native decoder can still

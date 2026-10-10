@@ -41,7 +41,7 @@ from archivey.internal.config import (
     stream_config_from_archivey,
 )
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.xz import XzDecompressorStream
+from archivey.internal.streams.codecs.xz_decoder import XzDecompressorStream
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.streams_util import (
@@ -775,7 +775,7 @@ def test_xz_hand_off_after_a_block_resume_keeps_the_cap(
     of A and then continues sequentially; every decoder on that path, the hand-off's
     included, must carry the caller's cap as its memlimit.
     """
-    from archivey.internal.streams import xz
+    from archivey.internal.streams.codecs import xz_decoder as xz
 
     parts = [bytes([i]) * 150_000 for i in range(3)]
     streams = [make_multiblock_xz(p, block_size=65536) for p in parts]
@@ -859,7 +859,7 @@ def test_xz_flush_drain_does_not_swallow_a_memlimit_refusal(
     White-box: the drain runs only when the decoder still holds input after the
     final ``_process`` pass, which a real stream does not reliably reach.
     """
-    from archivey.internal.streams import xz
+    from archivey.internal.streams.codecs import xz_decoder as xz
 
     state = xz._XzState(DecoderLimits(max_decoder_memory=2**16), lambda _check: None)
     state._state = xz._XzState._IN_STREAM

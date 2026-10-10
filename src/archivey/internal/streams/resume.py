@@ -37,7 +37,7 @@ class ResumeReachedStreamEnd(Exception):
     way as a damaged block, so that decoder raises this on either).
 
     It is control flow, not an error a caller may see: it is not an ``ArchiveyError``.
-    Only ``_StdlibOnAcceleratorError`` in ``codecs.py`` adds resume points to a
+    Only ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py`` adds resume points to a
     decoder, and every call of its that can decode (``read`` and ``seek``; ``readinto``
     and ``readall`` go through ``read``) catches it. A new caller of either decoder
     must catch it the same way.
