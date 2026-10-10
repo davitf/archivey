@@ -657,17 +657,21 @@ never reported as success. Public:
   index.
 - 7z header encryption has no check value, so a wrong key is caught by the encoded-header
   folder CRC when the writer stored one (7-Zip does; py7zr does not), then by the parse
-  failing. About 1 in 256 wrong keys decode to a leading `END` (or `HEADER`+`END`) that
-  parses as an empty archive (measured about 0.3% of py7zr salts). Legitimate writers
-  never encrypt an empty header, so `SevenZipReader._decode_encoded_header_block`
-  rejects a decoded header with zero file records as `EncryptionError`.
+  failing. The decoded header must start with `HEADER` and end at its final `END`
+  (`parse_decoded_header`), so only a wrong key that decodes to exactly `HEADER`+`END`
+  still parses as an empty archive. Before those two checks, about 1 in 256 wrong keys
+  decoded to a leading `END` or `HEADER`+`END` that parsed as empty (measured about 0.3%
+  of py7zr salts); that figure is now an upper bound and has not been re-measured.
+  Legitimate writers never encrypt an empty header, so
+  `SevenZipReader._decode_encoded_header_block` rejects a decoded header with zero file
+  records as `EncryptionError`.
 - A password only a weak check accepted, or none tested (RAR3/4 encrypted data has no
   check), is confirmed by the member's own CRC at EOF. Closing such a stream early emits
   `ENCRYPTED_MEMBER_UNVERIFIED`.
 
-**Residual.** Wrong-key 7z header garbage that parses into a non-empty plausible header
-survives in principle. Rejecting trailing bytes in the decoded header, or py7zr writing
-the encoded-header CRC, would narrow it further. Bytes returned before an error are of
+**Residual.** Wrong-key 7z header garbage survives in principle when it parses into a
+non-empty plausible header that also ends exactly at the end of the decoded buffer.
+py7zr writing the encoded-header CRC would narrow it further. Bytes returned before an error are of
 unknown quality.
 
 **Tests.**
