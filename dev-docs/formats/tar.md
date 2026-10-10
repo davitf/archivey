@@ -231,11 +231,16 @@ stays. A ustar or GNU name, link target, `uname` or `gname` declares no encoding
 when tarfile decoded it with the caller's `encoding=`, `_to_member` takes the stored
 bytes back and uses their UTF-8 reading when they are valid UTF-8, as every format does
 for an undeclared name (design rules, ruled 2026-10-07): `encoding=` changes such a field
-only when its bytes are not valid UTF-8. A PAX record is decoded strictly as UTF-8 first
+only when its bytes are not valid UTF-8. A name taken that way, where `encoding=` would
+have given a different one, emits `MEMBER_NAME_ENCODING_INFERRED` naming the caller's
+codec, as ZIP and RAR 1.5-4 do. A PAX record is decoded strictly as UTF-8 first
 and falls back to the archive codec (with `surrogateescape`) only when that fails, or
 outright for the member's own `hdrcharset=BINARY`; so `encoding=` changes a PAX name
 only when its bytes are not UTF-8. A `BINARY` record declares no encoding, so it gets
-the same UTF-8 reading as a ustar name. Because that fallback
+the same UTF-8 reading as a ustar name. A member block that repeats a global `BINARY`
+cannot be told from one that inherits it (`_pax_field_is_utf8`), so under a non-UTF-8
+`encoding=` its name keeps the codec's reading and `raw_name` is not the stored bytes;
+that needs a crafted archive, and is pinned by a test. Because that fallback
 is the archive codec, the UTF-8 default reaches such PAX names too: without `encoding=`
 their undecodable bytes are surrogate escapes whatever the locale, and `raw_name` is the
 stored bytes.

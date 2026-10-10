@@ -1474,9 +1474,7 @@ class TarReader(BaseArchiveReader):
         name = normalize_member_name(
             presented, member_type, backslash_is_separator=False
         )
-        raw_name = _recover_raw_name(
-            info, self._tar.encoding, self._tar.errors, self._tar.pax_headers
-        )
+        raw_name = _recover_raw_name(info, self._tar.encoding, self._tar.errors, pax)
 
         link_target = (
             self._utf8_first(info, "linkpath", info.linkname, pax)
@@ -1572,6 +1570,21 @@ class TarReader(BaseArchiveReader):
         )
         for issue in timestamp_issues:
             self._emit_timestamp_invalid(member, index, issue)
+        if presented != info.name:
+            # _utf8_first took the UTF-8 reading over the caller's encoding=, which
+            # ZIP and RAR 1.5-4 report the same way.
+            assert self._encoding is not None
+            self._emit_name_encoding_inferred(
+                member,
+                index,
+                inferred_encoding="utf-8",
+                passed_over=self._encoding,
+                message=(
+                    f"TAR member name decoded as 'utf-8' rather than "
+                    f"{self._encoding!r} (the stored bytes are valid UTF-8): "
+                    f"{quoted(member.name)}"
+                ),
+            )
         return member
 
     def _utf8_first(
@@ -1697,8 +1710,9 @@ def _recover_raw_name(
     overrode an inherited global ``path`` differs from it), and ``BINARY`` is honoured
     only when it is not the inherited global value (tarfile reads ``hdrcharset`` from
     the member's own block only). A block that repeats the global ``BINARY``, or a long
-    name equal to a global ``path``, is misread; both need a crafted archive and give
-    different bytes only when ``encoding`` is not UTF-8.
+    name equal to a global ``path``, is misread; both need a crafted archive and matter
+    only when ``encoding`` is not UTF-8. :func:`_pax_field_is_utf8` says what the first
+    misread costs.
 
     For a PAX name the bytes are taken as UTF-8, the spec's encoding. A name that UTF-8
     cannot encode holds surrogates, which only the fallback decode produces, so it is
@@ -1728,6 +1742,17 @@ def _pax_field_is_utf8(
 
     Inferred as :func:`_recover_raw_name` describes: the text equals the record, and
     the member's own block does not say ``hdrcharset=BINARY``.
+
+    ``info.pax_headers`` merges the global headers into the member's, and tarfile keeps
+    no record of which block a key came from. So a member block that repeats a global
+    ``hdrcharset=BINARY`` reads here as "not BINARY", though tarfile decoded its records
+    with the archive codec. That is the chosen wrong answer: the other one misreads a
+    ``BINARY`` set only globally, which tarfile ignores. It needs a crafted archive and
+    an ``encoding=`` that is not UTF-8, and then reaches the presented name, link
+    target, ``uname`` and ``gname`` (no UTF-8 reading is taken) and ``raw_name`` (the
+    text is encoded back as UTF-8, not with the codec). The test
+    ``test_pax_member_repeating_a_global_binary_charset_keeps_the_codec_reading`` pins
+    it.
     """
     if info.pax_headers.get(key) != text:
         return False

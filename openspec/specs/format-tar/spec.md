@@ -369,7 +369,10 @@ NOT depend on the process locale or `sys.getfilesystemencoding()`. These fields 
 declare an encoding, so a field whose bytes are valid UTF-8 SHALL be decoded as UTF-8
 whatever `encoding=` says, and a caller-passed `encoding=` SHALL replace the
 surrogate-escaped UTF-8 decode, with the same error handler, only for a field whose bytes
-are not valid UTF-8. A PAX record SHALL be decoded strictly as UTF-8 first; when that
+are not valid UTF-8. When a caller-passed `encoding=` would have given a different name
+than that UTF-8 reading, the backend SHALL emit `MEMBER_NAME_ENCODING_INFERRED` with
+`inferred_encoding="utf-8"` and `declared_encoding` set to the caller's encoding, as ZIP
+does. A PAX record SHALL be decoded strictly as UTF-8 first; when that
 fails it SHALL be decoded with the same archive codec and error handler, so `encoding=`
 (or the UTF-8 default) applies to a PAX record only when its bytes are not UTF-8. A PAX
 record under the member's own `hdrcharset=BINARY` declares no encoding and is decoded
@@ -381,7 +384,7 @@ as a ustar field is.
 | --- | --- |
 | ustar or GNU long name stored as UTF-8 `café.txt`, no `encoding=`, filesystem encoding Latin-1 or ASCII | `name == "café.txt"`; `raw_name` is the UTF-8 bytes |
 | ustar name stored as Latin-1 `caf\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9.txt"`; `raw_name == b"caf\xe9.txt"` |
-| ustar or GNU long name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"`; `raw_name` is the UTF-8 bytes |
+| ustar or GNU long name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"`; `raw_name` is the UTF-8 bytes; one `MEMBER_NAME_ENCODING_INFERRED` naming `latin-1` |
 | ustar name stored as Latin-1 `caf\xe9.txt`, `encoding="latin-1"` | `name == "café.txt"`; `raw_name == b"caf\xe9.txt"` |
 | ustar `linkname`, `uname` or `gname` stored as UTF-8, `encoding="latin-1"` | Decoded as UTF-8 |
 | PAX `path` record holding the non-UTF-8 bytes `caf\xe9\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |

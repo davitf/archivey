@@ -356,7 +356,10 @@ bytes are then `member.raw_name`, and the stored bytes are in
 are in. Most tools today write UTF-8, and older ones write whatever encoding the
 author's system used. Trying UTF-8 first means a legacy `encoding=` fixes the old names
 without turning the UTF-8 names in the same archive, or in the next archive you open
-with the same code, into mojibake. This differs from Python's `zipfile`
+with the same code, into mojibake. When a ZIP, TAR or RAR 1.5-4 name takes the UTF-8
+reading where your `encoding=` would have given a different name, a
+`member_name_encoding_inferred` diagnostic says so and names your encoding. This
+differs from Python's `zipfile`
 `metadata_encoding` and from `unzip -O`, which apply the encoding to every ZIP name
 without the flag.
 

@@ -427,9 +427,10 @@ decode with `surrogateescape`; a codec that refuses that handler (`idna`) gives 
 next one, and cp437 decodes every byte. This sniff SHALL apply only in the absence of an
 authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8. When the sniff
 selects an encoding archivey chose over the cp437 default — UTF-8, or a configured fallback
-other than cp437 — the backend SHALL emit a `diagnostics` warning identifying the member
-and the chosen encoding, so the decision is observable and escalatable via
-`DiagnosticPolicy`. A name decoded with the caller's `encoding=` emits no such warning.
+other than cp437 — the backend SHALL emit a `diagnostics` warning identifying the member,
+the chosen encoding and the encoding it passed over (the caller's `encoding=` or the
+configured fallback for a UTF-8 reading, cp437 for a configured fallback), so the decision
+is observable and escalatable via `DiagnosticPolicy`. A name decoded with the caller's `encoding=` emits no such warning.
 Decoding SHALL NOT raise a bare `UnicodeDecodeError`.
 
 An Info-ZIP Unicode Path extra field (`0x7075`) in the central directory outranks both the

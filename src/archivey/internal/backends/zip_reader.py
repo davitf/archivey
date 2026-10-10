@@ -65,8 +65,6 @@ from archivey.cost import (
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
-    NameEncodingContext,
-    raw_name_to_base64,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -932,9 +930,9 @@ class ZipReader(BaseArchiveReader):
         ``encoding=``, else the configured legacy fallback (default cp437).
 
         Returns ``(name, inferred_encoding)`` where ``inferred_encoding`` is the encoding
-        archivey chose when it overrode the cp437 APPNOTE default (for the diagnostic),
-        else ``None``. The caller's ``encoding=`` is not an inference, so it gives
-        ``None``. UTF-8 is self-validating, so a clean decode is strong evidence the bytes
+        archivey chose over the one the name would otherwise have had (for the
+        diagnostic), else ``None``. The caller's ``encoding=`` is not an inference, so it
+        gives ``None``. UTF-8 is self-validating, so a clean decode is strong evidence the bytes
         are UTF-8; legacy bytes that are coincidentally valid UTF-8 are the documented
         residual risk. Pure ASCII (and any other bytes that decode identically under
         UTF-8 and cp437) is not an override — both encodings agree, so no diagnostic.
@@ -1120,23 +1118,23 @@ class ZipReader(BaseArchiveReader):
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
         if inferred_encoding is not None:
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+            # The codec the name would otherwise have had: for a UTF-8 reading, the
+            # caller's encoding= or the configured fallback; for a configured fallback,
+            # the cp437 APPNOTE default.
+            passed_over = (
+                (self._encoding or self._config.zip_unflagged_fallback_encoding)
+                if inferred_encoding == "utf-8"
+                else "cp437"
+            )
+            self._emit_name_encoding_inferred(
+                member,
+                index,
+                inferred_encoding=inferred_encoding,
+                passed_over=passed_over,
                 message=(
-                    f"ZIP member name decoded as {inferred_encoding!r} rather than the "
-                    f"cp437 default (UTF-8 flag not set): {quoted(member.name)}"
+                    f"ZIP member name decoded as {inferred_encoding!r} rather than "
+                    f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
                 ),
-                context=NameEncodingContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=index,
-                    raw_name_base64=raw_name_to_base64(member.raw_name),
-                    inferred_encoding=inferred_encoding,
-                    declared_encoding="cp437",
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
             )
         emit_member_name_normalized(
             self._diagnostics_collector,

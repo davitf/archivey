@@ -111,8 +111,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
   Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
   name. One signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
-  whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then the field's UTF-8 bytes and
-  `extra["alternate_raw_name"]` holds the stored ones.
+  whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
+  the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
   bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
   parsing the central directory, so the failure is archive-wide rather than confined to

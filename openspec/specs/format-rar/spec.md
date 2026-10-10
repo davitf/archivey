@@ -90,7 +90,11 @@ first, with or without the Unicode flag. When the bytes are not valid UTF-8 it S
 decode them with the caller's `encoding=` when one was passed, and without one with
 cp437 (the OEM code page WinRAR writes) for a member whose host is MS-DOS, OS/2 or
 Win32, and windows-1252 for any other host, with `surrogateescape` for the bytes the
-codec leaves undefined. The system MUST NOT decode an 8-bit name as UTF-16LE. `raw_name` SHALL be the
+codec leaves undefined. When a name without the Unicode flag decodes as UTF-8 and the
+caller's `encoding=` would have given a different name, the system SHALL emit
+`MEMBER_NAME_ENCODING_INFERRED` with `inferred_encoding="utf-8"` and `declared_encoding`
+set to the caller's encoding, as ZIP does; the Unicode flag declares UTF-8, so a flagged
+name emits none. The system MUST NOT decode an 8-bit name as UTF-16LE. `raw_name` SHALL be the
 stored bytes in every case, and RAR SHALL NOT emit `ENCODING_ARGUMENT_UNUSED`. How a
 name with no UTF-16 field is decoded SHALL NOT change which member a read returns: its
 `unrar` mask is built from the stored name, not from the decoded text. A RAR 1.5-4
@@ -112,7 +116,7 @@ name.
 | 8-bit `caf\xe9.txt` written on Unix | `café.txt` (windows-1252) |
 | 8-bit name whose bytes are valid UTF-8 | Decoded as UTF-8 |
 | 8-bit name that is not valid UTF-8, with `encoding="cp1251"` | Decoded with cp1251; still reads |
-| 8-bit name whose bytes are valid UTF-8, `encoding=` passed, with or without the Unicode flag | UTF-8 |
+| 8-bit name whose bytes are valid UTF-8, `encoding=` passed, with or without the Unicode flag | UTF-8; one `MEMBER_NAME_ENCODING_INFERRED` without the flag, none with it |
 | RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
 | Any 8-bit name | `raw_name` is the stored bytes |
 | UTF-16 field holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`; `raw_name` is the 8-bit field; the member reads |

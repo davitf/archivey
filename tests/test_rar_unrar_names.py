@@ -476,12 +476,27 @@ def test_valid_utf8_rar3_name_wins_over_the_encoding_argument(
 ) -> None:
     """The bytes ``c3 a9`` are UTF-8 ``é``; ``encoding="latin-1"`` does not make them
     ``Ã©``, whether or not the Unicode flag is set."""
+    from archivey.diagnostics import DiagnosticCode
+
     stored = "é.txt".encode()
     path = _rar4_with_name(tmp_path, stored, unicode_flag=unicode_flag)
     with open_archive(path, encoding="latin-1") as reader:
         member = reader.members()[0]
         assert member.name == "é.txt"
         assert member.raw_name == stored
+    inferred = [
+        d
+        for d in member.diagnostics
+        if d.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+    ]
+    if unicode_flag:
+        # The flag declares UTF-8: nothing was inferred.
+        assert inferred == []
+    else:
+        # Reported as ZIP and TAR report it, naming the codec passed over.
+        (diag,) = inferred
+        assert diag.context.inferred_encoding == "utf-8"
+        assert diag.context.declared_encoding == "latin-1"
 
 
 @requires_binary("unrar")

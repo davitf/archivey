@@ -620,15 +620,17 @@ unflagged ZIP name: strict UTF-8 first, with or without the Unicode flag, then
 `encoding=` when the caller passed one, otherwise cp437 for a member whose host is
 MS-DOS, OS/2 or Win32 and windows-1252 for any other host (§7 has the evidence). So
 `encoding=` applies only to bytes that are not valid UTF-8, as in every format (design
-rules, ruled 2026-10-07). The five bytes windows-1252 leaves undefined decode with
-`surrogateescape` too, so `b\x81.txt` and `b\x8d.txt` stay two names. The 8-bit field is never tried as UTF-16LE: almost any
-even-length byte string decodes that way, so `caf\xe9.txt` used to list as `慣琮瑸`. The
-UTF-16 field decodes with `surrogatepass`, as 7z names do (7z.md §2): a lone surrogate
-stays in `name`, and extraction writes it by the cross-format rule in `safe-extraction`
-("Lone surrogates in a member name"). It used to decode with `replace`, which also left
-the U+D800–U+DFFF arm of `_fix_rar3_astral_truncation` unreachable. 7-Zip 23.01 writes
-such a name as 7z's. `unrar` 7.00 holds the field as UTF-16 code units, one `wchar_t`
-each, so a valid pair is two characters to its `-n` matcher (`-n./pair??.txt` selects
+rules, ruled 2026-10-07), and a name without the Unicode flag that took the UTF-8
+reading over `encoding=` emits `MEMBER_NAME_ENCODING_INFERRED`, as in ZIP and TAR. The
+five bytes windows-1252 leaves undefined decode with `surrogateescape` too, so
+`b\x81.txt` and `b\x8d.txt` stay two names. The 8-bit field is never tried as UTF-16LE:
+almost any even-length byte string decodes that way, so `caf\xe9.txt` used to list as
+`慣琮瑸`. The UTF-16 field decodes with `surrogatepass`, as 7z names do (7z.md §2): a
+lone surrogate stays in `name`, and extraction writes it by the cross-format rule in
+`safe-extraction` ("Lone surrogates in a member name"). It used to decode with
+`replace`, which also left the U+D800–U+DFFF arm of `_fix_rar3_astral_truncation`
+unreachable. 7-Zip 23.01 writes such a name as 7z's. `unrar` 7.00 holds the field as
+UTF-16 code units, one `wchar_t` each, so a valid pair is two characters to its `-n` matcher (`-n./pair??.txt` selects
 `pair` U+1F600 `.txt`, `-n./pair?.txt` does not), and `unrar x` on Linux writes the name
 cut at its first surrogate unit (`hi\ud800.txt` → `hi`); both measured. On POSIX the
 mask goes out as UTF-8 bytes, which cannot carry a surrogate unit, so it sends each unit

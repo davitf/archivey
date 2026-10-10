@@ -1697,6 +1697,22 @@ def test_explicit_encoding_does_not_decode_valid_utf8() -> None:
         (member,) = ar.members()
     assert member.name == "étxt"
     assert member.raw_name == b"\xc3\xa9txt"
+    # The diagnostic names the codec the caller passed, not cp437.
+    (diag,) = member.diagnostics
+    assert diag.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+    assert diag.context.declared_encoding == "latin-1"
+    assert "'latin-1'" in diag.message
+    assert "cp437" not in diag.message
+
+
+def test_utf8_inference_names_the_configured_fallback() -> None:
+    data = _stored_zip(b"\xc3\xa9txt", utf8_flag=False)
+    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
+    with open_archive(io.BytesIO(data), config=cfg) as ar:
+        (member,) = ar.members()
+    (diag,) = member.diagnostics
+    assert diag.context.declared_encoding == "cp1252"
+    assert "'cp1252'" in diag.message
 
 
 def test_explicit_encoding_replaces_the_configured_fallback() -> None:
