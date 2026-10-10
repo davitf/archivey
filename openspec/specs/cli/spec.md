@@ -122,9 +122,9 @@ single-file/single-stream archive. When no cheap index is available (plain TAR,
 future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
-the cwd and remove the wrapper. The hoist SHALL NOT run when the wrapper was
-already there before the extraction (its only entry may be the operator's own),
-when the only entry is a symlink (the move changes the directory its target is
+the cwd and remove the wrapper. Whether the hoist runs SHALL depend only on what
+the run extracted, never on what was at the wrapper's name before. The hoist SHALL
+NOT run when the only entry is a symlink (the move changes the directory its target is
 read from), or when a symlink in the entry leaves the entry on the way to its target
 or part of the entry could not be listed (it may hold such a link).
 Extraction checked those links against the wrapper, and a path that climbs above the
@@ -149,11 +149,15 @@ wrapper SHALL then take that root's mode and times. A directory stored without o
 write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
 and search permission for the move and then puts its mode back, as a direct extraction
 into the cwd would have succeeded.
-Container-name collisions SHALL be resolved by the overwrite policy, with one
-exception: a symlink at the container name, dangling or live, SHALL be treated
-as taken under every overwrite policy and the next free `<stem> (N)` used,
-because the CLI chose that name rather than the operator. `-d` remains the way
-to extract through a link deliberately.
+The container (`./<archive-stem>/`) SHALL always be a new directory that the run
+creates. When anything exists at the container name (a directory, a regular file, or a
+symlink, dangling or live), the name SHALL be treated as taken under every overwrite
+policy and the next free `<stem> (N)` used, because the CLI chose that name rather than
+the operator. An existing directory SHALL NOT be reused as the container. The overwrite
+policy SHALL apply where the content lands: inside the new container, or, after a
+hoist, in the cwd. `-d` remains the way to extract into an existing directory or
+through a link deliberately: `-d backup --overwrite replace` re-extracts a multi-root
+archive into an existing `backup/`.
 Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 (`--overwrite` may select `error` / `skip` / `replace` / `rename`).
 `extract` SHALL pass `OnError.CONTINUE` by default so policy rejections and
@@ -187,6 +191,9 @@ other processed statuses are omitted from that line).
 | `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
 | `archivey extract <no-index-archive>` with multiple top-level entries | Extracts into `./<archive-stem>/` (no hoist) |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a symlink (dangling or to a directory), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written through the link |
+| `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a regular file (for example the archive itself, when it has no extension), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; the file is untouched |
+| `archivey extract <archive>` needing a wrapper when `./<archive-stem>/` is an existing directory, any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written into the existing directory |
+| `archivey extract <no-index-archive>` with a single top-level dir `root/` when `./<archive-stem>/` is an existing directory, any `--overwrite` | Extracts into `./<archive-stem> (N)/`, then hoists `root/` to the cwd and removes the wrapper; the existing directory is untouched |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
@@ -412,8 +419,7 @@ say that nothing was written. With no `-d`, it SHALL name the smart default dest
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,
 and use that place in the closing summary. Where a real run would keep that entry in
-the destination (the folder was already there, the entry is a symlink, a symlink in it
-leaves it, or part of the entry could not be listed, which here means part of the
+the destination (the entry is a symlink, a symlink in it leaves it, or part of the entry could not be listed, which here means part of the
 scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
 reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
 already at that place, nor whether an existing directory there can be written into: a

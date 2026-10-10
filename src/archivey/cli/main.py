@@ -419,7 +419,10 @@ def build_parser() -> argparse.ArgumentParser:
         "-d",
         "--dest",
         default=None,
-        help="destination directory (default: smart enclosing dir; use -d . for cwd)",
+        help=(
+            "destination directory (default: a new folder named after the archive, "
+            "or . for a single top-level folder; use -d . for cwd)"
+        ),
     )
     p_extract.add_argument(
         "--policy",

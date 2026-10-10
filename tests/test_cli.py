@@ -2731,6 +2731,67 @@ def test_smart_dest_does_not_follow_symlink_to_directory(
     assert (tmp_path / "pkg (1)" / "b.txt").read_bytes() == b"b"
 
 
+# --- The wrapper named after the archive is always a folder this run creates ---
+
+
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_smart_dest_steps_aside_from_a_file_at_the_wrapper_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+) -> None:
+    # An archive with no extension: its stem is its own name, so the file is in the way.
+    monkeypatch.chdir(tmp_path)
+    archive = _zip(tmp_path / "backup", {"a.txt": b"a", "b.txt": b"b"})
+    assert main(["x", "--overwrite", overwrite, str(archive)]) == EXIT_OK
+    assert "extracting into backup (1)/" in capsys.readouterr().err
+    assert (tmp_path / "backup (1)" / "a.txt").read_bytes() == b"a"
+    assert archive.is_file()
+
+
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_smart_dest_never_reuses_an_existing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.txt").write_bytes(b"mine")
+    z = _zip(tmp_path / "pkg.zip", {"a.txt": b"a", "b.txt": b"b"})
+    assert main(["x", "--overwrite", overwrite, str(z)]) == EXIT_OK
+    assert sorted(p.name for p in (tmp_path / "pkg").iterdir()) == ["a.txt"]
+    assert (tmp_path / "pkg" / "a.txt").read_bytes() == b"mine"
+    assert (tmp_path / "pkg (1)" / "a.txt").read_bytes() == b"a"
+    assert (tmp_path / "pkg (1)" / "b.txt").read_bytes() == b"b"
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+def test_hoist_runs_when_a_directory_has_the_wrapper_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    dry_run: bool,
+) -> None:
+    # Whether the single root moves up depends on the archive alone.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "bundle").mkdir()
+    (tmp_path / "bundle" / "notes.txt").write_bytes(b"mine")
+    archive = _tar(tmp_path / "bundle.tar", {"root/a.txt": b"x"})
+    args = ["x", "--overwrite", overwrite, str(archive)]
+    args += ["--dry-run"] if dry_run else []
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "into bundle (1)/" in err
+    assert "move to root/" in err if dry_run else "moved to root/" in err
+    assert "already there" not in err
+    assert sorted(p.name for p in (tmp_path / "bundle").iterdir()) == ["notes.txt"]
+    assert not (tmp_path / "bundle (1)").exists()
+    if not dry_run:
+        assert (tmp_path / "root" / "a.txt").read_bytes() == b"x"
+
+
 # --- S24-K6: an incomplete ``test`` run exits nonzero even with no failure ---
 
 
