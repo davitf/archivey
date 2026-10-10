@@ -86,9 +86,14 @@ def _normalize(text: str, dest: Path, cwd: Path) -> str:
     labels = {resolved: "<resolved>", absolute: "<abs>"}
     if dest.is_absolute():
         labels.setdefault(str(dest), "<given>")
+    # Messages render paths through ``display_path`` (``/``-separated), so on Windows a
+    # spelling also shows up in its posix form.
+    for spelling, label in list(labels.items()):
+        labels.setdefault(display_path(spelling), label)
     for spelling in sorted(labels, key=len, reverse=True):
         text = text.replace(spelling, labels[spelling])
-    text = text.replace(str(cwd.resolve()), "<cwd>")
+    for spelling in (str(cwd.resolve()), display_path(cwd.resolve())):
+        text = text.replace(spelling, "<cwd>")
     if not dest.is_absolute():
         text = re.sub(rf"(?<=['\"]){re.escape(str(dest))}(?=['\"/\\])", "<rel>", text)
     # The staging file's random suffix is the one thing two runs never share.
