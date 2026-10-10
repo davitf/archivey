@@ -838,6 +838,27 @@ def test_plain_iso_versions_keep_the_newest_current(tmp_path: Path) -> None:
     assert (tmp_path / "out" / "FOO").read_bytes() == b"NEW VERSION"
 
 
+def test_a_directory_identifier_keeps_its_version_like_suffix() -> None:
+    """ECMA-119 gives a version only to a file identifier. A directory's ``;1`` is
+    part of its name, so the directory lists under the path its children use."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_directory("/DIAB")
+    iso.add_fp(io.BytesIO(b"x"), 1, "/DIAB/X.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    # The directory record and both path tables spell the identifier.
+    data = out.getvalue().replace(b"DIAB", b"DI;1")
+
+    with open_archive(io.BytesIO(data)) as ar:
+        rows = [(m.name, dict(m.extra)) for m in ar.members()]
+        assert rows == [("DI;1/", {}), ("DI;1/X.TXT", {"iso.version": 1})]
+        assert ar.read("DI;1/X.TXT") == b"x"
+
+
 def test_rock_ridge_relocation_directory_is_not_listed() -> None:
     """Deep trees are parked under ``rr_moved`` and relinked; only the logical tree lists."""
 
@@ -1011,16 +1032,18 @@ def test_the_el_torito_boot_catalog_reads_and_extracts(tmp_path: Path) -> None:
     assert (tmp_path / "A.TXT").read_bytes() == b"hi"
 
 
-def _split_into_two_extents(
-    image: bytes, identifier: bytes, *, gap: int = 0, flag: bool = True
+def _split_into_extents(
+    image: bytes, identifier: bytes, *, flags: tuple[bool, ...] = (True,), gap: int = 0
 ) -> bytes:
-    """Rewrite a root file's directory record as two, the way a 4 GiB file is stored.
+    """Rewrite a root file's directory record as several, the way a 4 GiB file is stored.
 
-    The first record keeps the first block and is flagged multi-extent; the second
-    has the same name and covers the rest, starting ``gap`` blocks after the first
-    ends. With ``flag=False`` the first record is not flagged, so the two are
-    unrelated files that happen to share an identifier. Both fit in the root
-    directory's sector, whose padding absorbs the new record.
+    The file becomes ``len(flags) + 1`` records with one name. Each record but the
+    last covers one block, and the last covers the rest. Record ``i`` carries the
+    multi-extent flag when ``flags[i]`` is true. With every flag set, the records are
+    one file, as a writer stores it. A record without the flag ends its file, so the
+    next record with the same identifier is an unrelated file. The second record
+    starts ``gap`` blocks after the first ends. All the records fit in the root
+    directory's sector, whose padding absorbs the new ones.
     """
     buf = bytearray(image)
     root = struct.unpack_from("<I", buf, 16 * 2048 + 156 + 2)[0] * 2048
@@ -1040,18 +1063,22 @@ def _split_into_two_extents(
         struct.pack_into("<I", target, at, value)
         struct.pack_into(">I", target, at + 4, value)
 
-    first, second = bytearray(record), bytearray(record)
-    both_endian(first, 10, 2048)
-    if flag:
-        first[25] |= 0x80
-    both_endian(second, 2, extent + 1 + gap)
-    both_endian(second, 10, size - 2048)
+    records = []
+    for index, flag in enumerate(flags):
+        chunk = bytearray(record)
+        both_endian(chunk, 2, extent + index + (gap if index else 0))
+        both_endian(chunk, 10, 2048)
+        if flag:
+            chunk[25] |= 0x80
+        records.append(bytes(chunk))
+    last = bytearray(record)
+    both_endian(last, 2, extent + len(flags) + gap)
+    both_endian(last, 10, size - 2048 * len(flags))
+    records.append(bytes(last))
     sector_end = root + 2048
     rest = bytes(buf[offset + length : sector_end])
-    assert rest.endswith(b"\0" * length), "no room for the second record"
-    buf[offset:sector_end] = (bytes(first) + bytes(second) + rest)[
-        : sector_end - offset
-    ]
+    assert rest.endswith(b"\0" * length * len(flags)), "no room for the new records"
+    buf[offset:sector_end] = (b"".join(records) + rest)[: sector_end - offset]
     return bytes(buf)
 
 
@@ -1072,7 +1099,7 @@ def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
     """A file of 4 GiB or more is several records with one name. Only the first
     reached the reader, so the member listed and read one extent's worth and dropped
     the rest without an error (measured: a 4 400 MiB xorriso file read as 4 GiB)."""
-    image = _split_into_two_extents(_image_with_two_block_file(), b"BIG.BIN;1")
+    image = _split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1")
     with open_archive(io.BytesIO(image)) as ar:
         by_name = {m.name: m for m in ar.members()}
         assert set(by_name) == {"BIG.BIN", "Z.TXT"}
@@ -1085,23 +1112,63 @@ def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
     """Extents that are not back to back are refused rather than read as one run."""
     from archivey.exceptions import UnsupportedFeatureError
 
-    image = _split_into_two_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
+    image = _split_into_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
     with open_archive(io.BytesIO(image)) as ar:
         assert ar.get("BIG.BIN").size == 3048
         with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
             ar.read("BIG.BIN")
 
 
-def test_a_repeated_identifier_without_the_flag_is_not_one_file() -> None:
-    """pycdlib links any record whose identifier repeats the previous one, and sets
-    the multi-extent flag on the first in memory. Only the flag as written in the
-    image makes a chain; without it the member is its own record, as before."""
-    image = _split_into_two_extents(
-        _image_with_two_block_file(), b"BIG.BIN;1", flag=False
+def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) -> None:
+    """pycdlib links any record whose identifier repeats the previous one, sets the
+    multi-extent flag on the first in memory, and its walk skips the second record.
+    Only the flag as written in the image makes the two records one file. Without
+    it they are two files with one name, and both list, as ZIP and TAR list two
+    members with one name and as 7-Zip lists this image. The later one is current.
+    """
+    image = _split_into_extents(
+        _image_with_two_block_file(), b"BIG.BIN;1", flags=(False,)
     )
     with open_archive(io.BytesIO(image)) as ar:
-        assert ar.get("BIG.BIN").size == 2048
-        assert ar.read("BIG.BIN") == b"a" * 2048
+        rows = [(m.name, m.size, m.is_current) for m in ar.members()]
+        assert rows == [
+            ("BIG.BIN", 2048, False),
+            ("BIG.BIN", 1000, True),
+            ("Z.TXT", 2, True),
+        ]
+        first, second, _ = ar.members()
+        assert ar.read(first) == b"a" * 2048
+        assert ar.read(second) == b"b" * 1000
+        assert ar.read("BIG.BIN") == b"b" * 1000
+        assert ar.diagnostics.total_count == 0
+        ar.extract_all(tmp_path)
+    assert (tmp_path / "BIG.BIN").read_bytes() == b"b" * 1000
+
+
+def test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list() -> None:
+    """The flag ends a file at the first record without it, so a real multi-extent
+    file followed by an unrelated record with the same identifier lists as two
+    members: the flagged records joined, and the unrelated record on its own."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+
+    for flags, expected in (
+        ((True, False), [b"a" * 2048 + b"b" * 2048, b"c" * 1000]),
+        ((False, True), [b"a" * 2048, b"b" * 2048 + b"c" * 1000]),
+    ):
+        image = _split_into_extents(out.getvalue(), b"BIG.BIN;1", flags=flags)
+        with open_archive(io.BytesIO(image)) as ar:
+            members = ar.members()
+            assert [m.name for m in members] == ["BIG.BIN", "BIG.BIN"]
+            assert [m.size for m in members] == [len(data) for data in expected]
+            assert [ar.read(m) for m in members] == expected
 
 
 def test_a_boot_catalog_declared_past_the_image_end_reads_short() -> None:

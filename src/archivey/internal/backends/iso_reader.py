@@ -907,20 +907,6 @@ def _is_directory_record(obj: object) -> TypeGuard[DirectoryRecord]:
     return _pycdlib_dr is not None and isinstance(obj, _pycdlib_dr.DirectoryRecord)
 
 
-def _continuation_chain(record: DirectoryRecord) -> list[DirectoryRecord]:
-    """``record`` and every record pycdlib linked after it through ``data_continuation``.
-
-    pycdlib links *any* record whose identifier repeats the previous one in its
-    directory, and sets the multi-extent flag on the earlier record as it does, so
-    this chain is only a candidate: ``IsoReader._layout`` confirms it against
-    the flags as written in the image.
-    """
-    chain = [record]
-    while chain[-1].data_continuation is not None:
-        chain.append(chain[-1].data_continuation)
-    return chain
-
-
 class _RawDirectory(NamedTuple):
     """What a directory's records say on disc that pycdlib does not keep as written."""
 
@@ -1559,7 +1545,9 @@ class IsoReader(BaseArchiveReader):
         close a cycle cannot loop.
 
         Within a directory, subdirectories come first and then files, each in record
-        order, except that plain ISO 9660 files are ordered by (name, version).
+        order, except that plain ISO 9660 files are ordered by (name, version). Records
+        that share an identifier but are separate files each list
+        (``_records_sharing_identifier``).
         ``superseded`` is true for a plain ISO 9660 file when the same directory holds
         a higher version of the same name.
         """
@@ -1571,18 +1559,21 @@ class IsoReader(BaseArchiveReader):
             dirpath, raw_dirpath, dir_record = stack.pop()
             dirs: list[tuple[str, bytes, DirectoryRecord]] = []
             files: list[tuple[str, bytes, DirectoryRecord]] = []
-            for child in _yield_children(dir_record, use_rr):
+            for first in _yield_children(dir_record, use_rr):
                 if (
                     use_rr
                     and dirpath == "/"
-                    and child.is_dir()
-                    and self._is_rr_moved(child)
+                    and first.is_dir()
+                    and self._is_rr_moved(first)
                 ):
                     continue
-                name, raw_name = self._record_name(child)
-                path = self._join(dirpath, name)
-                raw_path = raw_name if dirpath == "/" else raw_dirpath + b"/" + raw_name
-                (dirs if child.is_dir() else files).append((path, raw_path, child))
+                for child in self._records_sharing_identifier(first):
+                    name, raw_name = self._record_name(child)
+                    path = self._join(dirpath, name)
+                    raw_path = (
+                        raw_name if dirpath == "/" else raw_dirpath + b"/" + raw_name
+                    )
+                    (dirs if child.is_dir() else files).append((path, raw_path, child))
             if self._namespace == "iso9660":
                 files.sort(key=self._version_order)
             newest: dict[str, int] = {}
@@ -1603,12 +1594,53 @@ class IsoReader(BaseArchiveReader):
                 seen_extents.add(extent)
                 stack.append((path, raw_path, record))
 
+    def _records_sharing_identifier(
+        self, record: DirectoryRecord
+    ) -> Iterator[DirectoryRecord]:
+        """``record``, then each later record with its identifier that starts a file.
+
+        ``_yield_children`` yields only the first of several records that share an
+        identifier, because a file of 4 GiB or more is stored that way. Two files
+        that share an identifier are stored the same way, but without the
+        multi-extent flag on disc (``_file_records``). Each file is listed, as ZIP
+        and TAR list two members with one name and as 7-Zip lists such an image; the
+        shared duplicate-name rule then makes the later one current.
+        """
+        start: DirectoryRecord | None = record
+        while start is not None:
+            yield start
+            start = self._file_records(start)[-1].data_continuation
+
+    def _file_records(self, record: DirectoryRecord) -> list[DirectoryRecord]:
+        """The records that hold one file's data: ``record``, then the records it chains.
+
+        pycdlib links *any* record whose identifier repeats the previous one in its
+        directory through ``data_continuation``, and sets the multi-extent flag on
+        the earlier record as it does. So the in-memory flag cannot tell the extents
+        of one file from two files that share an identifier. Here the chain follows
+        the flag as written in the image: each record that carries it continues into
+        the next, and the first record without it is the file's last.
+        """
+        records = [record]
+        if record.data_continuation is None:
+            return records
+        parent = record.parent
+        assert parent is not None, "a listed file record has a parent directory"
+        flagged = self._raw_directory(parent).flagged
+        while (
+            records[-1].data_continuation is not None
+            and records[-1].extent_location() in flagged
+        ):
+            records.append(records[-1].data_continuation)
+        return records
+
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
         # the record walk traverses in-memory parsed catalog records and reads nothing
-        # from the image. ``_make_member`` can: for a repeated identifier or a file
-        # whose data ends at the end of the image, ``_raw_directory`` re-reads the
-        # directory's extent through ``_cdfp`` and takes the handle guard itself. The
+        # from the image, except in two cases. For a repeated identifier
+        # (``_records_sharing_identifier``) or a file whose data ends at the end of
+        # the image (``_make_member``), ``_raw_directory`` re-reads the directory's
+        # extent through ``_cdfp`` and takes the handle guard itself. The
         # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
         # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
         # ``_yield_children`` on the Joliet tree walks them. Following a link target
@@ -1651,7 +1683,13 @@ class IsoReader(BaseArchiveReader):
             member_type = MemberType.FILE
 
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
-        presented, version = self._split_version(ns_path)
+        # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
+        # part of its name, and its children's paths keep it.
+        presented, version = (
+            (ns_path.lstrip("/"), None)
+            if member_type is MemberType.DIRECTORY
+            else self._split_version(ns_path)
+        )
         if superseded:
             # An older version is presented as its stored identifier (``FOO.;1``), as
             # RAR presents a file-version history row: a distinct name to read it by,
@@ -2008,27 +2046,18 @@ class IsoReader(BaseArchiveReader):
         """A file's extents with their lengths as declared on disc.
 
         A file of 4 GiB or more is stored as several records with one name, each
-        flagged multi-extent but the last. ``_yield_children`` yields only the first,
-        and pycdlib links the rest to it. pycdlib links two unrelated files that share
-        an identifier the same way, and by then has set the flag on the first of them
-        in memory, so the chain is kept only when every record but the last carries
-        the flag in the image itself. Otherwise the file is its own record alone, as
-        it was before multi-extent files were read.
+        flagged multi-extent but the last. ``_file_records`` finds them from the
+        flags as written in the image.
 
         A record whose data ends at the end of the image takes its length from the
         directory's records on disc. One not found there keeps a length of 0 if it has
         one (an empty file whose extent sits at the end of the image), and the layout
         is ``None`` otherwise.
         """
-        chain = _continuation_chain(record)
         parent = record.parent
         assert parent is not None, "a listed file record has a parent directory"
-        if len(chain) > 1:
-            flagged = self._raw_directory(parent).flagged
-            if not all(chunk.extent_location() in flagged for chunk in chain[:-1]):
-                chain = [record]
         layout: list[_Extent] = []
-        for chunk in chain:
+        for chunk in self._file_records(record):
             length = chunk.data_length
             if chunk.inode is not None and self._reaches_image_end(chunk):
                 declared = self._raw_directory(parent).lengths_to_end.get(

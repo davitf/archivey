@@ -481,11 +481,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   it does a 7z name (see 7z above).
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
-- Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
+- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty
   extension), and `extra["iso.version"]` keeps the number. When a directory holds
   several versions of one name, the highest takes the bare name and the others list
   under their stored identifier (`FOO.;1`) with `is_current=False`, the same shape as
-  RAR file-version history. Entries within a directory list in on-disc record order.
+  RAR file-version history. Directory names have no version and keep any `;N`. Two
+  files stored with the same identifier both list, the later one current, as in ZIP
+  and TAR. Entries within a directory list in on-disc record order.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.

@@ -146,9 +146,11 @@ and turning a name back into a record fails when a Rock Ridge name holds `/` or 
 entries share one, costing the whole listing. So the walk enumerates each directory's
 children through `pycdlib`'s private `_yield_children` — the one place that skips a
 multi-extent file's extra records and follows Rock Ridge relocation — and renders a path
-from the record. Each directory extent is entered once. Within a directory, subdirectories
-come first, then files, in record order, except that plain ISO 9660 files sort by
-(name, version).
+from the record. That skip also hides a record that repeats the identifier of the record
+before it without being part of a multi-extent file, so the walk adds back each such
+record as a member of its own (`_records_sharing_identifier`, §2.3). Each directory
+extent is entered once. Within a directory, subdirectories come first, then files, in
+record order, except that plain ISO 9660 files sort by (name, version).
 
 What is ISO-specific in turning a record into a member:
 
@@ -199,11 +201,13 @@ What is ISO-specific in turning a record into a member:
   whose area does not fit in its logical block, in the record's own area and in each
   continuation area, before `pycdlib` reads that area: `CorruptionError` for the image,
   under any `ListingLimits` (§4).
-- **Versions.** In the plain namespace the `;N` suffix and the `.` of an empty extension
-  are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`. When a
-  directory holds several versions, the highest takes the bare name; older ones are
+- **Versions.** In the plain namespace the `;N` suffix of a file and the `.` of an empty
+  extension are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`.
+  When a directory holds several versions, the highest takes the bare name; older ones are
   listed under their stored identifier with `is_current=False`, the RAR file-history
-  shape, so extraction writes only the newest.
+  shape, so extraction writes only the newest. ECMA-119 gives a version only to a file
+  identifier, so a directory identifier that ends in `;N` keeps it: the directory then
+  lists under the same path its children's paths start with.
 - **Rock Ridge gaps.** A record with no Rock Ridge entries in a Rock Ridge image is kept
   under its ISO 9660 name, with `MEMBER_HEADER_RECORD_SKIPPED` attached to it. The
   `rr_moved` directory is not listed: it is recognised by its contents (every child is a
@@ -273,9 +277,13 @@ here, over the extents read straight from the image (`_data_inode`):
   in its directory, and sets the multi-extent flag on the earlier record in memory while
   doing it. So the in-memory flags cannot tell a real multi-extent file from two
   unrelated files that share a name. archivey re-reads the directory's extent, only when
-  a chain exists, and keeps the chain only if every record but the last carries the flag
-  as written (`_layout`). Otherwise the member is its first record alone, and the
-  duplicate stays hidden, as it always was.
+  a chain exists, and follows the flag as written (`_file_records`): each record that
+  carries it continues into the next, and the first record without it ends the file. The
+  next record with the same identifier starts another file, and it lists as its own
+  member. Two members with one name then follow the shared duplicate-name rule, as two
+  ZIP or TAR members with one name do: both list, and the later one is current, so
+  extraction writes it. 7-Zip lists both records of such an image too. Hiding the
+  second record instead would lose a file with no diagnostic.
 - **The boot catalog.** `pycdlib` keeps it in memory and gives its record no inode. Its
   extent still holds the bytes, which is what a mounted image shows. Because it has no
   inode, `pycdlib` never clamped its length to the image either; the inode built here
@@ -492,10 +500,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`, `::test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes`, `::test_a_latin1_rock_ridge_name_takes_its_joliet_name`, `::test_encoding_wins_over_the_joliet_name`, `::test_following_link_targets_reads_each_directory_once`, `::test_empty_files_sharing_an_extent_are_matched_in_linear_time`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
 | Namespace selection and metadata per namespace | `::test_rock_ridge_namespace_and_fidelity`, `::test_joliet_namespace_and_fidelity`, `::test_plain_iso_namespace_and_fidelity` |
 | Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge or without `NM` (also with `pycdlib` 1.20+'s unallocated `ce_entries`) | `::test_a_rock_ridge_name_holding_a_slash_costs_no_sibling`, `::test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name`, `::test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib`, `::test_duplicate_rock_ridge_names_all_list`, `::test_the_record_walk_descends_each_directory_extent_once`, `::test_rock_ridge_relocation_directory_is_not_listed`, `::test_a_rock_ridge_record_without_entries_lists_under_its_iso_name` |
-| Device node is `OTHER`; plain versions keep the newest current | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current` |
+| Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current`, `::test_a_directory_identifier_keeps_its_version_like_suffix` |
 | `TF` long-form dates; `TF` wins over the record date | `::test_rock_ridge_long_form_tf_time_is_read`, `::test_rock_ridge_tf_modification_time_wins_over_record_date` |
 | Boot catalog reads and extracts, and one declared past the image end reads short | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_boot_catalog_declared_past_the_image_end_reads_short` |
-| Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag is not a chain; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_is_not_one_file`, `::test_the_raw_directory_walk_crosses_sector_padding` |
+| Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_lists_each_file`, `::test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list`, `::test_the_raw_directory_walk_crosses_sector_padding` |
 | No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
 | Cycle guard in `pycdlib`'s own walk, in all three trees | `::test_pycdlib_directory_cycle_does_not_hang` |
 | Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens. The chained tests exercise the check only on `pycdlib` 1.21+; on the locked 1.16 they pin `pycdlib`'s own refusal of a second `CE` (`_pycdlib_follows_ce_chains`), so run them with `uv run --with pycdlib==1.21.0` after touching the hook | `tests/test_iso_metadata_bounds.py` |
@@ -508,8 +516,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 **Building fixtures.** The suite builds every image with `pycdlib` (`PyCdlib.new`,
 `add_fp`, `add_directory`, `add_symlink`, `add_eltorito`), and shapes `pycdlib` will not
-write are made by patching bytes: the multi-extent tests split one directory record in two
-(`_split_into_two_extents`), and the zisofs tests replace a 26-byte `TF` entry with a
+write are made by patching bytes: the multi-extent tests split one directory record into
+several (`_split_into_extents`), and the zisofs tests replace a 26-byte `TF` entry with a
 16-byte `ZF` and a 10-byte unknown entry, over data built by `_zisofs`. To check against
 real producers, `genisoimage` and `xorriso` install from the distribution (`apt-get
 install genisoimage xorriso`), and `mkzftree` comes with genisoimage for zisofs. A file
