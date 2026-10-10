@@ -226,7 +226,7 @@ halts with `DiagnosticRaisedError`.
 | Creation time stored, Unix or any other host | `created is None`; `ctime` holds it (7-Zip and libarchive on Linux and macOS store `st_ctime`) |
 | `flag_bits & 0x1` | `member.is_encrypted is True` |
 | Unix-origin entry named `a\` | `FILE` named `a\` on every host OS |
-| DOS-origin entry named `a\` | `DIRECTORY` named `a/` on every host OS |
+| DOS-origin entry named `a\` | `DIRECTORY` named `a/` on every host OS; any data it declares is not reachable (no `open()`, extraction writes an empty directory) and `size` still reports it |
 | Header name without a trailing `/`, Unicode Path field `dir/` | `DIRECTORY` named `dir/` on every Python version |
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |

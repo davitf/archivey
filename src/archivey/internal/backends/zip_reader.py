@@ -503,7 +503,7 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
 
 
 def _zip_timestamps(
-    info: zipfile.ZipInfo,
+    info: zipfile.ZipInfo, member_name: str
 ) -> tuple[
     datetime | None,
     datetime | None,
@@ -530,6 +530,9 @@ def _zip_timestamps(
     from the NTFS field and ``ut_ctime`` from the Extended Timestamp's third time.
     Whether either is a birth time depends on the writer, not the field, so the caller
     decides (``_zip_created``).
+
+    ``member_name`` names the member in the issue messages. It is ``member.name``, not
+    ``info.filename``: stdlib rewrites that by host and Python version.
     """
     issues: list[TimestampIssue] = []
     if info.date_time == (1980, 0, 0, 0, 0, 0):
@@ -544,7 +547,7 @@ def _zip_timestamps(
                     source="dos",
                     value_repr=repr(info.date_time),
                     message=(
-                        f"Invalid ZIP date_time for {quoted(info.filename)}: "
+                        f"Invalid ZIP date_time for {quoted(member_name)}: "
                         f"{info.date_time!r}"
                     ),
                 )
@@ -589,7 +592,7 @@ def _zip_timestamps(
                     (ctime, "ctime"),
                 ):
                     dt, issue = filetime_to_datetime(
-                        value, info.filename, field=field_name
+                        value, member_name, field=field_name
                     )
                     if issue is not None:
                         issues.append(issue)
@@ -695,6 +698,15 @@ def _stored_as_directory(name: str, create_system: CreateSystem) -> bool:
     )
 
 
+def _is_flagged_reparse_point(
+    info: zipfile.ZipInfo, create_system: CreateSystem
+) -> bool:
+    """Whether a DOS/Windows creator set ``FILE_ATTRIBUTE_REPARSE_POINT`` on the entry."""
+    return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
+        info.external_attr & FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
 def _reparse_fallback_type(
     info: zipfile.ZipInfo, create_system: CreateSystem, *, stored_as_directory: bool
 ) -> MemberType | None:
@@ -711,10 +723,13 @@ def _reparse_fallback_type(
     source filesystem, not that the archive carries the reparse buffer or that the tag
     named a link. What the data turns out to be decides that, in
     ``BaseArchiveReader._apply_reparse_data``.
+
+    ``stored_as_directory`` was decided under the separator family
+    (:data:`_BACKSLASH_SEPARATOR_SYSTEMS`, in :func:`_stored_as_directory`), not this
+    function's attribute family. The two hold the same hosts today; nothing here relies
+    on that.
     """
-    if create_system not in _DOS_ATTRIBUTE_SYSTEMS or not (
-        info.external_attr & FILE_ATTRIBUTE_REPARSE_POINT
-    ):
+    if not _is_flagged_reparse_point(info, create_system):
         return None
     return MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
 
@@ -1111,7 +1126,9 @@ class ZipReader(BaseArchiveReader):
                 (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),),
             )
 
-        modified, accessed, ntfs_ctime, ut_ctime, ts_issues = _zip_timestamps(info)
+        modified, accessed, ntfs_ctime, ut_ctime, ts_issues = _zip_timestamps(
+            info, name
+        )
         created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
@@ -2204,16 +2221,22 @@ class ZipReader(BaseArchiveReader):
         # LinkTargetNotFoundError). A CorruptionError or TruncatedError propagates, and
         # listing reports the link as damaged (`_report_damaged_link_target`); other
         # errors surface translated like any member-read error.
-        self._link_target_from_data(
-            member,
-            lambda: self._open_member(member),
-            reparse_fallback=_reparse_fallback_type(
+        # Only a reparse point needs the decoded name, so only one pays to decode it.
+        reparse_fallback = (
+            _reparse_fallback_type(
                 info,
                 create_system,
                 stored_as_directory=_stored_as_directory(
                     self._decode_member_name(info).text, create_system
                 ),
-            ),
+            )
+            if _is_flagged_reparse_point(info, create_system)
+            else None
+        )
+        self._link_target_from_data(
+            member,
+            lambda: self._open_member(member),
+            reparse_fallback=reparse_fallback,
         )
 
     def _locked_link_target_report(
@@ -2410,7 +2433,9 @@ def _end_record_findings(
         )
         if overrun is not None:
             index, field, entry_end = overrun
-            name = infos[index].filename if index < len(infos) else f"#{index}"
+            # orig_filename, not filename: stdlib rewrites filename by host and
+            # Python version, and no archivey decode exists yet at this point.
+            name = infos[index].orig_filename if index < len(infos) else f"#{index}"
             article = "an" if field.startswith("extra") else "a"
             findings.append(
                 (

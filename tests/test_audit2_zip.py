@@ -27,7 +27,7 @@ import pytest
 
 import archivey
 from archivey.config import AcceleratorMode, ArchiveyConfig
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, SymlinkTargetContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -677,6 +677,9 @@ def _pretend_zipfile_runs_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
             return getattr(os, attr)
 
     monkeypatch.setattr(zipfile, "os", _WindowsOs("nt"))
+    assert zipfile.ZipInfo("a\\").filename == "a/", (
+        "the Windows separator patch no longer reaches zipfile"
+    )
 
 
 def _listing(blob: bytes) -> list[tuple[str, str, int, list[str]]]:
@@ -724,9 +727,10 @@ def _reparse_listing(name: bytes) -> tuple[str, str, str | None, list[str]]:
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
         reasons = [
-            d.context.reason  # type: ignore[attr-defined]
+            d.context.reason
             for d in ar.diagnostics.retained
             if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+            and isinstance(d.context, SymlinkTargetContext)
         ]
         return member.name, member.type.name, member.link_target, reasons
 
@@ -759,3 +763,62 @@ def test_member_type_follows_the_unicode_path_name_on_every_python() -> None:
         (member,) = ar.members()
         assert (member.name, member.type) == ("dir/", archivey.MemberType.DIRECTORY)
         assert member.extra["alternate_raw_name"] == header
+
+
+def _ntfs_extra(mtime: int) -> bytes:
+    """An NTFS extra field (0x000A) whose tag-1 attribute holds ``mtime``."""
+    attribute = struct.pack("<HHQQQ", 1, 24, mtime, 0, 0)
+    body = bytes(4) + attribute
+    return struct.pack("<HH", 0x000A, len(body)) + body
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_messages_name_the_member_as_listed_on_every_host(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    # stdlib's ZipInfo.filename is "a/" on Windows and "a\\" elsewhere; the message
+    # names the member the way the listing and the diagnostic's context do.
+    blob = _build_zip(
+        [
+            _Entry(
+                b"a\\",
+                b"",
+                create_system=_FAT,
+                external_attr=_FILE_ATTRIBUTE_ARCHIVE,
+                extra=_ntfs_extra(2**64 - 1),
+            )
+        ]
+    )
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        (invalid,) = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
+        ]
+    assert member.name == "a/"
+    assert invalid.message == f"Invalid NTFS timestamp for 'a/': {2**64 - 1}"
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_directory_overrun_names_the_entry_as_stored_on_every_host(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    # No archivey decode exists when the directory is checked, so the report uses the
+    # stored name, which stdlib rewrites to "a/" on Windows in ZipInfo.filename.
+    blob = bytearray(_build_zip([_Entry(b"a\\", b"hi")]))
+    entry = blob.rfind(b"PK\x01\x02")
+    struct.pack_into("<H", blob, entry + 32, 3000)  # comment length past the end
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    with archivey.open_archive(io.BytesIO(bytes(blob))) as ar:
+        assert [m.name for m in ar.members()] == ["a\\"]
+        (finding,) = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+        ]
+    # The message escapes the stored backslash, so it reads as two.
+    assert finding.message.startswith(r"ZIP central directory entry 'a\\' declares")
