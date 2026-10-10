@@ -19,12 +19,12 @@ that reaches the end of its DEFLATE stream raises :class:`ResumeReachedStreamEnd
 the caller decodes from the start instead, which checks it. Reaching the end of the
 input first is a truncation, which a checksum would not change.
 
-:class:`DeflateResumeDecoder` serves ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py``,
-which takes over a read from rapidgzip. :func:`stream_end` asks only whether a raw
-DEFLATE stream reaches a final block, and where. Raw DEFLATE has no checksum, so
-there reaching the end is the answer, with no ``ResumeReachedStreamEnd`` case. Its
-caller is ``_DeflateEndCheckStream`` in ``codecs/zlib_codec.py``, before any takeover, to decide
-whether one is needed. The points for both come from
+:class:`DeflateResumeDecoder` serves ``_StdlibOnAcceleratorError`` in
+``codecs/stdlib_takeover.py``, which takes over a read from rapidgzip. :func:`stream_end`
+asks only whether a raw DEFLATE stream reaches a final block, and where. Raw DEFLATE has
+no checksum, so there reaching the end is the answer, with no ``ResumeReachedStreamEnd``
+case. Its caller is ``_DeflateEndCheckStream`` in ``codecs/zlib_codec.py``, before any
+takeover, to decide whether one is needed. The points for both come from
 ``RapidgzipChildStream.resume_point``.
 """
 
