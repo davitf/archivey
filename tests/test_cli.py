@@ -2904,7 +2904,10 @@ def test_tar_flag_hint_matches_short_option_bundles(
     assert f"try 'archivey {verb} ARCHIVE'" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("word", ["-exclude", "-file", "-name", "-dest"])
+@pytest.mark.parametrize(
+    "word",
+    ["-exclude", "-file", "-name", "-dest", "-max", "-math", "-mix", "-all", "-tail"],
+)
 def test_tar_flag_hint_skips_single_dash_words(
     word: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

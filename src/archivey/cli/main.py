@@ -162,10 +162,15 @@ def _unrecognized_hints(tokens: list[str]) -> str:
     # Tar users type -x/-l/-t, often bundled (-xvf, -zxf); verbs here are bare words.
     # Only a single-dash bundle of tar letters counts, so ``--my-list`` is not ``-l``
     # and a mistyped long option such as ``-exclude`` or ``-file`` is not ``-x``/``-i``.
+    # A bundle is one letter (``-x``) or names the archive with ``f`` (``-xvf``), so a
+    # word such as ``-max`` or ``-tail`` gets no hint either.
     bundles = [
         o[1:]
         for o in opts
-        if len(o) > 1 and o[0] == "-" and set(o[1:]) <= _TAR_BUNDLE_LETTERS
+        if len(o) > 1
+        and o[0] == "-"
+        and set(o[1:]) <= _TAR_BUNDLE_LETTERS
+        and (len(o) == 2 or "f" in o[1:])
     ]
     flags = [f"-{ch}" for bundle in bundles for ch in bundle]
     verb = next((_VERB_FLAG_HINTS[f] for f in flags if f in _VERB_FLAG_HINTS), None)
@@ -592,11 +597,15 @@ def _parse_cli_args(
     # from every positional group they consume, so ``x a.zip -- --`` lost the
     # pattern ``--`` there while ``x a.zip -d out -- --`` kept it. argparse sees
     # one ``--`` and opaque stand-ins for the tail, which it cannot strip or read
-    # as options, and the stand-ins are swapped back after parsing.
+    # as options, and the stand-ins are swapped back after parsing. A real argv word
+    # can never collide with a stand-in, because a process argv cannot carry ``\0``:
+    # execve rejects an embedded NUL, and os.exec*/subprocess raise ValueError.
     cut = argv_list.index("--") if "--" in argv_list else len(argv_list)
     head, tail = argv_list[:cut], argv_list[cut + 1 :]
     stand_ins = {f"\0archivey-tail-{i}\0": tok for i, tok in enumerate(tail)}
-    args, rest = parser.parse_known_args([*head, "--", *stand_ins] if tail else head)
+    args, rest = parser.parse_known_args(
+        [*head, "--", *stand_ins.keys()] if tail else head
+    )
     for name, value in vars(args).items():
         if isinstance(value, str) and value in stand_ins:
             setattr(args, name, stand_ins[value])
