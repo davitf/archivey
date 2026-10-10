@@ -271,7 +271,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | No size threshold for `AUTO` | The in-process decoder costs no child start; seeking was asked for | Reusing the 16 MiB DEFLATE gate |
 | Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
 | Find the accelerator's end from its compressed position and scan the source | Its warning goes to standard error, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
-| A stream header after the data hands the end to the standard library | An accelerator changes speed, not behaviour; the 2026-10-03 ruling below applies that to cut and damaged files, and a stream after zero padding is the same file read two ways. The decoder stops at zero padding and reports a damaged empty stream as trailing bytes | Reporting a stream after padding as trailing data, which read a short file with only a warning |
+| A stream header after the data hands the end to the standard library | An accelerator changes speed, not behaviour; the 2026-10-03 ruling below applies that to cut and damaged files, and a stream after zero padding is the same file read two ways. The decoder stops at zero padding and reports a damaged empty stream as trailing bytes | Reporting a stream after padding as trailing data with the accelerator only, which read a short file with only a warning. Whether both modes should stop there, as `bzip2` does, is open (§7) |
 | Check the stream layout from the index before a read returns (`_Bzip2Layout`) | Bytes from after a skipped region must not reach the caller; the index already says where each stream's first block is | Checking at the end of data only, after the wrong bytes were delivered |
 | The scan skips whole empty streams as well as zeros | The compressed position stops before trailing empty streams, and the standard library engine reads them as part of the data | Reading the end from the decoder's block offsets, whose last entry is where an end-of-stream marker starts: undocumented, and it forces the full index |
 | On a data error from the accelerator, the standard library takes over and gives the verdict (maintainer ruling, 2026-10-03) | The accelerator must not change what a cut or damaged file delivers or raises; its `std::exception` names no cause | Mapping `std::exception` to `TruncatedError`, which would mislabel damage |
@@ -285,6 +285,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - **Standard error output from the accelerator** on trailing bytes. Removing it needs an
   upstream option or clipping a standalone file to its last end marker, which is only found
   by decoding. Tracked internally.
+- **Stop at zero padding, as `bzip2` does?** A bare `.bz2` file with a stream after zero
+  padding reads whole in both modes (§3); `bzip2` 1.0.8 stops at the padding. Whether
+  both modes should stop there is an open gap in
+  [`design-rules.md`](../design-rules.md#open-gaps), with the factors on each side.
 
 ## 8. Verify
 

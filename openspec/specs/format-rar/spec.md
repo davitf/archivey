@@ -64,7 +64,12 @@ appear in `QO` SHALL be emitted from the copies and skipped; FILE headers
 normal SERVICE on that walk. Extract SHALL use the same table. Otherwise the
 parser SHALL walk FILE headers. A `QO` that is missing, packed, split,
 encrypted, CRC-invalid, or behind header encryption SHALL fall back to the
-walk.
+walk. Only the first MAIN header of a volume SHALL have its locator followed: a
+repeated MAIN SHALL still be parsed for its flags, but SHALL NOT read the `QO`
+payload again, so the payload is read at most once per volume however many MAIN
+headers point at it. A RAR 1.5-4 FILE or SUB header's data area SHALL be skipped by
+its PACK_SIZE (with HIGH_PACK_SIZE when set) whether or not LONG_BLOCK is set, as
+`unrar` does, so a member's data is never parsed as further headers.
 
 #### Scenario: native header matrix
 
@@ -76,6 +81,8 @@ walk.
 | Open RAR5 archive | Members, flags, hashes, and redirect metadata come from native headers |
 | Open RAR5 with a stored unencrypted `QO` reachable from MAIN's locator | FILE headers in `QO` are emitted from the copies and skipped on the walk; omitted FILE headers and `CMT` after MAIN are parsed |
 | Open RAR5 with no `QO`, locator offset 0, packed/encrypted/`QO` CRC failure, or header encryption | Member table is filled by the FILE-header walk |
+| Open RAR5 whose MAIN header is repeated, each copy's locator pointing at one `QO` | The `QO` payload is read once; later MAIN headers are parsed for their flags only |
+| Open RAR4 whose FILE header has LONG_BLOCK clear and whose data holds another FILE header | Only the outer member is listed, as `unrar lb` lists it |
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 
@@ -925,6 +932,8 @@ as they already refuse one known to be encrypted. The comment is decoded as text
 quick-open payload is parsed as a member table, so slicing unsettled bytes would put
 ciphertext in `ArchiveInfo.comment` or parse a member list out of it. Losing the comment, or
 falling back to the header walk, is a missing answer; the alternative is a wrong one.
+A stored comment SHALL be read only from the span the walk skips after its header, so no
+byte is read both as comment data and as a header.
 
 #### Scenario: A cut-short comment header is refused and reported
 

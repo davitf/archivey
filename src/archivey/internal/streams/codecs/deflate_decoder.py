@@ -215,78 +215,29 @@ class GzipDecoder(BaseDecoder):
     def flush(self) -> DecodeOut:
         if self._finished:
             return DecodeOut(b"")
-        out = bytearray()
         # Drain mid-member unconsumed_tail / continue member chaining with no new input.
-        drained = self.feed(b"")
-        out.extend(drained.data)
+        # With no max_length, feed consumes all of its input and runs _resolve_between
+        # on every byte after a member, so what is left at the end of the input is one
+        # of three cases.
+        out = self.feed(b"").data
         if self._pending_error is not None or self._finished:
-            return DecodeOut(bytes(out))
-
-        if self._between_members:
-            data = self._retained
-            self._retained = b""
-            i = 0
-            while i < len(data) and data[i] == 0:
-                i += 1
-            data = data[i:]
-            if not data:
-                self._finished = True
-                return DecodeOut(bytes(out))
-            if data.startswith(_GZIP_MAGIC):
-                self._decomp = zlib.decompressobj(_GZIP_WBITS)
-                self._between_members = False
-                try:
-                    produced = self._decomp.decompress(data)
-                    out.extend(produced)
-                    if self._decomp.unconsumed_tail:
-                        out.extend(
-                            self._decomp.decompress(self._decomp.unconsumed_tail)
-                        )
-                    if not self._decomp.eof:
-                        out.extend(self._decomp.flush())
-                except zlib.error as e:
-                    raise gzip_error(e) from e
-                if not self._decomp.eof:
-                    self._pending_error = TruncatedError("gzip stream is truncated")
-                    return DecodeOut(bytes(out))
-                trailing = self._decomp.unused_data
-                j = 0
-                while j < len(trailing) and trailing[j] == 0:
-                    j += 1
-                trailing = trailing[j:]
-                if trailing:
-                    self._arm_trailing_junk(trailing)
-                    return DecodeOut(bytes(out))
-                self._finished = True
-                return DecodeOut(bytes(out))
-            self._arm_trailing_junk(data)
-            return DecodeOut(bytes(out))
-
-        # Mid-member compressed EOF.
-        try:
-            if self._decomp.unconsumed_tail:
-                out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
-            out.extend(self._decomp.flush())
-        except zlib.error as e:
-            raise gzip_error(e) from e
-        if not self._decomp.eof:
+            return DecodeOut(out)
+        if not self._between_members:
+            # Inside a member, with all of its input fed: the member is cut. zlib can
+            # still hold output back until flush(), but flush() gets no new input, so it
+            # cannot reach the trailer and end the member.
+            try:
+                out += self._decomp.flush()
+            except zlib.error as e:
+                raise gzip_error(e) from e
             self._pending_error = TruncatedError("gzip stream is truncated")
+        elif self._retained:
+            # A lone 1f that _resolve_between kept for a magic that never came.
+            self._arm_trailing_junk(self._retained)
         else:
-            # Completed final member exactly at EOF.
-            trailing = self._decomp.unused_data
-            j = 0
-            while j < len(trailing) and trailing[j] == 0:
-                j += 1
-            trailing = trailing[j:]
-            if trailing == b"\x1f" or (
-                trailing and not trailing.startswith(_GZIP_MAGIC)
-            ):
-                self._arm_trailing_junk(trailing)
-            elif trailing.startswith(_GZIP_MAGIC):
-                self._pending_error = TruncatedError("gzip stream is truncated")
-            else:
-                self._finished = True
-        return DecodeOut(bytes(out))
+            # After a member, nothing but NUL padding.
+            self._finished = True
+        return DecodeOut(out)
 
     @property
     def finished(self) -> bool:

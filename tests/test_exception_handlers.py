@@ -8,10 +8,12 @@ are ``dev-docs/topics/exception-handlers.md``.
 from __future__ import annotations
 
 import io
+import struct
 import subprocess
 import sys
 import textwrap
 import zipfile
+import zlib
 from typing import TYPE_CHECKING, NoReturn
 
 import pytest
@@ -86,11 +88,120 @@ def test_overrun_probe_lets_resource_errors_through(error: BaseException) -> Non
     stream.close()
 
 
-def test_overrun_probe_still_reads_an_opaque_decoder_error_as_the_end() -> None:
-    """The narrowed probe keeps its reason: an opaque decoder error past the end is EOF."""
-    inner = _ExactThenFails(b"x" * 10, RuntimeError("std::exception"))
+@pytest.mark.parametrize("n", [-1, 10])
+def test_overrun_probe_reads_a_closed_source_as_the_end(n: int) -> None:
+    """verify.py ``_probe_past_declared``: a closed source past the end is "no more data".
+
+    The digests still judge the declared bytes: a wrong CRC raises.
+    """
+    closed = ValueError("I/O operation on closed file.")
+    good = zlib.crc32(b"x" * 10).to_bytes(4, "big")
+    with VerifyingStream(
+        _ExactThenFails(b"x" * 10, closed), {"crc32": good}, expected_size=10
+    ) as stream:
+        assert stream.read(n) == b"x" * 10
+    bad = (zlib.crc32(b"x" * 10) ^ 1).to_bytes(4, "big")
+    with VerifyingStream(
+        _ExactThenFails(b"x" * 10, closed), {"crc32": bad}, expected_size=10
+    ) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read(n)
+
+
+@pytest.mark.parametrize("n", [-1, 10])
+def test_overrun_probe_raises_a_decoder_error_past_the_end(n: int) -> None:
+    """verify.py ``_probe_past_declared``: a decoder error past the declared size raises.
+
+    It used to read as "the member ends here", so the read that reached the declared
+    size returned its bytes as verified and only a later read raised.
+    """
+    inner = _ExactThenFails(b"x" * 10, zlib.error("invalid block type"))
     with VerifyingStream(inner, {}, expected_size=10) as stream:
-        assert stream.read() == b"x" * 10
+        with pytest.raises(zlib.error):
+            stream.read(n)
+
+
+def _stored_block(data: bytes) -> bytes:
+    """A non-final stored DEFLATE block holding ``data``."""
+    return b"\x00" + struct.pack("<HH", len(data), len(data) ^ 0xFFFF) + data
+
+
+def _zip_with_bad_block_after_declared_size() -> tuple[bytes, int]:
+    """A ZIP deflate member whose declared size and CRC match its first blocks.
+
+    The body is ``size`` bytes in non-final stored blocks ending exactly at compressed
+    offset 4 x 64 KiB, then a block of the reserved type 11. zlib and 7-Zip reject it.
+    """
+    blocks, compressed_len = 5, 4 * 65536
+    size = compressed_len - 5 * blocks
+    payload = bytes(range(256)) * (size // 256) + bytes(range(size % 256))
+    step = size // blocks
+    bounds = [i * step for i in range(blocks)] + [size]
+    raw = b"".join(
+        _stored_block(payload[a:b]) for a, b in zip(bounds, bounds[1:], strict=False)
+    )
+    assert len(raw) == compressed_len
+    raw += b"\x07\x00\x00"
+    crc = zlib.crc32(payload)
+    name = b"m"
+    local = struct.pack(
+        "<IHHHHHIIIHH", 0x04034B50, 20, 0, 8, 0, 0, crc, len(raw), size, len(name), 0
+    )
+    body = local + name + raw
+    central = (
+        struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            0,
+            8,
+            0,
+            0,
+            crc,
+            len(raw),
+            size,
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+    )
+    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), len(body), 0)
+    return body + central + end, size
+
+
+@pytest.mark.parametrize("n", [-1, 65536, 262119])
+def test_read_reaching_declared_size_raises_when_the_body_goes_on_corrupt(
+    n: int,
+) -> None:
+    """A read that reaches ``member.size`` does not hand over a member zlib rejects.
+
+    With ``read(65536)`` the four reads ended at the declared size with no error, so a
+    caller that stops at ``member.size`` took a damaged member as verified. The verdict
+    is corruption, not truncation, and the reaching read withholds its chunk: only the
+    reads before it deliver bytes.
+    """
+    blob, size = _zip_with_bad_block_after_declared_size()
+    with pytest.raises(zlib.error):
+        zipfile.ZipFile(io.BytesIO(blob)).read("m")
+    got = 0
+    with (
+        archivey.open_archive(io.BytesIO(blob)) as reader,
+        reader.open("m") as stream,
+        pytest.raises(CorruptionError) as info,
+    ):
+        while got < size:
+            chunk = stream.read(n)
+            if not chunk:
+                break
+            got += len(chunk)
+    assert not isinstance(info.value, TruncatedError)
+    assert got == (0 if n < 0 else (size - 1) // n * n)
 
 
 @requires("rapidgzip")

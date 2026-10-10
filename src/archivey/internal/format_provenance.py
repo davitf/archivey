@@ -30,11 +30,12 @@ class FormatProvenance:
     """Where the resolved ``ArchiveFormat`` came from."""
 
     chosen_by: Literal["argument", "extension", "content", "directory"]
-    """``"content"`` covers magic, content probes and far magic — the bytes agreed.
+    """``"content"`` covers every detection step that read the bytes: magic (near,
+    far and trailer), the SFX scan and the content probes.
 
-    ``"extension"`` means detection fell through to the filename because magic, the
-    content probes *and* far magic all declined, which is the same answer
-    ``detect_format`` gives when it refuses a file outright.
+    ``"extension"`` means detection fell through to the filename because every one of
+    those steps declined, which is the same answer ``detect_format`` gives when it
+    refuses a file outright.
     """
 
     source: Path | None = None

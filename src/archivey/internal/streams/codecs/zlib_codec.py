@@ -18,6 +18,7 @@ from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
     CodecSource,
+    ProbeChargeDecode,
     ProbeReadAt,
     _restoring_position,
     _source_tail,
@@ -27,6 +28,8 @@ from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStr
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.deflate_resume import stream_end
 from archivey.internal.streams.codecs.stdlib_takeover import (
+    _DRAIN_CHUNK,
+    _drain_into,
     _OutputChecksum,
     _SourceViews,
     _StdlibOnAcceleratorError,
@@ -204,16 +207,17 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             if size < 0:
                 # A completing read: reach the end now, so the check raises from this
                 # read rather than leave the caller to find it on a later one.
-                while more := self._inner.read(1 << 20):
-                    self._count(more)
-                    data += more
+                buf = bytearray(data)
+                _drain_into(self._inner, buf, self._count)
                 tail = self._at_end(size, start)
                 # Where the standard library took over: _at_end put _pos there, then
                 # moved it on by the tail it read. With no handover the tail is empty
                 # and this is the end of data. Bytes of this read past that point (a
                 # second zlib stream) are dropped.
                 handover = self._pos - len(tail)
-                data = data[: handover - start] + tail
+                del buf[handover - start :]
+                buf += tail
+                data = bytes(buf)
         else:
             data = self._at_end(size, start)
         self._returned = max(self._returned, start + len(data))
@@ -247,7 +251,11 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         """Advance the frontier to ``target`` (``None``: the end) by reading."""
         self._pos = self._inner.seek(self._sum.frontier)
         while target is None or self._pos < target:
-            want = 1 << 20 if target is None else min(1 << 20, target - self._pos)
+            want = (
+                _DRAIN_CHUNK
+                if target is None
+                else min(_DRAIN_CHUNK, target - self._pos)
+            )
             data = self._inner.read(want)
             if not data:
                 # The rest of a cut stream, if any, is the read's after this seek.
@@ -427,11 +435,13 @@ class _DeflateEndCheckStream(DelegatingStream):
         data = self._inner.read(size)
         if data and size >= 0:
             return data
-        if data:
-            # A completing read: reach the end now, so the check raises from this read.
-            while more := self._inner.read(1 << 20):
-                data += more
-        return data + self._at_end(size)
+        if not data:
+            return self._at_end(size)
+        # A completing read: reach the end now, so the check raises from this read.
+        buf = bytearray(data)
+        _drain_into(self._inner, buf)
+        buf += self._at_end(size)
+        return bytes(buf)
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
@@ -586,6 +596,7 @@ class ZlibCodec(_ZlibErrorCodec):
         *,
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
     ) -> bool:
         """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
         return _zlib_header_plausible(prefix) and self._decodes_sample(
