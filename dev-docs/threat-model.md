@@ -845,9 +845,9 @@ member as fact.
   under `BALANCED`, off under `FAST`). Probe-only confidence is `GUESS` for the
   uncompressed or metadata-first class; a later decode failure sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. OLE compound
-  files are not probed: their signature stops the probes. Other structured look-alikes
-  (COFF objects, MP3s whose ID3 tag starts with padding) can still be claimed, and stamp
-  the same way.
+  files are not probed: their signature stops the probes. LZMA Alone refuses a header followed by a
+  zero run, so MP3s whose ID3 tag starts with padding are not claimed. Other structured
+  look-alikes (COFF objects) can still be claimed, and stamp the same way.
 
 **Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
 fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the

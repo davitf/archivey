@@ -304,13 +304,13 @@ It SHALL refuse, before decoding, a header whose range-coder data holds a run of
 bytes starting in its first 32 bytes**. A range coder fed zeros decodes zero literals
 without error, so any plausible header followed by a few hundred zero bytes, or by a zero
 byte, a few other bytes and then zeros, decodes as a valid stream of zeros, and reading
-it gives a member of zeros with no error. No encoder writes such a run: the longest zero
+it gives a member of zeros with no error. No measured encoder writes such a run: the longest zero
 run measured anywhere in real payloads is 3 bytes from liblzma and 7 from the LZMA SDK
 encoder (7-Zip), the 7 being a two-zero-byte input whose whole payload is zeros. The
 measurement and its inputs are recorded at the rule in `lzma_codec.py`. Unlike the other
 Alone rules this one rests on what encoders write, not on what the format allows: an
-encoder that coded a long run of zero bytes as literals would write such a run, and none
-does, because a real encoder codes the third byte of a run as a match. A stream refused
+encoder that coded a long run of zero bytes as literals would write such a run, and
+neither measured encoder does, because both code the third byte of a run as a match. A stream refused
 here still opens through a `.lzma` name.
 
 #### Scenario: content-probe matrix
@@ -339,7 +339,7 @@ here still opens through a `.lzma` name.
 | Alone header carrying a real uncompressed size rather than the sentinel | `LZMA_ALONE`, `content_probe` — unaffected |
 | Zero-filled source of any length (padding, a sparse or zero-truncated file) | No Alone claim — the header declares zero output |
 | Zero-filled source with `CD001` at 32 769 | `ISO` at the far-magic step; no Alone claim |
-| Plausible Alone header (e.g. an ID3v2.3 tag) followed by a zero run, or by `00`, a few bytes and a zero run | No Alone claim — no encoder writes the run, though it decodes |
+| Plausible Alone header (e.g. an ID3v2.3 tag) followed by a zero run, or by `00`, a few bytes and a zero run | No Alone claim — no measured encoder writes the run, though it decodes |
 | Real Alone stream of an all-zero input (liblzma or LZMA SDK, any level) | `LZMA_ALONE`, `content_probe` — unaffected |
 
 ### Requirement: Compressed streams are probed for an inner TAR

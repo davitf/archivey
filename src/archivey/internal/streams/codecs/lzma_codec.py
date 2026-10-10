@@ -196,17 +196,21 @@ def _alone_payload_has_zero_run(prefix: bytes) -> bool:
     random heads). ID3-tagged MP3s and OLE files have this shape, and they were claimed
     and read as a member of zeros, with no error.
 
-    No encoder writes a run like this. The longest zero run measured anywhere in a
-    payload: 3 bytes from liblzma (``FORMAT_ALONE``, presets 0-9, plain and extreme)
+    The two encoders measured never write a run like this. The longest zero run
+    measured anywhere in a payload: 3 bytes from liblzma (``FORMAT_ALONE``, presets 0-9, plain and extreme)
     and 7 from the LZMA SDK encoder (7-Zip 23.01, levels 1-9, varied ``lc``/``lp``/
     ``pb``, dictionary, ``a=0``/``a=1``, with and without an end marker), on zeros,
     ``A``, ``ff``, ``ab`` and ``abc`` runs, random data, text and mixtures, and every
     input of 1-64 zero bytes (``-mx=9``). The 7-byte run is a two-zero-byte input with
     no end marker: two zero literals are all zero bits, so the whole payload is the
     range-coder init plus a zero flush. Both encoders code the third byte of a run as a
-    match, and a match writes a one bit. So a 16-byte run is over twice the longest real
-    one, and a run starting anywhere in the first 32 bytes is caught, where the latest
-    start seen to reach 4 KiB of output was byte 10.
+    match, and a match writes a one bit; that argument holds for any LZMA1 encoder, but
+    other ``.lzma`` writers (XZ for Java, the SDK's ``lzma`` tool, ``lzma-rs``) were
+    not run. A 16-byte run is over twice the longest one measured, and a run starting
+    anywhere in the first 32 bytes is caught, where the latest start seen to reach 4 KiB
+    of output over random heads was byte 10. The span bounds accidental collisions, not
+    crafted input: a head of 32 or more bytes built to keep the range coder decoding
+    before a zero run passes this rule (threat-model O10).
     """
     payload = prefix[_ALONE_HEADER_SIZE:]
     window = payload[: _ALONE_ZERO_RUN_SPAN + _ALONE_ZERO_RUN - 1]
@@ -352,7 +356,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         set. When ``source_length`` is unknown the check is skipped.
 
         A zero run at the start of the range-coder data is refused before any decode
-        (``_alone_payload_has_zero_run``): it decodes cleanly, but no encoder writes it.
+        (``_alone_payload_has_zero_run``): it decodes cleanly, but no measured encoder writes it.
 
         Completeness and the bounded decode share ``_decodes_sample``; Alone additionally
         requires a positive output length (an empty successful read is not a claim).

@@ -206,7 +206,7 @@ guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
   This check is the Brotli probe's own, on [`formats/brotli.md`](../formats/brotli.md).
 
 The guards reduce false claims. They do not remove them: some structured binary files
-(COFF objects, MP3s whose ID3 tag starts with padding) still pass a probe. What bounds
+(COFF objects) still pass a probe. What bounds
 the damage is provenance. A probe hit with nothing to corroborate it is stamped, and when
 a read fails, the error has
 `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. The open is not refused on
@@ -417,7 +417,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A two-byte file `1f 8b` detects as `GZ` / `CERTAIN`, then fails at open with `TruncatedError` | **archivey** | Magic hits are not graded by length (§2.1, §3.2). The open still fails loudly |
 | A ZIP appended to a JPEG, or behind any prefix that raises no cue, is not detected | **archivey** | The one tail read is the 512-byte `koly` block (§2.4), not a ZIP trailer. `format=ZIP` reads it. [`prefixed-archives.md`](prefixed-archives.md) §6 |
 | An uncompressed `.dmg` whose disk is ISO 9660 opens as `ISO` | **archivey** | Far magic runs before the trailer (§2.4). [`formats/dmg.md`](../formats/dmg.md) §2.1 |
-| Some binary files (COFF, ID3-tagged MP3) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). Threat-model O10 |
+| Some binary files (COFF) detect as LZMA Alone or Brotli and list one `.uncompressed` member | **format** | Three formats have no usable magic (§1). A failed read is stamped `format_unconfirmed` (§2.5). Threat-model O10 |
 | A zero-filled `backup.gz` detects as `GZ` / `GUESS`; the read raises `CorruptionError` with `format_unconfirmed=True` | **format** | Extension was the only evidence (§2.6) |
 | A v7 tar inside gzip, named `.tar.gz`, opens as bare `GZ` | **format** | No `ustar`, so no inner-TAR upgrade. [`formats/tar.md`](../formats/tar.md) §2.1 |
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |

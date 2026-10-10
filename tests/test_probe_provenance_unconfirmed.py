@@ -83,6 +83,10 @@ def _lzma_alone_probe_only_residual() -> bytes:
     stream with those properties, which the probe's window decodes, cut at 80 000 bytes
     and followed by ``ff`` bytes, which the full read fails on. A zero run after the
     header would be shorter, but the probe refuses one.
+
+    The blob must stay over the 64 KiB probe-completion window
+    (``completion_window_bytes`` under ``BALANCED``). A shorter one is re-probed whole,
+    the re-probe reaches the ``ff`` tail, and the claim the tests need is gone.
     """
     data = random.Random(5).randbytes(100_000)
     lzma1 = {"id": lzma.FILTER_LZMA1, "lc": 1, "lp": 3, "pb": 4, "dict_size": 1 << 16}

@@ -821,6 +821,24 @@ def test_lzma_alone_header_gate_admits_the_formats_full_properties_range(
     assert codecs_module.lzma_codec._alone_header_plausible(header) is legal
 
 
+@pytest.mark.parametrize(
+    ("head", "run", "refused"),
+    [
+        (0, 16, True),
+        (0, 15, False),  # one short of the run
+        (31, 16, True),  # the last start inside the 32-byte span
+        (32, 16, False),  # the first start outside it
+    ],
+)
+def test_lzma_alone_zero_run_rule_boundaries(
+    head: int, run: int, refused: bool
+) -> None:
+    header = bytes([0x5D]) + (1 << 16).to_bytes(4, "little") + b"\xff" * 8
+    prefix = header + b"\x01" * head + b"\0" * run + b"\x01" * 64
+    has_run = codecs_module.lzma_codec._alone_payload_has_zero_run(prefix)
+    assert has_run is refused
+
+
 _ALONE_HEADERS = [
     # props 0x5D, 64 KiB dictionary, unknown size: what liblzma writes.
     bytes([0x5D]) + (1 << 16).to_bytes(4, "little") + b"\xff" * 8,
@@ -839,7 +857,7 @@ def test_lzma_alone_header_then_zero_run_is_not_claimed(
 ) -> None:
     # A range coder fed zeros decodes zero literals without error, so these decode as a
     # valid stream; a short head before the run, as in ``00 01 70``, does not change that.
-    # No encoder writes such a payload, so a zero run near the start is refused.
+    # No measured encoder writes such a payload, so a zero run near the start is refused.
     data = header + head + b"\0" * (size - len(header) - len(head))
     decoder = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
     assert len(decoder.decompress(data, max_length=4096)) == 4096  # no error

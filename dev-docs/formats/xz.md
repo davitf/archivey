@@ -93,7 +93,7 @@ are a valid, complete, empty Alone stream, so without it a run of zero padding w
 claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
 So is a run of 16 zero bytes starting in the first 32 bytes after the header: a range
 coder fed zeros decodes zero literals without error, so a header followed by zeros
-decodes, but no encoder writes that run (the longest measured is 7 bytes, from 7-Zip;
+decodes, but no measured encoder writes that run (the longest measured is 7 bytes, from 7-Zip;
 liblzma's is 3). Then the probe decodes the sample and requires at least one byte of output
 ([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
 probe-only match is stamped `format_unconfirmed`.
@@ -261,8 +261,9 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   megabytes of zeros costs a few reads, not one per four bytes.
 - **LZMA Alone has no check.** Corrupt data that the range coder accepts decodes to wrong
   bytes with no error. That is the format.
-- **The Alone probe claims foreign files.** COFF headers and ID3 tags followed by padding
-  pass its gate. OLE headers pass it too, but the OLE signature stops the probes first.
+- **The Alone probe claims foreign files.** COFF headers pass its gate. A header
+  followed by zeros, such as an ID3 tag with padding or an OLE header, is refused for
+  the zero run, and the OLE signature also stops the probes first.
   The claim is `PROBABLE`, and every error from it is stamped `format_unconfirmed`, so a
   caller can tell a misread file from a damaged one (threat-model O10).
 
