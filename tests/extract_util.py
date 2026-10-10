@@ -7,10 +7,15 @@ pair of lines, so a test that checks what extraction did doesn't repeat it. Open
 arguments go to :func:`archivey.open_archive` and everything else to
 :meth:`~archivey.ForwardArchiveReader.extract_all`, so the report's diagnostics are
 extraction-only, as a caller's would be.
+
+It also checks, after every run that returned or raised, that no ``.archivey-tmp-*``
+staging file is left under the destination: only a hard kill may leave one
+(docs/extracting.md), so every extraction the suite runs through here guards that.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +49,24 @@ def open_and_extract(
         encoding=encoding,
         config=config,
     ) as reader:
-        return reader.extract_all(dest, **extract_kwargs)
+        try:
+            return reader.extract_all(dest, **extract_kwargs)
+        finally:
+            assert_no_staging_files(dest)
+
+
+def assert_no_staging_files(dest: str | Path) -> None:
+    """Fail if an ``.archivey-tmp-*`` staging file is left anywhere under ``dest``.
+
+    Walks without following symlinks, and skips a directory it cannot read (tests
+    that lock a directory's mode) rather than failing on it."""
+    strays = [
+        os.path.join(root, name)
+        for root, dirs, files in os.walk(dest)
+        for name in dirs + files
+        if name.startswith(".archivey-tmp-")
+    ]
+    assert not strays, f"staging files left behind: {strays}"
 
 
 def lock_directories_at_once(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -147,7 +147,7 @@ which pays the child's start on every stream, small ones included.
 stream that ends early. The throw comes from a destructor, so it happens for a path, a
 file object and a `BytesIO` alike; on an 8 MB gzip, 27 of 30 random cuts aborted the
 interpreter, and no `try` can catch it. So gzip, zlib and raw DEFLATE go through
-`RapidgzipChildStream` (`internal/streams/rapidgzip_child.py`), which runs
+`RapidgzipChildStream` (`internal/streams/codecs/rapidgzip_child.py`), which runs
 `rapidgzip_worker.py` in a separate Python (`python -P`, importing nothing from archivey).
 The abort then costs the member, not the caller. bzip2 has not been seen to abort and stays
 in-process ([`bzip2.md`](bzip2.md) §2.3). The child turns off its own core dumps before it
@@ -179,7 +179,8 @@ logger; `ON` raises `ResourceLimitError`.
 
 **Truncation through `rapidgzip`.** Besides aborting, `rapidgzip` often ends a truncated
 stream softly, by design: `read()` returns `b""` or a prefix with no error. For a gzip
-source that is seekable, `_GzipTruncationCheckStream` backs it up:
+source that is seekable, two layers back it up: `_StdlibOnAcceleratorError` does item 1
+(its `empty_to_stdlib` switch), and `_GzipTruncationCheckStream` above it does the rest:
 
 1. If the stream ends before a single byte came out, the reader switches to the standard
    library engine over a fresh view of the source, which recovers the prefix and raises.
@@ -342,7 +343,7 @@ exits. The measurements and the canary that watches for an upstream fix are in
 bytes after a gzip member for the start of another and fails on them, or, in the child,
 delivers the payload and then takes the file's last four bytes, now junk, for ISIZE. Both
 cases switch to the standard library engine at the position already delivered
-(`_StdlibOnAcceleratorError` in `internal/streams/codecs.py`): a data error from
+(`_StdlibOnAcceleratorError` in `internal/streams/codecs/stdlib_takeover.py`): a data error from
 `rapidgzip` does it inside the read or a seek, and an ISIZE mismatch with no confirmed
 further member does it through the truncation check. A seek meets these errors too:
 `rapidgzip`'s seek through a valid file with NUL padding after it fails on the padding,
@@ -537,9 +538,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [ADR 0014](../decisions/0014-integrity-verdicts-from-reads-not-close.md) ·
   [`library-analysis.md`](../library-analysis.md) §gzip, §raw Deflate / zlib
-- Code: `internal/streams/codecs.py` (`GzipCodec`, `ZlibCodec`, `DeflateCodec`, the
-  accelerator selection, `_GzipTruncationCheckStream`) · `internal/streams/decompress.py`
-  (`GzipDecoder`, `ZlibDecoder`) · `internal/streams/rapidgzip_child.py`,
-  `rapidgzip_worker.py`
+- Code: `internal/streams/codecs/` (`gzip_codec.py`: `GzipCodec`,
+  `_GzipTruncationCheckStream`; `zlib_codec.py`: `ZlibCodec`, `DeflateCodec`;
+  `rapidgzip_select.py`: the accelerator selection; `stdlib_takeover.py`;
+  `deflate_decoder.py`: `GzipDecoder`, `ZlibDecoder`; `rapidgzip_child.py`,
+  `rapidgzip_worker.py`)
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (DEFLATE members) ·
   [`tar.md`](tar.md) (`.tar.gz`)

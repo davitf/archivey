@@ -21,6 +21,7 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_aes import (
     ExtraField,
@@ -317,7 +318,9 @@ def test_aes_hmac_survives_a_seekable_accelerator(
 
     monkeypatch.setattr(WinZipAesDecryptStream, "seek", spy_seek)
     # The shipped AUTO threshold is 16 MiB; lowered so AUTO reaches rapidgzip here.
-    monkeypatch.setattr(codecs, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(
+        codecs.rapidgzip_select, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20
+    )
     config = ArchiveyConfig(use_rapidgzip=mode)
     # Incompressible and over the lowered AUTO threshold, which sees the stage's size.
     payload = random.Random(480).randbytes(1_200_000)
@@ -492,18 +495,19 @@ def test_aes_multi_password_selects_winner() -> None:
         assert ar.read(ar.members()[0]) == _PAYLOAD
 
 
-def _minimal_aes_zip_bytes() -> bytes:
+def _minimal_aes_zip_bytes(body: bytes | None = None) -> bytes:
     """A tiny method-99 ZIP with a valid 0x9901 extra (no cryptography needed to build).
 
     The ciphertext body is garbage — only used to exercise the cryptography-absent path,
-    which fails before decryption.
+    which fails before decryption. ``body`` replaces it; the declared sizes follow.
     """
     name = b"x.txt"
     # AE-2, strength 1 (128), actual method STORED
     aes_extra = struct.pack("<H2sBH", 2, b"AE", 1, 0)
     extra = struct.pack("<HH", 0x9901, len(aes_extra)) + aes_extra
-    # salt(8) + verify(2) + cipher(1) + hmac(10)
-    body = b"\0" * (8 + 2 + 1 + 10)
+    if body is None:
+        # salt(8) + verify(2) + cipher(1) + hmac(10)
+        body = b"\0" * (8 + 2 + 1 + 10)
     flags = 0x1
     local = struct.pack(
         "<IHHHHHIIIHH",
@@ -555,6 +559,28 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         assert member.is_encrypted  # detection still works
         with pytest.raises(PackageNotInstalledError, match="cryptography"):
             ar.read(member)
+
+
+@pytest.mark.parametrize(
+    "password", [_PASSWORD, [b"wrong", _PASSWORD]], ids=["single", "multi"]
+)
+def test_aes_header_too_short_is_corruption_without_crypto(
+    monkeypatch: pytest.MonkeyPatch, password: bytes | list[bytes]
+) -> None:
+    """An impossible AES header is ``CorruptionError`` whether or not ``cryptography`` is installed.
+
+    No library can read a member whose declared size cannot hold salt, verification
+    value and HMAC, so the missing package is not the reason it fails (DR-5).
+    """
+    import archivey.internal.backends.zip_aes as zip_aes_module
+
+    monkeypatch.setattr(zip_aes_module, "_crypto_available", lambda: False)
+    data = _minimal_aes_zip_bytes(body=b"\0" * 5)
+    with open_archive(io.BytesIO(data), password=password) as ar:
+        (member,) = ar.members()
+        with raises_corruption_not_truncation() as excinfo:
+            ar.open(member)
+    assert excinfo.value.member_name == "x.txt"
 
 
 def test_parse_aes_extra_roundtrip() -> None:
@@ -969,3 +995,35 @@ def test_aes_short_payload_is_truncated_whichever_candidate_fails_first(
     with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
         with pytest.raises(TruncatedError):
             ar.read(ar.members()[0])
+
+
+@requires("cryptography")
+def test_method_99_without_encryption_flag_lists_as_encrypted() -> None:
+    """A method-99 member is encrypted whatever general-purpose bit 0 says.
+
+    Crafted: no producer writes method 99 with bit 0 clear (DR-24 allows a crafted
+    fixture for that). Opening already treats method 99 as encrypted and asks for
+    a password, so the listing must say so too.
+    """
+    blob = bytearray(build_aes_zip([(b"x.txt", _PAYLOAD)], password=_PASSWORD))
+    struct.pack_into("<H", blob, 6, 0)  # local file header flags
+    cd_at = blob.find(b"PK\x01\x02")
+    struct.pack_into("<H", blob, cd_at + 8, 0)  # central directory flags
+    with open_archive(io.BytesIO(bytes(blob))) as ar:
+        member = ar.members()[0]
+        assert member.is_encrypted
+        with pytest.raises(EncryptionError):
+            ar.read(member)
+    with open_archive(io.BytesIO(bytes(blob)), password=_PASSWORD) as ar:
+        assert ar.read(ar.members()[0]) == _PAYLOAD
+    # Without a 0x9901 extra no password is asked for, but the data is still
+    # encrypted, so the listing still says so.
+    no_extra = bytes(blob).replace(
+        struct.pack("<H", 0x9901) + b"\x07\x00", b"\xfe\xca\x07\x00"
+    )
+    assert no_extra.count(b"\xfe\xca\x07\x00") == 2  # local and central headers
+    with open_archive(io.BytesIO(no_extra), password=_PASSWORD) as ar:
+        member = ar.members()[0]
+        assert member.is_encrypted
+        with pytest.raises(UnsupportedFeatureError, match="0x9901"):
+            ar.open(member)

@@ -35,8 +35,8 @@ from archivey.internal.backends.sevenzip_pipeline import (
     parse_sevenzip_archive,
     plan_folder,
 )
-from archivey.internal.streams import bcj2 as bcj2_mod
-from archivey.internal.streams.bcj2 import Bcj2DecoderStream
+from archivey.internal.streams.codecs import bcj2_filter as bcj2_mod
+from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation

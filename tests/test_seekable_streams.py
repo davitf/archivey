@@ -26,9 +26,17 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import AcceleratorMode, DecoderLimits, StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
-from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
-from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
-from archivey.internal.streams.xz import XzDecompressorStream, _read_xz_index_backwards
+from archivey.internal.streams.codecs.lzip_decoder import (
+    LzipDecompressorStream,
+    _read_index_backwards,
+)
+from archivey.internal.streams.codecs.unix_compress_decoder import (
+    UnixCompressDecompressorStream,
+)
+from archivey.internal.streams.codecs.xz_decoder import (
+    XzDecompressorStream,
+    _read_xz_index_backwards,
+)
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.memory_util import traced_peak
@@ -115,7 +123,7 @@ def test_xz_size_then_read_multistream_no_collision() -> None:
 def test_xz_zero_uncompressed_size_blocks_do_not_crash_index() -> None:
     """Crafted index with zero-size blocks must not raise AssertionError (F1b)."""
     from archivey.exceptions import ArchiveyError
-    from archivey.internal.streams.xz import (
+    from archivey.internal.streams.codecs.xz_decoder import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
         _encode_mbi,
@@ -282,7 +290,7 @@ def test_xz_block_resume_hands_off_before_a_stream_without_blocks(
     carries on sequentially through B: jumping to C would serve C's bytes at B's
     offsets, and ending at A would return a short read and publish a short size.
     """
-    from archivey.internal.streams import xz as xz_module
+    from archivey.internal.streams.codecs import xz_decoder as xz_module
 
     rng = random.Random(7)
     parts = [rng.randbytes(150_000) for _ in range(3)]
@@ -392,7 +400,7 @@ def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
 
 def test_xz_index_unpadded_overflow_raises() -> None:
     """Index records whose unpadded sizes extend before offset 0 are rejected."""
-    from archivey.internal.streams.xz import (
+    from archivey.internal.streams.codecs.xz_decoder import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
         _encode_mbi,
@@ -437,7 +445,7 @@ def _xz_padding_end_bytewise(data: bytes, end: int, stop_at: int) -> int:
 def test_xz_padding_scan_matches_the_group_walk(
     seed: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from archivey.internal.streams import xz as xz_mod
+    from archivey.internal.streams.codecs import xz_decoder as xz_mod
 
     # A small chunk so seams between chunks are crossed on every case.
     monkeypatch.setattr(xz_mod, "_PADDING_SCAN_CHUNK", 16)
@@ -505,7 +513,7 @@ def test_xz_short_source_that_is_not_xz_is_corrupt(data: bytes) -> None:
 
 def test_xz_index_with_room_for_more_records_is_rejected() -> None:
     """Records plus padding must fill the index the footer declared, exactly."""
-    from archivey.internal.streams.xz import _parse_xz_index
+    from archivey.internal.streams.codecs.xz_decoder import _parse_xz_index
 
     # Indicator, zero records, then 4 bytes of zeros past the padding.
     with raises_corruption_not_truncation(match="length mismatch"):
@@ -517,7 +525,7 @@ def test_xz_index_with_room_for_more_records_is_rejected() -> None:
 
 
 def test_xz_index_rejects_a_non_minimal_multibyte_integer() -> None:
-    from archivey.internal.streams.xz import _decode_mbi
+    from archivey.internal.streams.codecs.xz_decoder import _decode_mbi
 
     assert _decode_mbi(b"\x00", 0) == (0, 1)
     assert _decode_mbi(b"\x80\x01", 0) == (128, 2)
@@ -608,7 +616,7 @@ def test_xz_cold_seek_trusts_a_self_consistent_block_index() -> None:
     the stream, where liblzma checks the index and raises; a full read raises too. If
     index validation is ever added, this test changes with O17.
     """
-    from archivey.internal.streams import xz as xz_module
+    from archivey.internal.streams.codecs import xz_decoder as xz_module
 
     data = b"".join(bytes([ord("A") + i]) * 65536 for i in range(4))
     compressed = make_multiblock_xz(data, block_size=65536)
@@ -787,7 +795,7 @@ def test_lzip_version_0_member_is_unsupported_on_index_scan(case: str) -> None:
     It reaches one at a member start, at the start of its range, or right after the
     last member it finds.
     """
-    from archivey.internal.streams.lzip import peek_index_summary
+    from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
 
     data = _V0_CASES[case]()
     with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
@@ -804,7 +812,7 @@ def test_lzip_version_0_member_the_walk_cannot_reach_fails_the_walk(case: str) -
     name its version. The seek test below pins what keeps a seek right here: the failed
     walk degrades the index, and the sequential read refuses the member.
     """
-    from archivey.internal.streams.lzip import peek_index_summary
+    from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
 
     data = _V0_CASES[case]()
     with raises_corruption_not_truncation():
@@ -857,7 +865,7 @@ def test_lzip_future_version_is_unsupported(version: int) -> None:
 
 
 def test_lzip_peek_index_summary_matches_the_payload() -> None:
-    from archivey.internal.streams.lzip import peek_index_summary
+    from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
 
     parts = [b"alpha" * 300, b"", b"beta" * 700, b"gamma"]
     compressed = make_multi_member_lzip(parts)
@@ -874,7 +882,7 @@ def test_lzip_peek_index_summary_holds_no_per_member_state() -> None:
     26 bytes is the smallest member the scan accepts, so a file of them declares one
     member per 26 bytes; the probe must not allocate in proportion to that count.
     """
-    from archivey.internal.streams.lzip import peek_index_summary
+    from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
 
     block = b"LZIP" + bytes([1, 20]) + struct.pack("<IQQ", 0, 0, 26)
     count = 20_000
@@ -1131,7 +1139,7 @@ def test_xz_progressive_scan_of_a_stream_over_the_cap_is_thinned(
 def test_xz_block_resume_refuses_blocks_that_disagree_with_the_index() -> None:
     """A resume checks the rest of the stream against the size the index declares,
     since it does not feed liblzma the index that would otherwise check it."""
-    from archivey.internal.streams.xz import _XzBlockResume
+    from archivey.internal.streams.codecs.xz_decoder import _XzBlockResume
 
     data = random.Random(8).randbytes(4 * 4096)
     compressed = make_multiblock_xz(data, block_size=4096)
@@ -1149,7 +1157,7 @@ def test_xz_block_resume_refuses_blocks_that_disagree_with_the_index() -> None:
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
 def test_xz_block_resume_cut_inside_the_blocks_is_truncated() -> None:
-    from archivey.internal.streams.xz import _XzBlockResume
+    from archivey.internal.streams.codecs.xz_decoder import _XzBlockResume
 
     data = random.Random(9).randbytes(4 * 4096)
     compressed = make_multiblock_xz(data, block_size=4096)
@@ -1183,7 +1191,7 @@ def _xz_stream_from_records(records: list[tuple[int, int]]) -> bytes:
 
     The block bytes are zeros: only the backward scan reads this, never a decoder.
     """
-    from archivey.internal.streams.xz import (
+    from archivey.internal.streams.codecs.xz_decoder import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
         _encode_mbi,
@@ -1203,7 +1211,7 @@ def _xz_stream_from_records(records: list[tuple[int, int]]) -> bytes:
 
 
 def test_xz_index_with_a_huge_declared_count_fails_without_reserving() -> None:
-    from archivey.internal.streams.xz import _encode_mbi, _iter_xz_index
+    from archivey.internal.streams.codecs.xz_decoder import _encode_mbi, _iter_xz_index
 
     with raises_corruption_not_truncation():
         list(_iter_xz_index(b"\x00" + _encode_mbi(1 << 40)))
@@ -1333,28 +1341,40 @@ def test_a_raise_mid_read_keeps_the_decoded_bytes(small_seek_cap: int, n: int) -
         assert stream.seek(0, io.SEEK_END) == len(full)
 
 
+@pytest.mark.parametrize("wrapper", ["ArchiveStream", "VerifyingStream"])
 def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
-    small_seek_cap: int,
+    small_seek_cap: int, wrapper: str
 ) -> None:
-    """The public wrapper learns where a seek that raised left the stream.
+    """Both verifying wrappers learn where a seek that raised left the stream.
 
     The raise comes after the inner seek moved, so the verifier must drop the
     digest and track the new position, or reading on reports a false truncation.
     """
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.verify import VerifyingStream
     from archivey.types import HashAlgorithm, crc32_digest
 
     compressed = make_multi_member_lzip(LZIP_PARTS)
     full = b"".join(LZIP_PARTS)
     collector = _strict_collector()
-    stream = ArchiveStream(
-        lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
-        translate=lambda _exc: None,
-        collector=collector,
-        expected_hashes={HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))},
-        expected_size=len(full),
-    )
+    hashes = {HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))}
+    stream: BinaryIO
+    if wrapper == "ArchiveStream":
+        stream = ArchiveStream(
+            lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            translate=lambda _exc: None,
+            collector=collector,
+            expected_hashes=hashes,
+            expected_size=len(full),
+        )
+    else:
+        stream = VerifyingStream(
+            LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+            hashes,
+            expected_size=len(full),
+            collector=collector,
+        )
     with stream:
         with pytest.raises(DiagnosticRaisedError):
             stream.seek(500)

@@ -108,21 +108,19 @@ dropped it. Ubuntu picks that up with its next sync from Debian.
 **Evidence.** [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md)
 §Compressed RAR5 member dropped. Handbook: [`formats/rar.md`](formats/rar.md) §3.
 
-## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive (open)
+## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive (open upstream)
 
 **Symptom.** `tarfile.TarFile.next()` re-raises `InvalidHeaderError` only at offset 0. A
 corrupt member header anywhere later is swallowed and iteration ends, so mid-archive
 corruption gives a shortened listing with no error. All supported Python versions.
 
-**What archivey does.** `TarReader._verify_tar_eof` classifies the block the walk stopped
-on and raises `CorruptionError` for a rejected header, in random access even when it is
-the archive's last block.
+**What archivey does.** `_TarInfo.fromtarfile` records the error class of each header
+parse on the `_TarFile` before `next()` swallows it, and `TarReader._verify_tar_eof`
+raises `CorruptionError` when the last parse rejected the header. That holds in both
+access modes, whatever follows the rejected header (members, a zero block, nothing).
 
-**What remains.** In streaming mode tarfile's `_Stream` hides its header reads, so a
-rejected header that is the archive's final block reads as a missing trailer and surfaces
-as the `ARCHIVE_EOF_MARKER_MISSING` warning, not `CorruptionError`. A native TAR header
-walker ([`formats/tar.md`](formats/tar.md) §7) would close it. Users are told in `docs/formats.md` and
-`docs/gotchas.md`.
+**What remains.** Nothing for archivey callers. The workaround depends on tarfile
+raising `InvalidHeaderError` for every header it rejects after the first.
 
 **Upstream.** CPython behaviour; not filed.
 
@@ -169,7 +167,7 @@ caller's own stream that fails or is closed mid-read:
   raises (a failed read is an end of input); this process serves the reads from the
   caller's stream and raises the caller's exception itself.
 - bzip2 decodes in-process and reads a caller-owned stream through `_TrappingSource` in
-  `codecs.py`, which parks the callback's exception and returns an EOF-shaped value.
+  `codecs/rapidgzip_inprocess.py`, which parks the callback's exception and returns an EOF-shaped value.
   `_AcceleratorStream` re-raises it after the call, marked as the caller's, so an
   `EOFError` from a dropped network stream stays an `EOFError`
   ([`topics/exception-handlers.md`](topics/exception-handlers.md) §C-boundary trap).
@@ -277,7 +275,7 @@ rewrite (upstream PR #126): 1.1.1 and 1.2.0 do not crash on it but return wrong 
 chunked decodes, which is why `[recommended]` requires `pyppmd>=1.3.1`. The random-input
 crash affects 1.2.0 and 1.3.x.
 
-**What archivey does.** `PpmdDecoder` (`streams/decompress.py`) bounds every request by
+**What archivey does.** `PpmdDecoder` (`streams/codecs/ppmd_decoder.py`) bounds every request by
 the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 at
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one

@@ -147,8 +147,8 @@ def check_decoder_memory(
     written, so a 151 KB stream declaring 4 GiB holds 1.1 GiB resident after
     producing 1 GiB of zeros, where the same stream declaring 1 MiB holds 59 MB.
 
-    Lives here rather than in ``codecs.py`` so the xz and lzip decoders, which
-    ``codecs.py`` imports, can call it without an import cycle.
+    Lives here rather than in ``codecs/`` so the xz and lzip decoders, which the
+    codec modules import, can call it without an import cycle.
     """
     if not exceeds_decoder_memory(declared, limits):
         return
