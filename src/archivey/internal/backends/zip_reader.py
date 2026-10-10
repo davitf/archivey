@@ -1033,11 +1033,11 @@ class ZipReader(BaseArchiveReader):
         # checked against the central one.
         alternate_raw_name: bytes | None = None
         unicode_name: bytes | None = None
-        unicode_path_fault: str | None = None
+        unicode_extra_fault: str | None = None
         if not is_utf8_flagged and info.extra:
             unicode_path = _unicode_path_name(info.extra, raw_name)
             unicode_name = unicode_path.name
-            unicode_path_fault = unicode_path.fault
+            unicode_extra_fault = unicode_path.fault
             if unicode_name is not None:
                 name_source = unicode_name.decode("utf-8")
                 if unicode_name != raw_name:
@@ -1143,13 +1143,13 @@ class ZipReader(BaseArchiveReader):
                     f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
                 ),
             )
-        if unicode_path_fault is not None:
+        if unicode_extra_fault is not None:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
                 message=(
                     f"The Unicode Path extra field (0x7075) of ZIP member "
                     f"{quoted(member.name)} is malformed and was dropped "
-                    f"({unicode_path_fault}); the name was decoded from the header."
+                    f"({unicode_extra_fault}); the name was decoded from the header."
                 ),
                 context=MemberHeaderRecordContext(
                     archive_name=self._archive_name,
@@ -1157,7 +1157,7 @@ class ZipReader(BaseArchiveReader):
                     member_id=index,
                     record="unicode_path",
                     record_id=_ZIP_EXTRA_UNICODE_PATH,
-                    reason=unicode_path_fault,
+                    reason=unicode_extra_fault,
                 ),
                 member=member,
                 attach_to_member=True,
