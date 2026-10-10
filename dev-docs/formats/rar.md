@@ -667,7 +667,8 @@ and no diagnostic. A stored `CMT` is read from the span the walk skips after its
 header, which is its PACK_SIZE whether or not LONG_BLOCK is set, as `unrar` reads it.
 So no byte is read both as comment data and as a later header; a read that could
 overlap the next headers would let a stack of 35-byte `CMT` headers each re-read the
-rest of the archive (DR-9a).
+rest of the archive (DR-9a). A stored `CMT` whose PACK_SIZE runs past the end of the
+file is a `CorruptionError`, with LONG_BLOCK set or clear.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.

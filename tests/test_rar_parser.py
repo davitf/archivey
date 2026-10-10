@@ -791,6 +791,21 @@ def test_a_rar3_stored_comment_is_read_whether_or_not_long_block_is_set(
     assert archive.truncated is None
 
 
+@pytest.mark.parametrize(
+    "long_block", [True, False], ids=["long_block", "no_long_block"]
+)
+def test_a_rar3_stored_comment_past_the_end_of_the_file_is_corruption(
+    long_block: bool,
+) -> None:
+    """A PACK_SIZE that runs past the end of the file fails the comment read, and the
+    LONG_BLOCK flag does not change that."""
+    start, end = _rar3_main_and_end()
+    flags = 0x8000 if long_block else 0
+    data = start + _rar3_cmt(2**20, flags=flags) + b"short" + end
+    with pytest.raises(CorruptionError, match="RAR3 comment"):
+        parse_rar_archive(io.BytesIO(data))
+
+
 def test_a_rar3_comment_is_read_only_from_the_bytes_the_walk_skips() -> None:
     """A RAR 1.5-4 ``CMT`` header must not read bytes the walk then parses again.
 
@@ -842,19 +857,10 @@ def _rar4_member_carrying_a_member() -> bytes:
     LONG_BLOCK says, so for unrar ``hidden.txt`` is only bytes inside ``carrier.bin``.
     No writer clears LONG_BLOCK on a FILE header, so the archive is crafted.
     """
+    start, end = _rar3_main_and_end()
     hidden = _rar3_stored_file(b"hidden.txt", b"smuggled\n", flags=0x8000)
     hidden += b"smuggled\n"
-    main_body = struct.pack("<BHH", 0x73, 0, 13) + bytes(6)
-    end_body = struct.pack("<BHH", 0x7B, 0x4000, 7)
-    return (
-        b"Rar!\x1a\x07\x00"
-        + struct.pack("<H", zlib.crc32(main_body) & 0xFFFF)
-        + main_body
-        + _rar3_stored_file(b"carrier.bin", hidden, flags=0)
-        + hidden
-        + struct.pack("<H", zlib.crc32(end_body) & 0xFFFF)
-        + end_body
-    )
+    return start + _rar3_stored_file(b"carrier.bin", hidden, flags=0) + hidden + end
 
 
 def test_a_rar4_file_header_skips_its_pack_size_without_long_block() -> None:

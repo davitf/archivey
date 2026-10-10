@@ -1009,7 +1009,8 @@ def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
 
     An end block has no data area, so no ``LONG_BLOCK`` flag, and its header is 7
     bytes plus at most a data CRC (4), a volume number (2) and 7 reserved bytes:
-    20 at most. Every FILE header carries ``LONG_BLOCK`` and is larger than that.
+    20 at most. A FILE header's fixed fields are 25 bytes past the 7-byte common
+    header, so even one with ``LONG_BLOCK`` clear is larger than that.
     """
     return not flags & _RAR3_LONG_BLOCK and header_size <= _RAR3_ENDARC_MAX_HEADER
 
