@@ -21,7 +21,11 @@ on:
     # globs with `!`, then the two doc paths that tests read, re-included (later
     # patterns win): docs/api.md (test_public_api) and review/problem-catalogue/
     # (test_review_problem_catalogue). Add a path there when a test starts reading
-    # another doc file. atheris-fuzz.yml and ppmd-native-stress.yml carry the same list.
+    # another doc file. atheris-fuzz.yml and ppmd-native-stress.yml carry the same list;
+    # tests/test_ci_doc_paths.py checks that the three match and the re-includes come last.
+    # Two cases skip this workflow although code changed, both from GitHub's filter: a
+    # rename is seen under its new name only, so moving code into docs/ alone skips it;
+    # and a diff over 3,000 files whose matches fall past the first 3,000 skips it too.
     # Branch protection on main requires no status checks today. If that changes, a
     # required check must come from a workflow that always runs: a docs-only PR gets no
     # check from this one at all, and would wait on it forever.

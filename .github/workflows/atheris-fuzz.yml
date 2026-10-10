@@ -11,7 +11,9 @@ name: Atheris fuzz
 on:
   pull_request:
     # Skip documentation-only pull requests. Same list as ci.yml's pull_request paths
-    # (see the comment there); keep the three in step.
+    # (see the comment there), kept identical on purpose so tests/test_ci_doc_paths.py
+    # can check it; the docs/api.md and review/problem-catalogue/ re-includes matter only
+    # in ci.yml, since no test here reads them.
     paths:
       - "**"
       - ".*"

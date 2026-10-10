@@ -79,9 +79,8 @@ jobs:
       - name: Assert no finished change is left unarchived
         run: python3 scripts/check_openspec_archived.py
 
-  # A separate job rather than a second step in `openspec`, so the existing required
-  # check keeps meaning exactly what its name says. Rename/merge them if branch
-  # protection is updated to match.
+  # A separate job rather than a second step in `openspec`, so each check keeps meaning
+  # exactly what its name says, which matters if branch protection ever requires one.
   openspec-self-reference:
     name: OpenSpec spec prose
     runs-on: ubuntu-latest
