@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import struct
+import subprocess
 import zlib
 from pathlib import Path
 
@@ -660,3 +661,233 @@ def test_volume_set_packed_data_past_end_names_the_volume() -> None:
     assert "(volume 2 of the set; the offset is within that volume)" in (
         archive.truncated
     )
+
+
+class _CountingReader(io.BytesIO):
+    """A ``BytesIO`` that adds up the bytes each ``read`` returns."""
+
+    bytes_read = 0
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        data = super().read(size)
+        self.bytes_read += len(data)
+        return data
+
+
+def _rar5_block(
+    block_type: int, body: bytes, *, extra: bytes = b"", data_size: int | None = None
+) -> bytes:
+    """One plain RAR5 header with a correct CRC, optional extra area and data size.
+
+    Local because ``test_rar_header_record_leniency._rar5_header`` takes no data size,
+    which the quick-open SERVICE header below needs.
+    """
+    flags = 0
+    fields = b""
+    if extra:
+        flags |= 0x0001
+        fields += _vint(len(extra))
+    if data_size is not None:
+        flags |= 0x0002
+        fields += _vint(data_size)
+    inner = _vint(block_type) + _vint(flags) + fields + body + extra
+    sized = _vint(len(inner)) + inner
+    return struct.pack("<I", zlib.crc32(sized) & 0xFFFFFFFF) + sized
+
+
+def _vint(value: int, width: int = 0) -> bytes:
+    """A RAR5 variable-length integer, padded with continuation bytes to ``width``."""
+    out = bytearray()
+    while True:
+        out.append((value & 0x7F) | (0x80 if value > 0x7F else 0))
+        value >>= 7
+        if not value:
+            break
+    while len(out) < width:
+        out[-1] |= 0x80
+        out.append(0)
+    return bytes(out)
+
+
+def test_repeated_rar5_main_headers_read_the_quick_open_payload_once() -> None:
+    """A second MAIN header must not buy another read of the quick-open payload.
+
+    ``unrar`` accepts more than one MAIN header, and the walk parses each one. Each
+    MAIN here is 17 bytes and its locator points at the same 1 MiB QO payload, so a
+    walk that tries the locator on every MAIN reads that payload once per header:
+    300 MiB from a 1 MiB archive, and up to 16 MiB per header at the payload limit.
+    Only the first MAIN of a volume is asked for the quick-open table.
+    """
+    count, qo_size = 300, 2**20
+
+    def main(distance: int) -> bytes:
+        # The distance is a fixed-width vint so that every MAIN is the same size and
+        # ``qo_at`` can be computed before the distances are known. Unpadded, the
+        # locators would miss the payload and the test would read nothing.
+        locator = _vint(1) + _vint(0x01) + _vint(distance, width=5)
+        return _rar5_block(1, _vint(0), extra=_vint(len(locator)) + locator)
+
+    main_size = len(main(0))
+    qo_body = (
+        _vint(0)  # file flags
+        + _vint(qo_size)  # unpacked size
+        + _vint(0)  # attributes
+        + _vint(0)  # compression info: stored
+        + _vint(1)  # host OS
+        + _vint(2)
+        + b"QO"
+    )
+    data = bytearray(b"Rar!\x1a\x07\x01\x00")
+    qo_at = len(data) + count * main_size
+    for _ in range(count):
+        data += main(qo_at - len(data))
+    data += _rar5_block(3, qo_body, data_size=qo_size) + bytes(qo_size)
+    data += _rar5_block(5, _vint(0))
+
+    source = _CountingReader(bytes(data))
+    archive = parse_rar_archive(source)
+    assert archive.members == []
+    # One read of the payload fits under this bound and two do not.
+    assert source.bytes_read < len(data) + qo_size // 2
+
+
+def _rar3_cmt(pack_size: int, *, flags: int = 0) -> bytes:
+    """A RAR 2.9-4 stored ``CMT`` SUB header, CRC16 correct, LONG_BLOCK clear by default.
+
+    Local because ``test_rar_reader._rar3_file_block`` always sets LONG_BLOCK, the one
+    flag these tests need clear.
+    """
+    name = b"CMT"
+    fixed = struct.pack(
+        "<LLBLLBBHL", pack_size, pack_size, 3, 0, 0, 29, 0x30, len(name), 0
+    )
+    body = struct.pack("<BHH", 0x7A, flags, 7 + len(fixed) + len(name)) + fixed + name
+    return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body
+
+
+def _rar3_main_and_end() -> tuple[bytes, bytes]:
+    """The signature plus a plain MAIN header, and an end block; CRC16s correct."""
+    main_body = struct.pack("<BHH", 0x73, 0, 13) + bytes(6)
+    end_body = struct.pack("<BHH", 0x7B, 0x4000, 7)
+    start = b"Rar!\x1a\x07\x00" + struct.pack("<H", zlib.crc32(main_body) & 0xFFFF)
+    end = struct.pack("<H", zlib.crc32(end_body) & 0xFFFF) + end_body
+    return start + main_body, end
+
+
+@pytest.mark.parametrize(
+    "long_block", [True, False], ids=["long_block", "no_long_block"]
+)
+def test_a_rar3_stored_comment_is_read_whether_or_not_long_block_is_set(
+    long_block: bool,
+) -> None:
+    """unrar takes a SUB header's data size from PACK_SIZE whatever LONG_BLOCK says,
+    so the comment is listed and the walk resumes after it, at the end block."""
+    start, end = _rar3_main_and_end()
+    text = b"hello comment"
+    flags = 0x8000 if long_block else 0
+    data = start + _rar3_cmt(len(text), flags=flags) + text + end
+    archive = parse_rar_archive(io.BytesIO(data))
+    assert archive.comment == "hello comment"
+    assert archive.truncated is None
+
+
+@pytest.mark.parametrize(
+    "long_block", [True, False], ids=["long_block", "no_long_block"]
+)
+def test_a_rar3_stored_comment_past_the_end_of_the_file_is_corruption(
+    long_block: bool,
+) -> None:
+    """A PACK_SIZE that runs past the end of the file fails the comment read, and the
+    LONG_BLOCK flag does not change that."""
+    start, end = _rar3_main_and_end()
+    flags = 0x8000 if long_block else 0
+    data = start + _rar3_cmt(2**20, flags=flags) + b"short" + end
+    with pytest.raises(CorruptionError, match="RAR3 comment"):
+        parse_rar_archive(io.BytesIO(data))
+
+
+def test_a_rar3_comment_is_read_only_from_the_bytes_the_walk_skips() -> None:
+    """A RAR 1.5-4 ``CMT`` header must not read bytes the walk then parses again.
+
+    Each of these 35-byte ``CMT`` headers has LONG_BLOCK clear and claims everything
+    after it as its comment. A comment read of PACK_SIZE paired with a walk that skips
+    only the LONG_BLOCK size made every one of them re-read the rest of the archive:
+    300 headers read 300 copies of a 256 KiB tail. The read and the skip are one span,
+    so the first header's comment covers the rest and the walk ends there.
+    """
+    count, tail = 300, 256 * 1024
+    start, end = _rar3_main_and_end()
+    header_size = len(_rar3_cmt(0))
+    rest = count * header_size + len(end) + tail
+    data = bytearray(start)
+    for index in range(count):
+        data += _rar3_cmt(rest - (index + 1) * header_size)
+    data += end + bytes(tail)
+
+    source = _CountingReader(bytes(data))
+    archive = parse_rar_archive(source)
+    assert archive.members == []
+    # One read of the tail fits under this bound and two do not.
+    assert source.bytes_read < len(data) + tail // 2
+
+
+def _rar3_stored_file(name: bytes, data: bytes, *, flags: int) -> bytes:
+    """One RAR 1.5-4 FILE header for a stored member, CRC16 correct."""
+    fixed = struct.pack(
+        "<LLBLLBBHL",
+        len(data),  # PACK_SIZE
+        len(data),  # UNP_SIZE
+        3,  # host OS: Unix
+        zlib.crc32(data) & 0xFFFFFFFF,
+        0x21 << 9 | 1 << 5,  # DOS time
+        29,  # extract version
+        0x30,  # method: stored
+        len(name),
+        0o100644,
+    )
+    body = struct.pack("<BHH", 0x74, flags, 7 + len(fixed) + len(name)) + fixed + name
+    return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body
+
+
+def _rar4_member_carrying_a_member() -> bytes:
+    """``carrier.bin`` holds a complete FILE header and data for ``hidden.txt``.
+
+    The carrier's header has LONG_BLOCK (0x8000) clear. Its PACK_SIZE still covers
+    ``hidden.txt``, and unrar takes a FILE header's data size from PACK_SIZE whatever
+    LONG_BLOCK says, so for unrar ``hidden.txt`` is only bytes inside ``carrier.bin``.
+    No writer clears LONG_BLOCK on a FILE header, so the archive is crafted.
+    """
+    start, end = _rar3_main_and_end()
+    hidden = _rar3_stored_file(b"hidden.txt", b"smuggled\n", flags=0x8000)
+    hidden += b"smuggled\n"
+    return start + _rar3_stored_file(b"carrier.bin", hidden, flags=0) + hidden + end
+
+
+def test_a_rar4_file_header_skips_its_pack_size_without_long_block() -> None:
+    """A member's data must not be listed as more members.
+
+    The walk skipped a FILE header's data only when LONG_BLOCK was set, so with the
+    flag clear it parsed ``carrier.bin``'s data as headers and listed (and read)
+    ``hidden.txt``, a member unrar does not have.
+    """
+    archive = parse_rar_archive(io.BytesIO(_rar4_member_carrying_a_member()))
+    assert [m.filename for m in archive.members] == ["carrier.bin"]
+    assert archive.members[0].compress_size == 51
+
+
+@requires_binary("unrar")
+def test_unrar_skips_a_rar4_file_headers_pack_size_without_long_block(
+    tmp_path: Path,
+) -> None:
+    """The rule above is unrar's: it lists only the carrier and has no ``hidden.txt``."""
+    path = tmp_path / "carrier.rar"
+    path.write_bytes(_rar4_member_carrying_a_member())
+    listed = subprocess.run(
+        ["unrar", "lb", str(path)], capture_output=True, text=True, check=True
+    )
+    # Names are matched inside the output rather than split out of it: unrar on the
+    # Windows runner ends a bare listing line with a literal ``\x0d``.
+    assert "carrier.bin" in listed.stdout
+    assert "hidden.txt" not in listed.stdout
+    with open_archive(path) as archive:
+        assert [m.name for m in archive.members_report().members] == ["carrier.bin"]
