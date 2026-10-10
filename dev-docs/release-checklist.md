@@ -90,10 +90,14 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
       --mode full --scale realistic --warmup \
       --json-out /tmp/archivey-wall-prev.json \
       --text-out /tmp/archivey-wall-prev.md )
-  # Drift helper against the previous JSON (same relative gates as nightly)
+  # Drift helper against the previous JSON: the nightly's two ratio gates, with
+  # the 1 ms time floor off. The floor absorbs night-to-night timer noise; both
+  # runs here are on one host in one session, so a sub-millisecond listing case
+  # that drifts is a real change and must be reported.
   uv run --no-sync python -m benchmarks.harness \
     --mode full --scale realistic --warmup \
     --wall-drift-baseline /tmp/archivey-wall-prev.json \
+    --wall-drift-min-extra-ms 0 \
     --json-out /tmp/archivey-wall-current.json \
     --text-out /tmp/archivey-wall-current.md
   ```
