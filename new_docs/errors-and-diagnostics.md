@@ -78,3 +78,20 @@ unnoticed. Once a read has raised, a later read that reaches the end raises the 
 after a seek, so seeking back can't hand you the damaged member as if it were complete.
 
 [Damaged members](extracting.md#damaged-members) covers what extraction does.
+
+## Diagnostics
+
+A diagnostic is a record of something worth knowing that didn't stop the operation, such as a
+password that wasn't needed or a member name with characters that make it display as a different
+name. Each has a `code` to check for, a `message` meant for people, and details such as the member's
+name. Archivey keeps them in a few places, depending on what you called:
+
+| After | Read them from |
+|---|---|
+| Opening, and anything on the reader | `archive.diagnostics`: everything since the archive was opened |
+| `archive.open(member)` | `stream.diagnostics`: that one read |
+| `extract_all` | `report.diagnostics`: that one call |
+| A listing | `member.diagnostics`: the ones about that member |
+
+All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
+records themselves, up to 256 by default.
