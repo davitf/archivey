@@ -415,8 +415,16 @@ and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are re
 stored, System Use areas included, not only the text kept. An image right at a cap can
 therefore be refused at open. Below the caps `pycdlib` still builds the whole tree, so
 memory at open stays linear in the records the budget allows: about 0.8 KB per plain
-record measured, so roughly 1 GiB at the default `max_members`. The UDF descriptors
-`pycdlib` also walks are not counted; archivey lists no UDF namespace.
+record measured, so roughly 1 GiB per tree at the default `max_members`. The UDF tree
+`pycdlib` also walks is counted as one more tree, though archivey lists no UDF
+namespace: each File Identifier but the parent entry is a member, and each File
+Identifier and each File Entry, with the extended attributes and allocation descriptors
+it declares, is weighed against `max_metadata_bytes`, the File Entry before `pycdlib`
+parses it. The budget is per tree, and `pycdlib` keeps every tree it walked, so the
+ceiling for one image is the sum: a PVD tree and a Joliet tree at about 1 GiB each,
+plus a UDF tree, where a name weighs at least about 220 bytes and was measured at about
+2.1 KB retained, so `max_metadata_bytes` (64 MiB) stops it near 300,000 names and
+0.6 GiB. That is about 2.6 GiB for an image that carries all three.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
@@ -446,7 +454,7 @@ the source really has.
 sizes come straight from the archive. Measured without a bound: a 10 KB tar asked for
 6 GiB, and a 51 KB ISO asked for 4 GiB, both dying on a bare `MemoryError`. So both
 libraries read through archivey's source (`internal/source.py` `ArchiveSource`) or
-decompressor (`tar_reader.py` `_EofProbeStream`), and both apply
+decompressor (`tar_reader.py` `_BoundedTarFileobj`), and both apply
 `streams/streamtools/binaryio.py` `read_within_reach`: where the remaining length is a
 fact (a path's `stat`, a `BytesIO` buffer, a regular file's `fstat`) the read is clamped
 to it; otherwise it is served in bounded steps, so the peak tracks the bytes that exist.
@@ -743,16 +751,18 @@ writes itself) is exercised against mutated and coverage-guided input.
    group only.
 
 pycdlib loops forever when corrupt directory records form a back-edge, in any namespace
-`open_fp` walks. `internal/backends/iso_reader.py`
-`_install_pycdlib_directory_cycle_guard` installs a queue, confined to archivey's own
-`open_fp` call, that drops a directory extent already scheduled; valid trees never
-revisit one.
+`open_fp` walks, UDF included, where it also allocates on every pass. A UDF File
+Identifier naming an ancestor's ICB grew memory by about 65 MB a second under default
+limits. `internal/backends/iso_reader.py`
+`_install_pycdlib_directory_cycle_guard` installs a queue, confined to `pycdlib`'s
+namespace, that drops a directory extent or UDF File Entry already scheduled; valid
+trees never revisit one.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz is [after the first release](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet).
+Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
 
 ### Directory sources changed concurrently
 
@@ -860,15 +870,17 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
-  later overruns or trailing bytes found by a bounded block-chain walk. It decodes the
+  later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
+  to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
+  which rejects data that only declares a long uncompressed run. It decodes the
   whole 4 KiB prefix (256 bytes let 7 of 800 Perl modules through; 4,096 let none),
   and re-checks a hit against the whole source up to `completion_window_bytes` (64 KiB
   under `BALANCED`, off under `FAST`). Probe-only confidence is `GUESS` for the
   uncompressed or metadata-first class; a later decode failure sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. OLE compound
-  files are not probed: their signature stops the probes. Other structured look-alikes
-  (COFF objects, MP3s whose ID3 tag starts with padding) can still be claimed, and stamp
-  the same way.
+  files are not probed: their signature stops the probes. LZMA Alone refuses a header followed by a
+  zero run, so MP3s whose ID3 tag starts with padding are not claimed. Other structured
+  look-alikes (COFF objects) can still be claimed, and stamp the same way.
 
 **Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
 fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the
