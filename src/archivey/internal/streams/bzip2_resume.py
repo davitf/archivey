@@ -22,8 +22,9 @@ on a clean end, it raises :class:`ResumeReachedStreamEnd`, and the caller decode
 the start instead, which decides. Reaching the end of the input first is a truncation,
 and the stdlib's own :class:`~archivey.exceptions.TruncatedError` is the verdict.
 
-The caller is ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py``, which takes over a read
-from rapidgzip's bzip2 decoder; the points come from ``_bzip2_resume_points`` there.
+The caller is ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py``, which
+takes over a read from rapidgzip's bzip2 decoder; the points come from
+``_bzip2_resume_points`` there.
 """
 
 from __future__ import annotations

@@ -34,7 +34,8 @@ suffix or a backend class name.
 **Format and codec:**
 - [ ] A new format registers a backend plus detection, with minimal edits outside its
   own modules
-- [ ] A new codec goes behind `internal/streams/codecs/` (its own `<name>_codec.py`), not inline in a backend
+- [ ] A new codec goes behind `internal/streams/codecs/` (its own `<name>_codec.py`),
+  not inline in a backend
 - [ ] A missing optional dependency is reported through `FormatSupport` /
   `MissingComponent`, not a bare `ImportError`
 - [ ] Limits come from `ArchiveyConfig`, not module constants in a parser
