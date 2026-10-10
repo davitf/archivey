@@ -54,13 +54,13 @@
     },
     "tar_open_list": {
       "bytes_decompressed": 0,
-      "source_seek_count": 32,
+      "source_seek_count": 17,
       "unpacked_bytes": null,
       "notes": "vs tarfile.getmembers; Q1 listing band 2\u20133\u00d7"
     },
     "tar_read_all": {
       "bytes_decompressed": 131072,
-      "source_seek_count": 32,
+      "source_seek_count": 19,
       "unpacked_bytes": 131072,
       "notes": "plain uncompressed TAR vs tarfile r: (not .tar.gz)"
     },

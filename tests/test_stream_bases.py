@@ -395,7 +395,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
     import archivey.internal.backends.sevenzip_reader as sevenzip_reader
     import archivey.internal.backends.tar_parser as tar_parser
-    import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.backends.zipcrypto as zipcrypto
@@ -478,9 +477,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
         # bytes and has no seek-point table to forward to.
         codecs.lzma_codec._RefusedAloneStream,
-        # Sits under tarfile, which hands out member data through its own
-        # ExFileObject: nothing above it can ask it for a resume offset.
-        tar_reader._BoundedTarFileobj,
         # Under a solid RAR pass's SolidBlockReader, which only reads forward.
         rar_copy_sources._TeeBlock,
         # A member's stored bytes, read forward from a forward-only walk's stream

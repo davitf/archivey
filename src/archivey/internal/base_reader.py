@@ -516,7 +516,7 @@ class BaseArchiveReader(ArchiveReader):
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
         # A backend that shares one underlying handle across member streams (zipfile fp,
-        # tarfile fileobj, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
+        # the TAR walk's stream, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
         # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
         # handle to serialize (default readers, path-per-open backends).
@@ -688,8 +688,8 @@ class BaseArchiveReader(ArchiveReader):
 
         Backends supply an ``open_member`` hook (return ``None`` for non-file members)
         and an optional ``cleanup`` for pass-scoped resources (solid block, ``unrar``
-        pipe). ``close_previous=False`` is for TAR streaming, where tarfile invalidates
-        the prior ``extractfile`` handle on advance.
+        pipe). ``close_previous=False`` is for TAR streaming, where the walk invalidates
+        the prior member stream on advance.
 
         The driver **always** closes the last still-open stream in its ``finally``
         before running ``cleanup`` — never tear down a solid block / pipe under a live
@@ -766,19 +766,26 @@ class BaseArchiveReader(ArchiveReader):
             after_members=_raise_report_error,
         )
 
-    def _lazy_member_stream(self, member: ArchiveMember) -> ArchiveStream:
+    def _lazy_member_stream(
+        self,
+        member: ArchiveMember,
+        open_member: Callable[[ArchiveMember], ArchiveStream] | None = None,
+    ) -> ArchiveStream:
         """A stream over ``member``'s data that defers ``_open_member`` to the first read.
 
         Closing it before any read never opens the member at all. ``_open_member``
         already returns an ``ArchiveStream``; nesting is collapsed inside
         :meth:`ArchiveStream._ensure_open` so the public handle is a **single**
         wrapper. Deferral does not change what a failed open raises — only when.
+        ``open_member`` replaces ``_open_member``, for a pass that opens its members
+        another way; it has the same contract.
         """
+        opener = self._open_member if open_member is None else open_member
         return self._register_public_stream(
             self._wrap_member_stream(
                 None,
                 member.name,
-                open_fn=lambda: self._open_member(member),
+                open_fn=lambda: opener(member),
                 size=member.size,
                 # ``_open_member`` already applied output tracking inside its wrap.
                 track_output=False,

@@ -39,7 +39,7 @@ from array import array
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -120,7 +120,9 @@ class SparseFormat(Enum):
 # --------------------------------------------------------------------------- blocks
 
 
-@dataclass(frozen=True, slots=True)
+# Not frozen, as no caller writes to it: a frozen init costs a microsecond per header
+# on the listing's hot path.
+@dataclass(slots=True)
 class HeaderBlock:
     """One decoded 512-byte header block. Strings are the stored bytes, cut at the
     first NUL; ``name`` already has the ustar ``prefix`` joined to it."""
@@ -170,7 +172,9 @@ def _cut_nul(field: bytes) -> bytes:
     return field if end < 0 else field[:end]
 
 
-_OCTAL = re.compile(rb" *([0-7]*)[ \x00]*")
+_OCTAL_DIGITS = b"01234567"
+_HIGH_BYTES = bytes(range(0x80, 0x100))
+_ZERO_BLOCK = bytes(BLOCKSIZE)
 
 
 def parse_number(field: bytes) -> int:
@@ -194,24 +198,26 @@ def parse_number(field: bytes) -> int:
         if first == 0xFF:
             value -= 1 << (8 * (len(field) - 1))
         return value
-    match = _OCTAL.fullmatch(field)
-    if match is None:
+    # Leading spaces, octal digits, then spaces or NULs to the end of the field.
+    digits = field.lstrip(b" ").rstrip(b" \x00")
+    if digits.translate(None, _OCTAL_DIGITS):
         raise _BadNumber(field)
-    digits = match.group(1)
     return int(digits, 8) if digits else 0
 
 
-def _checksums(block: bytes) -> tuple[int, int]:
-    """The unsigned and signed sums of ``block`` with its checksum field as spaces.
+def _checksum_matches(block: bytes, stored: int) -> bool:
+    """Whether ``stored`` is the unsigned or the signed sum of ``block`` with its
+    checksum field as spaces.
 
     Old Sun and other writers summed signed bytes; GNU tar and ``tarfile`` accept
     either sum.
     """
-    unsigned = sum(block[:148]) + 8 * 0x20 + sum(block[156:])
-    high = sum(1 for b in block[:148] if b >= 0x80) + sum(
-        1 for b in block[156:] if b >= 0x80
-    )
-    return unsigned, unsigned - 256 * high
+    unsigned = sum(block) - sum(block[148:156]) + 8 * 0x20
+    if stored == unsigned:
+        return True
+    rest = block[:148] + block[156:]
+    high = len(rest) - len(rest.translate(None, _HIGH_BYTES))
+    return stored == unsigned - 256 * high
 
 
 _FIELDS = (
@@ -234,13 +240,13 @@ def parse_header_block(
     rejected block is classified by the caller, which knows whether it came first.
     """
     assert len(block) == BLOCKSIZE
-    if block.count(0) == BLOCKSIZE:
+    if block == _ZERO_BLOCK:
         return ZeroBlock(offset)
     try:
         stored_sum = parse_number(block[148:156])
     except _BadNumber:
         return RejectedBlock(offset, "the checksum field is not a number")
-    if stored_sum not in _checksums(block):
+    if not _checksum_matches(block, stored_sum):
         return RejectedBlock(offset, "bad header checksum")
     values: dict[str, int] = {}
     for field, start, end in _FIELDS:
@@ -347,6 +353,9 @@ def parse_pax_records(
     Raises :class:`CorruptionError` on a record that does not parse.
     """
     raw: list[tuple[bytes, bytes]] = []
+    # One bytes object per distinct key: a sparse 0.0 map repeats two keys once per
+    # entry.
+    keys: dict[bytes, bytes] = {}
     binary = binary_default
     pos = 0
     end = len(data)
@@ -371,9 +380,13 @@ def parse_pax_records(
             )
         if key == b"hdrcharset":
             binary = value == b"BINARY"
-        raw.append((key, value))
+        raw.append((keys.setdefault(key, key), value))
         pos = record_end
-    return [(key, PaxValue(value, binary)) for key, value in raw]
+    # Each record is replaced in place, so the list is never held twice.
+    records = cast("list[tuple[bytes, PaxValue]]", raw)
+    for i, (key, value) in enumerate(raw):
+        records[i] = (key, PaxValue(value, binary))
+    return records
 
 
 def _pax_int(records: Mapping[bytes, PaxValue], key: bytes) -> int | None:
@@ -665,11 +678,24 @@ Budget = tuple[int, int] | None
 
 
 class _Charger:
-    __slots__ = ("cap", "left", "name")
+    __slots__ = ("_name", "_raw_name", "cap", "left")
 
     def __init__(self, budget: Budget) -> None:
         self.left, self.cap = budget if budget is not None else (-1, -1)
-        self.name = "a TAR member"
+        self._name: str | None = "a TAR member"
+        self._raw_name = b""
+
+    @property
+    def name(self) -> str:
+        """The member's name, quoted for a message. Quoted on first use: most members
+        never need it."""
+        if self._name is None:
+            self._name = quoted(self._raw_name.decode("utf-8", "surrogateescape"))
+        return self._name
+
+    def name_member(self, raw_name: bytes) -> None:
+        self._raw_name = raw_name
+        self._name = None
 
     def __call__(self, nbytes: int, what: str) -> None:
         if self.cap < 0:
@@ -777,11 +803,20 @@ class TarWalker:
         """Where the next header starts (the end of the last member's data area)."""
         return self._pos
 
-    def open_data(self, entry: TarEntry) -> BinaryIO:
+    def open_data(self, entry: TarEntry) -> _ForwardSlice:
         """A forward-only stream over ``entry``'s data area (``stored_size`` bytes),
-        good until the next :meth:`next_entry`. Only for a forward-only walk."""
-        assert not self._seekable
+        read through the walk's own stream. It is good while the walk stays at the
+        data, that is until the next :meth:`next_entry`; its ``in_place()`` tells
+        whether it still is."""
         return _ForwardSlice(self, entry.data_offset, entry.stored_size)
+
+    def stream_after_end(self) -> BinaryIO:
+        """The stream, positioned right after the zero block the walk ended on, for
+        the caller's check of the rest of the end-of-archive marker and what follows
+        it."""
+        assert self.end is not None and self.end.kind is TarEndKind.ZERO_BLOCK
+        self._seek(self.end.offset + BLOCKSIZE)
+        return self._stream
 
     # The walk -----------------------------------------------------------------
 
@@ -808,9 +843,8 @@ class TarWalker:
         charge = _Charger(budget)
         start = self._pos
         offset = start
-        if self._unchecked_data_end is not None:
-            self._check_data_present(self._unchecked_data_end)
-            self._unchecked_data_end = None
+        unchecked = self._unchecked_data_end
+        self._unchecked_data_end = None
         own: dict[bytes, PaxValue] = {}
         own_records: list[tuple[bytes, PaxValue]] = []
         long_name: bytes | None = None
@@ -822,6 +856,11 @@ class TarWalker:
         while True:
             block = self._read_block(offset)
             if len(block) < BLOCKSIZE:
+                if not block and offset == unchecked:
+                    # Only an empty read leaves it open whether the last member's data
+                    # area is whole. Checked only here, so a walk over a stream that a
+                    # member read has moved on never seeks back.
+                    self._check_data_present(offset)
                 if extended_at is not None:
                     raise TruncatedError(
                         "TAR archive is truncated after the extended header at "
@@ -943,7 +982,9 @@ class TarWalker:
         # PAX wins over a GNU long name, whichever came first, as GNU tar applies it.
         # GNU.sparse.name is the real name of a PAX sparse member (whose path is a
         # GNUSparseFile.N placeholder), so it wins over path.
-        for key in (b"path", b"GNU.sparse.name"):
+        # Most archives have no PAX records at all; each lookup is skipped for them.
+        has_pax = bool(merged)
+        for key in (b"path", b"GNU.sparse.name") if has_pax else ():
             value = pax(key)
             if value is not None:
                 name, name_source, name_binary = (
@@ -951,9 +992,7 @@ class TarWalker:
                     NameSource.PAX,
                     value.binary,
                 )
-        # Quoted once here; messages escape it once more when they are built.
-        charger_name = quoted(name.decode("utf-8", "surrogateescape"))
-        charge.name = charger_name
+        charge.name_member(name)
 
         typeflag = header.typeflag
         linkname: bytes | None = None
@@ -963,7 +1002,7 @@ class TarWalker:
             linkname, linkname_source = header.linkname, NameSource.HEADER
             if long_link is not None:
                 linkname, linkname_source = long_link, NameSource.GNU_LONG
-            value = pax(b"linkpath")
+            value = pax(b"linkpath") if has_pax else None
             if value is not None:
                 linkname, linkname_source, linkname_binary = (
                     value.value,
@@ -972,16 +1011,18 @@ class TarWalker:
                 )
 
         stored_size = header.size
-        pax_size = _pax_int(merged, b"size") if pax(b"size") is not None else None
+        pax_size = (
+            _pax_int(merged, b"size") if has_pax and pax(b"size") is not None else None
+        )
         if pax_size is not None:
             if pax_size > MAX_OFFSET:
                 raise CorruptionError(
-                    f"TAR PAX size {pax_size} of {charger_name} is past any file's size"
+                    f"TAR PAX size {pax_size} of {charge.name} is past any file's size"
                 )
             stored_size = pax_size
 
         uid, gid = header.uid, header.gid
-        for key in (b"uid", b"gid"):
+        for key in (b"uid", b"gid") if has_pax else ():
             value = pax(key)
             if value is not None and value.value.isdigit():
                 # A PAX id that is not a number is ignored, keeping the header's.
@@ -997,22 +1038,22 @@ class TarWalker:
         if typeflag == SPARSE_TYPE:  # always carries data
             sparse_format = SparseFormat.OLD_GNU
             sparse, data_offset = self._old_gnu_map(
-                header, data_offset, charger_name, charge
+                header, data_offset, charge.name, charge
             )
             size = header.sparse_realsize
-        elif not carries_data(typeflag):
+        elif not carries_data(typeflag) or not has_pax:
             # Sparse records on a link, device, FIFO or directory describe no data
-            # area: the member is not sparse.
+            # area: the member is not sparse. Without PAX records it has none.
             pass
         elif pax(b"GNU.sparse.map") is not None:
             sparse_format = SparseFormat.PAX_0_1
             sparse = sparse_map_0_1(
-                merged[b"GNU.sparse.map"].value, charger_name, charge
+                merged[b"GNU.sparse.map"].value, charge.name, charge
             )
             size = _pax_int(merged, b"GNU.sparse.size") or 0
         elif pax(b"GNU.sparse.size") is not None:
             sparse_format = SparseFormat.PAX_0_0
-            sparse = sparse_map_0_0(own_records, charger_name, charge)
+            sparse = sparse_map_0_0(own_records, charge.name, charge)
             size = _pax_int(merged, b"GNU.sparse.size") or 0
         elif (major := merged.get(b"GNU.sparse.major")) is not None:
             # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the
@@ -1023,7 +1064,7 @@ class TarWalker:
             if not (major.value.isdigit() and int(major.value) >= 1):
                 version = major.value[:20].decode("ascii", "replace")
                 raise CorruptionError(
-                    f"TAR member {charger_name} has GNU sparse major version "
+                    f"TAR member {charge.name} has GNU sparse major version "
                     f"{version} and no sparse map"
                 )
             sparse_format = SparseFormat.PAX_1_0
@@ -1033,10 +1074,14 @@ class TarWalker:
             # other encodings and its entries count against this member's budget.
             self._seek(data_offset)
             sparse, used = read_sparse_map_1_0(
-                self._read, stored_size, charger_name, charge
+                self._read, stored_size, charge.name, charge
             )
             data_offset += used
             stored_size -= used
+        else:
+            # Not sparse, but GNU tar still parses a stray size record and reports
+            # one that is not a number as a malformed header.
+            _pax_int(merged, b"GNU.sparse.realsize")
 
         old_style_directory = typeflag == b"\x00" and name.endswith(b"/")
         if not carries_data(typeflag):
@@ -1056,9 +1101,9 @@ class TarWalker:
             linkname_source=linkname_source,
             linkname_binary=linkname_binary,
             uname=header.uname,
-            uname_pax=pax(b"uname"),
+            uname_pax=pax(b"uname") if has_pax else None,
             gname=header.gname,
-            gname_pax=pax(b"gname"),
+            gname_pax=pax(b"gname") if has_pax else None,
             uid=uid,
             gid=gid,
             pax=merged,
@@ -1132,11 +1177,20 @@ class _ForwardSlice(ReadOnlyIOStream):
         self._length = length
         self._done = 0
 
+    def tell(self) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._done
+
+    def in_place(self) -> bool:
+        """Whether the walk is still where this stream reads next."""
+        return self._walker._stream_pos == self._start + self._done
+
     def read(self, size: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("read from a closed TAR member stream")
         walker = self._walker
-        if walker._stream_pos != self._start + self._done:
+        if not self.in_place():
             raise ValueError(
                 "TAR member data is no longer readable: the walk has moved on"
             )

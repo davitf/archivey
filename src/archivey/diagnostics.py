@@ -229,7 +229,7 @@ class ArchiveEofContext(_JsonSafeContext):
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing (``observed_kind="absent"``), short (``"short"``), or a non-null block
       where a header or the trailer belongs (``"nonzero"``). ``"nonzero"`` is always
-      escalated to ``CorruptionError``: tarfile rejected a header and the listing is
+      escalated to ``CorruptionError``: a header did not parse and the listing is
       shortened, or the file has no member and is not shown to be a TAR archive.
     - ``"second_zero_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the first TAR trailer
       block is zero and ends the members, and the second is a full non-null block.

@@ -9,8 +9,6 @@ access modes (DR-9a), and an honest archive of the same shape must still list.
 from __future__ import annotations
 
 import copy
-import hashlib
-import inspect
 import io
 import json
 import pickle
@@ -257,32 +255,6 @@ def test_an_old_gnu_sparse_map_cut_short_is_truncation(streaming: bool) -> None:
     header = _old_gnu_sparse(0)  # flagged as extended, with no block after it
     with pytest.raises(TruncatedError):
         _names(header, None, streaming=streaming)
-
-
-# ``_TarInfo._proc_sparse`` copies stdlib's private ``TarInfo._proc_sparse`` and
-# ``_TarInfo._proc_gnusparse_10`` replaces stdlib's body; neither calls ``super()``, so
-# a change to stdlib's parse would be shadowed, not inherited. These are the SHA-256 of
-# stdlib's source for each, identical on CPython 3.11 to 3.15.
-_SHADOWED_STDLIB_SOURCES = {
-    "_proc_sparse": "832a72a64f2278c39a62afba202c3dc3419c77c3dba6865594d3d7c291a7ad7d",
-    "_proc_gnusparse_10": (
-        "82dbac00c3672a794764f4dd5f7da2b265de69c411f58ee0f4fc1c48e5eef808"
-    ),
-}
-
-
-@pytest.mark.parametrize("method", list(_SHADOWED_STDLIB_SOURCES))
-def test_the_shadowed_stdlib_sparse_parsers_are_unchanged(method: str) -> None:
-    """If this fails, this Python's ``tarfile`` changed a parse archivey overrides
-    without calling it. Compare stdlib's new body with archivey's in
-    ``internal/backends/tar_reader.py``, carry over any fix, then record the new hash
-    here alongside the old one."""
-    try:
-        source = inspect.getsource(getattr(tarfile.TarInfo, method))
-    except OSError:
-        pytest.skip("tarfile's source is not available on this Python")
-    digest = hashlib.sha256(source.replace("\r\n", "\n").encode()).hexdigest()
-    assert digest == _SHADOWED_STDLIB_SOURCES[method]
 
 
 # ---------------------------------------------------------------------------
