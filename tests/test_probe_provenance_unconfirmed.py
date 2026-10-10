@@ -86,13 +86,10 @@ def _lzma_alone_zero_run_residual() -> bytes:
 
 
 def _chain_surviving_guess_residual() -> bytes:
-    """Uncompressed-first FP that passes framing + chain (compressed second link)."""
-    from tests.streams_util import brotli_compressed_metablock_header
+    """Uncompressed-first fabrication every probe check accepts (a chain past the cap)."""
+    from tests.streams_util import brotli_link_cap_residual
 
-    framing = parse_metablock(b"/**\n")
-    assert framing.consumed is not None and framing.declared_length is not None
-    second = brotli_compressed_metablock_header(first=False)
-    return b"/**\n" + b"x" * framing.declared_length + second + b"Z" * 32
+    return brotli_link_cap_residual()
 
 
 @requires("brotli")

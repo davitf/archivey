@@ -839,7 +839,9 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
-  later overruns or trailing bytes found by a bounded block-chain walk. It decodes the
+  later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
+  to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
+  which rejects data that only declares a long uncompressed run. It decodes the
   whole 4 KiB prefix (256 bytes let 7 of 800 Perl modules through; 4,096 let none),
   and re-checks a hit against the whole source up to `completion_window_bytes` (64 KiB
   under `BALANCED`, off under `FAST`). Probe-only confidence is `GUESS` for the

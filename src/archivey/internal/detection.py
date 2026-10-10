@@ -424,6 +424,7 @@ def _probe_completes(
     data: bytes,
     length: int | None,
     read_at: Callable[[int, int], bytes | None],
+    charge_decode: Callable[[int], bool],
     workspace: PrefixWorkspace,
 ) -> bool:
     """Whether a probe that accepted the prefix still accepts the whole source.
@@ -458,7 +459,9 @@ def _probe_completes(
         return True
     whole = workspace.peek_prefix(length)
     workspace.charge_decode(input_bytes=len(whole))
-    return probe(whole, source_length=length, read_at=read_at)
+    return probe(
+        whole, source_length=length, read_at=read_at, charge_decode=charge_decode
+    )
 
 
 def _brotli_probe_confidence(
@@ -969,6 +972,19 @@ def _detect_format_body(
             def read_at(offset: int, n: int) -> bytes | None:
                 return workspace.read_at(offset, n)
 
+            def charge_decode(n: int) -> bool:
+                # Brotli's chain decode reads and decodes [0, n): it draws on the
+                # decode allowance, and reads no further than any buffered tier may.
+                if n > workspace.read_ceiling:
+                    workspace.record_skip(
+                        "content_probe_decode", TierSkipReason.BUDGET_EXHAUSTED
+                    )
+                    return False
+                if not _decode_allowance_covers(workspace, n, "content_probe_decode"):
+                    return False
+                workspace.charge_decode(input_bytes=n)
+                return True
+
             for probe_fmt, probe in registry.content_probes():
                 if not _decode_allowance_covers(workspace, len(data), "content_probe"):
                     break
@@ -978,8 +994,13 @@ def _detect_format_body(
                 # (4 KiB, or 64 KiB with the whole source in hand).
                 workspace.charge_decode(input_bytes=len(data))
                 if probe(
-                    data, source_length=length, read_at=read_at
-                ) and _probe_completes(probe, data, length, read_at, workspace):
+                    data,
+                    source_length=length,
+                    read_at=read_at,
+                    charge_decode=charge_decode,
+                ) and _probe_completes(
+                    probe, data, length, read_at, charge_decode, workspace
+                ):
                     confidence = DetectionConfidence.PROBABLE
                     if probe_fmt.stream is StreamFormat.BROTLI:
                         confidence = _brotli_probe_confidence(data, ext_match)

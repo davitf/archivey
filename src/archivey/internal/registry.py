@@ -53,7 +53,9 @@ class ContentProbe(Protocol):
     through so a probe can reject declared framing that cannot fit, or an incomplete
     decode when the whole source is visible. ``read_at`` is an optional bounded read
     facility for probes that follow a self-describing block chain past the peeked
-    prefix; absent by default.
+    prefix; absent by default. ``charge_decode(n)`` asks the caller's decode allowance
+    for ``n`` more compressed bytes, for a probe that decodes past its sample (Brotli's
+    chain decode); ``False`` means not covered, and the probe keeps its verdict.
     """
 
     def __call__(
@@ -63,6 +65,7 @@ class ContentProbe(Protocol):
         *,
         source_length: int | None = None,
         read_at: Callable[[int, int], bytes | None] | None = None,
+        charge_decode: Callable[[int], bool] | None = None,
     ) -> bool: ...
 
 

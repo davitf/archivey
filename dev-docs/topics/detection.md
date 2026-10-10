@@ -313,8 +313,8 @@ name common settings:
 `budget=` argument on `detect_format`, the same file could be detected under two budgets
 and give two answers depending on the entry point.
 
-**Decode input is one allowance for the whole call.** The content probes, their completion
-re-check and the inner-TAR probe all draw on it, and a step the rest cannot cover does not
+**Decode input is one allowance for the whole call.** The content probes, the Brotli chain
+decode, the completion re-check and the inner-TAR probe all draw on it, and a step the rest cannot cover does not
 run. A per-candidate cap cannot bound the total: with 2 MiB of back-to-back gzip headers,
 decoding each to a 64 KiB cap is hundreds of times more work than the input. Threat-model
 O11 has the measurement. No step decodes scan candidates today, so that case is not
@@ -333,10 +333,17 @@ a few bytes deep in the source through `PrefixWorkspace.read_at`, which is how t
 chain walk checks later meta-block headers. On a path or a plain seekable stream,
 `read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is
 charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS` (8 links of
-24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose rewind would re-decode, `read_at`
-grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1
+24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose rewind would
+re-decode, `read_at` grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1
 MiB) and the workspace's read ceiling (the largest of the prefix, far and scan limits).
 Past that it returns nothing and records `content_probe_read_at` as `BUDGET_EXHAUSTED`.
+
+When the walk stops at a compressed block past the window, the Brotli probe reads and
+decodes `[0, end)`, to 4 KiB past that block's header, through the same `read_at` (a seek
+read takes the part the prefix already holds from the prefix). That decode is charged to
+`max_decode_input` and runs only when `end` is within the read ceiling and 1 MiB;
+otherwise `content_probe_decode` is recorded as `BUDGET_EXHAUSTED` and the probe keeps its
+verdict.
 
 **The receipt says what was spent and what did not run.** `FormatInfo.cost_receipt` counts
 unique bytes read, far and scanned bytes, decode input and output, and passes.

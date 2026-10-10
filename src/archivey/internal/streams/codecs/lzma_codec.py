@@ -29,6 +29,7 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
     MetadataContext,
+    ProbeChargeDecode,
     ProbeReadAt,
     StreamCodec,
 )
@@ -311,6 +312,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         *,
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
     ) -> bool:
         """Recognize LZMA Alone: plausible 13-byte header that then yields decode output.
 
