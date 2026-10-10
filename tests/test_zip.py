@@ -315,6 +315,36 @@ def test_archive_close_waits_for_an_in_flight_member_read() -> None:
     assert got == [b"data"]
 
 
+def test_archive_closed_before_the_overrun_probe() -> None:
+    """A close between the last declared byte and the over-run probe keeps the read.
+
+    The read that delivers a stored member's bytes closes the archive (the lock it
+    waits on is re-entrant, so this is the threaded race above, made deterministic).
+    The verifier's probe past the declared size then meets the member's closed view,
+    which is "no more data", not a usage error: every declared byte was delivered.
+    """
+    data = b"data" * 10
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", data)
+
+    class _ClosesOnRead(io.BytesIO):
+        armed = False
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            out = super().read(size)
+            if self.armed:
+                self.armed = False
+                ar.close()
+            return out
+
+    source = _ClosesOnRead(buf.getvalue())
+    ar = open_archive(source, concurrent_members=True)
+    with ar.open("a.txt") as stream:
+        source.armed = True
+        assert stream.read() == data
+
+
 def test_unencrypted_codec_indexerror_is_not_truncated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
