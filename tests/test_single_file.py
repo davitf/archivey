@@ -902,6 +902,13 @@ _SINGLE_FILE_CODECS = {
 _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
 
 
+def _zeros_error(suffix: str) -> type[Exception]:
+    """What zeros read as ``suffix`` raise. Two zero bytes pass the zlib header check
+    and name compression method 0, which zlib refuses as an unknown method: that is
+    the refusal gzip reports as unsupported."""
+    return UnsupportedFeatureError if suffix == ".zz" else CorruptionError
+
+
 def test_open_validation_table_covers_every_single_file_codec() -> None:
     # A new standalone codec gets open-time validation without a backend change; this
     # makes it fail here until the tables below cover it too.
@@ -937,7 +944,8 @@ def test_undecodable_source_raises_at_open(
         _assert_zeros_read_as_empty_lzma(path, seekable_members=seekable_members)
         return
     # The raise must come from open_archive itself, not from a read after it.
-    with pytest.raises(CorruptionError):
+    error = _zeros_error(suffix) if contents == "zeros" else CorruptionError
+    with pytest.raises(error):
         open_archive(path, seekable_members=seekable_members)
 
 
@@ -964,7 +972,7 @@ def test_undecodable_bytesio_raises_at_open(suffix: str) -> None:
     if suffix == ".lzma":
         _assert_zeros_read_as_empty_lzma(io.BytesIO(b"\x00" * 40_000), format=fmt)
         return
-    with pytest.raises(CorruptionError):
+    with pytest.raises(_zeros_error(suffix)):
         open_archive(io.BytesIO(b"\x00" * 40_000), format=fmt)
 
 

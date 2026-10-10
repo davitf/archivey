@@ -81,7 +81,8 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
 # zlib's gzip-window errors for a member header that gzip(1) refuses as unsupported,
 # not as damaged: "unknown method 7 -- not supported" (CM other than 8 = deflate), and
 # "has flags 0x80 -- not supported" / "is encrypted -- not supported" (a reserved FLG
-# bit, which RFC 1952 says a decoder must refuse).
+# bit, which RFC 1952 says a decoder must refuse). zlib gives the first text for a zlib
+# header too (CM other than 8), see :func:`zlib_error`.
 _GZIP_UNSUPPORTED_HEADER = ("unknown compression method", "unknown header flags set")
 
 
@@ -94,6 +95,24 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
         return UnsupportedFeatureError(f"Unsupported gzip member header: {exc!r}")
     return gzip_corruption(exc)
+
+
+def zlib_error(exc: Exception, label: str) -> CorruptionError | UnsupportedFeatureError:
+    """The error for a ``zlib.error`` from a zlib (``label`` "zlib") or raw DEFLATE
+    ("deflate") stream, sorted as :func:`gzip_error` sorts it.
+
+    zlib refuses a zlib header whose method is not deflate with the gzip text
+    ("unknown compression method"), so that is :class:`UnsupportedFeatureError` too.
+    """
+    if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
+        return UnsupportedFeatureError(f"Unsupported {label} stream header: {exc!r}")
+    return gzip_corruption(exc, label)
+
+
+def truncated_message(label: str) -> str:
+    """The message of the :class:`TruncatedError` a decoder gives a ``label`` stream
+    that ends before its end marker."""
+    return f"{label} stream is truncated"
 
 
 @dataclass(order=True)

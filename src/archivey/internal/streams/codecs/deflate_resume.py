@@ -143,6 +143,40 @@ def _resume_decompressor(resume: DeflateResume) -> zlib._Decompress:
     return zlib.decompressobj(-15)
 
 
+def _inflate(
+    decomp: zlib._Decompress,
+    data: bytes,
+    max_length: int,
+    error: Callable[[zlib.error], Exception],
+) -> bytes:
+    """One inflate step: ``data`` to at most ``max_length`` output bytes, the rest kept
+    in ``unconsumed_tail``. A negative ``max_length`` is no limit, and so is 0 (zlib's
+    reading): the stream never asks for 0 bytes. A ``zlib.error`` leaves as ``error``
+    maps it."""
+    try:
+        if max_length < 0:
+            return decomp.decompress(data)
+        return decomp.decompress(data, max_length)
+    except zlib.error as exc:
+        raise error(exc) from exc
+
+
+def _inflate_rest(
+    decomp: zlib._Decompress, error: Callable[[zlib.error], Exception]
+) -> bytes:
+    """At the end of the input: the output of what ``decomp`` still holds.
+
+    The caller checks ``decomp.eof`` after: when it is false, the stream is truncated.
+    """
+    out = b""
+    if decomp.unconsumed_tail:
+        out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
+    try:
+        return out + decomp.flush()
+    except zlib.error as exc:
+        raise error(exc) from exc
+
+
 def _splice(bit: int, chunk: bytes) -> bytes:
     """The first input ``chunk`` of a decode that starts ``bit`` bits into its first
     byte: empty blocks that end ``bit`` bits into a byte, then that byte's other bits,
@@ -158,9 +192,8 @@ class DeflateResumeDecoder(BaseDecoder):
     """Inflate from a :class:`DeflateResume` point to the end of the input.
 
     ``base`` is the codec's own decoder, which every other seek point recreates.
-    ``corruption`` maps a ``zlib.error`` the way the base decoder does (``None``
-    raises it as is), and ``truncated`` is the message the base decoder gives a
-    truncation.
+    ``corruption`` maps a ``zlib.error`` the way the base decoder does, and
+    ``truncated`` is the message the base decoder gives a truncation.
     """
 
     def __init__(
@@ -168,7 +201,7 @@ class DeflateResumeDecoder(BaseDecoder):
         resume: DeflateResume,
         base: Decoder,
         *,
-        corruption: Callable[[zlib.error], Exception] | None,
+        corruption: Callable[[zlib.error], Exception],
         truncated: str,
     ) -> None:
         self._decomp = _resume_decompressor(resume)
@@ -188,31 +221,19 @@ class DeflateResumeDecoder(BaseDecoder):
         self._before_input = False
         return _splice(self._bit, chunk)
 
-    def _decompress(self, data: bytes, max_length: int) -> bytes:
-        try:
-            if max_length < 0:
-                out = self._decomp.decompress(data)
-            else:
-                out = self._decomp.decompress(data, max_length)
-        except zlib.error as exc:
-            if self._corruption is None:
-                raise
-            raise self._corruption(exc) from exc
-        if self._decomp.eof:
-            raise ResumeReachedStreamEnd
-        return out
-
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         data = self._decomp.unconsumed_tail + self._spliced(chunk)
         if not data:
             return DecodeOut(b"")
-        return DecodeOut(self._decompress(data, max_length))
+        out = _inflate(self._decomp, data, max_length, self._corruption)
+        if self._decomp.eof:
+            raise ResumeReachedStreamEnd
+        return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        out = b""
-        if self._decomp.unconsumed_tail:
-            out = self._decompress(self._decomp.unconsumed_tail, -1)
-        out += self._decomp.flush()
+        out = _inflate_rest(self._decomp, self._corruption)
+        if self._decomp.eof:
+            raise ResumeReachedStreamEnd
         self._pending_error = TruncatedError(self._truncated)
         return DecodeOut(out)
 

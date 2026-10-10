@@ -2501,6 +2501,64 @@ def test_gzip_later_member_with_unknown_method_is_unsupported() -> None:
             stream.read()
 
 
+def _zlib_with_method(method: int) -> bytes:
+    """``CONTENT`` as a zlib stream whose CMF names compression ``method``, with FCHECK
+    fixed so zlib gets past "incorrect header check" to the method."""
+    data = bytearray(zlib.compress(CONTENT))
+    data[0] = (data[0] & 0xF0) | method
+    data[1] &= 0xE0
+    data[1] |= 31 - (data[0] * 256 + data[1]) % 31
+    return bytes(data)
+
+
+def test_zlib_unknown_compression_method_is_unsupported() -> None:
+    """zlib: "unknown compression method" (CM other than 8) is the gzip refusal, and
+    the message names the stream zlib."""
+    source = io.BytesIO(_zlib_with_method(7))
+    with open_codec_stream(Codec.ZLIB, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(UnsupportedFeatureError, match="zlib"):
+            stream.read()
+
+
+@pytest.mark.parametrize(
+    ("codec", "label"), [(Codec.ZLIB, "zlib"), (Codec.DEFLATE, "deflate")]
+)
+def test_zlib_family_translates_like_gzip(codec: Codec, label: str) -> None:
+    """The zlib and raw DEFLATE translators sort a ``zlib.error`` as gzip's does."""
+    translate = resolve_codec(codec, _STDLIB_GZIP).translate
+    refused = translate(
+        zlib.error("Error -3 while decompressing data: unknown compression method")
+    )
+    assert isinstance(refused, UnsupportedFeatureError)
+    damaged = translate(
+        zlib.error("Error -3 while decompressing data: invalid block type")
+    )
+    assert is_corruption_not_truncation(damaged)
+    assert f"{label} stream" in str(damaged)
+
+
+@pytest.mark.parametrize("wbits", [-15, zlib.MAX_WBITS])
+def test_zlib_decompressor_stream_raises_typed_errors(wbits: int) -> None:
+    """``ZlibDecompressorStream`` used alone raises archivey's errors, not ``zlib.error``,
+    also after a resume at a DEFLATE block boundary."""
+    from archivey.internal.streams.codecs.deflate_decoder import (
+        ZlibDecoder,
+        ZlibDecompressorStream,
+    )
+    from archivey.internal.streams.codecs.deflate_resume import DeflateResume
+    from archivey.internal.streams.decompressor_stream import SeekPoint
+
+    bad = b"\xff" * 64 if wbits < 0 else zlib.compress(b"x")[:2] + b"\xff" * 64
+    with ZlibDecompressorStream(io.BytesIO(bad), wbits=wbits) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read()
+    resumed = ZlibDecoder(wbits).recreate(
+        SeekPoint(0, 0, DeflateResume(0, b"")), io.BytesIO()
+    )
+    with pytest.raises(CorruptionError):
+        resumed.feed(b"\xff" * 64)
+
+
 @requires("lz4")
 @pytest.mark.parametrize("version_bits", [0b00, 0b10, 0b11])
 def test_lz4_frame_version_other_than_01_is_unsupported(version_bits: int) -> None:

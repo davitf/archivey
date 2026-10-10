@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import zlib
+from functools import partial
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
@@ -11,6 +12,8 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.deflate_resume import (
     DeflateResume,
     DeflateResumeDecoder,
+    _inflate,
+    _inflate_rest,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -19,10 +22,18 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
     gzip_error,
+    truncated_message,
+    zlib_error,
 )
 
 _GZIP_MAGIC = b"\x1f\x8b"
 _GZIP_WBITS = 16 + zlib.MAX_WBITS
+
+
+def _zlib_label(wbits: int) -> str:
+    """The name of a ``wbits`` stream in messages: a positive ``wbits`` reads the zlib
+    header, a negative one raw DEFLATE."""
+    return "zlib" if wbits > 0 else "deflate"
 
 
 class ZlibDecoder(BaseDecoder):
@@ -31,12 +42,17 @@ class ZlibDecoder(BaseDecoder):
     def __init__(self, wbits: int = -15) -> None:
         self._wbits = wbits
         self._decomp = zlib.decompressobj(wbits)
+        self._label = _zlib_label(wbits)
+        self._error = partial(zlib_error, label=self._label)
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del inner
         if isinstance(point.state, DeflateResume):
             return DeflateResumeDecoder(
-                point.state, self, corruption=None, truncated="File is truncated"
+                point.state,
+                self,
+                corruption=self._error,
+                truncated=truncated_message(self._label),
             )
         return ZlibDecoder(self._wbits)
 
@@ -50,22 +66,15 @@ class ZlibDecoder(BaseDecoder):
         data = self._decomp.unconsumed_tail + chunk
         if not data:
             return DecodeOut(b"")
-        if max_length < 0:
-            out = self._decomp.decompress(data)
-        else:
-            out = self._decomp.decompress(data, max_length)
+        out = _inflate(self._decomp, data, max_length, self._error)
         if self._decomp.eof:
             self._past_end(self._decomp.unused_data)
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
-        if self._decomp.unconsumed_tail:
-            out = self._decomp.decompress(self._decomp.unconsumed_tail)
-            leftover = out + self._decomp.flush()
-        else:
-            leftover = self._decomp.flush()
+        leftover = _inflate_rest(self._decomp, self._error)
         if not self._decomp.eof:
-            self._pending_error = TruncatedError("File is truncated")
+            self._pending_error = TruncatedError(truncated_message(self._label))
         return DecodeOut(leftover)
 
     @property
@@ -108,7 +117,7 @@ class GzipDecoder(BaseDecoder):
                 point.state,
                 self,
                 corruption=gzip_error,
-                truncated="gzip stream is truncated",
+                truncated=truncated_message("gzip"),
             )
         return GzipDecoder()
 
@@ -182,18 +191,11 @@ class GzipDecoder(BaseDecoder):
             limit = max_length - produced_total if max_length >= 0 else -1
             if limit == 0:
                 break
-            try:
-                if limit < 0:
-                    produced = self._decomp.decompress(data)
-                else:
-                    produced = self._decomp.decompress(data, limit)
-            except zlib.error as e:
-                # Corrupt deflate body (bad CRC/data check inside a member). Raise
-                # CorruptionError here so a raw GzipDecompressorStream is consistent
-                # with flush() and does not leak zlib.error (GzipCodec.translate maps
-                # it too, but the decoder must stand on its own).
-                # A failed CRC-32/ISIZE check is a _StreamChecksumError.
-                raise gzip_error(e) from e
+            # Corrupt deflate body (bad CRC/data check inside a member) raises
+            # CorruptionError here so a raw GzipDecompressorStream does not leak
+            # zlib.error (GzipCodec.translate maps it too, but the decoder must stand
+            # on its own). A failed CRC-32/ISIZE check is a _StreamChecksumError.
+            produced = _inflate(self._decomp, data, limit, gzip_error)
             if produced:
                 output.append(produced)
                 produced_total += len(produced)
@@ -263,14 +265,9 @@ class GzipDecoder(BaseDecoder):
             return DecodeOut(bytes(out))
 
         # Mid-member compressed EOF.
-        try:
-            if self._decomp.unconsumed_tail:
-                out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
-            out.extend(self._decomp.flush())
-        except zlib.error as e:
-            raise gzip_error(e) from e
+        out.extend(_inflate_rest(self._decomp, gzip_error))
         if not self._decomp.eof:
-            self._pending_error = TruncatedError("gzip stream is truncated")
+            self._pending_error = TruncatedError(truncated_message("gzip"))
         else:
             # Completed final member exactly at EOF.
             trailing = self._decomp.unused_data
@@ -316,7 +313,7 @@ def ZlibDecompressorStream(
         path,
         make_decoder=lambda _p, _i: ZlibDecoder(wbits),
         collector=collector,
-        codec_name="zlib" if wbits > 0 else "deflate",
+        codec_name=_zlib_label(wbits),
         report_trailing_data=report_trailing_data,
     )
 
