@@ -616,12 +616,12 @@ used to decode with `replace`, so `a\xffq.txt` and `a\xfeq.txt` both listed as
 `a` (it stops at the first bad byte), and each still reads its own bytes, because the
 mask is built from the stored bytes (§2.3; `tests/test_rar_undecodable_names.py`). A
 RAR 1.5-4 name with only the 8-bit bytes records no code page, so it is decoded like an
-unflagged ZIP name: `encoding=` when the caller passed one, otherwise strict UTF-8, then
-cp437 for a member whose host is MS-DOS, OS/2 or Win32 and windows-1252 for any other
-host (§7 has the evidence). The five bytes windows-1252 leaves undefined decode with
-`surrogateescape` too, so `b\x81.txt` and `b\x8d.txt` stay two names. A Unicode-flagged
-name with no UTF-16 field declares UTF-8, so there `encoding=` applies only when the
-bytes are not valid UTF-8. The 8-bit field is never tried as UTF-16LE: almost any
+unflagged ZIP name: strict UTF-8 first, with or without the Unicode flag, then
+`encoding=` when the caller passed one, otherwise cp437 for a member whose host is
+MS-DOS, OS/2 or Win32 and windows-1252 for any other host (§7 has the evidence). So
+`encoding=` applies only to bytes that are not valid UTF-8, as in every format (design
+rules, ruled 2026-10-07). The five bytes windows-1252 leaves undefined decode with
+`surrogateescape` too, so `b\x81.txt` and `b\x8d.txt` stay two names. The 8-bit field is never tried as UTF-16LE: almost any
 even-length byte string decodes that way, so `caf\xe9.txt` used to list as `慣琮瑸`. The
 UTF-16 field decodes with `surrogatepass`, as 7z names do (7z.md §2): a lone surrogate
 stays in `name`, and extraction writes it by the cross-format rule in `safe-extraction`
@@ -1582,7 +1582,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | An 8-bit RAR3 name is masked with its stored bytes; `unrar` runs under a UTF-8 locale, and without one a non-ASCII name is refused before spawning | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_member_is_readable`, `::test_non_ascii_member_reads_under_the_c_locale`, `tests/test_rar_unrar_argv.py::test_8bit_name_mask_is_the_stored_bytes`, `::test_unrar_child_runs_under_a_utf8_locale`, `::test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning` |
 | Each read returns its own member's bytes when the mask selects others: duplicate names (solid and not), a RAR5 name cut at a bad byte, a name `unrar` reads as empty; an earlier unmodellable name refuses later reads | `tests/test_audit_rar_iso_dir.py::test_invalid_utf8_name_never_reads_a_siblings_bytes`, `::test_duplicate_named_compressed_rar5_members_read_their_own_bytes`, `tests/test_rar_unrar_names.py::test_every_rar5_member_reads_its_own_bytes_or_is_refused`, `::test_duplicate_names_read_by_position`, `::test_invalid_utf8_name_reads_through_the_prefix_unrar_sees`, `::test_name_unrar_reads_as_empty_is_refused`, `::test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads` |
 | The mask selection archivey predicts is the one `unrar` 7.00 makes (Linux) | `tests/test_rar_unrar_names.py::test_rar5_mask_selection_is_the_one_unrar_makes`, `::test_rar3_8bit_mask_selection_is_the_one_unrar_makes`, `tests/test_rar_reader.py::test_unrar_mask_selection_follows_unrar_path_rules`, `::test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name` |
-| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`, `tests/test_rar_unrar_names.py::test_8bit_rar3_name_lists_in_its_writers_code_page`, `::test_encoding_argument_decodes_an_8bit_rar3_name`, `::test_8bit_rar3_name_decoded_with_encoding_still_reads`, `::test_unicode_flagged_rar3_name_without_a_utf16_field`, `::test_encoding_argument_leaves_rar5_names_alone`, `::test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning` |
+| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`, `tests/test_rar_unrar_names.py::test_8bit_rar3_name_lists_in_its_writers_code_page`, `::test_encoding_argument_decodes_an_8bit_rar3_name`, `::test_valid_utf8_rar3_name_wins_over_the_encoding_argument`, `::test_8bit_rar3_name_decoded_with_encoding_still_reads`, `::test_unicode_flagged_rar3_name_without_a_utf16_field`, `::test_encoding_argument_leaves_rar5_names_alone`, `::test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning` |
 | An explicit volume list in separate directories reads as given | `tests/test_audit_rar_iso_dir.py::test_explicit_rar_volume_paths_in_separate_directories_open` |
 | An invalid DOS date or out-of-range FILETIME is `None` plus `MEMBER_TIMESTAMP_INVALID`; a crafted `;n` suffix is not a bare `ValueError` | `tests/test_audit_cross_format.py::test_invalid_timestamp_is_none_and_reported`, `tests/test_audit_rar_iso_dir.py::test_rar3_version_suffix_is_parsed_without_a_bare_value_error` |
 | Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc | `tests/test_rar_reader.py::test_unrar_owned_stream_maps_exit_11_to_encryption_error` and the nine tests after it |

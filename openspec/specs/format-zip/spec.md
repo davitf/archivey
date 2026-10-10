@@ -420,14 +420,17 @@ Rejected-candidate streams SHALL be closed before trying the next candidate.
 ### Requirement: Decode unflagged ZIP member names by UTF-8-validity sniff
 
 The ZIP backend SHALL decode a member name whose general-purpose bit 11 (UTF-8/EFS flag) is
-**clear** by first attempting UTF-8, and only falling back to a configurable legacy encoding
-(default cp437, per APPNOTE) when the bytes are not valid UTF-8. This sniff SHALL apply only
-in the absence of an authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8,
-and an explicit caller-supplied `encoding=` SHALL be used verbatim and SHALL disable the
-sniff. When the sniff selects a non-default encoding — i.e. UTF-8 for an unflagged name — the
-backend SHALL emit a `diagnostics` warning identifying the member and the chosen encoding, so
-the decision is observable and escalatable via `DiagnosticPolicy`. Decoding SHALL NOT raise a
-bare `UnicodeDecodeError`; the fallback encoding (cp437 by default) decodes every byte.
+**clear** by first attempting UTF-8, and only when the bytes are not valid UTF-8 falling
+back to the caller's `encoding=` when one was passed, else to a configurable legacy encoding
+(default cp437, per APPNOTE). The caller's `encoding=` and the configured fallback SHALL
+decode with `surrogateescape`; a codec that refuses that handler (`idna`) gives way to the
+next one, and cp437 decodes every byte. This sniff SHALL apply only in the absence of an
+authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8. When the sniff
+selects an encoding archivey chose over the cp437 default — UTF-8, or a configured fallback
+other than cp437 — the backend SHALL emit a `diagnostics` warning identifying the member
+and the chosen encoding, so the decision is observable and escalatable via
+`DiagnosticPolicy`. A name decoded with the caller's `encoding=` emits no such warning.
+Decoding SHALL NOT raise a bare `UnicodeDecodeError`.
 
 An Info-ZIP Unicode Path extra field (`0x7075`) in the central directory outranks both the
 sniff and an explicit `encoding=` for an unflagged name: when the field is version 1, its
@@ -444,21 +447,21 @@ when a field with a matching CRC holds invalid UTF-8, and the open fails with
 #### Scenario: UTF-8 bytes without the flag
 
 - **WHEN** an archive stores a member name as valid UTF-8 bytes (e.g. `Español.txt`,
-  `emoji_😀.txt`) with bit 11 **clear** and the caller passes no `encoding=`
+  `emoji_😀.txt`) with bit 11 **clear**, with or without an `encoding=` from the caller
 - **THEN** the member name is decoded as UTF-8 (`Español.txt`, `emoji_😀.txt`), not cp437
-  mojibake, and a diagnostic records that UTF-8 was inferred for an unflagged name
+  or `encoding=` mojibake, and a diagnostic records that UTF-8 was inferred for an
+  unflagged name
 
 #### Scenario: Legacy bytes without the flag
 
 - **WHEN** an unflagged member name is not valid UTF-8
-- **THEN** it is decoded with the configured legacy fallback (default cp437), and no bare
-  `UnicodeDecodeError` escapes
+- **THEN** it is decoded with the caller's `encoding=` when one was passed, else with the
+  configured legacy fallback (default cp437), and no bare `UnicodeDecodeError` escapes
 
 #### Scenario: Authoritative signal disables the sniff
 
-- **WHEN** bit 11 is set, **or** the caller passed an explicit `encoding=`
-- **THEN** the name is decoded as UTF-8 (flag) or with the caller's `encoding` respectively,
-  with no sniff and no override diagnostic
+- **WHEN** bit 11 is set
+- **THEN** the name is decoded as UTF-8, with no sniff and no override diagnostic
 
 #### Scenario: Unicode Path extra field
 

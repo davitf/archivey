@@ -586,7 +586,8 @@ def parse_rar_archive(
     fresh cache.
 
     ``name_encoding`` is the caller's ``encoding=``, for RAR 1.5-4 names stored
-    as 8-bit bytes (``_decode_rar3_8bit_name``). RAR5 names are UTF-8.
+    as 8-bit bytes that are not valid UTF-8 (``_decode_rar3_8bit_name``). RAR5
+    names are UTF-8.
     """
     return _parse_rar_volume(
         source,
@@ -1350,36 +1351,29 @@ def _decode_comment_text(raw: bytes) -> str:
         return text.decode("windows-1252", "replace")
 
 
-def _decode_rar3_8bit_name(
-    raw: bytes, *, host_os: int, encoding: str | None, declared_unicode: bool
-) -> str:
+def _decode_rar3_8bit_name(raw: bytes, *, host_os: int, encoding: str | None) -> str:
     """Decode a RAR 1.5-4 name stored as 8-bit bytes, whose code page is not recorded.
 
-    ``encoding=`` decides, as it does for a TAR name or a ZIP name without the UTF-8
-    flag, except when the header's Unicode flag declares the bytes UTF-8
-    (``declared_unicode``): then it is used only for bytes that are not valid UTF-8.
-    Without it, strict UTF-8 is tried first, because ``rar`` on Unix stores the
-    locale's bytes, which today are UTF-8. Other bytes are in the writer's code page.
-    WinRAR on DOS, OS/2 and Windows writes the OEM code page, which is how Windows
-    ``unrar`` reads the name back (``ArcCharToWide`` with ``ACTW_OEM``), so cp437 is
-    used for those hosts. For a Unix or other host it is the locale's single-byte
-    charset, and windows-1252 is used. ``dev-docs/formats/rar.md`` §7 has the
-    evidence. UTF-16LE is never tried: almost any even-length byte string decodes as
-    UTF-16LE, and a RAR3 UTF-16 name is stored in its own encoded field.
+    Strict UTF-8 is tried first, with or without the header's Unicode flag, because
+    ``rar`` on Unix stores the locale's bytes, which today are UTF-8. The caller's
+    ``encoding=`` applies only to bytes that are not valid UTF-8, as it does for a
+    TAR name or a ZIP name without the UTF-8 flag. Without it, such bytes are in the
+    writer's code page. WinRAR on DOS, OS/2 and Windows writes the OEM code page,
+    which is how Windows ``unrar`` reads the name back (``ArcCharToWide`` with
+    ``ACTW_OEM``), so cp437 is used for those hosts. For a Unix or other host it is
+    the locale's single-byte charset, and windows-1252 is used.
+    ``dev-docs/formats/rar.md`` §7 has the evidence. UTF-16LE is never tried: almost
+    any even-length byte string decodes as UTF-16LE, and a RAR3 UTF-16 name is stored
+    in its own encoded field.
 
     A codec ``open_archive`` accepted can still fail on these bytes (``idna``, which
     has no ``surrogateescape``); the name then decodes as it would without one.
     """
-    if encoding is not None and not declared_unicode:
-        try:
-            return raw.decode(encoding, errors="surrogateescape")
-        except UnicodeError:
-            pass
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         pass
-    if encoding is not None and declared_unicode:
+    if encoding is not None:
         try:
             return raw.decode(encoding, errors="surrogateescape")
         except UnicodeError:
@@ -2203,22 +2197,14 @@ def _parse_rar3_file_header(
         if not decoded:
             # ``unrar`` falls back to the 8-bit field on an empty decode too.
             filename = _decode_rar3_8bit_name(
-                orig_filename,
-                host_os=host_os,
-                encoding=name_encoding,
-                declared_unicode=False,
+                orig_filename, host_os=host_os, encoding=name_encoding
             )
         else:
             unicode_name = decoded
             filename = _fix_rar3_astral_truncation(decoded, orig_filename)
     else:
         orig_filename = name
-        filename = _decode_rar3_8bit_name(
-            name,
-            host_os=host_os,
-            encoding=name_encoding,
-            declared_unicode=bool(flags & _RAR3_FILE_UNICODE),
-        )
+        filename = _decode_rar3_8bit_name(name, host_os=host_os, encoding=name_encoding)
 
     filename = filename.replace("\\", "/").rstrip("/")
     is_directory = (flags & _RAR3_FILE_DIRECTORY) == _RAR3_FILE_DIRECTORY

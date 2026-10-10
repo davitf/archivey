@@ -314,6 +314,15 @@ def open_archive(
     archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
     without manual slicing).
 
+    ``encoding`` names the codec for member names whose encoding the archive does not
+    declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO and RAR 1.5-4). A name
+    whose bytes are valid UTF-8 is decoded as UTF-8 in every format, with or without
+    ``encoding``, and ``encoding`` replaces only the format's fallback (cp437 or
+    ``ArchiveyConfig.zip_unflagged_fallback_encoding`` for ZIP, the host's code page for
+    RAR 1.5-4, surrogate escapes for TAR and ISO). ``member.raw_name`` keeps the stored
+    bytes. 7z, directory and single-file sources decode names another way, ignore it,
+    and record ``ENCODING_ARGUMENT_UNUSED``.
+
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
     ``unrar`` resolve siblings). A length-1 sequence is treated as a single source.

@@ -365,12 +365,15 @@ listing accounts for.
 When the caller does not pass `encoding=`, the TAR backend SHALL decode ustar and GNU
 long-name fields, and the other header strings `tarfile` decodes with the archive codec
 (`uname`, `gname`, `linkname`), as UTF-8 with `errors="surrogateescape"`. The result MUST
-NOT depend on the process locale or `sys.getfilesystemencoding()`. A caller-passed
-`encoding=` SHALL replace UTF-8 for those fields, with the same error handler. A PAX
-record SHALL be decoded strictly as UTF-8 first; when that fails, or when the member's
-own header block says `hdrcharset=BINARY`, it SHALL be decoded with the same archive
-codec and error handler, so `encoding=` (or the UTF-8 default) applies to a PAX record
-only when its bytes are not UTF-8.
+NOT depend on the process locale or `sys.getfilesystemencoding()`. These fields do not
+declare an encoding, so a field whose bytes are valid UTF-8 SHALL be decoded as UTF-8
+whatever `encoding=` says, and a caller-passed `encoding=` SHALL replace the
+surrogate-escaped UTF-8 decode, with the same error handler, only for a field whose bytes
+are not valid UTF-8. A PAX record SHALL be decoded strictly as UTF-8 first; when that
+fails it SHALL be decoded with the same archive codec and error handler, so `encoding=`
+(or the UTF-8 default) applies to a PAX record only when its bytes are not UTF-8. A PAX
+record under the member's own `hdrcharset=BINARY` declares no encoding and is decoded
+as a ustar field is.
 
 #### Scenario: TAR default name decoding
 
@@ -378,6 +381,8 @@ only when its bytes are not UTF-8.
 | --- | --- |
 | ustar or GNU long name stored as UTF-8 `café.txt`, no `encoding=`, filesystem encoding Latin-1 or ASCII | `name == "café.txt"`; `raw_name` is the UTF-8 bytes |
 | ustar name stored as Latin-1 `caf\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9.txt"`; `raw_name == b"caf\xe9.txt"` |
-| ustar name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "cafÃ©.txt"`; `raw_name` is the UTF-8 bytes |
+| ustar or GNU long name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"`; `raw_name` is the UTF-8 bytes |
+| ustar name stored as Latin-1 `caf\xe9.txt`, `encoding="latin-1"` | `name == "café.txt"`; `raw_name == b"caf\xe9.txt"` |
+| ustar `linkname`, `uname` or `gname` stored as UTF-8, `encoding="latin-1"` | Decoded as UTF-8 |
 | PAX `path` record holding the non-UTF-8 bytes `caf\xe9\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
 | The same PAX record, `encoding="latin-1"` | `name == "caféé.txt"` |

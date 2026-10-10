@@ -842,11 +842,11 @@ class TarReader(BaseArchiveReader):
             # same archive would list differently under a non-UTF-8 locale. tarfile
             # keeps its errors="surrogateescape" default, so undecodable bytes survive
             # as U+DC80..U+DCFF. ustar/GNU names (and uname/gname/linkname) always use
-            # this codec. A PAX record is decoded strictly as UTF-8 first and falls
-            # back to this codec when that fails (or for its own hdrcharset=BINARY), so
-            # it reaches PAX bytes that are not UTF-8 too. There is no config-level
-            # default as ZIP has: ZIP's fallback codec serves a name it sniffed as not
-            # UTF-8, and TAR sniffs nothing, so encoding= per call is the override.
+            # this codec, and _to_member then takes the UTF-8 reading of any such
+            # field whose bytes are valid UTF-8 (_utf8_first), so encoding= reaches
+            # only bytes that are not. A PAX record is decoded strictly as UTF-8 first
+            # and falls back to this codec when that fails (or for its own
+            # hdrcharset=BINARY), so it reaches PAX bytes that are not UTF-8 too.
             encoding=self._encoding if self._encoding is not None else "utf-8",
         )
 
@@ -1468,8 +1468,9 @@ class TarReader(BaseArchiveReader):
         """Type one member. ``index`` is its position in the walk, the id registration
         stamps, so the diagnostics raised here can name it before it has one."""
         member_type = _member_type(info)
+        pax = self._tar.pax_headers
         # TAR is a POSIX format: a backslash is a legal filename character, not a separator.
-        presented = info.name
+        presented = self._utf8_first(info, "path", info.name, pax)
         name = normalize_member_name(
             presented, member_type, backslash_is_separator=False
         )
@@ -1478,7 +1479,7 @@ class TarReader(BaseArchiveReader):
         )
 
         link_target = (
-            info.linkname
+            self._utf8_first(info, "linkpath", info.linkname, pax)
             if member_type in (MemberType.SYMLINK, MemberType.HARDLINK)
             else None
         )
@@ -1552,9 +1553,9 @@ class TarReader(BaseArchiveReader):
             elif issue is not None:
                 timestamp_issues.append(issue)
         if info.uname:
-            member.uname = info.uname
+            member.uname = self._utf8_first(info, "uname", info.uname, pax)
         if info.gname:
-            member.gname = info.gname
+            member.gname = self._utf8_first(info, "gname", info.gname, pax)
         if link_target is not None:
             member.link_target = link_target
         # issparse() covers all four GNU encodings: the old ``S`` typeflag and PAX
@@ -1572,6 +1573,31 @@ class TarReader(BaseArchiveReader):
         for issue in timestamp_issues:
             self._emit_timestamp_invalid(member, index, issue)
         return member
+
+    def _utf8_first(
+        self,
+        info: tarfile.TarInfo,
+        key: str,
+        text: str,
+        global_headers: Mapping[str, str],
+    ) -> str:
+        """``text`` as UTF-8 when tarfile decoded it with the archive codec from bytes
+        that are valid UTF-8, else ``text`` unchanged.
+
+        A ustar or GNU field does not declare its encoding, so the caller's
+        ``encoding=`` applies only to bytes that are not valid UTF-8, as in every
+        format. A field tarfile took from a PAX record (``key``) was already decoded
+        UTF-8 first. ASCII text, and every field under the UTF-8 default, is
+        unchanged. A codec that cannot give the bytes back keeps tarfile's text.
+        """
+        if self._encoding is None or text.isascii():
+            return text
+        if _pax_field_is_utf8(info, key, text, global_headers):
+            return text
+        try:
+            return text.encode(self._tar.encoding, self._tar.errors).decode("utf-8")
+        except UnicodeError:
+            return text
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # The callee takes the handle guard inside this boundary.
@@ -1685,10 +1711,7 @@ def _recover_raw_name(
     listing.
     """
     try:
-        from_pax = info.pax_headers.get("path") == info.name
-        charset = info.pax_headers.get("hdrcharset")
-        binary = charset == "BINARY" and global_headers.get("hdrcharset") != charset
-        if from_pax and not binary:
+        if _pax_field_is_utf8(info, "path", info.name, global_headers):
             try:
                 return info.name.encode("utf-8")
             except UnicodeEncodeError:
@@ -1696,6 +1719,20 @@ def _recover_raw_name(
         return info.name.encode(encoding, errors)
     except UnicodeEncodeError:
         return None
+
+
+def _pax_field_is_utf8(
+    info: tarfile.TarInfo, key: str, text: str, global_headers: Mapping[str, str]
+) -> bool:
+    """Whether tarfile took ``text`` from the PAX record ``key`` and read it as UTF-8.
+
+    Inferred as :func:`_recover_raw_name` describes: the text equals the record, and
+    the member's own block does not say ``hdrcharset=BINARY``.
+    """
+    if info.pax_headers.get(key) != text:
+        return False
+    charset = info.pax_headers.get("hdrcharset")
+    return not (charset == "BINARY" and global_headers.get("hdrcharset") != charset)
 
 
 class TarReadBackend(ReadBackend):

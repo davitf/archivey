@@ -204,11 +204,16 @@ for `.7z.NNN`. Both live on `ArchiveInfo`, not on `ArchiveMember` — `member.ex
 more reachable of the two and stays empty here. They describe how the archive arrived,
 not its ZIP structure, which is single-disk.
 
-**Name decoding.** A set bit 11 is honoured as UTF-8. An explicit `encoding=` is passed to
-stdlib as `metadata_encoding` and used verbatim, which also disables the sniff below. An
-unflagged name is decoded as UTF-8 when the bytes are valid UTF-8, and otherwise with
-`ArchiveyConfig.zip_unflagged_fallback_encoding` (default `cp437`, which decodes every
-byte, so no `UnicodeDecodeError` escapes).
+**Name decoding.** A set bit 11 is honoured as UTF-8. An unflagged name is decoded as
+UTF-8 when the bytes are valid UTF-8, and otherwise with the caller's `encoding=` when one
+was passed, else with `ArchiveyConfig.zip_unflagged_fallback_encoding` (default `cp437`,
+which decodes every byte, so no `UnicodeDecodeError` escapes). Both decode with
+`surrogateescape`. Stdlib `zipfile` gets no `metadata_encoding`: it decodes an unflagged
+name as cp437, which maps every byte both ways, and the reader takes the bytes back from
+that and decodes them itself. This departs from stdlib's `metadata_encoding` and from
+`unzip -O`, which apply the codec to every unflagged name: a valid UTF-8 name wins over
+`encoding=` in every format (design rules, ruled 2026-10-07), so a legacy `encoding=` fixes
+the legacy names in a mixed archive without garbling its UTF-8 ones.
 
 Choosing UTF-8 for an unflagged name emits `MEMBER_NAME_ENCODING_INFERRED`; a pure-ASCII
 name does not, because ASCII decodes identically under both and nothing was overridden.

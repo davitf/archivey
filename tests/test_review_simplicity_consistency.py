@@ -356,10 +356,36 @@ def _names_with_and_without_encoding(path: Path) -> tuple[list[str], list[str]]:
     return base, alt
 
 
+def _legacy_name_archive(key: str, tmp_path: Path) -> Path:
+    """A one-member archive whose name ``café.txt`` is stored in a legacy code page,
+    so its bytes are not valid UTF-8 and ``encoding=`` decides how it decodes."""
+    import tarfile
+    import zipfile
+
+    path = tmp_path / f"legacy.{key}"
+    if key == "zip":
+        # zipfile writes a non-ASCII name as flagged UTF-8, so an ASCII name is
+        # written and its bytes swapped for cp437 ones (0x82 = é), unflagged.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("cafX.txt", b"x")
+        path.write_bytes(buf.getvalue().replace(b"cafX.txt", b"caf\x82.txt"))
+    else:
+        with tarfile.open(
+            path, "w", format=tarfile.USTAR_FORMAT, encoding="latin-1"
+        ) as tf:
+            info = tarfile.TarInfo("café.txt")
+            info.size = 1
+            tf.addfile(info, io.BytesIO(b"x"))
+    return path
+
+
 @pytest.mark.parametrize("key", ["zip", "tar"])
 def test_encoding_argument_is_applied(key: str, tmp_path: Path) -> None:
-    """F2 (guardrail): the backends that consume ``encoding=`` still consume it."""
-    base, alt = _names_with_and_without_encoding(_archive("basic", key, tmp_path))
+    """F2 (guardrail): the backends that consume ``encoding=`` still consume it, for a
+    name whose bytes are not valid UTF-8 (a valid UTF-8 name, ASCII included, is
+    UTF-8 whatever ``encoding=`` says)."""
+    base, alt = _names_with_and_without_encoding(_legacy_name_archive(key, tmp_path))
     assert base != alt
 
 

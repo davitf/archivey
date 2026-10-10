@@ -1935,12 +1935,85 @@ def test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale() -> Non
         assert member.raw_name == b"caf\xe9.txt"
 
 
-def test_caller_encoding_overrides_the_utf8_default() -> None:
-    data = _one_member_tar("café.txt", "utf-8", tarfile.USTAR_FORMAT)
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        pytest.param(tarfile.USTAR_FORMAT, id="ustar"),
+        pytest.param(tarfile.GNU_FORMAT, id="gnu-longname"),
+    ],
+)
+def test_utf8_header_name_wins_over_the_caller_encoding(fmt: int) -> None:
+    """``encoding=`` applies only to bytes that are not valid UTF-8, as in every
+    other format: the UTF-8 bytes ``c3 a9`` stay ``é``, not ``Ã©``."""
+    name = "café-" + "x" * (120 if fmt == tarfile.GNU_FORMAT else 0) + ".txt"
+    data = _one_member_tar(name, "utf-8", fmt)
     with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = ar.members()
-        assert member.name == "cafÃ©.txt"
-        assert member.raw_name == b"caf\xc3\xa9.txt"
+        assert member.name == name
+        assert member.raw_name == name.encode("utf-8")
+
+
+def test_utf8_link_target_and_owner_win_over_the_caller_encoding() -> None:
+    target = "цель/café.txt"
+    data = _one_member_tar(
+        "link", "utf-8", tarfile.USTAR_FORMAT, linkname=target, owner="josé"
+    )
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.link_target == target
+        assert member.uname == "josé"
+        assert member.gname == "josé"
+
+
+def test_caller_encoding_decodes_header_fields_that_are_not_utf8() -> None:
+    data = _one_member_tar(
+        "café.txt", "latin-1", tarfile.USTAR_FORMAT, linkname="à.txt", owner="josé"
+    )
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "café.txt"
+        assert member.raw_name == b"caf\xe9.txt"
+        assert member.link_target == "à.txt"
+        assert member.uname == "josé"
+
+
+def test_mixed_header_names_each_decode_by_their_own_bytes() -> None:
+    """One archive with a UTF-8 name and a Latin-1 name: ``encoding="latin-1"``
+    fixes the Latin-1 one and leaves the UTF-8 one alone."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for raw in ("é-utf8.txt".encode(), "é-latin1.txt".encode("latin-1")):
+            # tarfile writes str names; surrogateescape stores the exact bytes.
+            info = tarfile.TarInfo(raw.decode("utf-8", "surrogateescape"))
+            info.size = 0
+            t.addfile(info)
+    with open_archive(io.BytesIO(buf.getvalue()), encoding="latin-1") as ar:
+        assert [m.name for m in ar.members()] == ["é-utf8.txt", "é-latin1.txt"]
+
+
+def test_binary_pax_path_that_is_valid_utf8_wins_over_the_caller_encoding() -> None:
+    """``hdrcharset=BINARY`` declares no encoding, so the record decodes as a ustar
+    name does: valid UTF-8 is UTF-8."""
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf,
+        mode="w",
+        format=tarfile.PAX_FORMAT,
+        encoding="utf-8",
+        errors="surrogateescape",
+    ) as t:
+        # A name UTF-8 cannot encode makes tarfile write hdrcharset=BINARY.
+        info = tarfile.TarInfo("caf\udce9.txt")
+        info.size = 0
+        t.addfile(info)
+    data = buf.getvalue()
+    assert b"hdrcharset=BINARY" in data
+    # Same length, so the record's length prefix stays right: "caé" in UTF-8.
+    data = data.replace(b"caf\xe9.txt", b"ca\xc3\xa9.txt")
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "caé.txt"
+        assert member.raw_name == b"ca\xc3\xa9.txt"
 
 
 def _pax_tar_with_non_utf8_path(raw: bytes) -> bytes:
