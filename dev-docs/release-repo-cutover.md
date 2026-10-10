@@ -37,7 +37,8 @@ branch protection, and sets up automatic URL/redirect handling.
 The only asset unique to the old `archivey` is its **31 stars** (no issues/PRs/watchers
 to strand). We accept losing those — they are rebuildable via the public-release
 announcement, whereas the v2 PR history is not reconstructable. `archivey-dev` has no
-external footprint; its 76 PRs are the intentionally-private messy AI history.
+external footprint; its 76 PRs are the messy AI history, deliberately kept out of the
+release.
 
 ## Cutover steps
 
