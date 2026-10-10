@@ -336,7 +336,8 @@ class ListingLimits:
     member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``
     parses against ``max_members`` too, one per UDF name, although ``members()`` does
     not list UDF: an image whose UDF tree has more names than its ISO 9660 tree can be
-    refused for the UDF tree.
+    refused for the UDF tree. ISO counts members per tree but weighs bytes as one sum
+    for the whole image, every tree together.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than the whole ``max_metadata_bytes``, before reading it.
     """

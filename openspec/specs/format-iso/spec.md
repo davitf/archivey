@@ -252,3 +252,22 @@ end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 or a `Z
 | A block compressed from one byte more than the block size | `CorruptionError` naming the block |
 | Image cut inside the header, the pointer table, or a block | `TruncatedError`; the member before it reads |
 | zisofs2 member, under `ZF` or `Z2`, or a `ZF` entry too short to parse | Lists with `UNKNOWN`; read raises `UnsupportedFeatureError`; the member beside it reads |
+
+### Requirement: Weigh every parsed directory tree against one image-wide metadata budget
+
+`pycdlib` parses every directory tree of an image inside `open_archive` (the PVD tree,
+a Joliet tree, and a UDF tree when present) and keeps all of them, so the ISO backend
+SHALL check `ListingLimits` while `pycdlib` parses. The bytes it weighs (directory
+records as stored, Rock Ridge continuation areas, path tables, UDF File Identifiers and
+File Entries) SHALL be one sum for the whole image, held to `max_metadata_bytes`; a
+tree under the cap SHALL NOT make an image over it open. `max_members` SHALL be counted
+per tree, because a Joliet tree repeats every file of the PVD tree. Crossing either cap
+SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
+
+#### Scenario: image-wide byte budget
+
+| Case | Expected |
+| --- | --- |
+| PVD, Joliet and UDF trees each under `max_metadata_bytes`, together over it | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
+| The same image with `max_metadata_bytes` above the sum | Opens and lists |
+| A Joliet tree repeating the PVD tree's files, `max_members` equal to the listed count | Opens: members count per tree |

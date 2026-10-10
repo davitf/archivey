@@ -553,6 +553,46 @@ def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
         assert [m.name for m in reader.members()] == ["F.TXT"]
 
 
+def _three_tree_image(count: int) -> bytes:
+    """An image holding ``count`` files in each of its PVD, Joliet and UDF trees."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, joliet=3, udf="2.60")
+    for index in range(count):
+        iso.add_fp(
+            io.BytesIO(b"x"),
+            1,
+            f"/F{index}.TXT;1",
+            joliet_path=f"/f{index}.txt",
+            udf_path=f"/f{index}.txt",
+        )
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def test_max_metadata_bytes_is_one_budget_for_the_whole_image() -> None:
+    """``max_metadata_bytes`` bounds the bytes of every tree pycdlib parses, together.
+
+    pycdlib keeps every tree it parses, so a budget per tree let one image hold the
+    budget once for each of its PVD, Joliet and UDF trees. With ten files, this image
+    weighs about 540 bytes in its PVD tree, 580 in its Joliet tree and 2,540 in its
+    UDF tree: each tree is under 3,000 bytes, and the three together are about 3,670.
+    ``max_members`` stays per tree
+    (``test_listing_limits_count_udf_entries_as_pycdlib_parses_them``).
+    """
+    image = _three_tree_image(10)
+    under_total = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=3000))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=3000"):
+        open_archive(io.BytesIO(image), config=under_total)
+
+    fits = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=4000))
+    with open_archive(io.BytesIO(image), config=fits) as reader:
+        assert len(reader.members()) == 10
+
+
 @pytest.mark.parametrize(
     ("tag", "fixed"),
     [pytest.param(261, 176, id="file-entry"), pytest.param(266, 216, id="extended")],
