@@ -186,7 +186,18 @@ class BrotliDecoder(BaseDecoder):
                     raise error
                 remaining -= len(chunk)
                 self._discard(decomp, chunk)
-            region = inner.read(failed_end - self._settled)
+            # Read the whole region even when the source returns short reads (a probe
+            # sample serves 4 KiB per read). A short region would end the replay early
+            # and report the original error for a stream that only had bytes after it.
+            parts: list[bytes] = []
+            wanted = failed_end - self._settled
+            while wanted:
+                chunk = inner.read(wanted)
+                if not chunk:
+                    break
+                parts.append(chunk)
+                wanted -= len(chunk)
+            region = b"".join(parts)
         finally:
             inner.seek(position)
         self._decomp = decomp
