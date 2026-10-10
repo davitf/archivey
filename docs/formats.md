@@ -94,6 +94,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   7-Zip writes with ``-mm=LZMA:lc=8`` and liblzma cannot decode, and a PPMd member with
   restore method 2. Under ZipCrypto both read as the password-or-damage
   ``EncryptionError`` instead, because those settings are encrypted.
+- Bytes inside a member's compressed data after its compressed stream ends (a zero
+  byte, junk, or a second stream) raise `CorruptionError` when the member is read, for
+  every compression method, as `7z t` reports an error for them. Under ZipCrypto they
+  read as the password-or-damage ``EncryptionError`` instead, caused by that
+  ``CorruptionError``, because the bytes are encrypted. Two cases still read:
+  a PPMd member whose stream has no end mark (7-Zip writes one), and, under rapidgzip,
+  a second DEFLATE stream that the member's declared size and CRC both cover.
 - An end record that disagrees with the central directory is a warning, not an error:
   an entry count that does not match, an archive comment length past the end of the
   file, or a directory entry whose name, extra field or comment runs past the
@@ -601,10 +608,18 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `UnsupportedFeatureError`. Detection reads a sample of the stream with no cap, so
   a frame declaring 2 GiB has that much address space reserved while `open_archive`
   detects it, whatever the cap.
+- A `.zst` frame carries a content checksum only when its writer adds one, as a modern
+  `.lz4` frame does. Archivey checks it when it is there; a frame without one can decode
+  damaged data to wrong bytes with no error.
 - The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) reads as `.lz4`. It has
   no checksum, so damaged data can decode to wrong bytes with no error, as a modern
   frame written without one can. It has no end mark either, so a file cut exactly
   between two of its blocks reads short with no error.
+- Brotli (`.br`), unix-compress (`.Z`) and LZMA Alone (`.lzma`) have no checksum
+  either, so damaged data can decode to wrong bytes with no error. Archivey does not
+  report this with a diagnostic on each file, because there is no check to skip. A
+  `.Z` file has no end mark, so a cut can also read short with no error (see the `.Z`
+  bullet above).
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 

@@ -315,11 +315,13 @@ def test_unicode_path_extra_field_is_read_from_the_central_directory() -> None:
 # ---------------------------------------------------------------------------------------
 # Z7: the rapidgzip accelerator on a raw DEFLATE member with bytes after its stream.
 #
-# zlib ends the member at the stream's final block; rapidgzip reads on. Where its output
-# would pass the declared size, or it fails on the bytes after the stream, it hands over to
-# zlib, so the verdicts agree. A second stream whose output matches the declared size and
-# CRC reads under rapidgzip: the compressed-streams spec lets the declared checks decide
-# on such stream-boundary malformations.
+# zlib ends the member at the stream's final block; rapidgzip reads on. Any byte after
+# the final block inside the member's compressed size is CorruptionError (DR-3; `7z t`:
+# "There are some data after the end of the payload data", an error in ZIP). Where
+# rapidgzip's output would pass the declared size, or it fails on the bytes after the
+# stream, it hands over to zlib, which refuses them, so the verdicts agree. A second
+# stream whose output matches the declared size and CRC still reads under rapidgzip: a
+# known difference, since its end check decodes only from its newest resume point.
 # ---------------------------------------------------------------------------------------
 
 _DEFLATE_PAYLOAD = bytes(range(256)) * 400
@@ -362,9 +364,9 @@ def _is_corruption(outcome: tuple[str, object]) -> bool:
 @pytest.mark.parametrize("case", ["two_streams_declared_first", "trailing_junk"])
 def test_rapidgzip_on_and_off_agree_on_a_zip_deflate_member(case: str) -> None:
     # Output past the declared size, or a data error, hands the member to zlib from the
-    # position already delivered: both read the first stream's payload.
+    # position already delivered, which refuses the bytes after the first stream.
     blob = _deflate_member_variants()[case]
-    expected = ("ok", hashlib.sha256(_DEFLATE_PAYLOAD).hexdigest())
+    expected = ("raise", CorruptionError)
     for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
         assert _outcome(blob, config=ArchiveyConfig(use_rapidgzip=mode)) == expected
 
@@ -372,9 +374,9 @@ def test_rapidgzip_on_and_off_agree_on_a_zip_deflate_member(case: str) -> None:
 @requires("rapidgzip")
 def test_rapidgzip_reads_a_second_deflate_stream_the_declared_crc_covers() -> None:
     blob = _deflate_member_variants()["two_streams_declared_both"]
-    # zlib stops after the first stream, short of the declared size.
+    # zlib stops after the first stream and refuses the second.
     off = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF))
-    assert off == ("raise", archivey.exceptions.TruncatedError)
+    assert off == ("raise", CorruptionError)
     # rapidgzip reads both, and they are exactly the bytes the size and CRC declare.
     on = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
     assert on == ("ok", hashlib.sha256(_DEFLATE_PAYLOAD * 2).hexdigest())
@@ -396,7 +398,7 @@ def test_seekable_members_reads_a_large_deflate_member_the_crc_covers() -> None:
     payload = os.urandom(9 * 2**20)
     stream = _raw_deflate(payload, level=1)
     blob = _build_zip([_Entry(b"a", stream + stream, method=8, plain=payload * 2)])
-    assert _outcome(blob) == ("raise", archivey.exceptions.TruncatedError)  # zlib
+    assert _outcome(blob) == ("raise", CorruptionError)  # zlib: input after the end
     assert _outcome(blob, seekable_members=True) == (
         "ok",
         hashlib.sha256(payload * 2).hexdigest(),
@@ -407,8 +409,9 @@ def test_seekable_members_reads_a_large_deflate_member_the_crc_covers() -> None:
 # Z8: a bzip2 member and the bytes after its bzip2 stream.
 #
 # The standard-library path ends the member at its first end-of-stream marker, as every
-# other ZIP codec and other readers do. The accelerator reads a second stream as content;
-# the declared size and CRC then decide, as for DEFLATE above.
+# other ZIP codec and other readers do, and any byte after it inside the member is
+# CorruptionError (DR-3), as for DEFLATE above. The accelerator reads a second stream
+# as content; its end check refuses it the same way, or the declared size does.
 # ---------------------------------------------------------------------------------------
 
 _BZ_PAYLOAD = b"hello world " * 20
@@ -428,18 +431,18 @@ def test_bzip2_member_ends_at_its_first_stream() -> None:
     # CRC (of both streams) fails: `unzip -t` "bad CRC", `7z t` "CRC Failed".
     with zipfile.ZipFile(io.BytesIO(blob)) as zf, pytest.raises(zipfile.BadZipFile):
         zf.read("a")
-    # Here the member ends 240 bytes short of its declared size, which the verifier
-    # reports as TruncatedError (a CorruptionError), as for two DEFLATE streams (Z7).
-    assert _outcome(blob) == ("raise", archivey.exceptions.TruncatedError)
+    # Here the second stream is input after the first one's end: CorruptionError.
+    assert _outcome(blob) == ("raise", CorruptionError)
 
 
-def test_bzip2_member_with_a_second_stream_after_its_end_reads() -> None:
+def test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt() -> None:
     blob = _two_bzip2_streams(_BZ_PAYLOAD)
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         assert zf.read("a") == _BZ_PAYLOAD
-    # Bytes after a codec's end inside a ZIP member end it silently for DEFLATE,
-    # LZMA and PPMd here (internal/config.py StreamConfig.report_trailing_data).
-    assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
+    # zipfile ignores it; `7z t` reports "There are some data after the end of the
+    # payload data" as an error, and so does archivey (DR-3), for every ZIP method
+    # (internal/config.py StreamConfig.refuse_input_after_end).
+    assert _outcome(blob) == ("raise", CorruptionError)
 
 
 _BZ_ACCELERATED = [
@@ -453,14 +456,12 @@ _BZ_ACCELERATED = [
 
 @requires("rapidgzip")
 @pytest.mark.parametrize("open_kwargs", _BZ_ACCELERATED)
-def test_bzip2_accelerator_reads_a_second_stream_the_declared_crc_covers(
+def test_bzip2_accelerator_refuses_a_second_stream_the_declared_crc_covers(
     open_kwargs: dict[str, object],
 ) -> None:
+    # The accelerator reads both streams; its end check finds input after the first.
     blob = _two_bzip2_streams(_BZ_PAYLOAD * 2)
-    assert _outcome(blob, **open_kwargs) == (
-        "ok",
-        hashlib.sha256(_BZ_PAYLOAD * 2).hexdigest(),
-    )
+    assert _outcome(blob, **open_kwargs) == ("raise", CorruptionError)
 
 
 @requires("rapidgzip")
@@ -491,8 +492,8 @@ def test_bzip2_second_stream_that_breaks_the_crc_raises(
 # A member is one raw LZMA stream. It ended where liblzma's file reader ended it, which
 # starts a second raw stream on the bytes after an end marker and reads it as content.
 # `7z t` reports "Data Error" for any byte after the marker, whatever the declared size
-# covers, so that is CorruptionError here (bzip2 and DEFLATE, where 7-Zip only warns,
-# end the member silently; Z8 above).
+# covers, so that is CorruptionError here (LzmaDataAfterEndError), as it is for every
+# other ZIP method (Z7, Z8 above).
 # ---------------------------------------------------------------------------------------
 
 _LZMA_EOS_FLAG = 0x0002  # general-purpose bit 1: the stream carries an end marker
