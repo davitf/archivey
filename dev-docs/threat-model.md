@@ -639,23 +639,35 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Mechanism.** `internal/extraction.py` `BombTracker` enforces `ExtractionLimits`: total
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
-live ratio for sources of unknown size, and an entry cap (1,048,576). The global guards
+live ratio for sources of unknown size, and an entry cap (1,048,576). A non-seekable
+caller stream's `size` attribute counts as unknown size: nothing can check it, and an
+inflated claim used as the static denominator would also switch off the live ratio
+(`BaseArchiveReader._trusted_source_size`). The global guards
 raise `_AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
 
 **Residual.** The tracker is per archive and not nesting-aware
-([accepted](#nested-archive-amplification)). `read()` and `open()` have no output bound
+([accepted](#nested-archive-amplification)). A nested archive's static denominator is
+the member length its container declares, and nothing checks that declaration first: an
+inflated one switches off both archive-wide guards for the inner archive, and the
+container refuses the short member (`TruncatedError`) only after the payload is decoded,
+so `max_extracted_bytes` is the bound that holds there. `read()` and `open()` have no output bound
 ([accepted](#reads-have-no-output-bound)). A hard link the filesystem refuses at its
 link-count limit is written as a copy, so a declared link count drives real writes: one
 copy of the source per limit's worth of links (1024 names on NTFS, 65000 on ext4).
 `BombTracker.count_copy` counts those copies toward `max_extracted_bytes` and the
 archive-wide `max_ratio` (maintainer ruling, 2026-10-07), so a small archive declaring
-many links to one member trips the ratio. A cross-device copy counts toward
+many links to one member trips the ratio when the archive has a denominator. A plain tar
+read from a non-seekable stream has none (no trusted size, and the live counter is
+installed only for a compressed container), so there only `max_extracted_bytes` applies. A cross-device copy counts toward
 `max_extracted_bytes` only: it depends on the destination, not the archive.
 
 **Tests.** `tests/test_extraction.py::test_per_member_ratio`,
 `::test_archive_wide_ratio`, `::test_archive_wide_ratio_live_denominator`,
 `::test_zip_bomb_per_member_ratio`, `::test_streaming_targz_bomb_caught_by_live_ratio`,
 `::test_streaming_live_ratio_halts_under_continue`,
+`::test_pipe_size_claim_does_not_switch_off_live_ratio`,
+`::test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator`,
+`::test_forged_member_declaration_is_refused_only_after_the_decode`,
 `::test_link_limit_copies_count_toward_the_archive_wide_ratio`;
 `tests/test_cross_os_extraction.py::test_link_limit_copies_trip_the_archive_wide_ratio`.
 

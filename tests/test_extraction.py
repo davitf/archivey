@@ -11,6 +11,7 @@ import errno
 import gzip
 import io
 import os
+import struct
 import tarfile
 import time
 import unicodedata
@@ -41,6 +42,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
+    TruncatedError,
 )
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.extraction import (
@@ -62,6 +64,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
+from tests.streams_util import SizedNonSeekable
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -2441,6 +2444,93 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                     max_extracted_bytes=100 * 2**20,
                 ),
             )
+
+
+@pytest.mark.parametrize("mode", ["gz", "tar.gz"])
+def test_pipe_size_claim_does_not_switch_off_live_ratio(
+    tmp_path: Path, mode: str
+) -> None:
+    # Regression: a non-seekable caller stream's ``size`` attribute became the static
+    # archive-wide denominator, and because a static denominator existed the live byte
+    # counter was not installed. An inflated claim (1 GB for a ~1 KiB gzip) therefore
+    # switched off both archive-wide ratio guards. Nothing can check a pipe's claim, so
+    # the claim is not a denominator: the live counter stays.
+    payload = b"\x00" * (1024 * 1024)
+    if mode == "gz":
+        raw = gzip.compress(payload)
+    else:
+        raw = _tar_bytes([("file", "z.bin", payload)], mode="w:gz")
+    limits = ExtractionLimits(
+        max_ratio=10.0,
+        ratio_activation_threshold=1024,
+        max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+    )
+    with open_archive(SizedNonSeekable(raw, size=10**9), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is not None
+        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
+            r.extract_all(tmp_path / "out", limits=limits)
+
+
+def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
+    # A member stream is non-seekable without ``seekable_members``, but its ``size`` is
+    # the length its container declares, not a caller's claim: it stays the static
+    # denominator, and no live counter is installed.
+    inner = gzip.compress(b"\x00" * 4096)
+    outer = tmp_path / "outer.tar"
+    with tarfile.open(outer, "w") as t:
+        info = tarfile.TarInfo("inner.gz")
+        info.size = len(inner)
+        t.addfile(info, io.BytesIO(inner))
+    with open_archive(outer) as outer_ar:
+        with outer_ar.open("inner.gz") as member_stream:
+            assert not member_stream.seekable()
+            with open_archive(member_stream, streaming=True) as inner_ar:
+                assert inner_ar.compressed_source_size == len(inner)
+                assert inner_ar.compressed_bytes_consumed is None
+
+
+def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:
+    # Pins the documented gap: a plain tar from a non-seekable caller stream has no
+    # trusted size, and only a compressed container installs the live counter, so
+    # neither archive-wide denominator exists and only max_extracted_bytes applies.
+    raw = _tar_bytes([("file", "a.bin", b"x" * 4096)])
+    with open_archive(SizedNonSeekable(raw, size=len(raw)), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is None
+
+
+def test_forged_member_declaration_is_refused_only_after_the_decode(
+    tmp_path: Path,
+) -> None:
+    # Pins the documented gap: a nested archive's static denominator is the length
+    # its container declares, unchecked until the member ends. An outer ZIP declaring
+    # 1 GB for a ~4 KiB inner.gz makes the ratio unreachable, so the inner payload
+    # decodes to its end; the container's end-of-member check then refuses it, and
+    # the failed extraction leaves no file behind.
+    inner = gzip.compress(b"\x00" * (4 * 2**20))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("inner.gz", inner)
+    raw = bytearray(buf.getvalue())
+    forged = 10**9
+    struct.pack_into("<I", raw, 22, forged)  # local header: uncompressed size
+    cd = raw.index(b"PK\x01\x02")
+    struct.pack_into("<I", raw, cd + 24, forged)  # central directory: same field
+    outer = tmp_path / "outer.zip"
+    outer.write_bytes(bytes(raw))
+    limits = ExtractionLimits(
+        max_ratio=10.0, ratio_activation_threshold=1024, max_extracted_bytes=100 * 2**20
+    )
+    out = tmp_path / "out"
+    with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
+        assert not member_stream.seekable()
+        with open_archive(member_stream, streaming=True) as inner_ar:
+            assert inner_ar.compressed_source_size == forged
+            assert inner_ar.compressed_bytes_consumed is None
+            with pytest.raises(TruncatedError):
+                inner_ar.extract_all(out, limits=limits)
+    assert not out.exists() or not any(out.iterdir())
 
 
 # ---------------------------------------------------------------------------
