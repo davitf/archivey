@@ -28,17 +28,17 @@ from archivey.exceptions import TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams.codecs import Codec, open_codec_stream
-from archivey.internal.streams.decompress import (
+from archivey.internal.streams.codecs.deflate_decoder import (
     GzipDecompressorStream,
     ZlibDecompressorStream,
 )
-from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
-from archivey.internal.streams.deflate_resume import (
+from archivey.internal.streams.codecs.deflate_resume import (
     WINDOW_SIZE,
     DeflateResume,
     DeflateResumeDecoder,
 )
-from archivey.internal.streams.rapidgzip_child import RapidgzipChildStream
+from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
+from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
 from tests.conftest import requires
 
 pytestmark = requires("rapidgzip")

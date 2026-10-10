@@ -70,7 +70,7 @@ of it is read, so a legacy `.tar.lz4` whose first block compresses to more than 
 `.tar.lz4`. A frame's blocks decode as they arrive, so no frame file is affected.
 
 For zstd, detection also walks a leading run of skippable frames
-(`streams/zstd_framing.py`): each declares its size, so the next frame's offset is
+(`streams/codecs/zstd_framing.py`): each declares its size, so the next frame's offset is
 arithmetic, with nothing decoded. A regular frame must follow. A source of only skippable
 frames has no payload and is not claimed, since claiming it would open a fabricated empty
 member. The walk stays inside the peeked prefix: a skippable frame larger than that ends it
@@ -88,7 +88,7 @@ not read, because it describes one frame and nothing says the file has one (§7)
 ### 2.3 Member data
 
 Both codecs run in archivey's engine as `FramedDecompressorStream`
-(`internal/streams/decompress.py`): one library decompressor per frame, and a new one
+(`internal/streams/codecs/framed_decoder.py`): one library decompressor per frame, and a new one
 only when the next bytes are a frame or skippable-frame magic. Anything else after a
 frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
 ([`single-file.md`](single-file.md) §2.3). The file-level readers the libraries offer
@@ -107,7 +107,7 @@ and block checksums when present. A frame that ends early is `TruncatedError`; a
 
 **Legacy LZ4.** `lz4.frame` does not read the legacy stream, so a stream that starts with
 its magic decodes block by block with `lz4.block` instead
-(`internal/streams/lz4_legacy.py`); the first four bytes of each stream pick the decoder, so
+(`internal/streams/codecs/lz4_legacy.py`); the first four bytes of each stream pick the decoder, so
 legacy and modern streams can follow each other in one file, as the `lz4` command allows.
 Each block was compressed on its own from at most 8 MiB, so it decodes into an 8 MiB
 buffer and nothing carries between blocks. The stream has no end mark: it ends where the
@@ -261,6 +261,6 @@ formats. `zstd`, `pzstd` and `lz4` install from the distribution.
   [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §zstd, §lz4
 - Code: `internal/streams/codecs/zstd_codec.py` (`ZstdCodec`), `lz4_codec.py` (`Lz4Codec`) ·
-  `internal/streams/zstd_framing.py` · `internal/streams/lz4_legacy.py`
+  `internal/streams/codecs/zstd_framing.py` · `internal/streams/codecs/lz4_legacy.py`
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (zstd method) ·
   [`7z.md`](7z.md) (LZ4 coder) · [`tar.md`](tar.md)

@@ -2324,7 +2324,7 @@ def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
     """
     import lzma
 
-    from archivey.internal.streams.decompress import FilterDecoder
+    from archivey.internal.streams.codecs.lzma_filter_decoder import FilterDecoder
 
     payload = bytes(range(256)) * 8
     small = FilterDecoder(lzma_filter={"id": lzma.FILTER_X86}, unpack_size=len(payload))

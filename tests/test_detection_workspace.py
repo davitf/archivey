@@ -425,7 +425,7 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
     # is the Brotli walk plus one trailer block.
     from archivey.detection_cost import DetectionCostReceipt
-    from archivey.internal.streams.brotli_framing import (
+    from archivey.internal.streams.codecs.brotli_framing import (
         CHAIN_HEADER_READ,
         CHAIN_MAX_LINKS,
     )

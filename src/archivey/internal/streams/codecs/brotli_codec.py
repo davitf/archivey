@@ -10,10 +10,6 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.archive_stream import RewindWarning
-from archivey.internal.streams.brotli_framing import (
-    chain_proves_invalid,
-    first_block_overruns_source,
-)
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -22,7 +18,11 @@ from archivey.internal.streams.codecs.base import (
     ProbeReadAt,
     StreamCodec,
 )
-from archivey.internal.streams.decompress import BrotliDecompressorStream
+from archivey.internal.streams.codecs.brotli_decoder import BrotliDecompressorStream
+from archivey.internal.streams.codecs.brotli_framing import (
+    chain_proves_invalid,
+    first_block_overruns_source,
+)
 from archivey.types import (
     MissingComponent,
     StreamFormat,

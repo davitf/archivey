@@ -12,7 +12,9 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
+from archivey.internal.streams.codecs.unix_compress_decoder import (
+    UnixCompressDecompressorStream,
+)
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,
