@@ -36,7 +36,9 @@ class DetectionConfidence(Enum):
     """An exact magic-byte match at the expected offset."""
 
     PROBABLE = "probable"
-    """A structural or content probe matched: the inner-TAR probe, or the SFX scan."""
+    """A structural or content probe matched: the inner-TAR probe, the SFX scan, or a
+    content probe hit (LZMA-alone, zlib, or Brotli whose first meta-block is
+    compressed or whose extension agrees)."""
 
     GUESS = "guess"
     """No confirmation strong enough to rely on: an extension-only guess, or a content
