@@ -1373,7 +1373,6 @@ class _PyCdlibStream(DelegatingStream):
 class IsoReader(BaseArchiveReader):
     """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain)."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = (
         True  # the directory tree is an in-header index (O(1) listing)
     )

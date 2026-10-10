@@ -33,6 +33,7 @@ from tests.detection_cost_util import within_budget
 from tests.streams_util import (
     NonSeekableBytesIO,
     brotli_compressed_metablock_header,
+    brotli_link_cap_residual,
     truncated_brotli,
 )
 
@@ -45,19 +46,12 @@ def _compressed_second_header() -> bytes:
 def _guess_residual_surviving_chain() -> bytes:
     """Uncompressed-first fabrication that passes framing + chain, fails full decode.
 
-    The historical ``/**\\n`` + padding residual is rejected by the chain walk once the
-    trailing bytes are examined. Replace the second link with a compressed header so the
-    walk stops, matching the OLE/COFF residual shape while keeping Alone out of the way.
+    The chain runs past the walk's link cap, so the walk cannot disprove it and the
+    probe never decodes past its window. A chain that stops at a compressed block is
+    decoded up to that block, which rejects the ``/**\n`` + padding + compressed-link
+    shape this used to be.
     """
-    framing = parse_metablock(b"/**\n")
-    assert framing.declares_length
-    assert framing.consumed is not None and framing.declared_length is not None
-    return (
-        b"/**\n"
-        + b"x" * framing.declared_length
-        + _compressed_second_header()
-        + b"Z" * 32
-    )
+    return brotli_link_cap_residual()
 
 
 @requires("brotli")
@@ -266,11 +260,12 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
     def read_at(offset: int, length: int) -> bytes | None:
         return ole[offset : offset + length]
 
+    # The decode past the window rejects it; detection does not run the probes on an
+    # OLE signature in any case.
     assert (
         BrotliCodec().content_probe(prefix, source_length=len(ole), read_at=read_at)
-        is True
+        is False
     )
-    # The probe accepts it, but detection does not run the probes on an OLE signature.
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(ole))
 
@@ -286,8 +281,8 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
         + b"\x00" * 8
     )
     assert first_block_overruns_source(coff, len(coff)) is False
-    coff_info = detect_format(io.BytesIO(coff))
-    assert coff_info.format in (ArchiveFormat.LZMA_ALONE, ArchiveFormat.BROTLI)
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(coff))
 
 
 @requires("brotli")
