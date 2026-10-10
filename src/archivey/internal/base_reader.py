@@ -1,4 +1,4 @@
-"""BaseArchiveReader ABC and ReadBackend/WriteBackend ABCs."""
+"""BaseArchiveReader ABC and the ReadBackend ABC."""
 
 from __future__ import annotations
 
@@ -57,6 +57,7 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_callable,
     check_extraction_limits,
+    check_path_not_empty,
     describe_value,
 )
 from archivey.internal.diagnostics_collector import (
@@ -91,7 +92,11 @@ from archivey.internal.selection import (
 )
 from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.archive_stream import (
+    ArchiveStream,
+    RewindWarning,
+    as_closed_source_error,
+)
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -109,7 +114,7 @@ from archivey.internal.windows_reparse import (
     parse_reparse_data,
     reparse_payload_length,
 )
-from archivey.reader import ArchiveReader, MemberSelector
+from archivey.reader import ArchiveReader
 from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -189,17 +194,20 @@ The extension code is also the empty-listing code, which
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     """Stamp is_current for duplicate names (last same-name entry wins).
 
-    Members whose ``name`` appears only once are left unchanged so format-specific
-    non-current rows (RAR ``path;N`` file-version history) keep the flag the backend
-    already set.
+    A member the backend already marked not current (a RAR ``path;N`` file-version
+    history row, an older plain ISO 9660 version) keeps that flag and takes no part
+    in the count: a superseded version stays superseded even when a crafted archive
+    repeats it. Members whose ``name`` appears only once among the rest are left
+    unchanged.
     """
     counts: dict[str, int] = {}
     for member in members:
-        counts[member.name] = counts.get(member.name, 0) + 1
+        if member.is_current:
+            counts[member.name] = counts.get(member.name, 0) + 1
 
     seen: set[str] = set()
     for member in reversed(members):
-        if counts[member.name] < 2:
+        if counts.get(member.name, 0) < 2 or not member.is_current:
             continue
         if member.name in seen:
             member.is_current = False
@@ -353,26 +361,6 @@ class ReadBackend(ABC):
         ...
 
 
-class WriteBackend(ABC):
-    """Stateless factory for creating ArchiveWriter instances."""
-
-    FORMATS: tuple[ArchiveFormat, ...]
-    OPTIONAL_DEPENDENCY: str | None = None
-
-    @abstractmethod
-    def open_write(
-        self,
-        dest: Path | BinaryIO,
-        compression: object | None,
-        password: bytes | None,
-        encoding: str | None,
-    ) -> ArchiveWriter: ...
-
-
-class ArchiveWriter(ABC):
-    """Abstract base for archive writers. Defined here as a placeholder."""
-
-
 class BaseArchiveReader(ArchiveReader):
     """Internal helper base for all format readers — the backend contract lives here.
 
@@ -394,20 +382,15 @@ class BaseArchiveReader(ArchiveReader):
     - ``_close_archive()``      — release resources (called exactly once, via
       ``close()``).
 
-    **MUST set** when they differ from the defaults (both default ``True``):
+    **MUST set** when it differs from the default (``True``):
 
     - ``_MEMBER_LIST_UPFRONT``    — does the backend have a true upfront index (central
       directory, 7z header, filesystem listing) that yields the full member list
       *without scanning*? This is the predicate behind :meth:`members_report_if_available`
       (it returns a report when ``True``, else ``None``). It does **not** gate the
       access-mode-enforced methods — those key off the ``streaming`` flag alone.
-    - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
-      When ``False``, ``open``/``read`` raise ``UnsupportedFeatureError``; sequential
-      access via ``stream_members`` still works. (The open-time fail-fast for a
-      non-seekable source under ``streaming=False`` — which also consults this — lands
-      with format detection in Phase 3.)
 
-    Access-mode enforcement (independent of the flags above): a ``streaming=True`` reader
+    Access-mode enforcement (independent of the flag above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
     ``ArchiveyUsageError`` — uniformly, not per-backend. Only a single pass of
     ``__iter__``/``stream_members``/``extract_all`` is allowed; ``scan_members()`` may
@@ -432,9 +415,6 @@ class BaseArchiveReader(ArchiveReader):
     an extension point.
     """
 
-    # Can an arbitrary member be opened out of order? When False, open()/read() raise
-    # UnsupportedFeatureError and callers must use stream_members() instead.
-    _SUPPORTS_RANDOM_ACCESS: bool = True
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
@@ -562,15 +542,22 @@ class BaseArchiveReader(ArchiveReader):
 
         The single backend-side error boundary (the out-of-stream counterpart of
         ``ArchiveStream._fail``): an already-typed ``ArchiveyError`` is stamped and
-        re-raised as-is; a raw exception the translator recognizes is stamped and raised
-        chained to the original; an unrecognized exception propagates unchanged (the
-        catch-all-free rule in CONTRIBUTING). ``stamp_encryption=False`` skips member
-        stamping for ``EncryptionError`` (ZIP's password errors carry their own message
-        and must not be reattributed).
+        re-raised as-is; a closed source (``as_closed_source_error``) raises a usage
+        error naming ``member_name``, as it does inside a member stream; a
+        raw exception the translator recognizes is stamped and raised chained to the
+        original; an unrecognized exception propagates unchanged (the catch-all-free
+        rule in CONTRIBUTING). ``stamp_encryption=False`` skips member stamping for
+        ``EncryptionError`` (ZIP's password errors carry their own message and must
+        not be reattributed).
         """
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
+        closed = as_closed_source_error(exc, member_name)
+        if closed is not None:
+            # Checked before the backend's translator, which may map every ValueError
+            # to corruption (ZIP's bad-offset rule, ISO's pycdlib rule).
+            raise closed from exc
         translated = self._translate_exception(exc)
         if translated is None:
             raise exc
@@ -971,6 +958,7 @@ class BaseArchiveReader(ArchiveReader):
                 verify_member=verify_member,
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
+                member_name=member_name,
             )
 
         assert inner is not None
@@ -994,6 +982,7 @@ class BaseArchiveReader(ArchiveReader):
             verify_member=verify_member,
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
+            member_name=member_name,
         )
 
     @abstractmethod
@@ -2595,6 +2584,7 @@ class BaseArchiveReader(ArchiveReader):
         # a __contains__, the `in` operator falls back to iterating __iter__, which
         # would silently consume a streaming reader's single forward pass (and compare
         # members by value). Strings are rejected: name lookup is get().
+        self._state.require_open("__contains__")
         if isinstance(member, ArchiveMember):
             return member._archive_id == self._archive_id
         raise TypeError(
@@ -2607,6 +2597,15 @@ class BaseArchiveReader(ArchiveReader):
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
         self._require_random_access("get()")
+        # Without this a ``bytes`` name answered "absent" for a member that exists (a
+        # wrong answer), and an ArchiveMember escaped as ``unhashable type``. ``open()``
+        # refuses a ``bytes`` name the same way; it takes a member object, which get()
+        # does not, because get() looks up by name.
+        if not isinstance(name, str):
+            raise ArchiveyUsageError(
+                f"reader.get() takes a member name (str), but got "
+                f"{describe_value(name)}."
+            )
         token = self._state.acquire_worker("get")
         try:
             materialized = self._materialize_members()
@@ -2627,15 +2626,7 @@ class BaseArchiveReader(ArchiveReader):
         concurrent ``open`` is supported. Positioning requires
         ``open_archive(seekable_members=True)``.
         """
-        # Two independent gates: the access mode (streaming=True forbids random access)
-        # and the backend capability (_SUPPORTS_RANDOM_ACCESS, used by the Phase-3
-        # open-time fail-fast for non-seekable sources).
         self._require_random_access("open()/read()")
-        if not self._SUPPORTS_RANDOM_ACCESS:
-            raise UnsupportedFeatureError(
-                "This reader does not support random access (open()/read()); "
-                "iterate with stream_members() instead.",
-            )
         token = self._state.acquire_worker("open")
         try:
             materialized = self._materialize_members()
@@ -2728,10 +2719,10 @@ class BaseArchiveReader(ArchiveReader):
                 )
             member_id = current._member_id
             if member_id in visited:
-                raise ReadError(
-                    f"Link cycle detected at '{current.name}'",
-                    member_name=current.name,
-                )
+                # The CLI's ``_is_link_destination_error`` (``cli/test_cmd.py``)
+                # matches this exact message, since the CLI may not import a shared
+                # constant from ``internal``. Change both together.
+                raise ReadError("Link cycle detected", member_name=current.name)
             visited.add(member_id)
             if current.link_target_member is not None:
                 current = current.link_target_member
@@ -2767,7 +2758,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def stream_members(
         self,
-        members: MemberSelector = None,
+        members: MemberSelectorArg = None,
         *,
         file_copy_streams: bool = True,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
@@ -2786,7 +2777,7 @@ class BaseArchiveReader(ArchiveReader):
         return self._stream_members(members, FileCopyPass(streams=file_copy_streams))
 
     def _stream_members(
-        self, members: MemberSelector, copies: FileCopyPass
+        self, members: MemberSelectorArg, copies: FileCopyPass
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """``stream_members()`` with the file-copy handling given whole.
 
@@ -2911,6 +2902,7 @@ class BaseArchiveReader(ArchiveReader):
         # passed on, because ``members`` may be a one-shot iterable that a second read
         # would find empty.
         selector = normalize_member_selector(members)
+        check_path_not_empty(dest, call="extract_all()")
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives

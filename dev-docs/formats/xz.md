@@ -18,7 +18,7 @@ this page states the behaviour and links the row.
 | Backends | The standard library's `lzma`, always available. `streams/codecs/xz_decoder.py` and `streams/codecs/lzip_decoder.py` are archivey's own framing parsers over it |
 | Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
 | Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source |
-| Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE` |
+| Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE`. LZMA Alone has no check at all (§4), and reports nothing |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
 | Refuses | A declared dictionary over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`); an xz filter liblzma cannot decode (`UnsupportedFeatureError`) |
@@ -125,7 +125,11 @@ thousands of short runs of zeros. Past either bound the index is reported unread
 `size=None`, and a seek falls back to decoding forward with `SEEK_INDEX_DEGRADED`. The
 forward read then reports the bytes as `ARCHIVE_TRAILING_DATA`
 ([`single-file.md`](single-file.md) §2.3). The two bounds keep the cost of a file of junk
-to 1 MiB of reading and 4096 checks at open, a few milliseconds.
+to 1 MiB of reading and 4096 checks at open, a few milliseconds. Each stream's index is
+read at most 1 MiB at a time (`_INDEX_READ_CHUNK`), because a footer that checks out can
+still claim an index as large as the file; a real index fits in one read, which the CRC
+check and both record walks share (threat model,
+[Allocations sized by a header field](../threat-model.md#allocations-sized-by-a-header-field)).
 
 **LZMA Alone** gives its size from the header when the header is not the all-ones
 "unknown" marker. `xz --format=lzma` always writes the marker; the LZMA SDK writes the real
