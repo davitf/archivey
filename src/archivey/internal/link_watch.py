@@ -46,6 +46,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
+from archivey.internal.filters import resolve_or_raise_on_loop
+
 # More symlink follows than any supported kernel allows in one resolution (Linux 40,
 # macOS and FreeBSD 32, Windows 63 reparse points). A walk stops there: the OS
 # refuses the path with ELOOP, so what lies further cannot be reached through it. A
@@ -366,7 +368,7 @@ class LinkWatch:
     def _physical(path: Path) -> Path:
         """``path`` with its parent resolved: where the entry physically is."""
         try:
-            return path.parent.resolve() / path.name
+            return resolve_or_raise_on_loop(path.parent) / path.name
         except (OSError, RuntimeError):
             return path
 

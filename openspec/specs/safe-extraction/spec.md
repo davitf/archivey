@@ -417,11 +417,12 @@ with the destination empty, or revise an already-deleted member to `OVERWRITTEN`
 ### Requirement: Symlink Escape Re-Validated at Extraction Time
 
 The system SHALL validate a SYMLINK member after `os.symlink(link_target,
-dest_path)` creates the link on disk. It resolves the created link target with
-`Path.resolve()` and, if the resolved path escapes `dest`, immediately unlinks the
-new link and raises `FilterRejectionError`. Resolution failures from symlink loops
-or platform equivalents (`OSError` such as `ELOOP`, or `RuntimeError`) SHALL fail
-safe the same way: unlink the just-created link and reject the member.
+dest_path)` creates the link on disk. It resolves the created link target through
+the real filesystem and, if the resolved path escapes `dest`, immediately unlinks the
+new link and raises `FilterRejectionError`. A symlink loop on the way (`ELOOP` or its
+platform equivalent) SHALL fail safe the same way: unlink the just-created link and
+reject the member. The loop SHALL be detected on every supported Python version, not
+only where `Path.resolve()` raises for one (it does before 3.13 and does not from 3.13).
 
 This post-creation check SHALL catch chained symlink attacks where earlier archive
 members influence later target resolution, without allowing writes through an
@@ -443,7 +444,7 @@ waiting are removed unresolved and the run stops with `ResourceLimitError`. Test
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
-| Cyclic links (`a -> b`, `b -> a`) make `Path.resolve()` raise | Just-created link is unlinked; `FilterRejectionError`; no uncaught OS/runtime error |
+| Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError`; no uncaught OS/runtime error; same on every Python version |
 
 ### Requirement: Hardlink Two-Pass Extraction
 

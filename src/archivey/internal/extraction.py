@@ -52,6 +52,7 @@ from archivey.internal.filters import (
     collision_key,
     disk_spelled,
     reroot_absolute,
+    resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
@@ -138,11 +139,11 @@ def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
     """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
 
     Resolved through the real filesystem, so links on the way are followed. A
-    cyclic or adversarial link makes ``resolve()`` raise ELOOP or ``RuntimeError``,
-    which counts as an escape: fail safe rather than crash.
+    symlink loop counts as an escape on every Python version: fail safe rather than
+    crash (``resolve_or_raise_on_loop``).
     """
     try:
-        resolved = (link_path.parent / target).resolve()
+        resolved = resolve_or_raise_on_loop(link_path.parent / target)
     except (OSError, RuntimeError):
         return True
     return not (resolved == dest_root or resolved.is_relative_to(dest_root))
@@ -2078,7 +2079,7 @@ class ExtractionCoordinator:
         if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
-                resolved = os.fspath(Path(parent).resolve())
+                resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
             except (OSError, RuntimeError):
                 return None
             prefix = root if root.endswith(os.sep) else root + os.sep
@@ -2362,8 +2363,8 @@ class ExtractionCoordinator:
         # escape the planning check cannot see. We can't do this "just before" creating the
         # link because there is no link to resolve until it exists; and resolving the *bare
         # target string* would only repeat check_universal. So: create, resolve, and unlink
-        # if it escaped. A cyclic/adversarial link makes resolve() raise ELOOP/RuntimeError,
-        # which we also treat as an escape (fail safe rather than crash). This is the third
+        # if it escaped. A symlink loop also counts as an escape (fail safe rather than
+        # crash), on every Python version. This is the third
         # of the three defense-in-depth layers named in the `safe-extraction` spec
         # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
         # check_universal. A *later* member can still change what this link resolves

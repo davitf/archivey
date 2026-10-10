@@ -18,6 +18,7 @@ the coordinator, next to the ``os.symlink`` call it guards.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import string
@@ -135,12 +136,36 @@ def _within(path: Path, root: Path) -> bool:
     return path.is_relative_to(root)
 
 
+# Windows' code for a path whose links do not resolve (``ERROR_CANT_RESOLVE_FILENAME``),
+# its equivalent of ``ELOOP``.
+_ERROR_CANT_RESOLVE_FILENAME = 1921
+
+
+def resolve_or_raise_on_loop(path: Path) -> Path:
+    """``path.resolve()``, raising ``OSError`` when a symlink loop is on the way.
+
+    A missing component is kept as a name, as ``resolve()`` does. Before Python 3.13,
+    ``resolve()`` raised ``RuntimeError`` on a loop; from 3.13 it returns a path that
+    still contains the looping link. The ``stat`` restores the older answer, so one
+    archive gets the same outcome on every Python version.
+    """
+    resolved = path.resolve()
+    try:
+        resolved.stat()
+    except OSError as exc:
+        if exc.errno == errno.ELOOP or (
+            getattr(exc, "winerror", None) == _ERROR_CANT_RESOLVE_FILENAME
+        ):
+            raise
+    return resolved
+
+
 def _escapes(path: Path, root: Path) -> bool:
     """Whether ``path`` resolves outside ``root``. A path that cannot be resolved (a
-    symlink loop; Python before 3.13 raises ``RuntimeError`` for one) counts as an
-    escape, as it does in the check after a link is created."""
+    symlink loop) counts as an escape, as it does in the check after a link is
+    created."""
     try:
-        return not _within(path.resolve(), root)
+        return not _within(resolve_or_raise_on_loop(path), root)
     except (OSError, RuntimeError):
         return True
 
@@ -332,11 +357,10 @@ def check_universal(
     dest_root = dest.resolve()
     if rel not in ("", "."):  # "" / "." is the root dir member itself
         try:
-            parent = (dest_root / rel).parent.resolve()
+            parent = resolve_or_raise_on_loop((dest_root / rel).parent)
         except (OSError, RuntimeError) as exc:
-            # A symlink loop the destination already had (Python before 3.13 raises
-            # RuntimeError for one). Links this run creates never loop: one that
-            # would is removed as an escape. The member cannot be placed, and that is
+            # A symlink loop the destination already had. Links this run creates
+            # never loop: one that would is removed as an escape. The member cannot be placed, and that is
             # the destination's state, not a policy decision.
             raise ExtractionError(
                 "Member's parent directory does not resolve in the destination "

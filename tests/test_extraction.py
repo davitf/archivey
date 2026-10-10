@@ -239,6 +239,17 @@ def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
     check_universal(m, tmp_path)  # resolves to <dest>/file.txt, inside root
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_check_universal_names_a_parent_loop_in_the_destination(
+    tmp_path: Path,
+) -> None:
+    # A loop the destination already had. Path.resolve() raises on it before Python
+    # 3.13 and returns a path from 3.13; the answer must not depend on which.
+    os.symlink("p", tmp_path / "p")
+    with pytest.raises(ExtractionError, match="does not resolve in the destination"):
+        check_universal(_member("p/f"), tmp_path)
+
+
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
     # Universal checks are non-bypassable, even under TRUSTED.
     with pytest.raises(FilterRejectionError):
@@ -1443,6 +1454,41 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
     statuses = {r.member.name: r.status for r in results}
     assert statuses["evil"] is ExtractionStatus.BLOCKED
     assert (dest / "ok.txt").read_bytes() == b"ok"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    "links",
+    [
+        [("d", "d")],
+        [("a", "b"), ("b", "a")],
+        [("a", "b"), ("b", "c"), ("c", "a")],
+        [("x/a", "../y/b"), ("y/b", "../x/a")],
+    ],
+    ids=["self", "pair", "triple", "across-dirs"],
+)
+def test_tar_symlink_closing_a_loop_is_rejected(
+    tmp_path: Path, links: list[tuple[str, str]]
+) -> None:
+    # The link that closes the loop is refused, on every Python version: Path.resolve()
+    # raises on a loop before 3.13 and returns a path from 3.13, so the check must
+    # not depend on it raising.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("sym", name, target) for name, target in links]))
+    dest = tmp_path / "out"
+    results = open_and_extract(src, dest, on_error=OnError.CONTINUE).results
+    statuses = {r.member.name: r.status for r in results}
+    closing = links[-1][0]
+    assert statuses == {
+        name: ExtractionStatus.BLOCKED
+        if name == closing
+        else ExtractionStatus.EXTRACTED
+        for name, _ in links
+    }
+    error = next(r.error for r in results if r.member.name == closing)
+    assert isinstance(error, FilterRejectionError)
+    assert error.message == "Symlink target escapes destination"
+    assert not os.path.lexists(dest / closing)
 
 
 # ---------------------------------------------------------------------------
