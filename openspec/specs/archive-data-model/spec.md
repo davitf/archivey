@@ -97,7 +97,9 @@ SHALL be refused as `CorruptionError`. Every member whose stored mode's file-typ
 (or TAR typeflag `3`/`4`/`6`) named a device, FIFO, socket or unknown file type SHALL
 carry `extra["special_file_type"]` ∈ `{"fifo","char_device","block_device","socket",
 "unknown"}`, whatever type the member ends up with (a RAR file copy is `FILE` by its
-redirect record), so the stored kind is never lost; an `OTHER` member that recorded no
+redirect record; a ZIP directory marker, an ISO directory record or a reparse-point bit
+over such a mode makes a `DIRECTORY` or `SYMLINK` that keeps the key), so the stored
+kind is never lost; an `OTHER` member that recorded no
 such mode (a GNU dumpdir, an ISO file record with a directory's `S_IFDIR` mode) has no
 key. `MemberType.ANTI` SHALL be a
 deletion/tombstone marker (`is_file` false, no payload); it SHALL NOT be treated as

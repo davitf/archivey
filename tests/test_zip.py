@@ -2195,6 +2195,24 @@ def test_unknown_file_type_bits_with_data_name_an_unrecognized_type(
         assert ar.read(dev) == b"xyz"
 
 
+def test_a_directory_marker_over_a_special_mode_keeps_the_key(tmp_path: Path) -> None:
+    """The trailing ``/`` is structure and wins the type (DR-25); the FIFO mode is still
+    what the archive recorded, so ``extra["special_file_type"]`` records it on the
+    DIRECTORY, and the data advisory is for FILE members only."""
+    path = tmp_path / "dir-fifo.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("d/")
+        info.create_system = 3
+        info.external_attr = (0o010755 << 16) | 0x10
+        zf.writestr(info, b"")
+    with open_archive(path) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.DIRECTORY
+        assert member.extra["special_file_type"] == "fifo"
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+
+
 def test_special_file_with_data_is_not_refused_by_strict(tmp_path: Path) -> None:
     """MEMBER_SPECIAL_FILE_HAS_DATA is advisory: a documented writer option produces
     the shape (``zip -FI``), so strict does not refuse it."""

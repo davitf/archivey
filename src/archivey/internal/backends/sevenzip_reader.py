@@ -914,7 +914,9 @@ class SevenZipReader(BaseArchiveReader):
         )
         if special is not None and member.type is MemberType.FILE:
             # member.type, not member_type: the settle above can re-type a reparse
-            # point with no reparse data to the fallback FILE.
+            # point with no reparse data to the fallback FILE. A reparse point whose
+            # data turns out not to be a link buffer is re-typed later, when the
+            # target is resolved, and `_apply_reparse_data` emits for it then.
             self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             self._emit_timestamp_invalid(member, index, issue)

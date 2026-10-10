@@ -519,9 +519,12 @@ class MemberExtra(dict[str, object]):
       ``"unknown"`` is a mode whose file-type bits no Unix type uses. Set whatever type
       the member ends up with: the stream-less ``OTHER`` such an entry usually is, the
       ``FILE`` it becomes when it carries data (its bytes are the content, as unzip,
-      7-Zip, bsdtar and ``zipfile`` deliver them), or a RAR file copy. Absent on an
-      ``OTHER`` member that is not a special file (a GNU dumpdir in TAR). TAR keeps
-      ``tar.type`` as well.
+      7-Zip, bsdtar and ``zipfile`` deliver them), a RAR file copy, or the
+      ``DIRECTORY`` or ``SYMLINK`` a structural marker made of it (a ZIP name ending
+      in ``/``, an ISO directory record, a reparse-point bit) over such a mode. The
+      key says what the mode named; the type says what the archive's structure
+      decided. Absent on an ``OTHER`` member that is not a special file (a GNU
+      dumpdir in TAR). TAR keeps ``tar.type`` as well.
     * ``alternate_raw_name`` (``bytes``) — ZIP. The other stored spelling of the
       name, when the archive stores two and ``raw_name`` is the one ``name`` was
       decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra

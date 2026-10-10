@@ -390,6 +390,42 @@ def test_file_copy_with_a_special_mode_keeps_its_kind(tmp_path: Path) -> None:
 
 
 @requires_binary("unrar")
+def test_file_copy_built_from_a_hardlink_record_keeps_its_kind(tmp_path: Path) -> None:
+    """The same shape as the live ``rar -oi`` test, built from a committed fixture so
+    it runs where CI has only ``unrar``: a RAR5 ``HARD_LINK`` redirect record differs
+    from a ``FILE_COPY`` one by its redirect type alone, so the hard link in
+    ``hardlinks_solid__.rar`` becomes a file copy with one byte changed."""
+    blocks = _rar5_parse(_fixture("hardlinks_solid__.rar").read_bytes())
+    files = _rar5_file_blocks(blocks)
+    link = next(b for b in files if b["name"] == b"subdir/hardlink_to_file1.txt")
+    assert link["host_os"] == 1 and link["data"] == b""  # Unix; a redirect, no data
+    # REDIR extra record: size, type 5 (REDIR), redirect type 4 (HARD_LINK), flags,
+    # name length, name. Redirect type 5 is FILE_COPY.
+    redir = b"\x0d\x05\x04\x00\x09file1.txt"
+    assert link["extra"].count(redir) == 1
+    link["extra"] = link["extra"].replace(redir, b"\x0d\x05\x05\x00\x09file1.txt")
+    link["attr"] = 0o010644  # FIFO
+    path = tmp_path / "fifo-copy.rar"
+    path.write_bytes(_rar5_build(blocks))
+
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        member = archive.get("subdir/hardlink_to_file1.txt")
+        assert member.type is MemberType.FILE
+        assert member.extra["is_file_copy"] is True
+        assert member.extra["special_file_type"] == "fifo"
+        assert "special_file_type" not in archive.get("file1.txt").extra
+        assert archive.read(member) == archive.read("file1.txt") == b"Hello 1!"
+        [diag] = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["special_file_type"] == "fifo"
+        assert diag.context.to_dict()["size"] == 8
+
+
+@requires_binary("unrar")
 def test_unix_special_file_without_data_is_other(tmp_path: Path) -> None:
     """A device-mode entry with no data is OTHER, as in TAR, 7z and ISO: there is
     nothing to read, and extraction skips it instead of creating an empty file."""

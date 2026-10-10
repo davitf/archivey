@@ -2950,6 +2950,45 @@ def test_unix_special_file_with_a_stream_is_a_file(
     assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in ARCHIVE_INTEGRITY_CODES
 
 
+def test_special_mode_reparse_point_with_content_reports_its_data() -> None:
+    """A reparse-point bit with a FIFO mode in the high word types the entry a SYMLINK
+    provisionally; when its data turns out not to be a link buffer it is re-typed a
+    FILE at resolution, and the special-file advisory is reported from that site, since
+    the backend's own emit (gated on FILE while the member is typed) did not run."""
+    py7zr = pytest.importorskip("py7zr")
+    archive = io.BytesIO()
+    with py7zr.SevenZipFile(archive, "w") as z:
+        z.writestr(b"hello", "a.txt")
+    archive.seek(0)
+    with open_archive(archive) as reader:
+        assert isinstance(reader, SevenZipReader)
+        record = _special_file_with_data_record(0x8000 | 0x400 | (0o010644 << 16))
+        member = reader._to_member(record, 0)
+        assert member.type is MemberType.SYMLINK
+        assert member.extra["special_file_type"] == "fifo"
+        assert not [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        reader._apply_reparse_data(
+            member, b"hello", fallback_type=MemberType.FILE, member_id=0
+        )
+        diags = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+    assert member.type is MemberType.FILE
+    assert len(diags) == 1
+    assert diags[0].context is not None
+    assert diags[0].context.to_dict()["special_file_type"] == "fifo"
+    assert diags[0].context.to_dict()["size"] == 5
+    assert [d.code for d in member.diagnostics].count(
+        DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+    ) == 1
+
+
 @requires_binary("7z")
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
 def test_real_7z_cli_fifo_is_other_and_not_extracted(tmp_path: Path) -> None:

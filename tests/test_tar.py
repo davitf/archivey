@@ -2868,6 +2868,13 @@ def test_a_sized_fifo_header_is_corruption() -> None:
         pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
     ):
         ar.members()
+    with (
+        open_archive(
+            NonSeekableBytesIO(buf.getvalue()), format=ArchiveFormat.TAR, streaming=True
+        ) as ar,
+        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
+    ):
+        list(ar.stream_members())
 
 
 def test_other_entries_that_are_not_special_files_get_no_special_file_type() -> None:

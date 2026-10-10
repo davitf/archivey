@@ -1818,12 +1818,13 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _emit_special_file_has_data(
-        self, member: ArchiveMember, member_id: int
+        self, member: ArchiveMember, member_id: int | None
     ) -> None:
         """Report ``MEMBER_SPECIAL_FILE_HAS_DATA`` for a ``FILE`` whose stored type is a
         device, FIFO or socket (``extra["special_file_type"]`` is set), attached to
         ``member``. ``member_id`` is the walk position, as for
-        :meth:`_emit_timestamp_invalid`."""
+        :meth:`_emit_timestamp_invalid`, or ``None`` when neither the caller nor the
+        member has one (a re-type in :meth:`_apply_reparse_data`)."""
         special = member.extra.get(EXTRA_SPECIAL_FILE_TYPE)
         assert isinstance(special, str)
         size = member.size
@@ -2147,6 +2148,18 @@ class BaseArchiveReader(ArchiveReader):
         )
         if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
             member.type = fallback_type
+            if (
+                fallback_type is MemberType.FILE
+                and EXTRA_SPECIAL_FILE_TYPE in member.extra
+            ):
+                # The entry's mode named a device, FIFO or socket and it was typed a
+                # link provisionally, so the backend's own emit (gated on FILE while
+                # the member is typed) did not run. It is a data-bearing FILE from
+                # here, and the data-model spec asks for the advisory with the key.
+                self._emit_special_file_has_data(
+                    member,
+                    member_id if member_id is not None else member._member_id,
+                )
             reason = "reparse_data_unrecognized"
             message = (
                 f"{quoted(member.name)} is flagged as a Windows reparse point, but its "

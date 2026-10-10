@@ -1924,6 +1924,10 @@ class IsoReader(BaseArchiveReader):
             # ``extra["special_file_type"]`` keeping the stored type. ``== 0``, not
             # ``not``: ``_file_size`` is ``None`` for a non-empty extent whose length
             # was lost, and that record is a FILE with ``size=None`` like a regular one.
+            # Defence, not tested behaviour: the lost length needs a record pycdlib
+            # walked that its parent directory's bytes on disc do not list with a
+            # length reaching the image end (``_layout``), and no image the suite can
+            # build does that, so no test tells ``== 0`` from ``not``.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
