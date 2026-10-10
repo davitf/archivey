@@ -61,6 +61,9 @@ _VERB_FLAG_HINTS = {
     "-t": "t",
     "-i": "i",
 }
+# Letters a tar flag bundle is made of: the verb letters above and tar's common
+# modifiers (-v, -f, the -z/-j/-J/-a compressors, -k, -p, -C, -O).
+_TAR_BUNDLE_LETTERS = "xltivfzjJakpCO"
 
 
 # The include-pattern positional's metavar; ``_ArchiveyArgumentParser.error`` matches it.
@@ -155,9 +158,10 @@ def _unrecognized_hints(tokens: list[str]) -> str:
     """Hints for unrecognized options: a tar-style verb flag, a verb's own flag."""
     opts = [tok.split("=", 1)[0] for tok in tokens]
     hints = ""
-    # Tar users type -x/-l/-t, often bundled (-xvf); verbs here are bare words. Only a
-    # single-dash bundle of letters counts, so ``--my-list`` is not ``-l``.
-    bundles = [o[1:] for o in opts if re.fullmatch(r"-[A-Za-z]+", o)]
+    # Tar users type -x/-l/-t, often bundled (-xvf, -zxf); verbs here are bare words.
+    # Only a single-dash bundle of tar letters counts, so ``--my-list`` is not ``-l``
+    # and a mistyped long option such as ``-exclude`` or ``-file`` is not ``-x``/``-i``.
+    bundles = [o[1:] for o in opts if re.fullmatch(f"-[{_TAR_BUNDLE_LETTERS}]+", o)]
     flags = [f"-{ch}" for bundle in bundles for ch in bundle]
     verb = next((_VERB_FLAG_HINTS[f] for f in flags if f in _VERB_FLAG_HINTS), None)
     if verb is not None:
@@ -580,16 +584,17 @@ def _parse_cli_args(
     that start with ``-`` (``x ARCHIVE -d out -- -file.txt``).
     """
     args, rest = parser.parse_known_args(argv_list)
-    after_double_dash = bool(rest and rest[0] == "--")
-    if after_double_dash:
-        rest = rest[1:]
+    # Python 3.11 and 3.12 leave the ``--`` and what follows in ``rest`` when a pattern came
+    # before it (``x a.zip -d out '*.py' -- -file``), so split at the first one.
+    cut = rest.index("--") if "--" in rest else len(rest)
+    before, after = rest[:cut], rest[cut + 1 :]
+    # Dash-prefixed leftovers before ``--`` are unknown options (not patterns).
+    unknown_opts = [tok for tok in before if tok.startswith("-") and tok != "-"]
+    if unknown_opts:
+        parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
+    rest = before + after
     if not rest:
         return args
-    if not after_double_dash:
-        # Without ``--``, dash-prefixed leftovers are unknown options (not patterns).
-        unknown_opts = [tok for tok in rest if tok.startswith("-") and tok != "-"]
-        if unknown_opts:
-            parser.error(f"unrecognized arguments: {' '.join(unknown_opts)}")
     if not hasattr(args, "patterns"):
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     args.patterns = list(args.patterns or ()) + list(rest)

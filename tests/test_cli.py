@@ -1655,6 +1655,37 @@ def test_extract_dest_before_dash_named_pattern(
     assert not (dest / "ok.txt").exists()
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [["*.py", "--", "-file.txt"], ["--", "-file.txt", "*.py"]],
+    ids=["pattern-before-separator", "pattern-after-separator"],
+)
+def test_extract_dest_then_patterns_around_double_dash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: list[str]
+) -> None:
+    """A pattern before ``--`` must not turn ``--`` and later tokens into options."""
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "dash.zip", {"-file.txt": b"x", "a.py": b"y", "ok.txt": b"z"})
+    dest = tmp_path / "out"
+    assert main(["x", str(z), "-d", str(dest), *tail]) == EXIT_OK
+    assert (dest / "-file.txt").read_bytes() == b"x"
+    assert (dest / "a.py").read_bytes() == b"y"
+    assert not (dest / "ok.txt").exists()
+
+
+def test_unknown_option_before_double_dash_still_rejected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only tokens after ``--`` are positionals; a typo before it stays an error."""
+    z = _zip(tmp_path / "a.zip", {"a.txt": b"x"})
+    dest = tmp_path / "out"
+    args = ["x", str(z), "-d", str(dest), "a*", "--bogus", "--", "-f"]
+    assert main(args) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: --bogus" in err
+    assert "-f" not in err.split("unrecognized arguments:")[-1]
+
+
 def test_extract_stop_on_error_reports_extracted_and_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2665,13 +2696,26 @@ def test_tar_flag_hint_matches_whole_options(
     assert "bare words" not in err
 
 
-@pytest.mark.parametrize(("bundle", "verb"), [("-xvf", "x"), ("-tzf", "t")])
+@pytest.mark.parametrize(
+    ("bundle", "verb"), [("-xvf", "x"), ("-tzf", "t"), ("-zxvf", "x"), ("-l", "l")]
+)
 def test_tar_flag_hint_matches_short_option_bundles(
     bundle: str, verb: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # ``tar -xvf`` habit: the bundle's first verb letter is the verb meant.
     assert main([bundle, "a.tar"]) == EXIT_USAGE
     assert f"try 'archivey {verb} ARCHIVE'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("word", ["-exclude", "-file", "-name", "-dest"])
+def test_tar_flag_hint_skips_single_dash_words(
+    word: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A mistyped long option is not a tar bundle: ``-exclude`` does not mean ``x``.
+    assert main(["l", "a.zip", word, "a*"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert f"unrecognized arguments: {word}" in err
+    assert "bare words" not in err
 
 
 def test_double_dash_lists_dash_named_archive(
