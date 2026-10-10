@@ -336,10 +336,17 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `observed_kind="nonzero"` after them, which `DiagnosticPolicy.strict()` raises. This
   is what `unrar t` does: each member tests OK, then it reports one error. A damaged
   header counts as the end block only if it has an end block's shape and the file ends
-  right after it; any other damaged header still raises `CorruptionError`. The damaged
+  right after it; any other damaged header is handled as the next item says. The damaged
   block's next-volume flag is not trusted, so a volume set goes on to the next volume
   only when a member's own header says its data continues there. With encrypted headers
   this needs the password proven, as above; before that it is `EncryptionError`.
+- **A damaged member header lists the members before it.** When a header after the main
+  header fails its checksum, the members before it are listed and read normally, and
+  the listing then ends with `CorruptionError`. The members after the damaged header
+  are not listed: its size field cannot be trusted, so archivey does not know where the
+  next header starts. `unrar` searches on and lists them too. A damaged main header
+  still raises `CorruptionError` at open. With encrypted headers this needs the
+  password proven, as above; before that it is `EncryptionError`.
 - **A volume set with a volume missing lists what it has.** Whether the missing volume
   is the first, one in the middle or the last, the members whose headers are in the
   volumes present are listed, opened from any of them, and those wholly inside them read

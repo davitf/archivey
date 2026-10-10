@@ -544,6 +544,16 @@ class RarArchive:
     #: ``old_volume_naming`` at their ``False`` defaults, and ``has_header_encryption``
     #: too when the cut is before the header that sets it: those values are not data.
     truncated: str | None = None
+    #: Set when the walk ended at a member header whose CRC failed, after the main
+    #: header. The members listed are the ones before it. The reader lists them and
+    #: then reports this as ``CorruptionError`` (DR-2), as TAR does for a damaged
+    #: header after its first member. The walk does not go past the damaged header:
+    #: its size is not data, so the next header's position is unknown. ``unrar``
+    #: searches for it; archivey does not. Not set for a damaged main header, which
+    #: still raises at open, nor where the header password is unproven: there a CRC
+    #: mismatch reads the same as a wrong key, so the walk raises the wrong-password
+    #: ``EncryptionError``. The walk does not follow a next-volume flag once it is set.
+    damaged: str | None = None
     #: 0-based indices of the RAR5 volumes whose block walk reached end of file
     #: without an end-of-archive block. RAR5 writers always close a volume with one,
     #: so its absence means the file was cut at a header boundary — bytes that would
@@ -700,12 +710,14 @@ def parse_rar_volumes(
             member.data_parts = [
                 (offset + base_offset, size) for offset, size in member.data_parts
             ]
-        if part.truncated is not None and len(volumes) > 1:
+        if len(volumes) > 1:
             # The walk's byte offsets are within this volume, not the concatenated
             # space the member offsets above use, so the message names the volume.
-            part.truncated += (
-                f" (volume {number} of the set; the offset is within that volume)"
-            )
+            where = f" (volume {number} of the set; the offset is within that volume)"
+            if part.truncated is not None:
+                part.truncated += where
+            if part.damaged is not None:
+                part.damaged += where
 
         if merged is None:
             merged = part
@@ -735,6 +747,7 @@ def parse_rar_volumes(
                 part.damaged_service_headers_omitted
             )
             merged.truncated = merged.truncated or part.truncated
+            merged.damaged = merged.damaged or part.damaged
             merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
@@ -1080,6 +1093,22 @@ def _encrypted_header_cut(start: int) -> str:
     )
 
 
+class _RarHeaderCrcError(CorruptionError):
+    """A header failed its CRC; private signal for the walk.
+
+    With plain headers or a proven password, the walks catch it by this type after
+    the main header and list the members before the damaged header
+    (``RarArchive.damaged``). Any other :class:`CorruptionError` raised in the same
+    place, such as an invalid header size, still fails the open, and so does this
+    one in the main header.
+    """
+
+
+def _damaged_header(exc: CorruptionError, start: int) -> str:
+    """The ``RarArchive.damaged`` text for a member header that failed its CRC."""
+    return f"{exc}; the header starts at byte {start}, and no member after it is listed"
+
+
 class _RarEndBlockCrcError(CorruptionError):
     """A RAR5 header shaped as an end block failed its CRC; private signal for the walk.
 
@@ -1089,7 +1118,7 @@ class _RarEndBlockCrcError(CorruptionError):
     the file also ends at ``data_offset`` and the header password is proven or
     headers are plain. Behind an unproven header password the walk's earlier
     check raises the wrong-password :class:`EncryptionError` instead. With a proven
-    key or plain headers, a file that does not end at ``data_offset`` raises
+    key or plain headers, a file that does not end at ``data_offset`` is handled as
     ``generic``, the error a header of any other type would have raised. The
     end-of-archive flags are not used.
     """
@@ -1099,7 +1128,7 @@ class _RarEndBlockCrcError(CorruptionError):
             f"RAR5 end-of-archive header CRC mismatch at offset {header_offset}"
         )
         self.data_offset = data_offset
-        self.generic = CorruptionError(
+        self.generic = _RarHeaderCrcError(
             f"RAR5 header CRC mismatch at offset {header_offset}"
         )
 
@@ -1191,7 +1220,7 @@ def _check_rar3_crc(
             raise wrong_password_error(
                 "Failed to decrypt RAR3 headers (wrong password?)"
             )
-        raise CorruptionError(
+        raise _RarHeaderCrcError(
             f"RAR3 {what} header CRC mismatch: expected {header_crc:#x}, got {calc:#x}"
         )
     return proven or encrypted
@@ -1943,6 +1972,8 @@ def _parse_rar3(
     members: list[RarMemberInfo] = []
     needs_next_volume = False
     truncated: str | None = None
+    damaged: str | None = None
+    main_seen = False
     end_block_damaged_at: int | None = None
     # Set once an encrypted header decrypted with a matching CRC16, in this volume or
     # an earlier one of the set (the caller passes that in). The walk treats a
@@ -2036,6 +2067,7 @@ def _parse_rar3(
                 encrypted=block_encrypted,
                 proven=password_proven,
             )
+            main_seen = True
             if flags & _RAR3_MAIN_COMMENT:
                 comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
             _seek_after_packed(source, data_offset, add_size)
@@ -2057,13 +2089,20 @@ def _parse_rar3(
             ):
                 end_block_damaged_at = header_start
                 break
-            password_proven = _check_rar3_crc(
-                header_crc,
-                hdata[2:header_size],
-                "ENDARC",
-                encrypted=block_encrypted,
-                proven=password_proven,
-            )
+            try:
+                password_proven = _check_rar3_crc(
+                    header_crc,
+                    hdata[2:header_size],
+                    "ENDARC",
+                    encrypted=block_encrypted,
+                    proven=password_proven,
+                )
+            except _RarHeaderCrcError as exc:
+                # Not an end block, so a header whose type byte is damaged.
+                if not main_seen:
+                    raise
+                damaged = _damaged_header(exc, header_start)
+                break
             needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
             volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
             if volume_index == 0 and is_volume and volume_number:
@@ -2078,24 +2117,41 @@ def _parse_rar3(
         if block_type in (_RAR3_FILE, _RAR3_SUB):
             # FILE header re-reads pack_size as first field when LONG_BLOCK was set.
             file_pos = pos - 4 if (flags & _RAR3_LONG_BLOCK) else pos
-            member, crc_pos = _parse_rar3_file_header(
-                hdata,
-                file_pos,
-                flags=flags,
-                header_offset=header_offset,
-                header_size=header_size,
-                data_offset=data_offset,
-                volume_index=volume_index,
-                is_service=(block_type == _RAR3_SUB),
-                name_encoding=name_encoding,
-            )
-            password_proven = _check_rar3_crc(
-                header_crc,
-                hdata[2:crc_pos],
-                "FILE",
-                encrypted=block_encrypted,
-                proven=password_proven,
-            )
+            member: RarMemberInfo | None = None
+            try:
+                member, crc_pos = _parse_rar3_file_header(
+                    hdata,
+                    file_pos,
+                    flags=flags,
+                    header_offset=header_offset,
+                    header_size=header_size,
+                    data_offset=data_offset,
+                    volume_index=volume_index,
+                    is_service=(block_type == _RAR3_SUB),
+                    name_encoding=name_encoding,
+                )
+            except CorruptionError:
+                # The fields are parsed before the CRC can be checked, since they
+                # say how many bytes it covers. A field that does not parse in a
+                # header whose CRC also fails is the same damage as a bad CRC.
+                if header_crc == _crc32(hdata[2:header_size]) & 0xFFFF:
+                    raise
+                crc_pos = header_size
+            try:
+                password_proven = _check_rar3_crc(
+                    header_crc,
+                    hdata[2:crc_pos],
+                    "FILE",
+                    encrypted=block_encrypted,
+                    proven=password_proven,
+                )
+            except _RarHeaderCrcError as exc:
+                if not main_seen:
+                    raise
+                damaged = _damaged_header(exc, header_start)
+                break
+            # A parse error leaves it unset only with a CRC that fails, raised above.
+            assert member is not None
 
             if block_type == _RAR3_FILE:
                 # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
@@ -2154,9 +2210,10 @@ def _parse_rar3(
         members=members,
         sfx_offset=sfx_offset,
         is_volume=is_volume,
-        needs_next_volume=needs_next_volume,
+        needs_next_volume=needs_next_volume and damaged is None,
         old_volume_naming=old_volume_naming,
         truncated=truncated,
+        damaged=damaged,
         end_block_damaged_volumes=(
             {volume_index: end_block_damaged_at}
             if end_block_damaged_at is not None
@@ -2769,6 +2826,8 @@ def _parse_rar5(
     damaged_service_headers: list[DamagedServiceHeader] = []
     damaged_service_headers_omitted = 0
     truncated: str | None = None
+    damaged: str | None = None
+    main_seen = False
     end_block_seen = False
     end_block_damaged_at: int | None = None
 
@@ -2811,10 +2870,17 @@ def _parse_rar5(
                 # As in the RAR3 walk: only a block with nothing after it is the
                 # end block. Damage after the last member keeps the listing, and
                 # the block's next-volume flag is not read.
-                if not _ends_at(source, exc.data_offset):
+                if _ends_at(source, exc.data_offset):
+                    end_block_seen = True
+                    end_block_damaged_at = header_start
+                    break
+                if not main_seen:
                     raise exc.generic from None
-                end_block_seen = True
-                end_block_damaged_at = header_start
+                # Not an end block, so a member header whose type byte is damaged.
+                damaged = _damaged_header(exc.generic, header_start)
+                break
+            if isinstance(exc, _RarHeaderCrcError) and main_seen:
+                damaged = _damaged_header(exc, header_start)
                 break
             raise
         if parsed is None:
@@ -2856,6 +2922,7 @@ def _parse_rar5(
                 )
             is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
             is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
+            main_seen = True
             _seek_after_packed(source, data_offset, add_size)
             # Header-encrypted QO stores IV+ciphertext header copies and
             # file-encrypts the QO payload; reconstructed data_offset then
@@ -2966,12 +3033,15 @@ def _parse_rar5(
         members=members,
         sfx_offset=sfx_offset,
         is_volume=is_volume,
-        needs_next_volume=needs_next_volume,
+        needs_next_volume=needs_next_volume and damaged is None,
         damaged_service_headers=damaged_service_headers,
         damaged_service_headers_omitted=damaged_service_headers_omitted,
         truncated=truncated,
+        damaged=damaged,
         end_block_missing_volumes=(
-            [volume_index] if not end_block_seen and truncated is None else []
+            [volume_index]
+            if not end_block_seen and truncated is None and damaged is None
+            else []
         ),
         end_block_damaged_volumes=(
             {volume_index: end_block_damaged_at}
@@ -3035,7 +3105,7 @@ def _read_rar5_block(
             damaged_type = None
         if damaged_type == _RAR5_ENDARC and _rar5_end_block_shaped(hdata, pos):
             raise _RarEndBlockCrcError(header_offset, data_offset)
-        raise CorruptionError(f"RAR5 header CRC mismatch at offset {header_offset}")
+        raise _RarHeaderCrcError(f"RAR5 header CRC mismatch at offset {header_offset}")
 
     block_type, pos = load_vint(hdata, pos)
     block_flags, pos = load_vint(hdata, pos)

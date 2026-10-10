@@ -225,15 +225,35 @@ header's type into `ENDARC` (RAR5 `5`, RAR3 `0x7b`). A CRC-failed header is take
 the end block only when its type reads as `ENDARC`, its shape is an end block's (RAR5:
 no extra or data area, nothing after the end-of-archive flags; RAR3: no `LONG_BLOCK`
 flag, header at most 20 bytes), and the file ends right after it. A FILE header fails
-the shape, and a MAIN header, which can pass it, has blocks after it. Anything else
-stays `CorruptionError`, including a damaged end block followed by any byte, since RAR
-has no trailing-data rule to allow one. unrar 7.00 is laxer here: with the second FILE
+the shape, and a MAIN header, which can pass it, has blocks after it. Anything else is
+a damaged header (next paragraph), including a damaged end block followed by any byte,
+since RAR has no trailing-data rule to allow one. unrar 7.00 is laxer here: with the second FILE
 header's type byte flipped to `ENDARC` in either `basic_nonsolid__` fixture, `unrar l`
 lists only `file1.txt` and `unrar t` tests it OK and exits 3, dropping the other five
 members. These checks bound accidental damage, not a crafted file, and that is enough:
 a RAR 1.5-4 file cut at a block boundary already lists the same prefix with no
 diagnostic at all, since writers may omit `ENDARC`, so spoofing a damaged end block
 only adds a warning.
+
+**A damaged header after MAIN lists the members before it** (DR-2). Any other header
+after the main header whose CRC fails ends the walk there: the parser records it in
+`RarArchive.damaged` (walks catch the private `_RarHeaderCrcError`), and the reader
+lists the members before it and then raises `CorruptionError`. This is the path the
+reader uses for `RarArchive.truncated`, with `CorruptionError` in place of
+`TruncatedError`. TAR does the same
+for a damaged header after its first member. Before this, the walk raised at open and
+listed nothing. Measured on unrar 7.00 with the last byte of the second FILE header
+flipped in `basic_nonsolid__rar4.rar` and `basic_nonsolid__.rar`: `unrar lb` lists
+`file1.txt`, reports "empty_file.txt - the file header is corrupt", lists the other
+four members, and exits 3. archivey stops at the damaged header and does not search for
+the next one: the damaged header's size is not data, and a search would trust bytes no
+CRC has checked yet. A damaged MAIN header still raises at open, since its flags are
+needed to read the rest. RAR 1.5-4 parses a FILE header's fields before the CRC check,
+because they give the bytes the CRC covers, so a parse error in a header whose CRC
+(over the whole header) also fails counts as the same damage. A bad declared size,
+and an invalid field under a matching CRC, still fail the open. In a set the walk does
+not go on to the next volume; a member before the damage that continues there keeps
+`split_after`, so its read is refused.
 
 *Volume sets.* Once the CRC fails, the block's flags are not data, so the walk does not
 read its next-volume flag. `needs_next_volume` is then whatever the volume's member
@@ -253,7 +273,8 @@ damaged end block the diagnostic above. Unproven, a CRC mismatch reads the same 
 wrong key, so it stays the wrong-password `EncryptionError`: a RAR 1.5-4 `-hp` archive
 whose end block is the first encrypted header (no members), and any RAR5 `-hp` archive
 whose encryption record has no check value. A damaged block whose type byte is itself
-the damaged byte is not recognised as `ENDARC` and stays `CorruptionError`.
+the damaged byte is not recognised as `ENDARC`: it is a damaged header, so the members
+list and `CorruptionError` follows them.
 
 *Ordering with a cut.* When the merged listing is also truncated (a later volume cut),
 the reader raises `TruncatedError` before it reaches this diagnostic, as it does for the

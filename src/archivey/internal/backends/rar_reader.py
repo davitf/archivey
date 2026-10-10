@@ -2421,6 +2421,14 @@ class RarReader(BaseArchiveReader):
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )
+        if self._archive.damaged is not None:
+            # A member header failed its CRC after these members: the same terminal
+            # damage after the prefix, reported as corruption rather than a cut.
+            raise CorruptionError(
+                self._archive.damaged,
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
         self._emit_end_block_missing()
         self._emit_end_block_damaged()
 
