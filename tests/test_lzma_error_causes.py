@@ -25,7 +25,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.streams.codecs import LzmaAloneCodec
-from archivey.internal.streams.xz import lzma_error_to_archivey
+from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,

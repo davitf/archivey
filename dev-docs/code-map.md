@@ -64,8 +64,8 @@ open_archive(path)                                   core.py
 
 reader.members() / .open(m)                          reader.py → base_reader.py
   └─ backend yields member metadata
-  └─ member stream: codec pipeline                   internal/streams/codecs.py
-       ├─ decoder strategies                         internal/streams/decompress.py
+  └─ member stream: codec pipeline                   internal/streams/codecs/
+       ├─ decoder strategies                         internal/streams/codecs/<name>_decoder.py
        ├─ seekable decode engine                     internal/streams/decompressor_stream.py
        ├─ AES stage ([recommended])                  internal/streams/crypto.py
        └─ digest / length verification               internal/streams/verify.py
@@ -118,7 +118,7 @@ Three things about this path are worth knowing before you debug it:
 | TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
 | ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal, the `pycdlib` cycle guard); handbook [`formats/iso.md`](formats/iso.md) |
 | Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
-| A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones; `rapidgzip_child.py` for the accelerator's child process; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
+| A codec, or adding one | `streams/codecs/`: one `<name>_codec.py` per codec (`registry.py` lists them), its engine beside it (`<name>_decoder.py`, framing and resume helpers, the PPMd and rapidgzip child processes and workers), and the rapidgzip modules for the accelerator; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |
 | Extraction safety, path traversal, symlinks | `internal/filters.py` + `internal/extraction.py`; a later member changing where an earlier link resolves: `internal/link_watch.py`; `dev-docs/threat-model.md` |

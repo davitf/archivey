@@ -43,7 +43,7 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
     resolve_codec,
 )
-from archivey.internal.streams.unix_compress import (
+from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,
     _MAX_FLAT_ENTRY,
     LzwState,
@@ -496,7 +496,7 @@ def test_unix_compress_needs_input_is_false_only_when_progress_is_possible() -> 
     Fed a byte at a time, the decoder is in a partial header, and at CLEAR padding still
     owed with nothing buffered; neither can progress, so both must report True.
     """
-    from archivey.internal.streams.unix_compress import LzwState
+    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
 
     # Enough output that the stream carries CLEARs (dictionary resets).
     data = random.Random(7).randbytes(300_000)
@@ -766,7 +766,7 @@ def test_unix_compress_maxbits_16_accepted() -> None:
 
 
 def _lzw_decode_in_chunks(compressed: bytes, chunk: int) -> bytes:
-    from archivey.internal.streams.unix_compress import LzwState
+    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
 
     state = LzwState()
     out = bytearray()
@@ -864,7 +864,7 @@ def _lzw_table_bytes(state: LzwState) -> int:
 def test_unix_compress_worst_case_table_stays_under_the_stated_bound(
     shape: str,
 ) -> None:
-    """The dictionary bound stated in ``unix_compress.py`` and ``unix-compress.md`` §4.
+    """The dictionary bound stated in ``unix_compress_decoder.py`` and ``unix-compress.md`` §4.
 
     The run's last entry is one byte short of a cap, so every repeat of its code adds
     an entry exactly at that cap: a distinct flat entry of the largest flat size, or a
@@ -1159,8 +1159,8 @@ def test_decompressor_read_one_bounds_internal_buffer() -> None:
     """Bounded read(1) must not buffer megabytes of highly compressible output (F3a)."""
     import lzma
 
-    from archivey.internal.streams.decompress import ZlibDecompressorStream
-    from archivey.internal.streams.xz import XzDecompressorStream
+    from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
+    from archivey.internal.streams.codecs.xz_decoder import XzDecompressorStream
 
     payload = b"A" * 2_000_000
     # deflate
@@ -1186,7 +1186,7 @@ def test_decompressor_owns_inner_closes_private_source(tmp_path: Path) -> None:
     left that slice open (the leak oracle's first finding). ``owns_inner=True``
     closes it; the default still borrows.
     """
-    from archivey.internal.streams.decompress import ZlibDecoder
+    from archivey.internal.streams.codecs.deflate_decoder import ZlibDecoder
     from archivey.internal.streams.decompressor_stream import DecompressorStream
     from archivey.internal.streams.streamtools.slice import SlicingStream
 
@@ -1236,7 +1236,7 @@ def test_brotli_read_one_bounds_internal_buffer() -> None:
     """Brotli process(output_buffer_limit) must bound read(1) peak buffer (CVE-2025-6176)."""
     import brotli
 
-    from archivey.internal.streams.decompress import BrotliDecompressorStream
+    from archivey.internal.streams.codecs.brotli_decoder import BrotliDecompressorStream
 
     payload = b"A" * 2_000_000
     compressed = brotli.compress(payload)
@@ -1254,7 +1254,9 @@ def test_deflate64_read_one_bounds_internal_buffer(tmp_path: Path) -> None:
     import struct
     import subprocess
 
-    from archivey.internal.streams.decompress import Deflate64DecompressorStream
+    from archivey.internal.streams.codecs.deflate64_decoder import (
+        Deflate64DecompressorStream,
+    )
 
     payload = b"A" * 500_000
     src = tmp_path / "a.bin"
@@ -1885,7 +1887,7 @@ def test_verify_close_quiet_when_inner_defers_truncation() -> None:
     must stay quiet. close() must not probe-read the inner and trip its *deferred*
     TruncatedError — that is the never-raise-a-first-content-fault-on-close rule, and
     it must match the plain (non-verified) DecompressorStream, which closes quietly."""
-    from archivey.internal.streams.decompress import GzipDecompressorStream
+    from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 
     body = b"payload-" * 8
     trunc = gzip.compress(body)[:-6]  # cut the gzip trailer → deferred TruncatedError
@@ -1971,11 +1973,13 @@ def _make_gzip_check_stream(inner, path):
     independent handle.
     """
     from archivey.internal.config import DEFAULT_STREAM_CONFIG
-    from archivey.internal.streams.codecs import (
+    from archivey.internal.streams.codecs.gzip_codec import (
         _gzip_isize_and_length,
         _GzipTruncationCheckStream,
-        _SourceViews,
         _stdlib_gzip,
+    )
+    from archivey.internal.streams.codecs.stdlib_takeover import (
+        _SourceViews,
         _StdlibOnAcceleratorError,
     )
 
@@ -2045,7 +2049,7 @@ def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> No
     path.write_bytes(gzip.compress(payload))
 
     monkeypatch.setattr(
-        codecs_module,
+        codecs_module.gzip_codec,
         "GzipDecompressorStream",
         lambda source, **_kwargs: NonSeekableBytesIO(payload),
     )
@@ -2194,7 +2198,7 @@ def test_truncated_gzip_seek_end_does_not_report_clean_size() -> None:
 
 
 def test_truncated_zlib_deflate_large_read_recovers_prefix() -> None:
-    from archivey.internal.streams.decompress import ZlibDecompressorStream
+    from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 
     for wbits, raw in (
         (-15, zlib.compress(CONTENT)[2:-4]),  # raw deflate
@@ -2390,11 +2394,11 @@ def _assert_hint_is_installable(message: str) -> None:
 @pytest.mark.parametrize(
     ("codec", "absent_global"),
     [
-        (Codec.PPMD, "_pyppmd"),
-        (Codec.DEFLATE64, "_inflate64"),
-        (Codec.BROTLI, "_brotli"),
-        (Codec.LZ4, "_lz4_frame"),
-        (Codec.ZSTD, "_zstd"),
+        (Codec.PPMD, "pyppmd"),
+        (Codec.DEFLATE64, "inflate64"),
+        (Codec.BROTLI, "brotli"),
+        (Codec.LZ4, "lz4_frame"),
+        (Codec.ZSTD, "zstd"),
     ],
 )
 def test_absent_codec_backend_hint_is_installable(
@@ -2407,13 +2411,13 @@ def test_absent_codec_backend_hint_is_installable(
     rot unnoticed, because ``format_availability`` reported the updated string while
     ``open()`` still advertised a deleted extra.
     """
-    current = getattr(codecs_module, absent_global)
+    current = getattr(codecs_module.deps, absent_global)
     absent = (
-        codecs_module._LazyOptional(current.name, present=False)
-        if isinstance(current, codecs_module._LazyOptional)
+        codecs_module.deps.LazyOptional(current.name, present=False)
+        if isinstance(current, codecs_module.deps.LazyOptional)
         else None
     )
-    monkeypatch.setattr(codecs_module, absent_global, absent, raising=True)
+    monkeypatch.setattr(codecs_module.deps, absent_global, absent, raising=True)
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))

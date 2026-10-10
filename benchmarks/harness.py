@@ -200,7 +200,7 @@ def _accel_config(*, enabled: bool) -> ArchiveyConfig:
 
     ``ON`` engages the accelerator even without ``seekable_members=True`` (AUTO would
     not). The bzip2 accelerator is rapidgzip's bundled decoder, not the separate
-    ``indexed_bzip2`` package — see codecs.py.
+    ``indexed_bzip2`` package — see codecs/deps.py.
     """
     mode = AcceleratorMode.ON if enabled else AcceleratorMode.OFF
     return ArchiveyConfig(use_rapidgzip=mode, use_indexed_bzip2=mode)

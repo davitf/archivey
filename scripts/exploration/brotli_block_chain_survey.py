@@ -2,7 +2,7 @@
 """Does a valid Brotli stream ever carry consecutive *declaring* meta-blocks?
 
 Supporting `dev-docs/investigations/brotli-uncompressed-block-runs.md`, which asks whether
-the completeness gate's chain walk (`archivey.internal.streams.brotli_framing`) could be
+the completeness gate's chain walk (`archivey.internal.streams.codecs.brotli_framing`) could be
 replaced by a single fixed test: "the meta-block after the first must be compressed".
 
 This script re-measures the two numbers that settled it, on whatever machine you run it on:
@@ -41,7 +41,7 @@ from collections import Counter
 
 import brotli
 
-from archivey.internal.streams.brotli_framing import (
+from archivey.internal.streams.codecs.brotli_framing import (
     BrotliFirstBlock,
     first_block_overruns_source,
     parse_first_metablock,
@@ -50,7 +50,7 @@ from archivey.internal.streams.brotli_framing import (
 # The chain walk and the mid-stream header parser land with #265. On an older checkout
 # the script still measures the first-block gate; the two comparison columns are skipped.
 try:
-    from archivey.internal.streams.brotli_framing import (
+    from archivey.internal.streams.codecs.brotli_framing import (
         chain_proves_invalid,
         parse_metablock,
     )
