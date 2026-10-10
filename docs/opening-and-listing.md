@@ -39,8 +39,12 @@ archivey.open_stream("access.log.gz")  # a stream: the decompressed bytes
 ```
 
 `open_archive` works on a plain `.gz` too — you get an archive with exactly one
-member, named after the file. Use `open_stream` when you just want the bytes and
-know there is no tar inside.
+member, named after the file. Use `open_stream` when you just want the decompressed
+bytes. On a `.tar.gz`, `.tar.xz` and the other compressed tars, `open_stream` removes
+the compression only and gives you the tar bytes, as `gzip.open` does, whether it
+detects the format or you pass `format=ArchiveFormat.TAR_GZ`. To read the files inside,
+use `open_archive`. `open_stream` refuses a ZIP, 7z, RAR, ISO or plain
+`.tar`, because there is no compression layer around them to remove.
 
 ## Which options to set
 
@@ -113,7 +117,10 @@ Its other limitations:
 | A sequence of paths or streams | The volumes of one multi-volume archive — see below |
 
 Passing a `format=` that says anything other than a directory, for a path that is one,
-raises `ArchiveyUsageError` rather than quietly reading the directory tree instead.
+raises `ArchiveyUsageError` rather than quietly reading the directory tree instead. The
+reverse, `format=ArchiveFormat.DIRECTORY` for a file or a stream, raises
+`ArchiveyUsageError` too. A path that cannot be reached at all raises the operating
+system's own error, such as `FileNotFoundError`, whatever `format=` says.
 
 **A seekable stream is read from wherever it currently is**, through to the end.
 Archivey treats the current position as byte 0 of the archive, so an archive stored

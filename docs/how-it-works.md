@@ -48,7 +48,7 @@ seekable with `seekable_members=True` does seek, even when that means decompress
 again from the start; where a codec allows better, the layer uses an index (xz, lzip) or
 the `[seekable]` accelerator (gzip, bzip2). Encrypted members seek too
 ([Seeking inside compressed members](access-and-cost.md#seeking-inside-compressed-members)).
-[`open_stream`][archivey.open_stream] exposes the layer for a bare compressed file.
+[`open_stream`][archivey.open_stream] exposes the layer for a bare compressed file, or for a compressed tar.
 
 Depth: the [codec library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md)
 for which library backs each codec, and why.

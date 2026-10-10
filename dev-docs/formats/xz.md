@@ -128,7 +128,11 @@ thousands of short runs of zeros. Past either bound the index is reported unread
 `size=None`, and a seek falls back to decoding forward with `SEEK_INDEX_DEGRADED`. The
 forward read then reports the bytes as `ARCHIVE_TRAILING_DATA`
 ([`single-file.md`](single-file.md) §2.3). The two bounds keep the cost of a file of junk
-to 1 MiB of reading and 4096 checks at open, a few milliseconds.
+to 1 MiB of reading and 4096 checks at open, a few milliseconds. Each stream's index is
+read at most 1 MiB at a time (`_INDEX_READ_CHUNK`), because a footer that checks out can
+still claim an index as large as the file; a real index fits in one read, which the CRC
+check and both record walks share (threat model,
+[Allocations sized by a header field](../threat-model.md#allocations-sized-by-a-header-field)).
 
 **LZMA Alone** gives its size from the header when the header is not the all-ones
 "unknown" marker. `xz --format=lzma` always writes the marker; the LZMA SDK writes the real

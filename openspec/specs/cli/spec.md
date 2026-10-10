@@ -63,16 +63,36 @@ matching members; a member SHALL be processed when it matches an include (or non
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
 `--include` flag. When one or more include patterns are given, each pattern that
 matches no member SHALL produce a stderr warning
-(`warning: pattern matched no members: '…'`). When every include misses on
-`extract` or `test`, the command SHALL exit `1` after the warning(s). On `list`,
-the same warnings SHALL be emitted but the exit code SHALL remain `0` when the
-archive otherwise listed successfully. On `extract`, when there is exactly one
-unmatched include that names an existing directory or ends with `/`, the warning
-SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL accept
-exactly **one** archive positional (multi-archive is out of scope for this
+(`warning: pattern matched no members: '…'`). When the includes match members but
+`--exclude` removes every one of them, or when there is no include and `--exclude`
+removes every member, the system SHALL warn
+`warning: no members selected: --exclude removed every member…` instead. When the
+patterns select no member in either way on `extract` or `test`, the command SHALL
+exit `1` after the warning(s) and SHALL write nothing, not even the destination
+directory; an archive with no members and only `--exclude` patterns is not such a
+case. On `list`, the same warnings SHALL be emitted but the exit code SHALL remain
+`0` when the archive otherwise listed successfully. On `extract` and `test`, the
+patterns SHALL be checked against a member index when the archive has a complete
+one without a scan, before anything is read or written. Otherwise they SHALL be
+checked in the same pass that tests or extracts the members, with the warnings
+after that pass, and SHALL NOT cost a separate pass: on a compressed TAR such a
+pass decompresses the whole archive. An index that ends in damage holds only the
+members before the damage, so it is not complete; and a pass that ends early SHALL
+NOT report its patterns, while a pass that reaches its end SHALL, whatever members
+failed in it. A pass that ends early SHALL exit `1` and SHALL NOT claim that the
+patterns matched nothing. The "write nothing" rule above does not apply to it: an
+`extract` that aborts this way MAY leave the destination directory it created, as
+an aborted `extract` with no patterns does. On `list`, the patterns SHALL be
+checked against the member listing the command reads anyway, with the warnings
+before the member lines. A listing that ends in damage SHALL produce no pattern
+warning on `list`, because the members after the damage are unknown; `list` SHALL
+print the listing error and exit `1` instead. On `extract`, when there is exactly
+one unmatched include that names an existing directory or ends with `/`, the
+warning SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL
+accept exactly **one** archive positional (multi-archive is out of scope for this
 capability). `--password` SHALL be accepted for encrypted archives; when an
-encrypted archive is opened, no `--password` was supplied, and stdin is a TTY,
-the system SHALL prompt for the password without echoing it.
+encrypted archive is opened, no `--password` was supplied, and stdin is a TTY, the
+system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
@@ -198,6 +218,8 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
+| `archivey test <archive> 'a*' --exclude 'a*'` or `archivey extract <archive> --exclude '*'` | stderr `warning: no members selected: …`; exit `1`; `extract` creates no directory |
+| `archivey test <archive.tar.gz> a.txt` | The archive is decompressed once; no backward-seek warning |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[recommended]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
@@ -390,6 +412,21 @@ filesystem entry literally named `-`.
 | --- | --- |
 | `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
 | `archivey extract -` | Same |
+
+### Requirement: an empty path argument is a usage error
+
+The system SHALL refuse an empty string given as the archive argument of any verb, or
+as `extract --dest`, with a usage error (exit `2`) and a message, before anything is
+read or written. `Path("")` is `Path(".")`, so an unset shell variable
+(`"$ARCHIVE"`, `-d "$OUT"`) would otherwise read or extract into the working
+directory; `.` remains the way to name it.
+
+#### Scenario: empty path
+
+| Case | Expected |
+| --- | --- |
+| `archivey list ""`, `test ""`, `info ""`, `extract ""` | Exit `2`; message names the empty path; no traceback |
+| `archivey extract a.zip -d ""` | Exit `2`; nothing is written to the working directory |
 
 ### Requirement: The CLI uses only public API
 

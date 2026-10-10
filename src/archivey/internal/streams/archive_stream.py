@@ -49,6 +49,7 @@ from archivey.internal.streams.verify import (
     build_member_verifier,
     note_raised_seek,
 )
+from archivey.terminal import quoted
 from archivey.types import HashAlgorithm
 
 if TYPE_CHECKING:
@@ -93,6 +94,49 @@ def _noop_stamp(_exc: ArchiveyError) -> None:
     return None
 
 
+_ARCHIVE_SOURCE_CLOSED = "Cannot read this stream: its source has been closed."
+
+
+def closed_source_error(member_name: str | None = None) -> ArchiveyUsageError:
+    """The error for a read that found the source under it closed.
+
+    It is a usage error, not damage: the archive bytes are fine. Raised from both error
+    boundaries, inside a member stream (``ArchiveStream._raise_translated``) and in the
+    reader's own work (``BaseArchiveReader._raise_translated``), so the two give the
+    same answer. ``member_name`` is the member being read, or ``None`` when no member
+    is involved (listing, or a bare stream from ``open_stream``); that wording names no
+    archive, because ``open_stream`` has none.
+    """
+    if member_name is None:
+        return ArchiveyUsageError(_ARCHIVE_SOURCE_CLOSED)
+    return ArchiveyUsageError(
+        f"Cannot read member {quoted(member_name)}: the archive source has been closed."
+    )
+
+
+def as_closed_source_error(
+    exc: BaseException, member_name: str | None
+) -> ArchiveyUsageError | None:
+    """The ``closed_source_error`` for ``exc``, or ``None`` if ``exc`` is not a closed source.
+
+    Matches the ``io`` closed-handle ``ValueError`` itself, and also the no-member
+    error that a boundary below this one already raised for it. A codec stream under a
+    member (a ``.tar.gz`` decoder, a 7z folder) has no member name, so its boundary
+    says "this stream"; the member boundary above it knows the member and names it.
+    """
+    if is_closed_file_error(exc):
+        return closed_source_error(member_name)
+    # Reachable because ArchiveyUsageError is not an ArchiveyError, so the callers'
+    # already-typed arm does not claim it first.
+    if (
+        member_name is not None
+        and type(exc) is ArchiveyUsageError
+        and exc.raw_message == _ARCHIVE_SOURCE_CLOSED
+    ):
+        return closed_source_error(member_name)
+    return None
+
+
 class ArchiveStream(ReadOnlyIOStream):
     """Public member/codec stream handle (exception translation + optional verify).
 
@@ -133,10 +177,12 @@ class ArchiveStream(ReadOnlyIOStream):
         verify_member: ArchiveMember | None = None,
         archive_name: str | None = None,
         verifier: MemberVerifier | None = None,
-        name: str | None = None,
+        member_name: str | None = None,
     ) -> None:
         super().__init__()
-        self._name = name
+        # Named in the closed-source error and returned by ``name``; ``None`` for a
+        # stream of no member.
+        self._member_name = member_name
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
         self._translate = translate
         self._stamp = stamp if stamp is not None else _noop_stamp
@@ -193,9 +239,9 @@ class ArchiveStream(ReadOnlyIOStream):
         name). It is a member name, not a filesystem path. A stream with no member
         (``open_stream``) has no name and raises, as ``io.BytesIO`` does.
         """
-        if self._name is None:
+        if self._member_name is None:
             raise AttributeError("name")
-        return self._name
+        return self._member_name
 
     def _attach_finalizer(self) -> None:
         """Safety-net finalizer: release the lease if the caller never closed us.
@@ -364,6 +410,8 @@ class ArchiveStream(ReadOnlyIOStream):
 
         self._translate = composed_translate
         self._stamp = composed_stamp
+        if self._member_name is None:
+            self._member_name = nested._member_name
         if self._rewind_warning is None and nested._rewind_warning is not None:
             self._rewind_warning = nested._rewind_warning
         # Adopt fused verification from the nested member wrap (lazy stream_members
@@ -462,16 +510,14 @@ class ArchiveStream(ReadOnlyIOStream):
         if isinstance(e, ArchiveyError):
             self._stamp(e)
             raise e
-        if is_closed_file_error(e):
+        translated_closed = as_closed_source_error(e, self._member_name)
+        if translated_closed is not None:
             # The *inner* stream hit a closed handle underneath it — typically the
-            # caller closed their supplied BinaryIO early. Mapped here, before the
+            # caller closed the BinaryIO they passed in. Mapped here, before the
             # per-library translator, so a backend's generic ValueError mapping cannot
             # claim it. The wrapper's own read-after-close never reaches _fail (plain
-            # ValueError from _ensure_open).
-            translated_closed = ArchiveyUsageError(
-                "Cannot read this member stream: its underlying caller-owned source "
-                "has been closed."
-            )
+            # ValueError from _ensure_open). BaseArchiveReader._raise_translated maps
+            # the same error raised while a member opens, with the same message.
             logger.debug("Translated exception: %r -> %r", e, translated_closed)
             raise translated_closed from e
         translated = self._translate(e)

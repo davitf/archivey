@@ -54,6 +54,7 @@ from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     apply_name_policy,
     check_universal,
+    resolve_or_raise_on_loop,
     transform_standard,
     transform_strict,
 )
@@ -238,6 +239,27 @@ def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> 
 def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
     m = _member("sub/link", type=MemberType.SYMLINK, link_target="../file.txt")
     check_universal(m, tmp_path)  # resolves to <dest>/file.txt, inside root
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    ("name", "in_loop"),
+    [("p/f", False), ("f", True), ("", True)],
+    ids=["parent", "dest", "dest-root-member"],
+)
+def test_check_universal_names_a_loop_in_the_destination(
+    tmp_path: Path, name: str, in_loop: bool
+) -> None:
+    # A loop the destination already had, below dest or at dest itself. Path.resolve()
+    # raises on it before Python 3.13 and returns a path from 3.13; the answer must not
+    # depend on which.
+    os.symlink("p", tmp_path / "p")
+    dest = tmp_path / "p" if in_loop else tmp_path
+    member = _member(name, type=MemberType.DIRECTORY) if name == "" else _member(name)
+    with pytest.raises(ExtractionError) as info:
+        check_universal(member, dest)
+    assert type(info.value) is ExtractionError
+    assert "A path in the destination does not resolve" in str(info.value)
 
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
@@ -1710,6 +1732,145 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
     statuses = {r.member.name: r.status for r in results}
     assert statuses["evil"] is ExtractionStatus.BLOCKED
     assert (dest / "ok.txt").read_bytes() == b"ok"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    "links",
+    [
+        [("d", "d")],
+        [("a", "b"), ("b", "a")],
+        [("a", "b"), ("b", "c"), ("c", "a")],
+        [("x/a", "../y/b"), ("y/b", "../x/a")],
+    ],
+    ids=["self", "pair", "triple", "across-dirs"],
+)
+def test_tar_symlink_closing_a_loop_is_rejected(
+    tmp_path: Path, links: list[tuple[str, str]]
+) -> None:
+    # The link that closes the loop is refused, on every Python version: Path.resolve()
+    # raises on a loop before 3.13 and returns a path from 3.13, so the check must
+    # not depend on it raising.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("sym", name, target) for name, target in links]))
+    dest = tmp_path / "out"
+    results = open_and_extract(src, dest, on_error=OnError.CONTINUE).results
+    statuses = {r.member.name: r.status for r in results}
+    closing = links[-1][0]
+    assert statuses == {
+        name: ExtractionStatus.BLOCKED
+        if name == closing
+        else ExtractionStatus.EXTRACTED
+        for name, _ in links
+    }
+    error = next(r.error for r in results if r.member.name == closing)
+    assert isinstance(error, FilterRejectionError)
+    assert error.message == "Symlink target escapes destination"
+    assert not os.path.lexists(dest / closing)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_under_a_symlink_loop_raises_eloop(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest below a looping link is refused with the OSError mkdir raises, for every
+    # backend and on every Python version. Before 3.13 Path.resolve() raised
+    # RuntimeError there, and the directory backend's into-itself check let it out.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(OSError) as info:
+            reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+    assert info.value.errno == errno.ELOOP
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest that is itself a looping link exists and is not a directory, so every
+    # backend refuses it as it refuses a regular file there. The directory backend's
+    # into-itself check must not answer first with the loop's OSError.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(ExtractionError, match="exists and is not a directory"):
+            reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("shape", ["self", "ancestor"])
+def test_resolve_or_raise_on_loop_raises_eloop(tmp_path: Path, shape: str) -> None:
+    # One OSError on every Python version, naming the path asked about: before 3.13
+    # resolve() raises RuntimeError itself, from 3.13 only the stat sees the loop.
+    os.symlink("loop", tmp_path / "loop")
+    path = tmp_path / "loop" if shape == "self" else tmp_path / "loop" / "x" / "y"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
+    assert info.value.filename == str(path)
+
+
+def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> None:
+    (tmp_path / "d").mkdir()
+    path = tmp_path / "d" / "missing" / "f"
+    assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
+    tmp_path: Path,
+) -> None:
+    # A dangling link inside dest must resolve to its target name, not count as a loop
+    # (an escape, at the call sites).
+    os.symlink("nowhere", tmp_path / "dangling")
+    assert resolve_or_raise_on_loop(tmp_path / "dangling") == (
+        tmp_path.resolve() / "nowhere"
+    )
+
+
+def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows reports a loop as ERROR_CANT_RESOLVE_FILENAME, not ELOOP. Raised here by
+    # a stubbed stat so the branch runs on every platform.
+    def stat(self: Path, **kwargs: object) -> os.stat_result:
+        exc = OSError(errno.EINVAL, "The name of the file cannot be resolved")
+        exc.winerror = 1921  # type: ignore[attr-defined]
+        raise exc
+
+    # resolve() is stubbed to return the path as 3.13+ does on a loop: before 3.13
+    # resolve() calls stat itself and would turn the stub's error into RuntimeError,
+    # so the stat branch would never run.
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(Path, "stat", stat)
+    path = tmp_path / "x"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
+    assert info.value.filename == str(path)
+    # The Windows code stays visible on the chained original.
+    assert getattr(info.value.__cause__, "winerror", None) == 1921
 
 
 # ---------------------------------------------------------------------------
@@ -3822,6 +3983,80 @@ def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> Non
             members=lambda m: m.name != "src.bin",
         )
     assert not _overwritten(report)
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_o2_hardlink_folded_onto_its_own_source(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # `A` folds onto `a` under STRICT and STANDARD, so REPLACE routes the link onto the
+    # path its own source was written to. The link wins that path as any later member
+    # would: the source is revised to OVERWRITTEN, and the file keeps its content.
+    archive = _tar_bytes([("file", "a", b"data"), ("hard", "A", "a")])
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest, overwrite=OverwritePolicy.REPLACE, on_error=OnError.CONTINUE
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("a", ExtractionStatus.OVERWRITTEN),
+        ("A", ExtractionStatus.EXTRACTED),
+    ]
+    assert report.results[1].path == dest / "a"
+    assert sorted(p.name for p in dest.iterdir()) == ["a"]
+    assert (dest / "a").read_bytes() == b"data"
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_duplicate_hardlink_name_under_replace_leaves_no_temp(
+    tmp_path: Path, streaming: bool, policy: ExtractionPolicy
+) -> None:
+    # The first `b` is superseded and parked at its name, which keeps the source's
+    # inode but is no longer a recorded source path. The second `b` is then linked
+    # onto another name of the same file, where rename(2) does nothing; the temp
+    # name was left behind.
+    archive = _tar_bytes(
+        [("file", "a", b"data"), ("hard", "b", "a"), ("hard", "b", "a")]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            policy=policy,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("a", ExtractionStatus.EXTRACTED),
+        ("b", ExtractionStatus.SUPERSEDED),
+        ("b", ExtractionStatus.EXTRACTED),
+    ]
+    assert sorted(p.name for p in dest.iterdir()) == ["a", "b"]
+    assert os.path.samefile(dest / "a", dest / "b")
+
+
+def test_o2_orphan_hardlinks_folded_onto_each_other(tmp_path: Path) -> None:
+    # The second pass writes the excluded source's content at `L`; `l` folds onto it.
+    # Under REPLACE `l` takes that path, and `L` is revised to OVERWRITTEN.
+    archive = _tar_bytes(
+        [("file", "src", b"data"), ("hard", "L", "src"), ("hard", "l", "src")]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            members=["L", "l"],
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("L", ExtractionStatus.OVERWRITTEN),
+        ("l", ExtractionStatus.EXTRACTED),
+    ]
+    assert report.results[1].path == dest / "L"
+    assert sorted(p.name for p in dest.iterdir()) == ["L"]
+    assert (dest / "L").read_bytes() == b"data"
 
 
 # ---------------------------------------------------------------------------

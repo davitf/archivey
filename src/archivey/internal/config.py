@@ -69,6 +69,11 @@ class StreamConfig:
     report them as ``ARCHIVE_TRAILING_DATA``. Inside a ZIP or 7z the container bounds
     the coder's input, and what follows a coder's end there (a 7z AES stage's block
     padding) is the container's business, so the codec stops at its end silently.
+    ``refuse_input_after_end`` is set where the container's declared compressed size is
+    the codec's input exactly, with no padding allowed after it (a ZIP member): any
+    byte of that input after the codec's end of stream, a zero too, is then a
+    ``CorruptionError`` (DR-3), as 7-Zip reports "There are some data after the end of
+    the payload data" as an error there.
     """
 
     streaming: bool = False
@@ -81,6 +86,7 @@ class StreamConfig:
     decoder_limits: DecoderLimits = DecoderLimits()
     collector: DiagnosticCollector | None = field(default=None, compare=False)
     report_trailing_data: bool = False
+    refuse_input_after_end: bool = False
 
 
 def stream_config_from_archivey(

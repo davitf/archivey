@@ -84,7 +84,8 @@ key-value records, per member (`x`) or for the rest of the archive (`g`), that r
 any field. tarfile merges all three before archivey sees a member, which has three
 consequences here. Where a name came from decides how its bytes were decoded, and
 archivey has to infer that to rebuild `raw_name` (§2.2). `extra["tar.pax_headers"]`
-holds the merged records, global ones included, not the member's own block. And
+holds the merged records, global ones included, not the member's own block; it is
+read-only, and members with no records of their own share one copy (§2.2). And
 access time and inode-change time exist only as PAX records, so a member without them
 has neither.
 
@@ -193,25 +194,33 @@ header past either cap and no more. That one header is bounded too: tarfile read
 `x`/`g` header or a GNU `L`/`K` name whole, so `_TarInfo._proc_member` refuses one whose
 size field declares more than is left of `max_metadata_bytes` (the whole cap when the
 listing is not enforcing it, and on a streaming walk) with `ResourceLimitError`, before
-the read. The budget reaches it through a context variable the reader sets around each
-tarfile call that parses headers. A sparse member's map counts too, 24 bytes per
-entry: tarfile keeps it on the `TarInfo`, and a PAX sparse 1.0 map is data, not header
-text, so a few kilobytes of compressed map can hold millions of entries. Past a cap that is not enforced (`stream_members()`
-on a random-access reader) the batches go back to full size. Batching keeps the walk a
-dense pass; one header per lock hold was measurably slower on ordinary listings. When
-the walk fails partway through a batch, the headers already parsed are handed out first,
-so `members_report()` keeps its salvaged prefix. tarfile still keeps every header it has
-parsed in `TarFile.members`, so a listing holds each header twice: once as tarfile's
-`TarInfo` and once as the `ArchiveMember`. On a streaming reader, `scan_members()` and
-`members_report()` count members against the cap as they arrive and raise at the one
-past it. `stream_members()` and forward-only iteration are not capped, by design, and
-there both lists grow for the whole pass.
+the read. The budget reaches it through a context variable the reader sets fresh for
+each member. tarfile keeps every header of a chain of `x` / `L` / `K` headers alive until
+the member at its end is built, so each header of the chain draws from what the headers
+before it left, not from the whole budget again. A sparse member's map counts too, 24
+bytes per entry, from the same budget: tarfile keeps it on the `TarInfo`, and a PAX
+sparse 1.0 or old GNU map is data, not header text, so a few kilobytes of compressed map
+can hold millions of entries. The map is weighed from its entry count before its entries
+are parsed (`_charge_sparse_map`): a 0.0 map by its offset records, a 0.1 map by its
+commas, a 1.0 map by its count line (`_proc_gnusparse_10` replaces tarfile's parse), and
+an old GNU map block by block (`_proc_sparse` copies tarfile's). tarfile also copies the
+PAX global records into every later member; members with no records of their own share
+one copy instead, which is why `extra["tar.pax_headers"]` is read-only. Past a cap that
+is not enforced (`stream_members()` on a random-access reader) the batches go back to
+full size. Batching keeps the walk a dense pass; one header per lock hold was measurably
+slower on ordinary listings. When the walk fails partway through a batch, the headers
+already parsed are handed out first, so `members_report()` keeps its salvaged prefix.
+tarfile still keeps every header it has parsed in `TarFile.members`, so a listing holds
+each header twice: once as tarfile's `TarInfo` and once as the `ArchiveMember`. On a
+streaming reader, `scan_members()` and `members_report()` count members against the cap
+as they arrive and raise at the one past it. `stream_members()` and forward-only
+iteration are not capped, by design, and there both lists grow for the whole pass.
 
 **Member metadata** is mapped in `_to_member`:
 
 | Field | From |
 | --- | --- |
-| `type` | typeflag through tarfile's predicates: directory, symlink, hardlink, file. Everything else, including devices, FIFOs and contiguous files, is `OTHER`, with `extra["tar.type"]` holding the typeflag byte |
+| `type` | typeflag through tarfile's predicates: directory, symlink, hardlink, file. Everything else, including devices, FIFOs and contiguous files, is `OTHER`, with `extra["tar.type"]` holding the typeflag byte. An old-style (v7) `AREGTYPE` header (typeflag NUL) whose final name ends in `/` is a directory, as in GNU tar 1.35 and 7-Zip. The final name is the one after a PAX `path` or a GNU long name; `_TarInfo` decides it, not tarfile, whose own check reads only the header's name field and differs between Python patch levels. The data blocks its `size` declares are skipped, and `extra["tar.type"]` stays the stored `b"\x00"`. The skipped bytes are not reported today: the member has no `size`, no `extra` key and no diagnostic for them, although DR-3 asks for one and GNU tar and 7-Zip both print the size (tracked internally) |
 | `name` | tarfile's decoded name after PAX and GNU overrides, normalized with `backslash_is_separator=False`, since a backslash is a legal POSIX filename character. `./` prefixes go and a directory gets a trailing `/`, with `MEMBER_NAME_NORMALIZED` for each change |
 | `raw_name` | Rebuilt by `_recover_raw_name`. A PAX `path` is UTF-8 unless its own block says `hdrcharset=BINARY`; a ustar or GNU long name is re-encoded with the archive `encoding` and tarfile's `surrogateescape`. tarfile does not record where a name came from, so a name equal to `pax_headers["path"]` is taken as PAX. `None` when no codec reproduces it |
 | `link_target` | `linkname` exactly as stored, for symlinks and hardlinks. A hardlink stores an archive path, so a tar made from `./d` stores `./d/b` while the member it names is listed as `d/b`. `link_target_member` is the resolved one |
@@ -222,7 +231,7 @@ there both lists grow for the whole pass.
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
 | `mode`, `uid`, `gid`, `uname`, `gname` | Straight from the header. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
 | `is_sparse` | `TarInfo.issparse()`, which is true for the old GNU `S` typeflag and for all three PAX sparse encodings |
-| `extra` | `tar.type` always; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
+| `extra` | `tar.type` always; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for device members |
 
 `encoding=` reaches `tarfile.open`; without it the reader passes `"utf-8"`, not
 tarfile's own default (`tarfile.ENCODING`, the filesystem encoding on POSIX), so a
@@ -259,6 +268,19 @@ entry, or a logical size past 2**63 - 1 (no file's size), with `CorruptionError`
 the member is opened (streaming: on its first read,
 so a consumer that skips it is unaffected). The end is known only in whole blocks, so up
 to 511 bytes of the member's own padding can still read as data.
+
+**A seek the filesystem refuses reads as the end of the data.** tarfile seeks to offsets
+it adds up from size fields, and a PAX or base-256 size can put one anywhere. An offset
+past 2**63 - 1 is refused before the seek, with `CorruptionError`: no file has a byte
+there. A smaller one can still be past the largest file the filesystem holds: ext4
+(about 16 TiB) refuses the seek with `EINVAL` or `EOVERFLOW`, while APFS and a `BytesIO`
+accept it and the next read finds the end. The archive is shorter than any file that
+filesystem can hold, so the offset is past its end either way, and the reader raises
+`TruncatedError` naming the offset. One archive then gives one error from every source
+on every OS (DR-5), and it is GNU tar's answer for the same bytes (`Unexpected EOF in
+archive`). The `except` holds one absolute seek to an archive-chosen offset, which is
+why `EINVAL` is an archive fact here though extraction deliberately does not translate
+it (`openspec/specs/safe-extraction/spec.md`).
 
 **A plain tar reads the member's bytes from the source**, at the offset the walk found.
 Random opens cost one seek each, and members can be read in any order.
@@ -431,6 +453,7 @@ extraction checks (§2.4).
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
 | A hardlink placed before the only member it names does not extract | **format** | A hardlink refers to an earlier member, as tarfile and `tar(1)` read it; `LinkTargetNotFoundError` in both modes (§2.3) |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
+| A `0` (`REGTYPE`) entry named `d/` that holds data lists as the file `d`; GNU tar 1.35 and 7-Zip make it a directory | **archivey** | The `AREGTYPE` form of the same entry is a directory (§2.2), and so is a ZIP entry `d/` with data (tracked internally) |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
 | `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
@@ -484,6 +507,7 @@ extraction checks (§2.4).
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch | `::test_bad_pax_time_is_reported`, `::test_several_bad_pax_times_on_one_member_are_each_reported`, `::test_pax_mtime_zero_is_the_epoch` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
+| A size field past what the filesystem can seek to is `TruncatedError` naming the offset, from a path, a `BytesIO` and a stream that refuses the seek as ext4 does; another errno propagates | `::test_size_past_filesystem_limit_is_truncation`, `::test_refused_seek_through_open_archive_is_truncation`, `::test_refused_seek_is_truncation_naming_the_offset`, `::test_refused_seek_with_other_errno_propagates` |
 | End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |
 | Missing trailer warns, and raises under `RAISE` | `::test_missing_eof_blocks_warns_by_default`, `::test_missing_eof_blocks_raise_disposition_raises`, and the `_streaming_` pair |
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
@@ -497,7 +521,7 @@ extraction checks (§2.4).
 | Trailing data reported, bounded, quiet on an undecodable tail; zeros pass | `tests/test_review_simplicity_consistency.py::test_trailing_data_is_reported`, `::test_trailing_data_scan_is_bounded`, `::test_compressed_tail_that_will_not_decode_ends_the_scan_quietly`, `::test_zero_padding_after_the_trailer_still_passes`, `::test_wrong_explicit_format_on_iso_reports_trailing_data` |
 | Zero-filled files are empty tars; detection refuses them | `::test_legitimately_empty_tar_stays_valid`, `::test_every_block_aligned_zero_length_is_a_valid_empty_tar`, `::test_zero_filled_dot_tar_opens_empty_via_extension`, `::test_content_detection_refuses_a_zero_filled_file` |
 | A PAX header's size does not drive an allocation (O15) | `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation` |
-| The listing stops reading headers at `max_members` and `max_metadata_bytes`, returns to full batches past the cap, and keeps its prefix when it fails mid-batch | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_listing_stops_reading_headers_at_max_metadata_bytes`, `::test_tar_header_batch_returns_to_full_size_past_max_members`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch` |
+| The listing stops reading headers at `max_members` and `max_metadata_bytes`, returns to full batches past the cap, and keeps its prefix when it fails mid-batch | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_listing_stops_reading_headers_at_max_metadata_bytes`, `::test_tar_header_batch_returns_to_full_size_past_max_members`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch`; extended-header chains, sparse maps, shared and read-only global records in both modes: `tests/test_tar_header_memory.py` |
 | Links: relative, `..`, absolute, archive-relative hardlinks, duplicate names, cycles | `tests/test_tar.py::test_relative_symlink_resolves_against_link_directory` through `::test_chain_through_same_named_members_not_false_cycle` |
 | Hardlink extraction: one pass, orphans, cross-device, past the link-count limit | `tests/test_extraction.py::test_tar_hardlink_shares_inode`, `::test_tar_hardlink_orphan_recovered_seekable`, `::test_tar_hardlink_orphan_forward_only_onerror`, `::test_cross_device_hardlink_reuses_sibling`; `tests/test_cross_os_extraction.py::test_hard_link_past_the_link_limit_is_copied` |
 | `\` in a name or link target under `STRICT`/`STANDARD` | `tests/test_cross_os_extraction.py::test_tar_backslash_is_written_as_a_separator`, `::test_hardlink_target_backslash_becomes_a_separator`, `::test_hardlink_resolves_by_its_stored_target`, `::test_symlink_to_a_member_named_with_a_backslash_resolves`, `::test_symlink_target_backslash_cannot_climb_out` |

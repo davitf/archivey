@@ -1,4 +1,4 @@
-"""No raw exception escapes the public API on a wrong-typed argument.
+"""No raw exception escapes the public API on a wrong argument.
 
 Every finding this file guards was found the same way: call a public entry point with
 a value a caller plausibly writes, and look at what comes back. The failures were not
@@ -25,6 +25,11 @@ argument added with no check a failure here rather than a silence.
   ``open_archive(0)`` raising ``TypeError: unsupported source type`` is deliberate:
   it is raised at the boundary with a message that names the problem, and a
   wrong-typed positional raising ``TypeError`` is what a Python caller expects.
+* ``ValueError`` for an empty string as a **source** or ``dest``: ``Path("")`` is
+  ``Path(".")``, so it would otherwise name the current directory. Every path
+  argument must have an empty-string row (:func:`test_every_path_argument_has_an_empty_row`),
+  and the sweep accepts ``ValueError`` only on such a row and only when its message
+  says the path is empty.
 * ``KeyError`` for an unknown member name (``archive-reading`` specifies it), plus
   ``io.UnsupportedOperation`` for an unsupported ``seek`` and ``ValueError`` for I/O
   on a closed stream — neither of which this file exercises.
@@ -58,11 +63,28 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.detection_cost import BALANCED_BUDGET, DetectionBudgetPreset
+from archivey.detection_cost import (
+    BALANCED_BUDGET,
+    DetectionBudget,
+    DetectionBudgetPreset,
+)
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 
-# TypeError is permitted only for the arguments named here; see the module docstring.
-_TYPE_ERROR_OK = frozenset({"source", "dest"})
+# The path arguments. Only these may raise TypeError for a wrong type, or ValueError
+# for an empty string, and each must have an empty-string row; see the module docstring.
+_PATH_ARGUMENTS = frozenset({"source", "dest"})
+
+
+@pytest.fixture(autouse=True)
+def _scratch_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run every probe from a scratch directory.
+
+    The empty-path rows name the current directory if their refusal regresses, and
+    an extraction there would land in the checkout.
+    """
+    scratch = tmp_path / "scratch-cwd"
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
 
 
 @pytest.fixture
@@ -77,6 +99,9 @@ def archive(tmp_path: Path) -> Path:
 class _Case(NamedTuple):
     """One (entry point, argument, wrong value) probe.
 
+    The wrong value is wrongly typed or wrongly valued: whatever a caller plausibly
+    writes that the entry point must refuse.
+
     ``entry`` is the name as :func:`_public_surface` and :data:`_NOT_SWEPT` spell it,
     and it is what the inventory matches on. Keying by argument name alone was not
     enough: a ``limits`` row on ``extract`` made ``extract_all(limits=…)`` look swept,
@@ -84,12 +109,25 @@ class _Case(NamedTuple):
 
     ``argument`` also decides whether a bare ``TypeError`` is allowed, so a row added
     with an unfamiliar name gets the strict treatment by default.
+
+    ``empty_path`` marks a row that passes an empty string as a path, alone or inside
+    a volume list. Only such a row may answer with the empty-path ``ValueError``.
+    :func:`_case` sets it from the value, so no label or list has to agree with it.
     """
 
     entry: str
     argument: str
     label: str
     call: Callable[[], Any]
+    empty_path: bool
+
+
+def _is_empty_path(argument: str, bad: Any) -> bool:
+    if argument not in _PATH_ARGUMENTS:
+        return False
+    if isinstance(bad, list):
+        return any(isinstance(item, str) and item == "" for item in bad)
+    return isinstance(bad, str) and bad == ""
 
 
 def _case(
@@ -100,11 +138,17 @@ def _case(
     *,
     label: str | None = None,
 ) -> _Case:
-    return _Case(entry, argument, label or f"{entry}({argument}={bad!r})", call)
+    return _Case(
+        entry,
+        argument,
+        label or f"{entry}({argument}={bad!r})",
+        call,
+        _is_empty_path(argument, bad),
+    )
 
 
 def _cases(archive: Path, dest: Path) -> list[_Case]:
-    """Every wrong-typed public argument, as a probe the sweep can run."""
+    """Every public argument, with each wrong value a caller plausibly writes."""
     d = iter(range(10_000))
 
     def out() -> Path:
@@ -136,6 +180,22 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: detect_format(archive, config=b),
             ),
         ]
+
+    # ``DetectionBudget`` has no defaults, so each row starts from a real preset and
+    # replaces one field. Every field is a byte count compared or sliced with, and
+    # ``None`` there is not "off": it fails mid-detection.
+    for budget_field in dataclasses.fields(DetectionBudget):
+        for bad in ("x", -1, True, 1.5, None):
+            rows.append(
+                _case(
+                    "DetectionBudget",
+                    budget_field.name,
+                    bad,
+                    lambda b=bad, f=budget_field.name: dataclasses.replace(
+                        BALANCED_BUDGET, **{f: b}
+                    ),
+                )
+            )
 
     for bad in ("x", 0, ExtractionLimits):
         rows += [
@@ -202,7 +262,25 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _read_member(archive, b),
                 label=f"reader.read({bad!r})",
             ),
+            _case(
+                "get",
+                "name",
+                bad,
+                lambda b=bad: _get_member(archive, b),
+                label=f"reader.get({bad!r})",
+            ),
         ]
+    # A member object, which ``open()`` takes: ``get()`` looks up by name only, and
+    # this used to escape as ``TypeError: unhashable type: 'ArchiveMember'``.
+    rows.append(
+        _case(
+            "get",
+            "name",
+            "<ArchiveMember>",
+            lambda: _get_member(archive, None, by_member=True),
+            label="reader.get(<ArchiveMember>)",
+        )
+    )
 
     for bad in ("h.txt", [0], [None], [1.5], 0):
         rows += [
@@ -249,6 +327,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         None,
         io.StringIO("x"),
         io.BufferedWriter(io.BytesIO()),
+        "",
     ):
         rows += [
             _case(
@@ -274,7 +353,19 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
         ]
 
-    for bad in (0, None, object()):
+    # An empty string inside a volume list, in either position: each item is a path.
+    for volumes in ([archive, ""], ["", archive]):
+        rows.append(
+            _case(
+                "open_archive",
+                "source",
+                volumes,
+                lambda v=volumes: open_archive(v),
+                label=f"open_archive([{', '.join(repr(str(p)) for p in volumes)}])",
+            )
+        )
+
+    for bad in (0, None, object(), ""):
         rows.append(
             _case(
                 "extract_all", "dest", bad, lambda b=bad: _extract_all(archive, b, None)
@@ -460,9 +551,16 @@ def _open_member(archive: Path, member: Any) -> Any:
         return reader.open(member)
 
 
-def _extract_all(archive: Path, dest: Path, members: Any, **kwargs: Any) -> Any:
+def _extract_all(archive: Path, dest: str | Path, members: Any, **kwargs: Any) -> Any:
     with open_archive(archive) as reader:
         return reader.extract_all(dest, members=members, **kwargs)
+
+
+def _get_member(archive: Path, name: Any, *, by_member: bool = False) -> Any:
+    with open_archive(archive) as reader:
+        if by_member:
+            name = reader.members()[0]
+        return reader.get(name)
 
 
 def _read_member(archive: Path, member: Any) -> Any:
@@ -489,13 +587,14 @@ def _with_config(archive: Path, dest: Path, **field: Any) -> Any:
 
 
 def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
-    """Every wrong-typed public argument fails inside the error contract."""
+    """Every wrong public argument fails inside the error contract."""
     dest = tmp_path / "out"
     dest.mkdir()
 
     offenders: list[str] = []
-    for _entry, argument, label, call in _cases(archive, dest):
-        lenient = argument in _TYPE_ERROR_OK
+    for case in _cases(archive, dest):
+        label, call = case.label, case.call
+        lenient = case.argument in _PATH_ARGUMENTS
         try:
             call()
         except ArchiveyUsageError:
@@ -511,6 +610,9 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
                 )
         except TypeError as exc:
             if not lenient:
+                offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
+        except ValueError as exc:
+            if not (case.empty_path and "empty path" in str(exc)):
                 offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — the point is to catch everything
             offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
@@ -577,10 +679,9 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_stream", "seekable"): "truthiness flag",
     ("detect_format", "follow_stub_volumes"): "truthiness flag",
     ("extract_all", "dry_run"): "truthiness flag",
-    # ``get`` is mapping-shaped on purpose: like ``dict.get`` it answers with the
-    # default rather than raising, so ``reader.get(0)`` returning ``None`` is the
-    # contract, not an escape. ``reader.open("absent.txt")`` is where a lookup raises.
-    ("get", "name"): "mapping-shaped; returns the default rather than raising",
+    # ``get`` answers an absent *name* with the default, like ``dict.get``. A value
+    # that is not a name at all is swept above: ``get(b"h.txt")`` used to answer
+    # "absent" for a member that exists, which is a wrong answer, not a lookup miss.
     ("get", "default"): "any object is a valid default",
 }
 
@@ -596,6 +697,7 @@ def _public_surface() -> list[tuple[str, list[str]]]:
     for cls in (
         ArchiveyConfig,
         DecoderLimits,
+        DetectionBudget,
         ExtractionLimits,
         ListingLimits,
         SpoolLimits,
@@ -627,6 +729,26 @@ def test_every_public_argument_is_swept(archive: Path, tmp_path: Path) -> None:
     assert not missing, (
         "public arguments with no row in _cases() and no entry in _NOT_SWEPT:\n"
         + "\n".join(missing)
+    )
+
+
+def test_every_path_argument_has_an_empty_row(archive: Path, tmp_path: Path) -> None:
+    """Every swept path argument also has an empty-string row.
+
+    :func:`test_every_public_argument_is_swept` keys on (entry, argument), so a path
+    argument with only a wrong-type row satisfies it. This derives the empty-string
+    requirement from the rows themselves, so a new path argument added without that
+    row fails here.
+    """
+    dest = tmp_path / "covered"
+    dest.mkdir()
+    cases = _cases(archive, dest)
+    path_rows = {(c.entry, c.argument) for c in cases if c.argument in _PATH_ARGUMENTS}
+    empty_rows = {(c.entry, c.argument) for c in cases if c.empty_path}
+
+    missing = sorted(path_rows - empty_rows)
+    assert not missing, "path arguments with no empty-string row:\n" + "\n".join(
+        f"{entry}({argument}=…)" for entry, argument in missing
     )
 
 
@@ -680,7 +802,8 @@ def test_no_usage_error_message_names_a_private_attribute(
     dest.mkdir()
 
     leaks: list[str] = []
-    for _entry, _argument, label, call in _cases(archive, dest):
+    for case in _cases(archive, dest):
+        label, call = case.label, case.call
         try:
             call()
         except Exception as exc:  # noqa: BLE001 — inspecting whatever comes back
@@ -733,6 +856,24 @@ def test_unknown_member_name_still_raises_keyerror(archive: Path) -> None:
             reader.open("nope.txt")
 
 
+def test_get_refuses_a_bytes_name_and_keeps_the_default_for_an_absent_one(
+    archive: Path,
+) -> None:
+    """``get(b"h.txt")`` used to return ``None`` although ``h.txt`` exists.
+
+    The refusal is for the wrong type only: an absent ``str`` name still answers with
+    the default, like ``dict.get``.
+    """
+    sentinel = object()
+    with open_archive(archive) as reader:
+        with pytest.raises(ArchiveyUsageError, match=r"b'h\.txt' \(bytes\)"):
+            reader.get(b"h.txt")  # type: ignore[arg-type]
+        assert reader.get("nope.txt") is None
+        assert reader.get("nope.txt", sentinel) is sentinel  # type: ignore[arg-type]
+        found = reader.get("h.txt")
+        assert found is not None and found.name == "h.txt"
+
+
 def test_extract_all_wrong_typed_members_does_not_create_dest(
     archive: Path, tmp_path: Path
 ) -> None:
@@ -782,3 +923,27 @@ def test_class_of_the_wrong_kind_gets_no_constructor_hint() -> None:
     message = str(info.value)
     assert "the ListingLimits class itself" in message
     assert "did you mean" not in message
+
+
+def test_empty_string_path_is_refused(
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty string is a wrong argument, not the current directory.
+
+    The sweep proves each empty-path row raises within the contract; this proves the
+    working directory is left alone. ``Path("")`` is ``Path(".")``, so an empty string
+    (an unset environment variable, typically) used to open the working directory as a
+    directory archive, or extract into it.
+    """
+    dest = tmp_path / "out"
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "precious.txt").write_text("keep")
+    monkeypatch.chdir(cwd)
+
+    rows = [case for case in _cases(archive, dest) if case.empty_path]
+    assert rows
+    for case in rows:
+        with pytest.raises(ValueError, match="empty path"):
+            case.call()
+    assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]

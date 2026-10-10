@@ -57,7 +57,8 @@ A **directory path** SHALL return `FormatInfo(format=DIRECTORY,
 confidence=CERTAIN, detected_by="directory")` without reading anything, the same
 format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt (one pass, no
 bytes read). It SHALL NOT raise `IsADirectoryError` or any
-other `OSError`.
+other `OSError`. An empty string is not a directory path, although `Path("")` is
+`Path(".")`: `detect_format("")` SHALL raise `ValueError` (`error-handling`).
 
 A **path to a volume of a set** SHALL be detected on the source `open_archive` resolves
 for it: any part of a numbered split set (`set.7z.002`, `set.zip.003`, `set.exe.002`) on
@@ -84,6 +85,7 @@ format its bytes show; `open_archive` refuses it as an incomplete set.
 | Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
+| Empty string `""` | `ValueError`; the current directory is not detected |
 | Any part of a numbered split set, or a RAR continuation | The format, `detected_by` and `payload_offset` `open_archive` reports for the same path |
 | Numbered set with a gap (`set.zip.002`, no `set.zip.001`) | `TruncatedError` naming the missing part, from `detect_format` and `open_archive` alike |
 | Lone first part (`set.zip.001`, no other part) | The format its bytes show; `open_archive` raises `TruncatedError` |
