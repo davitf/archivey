@@ -23,6 +23,7 @@ import subprocess
 import zipfile
 import zlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -34,7 +35,8 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     ResourceLimitError,
 )
-from archivey.internal.backends.rar_parser import RarMemberInfo
+from archivey.internal.backends import rar_parser
+from archivey.internal.backends.rar_parser import RarArchive
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType, OnError
@@ -223,16 +225,20 @@ def test_a_rar4_stored_target_over_the_cap_is_refused(
     The header is patched rather than written, as in `test_windows_reparse`: RAR 7
     cannot write RAR4 at all, and the sizes are the only fields the branch consults.
     Both are patched: a stored target whose two sizes disagree is damage, which is
-    reported before the cap (`test_damaged_link_target.py`).
+    reported before the cap (`test_damaged_link_target.py`). They are patched after
+    the header walk: the walk skips a FILE header's data by its parsed
+    ``compress_size``, so a larger size set any earlier would move the walk too.
     """
-    original_init = RarMemberInfo.__init__
+    original_walk = rar_parser._parse_rar3
 
-    def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
-        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
-        if self.is_symlink:
-            self.file_size = self.compress_size = MAX_LINK_TARGET_BYTES + 1
+    def patched_walk(*args: Any, **kwargs: Any) -> RarArchive:
+        archive = original_walk(*args, **kwargs)
+        for member in archive.members:
+            if member.is_symlink:
+                member.file_size = member.compress_size = MAX_LINK_TARGET_BYTES + 1
+        return archive
 
-    monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
+    monkeypatch.setattr(rar_parser, "_parse_rar3", patched_walk)
 
     fixture = Path(__file__).parent / "fixtures" / "rar" / "symlinks_solid__rar4.rar"
     with open_archive(fixture) as reader:

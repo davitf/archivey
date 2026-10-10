@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sys
-from typing import TextIO
+from collections.abc import Generator, Iterator
+from contextlib import closing
+from typing import TextIO, TypeVar
 
 from archivey import ArchiveReader, ExtractionProgress
 from archivey.cli.common import open_for_cli, reject_salvage
@@ -91,76 +93,80 @@ def run_test(
             # count as FAIL and still reach the summary (F4). Once the generator raises,
             # further next() yields StopIteration — remaining members are lost (library
             # limitation for solid / poisoned streams); report them as "not tested" (P8).
-            it = iter(reader.stream_members(pred))
-            while True:
-                try:
-                    member, stream = next(it)
-                except StopIteration:
-                    break
-                except (ArchiveyError, OSError) as exc:
-                    failed += 1
-                    print(f"FAIL: {format_error_detail(exc)}", file=err)
-                    continue
+            # ``closing`` ends the pass here, deterministically, whatever leaves the
+            # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
+            # pass for ``reader.close()`` or the garbage collector to end while the
+            # error travels up to ``main()``.
+            with closing(_closable(reader.stream_members(pred))) as it:
+                while True:
+                    try:
+                        member, stream = next(it)
+                    except StopIteration:
+                        break
+                    except (ArchiveyError, OSError) as exc:
+                        failed += 1
+                        print(f"FAIL: {format_error_detail(exc)}", file=err)
+                        continue
 
-                saw_selected = True
-                if stream is None and _link_needs_verification(member):
-                    # Verified after the pass: the reader refuses an open() while
-                    # stream_members() is running.
-                    pending_links.append(member)
-                    continue
-                if stream is None:
-                    # Directories / links / non-file: no body to verify — omit from counts
-                    # so "N OK" matches unzip -t style (files only).
-                    if verbose:
-                        print(f"skip {escape_member_name(member.name)}", file=err)
-                    continue
-                member_written = 0
-                try:
-                    with stream:
-                        while True:
-                            chunk = stream.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            n = len(chunk)
-                            member_written += n
-                            bytes_done += n
-                            if on_progress is not None:
-                                on_progress(
-                                    ExtractionProgress(
-                                        member=member,
-                                        bytes_written=bytes_done,
-                                        total_bytes_estimated=total_bytes,
-                                        members_done=files_done,
-                                        members_total=members_total,
-                                        member_bytes_written=member_written,
-                                        members_extracted=0,
-                                        members_blocked=0,
+                    saw_selected = True
+                    if stream is None and _link_needs_verification(member):
+                        # Verified after the pass: the reader refuses an open() while
+                        # stream_members() is running.
+                        pending_links.append(member)
+                        continue
+                    if stream is None:
+                        # Directories / links / non-file: no body to verify — omit from counts
+                        # so "N OK" matches unzip -t style (files only).
+                        if verbose:
+                            print(f"skip {escape_member_name(member.name)}", file=err)
+                        continue
+                    member_written = 0
+                    try:
+                        with stream:
+                            while True:
+                                chunk = stream.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                n = len(chunk)
+                                member_written += n
+                                bytes_done += n
+                                if on_progress is not None:
+                                    on_progress(
+                                        ExtractionProgress(
+                                            member=member,
+                                            bytes_written=bytes_done,
+                                            total_bytes_estimated=total_bytes,
+                                            members_done=files_done,
+                                            members_total=members_total,
+                                            member_bytes_written=member_written,
+                                            members_extracted=0,
+                                            members_blocked=0,
+                                        )
                                     )
+                        ok += 1
+                        files_done += 1
+                        if on_progress is not None:
+                            on_progress(
+                                ExtractionProgress(
+                                    member=member,
+                                    bytes_written=bytes_done,
+                                    total_bytes_estimated=total_bytes,
+                                    members_done=files_done,
+                                    members_total=members_total,
+                                    member_bytes_written=member_written,
+                                    members_extracted=0,
+                                    members_blocked=0,
                                 )
-                    ok += 1
-                    files_done += 1
-                    if on_progress is not None:
-                        on_progress(
-                            ExtractionProgress(
-                                member=member,
-                                bytes_written=bytes_done,
-                                total_bytes_estimated=total_bytes,
-                                members_done=files_done,
-                                members_total=members_total,
-                                member_bytes_written=member_written,
-                                members_extracted=0,
-                                members_blocked=0,
                             )
+                        if verbose:
+                            print(f"OK   {escape_member_name(member.name)}", file=err)
+                    except (ArchiveyError, OSError) as exc:
+                        failed += 1
+                        print(
+                            f"FAIL {escape_member_name(member.name)}: "
+                            f"{format_error_detail(exc)}",
+                            file=err,
                         )
-                    if verbose:
-                        print(f"OK   {escape_member_name(member.name)}", file=err)
-                except (ArchiveyError, OSError) as exc:
-                    failed += 1
-                    print(
-                        f"FAIL {escape_member_name(member.name)}: "
-                        f"{format_error_detail(exc)}",
-                        file=err,
-                    )
         finally:
             if on_progress is not None:
                 on_progress.close()
@@ -216,6 +222,19 @@ def run_test(
     return EXIT_FAIL if failed or not_tested or not_verified else EXIT_OK
 
 
+_T = TypeVar("_T")
+
+
+def _closable(items: Iterator[_T]) -> Generator[_T, None, None]:
+    """``items`` as a generator, so ``contextlib.closing`` can end it.
+
+    ``stream_members()`` is typed as a plain ``Iterator``, which has no ``close()``.
+    Closing this generator closes ``items`` too: ``yield from`` passes ``close()`` on
+    to the iterator it delegates to.
+    """
+    yield from items
+
+
 def _link_needs_verification(member: ArchiveMember) -> bool:
     """Whether ``member`` is a symlink whose stored target has not been read cleanly.
 
@@ -262,7 +281,7 @@ def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
     if isinstance(exc, LinkTargetNotFoundError):
         return True
     if type(exc) is ReadError:
-        return exc.raw_message.startswith("Link cycle detected at ")
+        return exc.raw_message == "Link cycle detected"
     # A link to a directory, an anti-item or an OTHER member: ``open()`` refuses to
     # return bytes for it, as a usage error, after following the link.
     return isinstance(exc, ArchiveyUsageError) and str(exc).endswith("(not a file)")

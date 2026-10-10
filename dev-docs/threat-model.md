@@ -454,7 +454,7 @@ the source really has.
 sizes come straight from the archive. Measured without a bound: a 10 KB tar asked for
 6 GiB, and a 51 KB ISO asked for 4 GiB, both dying on a bare `MemoryError`. So both
 libraries read through archivey's source (`internal/source.py` `ArchiveSource`) or
-decompressor (`tar_reader.py` `_EofProbeStream`), and both apply
+decompressor (`tar_reader.py` `_BoundedTarFileobj`), and both apply
 `streams/streamtools/binaryio.py` `read_within_reach`: where the remaining length is a
 fact (a path's `stat`, a `BytesIO` buffer, a regular file's `fstat`) the read is clamped
 to it; otherwise it is served in bounded steps, so the peak tracks the bytes that exist.
@@ -853,15 +853,17 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
-  later overruns or trailing bytes found by a bounded block-chain walk. It decodes the
+  later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
+  to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
+  which rejects data that only declares a long uncompressed run. It decodes the
   whole 4 KiB prefix (256 bytes let 7 of 800 Perl modules through; 4,096 let none),
   and re-checks a hit against the whole source up to `completion_window_bytes` (64 KiB
   under `BALANCED`, off under `FAST`). Probe-only confidence is `GUESS` for the
   uncompressed or metadata-first class; a later decode failure sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. OLE compound
-  files are not probed: their signature stops the probes. Other structured look-alikes
-  (COFF objects, MP3s whose ID3 tag starts with padding) can still be claimed, and stamp
-  the same way.
+  files are not probed: their signature stops the probes. LZMA Alone refuses a header followed by a
+  zero run, so MP3s whose ID3 tag starts with padding are not claimed. Other structured
+  look-alikes (COFF objects) can still be claimed, and stamp the same way.
 
 **Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
 fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the
