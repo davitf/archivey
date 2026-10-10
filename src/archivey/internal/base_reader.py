@@ -57,6 +57,7 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_callable,
     check_extraction_limits,
+    check_path_not_empty,
     describe_value,
 )
 from archivey.internal.diagnostics_collector import (
@@ -2593,6 +2594,15 @@ class BaseArchiveReader(ArchiveReader):
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
         self._require_random_access("get()")
+        # Without this a ``bytes`` name answered "absent" for a member that exists (a
+        # wrong answer), and an ArchiveMember escaped as ``unhashable type``. ``open()``
+        # refuses a ``bytes`` name the same way; it takes a member object, which get()
+        # does not, because get() looks up by name.
+        if not isinstance(name, str):
+            raise ArchiveyUsageError(
+                f"reader.get() takes a member name (str), but got "
+                f"{describe_value(name)}."
+            )
         token = self._state.acquire_worker("get")
         try:
             materialized = self._materialize_members()
@@ -2893,6 +2903,7 @@ class BaseArchiveReader(ArchiveReader):
         # passed on, because ``members`` may be a one-shot iterable that a second read
         # would find empty.
         selector = normalize_member_selector(members)
+        check_path_not_empty(dest, call="extract_all()")
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
