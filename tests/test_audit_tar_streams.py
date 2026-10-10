@@ -27,7 +27,12 @@ from archivey import (
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import ArchiveyError, CorruptionError, ResourceLimitError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from tests.conftest import requires, requires_zstd
 from tests.memory_util import traced_peak
 
@@ -334,33 +339,75 @@ _PACKED = b"A" * 512 + b"B" * 512
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 @pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
 @pytest.mark.parametrize(
-    ("entries", "realsize"),
+    ("entries", "realsize", "error", "match"),
     [
-        ([(4096, 512), (0, 512)], 8192),
-        ([(0, 512), (256, 512)], 2048),
-        ([(0, 512), (4096, 512)], 1024),
+        (
+            [(4096, 512), (0, 512)],
+            8192,
+            UnsupportedFeatureError,
+            "out of order or overlapping",
+        ),
+        (
+            [(0, 512), (256, 512)],
+            2048,
+            UnsupportedFeatureError,
+            "out of order or overlapping",
+        ),
+        (
+            [(0, 512), (4096, 512)],
+            1024,
+            CorruptionError,
+            "ends past the member's size",
+        ),
+        (
+            [(0, 512), (4096, 512), (8193, 0)],
+            8192,
+            CorruptionError,
+            "ends past the member's size",
+        ),
+        ([(0, 512)], 8192, CorruptionError, "accounts for only 512"),
     ],
-    ids=["out-of-order", "overlapping", "past-the-end"],
+    ids=[
+        "out-of-order",
+        "overlapping",
+        "past-the-end",
+        "empty-entry-past-the-end",
+        "under-stored",
+    ],
 )
-def test_sparse_map_out_of_order_overlapping_or_past_end_is_corruption(
-    entries: list[tuple[int, int]], realsize: int, encoding: str, streaming: bool
+def test_sparse_map_that_tarfile_would_misread_is_refused(
+    entries: list[tuple[int, int]],
+    realsize: int,
+    error: type[ArchiveyError],
+    match: str,
+    encoding: str,
+    streaming: bool,
 ) -> None:
-    """A sparse map's chunks must be in file order, must not overlap, and must end
-    within the logical size; GNU tar 1.35 refuses each of these maps. tarfile
-    stitches the first two into one output and drops the stored bytes of the third
-    (``B`` chunk), with no error."""
+    """tarfile serves each of these maps with no error, and each answer is wrong.
+
+    It stitches out-of-order or overlapping chunks into one run, where GNU tar 1.35
+    places each chunk at its own offset: the map is valid data that archivey cannot
+    serve, so ``UnsupportedFeatureError`` (DR-4). A chunk past the logical size, even
+    an empty one, and stored bytes that no chunk accounts for (``B`` in the last
+    case) are dropped by tarfile: that is damage, ``CorruptionError`` (DR-3). GNU tar
+    refuses a chunk past the logical size in old GNU and PAX 1.0, reads it in PAX
+    0.1, and extracts the under-stored member without the leftover bytes."""
     data = (
         _sparse_member(encoding, entries, realsize, _PACKED)
         + _member("b", b"SECRET")
         + _TRAILER
     )
     with open_archive(io.BytesIO(data), streaming=streaming) as ar:
-        with pytest.raises(CorruptionError, match="sparse map"):
+        with pytest.raises(error, match=match):
             if streaming:
                 _drain(ar)
             else:
                 with ar.open("a") as stream:
                     stream.read()
+
+
+_IN_ORDER_ENTRIES = [(0, 512), (4096, 512), (8192, 0)]
+_IN_ORDER_EXPECTED = b"A" * 512 + bytes(3584) + b"B" * 512 + bytes(3584)
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
@@ -371,16 +418,28 @@ def test_sparse_map_in_order_with_trailing_empty_entry_is_read(
     """The same chunks in order are a valid map. GNU tar ends a map with an empty
     ``(realsize, 0)`` entry when the file ends in a hole, and the old GNU header pads
     its unused slots with ``(0, 0)``; neither is out of order."""
-    entries = [(0, 512), (4096, 512), (8192, 0)]
     data = (
-        _sparse_member(encoding, entries, 8192, _PACKED)
+        _sparse_member(encoding, _IN_ORDER_ENTRIES, 8192, _PACKED)
         + _member("b", b"SECRET")
         + _TRAILER
     )
-    expected = b"A" * 512 + bytes(3584) + b"B" * 512 + bytes(3584)
     with open_archive(io.BytesIO(data), streaming=streaming) as ar:
         got = {m.name: s.read() for m, s in ar.stream_members() if s is not None}
-    assert got == {"a": expected, "b": b"SECRET"}
+    assert got == {"a": _IN_ORDER_EXPECTED, "b": b"SECRET"}
+
+
+@pytest.mark.parametrize("encoding", _SPARSE_ENCODINGS)
+def test_sparse_map_in_order_is_read_through_open(encoding: str) -> None:
+    """Random access by name serves the valid map too, the entry point the refusal
+    tests use."""
+    data = (
+        _sparse_member(encoding, _IN_ORDER_ENTRIES, 8192, _PACKED)
+        + _member("b", b"SECRET")
+        + _TRAILER
+    )
+    with open_archive(io.BytesIO(data)) as ar:
+        with ar.open("a") as stream:
+            assert stream.read() == _IN_ORDER_EXPECTED
 
 
 def _sparse_1_0_tar(entries: int) -> bytes:

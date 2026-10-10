@@ -254,17 +254,28 @@ expansion correct without a second implementation. What differs is what sits und
 map's chunks one after another from the start of the data area and does not know how
 much the member stores, so a map claiming more reads the next header and member as this
 member's content. The reader records where each member's data area ends as tarfile
-parses the header, and refuses a map whose chunks add up to more, or that has a negative
-entry, or a logical size past 2**63 - 1 (no file's size), with `CorruptionError` when
-the member is opened (streaming: on its first read,
-so a consumer that skips it is unaffected). The same check refuses a map whose chunks
-are out of order, overlap, or end past the logical size: tarfile would stitch the first
-two into one output and silently drop the stored bytes of the third, and GNU tar
-refuses all three. Empty entries are exempt from the order check, since GNU tar ends a
-map with `(realsize, 0)` and the old GNU header pads its slots with `(0, 0)`. One
-function makes this check for all four encodings (old GNU and PAX 0.0, 0.1, 1.0),
-since tarfile turns each into the same list of `(offset, numbytes)` pairs. The end is known only in whole blocks, so up
-to 511 bytes of the member's own padding can still read as data.
+parses the header, and refuses a map whose chunks add up to more. The end is known only
+in whole blocks, so up to 511 bytes of the member's own padding can still read as data.
+The same bound runs the other way: a map that accounts for more than 511 bytes fewer
+than the member stores is refused too, because tarfile never serves the bytes no chunk
+names, and leftover bytes inside a member are damage (DR-3); GNU tar 1.35 extracts such
+a member without them. A negative entry, a chunk that ends past the logical size (even
+an empty one) and a logical size past 2**63 - 1 (no file's size) are refused as well.
+tarfile drops the stored bytes of a chunk past the logical size; GNU tar 1.35 refuses
+that map in old GNU and PAX 1.0 and reads it in PAX 0.1. Each of these is
+`CorruptionError` when the member is opened (streaming: on its first read, so a
+consumer that skips it is unaffected).
+
+**An out-of-order or overlapping map is `UnsupportedFeatureError`.** GNU tar 1.35 reads
+both, writing each chunk at the offset the map gives. tarfile stitches the chunks into
+one run instead, which is a wrong answer (DR-1), and serving them in logical order on
+the streaming path would mean buffering up to the member's logical size (DR-9). The map
+is valid data archivey cannot serve, so it is unsupported, not corrupt (DR-4); a map
+that is also damaged raises `CorruptionError`. Empty entries are exempt from the order
+check, since GNU tar ends a map with `(realsize, 0)` and the old GNU header pads its
+slots with `(0, 0)`. One function makes all of these checks for the four encodings (old
+GNU and PAX 0.0, 0.1, 1.0), since tarfile turns each into the same list of
+`(offset, numbytes)` pairs.
 
 **A plain tar reads the member's bytes from the source**, at the offset the walk found.
 Random opens cost one seek each, and members can be read in any order.

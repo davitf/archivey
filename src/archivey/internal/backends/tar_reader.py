@@ -63,6 +63,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.base_reader import (
     BaseArchiveReader,
@@ -339,23 +340,34 @@ class _TarInfo(tarfile.TarInfo):
         return super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
 
 
-def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
-    """Refuse a sparse map that reads data from outside the member's own data area.
+def _sparse_map_error(
+    info: tarfile.TarInfo,
+) -> CorruptionError | UnsupportedFeatureError | None:
+    """Refuse a sparse map that ``tarfile`` would serve as the wrong bytes.
 
     ``tarfile`` reads the map's data chunks one after another from the start of the
     data area. A map whose chunks add up to more than the member stores reads the
     following header and members as this member's content, silently; a negative
     entry makes the read go backwards. ``tar(1)`` refuses both. The stored size is
     known only rounded up to whole blocks, so up to 511 bytes of the member's own
-    zero padding can still be read as data; nothing past its data area can.
+    zero padding can still be read as data; nothing past its data area can. For the
+    same reason a map must account for every stored byte but that padding: stored
+    bytes that no chunk names are never served, and leftover bytes inside a member's
+    data are damage (DR-3). GNU tar 1.35 extracts such a member without them.
 
-    The chunks must also be in file order, must not overlap, and must end at or
-    before the logical size. ``tarfile`` serves any other map without complaint: it
-    stitches out-of-order or overlapping chunks into one output, and it drops the
-    stored bytes of a chunk past the logical size. ``tar(1)`` refuses all three. An
-    empty entry is exempt from the order check: GNU tar ends a map with
-    ``(realsize, 0)`` when the file ends in a hole, and the old GNU header pads its
-    four slots with ``(0, 0)``.
+    A chunk must end at or before the logical size, since ``tarfile`` drops the
+    stored bytes of one that does not. GNU tar 1.35 refuses that map in the old GNU
+    and PAX 1.0 encodings and reads it in PAX 0.1. Both are ``CorruptionError``.
+
+    A non-empty chunk must start at or after the end of the previous one. GNU tar
+    1.35 reads an out-of-order or overlapping map, writing each chunk at the offset
+    the map gives; ``tarfile`` instead stitches the chunks into one run, which is a
+    wrong answer (DR-1). Serving them in logical order on the streaming path would
+    mean buffering up to the member's logical size (DR-9). Such a map is valid data
+    that archivey cannot serve, so it raises ``UnsupportedFeatureError`` (DR-4), and
+    only when no damage was found in the same map. An empty entry is exempt from the
+    order check: GNU tar ends a map with ``(realsize, 0)`` when the file ends in a
+    hole, and the old GNU header pads its four slots with ``(0, 0)``.
 
     The logical size (the GNU ``realsize`` field or ``GNU.sparse.realsize``) is held
     to the same bound as a plain size: past ``_MAX_SEEK_OFFSET`` it is no file's size,
@@ -374,6 +386,7 @@ def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
     stored = stored_end - info.offset_data
     total = 0
     previous_end = 0
+    unordered: UnsupportedFeatureError | None = None
     for offset, numbytes in sparse:
         if offset < 0 or numbytes < 0:
             return CorruptionError(
@@ -387,20 +400,25 @@ def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
                 f"of {info.size} bytes"
             )
         if numbytes:
-            if offset < previous_end:
-                return CorruptionError(
+            if offset < previous_end and unordered is None:
+                unordered = UnsupportedFeatureError(
                     f"TAR sparse map of {quoted(info.name)} is out of order or "
                     f"overlapping: a chunk at offset {offset} starts before the "
                     f"previous chunk ends at {previous_end}"
                 )
-            previous_end = offset + numbytes
+            previous_end = max(previous_end, offset + numbytes)
         total += numbytes
     if total > stored:
         return CorruptionError(
             f"TAR sparse map of {quoted(info.name)} claims {total} bytes of data, but "
             f"the member stores at most {stored}"
         )
-    return None
+    if stored - total > tarfile.BLOCKSIZE - 1:
+        return CorruptionError(
+            f"TAR sparse map of {quoted(info.name)} accounts for only {total} of the "
+            f"{stored} bytes the member stores"
+        )
+    return unordered
 
 
 def _raised_by_tarfile(exc: BaseException) -> bool:
@@ -1658,7 +1676,9 @@ class TarReader(BaseArchiveReader):
             if not defer_sparse_error:
                 raise sparse_error
 
-            def _refuse(error: CorruptionError = sparse_error) -> BinaryIO:
+            def _refuse(
+                error: CorruptionError | UnsupportedFeatureError = sparse_error,
+            ) -> BinaryIO:
                 raise error
 
             return self._wrap_member_stream(
