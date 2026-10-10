@@ -349,9 +349,10 @@ listing accounts for.
 ### Requirement: Decode TAR member names as UTF-8 by default
 
 When the caller does not pass `encoding=`, the TAR backend SHALL decode ustar and GNU
-long-name fields, and the other header strings (`uname`, `gname`, `linkname`), as UTF-8 with `errors="surrogateescape"`. The result MUST
-NOT depend on the process locale or `sys.getfilesystemencoding()`. These fields do not
-declare an encoding, so a field whose bytes are valid UTF-8 SHALL be decoded as UTF-8
+long-name fields, and the other header strings (`uname`, `gname`, `linkname`), as UTF-8
+with `errors="surrogateescape"`. The result MUST NOT depend on the process locale or
+`sys.getfilesystemencoding()`. These fields do not declare an encoding, so a field whose
+bytes are valid UTF-8 SHALL be decoded as UTF-8
 whatever `encoding=` says, and a caller-passed `encoding=` SHALL replace the
 surrogate-escaped UTF-8 decode, with the same error handler, only for a field whose bytes
 are not valid UTF-8. When a caller-passed `encoding=` would have given a different name
