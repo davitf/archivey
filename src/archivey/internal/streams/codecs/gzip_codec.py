@@ -28,7 +28,10 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.stdlib_takeover import (
+    _DRAIN_CHUNK,
+    _drain_into,
     _OutputChecksum,
+    _seek_reached_end,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
@@ -136,24 +139,31 @@ class _GzipTruncationCheckStream(DelegatingStream):
     """Backstop truncation detection for the rapidgzip accelerator (any seekable source).
 
     Upstream rapidgzip treats many incomplete streams as soft EOF (by design): ``read()``
-    may return empty or a short/full prefix with no exception. This wrapper:
+    may return empty or a short/full prefix with no exception.
 
-    1. On EOF with **zero** bytes delivered — fully switch ``_inner`` to the stdlib
-       gzip-window :func:`GzipDecompressorStream` *before* returning empty success, so
-       truncation is loud and any recoverable prefix is streamed (valid empty gzip still
-       succeeds with zero bytes). Switching the inner keeps ``tell``/``seek``/`seekable`
-       honest (ADR 0014: content faults raise from reads, never ``close()``).
+    1. On EOF with **zero** bytes delivered, the ``_StdlibOnAcceleratorError`` inside
+       hands the read to the stdlib gzip-window :func:`GzipDecompressorStream`
+       (``empty_to_stdlib``, set by ``GzipCodec._empty_to_stdlib``), so truncation is
+       loud and any recoverable prefix is streamed (valid empty gzip still succeeds with
+       zero bytes). This wrapper sees only that decoder's reads, and its checks stand
+       down after the switch. A seek that meets the end of an empty output reads
+       nothing, so the takeover does not switch there; this wrapper makes the same
+       switch for it (:meth:`_settle_end`). That decoder reads a seekable view of the
+       source, so it is seekable too, and the ``seekable()`` that this wrapper and the
+       ones above it cached from rapidgzip stays true
+       (``_StdlibOnAcceleratorError._open_stdlib_at`` asserts it).
     2. On EOF after **non-empty** delivery — check that rapidgzip decoded to the end of
        the source (its compressed position), then look for the member's trailer: the CRC-32
        of the output, kept as it goes by, and its length (mod 2**32), as the eight bytes
        that end the file but for zero padding (single-member). A forged copy of those
        eight bytes is not one (:meth:`_member_ends_the_file` says how far that holds).
-       When a seek skipped output there is no CRC-32 of it, and the length is compared to
-       the ISIZE read at open, the file's last four bytes, instead. On a mismatch, a file
-       with a further member that zlib confirms (:func:`gzip_has_additional_member`) is taken
-       as multi-member and nothing is raised: the trailer is only the last member's
-       size (a per-member ISIZE sum is deferred). A decode that stopped short of the
-       end, or any other mismatch, hands the read to the standard library.
+       When a seek short of the end skipped output and a read then meets the end, there
+       is no CRC-32 of that output, and the length is compared to the ISIZE read at
+       open, the file's last four bytes, instead. On a mismatch, a file with a further
+       member that zlib confirms (:func:`gzip_has_additional_member`) is taken as
+       multi-member and nothing is raised: the trailer is only the last member's size
+       (a per-member ISIZE sum is deferred). A decode that stopped short of the end, or
+       any other mismatch, hands the read to the standard library.
 
        The compressed position is what tells a cut member followed by a complete one
        from a multi-member file: the trailer is then the last member's, and the further
@@ -165,22 +175,35 @@ class _GzipTruncationCheckStream(DelegatingStream):
     per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ a
     non-empty soft EOF is an incomplete member, handed to the standard library like a
     mismatch; a value ⇒ compare; ``source_len is None`` (unreadable) ⇒ return without
-    raising. ``views`` gives the multi-member scan and the stdlib fallback their own access
+    raising. ``views`` gives the trailer lookup and the multi-member scan their own access
     to the source (:class:`_SourceViews`), so neither disturbs the live accelerator's
     cursor.
 
-    A seek does not disarm either check. Both look at the length of rapidgzip's whole
-    output, and the read that meets the end of that output is at that length whatever
-    seeks came before (a seek past the end lands at the end here, since rapidgzip clamps
-    it; ``_StdlibSeekContract`` above keeps the caller's position). So the length is the
-    position of that read, not a count of the bytes delivered. After a takeover the
-    standard library owns the end, and this check does not run.
+    Both checks run once, on the first read or seek that meets the end of rapidgzip's
+    output, and are spent after it: no later read or seek runs them again. A seek short
+    of the end leaves them armed. The length they compare is the position at the end,
+    not a count of the bytes delivered: a read that meets the end is at that length
+    whatever seeks came before (rapidgzip clamps a seek past the end to the end, and
+    ``_StdlibSeekContract`` above keeps the caller's position).
+
+    A seek that stops at the end of rapidgzip's output (a seek to the end, or one that
+    rapidgzip clamped) runs the checks there before it returns a position, so that
+    ``seek(0, SEEK_END)`` on a cut file does not return rapidgzip's short length with no
+    error. It first reads the output from the CRC-32 frontier to the end
+    (:meth:`_read_through`), so the trailer check finds the trailer by its CRC-32, not
+    by the four-byte ISIZE comparison that a forged trailer can pass. A size query on a
+    stream not yet read so pays for receiving and checksumming the whole output, the
+    price of a size that has been checked. When the standard library takes over, at the
+    check or during that read, it seeks to the caller's target: it raises as it does
+    with the accelerator off, or holds the caller's position, so a read after a seek
+    past the end of an empty rapidgzip output does not return the bytes at offset 0.
+    After a takeover the standard library owns the end, and this check does not run.
 
     An ISIZE mismatch hands the read to the standard library
     (:meth:`_StdlibOnAcceleratorError.switch_to_stdlib`), which gives the verdict and keeps
-    it, as does the stdlib engine the empty-EOF arm switches to. The switch always installs
-    that engine: positioning it at the delivered offset defers any content fault to the
-    next read (``DecompressorStream.seek``), so a later read cannot see a clean EOF.
+    it, as it does after the empty-EOF switch. The switch always installs that engine:
+    positioning it at the delivered offset defers any content fault to the next read
+    (``DecompressorStream.seek``), so a later read cannot see a clean EOF.
     """
 
     # Side-effecting read() (byte-total + EOF truncation check); disable
@@ -194,27 +217,23 @@ class _GzipTruncationCheckStream(DelegatingStream):
         views: _SourceViews,
         isize: int | None,
         source_len: int | None,
-        open_stdlib: Callable[[CodecSource], BinaryIO],
     ) -> None:
         super().__init__(inner)
-        # The same object as ``_inner`` until the empty-EOF arm replaces that, typed:
-        # the ISIZE check hands over through it.
+        # The same object as ``_inner``, typed: the ISIZE check hands over through it.
         self._takeover = inner
         self._views = views
         self._isize = isize
         self._source_len = source_len
-        self._open_stdlib = open_stdlib
         # The position in the output: where the read that meets the end of rapidgzip's
         # output is, that output's length. It equals ``self._inner.tell()`` (read adds
         # what the inner returned, seek stores what the inner's seek returned) and is
         # kept here because that tell() can be a round trip to the rapidgzip child
         # (``_StdlibSeekContract``). The ISIZE comparison depends on the two agreeing.
         self._pos = 0
-        # CRC-32 of the output from offset 0 up to its frontier; ``_verify_not_truncated``
+        # CRC-32 of the output from offset 0 up to its frontier; ``_trailer_hands_over``
         # needs it whole to find where the member's trailer is.
         self._crc = _OutputChecksum(zlib.crc32, 0)
         self._checked = False
-        self._verify = True
 
     def _count(self, data: bytes) -> None:
         """Advance the position past ``data`` that rapidgzip returned, and fold it into
@@ -229,69 +248,104 @@ class _GzipTruncationCheckStream(DelegatingStream):
         data = self._inner.read(size)
         if data:
             self._count(data)
-            if size < 0 and self._verify and not self._checked:
+            if size < 0 and not self._checked:
                 # Completing read (read/-1): observe soft EOF now and run ISIZE
                 # before returning. Callers that do only ``s.read(); s.close()`` must
                 # still get TruncatedError from the read — never from close (ADR 0014).
-                while True:
-                    nxt = self._inner.read(1)
-                    if not nxt:
-                        break
-                    more = nxt + self._inner.read(-1)
-                    self._count(more)
-                    data += more
-                self._checked = True
-                more = self._verify_not_truncated(-1)
-                self._pos += len(more)
-                data += more
+                buf = bytearray(data)
+                _drain_into(self._inner, buf, self._count)
+                if self._settle_end():
+                    more = self._inner.read(-1)
+                    self._pos += len(more)
+                    buf += more
+                return bytes(buf)
             return data
-        if self._verify and not self._checked:
-            self._checked = True
-            if self._pos == 0:
-                return self._begin_stdlib_fallback(size)
-            data = self._verify_not_truncated(size)
+        if self._settle_end():
+            data = self._inner.read(size)
             self._pos += len(data)
         return data
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # The checks stay armed (class docstring): only the position moves.
+        # A seek short of the end leaves the checks armed. A seek that stops at the end
+        # of rapidgzip's output runs them there (class docstring).
+        if whence == io.SEEK_CUR:
+            # _StdlibSeekContract above resolves a relative seek. A caller that drives
+            # this layer directly does not, and _seek_reached_end needs an absolute
+            # target, so resolve it here too, as _ZlibAdlerCheckStream.seek does.
+            offset, whence = self._pos + offset, io.SEEK_SET
         self._pos = super().seek(offset, whence)
+        if not _seek_reached_end(offset, whence, self._pos):
+            return self._pos
+        read_through = not self._checked and not self._takeover.switched
+        if read_through:
+            try:
+                self._read_through()
+            except ArchiveyError:
+                if not self._takeover.switched:
+                    raise
+                # The standard library took over on the way and met the fault. Its
+                # seek below gives the verdict a seek gets with the accelerator off: a
+                # seek past the end holds the target and the next read raises.
+        if self._settle_end() or (read_through and self._takeover.switched):
+            # The standard library decodes now: it seeks to the caller's place, or
+            # raises as it does with the accelerator off. The second operand covers a
+            # handover during _read_through, not at the check: _settle_end() then
+            # returns False, as the trailer check defers to a stream already switched.
+            self._pos = super().seek(offset, whence)
         return self._pos
+
+    def _read_through(self) -> None:
+        """Read rapidgzip's output from the CRC-32 frontier to its end, so that the
+        trailer check finds the trailer by its CRC-32 and does not compare the length
+        alone with the file's last four bytes (:meth:`_trailer_hands_over`).
+
+        A cut or damaged stream can hand the read to the standard library on the way;
+        it then raises as it does with the accelerator off, or reads on to its own end.
+        """
+        if self._crc.frontier >= self._pos:
+            return
+        self._pos = self._inner.seek(self._crc.frontier)
+        while data := self._inner.read(_DRAIN_CHUNK):
+            self._count(data)
 
     def nearest_resume_offset(self, target: int) -> int | None:
         # Sits on the decompressed chain (accelerator, then maybe stdlib fallback).
         return ask_resume_offset(self._inner, target)
 
-    def _begin_stdlib_fallback(self, size: int) -> bytes:
-        """Replace rapidgzip with the stdlib gzip engine after a silent empty EOF.
+    def _settle_end(self) -> bool:
+        """Run the end checks, once, at the end of rapidgzip's output (at ``_pos``);
+        return whether the standard library decodes from now on, so that the caller's
+        read or seek goes to it.
 
-        Retargets the same :class:`GzipDecompressorStream` used when rapidgzip is OFF
-        (#183), so large bounded ``read(n)`` recovers a prefix without a byte-at-a-time
-        ``GzipFile`` workaround. ``read()`` / ``readall`` still raise without returning
-        bytes (same contract as accelerator-off). The stdlib engine owns truncation
-        after the switch — disarm the ISIZE backstop so faults stay on its read path.
-        """
-        self._replace_inner(self._open_stdlib(self._views.for_stdlib()))
-        self._verify = False
-        data = self._inner.read(size)
-        self._pos += len(data)
-        return data
+        An end at offset 0 not yet switched is an empty rapidgzip output met by a seek
+        (a read there is switched by the takeover itself, ``empty_to_stdlib``): it
+        hands over as that read would. Any other end runs the trailer check
+        (:meth:`_trailer_hands_over`)."""
+        if self._checked:
+            return False
+        self._checked = True
+        if self._pos == 0 and not self._takeover.switched:
+            self._takeover.switch_to_stdlib()
+            return True
+        return self._trailer_hands_over()
 
-    def _verify_not_truncated(self, size: int) -> bytes:
-        """Check the end of the data; return what a read of ``size`` then gets.
+    def _trailer_hands_over(self) -> bool:
+        """Check the trailer at the end of the data; return whether the
+        standard-library decoder took over to decide (no trailer found, or after a
+        seek short of the end the ISIZE does not match; below), at the position
+        delivered.
 
-        That is ``b""`` unless the standard-library decoder took over to decide (no
-        trailer found, or after a seek the ISIZE does not match; below), in which case
-        it is that decoder's next read.
+        The inner half of :meth:`_settle_end`, which guards it (armed, not yet run)
+        and runs it once: call that, not this.
         """
         if self._takeover.switched:
             # The standard-library decoder finished the read; it owns truncation, and
             # bytes appended to the file are for it to report.
-            return b""
+            return False
         if self._source_len is None:
             # Source length unreadable (non-seekable / I/O error at capture): cannot verify,
             # so never invent a truncation we can't prove.
-            return b""
+            return False
         # Below 18 bytes no gzip member is complete, so the delivered bytes are a
         # truncation. So is a decode that stopped short of the end of the source: the
         # trailer there is not this output's. Otherwise no trailer found (or, after a
@@ -301,24 +355,25 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # confirming a later member, can pass; the per-member ISIZE sum is deferred).
         if self._source_len >= 18 and self._decoded_to_the_end():
             if self._isize is None:
-                return b""  # length known but ISIZE unread (should not happen here)
+                return False  # length known but ISIZE unread (should not happen here)
             if self._crc.frontier == self._pos:
                 # Every byte went through the CRC-32, so the trailer can be found
                 # rather than assumed to be the file's last four bytes.
                 if self._member_ends_the_file():
-                    return b""
+                    return False
             elif self._pos % (1 << 32) == self._isize:
-                # Output was skipped by a seek, so there is no CRC-32 to find the
-                # trailer with; the last four bytes of the file stand in.
-                return b""
+                # A seek short of the end skipped output, then a read met the end, so
+                # there is no CRC-32 to find the trailer with; the last four bytes of
+                # the file stand in. A seek that meets the end reads through instead.
+                return False
             if self._has_additional_gzip_member():
-                return b""
+                return False
         # No trailer of this output ends the file: it was cut, its ISIZE is wrong, or
         # something was appended, and rapidgzip reads past all of these without a word.
         # The standard-library decoder tells them apart, and keeps its verdict on later
         # reads: it carries on from here, and raises the truncation or reports the bytes.
         self._takeover.switch_to_stdlib()
-        return self._inner.read(size)
+        return True
 
     def _member_ends_the_file(self) -> bool:
         """Whether the file ends with this output's own trailer: its CRC-32 and the
@@ -529,6 +584,9 @@ class GzipCodec(_DeflateFamilyCodec):
     # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
     # declares a pack size to clip it to and no AES pad follows its data.
     _bounds_source = False
+    # rapidgzip ends some cut members before any output, with no error; the standard
+    # library gives the verdict there (``_GzipTruncationCheckStream``, item 1).
+    _empty_to_stdlib = True
 
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
         # gzip ISIZE makes truncation checkable → allows rapidgzip AUTO with the ISIZE
@@ -572,7 +630,8 @@ class GzipCodec(_DeflateFamilyCodec):
         # (gzip is never a ZIP or 7z coder), so this only keeps the check from
         # depending on that staying true.
         # Truncation backstop for **any** seekable source (path or caller-owned stream):
-        # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
+        # single-member ISIZE (the empty→stdlib fallback is the takeover's,
+        # ``_empty_to_stdlib``), with the multi-member scan on an
         # independent view: the check stands down only for a further member zlib's gzip
         # decoder confirms, and a scan that spends its budget hands the read to the
         # standard library (the per-member ISIZE sum is deferred). Capture the ISIZE
@@ -584,7 +643,6 @@ class GzipCodec(_DeflateFamilyCodec):
             views=views,
             isize=isize,
             source_len=source_len,
-            open_stdlib=lambda fallback: self._open_stdlib(fallback, config),
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

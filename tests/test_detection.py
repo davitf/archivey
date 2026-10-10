@@ -20,11 +20,18 @@ import pytest
 from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
 from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams import codecs as codecs_module
+from archivey.internal.streams.streamtools import source_name
 from archivey.types import MagicSignature
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
+
+# LZMA Alone, zlib and Brotli are recognised only by a content probe, and by default a
+# probe runs only when the source's name carries that format's extension. Tests of the
+# probes themselves (nameless BytesIO, or a name that points elsewhere) turn them all on.
+ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 def _zip_bytes() -> bytes:
@@ -276,7 +283,7 @@ def test_brotli_detected_by_content_probe() -> None:
     import brotli
 
     data = brotli.compress(b"some brotli payload to decode")
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.BROTLI
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
@@ -302,7 +309,7 @@ def test_brotli_probe_skipped_when_backend_missing(
 
 def test_zlib_weak_magic_confirmed_by_content_probe() -> None:
     data = zlib.compress(b"zlib payload")
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
     # The weak 2-byte header is confirmed by a content probe -> PROBABLE / content_probe.
     assert info.confidence == DetectionConfidence.PROBABLE
@@ -314,7 +321,7 @@ def test_zlib_probe_wins_over_misleading_extension(tmp_path: Path) -> None:
     # extension does not override it.
     path = tmp_path / "thing.xz"
     path.write_bytes(zlib.compress(b"payload"))
-    info = detect_format(path)
+    info = detect_format(path, config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
     assert info.detected_by == "content_probe"
 
@@ -333,7 +340,7 @@ def test_lzma_alone_detected_by_content_probe() -> None:
     import lzma
 
     data = lzma.compress(b"lzma alone payload " * 20, format=lzma.FORMAT_ALONE)
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
@@ -349,7 +356,7 @@ def test_lzma_alone_probe_does_not_claim_lzip() -> None:
 
 def test_lzma_alone_probe_does_not_steal_zlib() -> None:
     data = zlib.compress(b"zlib payload that must stay zlib")
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
 
 
@@ -447,7 +454,7 @@ def test_inner_tar_over_lzma_alone_is_tar_lzma() -> None:
     from archivey.types import ContainerFormat, StreamFormat
 
     data = lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE)
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
 
 
@@ -469,6 +476,8 @@ def test_tlz_alone_content_wins_with_extension_conflict(tmp_path: Path) -> None:
     from archivey.diagnostics import DiagnosticCode
     from archivey.types import ContainerFormat, StreamFormat
 
+    # Default config: .tlz names LZIP, yet it also runs the LZMA Alone probe, so the
+    # content still wins here without always_probe_content.
     path = tmp_path / "compat_lzma.tlz"
     path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
     info = detect_format(path)
@@ -701,7 +710,7 @@ def test_zlib_detected_at_every_legal_window_size(wbits: int) -> None:
     # Six of the seven windows were missed by the four-entry header allow-list.
     compressor = zlib.compressobj(6, zlib.DEFLATED, wbits)
     data = compressor.compress(b"zlib payload " * 100) + compressor.flush()
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.ZLIB
     assert info.detected_by == "content_probe"
 
@@ -764,7 +773,7 @@ def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> Non
     known = bytearray(lzma.compress(payload, format=lzma.FORMAT_ALONE))
     known[5:13] = len(payload).to_bytes(8, "little")
     assert lzma.decompress(bytes(known), format=lzma.FORMAT_ALONE) == payload
-    info = detect_format(io.BytesIO(bytes(known)))
+    info = detect_format(io.BytesIO(bytes(known)), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
 
@@ -801,7 +810,7 @@ def test_lzma_alone_with_zero_dictionary_size_is_detected() -> None:
     data[1:5] = b"\x00\x00\x00\x00"
     payload = bytes(data)
     assert lzma.decompress(payload, format=lzma.FORMAT_ALONE)  # the decoder accepts it
-    info = detect_format(io.BytesIO(payload))
+    info = detect_format(io.BytesIO(payload), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
 
@@ -871,7 +880,7 @@ def test_lzma_alone_of_zeros_from_liblzma_is_still_detected(
     size: int, preset: int
 ) -> None:
     data = lzma.compress(b"\0" * size, format=lzma.FORMAT_ALONE, preset=preset)
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
 
@@ -888,7 +897,7 @@ def test_lzma_alone_whose_payload_is_all_zeros_is_still_detected() -> None:
         + b"\0" * 7
     )
     assert lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(data) == b"\0\0"
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
 
@@ -929,7 +938,7 @@ def test_lzma_alone_of_zeros_from_the_lzma_sdk_is_still_detected(
 ) -> None:
     data = _sdk_lzma_alone(tmp_path, payload, level)
     assert lzma.decompress(data, format=lzma.FORMAT_ALONE) == payload
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
 
@@ -1479,7 +1488,9 @@ def test_content_probes_share_one_decode_allowance() -> None:
         receipt = MutableDetectionCostReceipt()
         collector = collector_from_config(DEFAULT_ARCHIVEY_CONFIG)
         try:
-            info = _detect_format_body(io.BytesIO(data), collector, budget, receipt)
+            info = _detect_format_body(
+                io.BytesIO(data), collector, budget, receipt, always_probe=True
+            )
         except FormatDetectionError:
             info = None
         return info, receipt
@@ -1542,14 +1553,19 @@ def _budget_config() -> ArchiveyConfig:
 def _record_detect(
     monkeypatch: pytest.MonkeyPatch, module: object
 ) -> list[tuple[str, ArchiveyConfig | None]]:
-    """Record each call through ``module.detect_format`` as (source name, config)."""
+    """Record each call through ``module.detect_format`` as (source name, config).
+
+    A resolved source is named as ``open_archive`` names it: a joined split set by
+    its first part.
+    """
     calls: list[tuple[str, ArchiveyConfig | None]] = []
     real = getattr(module, "detect_format")
 
     def recording(source: object, *args: object, **kwargs: object) -> FormatInfo:
         config = kwargs.get("config")
         assert config is None or isinstance(config, ArchiveyConfig)
-        calls.append((Path(str(getattr(source, "path", None) or source)).name, config))
+        name = source_name(source) if isinstance(source, ArchiveSource) else source
+        calls.append((Path(str(name)).name, config))
         return real(source, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(module, "detect_format", recording)

@@ -648,8 +648,11 @@ _NOT_DEFLATE = {
 
 @pytest.mark.parametrize("case", sorted(_NOT_DEFLATE))
 def test_a_declared_empty_stream_that_does_not_decode_raises(case: str) -> None:
-    """The over-run probe at a declared size of 0 used to take the standard library's
-    raw ``zlib.error`` for the accelerator's end of input, and read as empty."""
+    """A declared size of 0 over a body that does not decode raises, engaged or not.
+
+    The verifier's over-run probe at size 0 meets the decode error, and the read
+    raises the same ``CorruptionError`` with the accelerator engaged as with it off.
+    """
     pytest.importorskip("rapidgzip")
     codec, data = _NOT_DEFLATE[case]
     on, off = _read_in_both_modes(codec, data, 0, engaged=True)

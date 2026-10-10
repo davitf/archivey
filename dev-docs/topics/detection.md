@@ -34,6 +34,9 @@ Three other pages own parts of this, and this page links them rather than repeat
   not run, with the reason for each.
 - **A filename never overrules the bytes.** When they disagree, the bytes win and
   `FORMAT_EXTENSION_CONFLICT` is emitted.
+- **A content probe runs only for a name that claims its format**, unless
+  `ArchiveyConfig.always_probe_content` is set or the caller is `open_stream` (§2.5). A
+  nameless raw LZMA Alone, zlib or Brotli source is refused by default.
 - **`confidence` is provisional and `detected_by` is an open set** (`docs/formats.md`
   §Detection). No behaviour in the library branches on `confidence`.
 - **What you might expect and will not find:**
@@ -83,7 +86,7 @@ extension is the last step, and it is used only when every content signal declin
 | 2. SFX scan | Leading bytes look like a prefix; a validated archive needle behind it | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
 | 3. Far magic | Exact magic past 4 KiB (ISO `CD001` at 32 769) | `CERTAIN` | `magic` | 32 774 bytes, once |
 | 4. Trailer magic | Exact magic at the start of a fixed block at EOF (UDIF `koly`, 512 bytes) | `CERTAIN` | `magic` | 512 bytes, on a cheap seek |
-| 5. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
+| 5. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes; by default only the probe the extension names runs | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
 | 6. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
 
 A near-magic or content-probe match on a single-file compressor is then offered to the
@@ -163,9 +166,12 @@ is named as the image. What a compressed block contains, and why that is not a
 signature detection can use, is on [`formats/dmg.md`](../formats/dmg.md) §1. The read is
 one seek to the last 512 bytes on a path or a plain seekable stream, then a seek back to
 the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end. When
-the length is unknown the far-magic step has already read its window, so an image
-that fits in that window is refused: the block is in the prefix. A longer zlib-first
-image still opens as zlib. A source shorter than 512 bytes skips the read too.
+the source is 512 bytes or more, the receipt records `trailer` as
+`CAPABILITY_UNAVAILABLE`; a shorter source records nothing, as it has no block to
+miss. When the length is unknown the
+far-magic step has already read its window, so an image that fits in that window is
+refused: the block is in the prefix. A longer zlib-first image still opens as zlib. A
+source shorter than 512 bytes skips the read too.
 
 A hit is `DMG` / `CERTAIN` / `magic`. Nothing reads the image. `open_archive` raises
 `UnsupportedFeatureError` naming UDIF. `format_availability` reports `NONE` with an
@@ -177,7 +183,23 @@ ZIP appended to a JPEG is still not found (§5).
 
 ### 2.5 Content probes
 
-The probes run in registry order (LZMA Alone, zlib, Brotli), and the first to accept wins.
+**Which probes run.** By default only the probe of a stream format the source's extension
+names: `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, their `.tar.` forms, and LZMA Alone for
+`.tlz`, which lzma-utils used before lzip took the name. A source with no name or another
+extension runs no probe. Whenever the name leaves a probe out, even if another one runs,
+the step is recorded as `content_probe` / `NOT_ENABLED_BY_POLICY`.
+`ArchiveyConfig.always_probe_content=True` runs every probe, and `open_stream` always does,
+because its caller already says the source is a compressed stream; there a probe only
+picks the codec. The reason is evidence, not cost: on a nameless source a probe is the
+only evidence, and real files pass it. A scan of a backup drive
+([`investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md))
+found about 27 300 of its 57 390 "archives" through the probes: 26 681 git loose objects,
+435 non-Brotli files claimed as Brotli and 51 non-LZMA files claimed as LZMA Alone. A raw
+stream with no name is rare as a file and common as `open_stream` input. With a matching
+name the probe can only confirm the name, so it adds no false claim, and its hit still
+gets the inner-TAR check that an extension guess does not.
+
+When probes run, they run in registry order (LZMA Alone, zlib, Brotli), and the first to accept wins.
 Five guards keep a probe from claiming bytes that are not its format. The codec side of each
 guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
 
@@ -247,6 +269,14 @@ general message would tell the caller that some magic byte was wrong.
   `open_archive` probes with the flag off and then replaces the source itself, because it
   must hand the backend the volume's bytes and not the stub's. The receipt covers both
   passes (§4.1).
+- **A path to a volume of a set** goes through `resolve_source` first, as in
+  `open_archive`. Any part of a numbered split set (`set.zip.002`) is detected on the
+  joined parts, and a RAR continuation on volume 1. A middle part has no magic at offset
+  0, so detecting that one file alone refused a path that `open_archive` opens.
+  Resolution runs before detection reads a byte, and raises what `open_archive` raises
+  for the same path: `TruncatedError` for a numbered set with a gap. A lone first part
+  is detected as the format its bytes show, where `open_archive` refuses it as an
+  incomplete set.
 
 ## 3. What the answer claims
 
@@ -315,8 +345,8 @@ name common settings:
 `budget=` argument on `detect_format`, the same file could be detected under two budgets
 and give two answers depending on the entry point.
 
-**Decode input is one allowance for the whole call.** The content probes, their completion
-re-check and the inner-TAR probe all draw on it, and a step the rest cannot cover does not
+**Decode input is one allowance for the whole call.** The content probes, the Brotli chain
+decode, the completion re-check and the inner-TAR probe all draw on it, and a step the rest cannot cover does not
 run. A per-candidate cap cannot bound the total: with 2 MiB of back-to-back gzip headers,
 decoding each to a 64 KiB cap is hundreds of times more work than the input. Threat-model
 O11 has the measurement. No step decodes scan candidates today, so that case is not
@@ -335,10 +365,17 @@ a few bytes deep in the source through `PrefixWorkspace.read_at`, which is how t
 chain walk checks later meta-block headers. On a path or a plain seekable stream,
 `read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is
 charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS` (8 links of
-24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose rewind would re-decode, `read_at`
-grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1
+24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose rewind would
+re-decode, `read_at` grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1
 MiB) and the workspace's read ceiling (the largest of the prefix, far and scan limits).
 Past that it returns nothing and records `content_probe_read_at` as `BUDGET_EXHAUSTED`.
+
+When the walk stops at a compressed block past the window, the Brotli probe reads and
+decodes `[0, end)`, to 4 KiB past that block's header, through the same `read_at` (a seek
+read takes the part the prefix already holds from the prefix). That decode is charged to
+`max_decode_input` and runs only when `end` is within the read ceiling and 1 MiB;
+otherwise `content_probe_decode` is recorded as `BUDGET_EXHAUSTED` and the probe keeps its
+verdict.
 
 **The receipt says what was spent and what did not run.** `FormatInfo.cost_receipt` counts
 unique bytes read, far and scanned bytes, decode input and output, and passes.
@@ -347,7 +384,13 @@ three reasons:
 
 - `NOT_ENABLED_BY_POLICY`: the budget turned it off (`probe_completion` under `FAST`).
   The search is still complete for what the policy asked.
-- `CAPABILITY_UNAVAILABLE`: the source cannot do it. The search is incomplete.
+- `CAPABILITY_UNAVAILABLE`: the step could not run here. The inner-TAR probe records it
+  if the codec's backend is absent or its decoder cannot be built within the probe's
+  reservation (an xz filter chain it cannot decode raw, a zstd window over 128 MiB, a
+  `MemoryError`). The search is incomplete. The probe records one reason: a budget that
+  turns it off gives `NOT_ENABLED_BY_POLICY` whatever the backend, and an absent backend
+  gives `CAPABILITY_UNAVAILABLE` ahead of `BUDGET_EXHAUSTED`, since more budget would
+  not help.
 - `BUDGET_EXHAUSTED`: it started or would have started, and the budget cut it short. The
   search is incomplete.
 
@@ -399,10 +442,11 @@ A backward seek puts the handle back. It does not re-read the prefix:
 
 | Source | What detection does | What it cannot do |
 | --- | --- | --- |
-| Path | Opens its own handle for detection | Nothing missing |
+| Path | Resolved first, as `open_archive` resolves it (§2.7); then opens its own handle for detection. Resolution's listing and peeks run before the receipt starts, so `cost_receipt` does not count them | Nothing missing |
 | Seekable stream | Reads forward from the caller's position, restores it; the archive is taken to start where the caller positioned it | Nothing missing |
-| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block. Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
+| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when detection reaches that step and the source is 512 bytes or more). Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
 | Non-seekable, raw, to `detect_format` | Reads what it peeks | The caller loses those bytes unless it buffers the stream itself |
+| Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
 | Directory | Nothing | Nothing to do |
 
 Detection never spools a pipe to a temporary file. The one temporary copy the library makes
@@ -424,6 +468,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
 | `detect_format` on a raw pipe leaves the caller without the bytes it read | **archivey** | By design: `open_archive` and `open_stream` keep them (§4.3) |
 | A polyglot opens as whichever format comes first | **archivey** | The tie rule (§3.1); pass `format=` |
+| A bzip2- or xz-compressed `.dmg` read from a pipe or as a member stream detects as `BZ2` / `XZ`, with `trailer` in `unavailable_tiers` | **archivey** | Its `koly` block is at the end, and those sources are not seeked there (§2.4, §4.3) |
 
 ## 6. Decisions
 
@@ -441,6 +486,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | `confidence` provisional, `detected_by` an open set | Lets a later release grade more finely or add a step without breaking callers | Freezing the grades and values in 0.2.0; renaming `sfx_scan` to `prefixed_scan` |
 | A short 7z hit keeps the scan going to the end of the window | The short hit's own end would stop before a real payload that follows a decoy | Stopping at the first hit; bounding at the PE overlay now (an idea in [`IDEAS.md`](../IDEAS.md)) |
 | The reader keeps the `FormatInfo` its open detected (`reader.format_info`) | `archivey info` prints it instead of detecting a second time, and a second detection could differ from the first | Detecting again in the CLI |
+| Content probes run only for a name that claims the format, unless `always_probe_content` is set; `open_stream` always probes | On a nameless source a probe is the only evidence, and the backup scan found it wrong more often than right outside git objects (§2.5). Fixing one false-positive shape at a time (an OLE veto, the libmagic sweep) does not end the class | Probes on by default with more vetoes; probes off with no extension exception, which would lose the `.br`-holds-a-tar check |
 | Internal detections run under `probe_config(config)` | They spend what the caller allowed, but their diagnostics are not the caller's | Passing the caller's config through |
 
 ## 7. Open questions
@@ -478,6 +524,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | The budget comes from the config, for every entry point and every internal detection (§4.1, §3.3) | `tests/test_detection.py::test_open_archive_detects_under_the_config_budget`, `::test_format_argument_stub_checks_detect_under_the_config_budget`, `::test_empty_listing_rescan_detects_under_the_config_budget`, `::test_empty_listing_rescan_stays_internal_under_strict` |
 | A receipt over budget always names a step cut short, for one pass and two (§4.1) | `tests/test_detection_workspace.py::test_over_budget_receipt_always_names_a_cut_short_tier`, `::test_two_pass_receipt_over_budget_also_names_a_cut_short_tier` |
 | A stub-volume detection's receipt keeps the stub pass (§2.7, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
+| A path to any volume of a set is detected on the set `open_archive` reads; a gapped set raises `TruncatedError` (§2.7) | `tests/test_volumes.py::test_detect_format_on_any_numbered_part_agrees_with_open_archive`, `::test_detect_format_on_a_rar_continuation_agrees_with_open_archive`, `::test_detect_format_on_a_gapped_numbered_set_raises_truncated`, `::test_detect_format_on_a_lone_first_part_reports_its_bytes` |
 | The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
 | One forward pass over the prefix. Gzip, ZIP and ISO fetch each byte once and seek backward only to restore the handle. A seekable bzip2 or xz file also reads the 512-byte trailer, then fetches those bytes again when a later tier reads the file (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_seekable_bzip2_rereads_the_trailer_bytes`, `::test_seekable_koly_image_reads_the_trailer_once`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
 | A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) | `tests/test_udif.py` |

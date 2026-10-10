@@ -46,7 +46,7 @@ from archivey.internal.streams.resume import ResumeReachedStreamEnd
 _HEADER = b"BZh9"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Bzip2Resume:
     """A :class:`SeekPoint` state: a bzip2 block that starts ``bit`` bits (0 to 7) into
     the byte at the point's ``compressed_offset``."""

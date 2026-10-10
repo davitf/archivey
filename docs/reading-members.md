@@ -28,7 +28,9 @@ Two defaults keep the common case cheap, and each can be lifted at open time:
   non-seekable source, so ZIP, 7z, RAR and ISO refuse it with
   `StreamNotSeekableError`, and TAR and single-file compressed streams open only
   with `streaming=True`. To read a nested archive at random, pass `open_archive()`
-  the stream from `open()` under `seekable_members=True`.
+  the stream from `open()` under `seekable_members=True`. A member stream's `name` is the
+  member's name, so detection of the nested archive uses its extension, as it does for a
+  file.
 - **One stream may be live at a time.** Opening a second while the first is still
   open raises `ArchiveyUsageError` unless you opened with
   `concurrent_members=True`.
@@ -165,8 +167,11 @@ pass.
 **A member stream does not outlive its reader.** Closing the reader closes any member
 streams still open on it, the same way `zipfile.ZipFile.close()` and
 `tarfile.TarFile.close()` do — so reading one afterwards raises, as it would for any
-closed file. Nesting `with` blocks is still the clearest way to write it, and it means
-you never depend on the order:
+closed file. The same goes for a `stream_members()` iterator that is still alive when
+the reader closes, for example one kept in a variable or wrapped in `enumerate()`: the
+close succeeds, and advancing the iterator afterwards raises `ArchiveyUsageError`.
+Nesting `with` blocks is still the clearest way to write it, and it means you never
+depend on the order:
 
 ```python
 with archivey.open_archive("photos.zip") as reader:

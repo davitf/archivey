@@ -285,8 +285,10 @@ directory); when the same name appears more than once in an archive, the **last*
 in archive order has `is_current=True` and all earlier same-name entries have
 `is_current=False`. RAR file-version history rows (`format-rar`) use the `;N` suffix
 convention (unique presentation names) and MUST still set `is_current=False` on those
-rows; the shared last-entry-wins pass MUST NOT overwrite format-specific flags on
-names that appear only once. Anti entries (7z delete markers)
+rows, as plain ISO 9660 does on an older file version (`format-iso`); the shared
+last-entry-wins pass MUST NOT overwrite a backend's `is_current=False`, and counts
+only the remaining rows, so it leaves a name that appears once among them
+unchanged. Anti entries (7z delete markers)
 supersede their targets per `format-7z`. Unavailable values SHALL be `None`;
 `name` follows normalization while `raw_name` preserves stored bytes; timestamp
 timezone semantics are preserved; digest keys name their real algorithms; there
@@ -321,6 +323,7 @@ point-in-time snapshots.
 | `type == MemberType.ANTI` | `is_anti` true; `is_file` false |
 | Content superseded by later same-name / anti (7z) | Earlier member `is_current` false |
 | RAR `-ver` history row `path;n` | `is_current` false; live `path` remains true |
+| Two rows with one name, both marked not current by the backend (plain ISO `FOO.;1` twice) | Both stay `is_current` false |
 
 ### Requirement: Member diagnostics attach under the shared budget
 
