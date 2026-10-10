@@ -2411,9 +2411,22 @@ class RarReader(BaseArchiveReader):
             # holds and reports the rest as missing (``members_report().error``).
             # Raised before the end-block diagnostics below: under a strict policy
             # emitting them first would replace this with a DiagnosticRaisedError
-            # about lesser damage.
+            # about lesser damage. A set can also have a damaged header (the walk
+            # follows a split member past one): one error is raised, so its message
+            # names both.
+            message = self._archive.truncated
+            if self._archive.damaged is not None:
+                message += f"; also {self._archive.damaged}"
             raise TruncatedError(
-                self._archive.truncated,
+                message,
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
+        if self._archive.damaged is not None:
+            # A member header failed its CRC after these members: the same terminal
+            # damage after the prefix, reported as corruption rather than a cut.
+            raise CorruptionError(
+                self._archive.damaged,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )
@@ -3991,8 +4004,10 @@ class RarReader(BaseArchiveReader):
         # open(), and so a spawn-count right after open() is 1 (the live-stream
         # gate's "refused second open does not spawn" pin). Password and
         # corruption still map on the completing read — the exit status is only
-        # known after the process ends.
-        inner = spawn()
+        # known after the process ends. The boundary maps a stream source closed
+        # before its first spool to disk, as every format's member open does.
+        with self._translated_errors(member.name):
+            inner = spawn()
         try:
             rewind: RewindWarning | None = None
             if self._seek_declared():

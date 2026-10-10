@@ -23,7 +23,7 @@ subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 | `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, but that's a guess, so catch `CorruptionError` for both |
 | `EncryptionError` | A password is needed and none was given, or none of the ones given works |
 | `FormatDetectionError` | The file isn't in a format archivey recognizes |
-| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle |
+| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle. An unknown compression method or version number can also mean a damaged header: nothing checksums the header field it's read from, such as a ZIP entry's compression method, so archivey can't tell the two apart, and the message says so. If all you need to know is whether you can use the file, the answer is no either way |
 | `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
 | `ResourceLimitError` | The archive went over one of the [limits](security.md#hardening) |
 
