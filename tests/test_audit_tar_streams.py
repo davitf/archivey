@@ -290,18 +290,21 @@ def test_sparse_1_0_map_is_weighed_against_max_metadata_bytes() -> None:
     """threat-model O1: listing-time retained metadata is budgeted by
     ``max_metadata_bytes``. Here 30 000 map entries (120 KB of tar, ~200 bytes of
     .tar.gz) are retained as ~2 MB of tuples against a 64 KiB cap. At a million
-    entries a 4 KB .tar.gz retains 64 MB and takes ~2.5 s per member to list."""
+    entries a 4 KB .tar.gz retains 64 MB and takes ~2.5 s per member to list.
+
+    The map is weighed as it is parsed, and the first member's headers are parsed as
+    the archive opens, so the refusal may come from ``open_archive``."""
     data = _sparse_1_0_tar(30_000)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=64 * 1024))
     tracemalloc.start()
     try:
-        with open_archive(io.BytesIO(data), config=config) as ar:
-            try:
+        try:
+            with open_archive(io.BytesIO(data), config=config) as ar:
                 members = ar.members()
-            except ResourceLimitError:
-                return
-            retained, _peak = tracemalloc.get_traced_memory()
-            assert members[0].is_sparse
+                retained, _peak = tracemalloc.get_traced_memory()
+                assert members[0].is_sparse
+        except ResourceLimitError:
+            return
     finally:
         tracemalloc.stop()
     assert retained < 1_000_000, f"listing retained {retained} bytes past a 64 KiB cap"

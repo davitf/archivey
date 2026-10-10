@@ -111,6 +111,7 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     StreamFormat,
+    _ReadOnlyDict,
 )
 
 # Read size for the trailing-bytes scan. The tail past the trailer is unbounded (a
@@ -173,6 +174,10 @@ _MAX_SEEK_OFFSET = 2**63 - 1
 # ``TarInfo``, which reads the data through it, and a PAX sparse 1.0 map lives in the
 # data area, so no header text the cap already weighs stands in for it.
 _SPARSE_ENTRY_BYTES = 24
+
+# The ``tarfile`` module under a name that ``tarfile``'s own method signatures, which
+# call their ``TarFile`` argument ``tarfile``, do not shadow.
+_tarfile = tarfile
 
 
 def _sparse_map(info: tarfile.TarInfo) -> list[tuple[int, int]] | None:
@@ -303,10 +308,69 @@ class _TarFile(tarfile.TarFile):
     build of an older version may carry the fixes, as Ubuntu's 3.12.3 does), so 0
     after a call returns means the member is final."""
 
+    # The PAX global records as they stood at the last member parsed, or ``None``
+    # once a global header has changed them since (:meth:`_TarInfo._proc_member`).
+    _global_records: _GlobalPaxRecords | None = None
+
+    def global_records(self) -> _GlobalPaxRecords:
+        """One shared copy of the PAX global records now in force.
+
+        ``tarfile`` gives every member its own copy of ``pax_headers``, the global
+        records included, so one global header of K records cost K entries per
+        member, from a 512-byte header each. Members with no records of their own
+        share this copy instead (:meth:`_TarInfo._proc_builtin`).
+        """
+        if self._global_records is None:
+            self._global_records = _GlobalPaxRecords(self.pax_headers)
+        return self._global_records
+
+
+class _GlobalPaxRecords(dict[str, str]):
+    """The PAX global records shared by every member that has none of its own.
+
+    A type of its own so the listing can tell a shared copy from a member's own
+    records, and share its ``extra["tar.pax_headers"]`` the same way
+    (:meth:`TarReader._extra_pax_headers`). Nothing writes to it once made.
+    """
+
+    __slots__ = ()
+
+
+def _charge_sparse_map(entries: int, name: str) -> None:
+    """Refuse a sparse map of ``entries`` entries that weighs more than is left of
+    ``max_metadata_bytes`` for this member.
+
+    ``tarfile`` parses a map whole, into a list of tuples, before the member it
+    belongs to can be weighed: a PAX sparse 1.0 map lives in the data area and has no
+    size of its own, and an old GNU map grows by one extension block at a time. This
+    is called with the count before the entries are parsed, or as each block adds
+    some, so the refusal comes before the cost.
+    """
+    budget = _HEADER_BUDGET.get()
+    if budget is None:
+        return
+    left, cap = budget
+    weight = entries * _SPARSE_ENTRY_BYTES
+    if weight > left:
+        raise ResourceLimitError(
+            f"Listing limit reached: max_metadata_bytes={cap} (the TAR sparse map of "
+            f"{quoted(name)} has {entries} entries, weighing {weight} bytes, "
+            f"{max(left, 0)} left)"
+        )
+
+
+# The most characters one number of a PAX sparse 1.0 map may have. GNU tar reads each
+# into a buffer sized for the largest ``uintmax_t`` (20 digits) and refuses a longer
+# one, so no map it writes or reads has more. Structural, not a policy limit: without
+# it a number with no newline after it grows one buffer for as long as the archive
+# lasts.
+_SPARSE_NUMBER_DIGITS = 20
+
 
 class _TarInfo(tarfile.TarInfo):
-    """A ``TarInfo`` that records where its member's stored data ends, and refuses an
-    extended header larger than the listing's metadata budget before reading it.
+    """A ``TarInfo`` that records where its member's stored data ends, refuses an
+    extended header or a sparse map larger than the listing's metadata budget before
+    reading it, and shares the PAX global records between members.
 
     ``tarfile`` keeps no record of how many bytes a sparse member stores: it replaces
     ``size`` with the logical size and reads the data through the sparse map, even
@@ -441,8 +505,149 @@ class _TarInfo(tarfile.TarInfo):
                     f"header for {quoted(self.name)} declares {self.size} bytes, "
                     f"{max(left, 0)} left)"
                 )
+            # ``tarfile`` parses the next header from inside this one's parse, and
+            # keeps this one's data alive until the member at the end of the chain
+            # is built. So the rest of the chain, and the member's sparse map, draw
+            # from what this header leaves. The walk sets a fresh budget for the
+            # next member.
+            _HEADER_BUDGET.set((left - self.size, cap))
+        if self.type == _tarfile.XGLTYPE and isinstance(tarfile, _TarFile):
+            # This header changes the global records the members after it get.
+            tarfile._global_records = None
         # typeshed does not declare tarfile's private TarInfo._proc_member.
         return super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+
+    def _proc_builtin(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
+        """Parse as ``tarfile`` does, then share the global records.
+
+        ``tarfile`` has just given this member its own copy of the PAX global
+        records. With no records of its own (a member that has some gets them from
+        ``_proc_pax`` afterwards, which replaces this), the member takes the copy all
+        such members share instead, and its own is freed.
+        """
+        # typeshed does not declare tarfile's private TarInfo._proc_builtin.
+        info = super()._proc_builtin(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        if isinstance(tarfile, _TarFile) and tarfile.pax_headers:
+            info.pax_headers = tarfile.global_records()
+        return info
+
+    def _proc_sparse(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
+        """Parse an old GNU sparse header and its extension blocks, weighing the map
+        as each block adds to it.
+
+        A copy of stdlib's private ``TarInfo._proc_sparse``, which reads every
+        extension block the archive chains before anything can weigh the map, with
+        the weighing added. A short block, which ``tarfile`` met with a raw
+        ``IndexError``, is a truncated archive. It does not call ``super()``, so a
+        change to stdlib's body is shadowed, not inherited: the copied body was
+        compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
+        ``tests/test_tar_header_memory.py`` fails when stdlib's source changes. A
+        divergence has to be re-checked and carried over, not assumed harmless.
+        """
+        # Set by ``TarInfo.frombuf`` for a sparse header; typeshed does not declare it.
+        structs, isextended, origsize = self._sparse_structs  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        del self._sparse_structs  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        while isextended:
+            buf = tarfile.fileobj.read(_tarfile.BLOCKSIZE)
+            if len(buf) < _tarfile.BLOCKSIZE:
+                raise TruncatedError(
+                    f"TAR archive is truncated in the sparse map of {quoted(self.name)}"
+                )
+            for pos in range(0, 21 * 24, 24):
+                # typeshed does not declare tarfile's nti(). A field it cannot parse
+                # raises ``InvalidHeaderError``, as in ``tarfile``'s own loop.
+                offset = _tarfile.nti(buf[pos : pos + 12])  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+                numbytes = _tarfile.nti(buf[pos + 12 : pos + 24])  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+                if offset and numbytes:
+                    structs.append((offset, numbytes))
+            isextended = bool(buf[504])
+            _charge_sparse_map(len(structs), self.name)
+        self.sparse = structs
+        self.offset_data = tarfile.fileobj.tell()
+        tarfile.offset = self.offset_data + self._block(self.size)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        self.size = origsize
+        return self
+
+    def _proc_gnusparse_00(
+        self, next: tarfile.TarInfo, raw_headers: list[tuple[int, bytes, bytes]]
+    ) -> None:
+        """Weigh a PAX sparse 0.0 map by its count of offset records, then parse as
+        ``tarfile`` does."""
+        entries = sum(
+            1 for _, keyword, _ in raw_headers if keyword == b"GNU.sparse.offset"
+        )
+        _charge_sparse_map(entries, next.name)
+        # typeshed does not declare tarfile's private TarInfo._proc_gnusparse_00.
+        super()._proc_gnusparse_00(next, raw_headers)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+
+    def _proc_gnusparse_01(
+        self, next: tarfile.TarInfo, pax_headers: dict[str, str]
+    ) -> None:
+        """Weigh a PAX sparse 0.1 map by its count of commas, then parse as
+        ``tarfile`` does. The map's text is header text the budget has already
+        weighed; its entries cost more again once parsed."""
+        entries = (pax_headers["GNU.sparse.map"].count(",") + 1) // 2
+        _charge_sparse_map(entries, next.name)
+        # typeshed does not declare tarfile's private TarInfo._proc_gnusparse_01.
+        super()._proc_gnusparse_01(next, pax_headers)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+
+    def _proc_gnusparse_10(
+        self,
+        next: tarfile.TarInfo,
+        pax_headers: dict[str, str],
+        tarfile: tarfile.TarFile,
+    ) -> None:
+        """Parse a PAX sparse 1.0 map, weighing it by its entry count first.
+
+        The map is the start of the member's data area: a count, then an offset and
+        a size per entry, each a decimal number on its own line, padded to a block.
+        ``tarfile`` reads all of it before anything can weigh it, and reads a number
+        with no newline into one buffer that grows for as long as the archive lasts.
+        Here the count is weighed before any entry is read, and a number longer than
+        any GNU tar reads is corruption.
+
+        This replaces stdlib's private ``TarInfo._proc_gnusparse_10`` without calling
+        it, so a change to stdlib's parse is shadowed, not inherited. Stdlib's body
+        was compared byte-identical on CPython 3.11 to 3.14 and main (3.15), and
+        ``tests/test_tar_header_memory.py`` fails when its source changes. A
+        divergence has to be re-checked against this parse, not assumed harmless.
+        """
+        fileobj = tarfile.fileobj
+        buf = b""
+
+        def number() -> int:
+            nonlocal buf
+            while (end := buf.find(b"\n")) < 0:
+                if len(buf) > _SPARSE_NUMBER_DIGITS:
+                    break
+                block = fileobj.read(_tarfile.BLOCKSIZE)
+                if not block:
+                    break
+                buf += block
+            if not 0 <= end <= _SPARSE_NUMBER_DIGITS:
+                raise CorruptionError(
+                    f"TAR sparse map of {quoted(next.name)} has a malformed entry"
+                )
+            text, buf = buf[:end], buf[end + 1 :]
+            try:
+                value = int(text)
+            except ValueError:
+                raise CorruptionError(
+                    f"TAR sparse map of {quoted(next.name)} has an entry that is "
+                    f"not a number: {text[:_SPARSE_NUMBER_DIGITS]!r}"
+                ) from None
+            return value
+
+        entries = number()
+        if entries < 0:
+            raise CorruptionError(
+                f"TAR sparse map of {quoted(next.name)} declares {entries} entries"
+            )
+        _charge_sparse_map(entries, next.name)
+        sparse = [(number(), number()) for _ in range(entries)]
+        next.offset_data = fileobj.tell()
+        # What tarfile stores there (see :func:`_sparse_map`); typeshed says ``bytes``.
+        next.sparse = sparse  # pyrefly: ignore[bad-assignment]  # ty: ignore[invalid-assignment]
 
 
 def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:
@@ -490,7 +695,7 @@ def _raised_by_tarfile(exc: BaseException) -> bool:
     """Whether the innermost Python frame ``exc`` was raised in is stdlib ``tarfile``'s.
 
     ``tarfile`` parses some header values with a bare ``int()`` or tuple unpacking
-    (the GNU sparse PAX records and the PAX sparse 1.0 map), so a malformed value
+    (the GNU sparse PAX records), so a malformed value
     escapes as a plain ``ValueError``. Where it was raised is what separates that from
     a ``ValueError`` of the stream under ``tarfile``, which is raised in that stream's
     own code and is not this translator's to map. The closed-handle case among those
@@ -813,6 +1018,10 @@ class TarReader(BaseArchiveReader):
         # explicitly: left to the garbage collector, a stream held by a failed open's
         # traceback kept its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
+        # The last shared copy of the PAX global records a member was built from, and
+        # the ``extra["tar.pax_headers"]`` every member built from it shares
+        # (:meth:`_extra_pax_headers`).
+        self._shared_pax: tuple[_GlobalPaxRecords, _ReadOnlyDict] | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
         # same critical-section shape covers init, progressive walk, extractfile, EOF,
@@ -1003,8 +1212,9 @@ class TarReader(BaseArchiveReader):
             return TruncatedError(f"TAR archive is truncated: {exc!r}")
         if isinstance(exc, ValueError) and _raised_by_tarfile(exc):
             # A header value tarfile parses with a bare int() or tuple unpack: a GNU
-            # sparse PAX record (GNU.sparse.map / size / realsize) or a PAX sparse 1.0
-            # map that is not a list of integers.
+            # sparse PAX record (GNU.sparse.map / size / realsize) that is not a list
+            # of integers. A PAX sparse 1.0 map is parsed here
+            # (_TarInfo._proc_gnusparse_10), which raises CorruptionError itself.
             return CorruptionError(f"Malformed TAR header value: {exc!r}")
         if isinstance(exc, RecursionError) and _passes_through_tarfile(exc):
             # tarfile parses the header after a GNU long-name/long-link or PAX header
@@ -1564,6 +1774,22 @@ class TarReader(BaseArchiveReader):
             return StreamCapability.SEEKABLE
         return StreamCapability.FORWARD_ONLY
 
+    def _extra_pax_headers(self, pax_headers: Mapping[str, str]) -> _ReadOnlyDict:
+        """``extra["tar.pax_headers"]`` for a member whose records are ``pax_headers``.
+
+        A read-only copy. Members that carry only the PAX global records share one,
+        as they share the records (:meth:`_TarFile.global_records`): one per member
+        cost the global records once for every 512-byte member header. Read-only so
+        that sharing it is invisible: a change made through one member cannot show
+        on another, or reach the ``TarInfo`` the reader reads.
+        """
+        if not isinstance(pax_headers, _GlobalPaxRecords):
+            return _ReadOnlyDict(pax_headers)
+        shared = self._shared_pax
+        if shared is None or shared[0] is not pax_headers:
+            shared = self._shared_pax = (pax_headers, _ReadOnlyDict(pax_headers))
+        return shared[1]
+
     def _to_member(self, info: tarfile.TarInfo, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
         stamps, so the diagnostics raised here can name it before it has one."""
@@ -1615,7 +1841,7 @@ class TarReader(BaseArchiveReader):
         )
         extra = MemberExtra({"tar.type": stored_type})
         if info.pax_headers:
-            extra["tar.pax_headers"] = dict(info.pax_headers)
+            extra["tar.pax_headers"] = self._extra_pax_headers(info.pax_headers)
         if info.isdev():
             extra["tar.devmajor"] = info.devmajor
             extra["tar.devminor"] = info.devminor
