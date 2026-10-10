@@ -951,6 +951,33 @@ def test_pax_sparse_minor_alone_reads_as_a_plain_member() -> None:
     assert (entry.sparse_format, entry.sparse) == (None, None)
 
 
+@pytest.mark.parametrize(
+    "records",
+    [
+        {"GNU.sparse.realsize": "20"},
+        {"GNU.sparse.size": "20"},
+        {"GNU.sparse.major": "1", "GNU.sparse.minor": "0"},
+        {"GNU.sparse.map": "0,3"},
+    ],
+)
+def test_global_sparse_records_make_no_member_sparse(records: dict[str, str]) -> None:
+    """A map describes one member's data area, so a global sparse record leaves the
+    plain members after it plain, and the walk goes on. GNU tar 1.35 lists both."""
+    data = (
+        _pax(records, typeflag=b"g")
+        + _block(b"a", size=3)
+        + _data(b"abc")
+        + _block(b"b", size=3)
+        + _data(b"xyz")
+        + _END
+    )
+    entries, _ = _walk(data)
+    assert [(e.name, e.sparse_format, e.stored_size) for e in entries] == [
+        (b"a", None, 3),
+        (b"b", None, 3),
+    ]
+
+
 def _pax_0_x_member(records: dict[str, str]) -> bytes:
     """A PAX 0.0 or 0.1 member whose 20-byte file holds ``abc`` at offset 10."""
     return (

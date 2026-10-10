@@ -1007,20 +1007,22 @@ class TarWalker:
         # Each encoding is chosen by the presence of the records that define its map,
         # not by pax(), which drops an empty value: a sparse record whose value is
         # empty is damage, and reading the member as a plain file would serve its
-        # compacted data as the content.
-        elif b"GNU.sparse.map" in merged:
+        # compacted data as the content. Only the member's own records choose: a map
+        # describes one member's data area, so a global sparse record makes no member
+        # sparse, as GNU tar 1.35 reads it. The values still read the global defaults.
+        elif b"GNU.sparse.map" in own:
             sparse_format = SparseFormat.PAX_0_1
             sparse = sparse_map_0_1(
                 merged[b"GNU.sparse.map"].value, charger_name, charge
             )
             size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif b"GNU.sparse.size" in merged or any(
+        elif b"GNU.sparse.size" in own or any(
             key == b"GNU.sparse.offset" for key, _ in own_records
         ):
             sparse_format = SparseFormat.PAX_0_0
             sparse = sparse_map_0_0(own_records, charger_name, charge)
             size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif b"GNU.sparse.major" in merged or b"GNU.sparse.realsize" in merged:
+        elif b"GNU.sparse.major" in own or b"GNU.sparse.realsize" in own:
             # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the
             # minor (measured with 1.1, 1.5, 2.0 and 9.9), and refuses a major of 0,
             # an empty one, or one that is not a number when no 0.x map came with
