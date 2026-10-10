@@ -8,4 +8,6 @@ EXIT_USAGE = 2  # CLI usage error (argparse default)
 # Q8 Option A: completed extract with ≥1 policy BLOCKED and no FAILED (safe members on disk).
 # Applies under CONTINUE or STOP — STOP never aborts on a policy block.
 EXIT_POLICY = 3
-# ≥4 reserved
+# 4 to 127 reserved
+# Interrupted by Ctrl-C: 128 + SIGINT (2), the shell's convention for a signal.
+EXIT_INTERRUPTED = 130
