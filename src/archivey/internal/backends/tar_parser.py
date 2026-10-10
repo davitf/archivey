@@ -312,8 +312,9 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
             break
         offset = parse_number(block[pos : pos + 12])
         length = parse_number(block[pos + 12 : pos + 24])
-        # A base-256 field can hold a negative number, or one past 2**63.
-        if not (0 <= offset <= MAX_OFFSET and 0 <= length <= MAX_OFFSET):
+        # A base-256 field reaches 2**95 either side of zero. A negative entry that
+        # fits is kept, for validate_sparse_map to name with its offset.
+        if not all(-MAX_OFFSET - 1 <= n <= MAX_OFFSET for n in (offset, length)):
             raise _BadNumber(block[pos : pos + 24])
         slots.append((offset, length))
     return tuple(slots)

@@ -808,6 +808,20 @@ def test_old_gnu_header_slot_below_any_offset_rejects_the_block() -> None:
     assert isinstance(parsed, RejectedBlock)
 
 
+def test_old_gnu_negative_slot_that_fits_reaches_validation() -> None:
+    def header(h: bytearray) -> None:
+        h[386:398] = b"\xff" * 12  # -1 in base-256
+        h[398:410] = _octal(5, 12)
+        h[483:495] = _octal(10, 12)
+
+    data = _block(b"sp", size=5, typeflag=b"S", magic=b"ustar  \x00", patch=header)
+    (entry,), _ = _walk(data + _data(b"abcde") + _END)
+    assert entry.sparse is not None
+    error = validate_sparse_map(entry.sparse, entry.size, entry.stored_size, "'sp'")
+    assert isinstance(error, CorruptionError)
+    assert "negative entry" in str(error)
+
+
 def test_old_gnu_extension_slot_past_any_file_rejects_the_header() -> None:
     def header(h: bytearray) -> None:
         h[386:398] = _octal(0, 12)
