@@ -120,6 +120,13 @@ Usually the answer is that the code is not self-documenting, which makes it 🟡
 a comment or an assertion that encodes the invariant, not a shrug. "Later" with no PR
 and no tracked item is just dropping it slowly.
 
+**A case the stated condition already decides gets the condition, not a new case.** When a
+finding asks a comment, rule or bound to cover one more case and the condition it states
+already decides that case, the reply quotes the condition and adds nothing. When a second
+finding lands on the same block, rewrite the block as the condition it was trying to state
+rather than adding a second case. A list of cases grows by one finding per round; in
+another project's review loop one block took 24 findings over 9 rounds this way.
+
 ---
 
 ## 3. Verify before you act
@@ -130,6 +137,12 @@ in a file the reviewer never opened (answer with evidence, not a duplicate test)
 finding is often **narrower and sharper** than described, and reproducing it gives a
 better fix and test; and a fix for the reported symptom can leave the *cause* alive in a
 second place.
+
+**A safety finding needs evidence to be disproven.** A finding on path escape, bomb or
+resource limits, parser bounds on hostile input or the exception contract is disproven
+only by a cited `file:line`, test or commit that refutes it, not by a trace in prose.
+Without that it stays open: fix it, or escalate it (§6). A wrong "disproven" here ships the
+bug the library exists to prevent, so it costs more than a needless fix.
 
 When a finding is real, ask what **class** it belongs to. If an ad-hoc audit found it, the
 audit is the deliverable: convert it into a standing test so the claim is checked every

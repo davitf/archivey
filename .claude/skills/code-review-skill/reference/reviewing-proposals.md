@@ -55,6 +55,8 @@ Run every proposal — and every contract-moving code change — past these:
   §Domain checklist).
 - [ ] **Rationale present:** `design.md` records alternatives considered and the *why*,
   per the library schema — not just the *what* (stub OK for trivial deltas).
+- [ ] **A revision that shortened or moved text kept its guards** (§Text that shrinks or
+  moves keeps its guards).
 - [ ] **Docs move together:** if the contract moves, the matching `openspec/specs/` and
   user/decision docs move in the same change (§Coding and contract checks).
 - [ ] **Pause-and-ask** on conflicts with existing specs / docs / VISION — surface, don't

@@ -91,6 +91,11 @@ decides:
 Low confidence lowers the *confidence tag*, never the decision to report: a
 🔴 `PLAUSIBLE` finding is still reported.
 
+**`CONFIRMED` means quoted:** the finding quotes the lines that fail, from the reviewed
+HEAD. An absence found only by grep ("nothing calls this", "no backend sets it") is
+`PLAUSIBLE` at most, because the lazy `__getattr__` exports in `archivey/__init__.py` and
+`BackendRegistry` lookups hide uses from a grep. Say what you searched.
+
 ### Verification routes findings; it never silently culls them
 
 After the code + context passes, re-trace each candidate against the actual path —
