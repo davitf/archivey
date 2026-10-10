@@ -353,8 +353,11 @@ way is "can't tell" and its inner TAR is not claimed. A zstd frame whose window 
 decoder is "can't tell"; it SHALL NOT escape detection. In the inner-TAR probe, "can't
 tell" (an absent backend, or a decoder the probe cannot build) SHALL record `inner_tar`
 in `unavailable_tiers` as `CAPABILITY_UNAVAILABLE`; a corrupt or truncated stream records
-nothing, since it answers "no TAR". A budget that turns the tier off SHALL record
-`NOT_ENABLED_BY_POLICY` instead, whether or not the backend is present.
+nothing, since it answers "no TAR". The probe SHALL record one reason, in this order: a
+budget that turns the tier off records `NOT_ENABLED_BY_POLICY`, whether or not the
+backend is present; then an absent backend records `CAPABILITY_UNAVAILABLE`, even under
+a budget too small for the probe; then a budget too small for the probe records
+`BUDGET_EXHAUSTED`.
 
 #### Scenario: inner-TAR matrix
 

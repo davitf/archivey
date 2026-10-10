@@ -325,8 +325,9 @@ def _probe_inner_tar(
     header. An absent backend, or a decoder the probe cannot build within its reservation
     (``UnsupportedFeatureError``, ``ResourceLimitError``, ``MemoryError``), records
     ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is "can't tell", not "no TAR".
-    A budget that turns the tier off records ``NOT_ENABLED_BY_POLICY`` first, whatever
-    the backend.
+    Only one reason is recorded, in this order: a budget that turns the tier off
+    (``NOT_ENABLED_BY_POLICY``), an absent backend (``CAPABILITY_UNAVAILABLE``), a budget
+    that cannot cover the probe (``BUDGET_EXHAUSTED``).
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
     from archivey.internal.config import DecoderLimits, StreamConfig
@@ -340,29 +341,36 @@ def _probe_inner_tar(
         codec = codec_for_stream_format(stream_format)
     except KeyError:
         return False
-    limit = _INNER_TAR_MAX_PROBE_BYTES
+    # One reason is recorded, in this order: the policy turned the tier off, then the
+    # backend is absent (more budget would not help), then the budget cannot cover it.
     if workspace is not None:
         budget = workspace.budget
-        # Off when either face value is zero. Cut short: output against the budget's
-        # face value, since this is the only tier that charges output and a pass that
-        # reaches it returns a format, so no earlier pass (the sibling-volume retry
-        # shares the receipt) has charged any. Input against what is left, since a
-        # content probe and its completion check draw on the same allowance.
+        # Off when either face value is zero.
         if _record_tier_limit(
             workspace,
             "inner_tar",
             enabled=budget.max_decode_input > 0 and budget.max_decode_output > 0,
-            covered=budget.max_decode_output >= _INNER_TAR_PROBE_BYTES
-            and workspace.decode_input_left > 0,
         ):
             return False
-        limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
-    # After the budget gate: a tier the policy turned off is NOT_ENABLED_BY_POLICY
-    # whatever this environment could have run.
     if not is_codec_available(codec):
         if workspace is not None:
             workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
         return False
+    limit = _INNER_TAR_MAX_PROBE_BYTES
+    if workspace is not None:
+        # Cut short: output against the budget's face value, since this is the only
+        # tier that charges output and a pass that reaches it returns a format, so no
+        # earlier pass (the sibling-volume retry shares the receipt) has charged any.
+        # Input against what is left, since a content probe and its completion check
+        # draw on the same allowance.
+        if _record_tier_limit(
+            workspace,
+            "inner_tar",
+            covered=workspace.budget.max_decode_output >= _INNER_TAR_PROBE_BYTES
+            and workspace.decode_input_left > 0,
+        ):
+            return False
+        limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
 
     source = _BoundedPeekReader(peek_more, limit)
     head = b""

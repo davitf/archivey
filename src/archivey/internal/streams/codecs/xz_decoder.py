@@ -1261,14 +1261,24 @@ _MBI_ENDS = bytes.maketrans(bytes(range(256)), b"E" * 0x80 + b"C" * 0x80)
 _MBI_TOO_LONG = b"C" * 9
 
 
+def _mbi_marks(data: bytearray) -> bytearray:
+    """``data`` translated through ``_MBI_ENDS``."""
+    return data.translate(_MBI_ENDS)
+
+
 def _skip_index_and_footer(source: _HeadInput) -> None:
     """Consume a stream's index (its 0x00 indicator already taken) and its footer.
 
     Only the index's own record count says where it ends, so the records are walked:
-    each is two MBIs, and only where they end matters, not their values. They are
-    counted a buffer at a time, so a count no input can hold costs one pass over the
-    bytes the probe may read before it runs into the end of the input and is truncated.
-    The index CRC32 and the footer magic are checked.
+    each is two MBIs, and only where they end matters, not their values. MBI ends are
+    counted a slice at a time, never wider than the MBIs still to end, since each MBI
+    takes at least one byte: a slice never reaches past the index, so a short index
+    costs a scan of its own bytes, and a count no input can hold costs one pass over
+    the bytes the probe may read before it runs into the end of the input and is
+    truncated. Any 9 bytes in a row end an MBI, so a slice as wide as ``left`` ends at
+    least a ninth of them: the slices per index grow with the logarithm of its count
+    (plus one per read), not with the count. The index CRC32 and the footer magic are
+    checked.
     """
     crc = zlib.crc32(b"\x00")
     length = 1
@@ -1294,19 +1304,14 @@ def _skip_index_and_footer(source: _HeadInput) -> None:
     while left:
         if not source.pending and not source.fill(1):
             raise TruncatedError("XZ stream is truncated")
-        marks = source.pending.translate(_MBI_ENDS)
-        n = len(marks)
-        if marks.count(b"E") >= left:
-            pos = -1
-            for _ in range(left):
-                pos = marks.index(b"E", pos + 1)
-            n = pos + 1
-        if _MBI_TOO_LONG in b"C" * run + marks[:n]:
+        # ``left`` MBIs take at least ``left`` bytes: this slice is all index.
+        marks = _mbi_marks(source.pending[:left])
+        if _MBI_TOO_LONG in b"C" * run + marks:
             raise CorruptionError("XZ index MBI exceeds 9 bytes")
-        last_end = marks.rfind(b"E", 0, n)
-        run = run + n if last_end < 0 else n - 1 - last_end
-        left -= marks.count(b"E", 0, n)
-        consume(n)
+        last_end = marks.rfind(b"E")
+        run = run + len(marks) if last_end < 0 else len(marks) - 1 - last_end
+        left -= marks.count(b"E")
+        consume(len(marks))
     padding = consume(-length % 4)
     if any(padding):
         raise CorruptionError("XZ index padding is not zero")

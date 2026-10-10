@@ -343,6 +343,39 @@ def test_xz_head_walks_a_huge_index_in_bulk(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls < 1000, calls
 
 
+def test_xz_head_scans_each_index_by_its_own_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short index costs a scan of its own bytes, not of the whole read buffer.
+
+    32768 streams of 32 bytes each: a stream header, then an index that declares one
+    record (``00 01 01 01`` and its CRC32) with no block behind it, then a footer. The
+    bytes the walk hands to the MBI scan stay within a small multiple of the input.
+    """
+    from archivey.internal.streams.codecs import xz_decoder
+
+    header = lzma.compress(b"", format=lzma.FORMAT_XZ, check=lzma.CHECK_NONE)[:12]
+    index = b"\x00\x01\x01\x01"
+    index += struct.pack("<I", zlib.crc32(index))
+    footer_body = struct.pack("<I", len(index) // 4 - 1) + b"\x00\x00"
+    footer = struct.pack("<I", zlib.crc32(footer_body)) + footer_body + b"YZ"
+    stream = header + index + footer
+    assert len(stream) == 32
+    payload = stream * 32768
+
+    scanned = 0
+    real_marks = xz_decoder._mbi_marks
+
+    def counting_marks(data: bytearray) -> bytearray:
+        nonlocal scanned
+        scanned += len(data)
+        return real_marks(data)
+
+    monkeypatch.setattr(xz_decoder, "_mbi_marks", counting_marks)
+    assert _decode_xz_head(io.BytesIO(payload).read, 512) == b""
+    assert scanned <= 2 * len(payload), scanned
+
+
 def test_xz_head_with_filters_ahead_of_lzma2_is_byte_identical() -> None:
     """The clamp's filter allowance holds at a bound past the 4 KiB floor.
 
