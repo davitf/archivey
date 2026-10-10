@@ -116,7 +116,10 @@ DEFAULT_STREAM_CONFIG = stream_config_from_archivey(
 # declaration up to it, so a clamp below it would change nothing.
 _LZMA_DICT_MIN = 4096
 # Output a filter ahead of LZMA2 in an xz chain may ask of LZMA2 beyond what it hands
-# on: a BCJ filter holds back at most one instruction (liblzma's x86 filter, 5 bytes).
+# on: a BCJ filter holds back the bytes that may start an instruction (liblzma's x86
+# filter, at most 5). Measured on a delta + x86 + LZMA2 chain at an 8 KiB bound, an
+# allowance of 0 fails and 1 is enough; 64 is margin. Only the xz inner-TAR probe has
+# such a chain today, and its 512-byte bound sits under the 4 KiB floor.
 _LZMA_FILTER_LOOKAHEAD = 64
 
 

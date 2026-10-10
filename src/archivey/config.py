@@ -424,7 +424,7 @@ class DecoderLimits:
     decoding a small sample, and that sample is decoded with no decoder limit,
     because a capped probe would report a different format for a caller who
     passed :attr:`UNLIMITED`. It does not need one: a probe builds its LZMA
-    decoder with only the dictionary its sample needs (a few KiB, whatever the
+    decoder with only the dictionary its sample needs (4 to 64 KiB, whatever the
     header declares), which decodes the sample to the same bytes, and lowers
     zstd's window limit to libzstd's default 128 MiB, treating a frame over it
     as unrecognised. The open that follows detection is capped as described

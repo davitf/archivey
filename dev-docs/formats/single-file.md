@@ -330,9 +330,9 @@ Shared by the codecs; each page adds its own.
   output it reads, and the decoder is built with a dictionary of that size (4 KiB at
   least), which decodes those bytes identically, since a match never reaches back past
   output already produced. `.lzma` and lzip rewrite the probe's copy of the header; xz
-  decodes each block raw with its filter chain and a clamped LZMA2 dictionary, and a
-  chain Python's `lzma` cannot build raw (ARM64, RISC-V) leaves the inner TAR
-  unclaimed.
+  decodes each block raw with its filter chain and a clamped LZMA2 dictionary, walking
+  into later streams, and a chain Python's `lzma` cannot build raw (ARM64, RISC-V)
+  leaves the inner TAR unclaimed, recorded as `CAPABILITY_UNAVAILABLE`.
 - **A crafted index misplaces bytes on a seek.** xz and lzip seeks trust the file's own
   index; a forward read verifies it, a cold seek does not. Accepted: threat-model O17.
 - **A seek table grows with the unit count the file declares.** An lzip member can be 26

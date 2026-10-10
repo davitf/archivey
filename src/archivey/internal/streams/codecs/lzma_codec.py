@@ -89,6 +89,8 @@ class XzCodec(_SizedLzmaCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if config.probe_read_bound is not None:
+            # Probes decode from a bounded in-memory or peek reader, never a path.
+            assert not isinstance(source, (str, os.PathLike))
             return open_xz_head(source, config.probe_read_bound)
         return XzDecompressorStream(
             source,

@@ -76,7 +76,12 @@ from archivey.diagnostics import (
     DiagnosticCode,
     FormatConflictContext,
 )
-from archivey.exceptions import ArchiveyError, FormatDetectionError
+from archivey.exceptions import (
+    ArchiveyError,
+    FormatDetectionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.arg_checks import check_config
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import DETECTION_LIMIT, PrefixWorkspace
@@ -317,7 +322,9 @@ def _probe_inner_tar(
 
     Returns ``False`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no TAR
-    header.
+    header. An absent backend, or a decoder the probe cannot build within its reservation
+    (``UnsupportedFeatureError``, ``ResourceLimitError``, ``MemoryError``), records
+    ``inner_tar`` as ``CAPABILITY_UNAVAILABLE``: the answer is "can't tell", not "no TAR".
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
     from archivey.internal.config import DecoderLimits, StreamConfig
@@ -332,6 +339,8 @@ def _probe_inner_tar(
     except KeyError:
         return False
     if not is_codec_available(codec):
+        if workspace is not None:
+            workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
         return False
 
     limit = _INNER_TAR_MAX_PROBE_BYTES
@@ -354,6 +363,7 @@ def _probe_inner_tar(
 
     source = _BoundedPeekReader(peek_more, limit)
     head = b""
+    unavailable = False
     try:
         with open_codec_stream(
             codec,
@@ -368,9 +378,13 @@ def _probe_inner_tar(
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
-    except (ArchiveyError, OSError, ValueError, MemoryError):
-        # Not decodable as this codec, truncated before a full block, or a decoder
-        # the allocator refused -> not an inner tar.
+    except (UnsupportedFeatureError, ResourceLimitError, MemoryError):
+        # The decoder could not be built within the probe's reservation: a zstd window
+        # over the probe's limit, an xz filter chain it cannot decode raw, or an
+        # allocation refused. "Can't tell", and the receipt says so.
+        unavailable = True
+    except (ArchiveyError, OSError, ValueError):
+        # Not decodable as this codec, or truncated before a full block -> not an inner tar.
         pass
     found = head[257:262] == b"ustar"
     if workspace is not None:
@@ -379,7 +393,9 @@ def _probe_inner_tar(
             input_bytes=source.tell(),
             output_bytes=len(head),
         )
-        if not found and source.hit_limit:
+        if unavailable:
+            workspace.record_skip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE)
+        elif not found and source.hit_limit:
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
     return found
 

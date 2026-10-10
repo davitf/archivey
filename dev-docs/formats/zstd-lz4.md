@@ -182,7 +182,13 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   frame without a content size when it reads the header (measured: a 2 GiB window under
   a 256 MiB `RLIMIT_AS` fails with "Allocation error"), and a window cannot be shrunk to
   what the read needs the way an LZMA dictionary can. A frame over 128 MiB is "can't
-  tell": detection reports a bare `.zst`, and the open applies the caller's limit.
+  tell": detection reports a bare `.zst`, records `inner_tar` as
+  `CAPABILITY_UNAVAILABLE`, and the open applies the caller's limit. The alternative was to
+  keep libzstd's 2 GiB ceiling and let its own allocation refusal ("Allocation error", a
+  `CorruptionError` to the probe) be the "can't tell" under memory pressure; that keeps
+  `--long=28` and up detected where memory allows. The cap was chosen because a 2 GiB
+  reservation per `detect_format` is a cost in itself (threat model O11) and `--long`
+  frames are rare beside the 8 MiB window of `zstd -19`.
 - **The decoders are native code.** Both run in the caller's process. `compression.zstd`
   is the standard library's; `lz4` is a C extension. Neither is fuzzed by archivey's own
   harness beyond the corpus.

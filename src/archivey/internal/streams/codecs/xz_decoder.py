@@ -1222,34 +1222,103 @@ def _head_filter_chain(header: bytes, read_bound: int) -> list[dict[str, int]]:
     return chain
 
 
+class _HeadInput:
+    """The compressed input of :func:`_decode_xz_head`: bytes read ahead, then ``read``."""
+
+    def __init__(self, read: Callable[[int], bytes]) -> None:
+        self._read = read
+        self.pending = bytearray()
+
+    def fill(self, n: int) -> bool:
+        """Hold at least ``n`` bytes; ``False`` when the input ends first."""
+        while len(self.pending) < n:
+            chunk = self._read(max(n - len(self.pending), _HEAD_READ_SIZE))
+            if not chunk:
+                return False
+            self.pending.extend(chunk)
+        return True
+
+    def take(self, n: int) -> bytes:
+        if not self.fill(n):
+            raise TruncatedError("XZ stream is truncated")
+        taken = bytes(self.pending[:n])
+        del self.pending[:n]
+        return taken
+
+    def take_all(self) -> bytes:
+        """Everything held, or the next read when nothing is; truncated at the end."""
+        if not self.pending and not self.fill(1):
+            raise TruncatedError("XZ stream is truncated")
+        taken = bytes(self.pending)
+        self.pending.clear()
+        return taken
+
+
+def _skip_index_and_footer(source: _HeadInput) -> None:
+    """Consume a stream's index (its 0x00 indicator already taken) and its footer.
+
+    The index is walked record by record, since only its own record count says where it
+    ends, and its CRC32 is checked; the footer's magic is checked. A count no input can
+    hold runs into the end of the input and is truncated.
+    """
+    index = bytearray(b"\x00")
+
+    def vli() -> int:
+        value = 0
+        for i in range(9):
+            byte = source.take(1)[0]
+            index.append(byte)
+            value |= (byte & 0x7F) << (7 * i)
+            if not byte & 0x80:
+                return value
+        raise CorruptionError("XZ index MBI exceeds 9 bytes")
+
+    for _ in range(vli() * 2):  # each record: unpadded size, uncompressed size
+        vli()
+    padding = source.take(-len(index) % 4)
+    if any(padding):
+        raise CorruptionError("XZ index padding is not zero")
+    index.extend(padding)
+    (stored,) = struct.unpack("<I", source.take(4))
+    if zlib.crc32(index) & 0xFFFFFFFF != stored:
+        raise CorruptionError("XZ index CRC32 mismatch")
+    if source.take(_STREAM_FOOTER_SIZE)[-2:] != _XZ_FOOTER_MAGIC:
+        raise CorruptionError("XZ stream footer magic not found")
+
+
+def _starts_next_stream(source: _HeadInput) -> bool:
+    """Skip stream padding (zeros, four at a time); whether another stream follows.
+
+    ``False`` at the end of the input, and at bytes that start no stream: what follows
+    the last stream is the open's business (``ARCHIVE_TRAILING_DATA``), not the probe's.
+    """
+    while source.fill(4) and source.pending[:4] == b"\x00\x00\x00\x00":
+        del source.pending[:4]
+    return source.fill(6) and source.pending[:6] == _XZ_STREAM_MAGIC
+
+
 def _decode_xz_head(read: Callable[[int], bytes], size: int) -> bytes:
-    """Up to ``size`` bytes of the xz stream ``read`` returns, its dictionaries clamped.
+    """Up to ``size`` bytes of the xz data ``read`` returns, its dictionaries clamped.
 
     Each block is decoded raw, with the filter chain its header declares and the LZMA2
     dictionary clamped to what ``size`` bytes of output need (see
-    :func:`_head_filter_chain`). Stream header and block header CRCs are checked; the
-    block check is not, since a bounded read rarely reaches it. Decoding stops at
-    ``size`` bytes or at the stream's index, whichever comes first.
+    :func:`_head_filter_chain`). Stream header, block header and index CRCs are
+    checked; a block's check is not, since a bounded read rarely reaches it. Past a
+    stream's index the walk goes on through stream padding into the next stream, as
+    ``XzDecoder`` does, and stops at ``size`` bytes or at the end of the xz data.
     """
-    pending = bytearray()
-
-    def take(n: int) -> bytes:
-        while len(pending) < n:
-            chunk = read(max(n - len(pending), _HEAD_READ_SIZE))
-            if not chunk:
-                raise TruncatedError("XZ stream is truncated")
-            pending.extend(chunk)
-        taken = bytes(pending[:n])
-        del pending[:n]
-        return taken
-
-    check = _parse_xz_header(take(_STREAM_HEADER_SIZE))
+    source = _HeadInput(read)
+    check = _parse_xz_header(source.take(_STREAM_HEADER_SIZE))
     out = bytearray()
     while len(out) < size:
-        first = take(1)
-        if first == b"\x00":
-            break  # the index indicator: the stream has no more blocks
-        header = first + take(first[0] * 4 + 3)
+        first = source.take(1)
+        if first == b"\x00":  # the index indicator: this stream has no more blocks
+            _skip_index_and_footer(source)
+            if not _starts_next_stream(source):
+                break
+            check = _parse_xz_header(source.take(_STREAM_HEADER_SIZE))
+            continue
+        header = first + source.take(first[0] * 4 + 3)
         (stored,) = struct.unpack_from("<I", header, len(header) - 4)
         if zlib.crc32(header[:-4]) & 0xFFFFFFFF != stored:
             raise CorruptionError("XZ block header CRC32 mismatch")
@@ -1260,33 +1329,25 @@ def _decode_xz_head(read: Callable[[int], bytes], size: int) -> bytes:
         while not dec.eof and len(out) < size:
             data = b""
             if dec.needs_input:
-                if not pending:
-                    chunk = read(_HEAD_READ_SIZE)
-                    if not chunk:
-                        raise TruncatedError("XZ stream is truncated")
-                    pending.extend(chunk)
-                data = bytes(pending)
-                pending.clear()
+                data = source.take_all()
                 fed += len(data)
             out += dec.decompress(data, size - len(out))
         if not dec.eof:
             break  # ``size`` reached inside the block
-        pending[:0] = dec.unused_data
+        source.pending[:0] = dec.unused_data
         compressed = len(header) + fed - len(dec.unused_data)
-        take(-compressed % 4 + _check_size(check))  # block padding, then its check
+        source.take(-compressed % 4 + _check_size(check))  # block padding, then check
     return bytes(out)
 
 
-def open_xz_head(source: str | os.PathLike[str] | BinaryIO, size: int) -> BinaryIO:
-    """The first ``size`` bytes an xz stream decodes to, for a detection probe.
+def open_xz_head(source: BinaryIO, size: int) -> BinaryIO:
+    """The first ``size`` bytes an xz source decodes to, for a detection probe.
 
     liblzma reserves the dictionary a block header declares, up to 4 GiB, when its
     xz decoder reads that header; a probe reading 512 bytes needs 4 KiB of it. So
     this decodes each block raw with the dictionary clamped instead
     (``StreamConfig.probe_read_bound``), which gives the same bytes. The stream ends
-    at ``size``.
+    at ``size``. ``source`` is the probe's bounded reader: nothing here limits how
+    much input a block reads to reach ``size`` bytes.
     """
-    if isinstance(source, (str, os.PathLike)):
-        with open(os.fspath(source), "rb") as f:
-            return io.BytesIO(_decode_xz_head(f.read, size))
     return io.BytesIO(_decode_xz_head(source.read, size))

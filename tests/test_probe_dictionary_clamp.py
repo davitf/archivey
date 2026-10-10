@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import lzma
+import random
 import struct
 import subprocess
 import tarfile
@@ -22,9 +23,11 @@ from typing import Any
 import pytest
 
 from archivey import ArchiveFormat, detect_format
+from archivey.detection_cost import TierSkip, TierSkipReason
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, probe_lzma_dictionary
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.lzma_codec import LzmaAloneCodec
+from archivey.internal.streams.codecs.xz_decoder import _decode_xz_head
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires_zstd, zstd_backend
 from tests.streams_util import make_lzip_member, make_multiblock_xz, xz_cli_available
@@ -240,7 +243,36 @@ def test_tar_xz_probe_declines_a_filter_it_cannot_build() -> None:
     if result.returncode != 0:
         pytest.skip("this xz has no ARM64 filter (added in XZ Utils 5.4)")
     written = result.stdout
-    assert detect_format(io.BytesIO(written)).format == ArchiveFormat.XZ
+    info = detect_format(io.BytesIO(written))
+    assert info.format == ArchiveFormat.XZ
+    assert info.unavailable_tiers == (
+        TierSkip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE),
+    )
+
+
+def test_inner_tar_probe_without_a_backend_is_cant_tell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A codec whose backend is absent cannot be probed: recorded, not silent."""
+    import gzip
+
+    from archivey.internal.streams import codecs
+
+    monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+    info = detect_format(io.BytesIO(gzip.compress(_TARBALL)))
+    assert info.format == ArchiveFormat.GZ
+    assert info.unavailable_tiers == (
+        TierSkip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE),
+    )
+
+
+def test_tar_xz_probe_on_corrupt_data_is_not_a_tar_not_cant_tell() -> None:
+    """Damage answers "no TAR here"; only an unbuildable decoder answers "can't tell"."""
+    written = bytearray(lzma.compress(_TARBALL, format=lzma.FORMAT_XZ))
+    written[40] ^= 0xFF  # inside the first block's LZMA2 data
+    info = detect_format(io.BytesIO(bytes(written)))
+    assert info.format == ArchiveFormat.XZ
+    assert info.unavailable_tiers == ()
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI not on PATH")
@@ -248,6 +280,55 @@ def test_tar_xz_probe_crosses_small_blocks() -> None:
     """Blocks smaller than the 512-byte read: the probe walks to the next block."""
     written = make_multiblock_xz(_TARBALL, 100)
     assert detect_format(io.BytesIO(written)).format == _tar_of(StreamFormat.XZ)
+
+
+def _xz(data: bytes) -> bytes:
+    return lzma.compress(data, format=lzma.FORMAT_XZ)
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param(
+            _xz(_TARBALL[:100]) + _xz(_TARBALL[100:]), id="short-first-stream"
+        ),
+        pytest.param(_xz(b"") + _xz(_TARBALL), id="empty-first-stream"),
+        pytest.param(
+            _xz(b"") + bytes(4) + _xz(_TARBALL), id="empty-first-stream-padded"
+        ),
+    ],
+)
+def test_tar_xz_probe_crosses_streams(written: bytes) -> None:
+    """An xz file is a sequence of streams: the probe walks into the next one."""
+    # The full decoder, not ``lzma.decompress``, which stops at stream padding.
+    with open_codec_stream(Codec.XZ, io.BytesIO(written)) as stream:
+        assert stream.read() == _TARBALL
+    assert detect_format(io.BytesIO(written)).format == _tar_of(StreamFormat.XZ)
+
+
+def test_xz_head_with_filters_ahead_of_lzma2_is_byte_identical() -> None:
+    """The clamp's filter allowance holds at a bound past the 4 KiB floor.
+
+    A BCJ filter holds back the bytes that may start an instruction, so to hand on
+    ``bound`` bytes it asks LZMA2 for a few more. Here the first ``bound + 4`` random
+    bytes, ending in x86 call opcodes, repeat at that distance: the bytes LZMA2
+    decodes past the bound are a match reaching back ``bound + 4``, which a dictionary
+    of exactly ``bound`` refuses (measured: an allowance of 0 fails this, 1 passes).
+    """
+    bound = 8192
+    first = bytearray(random.Random(0).randbytes(bound + 4))
+    first[-12:] = b"\xe8" * 12
+    data = bytes(first) * 2
+    written = lzma.compress(
+        data,
+        format=lzma.FORMAT_XZ,
+        filters=[
+            {"id": lzma.FILTER_DELTA, "dist": 1},
+            {"id": lzma.FILTER_X86},
+            {"id": lzma.FILTER_LZMA2, "dict_size": 1 << 20},
+        ],
+    )
+    assert _decode_xz_head(io.BytesIO(written).read, bound) == data[:bound]
 
 
 def test_tar_lzma_probe_clamps_the_header_dictionary(
@@ -305,4 +386,10 @@ def test_tar_zst_probe_caps_the_window(
     info = detect_format(io.BytesIO(written))
     want = _tar_of(StreamFormat.ZSTD) if expected else ArchiveFormat.ZST
     assert info.format == want
+    skipped = (
+        ()
+        if expected
+        else (TierSkip("inner_tar", TierSkipReason.CAPABILITY_UNAVAILABLE),)
+    )
+    assert info.unavailable_tiers == skipped
     assert windows and max(windows) <= 27
