@@ -137,10 +137,11 @@ can no longer raise `UnicodeDecodeError` there.
   end, and otherwise from the index pass below; the directory is never walked a third
   time. The cost receipt stays `INDEXED`, `DIRECT`, `SEEKABLE` for a seekable source;
   §"What the caller sees in a forward pass" has the forward-pass values.
-- At open (not under `streaming=True`), an archive whose end record declares more
-  entries than `max_members` raises `ResourceLimitError`, when the directory is large
-  enough to hold that many (`cd_size` at least 46 bytes per declared entry). That is the
-  cheap check at open (DR-15b). A declared count the directory cannot hold is a wrong
+- At open, an archive whose end record declares more entries than `max_members` raises
+  `ResourceLimitError`, when the directory is large enough to hold that many (`cd_size`
+  at least 46 bytes per declared entry). That is the cheap check at open (DR-15b). It
+  applies under `streaming=True` too, for a seekable source, which reads the directory
+  first (question C). A declared count the directory cannot hold is a wrong
   field, not a breach: it stays the count-mismatch finding, and the walk charges what is
   really there.
 
@@ -155,10 +156,19 @@ The listing walk records each entry's header offset as it goes (8 bytes per entr
 already known. Only when a member is opened, or `member_count` is asked for, before the
 listing has finished does the reader run an **index pass**: one more pass over the fixed
 46-byte fields that builds no members and keeps only the offsets and the count. Both
-collections charge `max_members`: the index pass stops past it, the same limit the
-listing that any member open needs has already enforced. A member open after the pass
-stopped raises the listing's `ResourceLimitError`. Listing alone never pays for the
-array beyond the offsets of the members it listed.
+collections charge `max_members`: the index pass stops past it. Once it has stopped,
+**every** member open raises the listing's `ResourceLimitError`, not only one above the
+stop, because the bound of a member below it could come from an incomplete set of
+offsets. Listing alone never pays for the array beyond the offsets of the members it
+listed.
+
+`max_members` bounds the array in every mode, so ZIP charges it even under
+`streaming=True`, where listing limits are otherwise off. That moves ZIP into the list
+of formats that apply `max_members` while parsing (7z, RAR and ISO, `archive-reading`;
+a stage 3 spec edit). A seekable source under `streaming=True` walks the directory
+first, so the walk charges it there. A forward pass has no offset array (it reads data
+in order), but it keeps every member it yielded until the end of the pass to update it
+in place, so it charges `max_members` as members are yielded.
 
 ## Streaming: a forward walk over local headers
 
@@ -202,16 +212,15 @@ the directory is then read forward from the same stream with the same entry pars
 | Bit 3, a codec with an end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark) | The codec's own end, then the data descriptor: signature optional, 8-byte sizes when the local header has a ZIP64 extra field, else 4-byte. Its CRC and sizes are checked against what was read |
 | Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for `PK\x07\x08` followed by a CRC and a compressed size that match the bytes since the data start, and then by a local header, central header or end record signature. libarchive reads it the same way. A descriptor without its signature cannot be found this way: `UnsupportedFeatureError` |
 | Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext. The descriptor's CRC covers the plaintext, so the scan matches on the compressed size and the signature after it only; the CRC (ZipCrypto, AE-1) or the HMAC (AES) then checks the plaintext as for any member |
+| Bit 3, LZMA without the EOS bit, PPMd without an end mark | No way to find the end: `UnsupportedFeatureError` in this mode, naming the reason. A seekable source reads it |
 
 The STORED scan can be fooled on purpose: a member that carries, inside its own data, a
 descriptor for a prefix of itself followed by a local header signature ends early, and
-its CRC matches. The central entry is the check that catches it. At the end of the pass
-a size or CRC that came from a data descriptor and differs from the central entry raises
-`CorruptionError` for that member. This is not question A, which is about two headers
-that state the same field differently; here the local header stated no size at all. In
-a streaming extraction the short file is already on disk by then, so it is removed
-(DR-18: archivey created it) and the error names the member.
-| Bit 3, LZMA without the EOS bit, PPMd without an end mark | No way to find the end: `UnsupportedFeatureError` in this mode, naming the reason. A seekable source reads it |
+its CRC matches. The central entry is the check that catches it: a size or CRC that came
+from a data descriptor and differs from the central entry is a failure of that member at
+the end of the pass (§"Failures found at the end of the pass"). This is not question A,
+which is about two headers that state the same field differently; here the local header
+stated no size at all.
 
 ### What only the central directory says
 
@@ -251,7 +260,8 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   member) is removed from disk and reported: data outside any member is a warning
   (DR-3), and the seekable read never sees it. A name, CRC or size that differs
   between the two follows the answer to question A, as in seekable mode. A directory
-  entry with no local entry in the stream raises at the end of the pass (DR-2).
+  entry with no local entry in the stream is a failure of that member at the end of the
+  pass (DR-2; next section).
 
 ### Other shapes the walk meets
 
@@ -262,9 +272,9 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   offset was given, the walk scans forward for a local header that the detector's ZIP
   hit validator (`validate_zip_local_header`) accepts, within the same 2 MiB window
   (`SFX_MAX`), and starts there. Nothing found in the window is `CorruptionError`
-  naming the reason. In the seekable
-  read a missed stub costs nothing, because `base` recovers the offsets; the forward
-  walk has no end record to recover them from until the end.
+  naming the reason. In the seekable read a missed stub costs nothing, because `base`
+  recovers the offsets; the forward walk has no end record to recover them from until
+  the end.
 - Bytes between the last member and the directory (an APK signing block, for one) are
   read past to the directory signature. The end record, read last, confirms where the
   directory started; the seekable read skips the same bytes without reading them.
@@ -275,9 +285,34 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   same name, the current one is the later in the directory, in both modes. A streaming
   extraction writes copies in file order, so when the directory order of two same-name
   members is the reverse of their file order, the file on disk holds the copy the
-  directory supersedes. The end of the pass removes that file and raises
-  `CorruptionError` naming the member; the other members stay written. Writers do not
-  produce this; a crafted or hand-edited archive does.
+  directory supersedes. That is a failure of the current member at the end of the pass
+  (§"Failures found at the end of the pass"). Writers do not produce this; a crafted or
+  hand-edited archive does. `stream_members()` raises nothing for it: the members are
+  updated in place, `is_current` included, and `member_state_final` said so.
+
+### Failures found at the end of the pass
+
+Three things are known only once the directory has been read: a size or CRC from a data
+descriptor that differs from the central entry, two same-name members whose directory
+order reverses their file order, and a directory entry with no local entry. Each is a
+member-scoped failure of the member it names, handled as `safe-extraction` handles any
+other (the `OnError` requirement):
+
+- In `extract_all`, the member's result is revised in place to `FAILED`, as the
+  `OVERWRITTEN` rows revise a result, and what archivey wrote for it is removed (DR-18).
+  A directory entry with no local entry never had a result, so one is added. Results
+  stay in member-processing order. Under `OnError.CONTINUE` the report completes; under
+  `OnError.STOP` the first such failure raises `CorruptionError` naming the member, at
+  the end of the pass, which is the earliest point it is known.
+- In `stream_members()`, the descriptor mismatch and the missing local entry raise
+  `CorruptionError` from the iterator at the end of the pass; the reversed order raises
+  nothing (the previous section).
+
+The first two make a streaming extraction fail a member that the seekable extraction of
+the same archive writes. That is the only place the two access modes differ on disk.
+Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
+a little; matching them would mean buffering every member until the directory arrives
+(ADR 0010).
 
 ### What the caller sees in a forward pass
 
@@ -333,6 +368,7 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 | `streaming=True` on a non-seekable source | `StreamNotSeekableError` at open | Read forward (§"Streaming") | The maintainer's request, 2026-10-10 |
 | A ZIP64 archive whose directory is Strong-Encrypted | `CorruptionError` | `UnsupportedFeatureError` | DR-4 |
 | Bytes after the end record and its comment | Nothing reported | `ARCHIVE_TRAILING_DATA` warning; strict refuses; zero padding stays silent. 7-Zip 23.01 warns on the same input, `unzip` says nothing. A forward pass reads the rest of the stream to the end to count them, keeping none | The 2026-10-07 ruling (davi): report trailing data after ZIP, 7z, RAR and ISO, as TAR and the codecs already do. Stage 2 |
+| A ZIP from a pipe whose data descriptor understates a STORED member, or whose directory lists two same-name members in the reverse of their file order | Not readable at all (non-seekable source refused) | That member fails at the end of the pass (`FAILED` under `OnError.CONTINUE`, a raise under `STOP`); the seekable read of the same archive writes it. The only on-disk difference between the two modes | DR-5a: only crafted archives have these shapes, and matching would mean buffering every member (ADR 0010). Stage 3 |
 | A member flagged as a Windows reparse point whose data is not a reparse buffer, in a `stream_members()` pass | Yielded as a SYMLINK with no stream, retyped to FILE after the pass: its content is lost | Typed when the pass reaches it, by reading the bounded reparse header ahead and handing back a stream of the whole member, as 7z already does; `members()` already lists it as FILE. From a pipe the reparse bit arrives with the directory, so such a member is written as a file and stays one, and only a real reparse buffer becomes a link (§"What only the central directory says") | DR-5, DR-1. Stage 3 |
 | Open of an archive with a huge declared directory | All `ZipInfo` built at open | Members built as listed; `ListingLimits` stop the walk | DR-9a, DR-15b |
 
@@ -385,6 +421,7 @@ One PR each, in order; every PR goes through the review label.
    trailing-index row), `safe-extraction` if the filter re-run needs a sentence there,
    `docs/access-and-cost.md` (the checklist tells users to buffer ZIP),
    `archive-data-model` (the new `member_state_final` field, every format),
+   `archive-reading` (ZIP applies `max_members` at parse, in every mode),
    `docs/formats.md`, handbook §1, §2.2, §5, §6.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
    (question B, answered). Format-zip spec, handbook §2.2 and §5, `docs/formats.md`,
@@ -456,6 +493,10 @@ until the directory has been read; any member of a forward-only pass in any form
 make it `is_current=False`; and a link whose target is stored as member data until that
 target has been read (`read_link_targets=False`, or a listing from the index alone). It
 is true everywhere else, so a caller checks it on each member before reading anything.
+Its documented meaning is "any field of this member may still change"; each format's
+handbook page and `docs/formats.md` name which fields that is in practice (for a ZIP
+forward pass: type, mode, host, comment, `is_current`; for a data-stored link: the
+target).
 
 ## Out of scope
 

@@ -11,6 +11,7 @@
 - [x] 0.4 Question D is answered (davi, 2026-10-10: a per-member field, working name
       `member_state_final`, settled in the stage 3 PR).
 
+
 ## 1. Parser (PR 1)
 
 - [ ] 1.1 `internal/backends/zip_parser.py`: `EndRecord`, `find_end_record`,
@@ -90,10 +91,19 @@
       `stream_members()` reaches it and yields its whole content, as the 7z pass does
       (read-ahead stream); from a pipe it stays a file (tests in both modes, red
       first).
+- [ ] 3.3g End-of-pass failures as in `design.md` §"Failures found at the end of the
+      pass": the result revised to `FAILED` under `OnError.CONTINUE`, a raise under
+      `STOP`, the written file removed (tests under both, for 3.3b, 3.3c and a
+      directory entry with no local entry).
+- [ ] 3.3h `max_members` charged under `streaming=True`: the directory walk of a
+      seekable source and the members a forward pass keeps (tests: a directory over
+      the limit refuses in both).
 - [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
-      same files on disk.
+      same files on disk, except the two divergences `design.md` names (3.3b, 3.3c),
+      which 3.3g tests instead.
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
-      and `access-mode-and-cost` specs, `archive-data-model` for
+      and `access-mode-and-cost` specs, `archive-reading` (ZIP applies `max_members`
+      at parse), `archive-data-model` for
       `member_state_final` (and `safe-extraction` if the filter re-run needs a
       sentence); `docs/access-and-cost.md`, `docs/formats.md`; handbook §1, §2.2, §5,
       §6.

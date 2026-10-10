@@ -447,7 +447,9 @@ object) turns out to matter more than complete members. A member that archivey w
 still update in place says so on the member itself, with a field (working name
 `member_state_final`), not on the cost receipt, which describes cost; it covers
 data-stored link targets not yet read, `is_current` in any forward-only pass, and a ZIP
-read from a pipe (davi, 2026-10-10).
+read from a pipe (davi, 2026-10-10). Reopen if callers need to know which fields are
+still provisional rather than only that some are, or if a format turns up where the
+field would be false for most members of an ordinary read.
 
 **Do not** recommend "lazy by default, complete on request".
 
