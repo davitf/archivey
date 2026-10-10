@@ -17,6 +17,7 @@ import os
 import struct
 import subprocess
 import sys
+import types
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -53,6 +54,7 @@ class _Entry:
     extract_version: int = 20
     external_attr: int = 0o100644 << 16
     flags: int = 0  # general-purpose bit flags, both headers
+    create_system: int = 3  # "version made by" high byte; 3 is Unix
 
 
 def _build_zip(entries: list[_Entry]) -> bytes:
@@ -90,7 +92,7 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             "<4sBBHHHHHIIIHHHHHII",
             b"PK\x01\x02",
             20,  # version made by
-            3,  # create system: Unix
+            e.create_system,
             e.extract_version,
             e.flags,
             e.method,
@@ -640,3 +642,120 @@ def test_eocd_disk_fields_spelling_the_signature_are_still_refused() -> None:
         assert zf.namelist() == ["a"]  # stdlib parsed the record at the end
     with pytest.raises(UnsupportedFeatureError):
         _open_and_list(bytes(crafted))
+
+
+# ---------------------------------------------------------------------------------------
+# Z11: a member's type came from ZipInfo.is_dir(), which reads stdlib's rewritten
+# filename. That rewrite depends on the host (os.sep becomes "/" on Windows) and on the
+# Python version (3.12+ substitutes the Unicode Path field's name), so the same entry
+# could be a FILE on one machine and a DIRECTORY on another.
+# ---------------------------------------------------------------------------------------
+
+_FAT = 0
+_FILE_ATTRIBUTE_ARCHIVE = 0x20
+_FILE_ATTRIBUTE_DIRECTORY = 0x10
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _pretend_zipfile_runs_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give stdlib zipfile Windows' separators, which is all that its filename rewrite
+    and ``ZipInfo.is_dir`` read. Everything else in ``os`` stays the real module."""
+
+    class _WindowsPath(types.ModuleType):
+        sep = "\\"
+        altsep = "/"
+
+        def __getattr__(self, attr: str) -> object:
+            return getattr(os.path, attr)
+
+    class _WindowsOs(types.ModuleType):
+        sep = "\\"
+        altsep = "/"
+        path = _WindowsPath("ntpath")
+
+        def __getattr__(self, attr: str) -> object:
+            return getattr(os, attr)
+
+    monkeypatch.setattr(zipfile, "os", _WindowsOs("nt"))
+
+
+def _listing(blob: bytes) -> list[tuple[str, str, int, list[str]]]:
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        return [
+            (m.name, m.type.name, m.size, [d.code.name for d in m.diagnostics])
+            for m in ar.members()
+        ]
+
+
+_HOST_DEPENDENT_ENTRIES = [
+    # A Unix entry keeps "\\" as a literal name character: a file.
+    _Entry(b"unix\\", b"data"),
+    # A DOS-origin entry treats "\\" as a separator, so the name ends in one: a directory.
+    _Entry(b"fat\\", b"", create_system=_FAT, external_attr=_FILE_ATTRIBUTE_ARCHIVE),
+]
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_member_type_does_not_depend_on_the_host(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    blob = _build_zip(_HOST_DEPENDENT_ENTRIES)
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    assert _listing(blob) == [
+        ("unix\\", "FILE", 4, []),
+        # The "\\" -> "/" rewrite is reported, as for any DOS-origin name.
+        ("fat/", "DIRECTORY", 0, ["MEMBER_NAME_NORMALIZED"]),
+    ]
+
+
+def _reparse_listing(name: bytes) -> tuple[str, str, str | None, list[str]]:
+    # A directory-shaped reparse point whose data is not a link buffer.
+    blob = _build_zip(
+        [
+            _Entry(
+                name,
+                b"not a reparse buffer",
+                create_system=_FAT,
+                external_attr=_FILE_ATTRIBUTE_DIRECTORY | _FILE_ATTRIBUTE_REPARSE_POINT,
+            )
+        ]
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        reasons = [
+            d.context.reason  # type: ignore[attr-defined]
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        return member.name, member.type.name, member.link_target, reasons
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix_host", "windows_host"])
+def test_dos_backslash_reparse_point_is_directory_shaped(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    # Directory-shaped, a reparse point whose data is not a link buffer stays a
+    # targetless link (handbook zip.md, section 2.2.1). Spelled "link\\" by a DOS-origin
+    # writer, it is the same member as "link/" on every host.
+    if windows:
+        _pretend_zipfile_runs_on_windows(monkeypatch)
+    expected = ("link", "SYMLINK", None, ["reparse_data_unrecognized"])
+    assert _reparse_listing(b"link/") == expected
+    assert _reparse_listing(b"link\\") == expected
+
+
+def test_member_type_follows_the_unicode_path_name_on_every_python() -> None:
+    # The header's bytes are not valid UTF-8 and do not end in "/"; the Unicode Path
+    # field that names the member does. stdlib 3.12+ puts the field's name in
+    # ZipInfo.filename and 3.11 does not, so is_dir() disagreed across versions.
+    # archivey names the member from the field on every version, and types it from
+    # that same name.
+    header = b"x\xff"
+    blob = _build_zip(
+        [_Entry(header, b"", extra=_unicode_path_field(stored=header, name=b"dir/"))]
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert (member.name, member.type) == ("dir/", archivey.MemberType.DIRECTORY)
+        assert member.extra["alternate_raw_name"] == header

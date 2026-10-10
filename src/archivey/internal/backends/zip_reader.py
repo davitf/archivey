@@ -50,6 +50,7 @@ from typing import (
     Any,
     BinaryIO,
     Literal,
+    NamedTuple,
     NoReturn,
     TypeVar,
     cast,
@@ -665,8 +666,37 @@ def _zip_timestamp_field(create_system: CreateSystem, slot: str) -> str:
     return {"mtime": "modified", "atime": "accessed"}[slot]
 
 
+class _DecodedName(NamedTuple):
+    """A ZIP entry's name as archivey reads it, before normalization. A tuple, not a
+    dataclass: one is built per member on the listing hot path."""
+
+    text: str
+    """The decoded name; ``member.name`` is this, normalized."""
+    raw_name: bytes
+    """The bytes ``text`` was decoded from."""
+    alternate_raw_name: bytes | None
+    """The header's bytes, when the Unicode Path field named the entry instead."""
+    inferred_encoding: str | None
+    """The codec a sniff chose over the default, for the diagnostic."""
+
+
+def _stored_as_directory(name: str, create_system: CreateSystem) -> bool:
+    """Whether a decoded ZIP name ends in a separator, which marks a directory entry.
+
+    The test reads archivey's own decoded name with archivey's own separator rule
+    (``\\`` is one only for DOS/Windows-origin entries), never ``ZipInfo.is_dir()``:
+    that reads stdlib's rewritten ``filename``, which differs by host (``os.sep``
+    becomes ``/`` on Windows, and a trailing ``\\`` counts there) and by Python version
+    (3.12+ substitutes the Unicode Path field's name), so one entry would change type
+    from one machine to the next.
+    """
+    return name.endswith("/") or (
+        create_system in _BACKSLASH_SEPARATOR_SYSTEMS and name.endswith("\\")
+    )
+
+
 def _reparse_fallback_type(
-    info: zipfile.ZipInfo, create_system: CreateSystem
+    info: zipfile.ZipInfo, create_system: CreateSystem, *, stored_as_directory: bool
 ) -> MemberType | None:
     """For an entry flagged as a Windows reparse point (handbook §2.2.1), the type it
     reverts to when its data is not a link buffer; ``None`` for any other entry.
@@ -686,7 +716,7 @@ def _reparse_fallback_type(
         info.external_attr & FILE_ATTRIBUTE_REPARSE_POINT
     ):
         return None
-    return MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
+    return MemberType.DIRECTORY if stored_as_directory else MemberType.FILE
 
 
 class ZipReader(BaseArchiveReader):
@@ -967,49 +997,15 @@ class ZipReader(BaseArchiveReader):
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
 
-    def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
-        full_mode = info.external_attr >> 16
-        is_unix = info.create_system == 3
-        # Permission bits only; None when no usable Unix mode was stored.
-        mode = (
-            stat.S_IMODE(full_mode) if (info.external_attr != 0 and is_unix) else None
-        )
-
-        create_system = _CREATE_SYSTEM_BY_VALUE.get(
-            info.create_system, CreateSystem.UNKNOWN
-        )
-
-        # A Windows reparse point (symlink or junction) is marked by a DOS attribute
-        # bit in the low word, and 7-Zip's `-snl` is the only common writer that sets
-        # it. Checked before is_dir(): a directory reparse point carries both bits and
-        # is a link, not a directory — its trailing "/" is then dropped by
-        # normalize_member_name, which is how 7z already presents the same member.
-        # The type is provisional: the data decides, in `_apply_reparse_data`, whether
-        # the entry really holds a link buffer, and a member that does not goes back to
-        # `reparse_fallback`.
-        reparse_fallback = _reparse_fallback_type(info, create_system)
-        is_reparse_point = reparse_fallback is not None
-
-        if is_reparse_point:
-            member_type = MemberType.SYMLINK
-        elif info.is_dir():
-            member_type = MemberType.DIRECTORY
-        elif is_unix and stat.S_ISLNK(full_mode):
-            member_type = MemberType.SYMLINK
-        elif is_unix and is_special_file_mode(full_mode):
-            # A device, FIFO or socket. unzip writes these as empty regular files, but
-            # every format types them OTHER, so extraction refuses them everywhere.
-            member_type = MemberType.OTHER
-        else:
-            member_type = MemberType.FILE
-        # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);
-        # a Unix (or other) entry keeps a backslash as a literal filename character.
-        backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
-
+    def _decode_member_name(self, info: zipfile.ZipInfo) -> _DecodedName:
+        """The entry's name as archivey reads it: the source of ``member.name`` and of
+        the directory marker. It reports nothing, so ``_ensure_link_target`` can call it
+        again for a member it already listed."""
         # Use orig_filename, not filename: stdlib zipfile rewrites filename in a
         # platform-dependent way (it replaces os.sep -> "/" on Windows and truncates at a
         # null byte), whereas orig_filename is the raw decoded name, identical on every OS.
-        # Archivey's own backslash_is_separator / extraction checks are the single authority.
+        # Archivey's own separator rule (_stored_as_directory, normalize_member_name) and
+        # extraction checks are the single authority.
         decoded = info.orig_filename
         is_utf8_flagged = bool(info.flag_bits & 0x800)
         # raw_name recovers the stored bytes by re-encoding orig_filename with the codec
@@ -1045,6 +1041,57 @@ class ZipReader(BaseArchiveReader):
             name_source, inferred_encoding = self._sniff_unflagged_name(
                 raw_name, decoded
             )
+        return _DecodedName(
+            text=name_source,
+            raw_name=raw_name,
+            alternate_raw_name=alternate_raw_name,
+            inferred_encoding=inferred_encoding,
+        )
+
+    def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
+        full_mode = info.external_attr >> 16
+        is_unix = info.create_system == 3
+        # Permission bits only; None when no usable Unix mode was stored.
+        mode = (
+            stat.S_IMODE(full_mode) if (info.external_attr != 0 and is_unix) else None
+        )
+
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(
+            info.create_system, CreateSystem.UNKNOWN
+        )
+        decoded_name = self._decode_member_name(info)
+        name_source = decoded_name.text
+        raw_name = decoded_name.raw_name
+        stored_as_directory = _stored_as_directory(name_source, create_system)
+
+        # A Windows reparse point (symlink or junction) is marked by a DOS attribute
+        # bit in the low word, and 7-Zip's `-snl` is the only common writer that sets
+        # it. Checked before the directory marker: a directory reparse point carries
+        # both and is a link, not a directory — its trailing "/" is then dropped by
+        # normalize_member_name, which is how 7z already presents the same member.
+        # The type is provisional: the data decides, in `_apply_reparse_data`, whether
+        # the entry really holds a link buffer, and a member that does not goes back to
+        # `reparse_fallback`.
+        reparse_fallback = _reparse_fallback_type(
+            info, create_system, stored_as_directory=stored_as_directory
+        )
+        is_reparse_point = reparse_fallback is not None
+
+        if is_reparse_point:
+            member_type = MemberType.SYMLINK
+        elif stored_as_directory:
+            member_type = MemberType.DIRECTORY
+        elif is_unix and stat.S_ISLNK(full_mode):
+            member_type = MemberType.SYMLINK
+        elif is_unix and is_special_file_mode(full_mode):
+            # A device, FIFO or socket. unzip writes these as empty regular files, but
+            # every format types them OTHER, so extraction refuses them everywhere.
+            member_type = MemberType.OTHER
+        else:
+            member_type = MemberType.FILE
+        # Convert "\\" to "/" only for DOS/Windows-origin entries (where it is a separator);
+        # a Unix (or other) entry keeps a backslash as a literal filename character.
+        backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
         name = normalize_member_name(
             name_source, member_type, backslash_is_separator=backslash_is_separator
         )
@@ -1076,8 +1123,8 @@ class ZipReader(BaseArchiveReader):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
-        if alternate_raw_name is not None:
-            extra[EXTRA_ALTERNATE_RAW_NAME] = alternate_raw_name
+        if decoded_name.alternate_raw_name is not None:
+            extra[EXTRA_ALTERNATE_RAW_NAME] = decoded_name.alternate_raw_name
         if is_reparse_point:
             # From the attribute bit alone, so it is known while listing and stays true
             # even when the data turns out not to be a link buffer and the member is
@@ -1117,6 +1164,7 @@ class ZipReader(BaseArchiveReader):
             member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
+        inferred_encoding = decoded_name.inferred_encoding
         if inferred_encoding is not None:
             # The codec the name would otherwise have had: for a UTF-8 reading, the
             # caller's encoding= or the configured fallback; for a configured fallback,
@@ -1148,7 +1196,7 @@ class ZipReader(BaseArchiveReader):
             # A directory reparse point is stored with the directory convention's
             # trailing "/" and is still a link, so normalization drops the slash. Only
             # this backend knows that, so only this backend says so.
-            link_stored_as_directory=is_reparse_point and info.is_dir(),
+            link_stored_as_directory=is_reparse_point and stored_as_directory,
         )
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
@@ -2147,6 +2195,9 @@ class ZipReader(BaseArchiveReader):
                 target_in_archive=True,
             )
             return
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(
+            info.create_system, CreateSystem.UNKNOWN
+        )
         # A symlink's target is its (possibly encrypted) file data. A missing/wrong
         # password, or data that fails its check under an unconfirmed ZipCrypto
         # password, leaves link_target unset (following the link later fails with
@@ -2158,7 +2209,10 @@ class ZipReader(BaseArchiveReader):
             lambda: self._open_member(member),
             reparse_fallback=_reparse_fallback_type(
                 info,
-                _CREATE_SYSTEM_BY_VALUE.get(info.create_system, CreateSystem.UNKNOWN),
+                create_system,
+                stored_as_directory=_stored_as_directory(
+                    self._decode_member_name(info).text, create_system
+                ),
             ),
         )
 
