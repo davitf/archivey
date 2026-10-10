@@ -1955,9 +1955,12 @@ def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
     """Hostile encoded-header unpack size must not raise MemoryError (Atheris finding)."""
 
     # CI crash input (sevenzip_header, 2026-07-15): ENCODED_HEADER claims ~7.26e17
-    # uncompressed bytes; previously blew up in lzma/read_exact as MemoryError.
+    # uncompressed bytes; previously blew up in lzma/read_exact as MemoryError. The
+    # original input had one byte after the encoded header's final kEnd; it is trimmed
+    # here (next-header size and both CRCs recomputed) so the unpack-size guard, not
+    # the trailing-bytes check, is what fires.
     blob = bytes.fromhex(
-        "377abcaf271c0004b94189d2e30000000000000024000000000000003393e6a2"
+        "377abcaf271c00048fac0b60e30000000000000023000000000000000531888e"
         "e0002800255d00241949986f16028ce8e65bb147c6e8785df977f152c4a859c0"
         "a9300dd98729229ab2993c9f00e0016d00ae5d0000813307ae0fd0d36d7c9f39"
         "109c6cea561a8ee1ce421bf7dd8a7d61fa2b2e795eb720494abfaa6e563e7783"
@@ -1966,7 +1969,7 @@ def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
         "1946a77f37cd1773040ccbc8b9053fefb060f8b4b0b770e4be72e602741c8904"
         "1b2c1343fbf55ece457ecb05f85ff07810e4d6b1959f3d4a90a6a92f3d532e00"
         "00000017062d010980b600070b010001212101180cffffffffffffff110a0a0a"
-        "0a01000000000002830a0a0a0a0a0a0a0a0a0a0a0a816e0000"
+        "0a010000000002830a0a0a0a0a0a0a0a0a0a0a0a816e0000"
     )
     with raises_corruption_not_truncation(match="unpack size|parser limit"):
         load_sevenzip_archive(io.BytesIO(blob))
@@ -2005,6 +2008,10 @@ def test_encoded_header_self_copy_is_typed_corruption() -> None:
 _NOT_ONE_FOLDER = "must have exactly one"
 _NOT_A_HEADER = "did not decode to a 7z HEADER"
 _TRAILING = "bytes after its END"
+_NESTED = "decoded to another encoded header"
+# kEncodedHeader with one COPY folder of unpack size 2: the folder decodes to the two
+# packed bytes.
+_ENCODED_COPY_OF_2 = bytes.fromhex("17060001090200070b010001000c020000")
 
 
 @pytest.mark.parametrize(
@@ -2049,6 +2056,22 @@ _TRAILING = "bytes after its END"
             _TRAILING,
             id="plain-header-with-trailing-bytes",
         ),
+        # An encoded header with two bytes after its final kEnd. Its folder decodes to
+        # kHeader kEnd; the control is test_encoded_header_to_empty_header_opens.
+        pytest.param(
+            b"\x01\x00",
+            _ENCODED_COPY_OF_2 + b"\xff\xee",
+            _TRAILING,
+            id="encoded-header-with-trailing-bytes",
+        ),
+        # A folder that decodes to kEncodedHeader with a malformed body (0x1a is not a
+        # streams-info ID): the verdict is the nesting, not the body's parse error.
+        pytest.param(
+            b"\x17\x1a",
+            _ENCODED_COPY_OF_2,
+            _NESTED,
+            id="decodes-to-malformed-encoded-header",
+        ),
     ],
 )
 def test_header_that_is_not_one_plain_header_is_corruption(
@@ -2059,6 +2082,33 @@ def test_header_that_is_not_one_plain_header_is_corruption(
     with raises_corruption_not_truncation(match=match):
         with open_archive(io.BytesIO(blob)):
             pass
+
+
+def test_encoded_header_to_empty_header_opens() -> None:
+    """Control for encoded-header-with-trailing-bytes: without the two bytes, 7-Zip
+    lists this archive cleanly, and so does archivey."""
+    blob = _sevenzip_blob(packed=b"\x01\x00", next_header=_ENCODED_COPY_OF_2)
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert archive.members() == []
+
+
+@pytest.mark.parametrize(
+    "decoded",
+    [
+        pytest.param(b"\x17\x1a", id="unknown-streams-info-id"),
+        # Claims 200 folders: parsing the body would hit the listing limit first.
+        pytest.param(
+            bytes.fromhex("17060001090100070b") + b"\x80\xc8" + b"\x00" * 300,
+            id="folder-count-over-listing-limit",
+        ),
+    ],
+)
+def test_decoded_encoded_header_is_refused_before_its_body(decoded: bytes) -> None:
+    """The nesting verdict comes before the body parse, so it is always CorruptionError."""
+    from archivey.internal.backends.sevenzip_parser import parse_decoded_header
+
+    with raises_corruption_not_truncation(match=_NESTED):
+        parse_decoded_header(decoded, max_members=100)
 
 
 @pytest.mark.parametrize(

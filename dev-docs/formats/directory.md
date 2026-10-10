@@ -89,6 +89,10 @@ magic and no extension.
 
 An explicit `format=` other than `DIRECTORY` on a directory path raises
 `ArchiveyUsageError` rather than being silently overruled; `format=DIRECTORY` is accepted.
+The mirror case, a `DIRECTORY` container on a file or a stream, raises the same
+`ArchiveyUsageError` in `_open_resolved`, before the backend is reached. That branch
+first runs `os.stat` on a path, so a path the OS cannot stat (missing, under a file, a
+symlink loop) raises the OS's own error, the same class as under any other `format=`.
 `open_stream()` refuses a directory path with a message that points to `open_archive()`,
 rather than "not found".
 
@@ -226,9 +230,9 @@ they would over a tar. The format-shaped outcomes are these.
 
 ### 2.5 Write
 
-Not shipped for any format. The `format-directory` spec states that a directory reader
-feeds `writer.add_members(reader)` in one forward pass without buffering the tree; that is
-a requirement for the future writer, and nothing tests it today.
+Not shipped for any format. Whether a writer can take a directory reader in one forward
+pass, without buffering the tree, is a question for the change that adds writing
+([writing design](../investigations/archive-writing-design.md)); no spec states it today.
 
 ## 3. In the wild
 
@@ -346,7 +350,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `detect_format` answers `DIRECTORY` with a zero receipt | `tests/test_detection.py::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
 | Cost receipt, no upfront list | `tests/test_directory.py::test_cost_receipt`, `::test_members_report_if_available_returns_none_before_scan` |
 | Walk order; any depth lists | `::test_non_dirs_listed_before_subdirs`, `::test_walk_order_is_depth_first_preorder`, `::test_tree_deeper_than_recursion_limit_lists` |
-| Metadata: sizes, times, `ctime` not on Windows, mode | `::test_members_file_sizes`, `::test_members_have_modified_timestamp`, `::test_members_ctime_is_st_ctime_except_on_windows`, `::test_members_have_mode`, `::test_stat_datetime_guards_out_of_range_values` |
+| Metadata: sizes, times, `ctime` not on Windows, mode | `::test_members_file_sizes`, `::test_members_have_modified_timestamp`, `::test_members_ctime_is_st_ctime_except_on_windows`, `::test_members_have_mode` |
 | Symlinks list as `SYMLINK` and resolve inside the tree | `::test_symlink_member_type`, `::test_symlink_link_target_member_resolved`, `::test_open_symlink_follows_to_real_content` |
 | A junction is flagged and not walked (Windows, 3.12+) | `::test_windows_junction_detected_and_not_traversed` |
 | Races skip with a diagnostic; a genuine error fails the listing | `::test_subdirectory_vanishing_mid_walk_is_skipped`, `::test_symlink_vanishing_before_readlink_is_skipped`, `::test_symlink_replaced_by_file_mid_scan_lists_as_file`, `::test_unreadable_subdirectory_fails_listing`; `tests/test_diagnostics.py::test_directory_scan_race_diagnostic` |

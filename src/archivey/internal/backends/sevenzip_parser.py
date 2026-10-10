@@ -652,8 +652,26 @@ def parse_header_block(
     ``max_members`` is ``ListingLimits.max_members`` from the reader config
     (``None`` disables). Omitting it applies the ``ListingLimits`` default, as the
     RAR parser's entry points do; header size still bounds bombs either way.
+
+    An undefined first property ID here is ``UnsupportedFeatureError``, as it may be a
+    future 7z feature; ``parse_decoded_header`` makes the same bytes a
+    ``CorruptionError``, because a decoded blob can only be damage or a wrong key.
     """
-    return _parse_header_block(header_data, max_members=max_members)[1]
+    if not header_data:
+        return PlainHeader(_StreamsInfo(), [], None)
+
+    cur = _Cursor(header_data)
+    prop = _read_property(cur, "7z header")
+    if prop == _Property.END:
+        _require_header_consumed(cur)
+        return PlainHeader(_StreamsInfo(), [], None)
+    if prop == _Property.HEADER:
+        return _parse_plain_header(cur, max_members=max_members)
+    if prop != _Property.ENCODED_HEADER:
+        raise CorruptionError(f"Expected 7z HEADER or ENCODED_HEADER, got 0x{prop:02x}")
+    encoded = EncodedHeader(_read_streams_info(cur, max_members=max_members))
+    _require_header_consumed(cur)
+    return encoded
 
 
 def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHeader:
@@ -662,37 +680,24 @@ def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHea
     7-Zip requires ``kHeader`` here (7zIn.cpp, ReadDatabase2). Empty output or a bare
     ``kEnd`` would otherwise parse as an archive with no members, and a second
     ``kEncodedHeader`` is hostile (a COPY payload that is itself; O14).
+
+    The first property ID is judged before the body is parsed, so a nested encoded
+    header with a malformed body is still this ``CorruptionError`` and not the error
+    its body would raise (an unknown ID, or the listing limit).
     """
-    kind, block = _parse_header_block(decoded, max_members=max_members)
+    kind: _Property | None = None
+    if decoded:
+        try:
+            kind = _read_property(_Cursor(decoded), "7z header")
+        except UnsupportedFeatureError:
+            kind = None  # an unknown ID is not kHeader either
     if kind == _Property.ENCODED_HEADER:
         raise CorruptionError("Encoded 7z header decoded to another encoded header")
     if kind != _Property.HEADER:
         raise CorruptionError("Encoded 7z header did not decode to a 7z HEADER")
+    block = parse_header_block(decoded, max_members=max_members)
     assert isinstance(block, PlainHeader)
     return block
-
-
-def _parse_header_block(
-    header_data: bytes, *, max_members: int | None
-) -> tuple[_Property | None, HeaderBlock]:
-    """Parse one header block; also return its first property ID (``None`` if empty).
-
-    An empty block and a bare ``kEnd`` both parse as a ``PlainHeader`` with no
-    members, so the ID is what tells them from a real ``kHeader``.
-    """
-    if not header_data:
-        return None, PlainHeader(_StreamsInfo(), [], None)
-
-    cur = _Cursor(header_data)
-    prop = _read_property(cur, "7z header")
-    if prop == _Property.END:
-        _require_header_consumed(cur)
-        return prop, PlainHeader(_StreamsInfo(), [], None)
-    if prop == _Property.HEADER:
-        return prop, _parse_plain_header(cur, max_members=max_members)
-    if prop != _Property.ENCODED_HEADER:
-        raise CorruptionError(f"Expected 7z HEADER or ENCODED_HEADER, got 0x{prop:02x}")
-    return prop, EncodedHeader(_read_streams_info(cur, max_members=max_members))
 
 
 def _require_header_consumed(cur: _Cursor) -> None:

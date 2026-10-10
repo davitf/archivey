@@ -97,3 +97,6 @@ why it matters are in [`SKILL.md`](../SKILL.md) §6.
 - The round budget and what each verdict commits to are `SKILL.md` §4. A fix round that
   finds only 🟢 nits from round 3 on is a conditional approval, and 🔄 is for a 🔴 or a fix
   you genuinely need to see land — not a way to keep a round in hand.
+- A second finding on the same block asks for the block to be rewritten as its condition,
+  not for one more case; if the condition already decides the case, quote it instead
+  (`address-review-findings` §2).

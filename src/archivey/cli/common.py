@@ -20,11 +20,31 @@ from archivey.reader import ArchiveReader
 
 
 def reject_stdin_token(archive: str) -> None:
-    """Fail fast when ``-`` is used (stdin archives reserved, not supported)."""
+    """Fail fast when ``-`` is used (stdin archives reserved, not supported).
+
+    Also refuses the empty string, through :func:`reject_empty_path`. Call it on the
+    string the user typed, before any ``Path()``: ``Path("")`` is ``Path(".")``.
+    """
+    reject_empty_path(archive, arg="archive")
     if archive == "-":
         # Grammar-level "not available yet" → usage exit (D7), matching reserved verbs.
         raise CliError(
             "stdin archives are not supported yet (the '-' token is reserved)",
+            code=EXIT_USAGE,
+        )
+
+
+def reject_empty_path(value: str, *, arg: str) -> None:
+    """Refuse an empty path argument as a usage error.
+
+    ``Path("")`` is ``Path(".")``, so an unset shell variable (``"$ARCHIVE"``,
+    ``-d "$OUT"``) would otherwise read or extract into the working directory. The
+    library refuses an empty string too, but with ``ValueError``, and the CLI turns
+    the path into a ``Path`` before the library sees it; ``.`` names the cwd on purpose.
+    """
+    if value == "":
+        raise CliError(
+            f"{arg} is an empty path; pass '.' to mean the current directory",
             code=EXIT_USAGE,
         )
 

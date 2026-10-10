@@ -78,8 +78,12 @@ A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=
 naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:
 silently overruling it returns a reader over the directory tree to a caller who
 asserted a different format, so every read downstream succeeds on the wrong data.
-`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. This is the
-assertion half of the rule above, not a special case.
+`format=ArchiveFormat.DIRECTORY` and `format=None` both remain valid. The mirror
+conflict, a `format=` with a `DIRECTORY` container on a stream or on a path that exists
+and is not a directory, SHALL raise the same `ArchiveyUsageError`. A path the
+operating system cannot stat SHALL raise the OS's own error (`FileNotFoundError`,
+`NotADirectoryError`, …), the same class it raises under every other `format=`. This
+is the assertion half of the rule above, not a special case.
 
 **Diagnostics at open (observable):** On success, advisory events from automatic
 detection (if any) appear in this reader's cumulative `diagnostics` for its
@@ -105,6 +109,9 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 | Directory path, no `format=` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError`, naming the path and the requested format |
+| File path or stream, `format=ArchiveFormat.DIRECTORY` or an unnamed pair such as `(DIRECTORY, GZIP)` | `ArchiveyUsageError`, naming the source and the requested format |
+| Path that does not exist, `format=ArchiveFormat.DIRECTORY` | `FileNotFoundError`, as under `format=ArchiveFormat.ZIP` or `None`; not `ArchiveyUsageError` |
+| Path under a file (`a.txt/sub`), `format=ArchiveFormat.DIRECTORY` | The OS's own error, the class it raises under `format=ArchiveFormat.ZIP` or `None` (`NotADirectoryError` on POSIX, `FileNotFoundError` on Windows) |
 
 ### Requirement: Declared member-stream capabilities
 
@@ -500,7 +507,7 @@ escape hatch there.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records and path tables it parses against `max_metadata_bytes` and its count of path-table entries against `max_members` (more than `max_members + 1` entries; each is a directory, a member anyway), which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -571,7 +578,11 @@ def __contains__(self, member: ArchiveMember) -> bool: ...  # identity, O(1), an
 
 `get()` looks up by normalized name; duplicates → **last** (sequential extraction
 winner). On `streaming=True` SHALL raise `ArchiveyUsageError` regardless of
-loaded index. For a no-scan peek use `members_report_if_available()`.
+loaded index. A `name` that is not a `str` (a `bytes` name, an `ArchiveMember`)
+SHALL raise `ArchiveyUsageError`: answering `default` for it would report a member
+that exists as absent. `open()` refuses a `bytes` name the same way; it accepts an
+`ArchiveMember`, which `get()` does not, because `get()` looks up by name. For a
+no-scan peek use `members_report_if_available()`.
 
 `member in reader` is identity membership (yielded by this reader), O(1), any mode.
 Non-`ArchiveMember` (notably a name string) SHALL raise `TypeError` pointing to
@@ -585,6 +596,7 @@ would consume a streaming pass.
 | `get` existing name | That `ArchiveMember` |
 | `get` missing | `default` / `None`; `open`/`read` of missing name → `KeyError` |
 | `get` on `streaming=True` | `ArchiveyUsageError` |
+| `get(b"file.txt")`, `get(0)`, `get(member)` | `ArchiveyUsageError`; never `default`, never `unhashable type` |
 | `member in ar` (yielded by `ar`) | `True`; foreign member → `False`; no scan |
 | `"file.txt" in ar` | `TypeError` → use `get()`; never iterate |
 
@@ -1171,8 +1183,9 @@ Value shape, retention budget, watermarks, and attachment rules: `diagnostics`.
 
 ### Requirement: Collection form of MemberSelector
 
-`MemberSelector` SHALL accept a predicate or `Collection[str | ArchiveMember]`,
-normalized to a predicate at the API boundary:
+`MemberSelector` SHALL accept a predicate or any `Iterable[str | ArchiveMember]`,
+normalized to a predicate at the API boundary. The boundary SHALL read the iterable
+exactly once, so a generator selects the same members as the equivalent list:
 
 - `str` matches **every** member with that normalized name (duplicates all match;
   extraction keeps sequential last-wins-on-disk)
@@ -1401,13 +1414,25 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   and a filled target SHALL NOT be read again. A report taken afterwards therefore shows
   targets for the links read this way and `None` for the rest. `False` is a promise about
   what the reader reads on its own, not about what a member ends up holding.
-- Under either setting, a read made for extraction can show that the member is not a
-  link: a reparse-flagged member whose data is no reparse buffer, which listing would
-  have re-typed to a file. `extract_all` SHALL then re-type it the same way, call its
-  `filter` again on the re-typed member, and write it as a file. In random access it
-  opens the member for its content. A streaming pass has already passed that content,
-  so it SHALL fail the member under `OnError`; it SHALL NOT report it as a link with no
-  target.
+- A reparse-flagged member whose data is no reparse buffer is re-typed to a file, as
+  listing would type it, except a directory-shaped entry: that one stays a link with no
+  target and gets no stream, because `open()` refuses a directory anyway. The two
+  bullets below re-type only the members this allows.
+- Under either setting, a read made for extraction, in a pass that has not yet read
+  the member's data, can show that the member is not a link: a reparse-flagged member
+  whose data is no reparse buffer. `extract_all` SHALL then re-type it as above, call
+  its `filter` again on the re-typed member, and write it as a file. In random access
+  it opens the member for its content. A streaming pass has already passed that
+  content, so it SHALL fail the member under `OnError`; it SHALL NOT report it as a
+  link with no target.
+- Exception to the bullet above: a 7z `stream_members()` pass under
+  `read_link_targets=True` reads a reparse-flagged member's data when it reaches the
+  member, in either access mode, so the pass has read that data before extraction sees
+  the member. When that data is no reparse buffer, the pass SHALL re-type the member
+  there, as above, and yield it with a stream of its whole content. It SHALL NOT yield
+  it as a link with no stream and re-type it after: the folder decoder cannot go back,
+  so that content would be lost with no error. `extract_all` over such a pass
+  therefore writes the member as a file in both access modes.
 
 #### Scenario: link-target setting matrix
 
@@ -1424,6 +1449,9 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | ZIP symlink, `read_link_targets=False`, password supplied, `reader.open("link")` | The target is read, then the link is followed |
 | Streaming `extract_all()` over a ZIP symlink, default config | The target is read before the link is written; the link is extracted |
 | ZIP member flagged as a reparse point whose data is no reparse buffer, `read_link_targets=False`, `extract_all()` | The filter sees it as a link, then again as a file; random access writes its content; a streaming pass fails it under `OnError` |
+| 7z member flagged as a reparse point whose data is no reparse buffer, default config, `stream_members()` in either access mode | Yielded as `FILE` with a stream of all its content; the next member in the folder reads correctly |
+| Same 7z archive, default config, streaming `extract_all()` | Written as a file |
+| Same 7z archive, `read_link_targets=False`, `stream_members()` | Yielded as `SYMLINK` with no stream, as `members()` lists it; not re-typed later |
 
 ### Requirement: A damaged data-stored link target leaves the listing intact
 

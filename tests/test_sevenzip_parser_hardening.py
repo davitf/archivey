@@ -14,6 +14,7 @@ import io
 import lzma
 import struct
 import subprocess
+import sys
 import zlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -603,3 +604,63 @@ def test_unknown_streams_info_property_is_skipped(context: str) -> None:
     header = b"\x01" + streams + files + b"\x00"
 
     assert _read_only_member(_archive(payload, header)) == payload
+
+
+# ---------------------------------------------------------------------------
+# Solid folder data pass cost
+# ---------------------------------------------------------------------------
+
+
+def _solid_copy_archive(count: int) -> tuple[bytes, bytes]:
+    """One COPY folder holding ``count`` one-byte members, and its payload."""
+    payload = bytes(index % 251 for index in range(count))
+    header = _header(
+        folders=[_linear([_coder(_COPY)])],
+        coder_unpack_sizes=[[count]],
+        pack_sizes=[count],
+        names=[str(index) for index in range(count)],
+        substreams=b"\x0d"
+        + _num(count)
+        + b"\x09"
+        + b"".join(_num(1) for _ in range(count - 1)),
+    )
+    return _archive(payload, header), payload
+
+
+def _python_calls_for_both_passes(count: int) -> int:
+    """Python function calls made by a streaming pass plus an ``open()`` per member."""
+    data, payload = _solid_copy_archive(count)
+    calls = 0
+
+    def profile(_frame: object, event: str, _arg: object) -> None:
+        nonlocal calls
+        if event == "call":
+            calls += 1
+
+    with open_archive(io.BytesIO(data)) as reader:
+        members = reader.members()
+        streamed = bytearray()
+        opened = bytearray()
+        sys.setprofile(profile)
+        try:
+            for _, stream in reader.stream_members():
+                assert stream is not None
+                streamed += stream.read()
+            for member in members:
+                with reader.open(member) as stream:
+                    opened += stream.read()
+        finally:
+            sys.setprofile(None)
+    assert streamed == payload
+    assert opened == payload
+    return calls
+
+
+def test_solid_folder_data_pass_cost_grows_linearly_with_member_count() -> None:
+    # Each member's offset in its folder is the sum of the earlier members' sizes.
+    # Recomputing that sum for every member makes a pass over a solid folder
+    # quadratic: doubling the member count then triples the work or more. Counting
+    # Python calls instead of timing keeps the check deterministic.
+    small = _python_calls_for_both_passes(200)
+    large = _python_calls_for_both_passes(400)
+    assert large / small < 2.5, (small, large)

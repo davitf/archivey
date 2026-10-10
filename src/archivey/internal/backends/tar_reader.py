@@ -16,7 +16,8 @@ via ``_iter_with_data()`` / ``stream_members()``.
 
 After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 
-- A rejected (non-null) header where ``tarfile`` stopped → ``CorruptionError``.
+- A header ``tarfile`` rejected where it stopped → ``CorruptionError``, in both access
+  modes and whatever follows it.
 - A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING``.
 - A trailer whose first block is zero and whose second is not, after at least one
   member → ``ARCHIVE_EOF_MARKER_MISSING`` (``expected_marker="second_zero_block"``).
@@ -29,11 +30,12 @@ Both codes follow the diagnostic policy like any other: a caller who wants eithe
 fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
 
 Note: after the header walk, ``tarfile`` has typically already consumed the
-*first* trailer zero-block; the EOF probe therefore inspects the *next* 512 bytes.
+*first* trailer zero-block; the end check therefore inspects the *next* 512 bytes.
 """
 
 from __future__ import annotations
 
+import errno
 import stat
 import tarfile
 import threading
@@ -252,16 +254,23 @@ class _HeaderBudget:
 
 # What :meth:`TarReader._verify_tar_eof` found where the end-of-archive marker belongs:
 # no block, a partial one, a non-null block after a zero block that ended at least one
-# member (the marker is damaged, the listing whole), a non-null block at or after a
-# header tarfile rejected (the listing is shortened), or a non-null block after a zero
-# block with no member before it.
+# member (the marker is damaged, the listing whole), a header tarfile rejected (the
+# listing is shortened), or a non-null block after a zero block with no member before
+# it.
 _TarEnd = Literal[
     "absent", "short", "damaged_second_block", "rejected_header", "no_member"
 ]
 
 
-# typeshed does not declare tarfile's header errors; this one is raised for a zero block.
+# typeshed does not declare tarfile's header errors. The first is raised for a zero
+# block; the second for a header tarfile rejects (a bad checksum or number field, a
+# negative size, PAX records that do not parse).
 _EOFHeaderError: type[Exception] = tarfile.EOFHeaderError  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+_InvalidHeaderError: type[Exception] = tarfile.InvalidHeaderError  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+
+# Why the last header parse of a walk failed: on a zero block, or on a header tarfile
+# rejected. ``None`` when it did not fail with either (it parsed, or the data ran out).
+_HeaderStop = Literal["zero_block", "rejected_header"]
 
 
 class _TarFile(tarfile.TarFile):
@@ -269,14 +278,30 @@ class _TarFile(tarfile.TarFile):
 
     ``TarFile.next()`` returns ``None`` both on a zero block (the first end-of-archive
     block) and on a header it rejects after the first member, and swallows the error
-    that told the two apart. :meth:`_TarInfo.fromtarfile` sets
-    ``stopped_on_zero_block`` on every header parse, so after the walk ends it says
-    which one the last parse hit. This works in both access modes, unlike the
-    random-access probe (:class:`_EofProbeStream`), because it does not depend on
-    seeing the read.
+    that told the two apart. It calls :meth:`_TarInfo.fromtarfile` once per member,
+    and that call sets ``stopped_on``, so after the walk ends it says which of the two
+    the last parse hit. It comes from the error class, not from the
+    bytes read, so it is the same answer in both access modes, and whatever block
+    follows the stop.
+
+    Only the outermost parse matters. A GNU long-name or PAX header is followed by a
+    nested parse of the member's own header; a failure there reaches ``next()`` as
+    ``SubsequentHeaderError``, which it re-raises as ``ReadError`` instead of
+    swallowing, so the walk ends with an error and ``stopped_on`` is not read. From
+    CPython 3.11.16, 3.12.14, 3.13.13 and 3.14.4 that nested parse goes through the
+    private ``_fromtarfile`` and bypasses the override; earlier patch releases run it
+    through ``fromtarfile`` and so through the override, innermost first, and the
+    outermost call still runs last.
     """
 
-    stopped_on_zero_block: bool = False
+    stopped_on: _HeaderStop | None = None
+
+    header_depth: int = 0
+    """How many :meth:`_TarInfo.fromtarfile` calls are running. A GNU long name or a
+    PAX header parses the header after it from inside its own call on Pythons without
+    the 2025 tarfile fixes (CPython 3.11.15 and 3.12.13 among them; a distribution's
+    build of an older version may carry the fixes, as Ubuntu's 3.12.3 does), so 0
+    after a call returns means the member is final."""
 
 
 class _TarInfo(tarfile.TarInfo):
@@ -287,33 +312,114 @@ class _TarInfo(tarfile.TarInfo):
     ``size`` with the logical size and reads the data through the sparse map, even
     where the map claims more than the member stores and the read runs on into the
     next header. :func:`_sparse_map_error` compares the map to this end.
+
+    It also decides old-style directories itself, as GNU tar does: see
+    :meth:`_mark_old_style_directory`. That needs the nesting count only a
+    :class:`_TarFile` keeps, so :meth:`fromtarfile` requires one.
     """
 
-    __slots__ = ("stored_end",)
+    __slots__ = ("old_style_directory", "stored_end")
 
     stored_end: int
     """The offset where the member's data area ends, rounded up to whole blocks."""
+
+    old_style_directory: bool
+    """The header is a regular file (``AREGTYPE``, typeflag NUL) whose final name ends
+    in ``/``, listed as a directory. ``type`` is then ``DIRTYPE``."""
+
+    @classmethod
+    def frombuf(cls, buf: bytes | bytearray, encoding: str, errors: str) -> Self:
+        # Python versions before the 2025 tarfile security fixes call this one.
+        info = super().frombuf(buf, encoding, errors)
+        info._undo_stdlib_directory_check(buf)
+        return info
+
+    @classmethod
+    def _frombuf(
+        cls,
+        buf: bytes | bytearray,
+        encoding: str,
+        errors: str,
+        *,
+        dircheck: bool = True,
+    ) -> Self:
+        # Later versions call this one. typeshed does not declare tarfile's private
+        # TarInfo._frombuf.
+        info: Self = super()._frombuf(buf, encoding, errors, dircheck=dircheck)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        info._undo_stdlib_directory_check(buf)
+        return info
+
+    def _undo_stdlib_directory_check(self, buf: bytes | bytearray) -> None:
+        """Keep an ``AREGTYPE`` header a regular file while its member is parsed.
+
+        Old (v7) tars mark a directory as a regular file whose name ends in ``/``.
+        ``tarfile`` decides that from the header's own name field: on every header
+        before the 2025 fixes, and after them only on a header with no GNU long name
+        or PAX header before it. It then does not skip the data, because a directory
+        has none, so a header that declares a size has its data read as the next
+        header. Undone here, so ``tarfile`` skips the data as for any regular file,
+        with the final size, and :meth:`_mark_old_style_directory` decides on the
+        final name once the member is complete.
+        """
+        self.old_style_directory = False
+        if buf[156:157] == tarfile.AREGTYPE and self.type == tarfile.DIRTYPE:
+            self.type = tarfile.AREGTYPE
+            # ``tarfile`` stripped the slash, before adding the ustar prefix.
+            self.name += "/"
+
+    def _mark_old_style_directory(self) -> None:
+        """Make an ``AREGTYPE`` member whose final name ends in ``/`` a directory.
+
+        The final name is the one after a PAX ``path`` or a GNU long name, as GNU tar
+        1.35 and 7-Zip read it. Both list such a member as a directory and skip its
+        data. ``tarfile`` strips the slash from a PAX ``path``, so the record is read
+        again. A ``DIRTYPE`` header that declares a size is not this case: it has no
+        data area.
+        """
+        if self.type != tarfile.AREGTYPE:
+            return
+        name_is_dir = self.name.endswith("/")
+        pax_path = self.pax_headers.get("path")
+        if pax_path is not None and self.name == pax_path.rstrip("/"):
+            name_is_dir = pax_path.endswith("/")
+        if name_is_dir:
+            self.type = tarfile.DIRTYPE
+            self.name = self.name.rstrip("/")
+            self.old_style_directory = True
 
     @classmethod
     def fromtarfile(cls, tarfile: tarfile.TarFile) -> Self:
         # ``TarFile.next()`` swallows the header error that ends the walk, so whether
         # it stopped on a zero block or on a rejected header is recorded here, where
         # the error passes through (see :class:`_TarFile`).
-        if isinstance(tarfile, _TarFile):
-            tarfile.stopped_on_zero_block = False
+        # Only a _TarFile counts its nesting. Over a plain TarFile this would mark
+        # the inner header of a PAX or GNU long-name member on older CPython patch
+        # releases, before tarfile skips its data, and the data would be read as the
+        # next header.
+        assert isinstance(tarfile, _TarFile)
+        tarfile.stopped_on = None
+        tarfile.header_depth += 1
         try:
             info = super().fromtarfile(tarfile)
         except _EOFHeaderError:
-            if isinstance(tarfile, _TarFile):
-                tarfile.stopped_on_zero_block = True
+            tarfile.stopped_on = "zero_block"
             raise
+        except _InvalidHeaderError:
+            tarfile.stopped_on = "rejected_header"
+            raise
+        finally:
+            tarfile.header_depth -= 1
         # ``TarFile.offset`` is where tarfile will look for the next header, which is
-        # the end of this member's data area. For a header preceded by GNU long-name or
-        # PAX headers this runs once per header, innermost first; the outermost call
-        # runs last and sees the final offset, which a PAX ``size`` record may change,
-        # and the final ``linkname``, which a long link name or PAX linkpath sets.
+        # the end of this member's data area. This call returns only after any GNU
+        # long-name or PAX headers before the member's header have been parsed and
+        # applied (on older CPython patch releases the nested parses also run through
+        # here, and finish first; see :class:`_TarFile`), so it sees the final offset,
+        # which a PAX ``size`` record may change, and the final ``linkname``, which a
+        # long link name or PAX linkpath sets.
         info.stored_end = tarfile.offset
         _drop_unweighed_link_name(info)
+        if tarfile.header_depth == 0:
+            info._mark_old_style_directory()
         return info
 
     def _proc_member(self, tarfile: tarfile.TarFile) -> tarfile.TarInfo:
@@ -527,18 +633,9 @@ def _tar_time_issue(
     )
 
 
-class _EofProbeStream(ReadOnlyIOStream):
-    """Transparent read/seek proxy over the seekable fileobj handed to stdlib
-    ``tarfile`` in random-access mode, remembering the ``(offset, bytes)`` of the most
-    recent ``read`` (empty reads included).
-
-    After the header scan, that read is tarfile's attempt to parse a header at the
-    end-of-archive position (``TarFile.next()`` always tries one more block before
-    returning ``None``). A full non-null block there is a rejected header — including when
-    it is the archive's final block, and including after a GNU sparse member whose
-    logical ``size`` does not match the physical packed end. Relying on the scan's last
-    read (rather than ``offset_data + roundup(size)``) avoids that false negative without
-    seeking backwards, which on a compressed source would force a re-decompression.
+class _BoundedTarFileobj(ReadOnlyIOStream):
+    """Read/seek proxy over the seekable fileobj handed to stdlib ``tarfile`` in
+    random-access mode, which bounds the reads and seeks whose size the archive chooses.
 
     tarfile treats this as an external fileobj (``read``/``seek``/``tell``/``seekable``
     only) and never closes it; the reader closes what it wraps — the decompressor via
@@ -573,13 +670,10 @@ class _EofProbeStream(ReadOnlyIOStream):
         # Offsets share tarfile's coordinate space (both anchored at the wrapped
         # stream's current position), so they compare directly to TarInfo offsets.
         self._pos = inner.tell() if inner.seekable() else 0
-        self.last_read: tuple[int, bytes] = (-1, b"")
 
     def read(self, size: int = -1, /) -> bytes:
-        offset = self._pos
         chunk = self._read_within_reach(size)
         self._pos += len(chunk)
-        self.last_read = (offset, chunk)
         return chunk
 
     def _read_within_reach(self, size: int) -> bytes:
@@ -607,7 +701,34 @@ class _EofProbeStream(ReadOnlyIOStream):
                 f"TAR archive is corrupt: a size field puts data at byte {offset}, "
                 "past the largest offset any file can have"
             )
-        self._inner.seek(offset, whence)
+        try:
+            self._inner.seek(offset, whence)
+        except OSError as e:
+            # A filesystem refuses a smaller offset too, past its largest file size:
+            # ext4 (about 16 TiB) with EINVAL or EOVERFLOW, while APFS and a BytesIO
+            # take it and the next read finds the end of the data. The archive is
+            # shorter than any file that filesystem can hold, so the offset is past
+            # its end, and the same archive is a TruncatedError from any source on
+            # any OS (DR-5), as GNU tar reports it ("Unexpected EOF in archive").
+            #
+            # Taking EINVAL as an archive fact is sound here, though extraction
+            # deliberately does not (safe-extraction spec): there one ``try`` holds
+            # open, mkdir and write calls, where EINVAL has unrelated causes. Over a
+            # plain tar this ``try`` holds one absolute lseek to a non-negative
+            # offset the archive chose, whose EINVAL or EOVERFLOW means only that
+            # the offset is past what the file can hold. Over a decompressor the
+            # seek decodes forward with plain reads of the source, which give
+            # neither errno for a reachable offset.
+            if (
+                whence != SEEK_SET
+                or offset < 0
+                or e.errno not in (errno.EINVAL, errno.EOVERFLOW)
+            ):
+                raise
+            raise TruncatedError(
+                f"TAR archive is truncated: a size field puts data at byte {offset}, "
+                "past the end of the archive"
+            ) from e
         self._pos = self._inner.tell()
         return self._pos
 
@@ -620,8 +741,8 @@ class _EofProbeStream(ReadOnlyIOStream):
     def close(self) -> None:
         # No-op: the reader owns the wrapped stream's lifetime (``_owned_stream``); a
         # stray tarfile call must not tear the shared handle down early. So ``closed``
-        # stays False for the probe's whole life. Nothing reads it: tarfile never
-        # checks an external fileobj's ``closed``, and the probe never leaves this
+        # stays False for the proxy's whole life. Nothing reads it: tarfile never
+        # checks an external fileobj's ``closed``, and the proxy never leaves this
         # module.
         pass
 
@@ -629,12 +750,11 @@ class _EofProbeStream(ReadOnlyIOStream):
 class TarReader(BaseArchiveReader):
     """Reads a TAR archive (plain or compressed) via stdlib ``tarfile``.
 
-    ``_SUPPORTS_RANDOM_ACCESS`` is True (seekable uncompressed / decompressed sources
-    can open any member), but ``_MEMBER_LIST_UPFRONT`` is False — there is no central
-    directory, so a complete list always requires a scan (or a finished stream pass).
+    A seekable source can open any member, but ``_MEMBER_LIST_UPFRONT`` is False —
+    there is no central directory, so a complete list always requires a scan (or a
+    finished stream pass).
     """
 
-    _SUPPORTS_RANDOM_ACCESS = True
     # TAR has no central directory: the member list only exists after a scan, so it is not
     # "available without scanning" (listing cost is REQUIRES_SCANNING / REQUIRES_DECOMPRESSION,
     # not INDEXED). Once iterated, the base serves the cached list anyway.
@@ -666,10 +786,6 @@ class TarReader(BaseArchiveReader):
         self._encoding = encoding
         self._source = source
         self._compressed = format.stream != StreamFormat.UNCOMPRESSED
-        # Random-access EOF probe: set when the fileobj is wrapped (non-streaming opens),
-        # snapshotted into ``_eof_header_rejected`` right after the header scan.
-        self._eof_probe_stream: _EofProbeStream | None = None
-        self._eof_header_rejected: bool = False
         # Whether the walk's current pull enforces the listing limits (see
         # _pull_member). True until a pull says otherwise: the first header is parsed
         # at open, where only the whole cap can bind anyway.
@@ -782,42 +898,38 @@ class TarReader(BaseArchiveReader):
             self._owned_codec_stream = stream
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(
-                fileobj=self._wrap_eof_probe(self._owned_stream, streaming),
+                fileobj=self._bounded_fileobj(self._owned_stream, streaming),
                 streaming=streaming,
             )
         # A plain tar reads the source itself, which is full-count and bounded; the
-        # probe in front of it only watches. Do NOT slurp a path into a BytesIO — that
-        # would force the whole archive into memory up front.
+        # proxy in front of it only refuses impossible seeks. Do NOT slurp a path into a
+        # BytesIO — that would force the whole archive into memory up front.
         return self._tarfile_open(
             name=str(source.path) if source.path is not None else None,
-            fileobj=self._wrap_eof_probe(
+            fileobj=self._bounded_fileobj(
                 self._track_source_seeks(source), streaming, bounded=False
             ),
             streaming=streaming,
         )
 
-    def _wrap_eof_probe(
-        self,
+    @staticmethod
+    def _bounded_fileobj(
         fileobj: BinaryIO,
         streaming: bool,
         *,
         bounded: bool = True,
     ) -> BinaryIO:
-        """Wrap a random-access fileobj so the end-of-archive check can inspect the block
-        tarfile stopped on. Forward-only (streaming) opens get no probe — tarfile's
-        ``_Stream`` hides its header reads and a consumed block cannot be recovered there.
+        """Wrap a random-access fileobj in :class:`_BoundedTarFileobj`. A forward-only
+        (streaming) open passes it through unwrapped.
 
-        That is also why bounding a header-sized read only happens here: ``r|`` needs no
-        bound, tarfile's own ``_Stream.read`` looping in ``bufsize`` chunks, and ``r:``
-        is the mode that hands a raw handle through. Over a decompressor the read is
-        stepped (see :class:`_EofProbeStream`); a plain tar passes ``bounded=False``: the
+        ``r|`` needs no bound: tarfile's own ``_Stream.read`` loops in ``bufsize``
+        chunks. ``r:`` is the mode that hands a raw handle through. Over
+        a decompressor the read is stepped; a plain tar passes ``bounded=False``: the
         source it wraps bounds its own reads.
         """
         if streaming:
             return fileobj
-        probe = _EofProbeStream(fileobj, bounded=bounded)
-        self._eof_probe_stream = probe
-        return probe
+        return _BoundedTarFileobj(fileobj, bounded=bounded)
 
     def _tarfile_open(
         self,
@@ -956,9 +1068,6 @@ class TarReader(BaseArchiveReader):
                                 break
                         else:
                             ended = True
-                            # Snapshot the EOF probe now, while the last read is still
-                            # the block tarfile stopped on.
-                            self._capture_eof_probe(index + len(batch) > 0)
             except CorruptionError as exc:
                 # Hand out the headers this batch already parsed first, so a
                 # members_report() keeps the same salvaged prefix it would have had
@@ -1176,59 +1285,36 @@ class TarReader(BaseArchiveReader):
                 close_previous=False,
             )
 
-    def _capture_eof_probe(self, any_members: bool) -> None:
-        """Snapshot whether tarfile stopped the header scan on a *rejected* (non-null)
-        header block, using the random-access EOF probe.
-
-        When ``TarFile.next()`` returns ``None`` it has always attempted one more header
-        read first, so the probe's ``last_read`` *is* the block tarfile stopped on —
-        independent of the live handle position (later member extraction may seek away)
-        and independent of ``offset_data + roundup(size)`` (wrong for GNU sparse, where
-        logical size ≫ packed size). A full non-null block there is a rejected header,
-        including when it is the archive's final block (which the trailing-block check
-        in :meth:`_verify_tar_eof` reads past and cannot see).
-        """
-        self._eof_header_rejected = False
-        probe = self._eof_probe_stream
-        if probe is None or not any_members:
-            return
-        _offset, chunk = probe.last_read
-        if len(chunk) == 512 and chunk != b"\x00" * 512:
-            self._eof_header_rejected = True
-
     def _verify_tar_eof(self, *, any_members: bool) -> None:
         """Verify the two-block null end-of-archive marker and surface a rejected header
         as corruption.
 
-        In random-access mode ``_capture_eof_probe`` has already inspected the block
-        tarfile stopped on. A full non-null block there means tarfile rejected a header —
-        a corrupt member header after the first, treated as a silent early end, including
-        when it is the archive's *final* block — which escalates to ``CorruptionError``
-        whatever the diagnostic policy says.
+        What tarfile stopped on decides first (:class:`_TarFile`). When its last header
+        parse rejected the header — a corrupt member header after the first, which
+        ``TarFile.next()`` treats as a clean end — the listing was cut short, and that
+        escalates to ``CorruptionError`` whatever the diagnostic policy says. This needs
+        no further read, so it holds in both access modes whatever follows the rejected
+        header: nothing, a zero block (a member whose data starts with one), or more
+        members.
 
-        Otherwise (and for forward-only streaming, which has no probe) it inspects the
-        block following tarfile's stop. ``tarfile`` has already consumed the *first* null
-        trailer block (stopping on it via ``EOFHeaderError`` with ``ignore_zeros=False``),
-        so we only confirm the *second*: reading two blocks here would demand a third
-        block of trailing zeros and wrongly flag a minimal ``tar -b1`` trailer. Two null
-        blocks are valid. A short or empty read is a truncated or absent trailer,
-        reported as ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary diagnostic policy.
+        Otherwise it inspects the block following tarfile's stop. ``tarfile`` has already
+        consumed the *first* null trailer block (stopping on it via ``EOFHeaderError``
+        with ``ignore_zeros=False``), so we only confirm the *second*: reading two blocks
+        here would demand a third block of trailing zeros and wrongly flag a minimal
+        ``tar -b1`` trailer. Two null blocks are valid. A short or empty read is a
+        truncated or absent trailer, reported as ``ARCHIVE_EOF_MARKER_MISSING`` under the
+        ordinary diagnostic policy.
 
-        A non-null block there depends on what tarfile stopped on
-        (:class:`_TarFile`). After a zero block, with members listed, the end-of-archive
-        marker itself is damaged: every member before it is listed and whole, as GNU tar
-        and 7-Zip list them with a warning, so it is ``ARCHIVE_EOF_MARKER_MISSING`` under
-        the ordinary policy (``DiagnosticPolicy.strict()`` refuses it), and the scan
-        past the trailer runs from the block after it. After a rejected header, the
-        listing was cut short and it is ``CorruptionError``; so is a zero block and
-        then a non-null one with no member before them.
-
-        Streaming cannot see a rejected *final* header (tarfile's ``_Stream`` hides the
-        block and it cannot be recovered without re-reading), so that one case surfaces as
-        a missing-trailer warning there rather than corruption — see
-        ``dev-docs/known-issues.md``.
+        A non-null block there, after a zero block with members listed, means the
+        end-of-archive marker itself is damaged: every member before it is listed and
+        whole, as GNU tar and 7-Zip list them with a warning, so it is
+        ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary policy
+        (``DiagnosticPolicy.strict()`` refuses it), and the scan past the trailer runs
+        from the block after it. A zero block and then a non-null one with no member
+        before them is ``CorruptionError``.
         """
-        if self._eof_header_rejected:
+        stopped_on = self._tar.stopped_on if isinstance(self._tar, _TarFile) else None
+        if stopped_on == "rejected_header":
             self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
         fileobj = self._tar.fileobj
@@ -1243,7 +1329,7 @@ class TarReader(BaseArchiveReader):
             if not any_members:
                 self._emit_eof_marker("no_member", observed_bytes=512)
                 return
-            if isinstance(self._tar, _TarFile) and self._tar.stopped_on_zero_block:
+            if stopped_on == "zero_block":
                 # One zero block, then a damaged one: the marker is damaged, not the
                 # listing. The scan past it still runs, because on a compressed tar it
                 # is where the codec's whole-stream checksum over the members just
@@ -1251,8 +1337,11 @@ class TarReader(BaseArchiveReader):
                 self._emit_eof_marker("damaged_second_block", observed_bytes=512)
                 self._verify_nothing_but_zeros_to_eof()
                 return
-            # A non-null block where the second trailer block belongs after a rejected
-            # header: tarfile treated a bad block as a clean end.
+            # The walk recorded no stop reason, yet a whole block follows. Not reached
+            # today: tarfile's other stops (no data, or a partial block) leave the
+            # source at its end. Kept as a conservative fallback, so that a stop
+            # reason nobody anticipated cannot read as a clean end.
+            assert stopped_on is None
             self._emit_eof_marker("rejected_header", observed_bytes=512)
             return
         self._emit_eof_marker(
@@ -1416,10 +1505,10 @@ class TarReader(BaseArchiveReader):
             expected_bytes = 512
         elif end == "rejected_header":
             message = (
-                "TAR archive is corrupt: a non-null block appears where the "
-                "end-of-archive marker was expected. Stdlib tarfile treats a corrupt "
-                "member header after the first as a clean end of archive, so a silently "
-                "shortened listing surfaces here."
+                "TAR archive is corrupt: a member header that does not parse appears "
+                "where the next header or the end-of-archive marker was expected. "
+                "Stdlib tarfile treats a corrupt member header after the first as a "
+                "clean end of archive, so a silently shortened listing surfaces here."
             )
             escalate_as = CorruptionError
         elif end == "no_member":
@@ -1506,7 +1595,14 @@ class TarReader(BaseArchiveReader):
             else ()
         )
 
-        extra = MemberExtra({"tar.type": info.type})
+        # The typeflag as stored: NUL for an old-style directory, whose ``type`` is
+        # DIRTYPE.
+        stored_type = (
+            tarfile.AREGTYPE
+            if getattr(info, "old_style_directory", False)
+            else info.type
+        )
+        extra = MemberExtra({"tar.type": stored_type})
         if info.pax_headers:
             extra["tar.pax_headers"] = dict(info.pax_headers)
         if info.isdev():

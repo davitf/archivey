@@ -88,7 +88,11 @@ a facility exists, it SHALL be optional, absent by default, and bounded in both 
 range (forward-only ceiling today: 1 MiB) and number of links walked; a probe that does not
 take it SHALL behave exactly as it does today. This exception exists for the self-describing
 block chain in `format-detection`, whose successor offsets frequently sit past a 4 KiB
-prefix, and it does not license open-ended reading.
+prefix, and for the decode up to the first compressed block of that chain (within the
+same 1 MiB reach). It does not license open-ended reading. A probe that decodes past its
+sample SHALL first ask a second optional facility, `charge_decode(n)`, which the detector
+backs with its decode allowance; when the answer is no, the probe keeps the verdict it
+has.
 
 Registering a standalone codec descriptor SHALL make detection, the single-file
 reader, and availability reporting work without edits elsewhere.
@@ -107,7 +111,7 @@ reader, and availability reporting work without edits elsewhere.
 | Any probe, `source_length <= len(prefix)`, decode wants more input within the output drain | Reject — the whole source is visible and the stream does not terminate |
 | Any probe, `source_length <= len(prefix)`, decode completes within the output drain | Accept |
 | Probe offered no bounded read facility | Behaves exactly as today; prefix is its whole world |
-| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk only |
+| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk and the Brotli decode to its first compressed block only |
 | Probe given one, attempts an unbounded or unlimited-count read | Not permitted |
 
 ### Requirement: Each supported codec has a default backend
@@ -250,9 +254,12 @@ expected hashes) when a read **reaches the member's end**:
 - **Size-declared** (`expected_size` set): the read that consumes the declared
   size is a verifying event (checksum and over-run). On digest mismatch or
   over-run it SHALL raise `CorruptionError` and return **no bytes** for that call
-  (withhold the final chunk). On truncation-shaped EOF before the declared size,
-  the first read that asks past available output returns the remaining prefix
-  (short return); the next empty `read` raises `TruncatedError`.
+  (withhold the final chunk). When the data past the declared size fails to
+  decode, that read SHALL raise the decoder's error as the verdict and return no
+  bytes, even when the declared bytes match their checksum; the translator above
+  the verifier types it as `CorruptionError`. On truncation-shaped EOF before the
+  declared size, the first read that asks past available output returns the
+  remaining prefix (short return); the next empty `read` raises `TruncatedError`.
 - **Size-unknown**: every data chunk MAY be returned first; `CorruptionError`
   SHALL raise on the read that observes end-of-stream (typically the terminal
   empty `read`) — no mandatory one-chunk delayed-release lookahead.
@@ -534,9 +541,11 @@ the standard-library decoder on stream-boundary malformations they cannot see:
 - for a container member that declares its size and CRC (a ZIP member, a 7z coder
   under a CRC-checked file), a second stream or
   trailing bytes inside the member's compressed data, which the accelerator MAY read as
-  content where the standard-library decoder stops at the first stream's end; the
-  declared size and CRC then decide, so output that matches both reads and output that
-  breaks either raises;
+  content where the standard-library decoder stops at the first stream's end (and, in a
+  ZIP member, raises `CorruptionError` for the bytes after it); the declared size and
+  CRC then decide, so output that matches both reads and output that breaks either
+  raises. The bzip2 accelerator checks a ZIP member's stream ends from its block index,
+  so there only rapidgzip's DEFLATE MAY differ;
 - for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
   when every member's CRC-32 is still checked.
 
@@ -581,6 +590,7 @@ no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 
 | Member | Accelerator `OFF` | Accelerator `ON` |
 | --- | --- | --- |
-| Two DEFLATE or bzip2 streams; declared size and CRC cover both | `TruncatedError` (decoder stops after the first) | Both streams' content |
-| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `TruncatedError` | `CorruptionError` (CRC) |
-| Two bzip2 streams; declared size and CRC cover the first | First stream's content | `CorruptionError` (output past the declared size) |
+| Two DEFLATE streams; declared size and CRC cover both | `CorruptionError` (input after the first stream's end) | Both streams' content |
+| Two bzip2 streams; declared size and CRC cover both | `CorruptionError` (input after the first stream's end) | `CorruptionError` (the end check finds input after the first stream) |
+| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `CorruptionError` | `CorruptionError` (CRC) |
+| Two DEFLATE or bzip2 streams; declared size and CRC cover the first | `CorruptionError` (input after the first stream's end) | `CorruptionError` |
