@@ -932,6 +932,8 @@ as they already refuse one known to be encrypted. The comment is decoded as text
 quick-open payload is parsed as a member table, so slicing unsettled bytes would put
 ciphertext in `ArchiveInfo.comment` or parse a member list out of it. Losing the comment, or
 falling back to the header walk, is a missing answer; the alternative is a wrong one.
+A stored comment SHALL be read only from the span the walk skips after its header, so no
+byte is read both as comment data and as a header.
 
 #### Scenario: A cut-short comment header is refused and reported
 

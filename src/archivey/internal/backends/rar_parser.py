@@ -2775,7 +2775,7 @@ def _parse_rar5(
     end_block_damaged_at: int | None = None
     # Only the first MAIN of a volume is asked for the quick-open table. unrar
     # accepts a repeated MAIN, and each try reads a QO payload of up to
-    # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 20-byte header buy
+    # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
     # that read again.
     qo_tried = not use_qo
 

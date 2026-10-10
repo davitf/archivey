@@ -294,7 +294,7 @@ included — it does not leave FILE after the old QO.
    Only the first MAIN of a volume is asked. `unrar` 7.00 accepts a repeated MAIN
    (`unrar lb` lists past it), and each try reads a QO payload of up to 16 MiB, so
    following every MAIN's locator let a crafted archive buy that read again with
-   each 20-byte MAIN: measured at about 50 ms of parse per extra MAIN (DR-9a).
+   each 17-byte MAIN (13 bytes at the format minimum): measured at about 50 ms of parse per extra MAIN (DR-9a).
 2. Seek back to after MAIN and walk. `CMT` is a normal SERVICE. When `tell()`
    is a FILE in the map, emit those copies in order and seek to the end of
    the consecutive run (the chain is in memory; one seek). AUTO holes — small
@@ -663,9 +663,10 @@ UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to lis
 CJK. `encoding=` does not apply to comments. A compressed `CMT` SERVICE header is not
 decoded: the parser reads only a stored one, so such an archive lists with no comment
 and no diagnostic. A stored `CMT` is read from the span the walk skips after its
-header, so no byte is read both as comment data and as a later header. When the walk
-skipped only the LONG_BLOCK size, reading PACK_SIZE there let a stack of 37-byte `CMT`
-headers each re-read the rest of the archive (DR-9a).
+header, which is its PACK_SIZE whether or not LONG_BLOCK is set, as `unrar` reads it.
+So no byte is read both as comment data and as a later header; a read that could
+overlap the next headers would let a stack of 35-byte `CMT` headers each re-read the
+rest of the archive (DR-9a).
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.
