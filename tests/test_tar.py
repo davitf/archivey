@@ -2394,18 +2394,20 @@ def test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding() -> None:
         # name, so which bytes were stored cannot be recovered from it.
 
 
+@pytest.mark.parametrize("streaming", [False, True])
 def test_close_releases_the_codec_stream_when_its_buffer_close_raises(
-    tmp_path: Path,
+    tmp_path: Path, streaming: bool
 ) -> None:
     path = tmp_path / "a.tar.gz"
     with tarfile.open(path, "w:gz") as t:
         info = tarfile.TarInfo("a")
         info.size = 1
         t.addfile(info, io.BytesIO(b"x"))
-    # Streaming: random access buffers each walk's view, not the codec stream.
-    ar: Any = open_archive(path, streaming=True)
+    ar: Any = open_archive(path, streaming=streaming)
     codec = ar._owned_codec_stream
-    with mock.patch.object(ar._owned_stream, "close", side_effect=OSError("boom")):
+    # Streaming buffers the codec stream; random access buffers the walk's view.
+    buffer = ar._owned_stream if streaming else ar._walker_view
+    with mock.patch.object(buffer, "close", side_effect=OSError("boom")):
         with pytest.raises(OSError):
             ar.close()
     assert codec.closed
@@ -2460,6 +2462,36 @@ def test_a_member_stream_seeks_past_its_end_like_a_file(tmp_path: Path) -> None:
         assert stream.read() == b""
         assert stream.seek(1) == 1
         assert stream.read() == b"bc"
+
+
+def test_small_reads_of_a_compressed_member_are_buffered(tmp_path: Path) -> None:
+    """Line iteration over a .tar.gz member reads the decoded stream in buffer-sized
+    pieces, not once per line."""
+    path = tmp_path / "a.tar.gz"
+    data = b"x" * 79 + b"\n"
+    with tarfile.open(path, "w:gz") as t:
+        info = tarfile.TarInfo("lines")
+        info.size = len(data) * 1000
+        t.addfile(info, io.BytesIO(data * 1000))
+    ar: Any = open_archive(path)
+    with ar, mock.patch.object(ar._stream, "read", wraps=ar._stream.read) as read:
+        with ar.open("lines") as stream:
+            assert sum(1 for _ in stream) == 1000
+        assert read.call_count < 30
+
+
+def test_a_member_keeps_no_parsed_pax_records() -> None:
+    """The member's PAX records live on as ``extra["tar.pax_headers"]``; the parsed
+    copy the entry carried is dropped once the member is built."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("a")
+        info.pax_headers = {"comment": "c" * 100}
+        t.addfile(info, io.BytesIO())
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        (member,) = ar.members()
+        assert member.extra["tar.pax_headers"]["comment"] == "c" * 100
+        assert not member._raw.pax
 
 
 def test_global_pax_path_wins_over_a_gnu_long_name() -> None:

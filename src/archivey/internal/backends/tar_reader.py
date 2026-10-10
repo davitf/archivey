@@ -40,6 +40,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import datetime
+from types import MappingProxyType
 from typing import BinaryIO, Literal, cast
 
 from archivey.config import ArchiveyConfig
@@ -178,6 +179,8 @@ _WALK_BUFFER = 8 * 1024
 # lists the directory's contents at dump time. GNU tar extracts it as a directory; the
 # list is skipped.
 _DIRECTORY_TYPES = frozenset((b"5", b"D"))
+
+_NO_PAX: Mapping[bytes, PaxValue] = MappingProxyType({})
 _SYMLINK_TYPE = b"2"
 _HARDLINK_TYPE = b"1"
 # Character and block devices and FIFOs, which carry device numbers.
@@ -358,15 +361,17 @@ class TarReader(BaseArchiveReader):
         # _pull_member). True until a pull says otherwise: the first header is parsed
         # at open, where only the whole cap can bind anyway.
         self._listing_enforced = True
-        # The decompression stream of a compressed tar, or the buffer in front of the
-        # source of a streaming plain tar: built by this reader, so closed by it.
+        # Streaming only: the buffer in front of the codec stream or the source, built
+        # by this reader, so closed by it. Random access buffers each walk's view
+        # (``_walker_view``) and each compressed member's view instead, so a reader
+        # holds ``_owned_stream`` or ``_walker_view``, never both.
         self._owned_stream: BinaryIO | None = None
-        # The codec stream under ``_owned_stream``. ``ensure_bufferedio`` wraps it in a
-        # buffer that detaches on close rather than closing it, so it is closed here
-        # explicitly: left to the garbage collector, a stream held by a failed open's
-        # traceback kept its rapidgzip child process running.
+        # A compressed tar's codec stream, in either mode. ``ensure_bufferedio`` wraps
+        # it in a buffer that detaches on close rather than closing it, so it is closed
+        # here explicitly: left to the garbage collector, a stream held by a failed
+        # open's traceback kept its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
-        # The current walk's own buffered view in random access (see _new_walker).
+        # Random access only: the current walk's own buffered view (see _new_walker).
         self._walker_view: BinaryIO | None = None
         # The last PAX records a member without records of its own was built from,
         # and the ``extra["tar.pax_headers"]`` every such member shares
@@ -411,8 +416,7 @@ class TarReader(BaseArchiveReader):
     def _release_owned_stream(self) -> None:
         """Close the streams this reader opened, if any. Safe to call more than once."""
         try:
-            # A random-access reader has a walk view and a streaming one has the
-            # buffer; never both.
+            # Never both (see __init__), so the codec stream alone needs the finally.
             self._close_walker_view()
             if self._owned_stream is not None:
                 owned, self._owned_stream = self._owned_stream, None
@@ -1137,6 +1141,10 @@ class TarReader(BaseArchiveReader):
                     f"{quoted(member.name)}"
                 ),
             )
+        if entry.has_own_pax:
+            # The records live on, decoded, in extra["tar.pax_headers"]; the parsed
+            # copy is not kept twice. A shared global mapping costs nothing per member.
+            entry.pax = _NO_PAX
         return member
 
     def _owner_name(self, header: bytes, pax: PaxValue | None) -> str:
@@ -1195,6 +1203,11 @@ class TarReader(BaseArchiveReader):
                 entry.stored_size,
                 lock=self._io_guard(),
             )
+            if self._compressed:
+                # The codec stream has no buffer of its own here (_open_byte_stream),
+                # so a read smaller than this would cost a decoder seek and read. The
+                # buffer sits above the view: each fill is one sized read of the codec.
+                stream = cast("BinaryIO", ensure_bufferedio(stream, _WALK_BUFFER))
         if entry.sparse is not None:
             stream = SparseStream(
                 stream, entry.sparse.offsets, entry.sparse.lengths, entry.size
