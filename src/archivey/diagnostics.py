@@ -864,6 +864,7 @@ __all__ = [
     "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
+    "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",
     "MemberTimestampContext",

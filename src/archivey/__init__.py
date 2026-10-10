@@ -16,7 +16,7 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 
 Names in ``__all__`` are the documented API, and the root exposes no other public
 name apart from submodules. Niche names, such as the ``*Context`` diagnostic payloads
-and ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``, are imported from their submodule
+and ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``, are available only from their submodule
 (:mod:`archivey.diagnostics`, :mod:`archivey.config`).
 """
 
@@ -200,9 +200,9 @@ __all__ = [
 
 # Eager backend registration so list_supported_formats / format_availability work
 # immediately after `import archivey` (open_archive also imports as a safety net).
-from archivey.internal import backends as _backends  # noqa: E402,F401
-
-del _backends
+# Aliased so the statement does not bind `archivey` on itself: a plain
+# `import archivey.internal.backends` puts `archivey.archivey` on the package root.
+import archivey.internal.backends as _backends  # noqa: E402,F401
 
 
 def _pin_public_module() -> None:

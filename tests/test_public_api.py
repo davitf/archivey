@@ -262,12 +262,25 @@ def test_niche_names_live_only_in_their_submodule() -> None:
     import archivey.config
     import archivey.diagnostics
 
-    contexts = [
+    def is_payload(name: str) -> bool:
+        return (
+            name.endswith("Context")
+            and name != "DiagnosticContext"
+            and not name.startswith("_")
+        )
+
+    # The submodule is the only public path to a payload, so its __all__ must list
+    # every one the module defines.
+    unlisted = sorted(
         name
         for name in vars(archivey.diagnostics)
-        if name.endswith("Context") and name != "DiagnosticContext"
-    ]
-    assert len(contexts) >= 17, contexts
+        if is_payload(name) and name not in archivey.diagnostics.__all__
+    )
+    assert unlisted == []
+    contexts = [name for name in archivey.diagnostics.__all__ if is_payload(name)]
+    # The 17 payload classes the module defines; update the count when one is added
+    # or removed, so the loop below cannot pass on a shrunken list.
+    assert len(contexts) == 17, contexts
     for name in [*contexts, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE"]:
         assert not hasattr(archivey, name), name
     assert archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE > 0

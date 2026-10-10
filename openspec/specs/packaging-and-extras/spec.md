@@ -269,8 +269,9 @@ package root. Only public API modules appear in `archivey.__all__`: `core.py`,
 `types.py`, `detection.py`, `config.py`, `diagnostics.py`, `exceptions.py`, `cost.py`,
 and `reader.py`.
 `archivey.__init__.py` SHALL re-export the public API so supported callers do not
-import from `archivey.internal.*`. Every public name on the package root SHALL be in
-`archivey.__all__` or be a submodule of `archivey`. A niche name stays in its public
+import from `archivey.internal.*`. Every attribute of the package root SHALL be in
+`archivey.__all__`, be a real submodule of `archivey` (`internal` included: importing
+a submodule binds it on its parent package), or be private. A niche name stays in its public
 submodule and is not also imported at the root: the diagnostic context payloads
 (`NameNormalizationContext` and the others) come from `archivey.diagnostics`, and
 `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` from `archivey.config`.
