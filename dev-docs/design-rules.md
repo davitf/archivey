@@ -406,7 +406,11 @@ Absolute member names re-root inside the destination like every mainstream extra
 `bzip2` 1.0.8 and GNU `gzip` do: what follows them is trailing data, and only zeros that
 end the file are silent padding. Every reader measured but Python's `gzip` stops there,
 and no writer produces the shape (2026-10-10; `formats/bzip2.md` and `formats/gzip.md`
-§6).
+§6). The same day the rule was extended to zstd, LZ4 and LZMA Alone, whose tools stop
+there too; xz keeps reading past the Stream Padding its format defines. Zeros at the end
+stay silent for every codec, although `zstd`, `lz4` and `xz --format=lzma` refuse them:
+one cross-codec rule, after the tape and block padding GNU `gzip` and `bzip2` accept
+(`formats/single-file.md` §6).
 
 **Limits.** When this rule and DR-5 disagree, that is a
 [real decision](#when-consistency-and-the-official-tool-disagree): weigh the factors,
@@ -935,12 +939,6 @@ Questions no rule here settles yet.
 
 - **The official tool for ZIP and ISO.** DR-6 names none. Asked on 2026-10-02 and not
   answered.
-- **Zero bytes between zstd, LZ4 and LZMA Alone streams.** A bare `.bz2` or `.gz` stops
-  at zero bytes between streams (DR-6 rulings, 2026-10-10). zstd, LZ4 and LZMA Alone
-  still read a stream after zero bytes, because that ruling named only bzip2 and gzip.
-  Whether they should follow it is open: `lz4 -dc` refuses three zero bytes after a
-  legacy stream, where archivey reads them clean
-  ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §3). Asked on 2026-10-10.
 - **The stricter `DecoderLimits` preset.** The numbers are chosen (256 MiB, 2**24); the
   name, and whether it should be a mode rather than numbers, are open.
 

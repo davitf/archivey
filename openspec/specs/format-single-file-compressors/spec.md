@@ -294,10 +294,12 @@ then stop reading the source. Bytes after the end SHALL be classified this way:
   most 4) and a zero first byte of range-coder data, as `lzma.LZMAFile` reads a second
   stream. Bytes that pass this check but are not a valid stream fail the read with
   `CorruptionError`;
-- zero bytes are padding and SHALL NOT be reported. For gzip and bzip2 they are padding
-  only where they run to the end of the source: after zero bytes, the first non-zero
-  byte is trailing data as the next bullet says, also when it starts another stream,
-  in every accelerator mode. GNU `gzip`, `bzip2` 1.0.8 and 7-Zip stop there too;
+- zero bytes are padding and SHALL NOT be reported where they run to the end of the
+  source. For every codec but xz, whose format defines Stream Padding between streams,
+  they are padding only there: after zero bytes, the first non-zero byte is trailing
+  data as the next bullet says, also when it starts another stream, in every
+  accelerator mode. GNU `gzip`, `bzip2`, `zstd`, `lz4`, `xz --format=lzma` and 7-Zip
+  stop there too;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
   `format`, and the offset of the first non-zero byte after the end as
@@ -340,7 +342,8 @@ after the data decode as more codes.
 | Valid stream + 4096 zero bytes | Full payload; no diagnostic |
 | Valid stream + zeros + junk | One report at the first non-zero byte |
 | Two concatenated `.gz` / `.bz2` / `.lzma` / `.zst` / `.lz4` streams + junk | Both payloads; one report after the second |
-| `.gz` / `.bz2` stream + zero bytes + another stream, accelerator `OFF`, `AUTO` or `ON` | The first payload; one report at the second stream's first byte; under strict the read raises |
+| `.gz` / `.bz2` / `.zst` / `.lz4` / `.lzma` / `.lz` stream + zero bytes + another stream, accelerator `OFF`, `AUTO` or `ON` | The first payload; one report at the second stream's first byte; under strict the read raises |
+| Two `.xz` streams with zero bytes between them | Both payloads; no report (xz Stream Padding) |
 | `.bz2` stream + empty streams + zero bytes | Full payload; no diagnostic |
 | `.zst` with a skippable frame between two frames | Both payloads; no report |
 | `.xz` / `.lz` + junk within 1 MiB | Size known, seek works, full payload, one report |

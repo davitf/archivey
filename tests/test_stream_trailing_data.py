@@ -3,9 +3,9 @@
 Every stream codec but ``.Z`` (which has no end marker) reads its data in full and
 reports what follows as one ``ARCHIVE_TRAILING_DATA``, with ``expected_marker=
 "end_of_stream"`` and the compressed offset of the first non-zero byte after the end.
-Zeros there are padding; for gzip and bzip2 only where they run to the end of the file.
-``DiagnosticPolicy.strict()`` makes the report an error. xz
-and lzip keep their size and index through the appended bytes.
+Zeros there are padding, for every codec but xz only where they run to the end of the
+file. ``DiagnosticPolicy.strict()`` makes the report an error. xz and lzip keep their
+size and index through the appended bytes.
 """
 
 from __future__ import annotations
@@ -781,13 +781,20 @@ def test_what_follows_zero_padding_is_trailing_data_in_every_mode(
     assert report.observed_bytes == len(compressed) + reported_at
 
 
-# NUL bytes between two bzip2 streams or gzip members end the data, as in `bzip2`,
-# GNU `gzip` and 7-Zip: only NULs that run to the end of the file are padding
-# (dev-docs/formats/bzip2.md and gzip.md §6). Every accelerator mode gives the same
-# result.
+# NUL bytes between two streams end the data, as in `bzip2`, GNU `gzip`, `zstd`, `lz4`,
+# `xz --format=lzma` and 7-Zip: only NULs that run to the end of the file are padding
+# (dev-docs/formats/single-file.md §6). Every accelerator mode gives the same result.
+# lzip has no stream padding either. xz is not here: its format defines stream padding
+# between streams.
 _NUL_CODECS = [
     pytest.param(".bz2", bz2.compress, id="bz2"),
     pytest.param(".gz", gzip.compress, id="gz"),
+    pytest.param(".zst", _zstd, id="zst", marks=requires_zstd()),
+    pytest.param(".lz4", _lz4, id="lz4", marks=requires("lz4")),
+    pytest.param(
+        ".lzma", lambda d: lzma.compress(d, format=lzma.FORMAT_ALONE), id="lzma"
+    ),
+    pytest.param(".lz", make_lzip_member, id="lz"),
 ]
 
 

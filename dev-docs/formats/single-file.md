@@ -72,11 +72,12 @@ luck by `.Z` ([`unix-compress.md`](unix-compress.md)).
 **Most of them allow concatenation.** gzip members, bzip2 streams, xz streams (with zero
 padding between them), lzip members, zstd frames and LZ4 frames can each follow one
 another in one file, and the file's content is all of them joined. archivey reads every
-codec's concatenation as one payload. For gzip and bzip2 that means segments with nothing
-between them: zero bytes there end the data, as in GNU `gzip`, `bzip2` and 7-Zip
-([`gzip.md`](gzip.md) §6, [`bzip2.md`](bzip2.md) §6). The consequence is that a trailer
-describes its own segment, not the file: gzip's ISIZE is the last member's size, which is
-why archivey never reports it as the file's size.
+codec's concatenation as one payload. For every codec but xz that means segments with
+nothing between them: zero bytes there end the data, as in GNU `gzip`, `bzip2`, `zstd`,
+`lz4`, `xz --format=lzma` and 7-Zip (§6). xz alone defines Stream Padding between streams,
+and reads past it. The consequence is that a trailer describes its own segment, not the
+file: gzip's ISIZE is the last member's size, which is why archivey never reports it as
+the file's size.
 
 **Decoding runs forward, and random access needs points to resume from.** A decoder
 reaches offset N by decoding everything before it, unless the stream has places where
@@ -253,10 +254,9 @@ properties byte is one liblzma decodes and byte 13, the range coder's first byte
 zero, which every LZMA encoder writes and text almost never has. That is how
 `lzma.LZMAFile` reads a concatenated `.lzma` too, and a second stream's dictionary is
 checked against `max_decoder_memory` like the first. Past the end, zero bytes are
-padding, as `tar` pads its records; the first non-zero byte ends the stream there. For
-gzip and bzip2 zeros are padding only when they run to the end of the file: after them,
-the first non-zero byte ends the stream even when it starts a further member or stream
-(`padding_ends_data` of `FramedDecoder`, and `GzipDecoder`).
+padding, as `tar` pads its records, only when they run to the end of the file; the first
+non-zero byte ends the stream there, also after zeros and also when it starts a further
+stream (`FramedDecoder`, `GzipDecoder`; lzip's decoder ends its data at zeros too).
 `DecompressorStream` stops reading the source, returns everything decoded, and emits one
 `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` at that byte's offset.
 Only a bare file, a compressed TAR's codec and `open_stream` report
@@ -373,6 +373,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A truncation keeps raising after a seek back | The source did not change, so a second pass must not end cleanly | Clearing the error with the position (PR #491) |
 | An absolute 1 MiB threshold for the rewind report (PR #232) | Wall time follows bytes re-decoded, not the ratio to the jump | A relative threshold, which goes quiet on the worst case |
 | Read every stream to its end, then report non-zero bytes after it as `ARCHIVE_TRAILING_DATA`; zeros are padding | The payload is intact, so refusing it helps no one, and a diagnostic lets a caller who cares refuse through the policy. One rule for every codec, as for TAR | Refusing, as `xz` and `zstd` do; ignoring without a word, as the standard library's readers do |
+| Zero bytes are padding only where they run to the end of the file; after them, the first non-zero byte is trailing data, a further stream too. Every codec but xz (maintainer rulings, 2026-10-10: gzip and bzip2 first, then zstd, LZ4 and LZMA Alone) | Match the official tools (DR-6): `bzip2`, GNU `gzip`, `zstd`, `lz4`, `xz --format=lzma` and 7-Zip stop at zeros between streams, and no known writer puts zeros there. Zeros at the end stay silent although `zstd`, `lz4` and `xz --format=lzma` refuse them: tape, `dd` and `tar` pad files to a block size, GNU `gzip` and `bzip2` accept that padding, and one rule holds for every codec. xz defines Stream Padding between streams, so it keeps reading past it | Reading a stream after zeros, as Python's `gzip` and `lzma.LZMAFile` do; refusing zeros at the end, as `zstd`, `lz4` and `xz --format=lzma` do |
 | Cap the seek table and thin it, rather than refuse (PR #420) | A seek table is an optimisation; nothing becomes unreadable | A `ListingLimits` field that fails the read |
 
 ## 7. Open questions

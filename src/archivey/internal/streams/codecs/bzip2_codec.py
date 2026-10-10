@@ -98,9 +98,6 @@ def _stdlib_bzip2(
         bz2.BZ2Decompressor,
         codec_name="bzip2",
         magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
-        # Zeros are padding only at the end; a stream after them is trailing data, as
-        # bzip2 1.0.8 and 7-Zip read it (dev-docs/formats/bzip2.md §6).
-        padding_ends_data=True,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
     )
