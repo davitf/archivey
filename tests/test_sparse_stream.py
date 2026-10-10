@@ -10,6 +10,7 @@ from random import Random
 import pytest
 
 from archivey.internal.streams.streamtools import SparseStream
+from tests.memory_util import traced_peak
 
 
 class _ForwardOnly(io.RawIOBase):
@@ -125,13 +126,71 @@ def test_short_stored_data_is_an_eof_error() -> None:
         stream.read()
 
 
-def test_a_hole_is_served_in_bounded_steps() -> None:
-    """A read inside a large hole does not build the whole hole at once."""
+def test_a_huge_logical_size_costs_nothing_until_a_hole_is_read() -> None:
     stream = _stream([], 1 << 40)
     stream.seek((1 << 40) - 10)
     assert stream.read() == bytes(10)
-    stream.seek(0)
-    assert len(stream.read(3 << 20)) == 3 << 20
+
+
+def test_a_hole_read_builds_its_zeros_once() -> None:
+    """One read inside a hole holds its result once, not once in pieces and again
+    joined."""
+    size = 16 << 20
+    stream = _stream([(0, b"a")], size + 1)
+    stream.seek(1)
+    traced_peak(lambda: None)
+    peak = traced_peak(stream.read)
+    assert peak < size * 1.5
+
+
+def test_inner_stream_positioned_past_its_start() -> None:
+    """The stored chunks start where the inner stream is when the sparse stream is
+    made."""
+    inner = io.BytesIO(b"ZZab")
+    inner.seek(2)
+    stream = SparseStream(inner, [0], [2], 4)
+    assert stream.read() == b"ab\x00\x00"
+    assert stream.seek(1) == 1
+    assert stream.read(1) == b"b"
+
+
+class _Flaky(io.RawIOBase):
+    """Forward-only, two bytes per read, and one read that raises ``OSError``."""
+
+    def __init__(self, data: bytes, fail_on: int) -> None:
+        self._data = io.BytesIO(data)
+        self._calls = 0
+        self._fail_on = fail_on
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[override]
+        self._calls += 1
+        if self._calls == self._fail_on:
+            raise OSError("transient")
+        return self._data.readinto(memoryview(b)[:2])
+
+
+def test_a_skip_that_raises_keeps_the_inner_position() -> None:
+    """A forward skip that fails partway leaves the stream knowing how far the inner
+    stream went, so a later read serves the right bytes."""
+    stream = SparseStream(
+        _Flaky(b"AA" + b"X" * 6 + b"BB", fail_on=3), [0, 20], [8, 2], 22
+    )
+    assert stream.read(2) == b"AA"
+    stream.seek(20)
+    with pytest.raises(OSError):
+        stream.read(2)
+    assert stream.read(2) == b"BB"
+
+
+def test_closed_stream_refuses_seek_and_tell() -> None:
+    stream = _stream([(0, b"ab")], 4)
+    stream.close()
+    for call in (lambda: stream.seek(1), stream.tell, stream.read):
+        with pytest.raises(ValueError, match="closed file"):
+            call()
 
 
 def test_close_closes_the_inner_stream() -> None:

@@ -6,9 +6,14 @@ logical file: a read inside a chunk reads the stored bytes, a read inside a hole
 returns zeros without touching the inner stream.
 
 The map must already be validated by the caller: non-negative, in order, not
-overlapping, inside ``size``, and summing to the inner stream's length. This module
-does not check it again, because what an invalid map means (damage, or a valid map it
-cannot serve) is the format's decision, not this stream's.
+overlapping, inside ``size``, and summing to the stored bytes. For TAR,
+``validate_sparse_map`` in the native TAR parser checks exactly these. This module
+does not check them again, because what an invalid map means (damage, or a valid map
+it cannot serve) is the format's decision, not this stream's.
+
+The zeros of a hole are output the archive chooses, and this stream neither counts nor
+caps them: the output limits (``max_extracted_bytes``, ``max_ratio``) must count above
+it, where the logical bytes are.
 
 Seeking follows ``io.BytesIO``: any non-negative target is accepted, a read past the
 end returns ``b""``. Over a forward-only inner the stream is forward-only too: reading
@@ -26,23 +31,18 @@ from typing import BinaryIO
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     check_read_size,
-    is_seekable,
     resolve_seek,
 )
 from archivey.internal.streams.streamtools.solid import skip_forward
-
-# The largest run of zeros one read builds at a time. A hole can be as large as the
-# logical size, which the archive chooses.
-_ZERO_STEP = 1 << 20
 
 
 class SparseStream(DelegatingStream):
     """The logical bytes of a sparse file of ``size`` bytes.
 
     ``offsets[i]`` is where chunk ``i`` starts in the logical file and ``lengths[i]``
-    how long it is; chunk ``i`` is stored right after chunk ``i - 1`` in ``inner``,
-    which starts at the first chunk. Owns ``inner``, as every
-    :class:`DelegatingStream` does.
+    how long it is; chunk ``i`` is stored right after chunk ``i - 1`` in ``inner``.
+    The first chunk starts where ``inner`` is positioned when this stream is made.
+    Owns ``inner``, as every :class:`DelegatingStream` does.
     """
 
     # read() transforms the inner's bytes, so readinto must go through it.
@@ -68,19 +68,23 @@ class SparseStream(DelegatingStream):
             total += n
         self._size = size
         self._pos = 0
-        # Where the inner stream is now, in its own offsets.
+        # Where the first chunk starts in the inner stream, and how far past it the
+        # inner stream is now.
+        self._base = inner.tell() if self._seekable else 0
         self._inner_pos = 0
-        self._seekable_inner = is_seekable(inner)
 
-    def seekable(self) -> bool:
-        return self._seekable_inner
+    def _raise_if_closed(self) -> None:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
 
     def tell(self) -> int:
+        self._raise_if_closed()
         return self._pos
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self._raise_if_closed()
         target = resolve_seek(offset, whence, pos=self._pos, end=lambda: self._size)
-        if not self._seekable_inner and target < self._pos:
+        if not self._seekable and target < self._pos:
             raise io.UnsupportedOperation(
                 "backward seek on a forward-only sparse stream"
             )
@@ -88,8 +92,7 @@ class SparseStream(DelegatingStream):
         return target
 
     def read(self, n: int = -1, /) -> bytes:
-        if self.closed:
-            raise ValueError("read from a closed sparse stream")
+        self._raise_if_closed()
         n = check_read_size(n)
         left = self._size - self._pos
         if left <= 0:
@@ -112,21 +115,27 @@ class SparseStream(DelegatingStream):
                 self._stored[i] + self._pos - self._starts[i], count
             )
         next_start = self._starts[i + 1] if i + 1 < len(self._starts) else self._size
-        return bytes(min(want, next_start - self._pos, _ZERO_STEP))
+        # Built whole: ``read`` already bounds ``want``, and a read that is one hole
+        # returns this object without a join copying it.
+        return bytes(min(want, next_start - self._pos))
 
     def _read_stored(self, at: int, count: int) -> bytes:
         inner = self._inner
         if at != self._inner_pos:
-            if self._seekable_inner:
-                inner.seek(at)
+            if self._seekable:
+                inner.seek(self._base + at)
+                self._inner_pos = at
             else:
                 # Chunks are in logical order, so a forward-only inner only ever skips
-                # forward: the reader moved past a chunk's start by a seek.
-                skip_forward(inner, at - self._inner_pos)
-            self._inner_pos = at
+                # forward: the reader moved past a chunk's start by a seek. Counted as
+                # it goes, so a skip that raises leaves the position true.
+                skip_forward(inner, at - self._inner_pos, on_chunk=self._advance_inner)
         # A full-count inner (ADR 0014): a short read is its end.
         data = inner.read(count)
         self._inner_pos += len(data)
         if len(data) < count:
             raise EOFError(f"sparse data ended {count - len(data)} bytes into a chunk")
         return data
+
+    def _advance_inner(self, count: int) -> None:
+        self._inner_pos += count
