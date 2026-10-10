@@ -50,6 +50,10 @@ class DetectionCostReceipt:
     passes: int            # detection passes summed (2 after following a stub), each under the full budget
 ```
 
+Every `DetectionBudget` field SHALL be a non-negative `int`, checked at construction
+with the same field check as the `*Limits` types (`error-handling`): a `bool`, a
+`float`, `None` or a negative value raises `ArchiveyUsageError` naming the field.
+
 The budget SHALL be set through `ArchiveyConfig.detection_budget`, which takes a
 `DetectionBudget`, a `DetectionBudgetPreset` or its string spelling, and the same budget
 SHALL govern `detect_format` and the detection `open_archive` / `open_stream` run. The

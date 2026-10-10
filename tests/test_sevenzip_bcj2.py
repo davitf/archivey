@@ -28,7 +28,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFolder,
-    encoded_folder_slices,
+    encoded_header_slice,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
     _Bcj2Stage,
@@ -666,7 +666,7 @@ def test_encoded_header_stays_linear_only() -> None:
         )
     )
     with pytest.raises(UnsupportedFeatureError, match="multi-pack"):
-        encoded_folder_slices(encoded)  # type: ignore[arg-type]
+        encoded_header_slice(encoded)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

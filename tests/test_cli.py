@@ -246,6 +246,47 @@ def test_stdin_token_reserved() -> None:
     assert main(["-"]) == EXIT_USAGE
 
 
+@pytest.mark.parametrize("verb", ["list", "test", "info", "extract"])
+def test_empty_archive_argument_is_a_usage_error(
+    verb: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``archivey <verb> ""`` (an unset ``$ARCHIVE``) does not read the cwd.
+
+    ``Path("")`` is ``Path(".")``, so the empty string used to open the working
+    directory as a directory archive. It is a usage error, reported as a message.
+    """
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "precious.txt").write_text("keep")
+    monkeypatch.chdir(cwd)
+
+    assert main([verb, ""]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "empty" in err
+    assert "Traceback" not in err
+    assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]
+
+
+def test_extract_empty_dest_is_a_usage_error(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``-d ""`` (an unset ``$OUT``) does not extract into the cwd; ``-d .`` does."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "precious.txt").write_text("keep")
+    monkeypatch.chdir(cwd)
+
+    assert main(["x", str(sample_zip), "-d", ""]) == EXIT_USAGE
+    assert "--dest" in capsys.readouterr().err
+    assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]
+
+
 def test_reserved_verbs(sample_zip: Path) -> None:
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
     assert main(["hash", str(sample_zip)]) == EXIT_USAGE

@@ -17,7 +17,7 @@ you opt out**. Most migrations are shorter code plus stricter defaults.
 | Read one member | `zf.read(n)` / `tf.extractfile(n).read()` | `reader.read(n)` |
 | Extract everything | `zf.extractall(d)` / `tf.extractall(d, filter="data")` | `reader.extract_all(d)` |
 | Unpack any format | `shutil.unpack_archive(p, d)` | `open_archive(p)`, then `reader.extract_all(d)` |
-| Decompress a `.gz` | `gzip.open(p)` | `archivey.open_stream(p)` |
+| Decompress a `.gz` (a `.tar.gz` gives the tar bytes) | `gzip.open(p)` | `archivey.open_stream(p)` |
 | Detect the format | guess from the extension | `archivey.detect_format(p)` |
 
 ## From `zipfile`
