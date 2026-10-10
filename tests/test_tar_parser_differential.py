@@ -24,19 +24,14 @@ from typing import BinaryIO
 import pytest
 
 from archivey.internal.backends.tar_parser import (
-    SparseFormat,
+    TarEndKind,
     TarEntry,
     TarWalker,
-    read_sparse_map_1_0,
     validate_sparse_map,
 )
 from tests.sample_archives import CORPUS, corpus_archive_path
 
-_REGULAR = frozenset((b"0", b"\x00", b"7", b"S"))
-
-
-def _no_limit(nbytes: int, what: str) -> None:
-    pass
+_REGULAR = frozenset((b"0", b"\x00", b"7", b"S"))  # what tarfile.isreg() accepts
 
 
 def _member_data(stream: BinaryIO, entry: TarEntry) -> bytes:
@@ -44,9 +39,6 @@ def _member_data(stream: BinaryIO, entry: TarEntry) -> bytes:
     stream.seek(entry.data_offset)
     sparse = entry.sparse
     stored = entry.stored_size
-    if entry.sparse_format is SparseFormat.PAX_1_0:
-        sparse, used = read_sparse_map_1_0(stream.read, stored, "m", _no_limit)
-        stored -= used
     if sparse is None:
         return stream.read(stored)
     assert validate_sparse_map(sparse, entry.size, stored, "m") is None
@@ -78,7 +70,7 @@ def _native_listing(path: Path) -> list[tuple[object, ...]]:
                 + (_text(uname), _text(gname), entry.header.mode & 0o7777)
                 + (entry.sparse_format is not None, data)
             )
-        assert walker.end is not None and walker.end.kind == "zero_block"
+        assert walker.end is not None and walker.end.kind is TarEndKind.ZERO_BLOCK
     return rows
 
 
@@ -244,4 +236,30 @@ def test_gnu_tar_archives_match(options: list[str], tmp_path: Path) -> None:
     native = _native_listing(path)
     assert native == _tarfile_listing(path)
     assert sum(1 for row in native if row[-2]) == 3  # the three sparse files
+    _forward_only_matches(path)
+
+
+@needs_gnu_tar
+def test_gnu_incremental_names_have_no_prefix(tmp_path: Path) -> None:
+    """GNU tar's incremental mode fills the old GNU atime slot, which sits where a
+    ustar header has its ``prefix``. tarfile joins those digits to every name; the
+    native parser reads ``prefix`` only under the ustar magic, as GNU tar does. This
+    is the one listing difference from tarfile on a GNU tar archive."""
+    assert _GNU_TAR is not None
+    tree = tmp_path / "tree"
+    (tree / "d" / "sub").mkdir(parents=True)
+    (tree / "d" / "f.txt").write_bytes(b"hi\n")
+    path = tmp_path / "inc.tar"
+    subprocess.run(
+        [_GNU_TAR, "--format=gnu", "--incremental", "-cf", str(path)]
+        + ["-C", str(tree), "d"],
+        check=True,
+        capture_output=True,
+    )
+    native = _native_listing(path)
+    oracle = _tarfile_listing(path)
+    assert [row[0] for row in native] == ["d/", "d/sub/", "d/f.txt"]
+    # tarfile gives the same names under the atime digits: "15262452373/d/".
+    assert all(row[0].split("/", 1)[0].isdigit() for row in oracle)
+    assert [row[1:] for row in native] == [row[1:] for row in oracle]
     _forward_only_matches(path)

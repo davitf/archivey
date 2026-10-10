@@ -1,9 +1,8 @@
 """Native TAR header parser and header walker (structure only: no member mapping).
 
-Reads TAR headers one at a time from a byte stream and returns small data objects. It
-replaces stdlib ``tarfile`` for reading; ``tarfile`` stays a fixture writer and a test
-oracle. The reader (``tar_reader.py``) turns each :class:`TarEntry` into an
-``ArchiveMember`` and serves member data as slices of the same stream.
+Reads TAR headers one at a time from a byte stream and returns small data objects.
+``tar_reader.py`` still parses headers with stdlib ``tarfile``; nothing reads through
+this module yet. Its tests compare it with ``tarfile`` and GNU tar.
 
 On-disk layout this parser assumes::
 
@@ -50,6 +49,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.streams.streamtools import read_within_reach
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
+from archivey.terminal import quoted
 
 BLOCKSIZE = 512
 
@@ -57,9 +57,10 @@ BLOCKSIZE = 512
 # EINVAL) on every stream archivey reads from.
 MAX_OFFSET = 2**63 - 1
 
-# What a sparse map entry is charged against ``max_metadata_bytes``. Kept at the
-# weight the tarfile-based reader charged (a tuple of two ints), though a SparseMap
-# holds 16 bytes per entry, so limits trip where they did before.
+# What a sparse map entry is charged against ``max_metadata_bytes``, which counts
+# header text, not allocator bytes: 24 is the width of an entry in its fixed-width
+# encoding (two 12-byte numbers in an old GNU header), whatever encoding the map came
+# in. The archive-reading spec sets this weight. A SparseMap holds 16 bytes per entry.
 SPARSE_ENTRY_BYTES = 24
 
 # The most digits one number of a PAX sparse 1.0 map may have. GNU tar reads each into
@@ -76,9 +77,7 @@ READ_STEP = 64 * 1024
 POSIX_MAGIC = b"ustar\x00"
 GNU_MAGIC = b"ustar  \x00"
 
-# Typeflags. NUL is the v7 regular file (``AREGTYPE``); ``7`` is a contiguous file,
-# which every reader treats as a regular one.
-REGULAR_TYPES = frozenset((b"0", b"\x00", b"7"))
+# Typeflags.
 SPARSE_TYPE = b"S"
 LINK_TYPES = frozenset((b"1", b"2"))
 PAX_MEMBER_TYPES = frozenset((b"x", b"X"))  # ``X`` is Solaris's spelling of ``x``
@@ -179,6 +178,12 @@ def parse_number(field: bytes) -> int:
     Octal may have leading spaces and ends at a space or NUL, as GNU tar and every
     writer store it; an empty field is 0. Base-256 is flagged by the first byte:
     ``0x80`` positive, ``0xFF`` negative (two's complement over the field).
+
+    The base-256 form is ``tarfile``'s, on purpose: GNU tar takes any first byte with
+    the high bit set and counts its low seven bits in the value, so a field starting
+    with ``0x81`` is a number to GNU tar and :class:`_BadNumber` here. Such a value
+    is at least 2**56 in magnitude, past any id, mode, size or time a real archive
+    holds, and every answer stays what ``tarfile`` gave.
     """
     if not field:
         return 0
@@ -265,7 +270,10 @@ def parse_header_block(
             sparse_slots = _sparse_slots(block, 386, 4)
             sparse_realsize = parse_number(block[483:495])
         except _BadNumber:
-            return RejectedBlock(offset, "an old GNU sparse field is not a number")
+            return RejectedBlock(
+                offset,
+                "an old GNU sparse field is not a number or past any file's size",
+            )
         sparse_extended = block[482] != 0
     elif header_format is HeaderFormat.USTAR:
         # GNU tar joins the prefix for any "ustar\0" magic, whatever the version
@@ -301,12 +309,11 @@ def _sparse_slots(block: bytes, start: int, count: int) -> tuple[tuple[int, int]
         pos = start + 24 * i
         if block[pos + 12] == 0:
             break
-        slots.append(
-            (
-                parse_number(block[pos : pos + 12]),
-                parse_number(block[pos + 12 : pos + 24]),
-            )
-        )
+        offset = parse_number(block[pos : pos + 12])
+        length = parse_number(block[pos + 12 : pos + 24])
+        if offset > MAX_OFFSET or length > MAX_OFFSET:
+            raise _BadNumber(block[pos : pos + 24])
+        slots.append((offset, length))
     return tuple(slots)
 
 
@@ -395,7 +402,14 @@ class SparseMap:
 
     @classmethod
     def from_pairs(cls, pairs: list[int]) -> SparseMap:
-        return cls(array("q", pairs[0::2]), array("q", pairs[1::2]))
+        assert len(pairs) % 2 == 0, "a sparse map is (offset, length) pairs"
+        try:
+            return cls(array("q", pairs[0::2]), array("q", pairs[1::2]))
+        except OverflowError:
+            # The parsers refuse such a number with a better message first.
+            raise CorruptionError(
+                "TAR sparse map has an entry past any file's size"
+            ) from None
 
 
 Charge = Callable[[int, str], None]
@@ -404,15 +418,22 @@ member's budget, raising :class:`ResourceLimitError` when it is spent. ``what`` 
 the cost for the message."""
 
 
+def _map_number(item: bytes, name: str, what: str) -> int:
+    """One decimal number of a PAX sparse map. ``name`` is already quoted."""
+    if not item.isdigit() or len(item) > SPARSE_NUMBER_DIGITS:
+        raise CorruptionError(
+            f"TAR sparse map of {name} ({what}) has a bad number: {item[:40]!r}"
+        )
+    value = int(item)
+    if value > MAX_OFFSET:
+        raise CorruptionError(
+            f"TAR sparse map of {name} ({what}) has {value}, past any file's size"
+        )
+    return value
+
+
 def _parse_map_numbers(text: bytes, name: str, *, what: str) -> list[int]:
-    numbers = []
-    for item in text.split(b","):
-        if not item.isdigit() or len(item) > SPARSE_NUMBER_DIGITS:
-            raise CorruptionError(
-                f"TAR sparse map of {name} ({what}) has a bad number: {item[:40]!r}"
-            )
-        numbers.append(int(item))
-    return numbers
+    return [_map_number(item, name, what) for item in text.split(b",")]
 
 
 def sparse_map_0_1(value: bytes, name: str, charge: Charge) -> SparseMap:
@@ -444,8 +465,9 @@ def sparse_map_0_0(
     charge(len(offsets) * SPARSE_ENTRY_BYTES, "sparse map")
     pairs: list[int] = []
     for offset, length in zip(offsets, lengths, strict=True):
-        pairs.extend(_parse_map_numbers(offset, name, what="GNU.sparse.offset"))
-        pairs.extend(_parse_map_numbers(length, name, what="GNU.sparse.numbytes"))
+        # One number per record: a comma is not a separator here.
+        pairs.append(_map_number(offset, name, "GNU.sparse.offset"))
+        pairs.append(_map_number(length, name, "GNU.sparse.numbytes"))
     return SparseMap.from_pairs(pairs)
 
 
@@ -471,14 +493,11 @@ def read_sparse_map_1_0(
             if newline >= 0:
                 item = bytes(buffer[:newline])
                 del buffer[: newline + 1]
-                if not item.isdigit() or len(item) > SPARSE_NUMBER_DIGITS:
-                    raise CorruptionError(
-                        f"TAR sparse map of {name} (1.0) has a bad number: {item[:40]!r}"
-                    )
-                return int(item)
+                return _map_number(item, name, "1.0")
             if len(buffer) > SPARSE_NUMBER_DIGITS:
                 raise CorruptionError(
-                    f"TAR sparse map of {name} (1.0) has a number longer than {SPARSE_NUMBER_DIGITS} digits"
+                    f"TAR sparse map of {name} (1.0) has a number longer than "
+                    f"{SPARSE_NUMBER_DIGITS} digits"
                 )
             if consumed + BLOCKSIZE > stored_size:
                 raise CorruptionError(
@@ -505,7 +524,8 @@ def validate_sparse_map(
     """The error opening this sparse member must raise, or ``None``.
 
     ``size`` is the logical size, ``stored`` the bytes the data area holds for the
-    chunks (the 1.0 map's own blocks excluded). Damage is :class:`CorruptionError`: a
+    chunks (the 1.0 map's own blocks excluded). ``name`` goes into the message as it
+    is, so the caller passes it through ``quoted()``. Damage is :class:`CorruptionError`: a
     negative entry, a chunk past the logical size, or chunks that do not add up to
     exactly the stored bytes (more would read the next header as data; fewer leaves
     bytes inside the member that nothing names, DR-3). A map whose chunks are out of
@@ -517,7 +537,8 @@ def validate_sparse_map(
     """
     if size > MAX_OFFSET:
         return CorruptionError(
-            f"TAR sparse member {name} has a logical size of {size} bytes, past any file's size"
+            f"TAR sparse member {name} has a logical size of {size} bytes, "
+            "past any file's size"
         )
     total = 0
     previous_end = 0
@@ -525,24 +546,27 @@ def validate_sparse_map(
     for offset, length in zip(sparse.offsets, sparse.lengths, strict=True):
         if offset < 0 or length < 0:
             return CorruptionError(
-                f"TAR sparse map of {name} has a negative entry (offset {offset}, {length} bytes)"
+                f"TAR sparse map of {name} has a negative entry "
+                f"(offset {offset}, {length} bytes)"
             )
         if offset + length > size:
             return CorruptionError(
-                f"TAR sparse map of {name} has a chunk at offset {offset} ({length} bytes) "
-                f"that ends past the member's size of {size} bytes"
+                f"TAR sparse map of {name} has a chunk at offset {offset} "
+                f"({length} bytes) that ends past the member's size of {size} bytes"
             )
         if length:
             if offset < previous_end and unordered is None:
                 unordered = UnsupportedFeatureError(
-                    f"TAR sparse map of {name} is out of order or overlapping: a chunk at "
-                    f"offset {offset} starts before the previous chunk ends at {previous_end}"
+                    f"TAR sparse map of {name} is out of order or overlapping: a chunk "
+                    f"at offset {offset} starts before the previous chunk ends at "
+                    f"{previous_end}"
                 )
             previous_end = max(previous_end, offset + length)
         total += length
     if total != stored:
         return CorruptionError(
-            f"TAR sparse map of {name} accounts for {total} bytes of data, but the member stores {stored}"
+            f"TAR sparse map of {name} accounts for {total} bytes of data, but the "
+            f"member stores {stored}"
         )
     return unordered
 
@@ -554,9 +578,11 @@ def validate_sparse_map(
 class TarEntry:
     """One member, after its extended headers are applied.
 
-    ``data_offset`` is where its data area starts in the stream and ``stored_size``
-    how many bytes that area holds (exact, before block padding). ``size`` is the
-    logical size: the same as ``stored_size`` except for a sparse member.
+    ``data_offset`` is where its stored bytes start in the stream and ``stored_size``
+    how many there are (exact, before block padding). For a sparse member these are
+    the chunks alone: an old GNU map's extension blocks and a PAX 1.0 map come before
+    ``data_offset``. ``size`` is the logical size: the same as ``stored_size`` except
+    for a sparse member.
     """
 
     header: HeaderBlock
@@ -584,7 +610,6 @@ class TarEntry:
     # declared data is skipped, as GNU tar reads it.
     old_style_directory: bool
     sparse_format: SparseFormat | None = None
-    # The map, for every sparse encoding but 1.0, whose map is read at open.
     sparse: SparseMap | None = None
 
     @property
@@ -608,17 +633,21 @@ def carries_data(typeflag: bytes) -> bool:
 # --------------------------------------------------------------------------- walker
 
 
+class TarEndKind(Enum):
+    """Why a walk stopped."""
+
+    ZERO_BLOCK = "zero_block"  # the first block of an end-of-archive marker
+    REJECTED = "rejected"  # a full block, or a chain of headers, that does not parse
+    ABSENT = "absent"  # the stream ended exactly where a header should start
+    SHORT = "short"  # the stream ended inside a header block
+
+
 @dataclass(frozen=True, slots=True)
 class TarEnd:
-    """Why a walk stopped, and where.
+    """Why a walk stopped, and where. ``reason`` says why a header was rejected;
+    ``observed_bytes`` is how much of a short block the stream held."""
 
-    ``kind`` is ``"zero_block"`` (the first block of a marker, at ``offset``),
-    ``"rejected"`` (a full block that is no header; ``reason`` says why),
-    ``"absent"`` (the stream ended exactly where a header should start) or
-    ``"short"`` (it ended inside the block, after ``observed_bytes``).
-    """
-
-    kind: str
+    kind: TarEndKind
     offset: int
     reason: str = ""
     observed_bytes: int = 0
@@ -683,7 +712,8 @@ class TarWalker:
                 self._stream.seek(offset)
             except (OverflowError, ValueError) as exc:
                 raise CorruptionError(
-                    f"TAR archive asks for offset {offset}, which the source cannot seek to"
+                    f"TAR archive asks for offset {offset}, which the source cannot "
+                    "seek to"
                 ) from exc
             except OSError as exc:
                 if exc.errno in _SEEK_RANGE_ERRNOS:
@@ -705,7 +735,8 @@ class TarWalker:
             if got < want:
                 raise TruncatedError(
                     f"TAR archive is truncated: a member's data runs to offset "
-                    f"{self._stream_pos + count}, but the archive ends at {self._stream_pos}"
+                    f"{self._stream_pos + count}, but the archive ends at "
+                    f"{self._stream_pos}"
                 )
 
     def _read(self, size: int) -> bytes:
@@ -728,7 +759,8 @@ class TarWalker:
         self._seek(end - 1)
         if not self._read(1):
             raise TruncatedError(
-                f"TAR archive is truncated: a member's data runs to offset {end}, past the end of the archive"
+                f"TAR archive is truncated: a member's data runs to offset {end}, "
+                "past the end of the archive"
             )
 
     @property
@@ -765,49 +797,90 @@ class TarWalker:
         own_records: list[tuple[bytes, PaxValue]] = []
         long_name: bytes | None = None
         long_link: bytes | None = None
+        # Where the last extended header of this member's chain starts, once there is
+        # one: the chain must end in a member header.
+        extended_at: int | None = None
         while True:
             block = self._read_block(offset)
             if len(block) < BLOCKSIZE:
-                kind = "short" if block else "absent"
+                if extended_at is not None:
+                    raise TruncatedError(
+                        "TAR archive is truncated after the extended header at "
+                        f"offset {extended_at}"
+                    )
+                kind = TarEndKind.SHORT if block else TarEndKind.ABSENT
                 self.end = TarEnd(kind, offset, observed_bytes=len(block))
                 return self.end
             parsed = parse_header_block(block, offset)
-            if isinstance(parsed, ZeroBlock):
-                self.end = TarEnd("zero_block", offset)
-                return self.end
-            if isinstance(parsed, RejectedBlock):
-                self.end = TarEnd("rejected", offset, reason=parsed.reason)
+            if isinstance(parsed, ZeroBlock | RejectedBlock):
+                if extended_at is not None:
+                    # A chain that ends in no member header is a header that does not
+                    # parse, as tarfile reports it: never the end of the archive.
+                    what = (
+                        "a zero block"
+                        if isinstance(parsed, ZeroBlock)
+                        else f"a block that is no header ({parsed.reason})"
+                    )
+                    return self._reject(
+                        offset,
+                        f"the extended header at offset {extended_at} is followed "
+                        f"by {what}",
+                    )
+                if isinstance(parsed, ZeroBlock):
+                    self.end = TarEnd(TarEndKind.ZERO_BLOCK, offset)
+                else:
+                    self.end = TarEnd(TarEndKind.REJECTED, offset, reason=parsed.reason)
                 return self.end
             if parsed.typeflag in EXTENDED_TYPES:
+                extended_at = offset
                 charge(parsed.size, "an extended header")
                 data = self._read(parsed.size)
                 if len(data) < parsed.size:
                     raise TruncatedError(
-                        f"TAR archive is truncated inside an extended header at offset {offset}"
+                        "TAR archive is truncated inside an extended header at "
+                        f"offset {offset}"
                     )
                 offset += BLOCKSIZE + _round_up(parsed.size)
                 if parsed.typeflag == LONG_NAME_TYPE:
                     long_name = _cut_nul(data)
                 elif parsed.typeflag == LONG_LINK_TYPE:
                     long_link = _cut_nul(data)
-                elif parsed.typeflag == PAX_GLOBAL_TYPE:
-                    self._apply_global(
-                        parse_pax_records(data, binary_default=self._global_binary)
-                    )
                 else:
-                    records = parse_pax_records(
-                        data, binary_default=self._global_binary
-                    )
-                    own_records.extend(records)
-                    own.update(records)
+                    try:
+                        records = parse_pax_records(
+                            data, binary_default=self._global_binary
+                        )
+                    except CorruptionError as exc:
+                        # Records that do not parse make a header that does not parse,
+                        # which the reader classifies like any rejected block.
+                        return self._reject(extended_at, str(exc))
+                    if parsed.typeflag == PAX_GLOBAL_TYPE:
+                        self._apply_global(records)
+                    else:
+                        own_records.extend(records)
+                        own.update(records)
                 continue
-            entry = self._resolve(
-                parsed, start, offset, own, own_records, long_name, long_link, charge
-            )
+            try:
+                entry = self._resolve(
+                    parsed,
+                    start,
+                    offset,
+                    own,
+                    own_records,
+                    long_name,
+                    long_link,
+                    charge,
+                )
+            except _RejectedHeader as exc:
+                return self._reject(offset, exc.reason)
             self._pos = entry.data_end
             if entry.stored_size:
                 self._unchecked_data_end = entry.data_end
             return entry
+
+    def _reject(self, offset: int, reason: str) -> TarEnd:
+        self.end = TarEnd(TarEndKind.REJECTED, offset, reason=reason)
+        return self.end
 
     def _apply_global(self, records: list[tuple[bytes, PaxValue]]) -> None:
         for key, value in records:
@@ -855,8 +928,9 @@ class TarWalker:
                     NameSource.PAX,
                     value.binary,
                 )
-        charger_name = name.decode("utf-8", "backslashreplace")
-        charge.name = repr(charger_name)
+        # Quoted once here; messages escape it once more when they are built.
+        charger_name = quoted(name.decode("utf-8", "surrogateescape"))
+        charge.name = charger_name
 
         typeflag = header.typeflag
         linkname: bytes | None = None
@@ -879,7 +953,7 @@ class TarWalker:
         if pax_size is not None:
             if pax_size > MAX_OFFSET:
                 raise CorruptionError(
-                    f"TAR PAX size {pax_size} of {charger_name!r} is past any file's size"
+                    f"TAR PAX size {pax_size} of {charger_name} is past any file's size"
                 )
             stored_size = pax_size
 
@@ -913,14 +987,29 @@ class TarWalker:
             sparse_format = SparseFormat.PAX_0_0
             sparse = sparse_map_0_0(own_records, charger_name, charge)
             size = _pax_int(merged, b"GNU.sparse.size") or 0
-        elif (major := pax(b"GNU.sparse.major")) is not None and major.value == b"1":
-            minor = pax(b"GNU.sparse.minor")
-            if minor is None or minor.value != b"0":
-                raise UnsupportedFeatureError(
-                    f"TAR member {charger_name!r} uses GNU sparse format 1.{minor.value.decode('ascii', 'replace') if minor else '?'}"
+        elif (major := pax(b"GNU.sparse.major")) is not None:
+            # GNU tar 1.35 reads any major version of 1 or more as 1.0, whatever the
+            # minor (measured with 1.1, 1.5, 2.0 and 9.9), and refuses a major of 0
+            # or one that is not a number when no 0.x map came with it. Read as a
+            # plain file, the member would serve its map blocks as content.
+            if not (major.value.isdigit() and int(major.value) >= 1):
+                version = major.value[:20].decode("ascii", "replace")
+                raise CorruptionError(
+                    f"TAR member {charger_name} has GNU sparse major version "
+                    f"{version} and no sparse map"
                 )
             sparse_format = SparseFormat.PAX_1_0
             size = _pax_int(merged, b"GNU.sparse.realsize") or 0
+            if carries_data(typeflag):
+                # The map is the first blocks of the data area. It is read here, as
+                # tarfile and GNU tar read it, so a bad map fails the listing as in the
+                # other encodings and its entries count against this member's budget.
+                self._seek(data_offset)
+                sparse, used = read_sparse_map_1_0(
+                    self._read, stored_size, charger_name, charge
+                )
+                data_offset += used
+                stored_size -= used
 
         old_style_directory = typeflag == b"\x00" and name.endswith(b"/")
         if not carries_data(typeflag):
@@ -966,13 +1055,14 @@ class TarWalker:
             block = self._read_block(data_offset)
             if len(block) < BLOCKSIZE:
                 raise TruncatedError(
-                    f"TAR archive is truncated inside the sparse map of {name!r}"
+                    f"TAR archive is truncated inside the sparse map of {name}"
                 )
             try:
                 slots = _sparse_slots(block, 0, 21)
             except _BadNumber:
-                raise CorruptionError(
-                    f"TAR sparse map of {name!r} has an extension block with a bad number"
+                # tarfile rejects the whole header here, and so does the walk.
+                raise _RejectedHeader(
+                    f"the sparse map of {name} has an extension block with a bad number"
                 ) from None
             charge(len(slots) * SPARSE_ENTRY_BYTES, "sparse map")
             for slot in slots:
@@ -987,8 +1077,20 @@ class TarWalker:
 _SEEK_RANGE_ERRNOS = frozenset((errno.EINVAL, errno.EOVERFLOW))
 
 
+class _RejectedHeader(Exception):
+    """A member's headers do not parse: the walk ends as at a rejected block."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class _ReadOnly(dict[bytes, PaxValue]):
-    """The PAX records shared by members. Nothing writes to it once made."""
+    """The PAX records in force for a member, shared by members with none of their
+    own. A plain ``dict`` on purpose: one is built per member with its own records,
+    and a ``MappingProxyType`` would add a layer to every lookup. The ``Mapping``
+    annotation on :attr:`TarEntry.pax` is what keeps callers from writing to it;
+    the walker never writes to one once it is made."""
 
     __slots__ = ()
 
@@ -1017,6 +1119,7 @@ class _ForwardSlice(ReadOnlyIOStream):
         self._done += len(data)
         if len(data) < want:
             raise TruncatedError(
-                f"TAR archive is truncated inside a member's data at offset {walker._stream_pos}"
+                "TAR archive is truncated inside a member's data at offset "
+                f"{walker._stream_pos}"
             )
         return data
