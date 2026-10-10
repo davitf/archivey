@@ -602,9 +602,10 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   entry's data must end before the next local header, or before the central
   directory), but archivey computes the bounds itself because stdlib sets them only
   from Python 3.11.8. Of two entries over one local header, the first in directory
-  order reads and the later one is refused. stdlib before 3.13.7 does the same;
-  3.13.7 and later warn and read both. archivey keeps refusing, because many entries
-  over one local header is the overlapping-entry amplification shape (DR-9a).
+  order reads and the later one is refused. stdlib raises on 3.11, on 3.12 before
+  3.12.10 and on 3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read both.
+  archivey keeps refusing, because many entries over one local header is the
+  overlapping-entry amplification shape (DR-9a).
 - **Confirming a ZipCrypto password costs time that depends on the archive, and that cost
   is observable**: the one-byte verifier cannot decide between candidates, so a STORED
   member is read through and its CRC compared. Timing the call, or watching how much is

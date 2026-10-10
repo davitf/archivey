@@ -2274,10 +2274,11 @@ def _member_data_ends(
     bound as ``ZipInfo._end_offset``, but only from Python 3.11.8, so archivey
     computes it here and the guard is the same on every Python.
 
-    Two entries over one local header: the first in directory order reads and each
-    later one is an overlap. stdlib before 3.13.7 does the same; 3.13.7 and later
-    warn and read both. archivey keeps refusing, because many directory entries over
-    one local header is the overlapping-entry amplification shape (DR-9a).
+    Two entries over one local header: the first in directory order reads and each later
+    one is an overlap. stdlib raises on 3.11, on 3.12 before 3.12.10 and on 3.13 before
+    3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read both. archivey keeps refusing,
+    because many directory entries over one local header is the overlapping-entry
+    amplification shape (DR-9a).
     """
     ends: dict[zipfile.ZipInfo, int] = {}
     end = start_dir
@@ -2315,7 +2316,7 @@ def _end_record_findings(
             return []
         findings: list[tuple[str, ArchiveEofContext]] = []
         eocd_offset = endrec[_ECD_LOCATION]
-        is_zip64 = endrec[_ECD_SIGNATURE] != b"PK\x05\x06"
+        is_zip64 = endrec[_ECD_SIGNATURE] != _EOCD_SIG
 
         declared = endrec[_ECD_ENTRIES_TOTAL]
         read = len(infos)
@@ -2425,12 +2426,11 @@ def _central_directory_overrun(
 def _eocd_declares_split(fp: IO[bytes]) -> bool:
     """True when the end record stdlib parsed names a real non-zero disk.
 
-    The disk fields come from ``_EndRecData``: the ZIP64 end record's when there is
-    one, else the classic record's. ``0xFFFF`` is the ZIP64
-    sentinel ("value lives in the ZIP64 record"), not disk 65535, so it is skipped
-    and a ZIP64 archive is not refused. A ZIP64 locator that counts several disks is
-    already refused by stdlib (``_looks_like_multivolume``). ``fp``'s position is
-    restored.
+    The disk fields come from ``_EndRecData``: the ZIP64 end record's when there is one,
+    else the classic record's. ``0xFFFF`` is the ZIP64 sentinel ("value lives in the
+    ZIP64 record"), not disk 65535, so it is skipped and a ZIP64 archive is not refused.
+    A ZIP64 locator that counts several disks is already refused by stdlib
+    (``_looks_like_multivolume``). ``fp``'s position is restored.
     """
     pos = fp.tell()
     try:
@@ -2504,9 +2504,12 @@ def _directory_end(fp: IO[bytes], endrec: list[Any]) -> int:
     Earlier patch levels leave it on the classic record, and ``_RealGetContents``
     subtracts the ZIP64 record and locator (76 bytes) itself. The magic at
     ``_ECD_LOCATION`` tells the two apart without a version check. ``fp``'s position
-    is left wherever the read leaves it.
+    is left wherever the read leaves it. A negative location is returned unchanged,
+    without a seek, so the caller's ``start_dir < 0`` check refuses it.
     """
     location: int = endrec[_ECD_LOCATION]
+    if location < 0:
+        return location
     if endrec[_ECD_SIGNATURE] == _ZIP64_END_RECORD_SIG:
         fp.seek(location)
         if fp.read(4) == _EOCD_SIG:
@@ -2524,12 +2527,13 @@ def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
     but nothing else here can tell encrypted bytes from damaged ones.
 
     Looks only where stdlib ``_RealGetContents`` reads: the position of the end record
-    that follows the directory, minus the recorded directory size. The offset the EOCD records is not consulted: it matches
-    that position whenever it is right, and in a stub-prefixed archive with stale offsets
-    it points into the stub, where four arbitrary bytes would turn damage into a false
-    Strong Encryption report. The record and size are the ones ``_EndRecData`` gives
-    stdlib, ZIP64 included (``_directory_end`` handles both layouts of a ZIP64 end
-    record's location). An end record stdlib cannot parse is not this case.
+    that follows the directory, minus the recorded directory size. The offset the EOCD
+    records is not consulted: it matches that position whenever it is right, and in a
+    stub-prefixed archive with stale offsets it points into the stub, where four
+    arbitrary bytes would turn damage into a false Strong Encryption report. The record
+    and size are the ones ``_EndRecData`` gives stdlib, ZIP64 included
+    (``_directory_end`` handles both layouts of a ZIP64 end record's location). An end
+    record stdlib cannot parse is not this case.
     """
     pos = fp.tell()
     try:

@@ -172,11 +172,11 @@ def parallel_plaintext_crc32(
 ) -> list[tuple[bytes, int]]:
     """Decrypt ``body`` with each password in parallel; return ``(password, crc32)``.
 
-    ``body`` is the ZipCrypto ciphertext *after* the 12-byte encryption header: a
-    stream over the member's payload positioned after that header; this function only
-    reads forward.
-    Constant memory beyond the current chunk: one ZipCrypto state and running CRC per
-    candidate. Candidate order is preserved (ties resolved by the caller via first match).
+    ``body`` is the ZipCrypto ciphertext *after* the 12-byte encryption header: a stream
+    over the member's payload positioned after that header; this function only reads
+    forward. Constant memory beyond the current chunk: one ZipCrypto state and running
+    CRC per candidate. Candidate order is preserved (ties resolved by the caller via
+    first match).
     """
     states = [
         keys_after_header(password, header_ciphertext)[0] for password in passwords

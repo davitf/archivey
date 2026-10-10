@@ -1253,9 +1253,10 @@ def test_overlap_guard_does_not_depend_on_stdlib_end_offsets(
 
 def test_entries_sharing_one_local_header_read_only_once() -> None:
     # Two central directory entries that point at the same local header. The first in
-    # directory order reads; the second is an overlap. stdlib before 3.13.7 does the
-    # same; 3.13.7+ warns and reads both. archivey keeps refusing: many entries over one
-    # local header is the overlapping-entry amplification shape (DR-9a).
+    # directory order reads; the second is an overlap. stdlib raises on 3.11, on 3.12
+    # before 3.12.10 and on 3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read
+    # both. archivey keeps refusing: many entries over one local header is the
+    # overlapping-entry amplification shape (DR-9a).
     raw = bytearray(_stdlib_zip_bytes("a.txt", b"hello"))
     cd = raw.index(b"PK\x01\x02")
     eocd = raw.rindex(b"PK\x05\x06")
@@ -1410,7 +1411,10 @@ def _end_rec_data_with_location(rebased: bool) -> Any:
     ``_EndRecData64``). Earlier patch levels leave it on the classic record, and
     ``_RealGetContents`` subtracts the 76 bytes of the ZIP64 record and locator itself.
     The rebased value is written for archives with no ZIP64 extensible data, which is
-    every fixture here.
+    every fixture here. It is taken from the classic record's location, which every
+    release stores as an absolute position before calling ``_EndRecData64``. The
+    ``offset`` argument is not used: pre-rebase releases pass it relative to the end
+    of the file.
     """
     real_end_rec_data64 = zipfile._EndRecData64  # type: ignore[attr-defined]
 
@@ -1419,7 +1423,7 @@ def _end_rec_data_with_location(rebased: bool) -> Any:
         endrec = real_end_rec_data64(fpin, offset, endrec)
         if endrec[zipfile._ECD_SIGNATURE] == b"PK\x06\x06":  # type: ignore[attr-defined]
             endrec[zipfile._ECD_LOCATION] = (  # type: ignore[attr-defined]
-                offset - 20 - 56 if rebased else classic_location
+                classic_location - 20 - 56 if rebased else classic_location
             )
         return endrec
 
