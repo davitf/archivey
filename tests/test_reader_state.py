@@ -105,15 +105,19 @@ def test_suspended_pass_is_not_diagnosed_as_a_callback() -> None:
     state = _state()
     token = state.acquire_pass("stream_members")
     state.set_suspended(token, True)
-    with pytest.raises(ArchiveyUsageError, match="another reader operation") as ei:
-        state.mark_reader_closed()
-    assert CLOSE_FROM_INSIDE not in str(ei.value)
     with pytest.raises(ArchiveyUsageError, match="another reader operation"):
         state.acquire_worker("open")
     # Running again (a diagnostic fired inside a step): that is re-entry.
     state.set_suspended(token, False)
     with pytest.raises(ArchiveyUsageError, match=REENTRY):
         state.acquire_worker("open")
+    with pytest.raises(ArchiveyUsageError, match=CLOSE_FROM_INSIDE):
+        state.mark_reader_closed()
+    # Suspended again: the close comes from the caller's loop body, and a suspended
+    # pass does not block it. The reader closes under the pass.
+    state.set_suspended(token, True)
+    state.mark_reader_closed()
+    assert state.lifecycle is not LifecycleState.OPEN
 
 
 def test_internal_open_window_still_admits_children() -> None:
@@ -184,9 +188,11 @@ def test_loop_body_of_stream_members_keeps_the_generic_message() -> None:
             with pytest.raises(ArchiveyUsageError) as ei:
                 reader.get("plain.txt")
             assert "another reader operation ('stream_members')" in str(ei.value)
-            with pytest.raises(ArchiveyUsageError) as ei:
-                reader.close()
-            assert CLOSE_FROM_INSIDE not in str(ei.value)
+            # Not a callback either: the close is the caller's, and a pass suspended
+            # at a yield does not block it.
+            reader.close()
+            with pytest.raises(ArchiveyUsageError, match="closed"):
+                reader.get("plain.txt")
             break
 
 
