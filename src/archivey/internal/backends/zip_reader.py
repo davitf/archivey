@@ -167,7 +167,8 @@ if TYPE_CHECKING:
 
 # Decoding of a comment under a set UTF-8 flag: UTF-8, else cp437 (the ZIP appnote
 # default, which maps every byte and therefore never fails). An unflagged comment goes
-# through `_sniff_unflagged_name`, as an unflagged name does.
+# through `_decode_unflagged_comment`, which shares the `encoding=` / fallback step
+# (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # ZIP general-purpose bit 3: data descriptor follows the member; verification byte is

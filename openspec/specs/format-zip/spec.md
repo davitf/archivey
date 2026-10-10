@@ -495,11 +495,12 @@ when a field with a matching CRC holds invalid UTF-8, and the open fails with
 APPNOTE puts a member comment under the same bit 11 as its name, and gives the archive
 comment no flag. A member comment whose bit 11 is clear, and the archive comment, SHALL
 decode as an unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
-`encoding=`, else `zip_unflagged_fallback_encoding` (default cp437), through the same
-code path. A byte the chosen codec leaves undefined SHALL survive as a lone surrogate, as
-it does in a name. A member comment whose bit 11 is set SHALL decode as UTF-8, with cp437
-for bytes that are not valid UTF-8, and SHALL ignore `encoding=`. A comment is not a name,
-so decoding it SHALL NOT emit `MEMBER_NAME_ENCODING_INFERRED`.
+`encoding=`, else `zip_unflagged_fallback_encoding` (default cp437). The `encoding=` and
+fallback steps SHALL be the ones a name uses. A byte the chosen codec leaves undefined
+SHALL survive as a lone surrogate, as it does in a name. A member comment whose bit 11 is
+set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and SHALL
+ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
+`MEMBER_NAME_ENCODING_INFERRED`.
 
 #### Scenario: A flagged member comment ignores `encoding=`
 
