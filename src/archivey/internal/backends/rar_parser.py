@@ -557,17 +557,18 @@ class RarArchive:
     truncated: str | None = None
     #: Set when the walk ended at a member header whose CRC failed, after the main
     #: header. The members of that volume listed are the ones before it; no later
-    #: member of that volume is listed. The reader lists them and then reports this as ``CorruptionError`` (DR-2), as TAR does for a damaged
-    #: header after its first member. The walk does not go past the damaged header:
-    #: its size is not data, so the next header's position is unknown. ``unrar``
-    #: searches for it; archivey does not. Not set for a damaged main header, which
-    #: still raises at open, nor where the header password is unproven: there a CRC
-    #: mismatch reads the same as a wrong key, so the walk raises the wrong-password
+    #: member of that volume is listed. The reader lists them and then reports this
+    #: as ``CorruptionError`` (DR-2), as TAR does for a damaged header after its
+    #: first member. The walk does not go past the damaged header: its size is not
+    #: data, so the next header's position is unknown. ``unrar`` searches for it;
+    #: archivey does not. Not set for a damaged main header, which still raises at
+    #: open, nor where the header password is unproven: there a CRC mismatch reads
+    #: the same as a wrong key, so the walk raises the wrong-password
     #: ``EncryptionError``. In a set, ``needs_next_volume`` is still set by a member
     #: header before the damage (CRC intact) whose data continues, and the walk
     #: follows it: the next volume's first header is at its own offset 0, so the
-    #: damaged header's size is not needed to find it. Its members are listed and
-    #: the error follows the whole listing, as for a missing middle volume (DR-2).
+    #: damaged header's size is not needed to find it. Its members are listed and the
+    #: error follows the whole listing, as for a missing middle volume (DR-2).
     #: The first damaged volume's text is kept.
     damaged: str | None = None
     #: 0-based indices of the RAR5 volumes whose block walk reached end of file

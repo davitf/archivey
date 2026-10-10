@@ -1251,18 +1251,18 @@ record has no check value.
 
 When a header after the main header fails its CRC, and it is not taken as a damaged end
 block (previous requirement), the archive SHALL open and list the members whose headers
-precede it. The damage SHALL then be reported as `CorruptionError`, not
-`TruncatedError` unless the set is also incomplete (below): as `members_report().error`, and raised by `members()` and
-`stream_members()` after the listed members. This SHALL hold for RAR 1.5-4 and RAR5, in
-both access modes (DR-2: TAR lists the members before a damaged header and then raises).
-In a multi-volume set the message SHALL name the first damaged volume. The walk SHALL
-go on to the next volume only when a member header before the damage (CRC intact) says
-its data continues there, as for a damaged end block: the next volume's first header is
-at its own offset 0, so the damaged header's size is not needed to find it. That
-volume's members SHALL be listed, and the `CorruptionError` SHALL follow the whole
-listing (DR-2, as for a missing middle volume). With no continuing member the set ends at
-the damaged volume. When the next volume is missing, the open SHALL end with the
-incomplete-set `TruncatedError`, whose message also names the damaged header.
+precede it. The damage SHALL then be reported as `CorruptionError`, as
+`members_report().error` and raised by `members()` and `stream_members()` after the listed
+members; not as `TruncatedError` unless the set is also incomplete (below). This SHALL
+hold for RAR 1.5-4 and RAR5, in both access modes (DR-2: TAR lists the members before a
+damaged header and then raises). In a multi-volume set the message SHALL name the first
+damaged volume. The walk SHALL go on to the next volume only when a member header before
+the damage (CRC intact) says its data continues there, as for a damaged end block: the
+next volume's first header is at its own offset 0, so the damaged header's size is not
+needed to find it. That volume's members SHALL be listed, and the `CorruptionError` SHALL
+follow the whole listing (DR-2, as for a missing middle volume). With no continuing member
+the set ends at the damaged volume. When the next volume is missing, the open SHALL end
+with the incomplete-set `TruncatedError`, whose message also names the damaged header.
 
 The walk SHALL stop at the damaged header. Its size field is not data once the CRC
 fails, so the position of the next header is unknown. `unrar` 7.00 searches past the
