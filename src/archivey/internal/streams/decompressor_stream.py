@@ -85,6 +85,17 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
 _GZIP_UNSUPPORTED_HEADER = ("unknown compression method", "unknown header flags set")
 
 
+def input_after_end_error(name: str) -> CorruptionError:
+    """The error for input after a codec's end, where the container refuses it.
+
+    ``StreamConfig.refuse_input_after_end`` (DR-3). The decoders' check
+    (``DecompressorStream``) and the bzip2 accelerator's end check both raise it.
+    """
+    return CorruptionError(
+        f"{name} stream ends before its input does: bytes are left after its end"
+    )
+
+
 def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     """The error for a ``zlib.error`` from a gzip stream.
 
@@ -92,7 +103,10 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     anything else is :func:`gzip_corruption`.
     """
     if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
-        return UnsupportedFeatureError(f"Unsupported gzip member header: {exc!r}")
+        return UnsupportedFeatureError(
+            f"Unsupported gzip member header: {exc!r}; a damaged header reads the "
+            "same way"
+        )
     return gzip_corruption(exc)
 
 
@@ -166,6 +180,16 @@ class Decoder(Protocol):
         ...
 
     @property
+    def input_after_end(self) -> bool:
+        """True once any byte, a zero too, has been fed after the stream's end.
+
+        Unlike :attr:`trailing_bytes` this counts zero padding, and the decoder may go
+        on reading after it. A stream opened with ``refuse_input_after_end`` raises
+        ``CorruptionError`` when it turns True (DR-3).
+        """
+        ...
+
+    @property
     def needs_input(self) -> bool:
         """False when more output can be produced without reading new compressed bytes."""
         ...
@@ -204,6 +228,7 @@ class BaseDecoder:
 
     _pending_error: BaseException | None = None
     _trailing_bytes: int | None = None
+    _input_after_end = False
 
     @property
     def pending_error(self) -> BaseException | None:
@@ -213,13 +238,20 @@ class BaseDecoder:
     def trailing_bytes(self) -> int | None:
         return self._trailing_bytes
 
+    @property
+    def input_after_end(self) -> bool:
+        return self._input_after_end
+
     def _past_end(self, data: bytes) -> bool:
         """Account for ``data``, fed after the stream's last byte; True once it is junk.
 
         Zeros are padding and pass, as they do after a TAR trailer: block devices, tape
         and ``dd`` pad files with them. The first non-zero byte sets
-        :attr:`trailing_bytes`; the caller then stops decoding.
+        :attr:`trailing_bytes`; the caller then stops decoding. Any byte, a zero too,
+        sets :attr:`input_after_end`.
         """
+        if data:
+            self._input_after_end = True
         if self._trailing_bytes is None:
             rest = data.lstrip(b"\x00")
             if rest:
@@ -516,12 +548,15 @@ class DecompressorStream(ReadOnlyIOStream):
         seekable: bool = True,
         owns_inner: bool = False,
         report_trailing_data: bool = False,
+        refuse_input_after_end: bool = False,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
         self._diagnostics_collector = collector
         self._codec_name = codec_name
         self._report_trailing_data = report_trailing_data
+        # StreamConfig.refuse_input_after_end: see _decoding.
+        self._refuse_input_after_end = refuse_input_after_end
         # Reported once per stream: a seek back re-decodes to the same end.
         self._trailing_reported = False
         # Compressed bytes read from the start of the source, for the offset of
@@ -819,14 +854,25 @@ class DecompressorStream(ReadOnlyIOStream):
         or a bug in the decoder leaves its state just as undefined, so it sticks until a
         seek too. ``ResumeReachedStreamEnd`` is not an error, and its caller replaces
         this stream.
+
+        With ``refuse_input_after_end``, the call that first shows input after the
+        codec's end (:attr:`Decoder.input_after_end`) raises ``CorruptionError`` here,
+        kept the same way. Every codec a ZIP member uses goes through this one check.
         """
         try:
-            return call()
+            out = call()
         except ResumeReachedStreamEnd:
             raise
         except Exception as exc:
             self._spent = exc
             raise
+        if self._refuse_input_after_end and self._decoder.input_after_end:
+            # The container's compressed size is this codec's input exactly, so a
+            # byte after the codec's end is hidden data inside the member (DR-3).
+            error = input_after_end_error(self._codec_name or "compressed")
+            self._spent = error
+            raise error
+        return out
 
     def _end_at_trailing_data(self, data: bytes) -> bytes:
         """End the stream where the decoder found bytes past the codec's end.
