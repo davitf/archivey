@@ -1100,7 +1100,9 @@ def _rar5_end_block_shaped(hdata: bytes, pos: int) -> bool:
 
     That is the type, block flags with neither an extra nor a data area, then the
     end-of-archive flags, and nothing after them. A FILE or service header declares
-    a data area; a MAIN header passes this, and the end-of-file check rejects it.
+    a data area. A MAIN header with no extra and no data area passes this; the blocks
+    that follow it in any archive with members keep it out (see
+    ``dev-docs/formats/rar.md``).
     """
     try:
         _type, pos = load_vint(hdata, pos)
@@ -1169,12 +1171,13 @@ class _RarEndBlockCrcError(CorruptionError):
     :func:`_read_rar5_block` raises this in place of the generic CRC error when the
     header's type reads as the end block and its shape is an end block's (see
     :func:`_rar5_end_block_shaped`). The walk keeps the members before it only if
-    the file also ends at ``data_offset`` and the header password is proven or
-    headers are plain. Behind an unproven header password the walk's earlier
-    check raises the wrong-password :class:`EncryptionError` instead. With a proven
-    key or plain headers, a file that does not end at ``data_offset`` is handled as
-    ``generic``, the error a header of any other type would have raised. The
-    end-of-archive flags are not used.
+    nothing but zeros follows ``data_offset``, as far as the 1 MiB trailing scan
+    looks (:func:`_only_zeros_after`), and the header password is proven or headers
+    are plain. Behind an unproven header password the walk's earlier check raises
+    the wrong-password :class:`EncryptionError` instead. With a proven key or plain
+    headers, a non-zero byte within that scan is handled as ``generic``, the error
+    a header of any other type would have raised. The end-of-archive flags are not
+    used.
     """
 
     def __init__(self, header_offset: int, data_offset: int) -> None:

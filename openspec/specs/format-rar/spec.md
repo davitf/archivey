@@ -1258,7 +1258,8 @@ record has no check value.
 | Case | Expected |
 | --- | --- |
 | Plain RAR 1.5-4 or RAR5, end block CRC mismatch | Full listing; members read; `ARCHIVE_EOF_MARKER_MISSING` after them; strict refuses |
-| MAIN header whose type byte is flipped to the end block's | `CorruptionError` at open |
+| MAIN header whose type byte is flipped to the end block's, blocks after it | `CorruptionError` at open |
+| MAIN header whose type byte is flipped to the end block's, nothing but zeros after it | Empty listing; `ARCHIVE_EOF_MARKER_MISSING` and `EMPTY_ARCHIVE` |
 | FILE header whose type byte is flipped to the end block's | Members before it listed; `CorruptionError` after them |
 | Damaged end block followed by a non-zero byte within 1 MiB | Members before it listed; `CorruptionError` after them |
 | Damaged end block followed by 1 MiB of zeros, then a non-zero byte | Full listing; `ARCHIVE_EOF_MARKER_MISSING` only (past the scan bound) |

@@ -21,7 +21,7 @@ import pytest
 from archivey import open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
-from archivey.exceptions import DiagnosticRaisedError
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from archivey.internal.trailing_scan import MAX_TRAILING_SCAN
 from tests.conftest import requires, requires_binary
 
@@ -266,3 +266,20 @@ def test_damaged_end_block_check_stops_at_the_scan_bound(name: str, flip: int) -
         assert reader.members()
         codes = [d.code for d in reader.diagnostics.retained]
     assert codes == [DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING]
+
+
+@pytest.mark.parametrize("zeros", [0, 8])
+def test_damaged_main_header_alone_lists_as_empty(zeros: int) -> None:
+    # A RAR 1.5-4 MAIN header (13 bytes after the signature) whose type byte reads as
+    # the end block's: its CRC fails and it has the end block's shape, so with no block
+    # after it, it is taken for a damaged end block.
+    data = bytearray(_data("basic_nonsolid__rar4.rar")[: 7 + 13])
+    assert data[9] == 0x73
+    data[9] = 0x7B
+    with open_archive(io.BytesIO(bytes(data) + bytes(zeros))) as reader:
+        assert reader.members() == []
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING in codes
+    data += bytes(zeros) + b"\x01"
+    with pytest.raises(CorruptionError), open_archive(io.BytesIO(bytes(data))) as r:
+        r.members()
