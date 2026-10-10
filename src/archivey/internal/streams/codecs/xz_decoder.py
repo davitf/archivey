@@ -54,6 +54,8 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     SpacedCollector,
     build_index_backwards,
+    damaged_stream_error,
+    near_stream_magic,
 )
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
@@ -277,7 +279,9 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     A footer followed (after any stream padding) by a stream header's magic is not the
     last one: the forward decoder starts a stream there, so the later stream's own
     footer is damaged. That is corruption, not appended data, and is raised so the
-    last stream is never dropped from the size and the seek range.
+    last stream is never dropped from the size and the seek range. A header magic
+    damaged in a few places (:func:`near_stream_magic`) is corruption too, as the
+    forward decoder finds it.
     """
     if _ends_with_footer(stream, file_size, stop_at):
         return file_size
@@ -301,11 +305,14 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
                 # must agree on where the next header starts.
                 while window[after : after + 4] == b"\x00\x00\x00\x00":
                     after += 4
-                if window[after : after + 6] == _XZ_STREAM_MAGIC:
+                header = window[after : after + 6]
+                if header == _XZ_STREAM_MAGIC:
                     raise CorruptionError(
                         f"XZ stream starting at offset {start + after} has no valid "
                         "footer at the end of the file"
                     )
+                if near_stream_magic(header, _XZ_STREAM_MAGIC):
+                    raise damaged_stream_error(start + after)
                 return end
         at -= 1
         if at < 0:
@@ -624,6 +631,8 @@ class _XzState:
             if len(self._buf) >= 6 and bytes(self._buf[:6]) == _XZ_STREAM_MAGIC:
                 self.truncated = True
                 return b"", []
+            if near_stream_magic(bytes(self._buf), _XZ_STREAM_MAGIC):
+                raise damaged_stream_error()
             self._end_at(bytes(self._buf))
             return b"", []
         # Mid-stream: drain any remaining buffered input for a recoverable prefix,
@@ -687,6 +696,8 @@ class _XzState:
                             f"Not a valid XZ file: expected magic {_XZ_STREAM_MAGIC!r}, "
                             f"got {header[:6]!r}"
                         )
+                    if near_stream_magic(header, _XZ_STREAM_MAGIC):
+                        raise damaged_stream_error()
                     self._end_at(bytes(self._buf))
                     break
                 del self._buf[:_STREAM_HEADER_SIZE]

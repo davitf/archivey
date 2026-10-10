@@ -573,7 +573,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `DiagnosticPolicy.strict()` the read that reaches it raises `DiagnosticRaisedError`.
   Zero bytes after the end are padding and report nothing, as for TAR. A second stream
   of the same codec (a concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more
-  data, not trailing bytes. `.xz` and `.lz` keep their size and seeks when the
+  data, not trailing bytes. For `.xz`, `.lz`, `.zst`, `.lz4` and `.bz2`, bytes that
+  hold at least half of the codec's stream magic, but not all of it, are a later stream
+  with a damaged header: the read raises `CorruptionError` rather than return the first stream alone. `.xz` and `.lz` keep their size and seeks when the
   appended bytes are within 1 MiB, unless they are crafted to hold thousands of fake
   end markers; further out the index is not found and the size reads as unknown.
   A damaged end marker on the last of several `.xz` streams or `.lz` members is

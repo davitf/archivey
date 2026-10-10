@@ -18,7 +18,7 @@ from __future__ import annotations
 import bisect
 import io
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Container, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import (
@@ -1152,6 +1152,48 @@ TRAILING_DATA_SEARCH = 1 << 20
 # crafted to be all candidates would otherwise cost a Python check per few bytes on
 # every open.
 TRAILING_DATA_CANDIDATES = 4096
+
+
+def near_stream_magic(data: bytes, magic: bytes | Sequence[Container[int]]) -> bool:
+    """Whether ``data``, the bytes after a complete stream, start like a damaged stream.
+
+    The rule is lzip's: ``lzip`` refuses a file whose trailing data has two or three of
+    the four ``LZIP`` magic bytes in place, as a "corrupt header in multimember file"
+    (its ``--loose-trailing`` option turns that off). Here it is stated for a magic of
+    any length: the first ``len(magic)`` bytes of ``data`` hold the magic's byte in at
+    least half of the positions, and not in all of them. One rule serves every codec
+    whose magic tells a further stream from appended bytes (xz, lzip, zstd, LZ4,
+    bzip2), so they cannot disagree on what a damaged stream is.
+
+    One damaged byte, or a few flipped bits in one byte, leaves a 4-byte magic three
+    matches and xz's 6-byte one five, so the damage the rule exists for is always
+    caught. Random appended bytes match a 4-byte magic about once in 11 000 tails,
+    zstd's and LZ4's skippable-frame magic (16 values for its first byte) about once in
+    1 300, and xz's magic about once in 800 000. A tail shorter than the magic does not
+    match: ``lzip`` also refuses a few bytes that begin like its magic, but
+    a tail that short holds too little to tell damage from appended bytes, so it is
+    reported as trailing data like any other.
+
+    ``magic`` is the magic's bytes, or the bytes each position may hold (bzip2's
+    block-size digit, zstd's skippable-frame range). A ``data`` that starts with the
+    whole magic is a stream, not a near match.
+    """
+    if len(data) < len(magic):
+        return False
+    if isinstance(magic, bytes):
+        matches = sum(a == b for a, b in zip(data, magic))
+    else:
+        matches = sum(byte in allowed for byte, allowed in zip(data, magic))
+    return len(magic) <= 2 * matches < 2 * len(magic)
+
+
+def damaged_stream_error(offset: int | None = None) -> CorruptionError:
+    """The error for bytes after a stream that :func:`near_stream_magic` matches."""
+    where = "" if offset is None else f" at offset {offset}"
+    return CorruptionError(
+        f"Damaged stream header{where}: the bytes after a complete stream hold at "
+        "least half of the stream magic, so a further stream starts there and is damaged"
+    )
 
 
 def report_trailing_data(

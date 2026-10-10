@@ -89,8 +89,10 @@ not read, because it describes one frame and nothing says the file has one (§7)
 
 Both codecs run in archivey's engine as `FramedDecompressorStream`
 (`internal/streams/codecs/framed_decoder.py`): one library decompressor per frame, and a new one
-only when the next bytes are a frame or skippable-frame magic. Anything else after a
-frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
+only when the next bytes are a frame or skippable-frame magic. Bytes that hold one of
+those magics in at least half of its positions, but not all, are a frame with a damaged
+magic and raise `CorruptionError`. Anything else after a frame is trailing data,
+reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
 ([`single-file.md`](single-file.md) §2.3). The file-level readers the libraries offer
 (`compression.zstd.open`, `lz4.frame.open`) cannot do that: they take any bytes after a
 frame for the next frame and fail on them.
@@ -142,6 +144,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `zstd --long=31` on a file | Reads: the window is sized to the input |
 | `zstd --long=31` from standard input (2 GiB window) | Reads under the default 2 GiB cap; `ResourceLimitError` under a smaller one |
 | A zstd file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; `zstd -t` refuses it |
+| Two zstd or LZ4 frames, one byte of the second frame's magic damaged | `CorruptionError` on a read and a seek |
 | One bit flipped mid-file, `zstd` / `zstd --no-check` | `CorruptionError` from the checksum / **read with no error** |
 | `lz4`, `lz4 -BD`, two frames concatenated | Reads |
 | `lz4 --content-size` | Reads; `size=None` |

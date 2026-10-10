@@ -681,9 +681,6 @@ def test_bytes_after_empty_bzip2_streams_are_reported_past_them(
             (1 << 16) - 5 + len(_BZ2_EMPTY),
             id="split-by-scan-then-junk",
         ),
-        # Shaped like an empty stream but not one: the block-size digit is 1 to 9, so
-        # this is not a stream header either.
-        pytest.param(b"BZh0" + _BZ2_EMPTY[4:], 0, id="digit-out-of-range"),
     ],
 )
 def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
@@ -764,6 +761,158 @@ def test_inside_a_container_the_codec_stops_silently(
     ) as stream:
         assert stream.read() == b"data"
     assert collector.snapshot().total_count == expected
+
+
+# The codecs whose magic tells the next stream from appended bytes, and the length of
+# that magic. zstd and LZ4 frames have a 4-byte magic; lzip's is "LZIP"; bzip2's is
+# "BZh" and the block-size digit; xz's stream header magic is 6 bytes.
+_MAGIC_LENGTHS = {".xz": 6, ".lz": 4, ".zst": 4, ".lz4": 4, ".bz2": 4}
+_SMALL = _PAYLOAD[:2_000]
+# Bytes that start no stream of any codec here, and are not near any magic either.
+_RANDOM_JUNK = random.Random(4096).randbytes(64)
+
+
+def _magic_params() -> list:
+    return [
+        pytest.param(suffix, id=suffix, marks=_CODECS[suffix][2])
+        for suffix in _MAGIC_LENGTHS
+    ]
+
+
+def _second_stream_magic_damaged(suffix: str, position: int) -> bytes:
+    """Two streams of ``suffix``; one bit flipped in byte ``position`` of the second.
+
+    The bit is 0x40, which takes bzip2's block-size digit out of ``1``-``9``.
+    """
+    compress = _CODECS[suffix][1]
+    second = bytearray(compress(_SMALL))
+    second[position] ^= 0x40
+    return compress(_SMALL) + bytes(second)
+
+
+@pytest.mark.parametrize("access", ["random", "streaming"])
+@pytest.mark.parametrize("where", ["first", "last"])
+@pytest.mark.parametrize("suffix", _magic_params())
+def test_a_damaged_magic_on_a_later_stream_is_corruption(
+    tmp_path: Path, suffix: str, where: str, access: str
+) -> None:
+    """Bytes after a stream that match its magic in most places are a damaged stream,
+    as ``lzip`` and ``xz -t`` judge them, not appended data: reporting them as
+    trailing data would return the first stream alone, with only a warning."""
+    position = 0 if where == "first" else _MAGIC_LENGTHS[suffix] - 1
+    data = _second_stream_magic_damaged(suffix, position)
+    if access == "streaming":
+        source = NonSeekableBytesIO(data)
+        with open_archive(source, streaming=True, format=_format(suffix)) as reader:
+            for _member, stream in reader.stream_members():
+                assert stream is not None
+                with raises_corruption_not_truncation():
+                    stream.read()
+        return
+    path = _write(tmp_path, suffix, data)
+    with open_archive(path, seekable_members=True) as reader:
+        member = reader.members()[0]
+        assert member.size != len(_SMALL)
+        with reader.open(member) as stream, raises_corruption_not_truncation():
+            stream.seek(0, io.SEEK_END)
+        with raises_corruption_not_truncation():
+            reader.read(member)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(_RANDOM_JUNK, id="random"),
+        # Fewer bytes than the magic: the rule looks at a whole magic, so a short
+        # tail is appended data even when it starts like a stream.
+        pytest.param(None, id="short-prefix"),
+    ],
+)
+@pytest.mark.parametrize("access", ["random", "streaming"])
+@pytest.mark.parametrize("suffix", _magic_params())
+def test_other_bytes_after_a_stream_are_still_reported(
+    tmp_path: Path, suffix: str, access: str, tail: bytes | None
+) -> None:
+    compress = _CODECS[suffix][1]
+    compressed = compress(_SMALL)
+    if tail is None:
+        tail = compressed[: _MAGIC_LENGTHS[suffix] - 1]
+    data = compressed + tail
+    if access == "streaming":
+        source = NonSeekableBytesIO(data)
+        with open_archive(source, streaming=True, format=_format(suffix)) as reader:
+            for _member, stream in reader.stream_members():
+                assert stream is not None
+                assert stream.read() == _SMALL
+            (report,) = _reports(reader)
+    else:
+        path = _write(tmp_path, suffix, data)
+        with open_archive(path, seekable_members=True) as reader:
+            with reader.open(reader.members()[0]) as stream:
+                assert stream.seek(0, io.SEEK_END) == len(_SMALL)
+                stream.seek(0)
+                assert stream.read() == _SMALL
+            (report,) = _reports(reader)
+    assert report.observed_bytes == len(compressed)
+
+
+@pytest.mark.parametrize("mode", _BZ2_MODES)
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(b"BZh0" + _BZ2_EMPTY[4:], id="digit-out-of-range"),
+        pytest.param(b"BY", id="damaged-second-stream"),
+    ],
+)
+def test_a_damaged_bzip2_header_after_the_last_stream_raises_in_both_modes(
+    tmp_path: Path, mode: AcceleratorMode, tail: bytes
+) -> None:
+    """With the accelerator on, the standard library takes over at a damaged header
+    as at a whole one, and gives the same verdict as with the accelerator off."""
+    if tail == b"BY":
+        tail = b"BY" + bz2.compress(_SMALL)[2:]
+    path = _write(tmp_path, ".bz2", bz2.compress(_SMALL) + tail)
+    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        with raises_corruption_not_truncation():
+            reader.read(reader.members()[0])
+
+
+@pytest.mark.parametrize(
+    ("data", "near"),
+    [
+        # lzip's own check: two or three of the four magic bytes in place.
+        (b"LZIP", False),  # the magic itself starts a stream
+        (b"LZIQ", True),
+        (b"XZIX", True),
+        (b"LXXP", True),
+        (b"LXXX", False),
+        (b"XXXX", False),
+        # Only the first len(magic) bytes count, and all of them must be there.
+        (b"LZI", False),
+        (b"LXXXLZIP", False),
+        (b"LZIQ\x00\x00", True),
+    ],
+)
+def test_the_near_magic_rule_is_lzips(data: bytes, near: bool) -> None:
+    from archivey.internal.streams.decompressor_stream import near_stream_magic
+
+    assert near_stream_magic(data, b"LZIP") is near
+
+
+def test_the_random_junk_is_near_no_magic() -> None:
+    """The junk the tests above append must not be a damaged stream by the rule."""
+    from archivey.internal.streams.decompressor_stream import near_stream_magic
+
+    magics = (
+        b"\xfd7zXZ\x00",
+        b"LZIP",
+        b"\x28\xb5\x2f\xfd",
+        b"\x04\x22\x4d\x18",
+        (b"B", b"Z", b"h", b"123456789"),
+    )
+    for magic in magics:
+        assert not near_stream_magic(_RANDOM_JUNK, magic)
 
 
 def _format(suffix: str):  # noqa: ANN202 - an ArchiveFormat

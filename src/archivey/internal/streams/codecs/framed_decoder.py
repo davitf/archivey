@@ -21,6 +21,8 @@ from archivey.internal.streams.decompressor_stream import (
     Decoder,
     DecompressorStream,
     SeekPoint,
+    damaged_stream_error,
+    near_stream_magic,
 )
 
 
@@ -44,8 +46,8 @@ class _OneStreamDecompressor(Protocol):
 StreamMagic = tuple[tuple[frozenset[int], ...], ...]
 # Given the bytes after a stream: True when they start another, None when more bytes are
 # needed to tell, False when they do not. It may also refuse the stream by raising, as
-# the LZMA Alone check does for a dictionary over ``max_decoder_memory``, so its
-# result must not be cached or its call skipped.
+# the LZMA Alone check does for a dictionary over ``max_decoder_memory`` and a magic
+# check does for a damaged magic, so its result must not be cached or its call skipped.
 StreamStart = Callable[[bytes], bool | None]
 
 
@@ -59,11 +61,21 @@ def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
 
 
 def _magic_state(data: bytes, magic: StreamMagic) -> bool | None:
-    """True when ``data`` starts a stream, None when it may once more bytes come."""
+    """True when ``data`` starts a stream, None when it may once more bytes come.
+
+    Bytes that start like a damaged stream (:func:`near_stream_magic`) raise
+    :class:`CorruptionError`. Telling them needs a whole magic, so a shorter ``data``
+    is waited on; at the end of the source it is trailing data (``flush``).
+    """
     for alternative in magic:
         seen = min(len(data), len(alternative))
         if all(data[i] in alternative[i] for i in range(seen)):
             return True if seen == len(alternative) else None
+    for alternative in magic:
+        if len(data) < len(alternative):
+            return None
+        if near_stream_magic(data, alternative):
+            raise damaged_stream_error()
     return False
 
 
@@ -75,10 +87,12 @@ class FramedDecoder(BaseDecoder):
     ``needs_input``. Their file readers decide on their own what may follow a stream,
     and disagree: ``bz2.open`` ignores anything that does not decode, zstd and lz4
     raise on it. This adapter decides it the same way for all of them. Bytes that start
-    ``magic`` begin another stream (a concatenated file); zeros are padding; anything
-    else ends the data and sets :attr:`trailing_bytes`. A codec with no magic (LZMA
-    Alone) passes a :data:`StreamStart` check of the header instead, which may raise to
-    refuse the next stream. ``zero_padding=False`` hands zeros to that check too (raw
+    ``magic`` begin another stream (a concatenated file); zeros are padding; bytes that
+    hold at least half of the magic, but not all, are a damaged stream and raise
+    :class:`CorruptionError` (:func:`near_stream_magic`); anything else ends the data
+    and sets :attr:`trailing_bytes`. A codec with no magic (LZMA Alone) passes a
+    :data:`StreamStart` check of the header instead, which may raise to refuse the next
+    stream. ``zero_padding=False`` hands zeros to that check too (raw
     LZMA, where 7-Zip refuses any byte after the end marker).
 
     The first stream is handed to the library as it comes, so a file that is not this
@@ -102,8 +116,8 @@ class FramedDecoder(BaseDecoder):
         self._fed = False
         # Past a stream's end, looking for the next one.
         self._between = False
-        # Input not yet handed on: kept when an output budget ran out, or a prefix of
-        # the next stream's magic waiting for its remaining bytes (``_need_more``).
+        # Input not yet handed on: kept when an output budget ran out, or bytes after a
+        # stream, fewer than a magic, waiting for the rest (``_need_more``).
         self._held = b""
         self._need_more = False
         self._done = False
@@ -168,8 +182,8 @@ class FramedDecoder(BaseDecoder):
         if self._done:
             return DecodeOut(b"")
         if self._between:
-            # A prefix of another stream's magic is where the file ends: too short to
-            # be a stream, so it is what follows this one.
+            # Fewer bytes than a magic are where the file ends: too short to be a
+            # stream or a damaged one, so they are what follows this one.
             self._past_end(self._held)
             self._held = b""
             self._done = True
