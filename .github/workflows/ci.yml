@@ -23,9 +23,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides whether the code jobs (lint, test, unar-distro-packages,
+  # free-threaded-concurrency, benchmark) run. They skip, and report "skipped", when a
+  # pull request changes only documentation; docs and the two openspec jobs always run.
+  # A job-level `if:` rather than workflow `paths-ignore`, because paths-ignore would
+  # also drop the docs build. Pushes to main and manual dispatches always run everything.
+  #
+  # Documentation here means Markdown anywhere, docs/, new_docs/, docs_templates/,
+  # mkdocs.yml and LICENSE, minus the Markdown that tests read: docs/api.md
+  # (test_public_api) and review/problem-catalogue/ (test_review_problem_catalogue).
+  # Add a path to that exception list when a test starts reading another doc file.
+  changes:
+    name: Detect docs-only change
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: Classify changed files
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A rename lists both names, so moving code into docs/ still counts as code.
+          files=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+          # The files API stops at 3000; past that, run everything.
+          count=$(printf '%s\n' "$files" | grep -c . || true)
+          code=false
+          if [ "$count" -eq 0 ] || [ "$count" -ge 3000 ]; then
+            code=true
+          fi
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              docs/api.md | review/problem-catalogue/*) ;;
+              *.md | docs/* | new_docs/* | docs_templates/* | mkdocs.yml | LICENSE) continue ;;
+            esac
+            echo "code change: $f"
+            code=true
+          done <<< "$files"
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   # Lint + type-check once (these are environment-independent). No continue-on-error:
   # a failure here fails CI — the "clean on Pyrefly AND ty" gate is enforced.
   lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Lint & type-check
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -131,6 +183,8 @@ jobs:
         run: python3 scripts/check_openspec_self_reference.py
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     runs-on: ${{ matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
@@ -529,6 +583,8 @@ jobs:
   # official image (a name with no slash); the names stay Docker Hub's so the job
   # names do not change.
   unar-distro-packages:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: unar package / ${{ matrix.image }}
     runs-on: ubuntu-latest
     container: mirror.gcr.io/library/${{ matrix.image }}
@@ -586,6 +642,8 @@ jobs:
   # lz4 or cryptography on it yet (2026-10-08), so both build from source; cryptography
   # keeps the GIL disabled there, as on 3.14t.
   free-threaded-concurrency:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: free-threaded-concurrency / py${{ matrix.python }} / core + GIL-safe extras
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -658,6 +716,8 @@ jobs:
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
   # as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.
   benchmark:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Benchmark gate (structural)
     runs-on: ubuntu-latest
     timeout-minutes: 15
