@@ -76,6 +76,11 @@ class StreamConfig:
     for the LZMA family; zstd, which cannot shrink a window, lowers
     ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
     no further.
+    ``refuse_input_after_end`` is set where the container's declared compressed size is
+    the codec's input exactly, with no padding allowed after it (a ZIP member): any
+    byte of that input after the codec's end of stream, a zero too, is then a
+    ``CorruptionError`` (DR-3), as 7-Zip reports "There are some data after the end of
+    the payload data" as an error there.
     """
 
     streaming: bool = False
@@ -89,6 +94,7 @@ class StreamConfig:
     collector: DiagnosticCollector | None = field(default=None, compare=False)
     report_trailing_data: bool = False
     probe_read_bound: int | None = None
+    refuse_input_after_end: bool = False
 
 
 def stream_config_from_archivey(

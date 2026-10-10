@@ -224,6 +224,12 @@ _PROBE_COMPLETENESS_OUTPUT = 64 * 1024
 # Optional bounded read-at callback for probes that follow a self-describing block chain
 # past the peeked prefix (``compressed-streams``). ``None`` means the caller declined.
 ProbeReadAt = Callable[[int, int], bytes | None]
+# Optional hook for a probe that decodes more than the sample it was handed (the Brotli
+# chain decode): ``charge_decode(n)`` asks to read and decode the total ``[0, n)`` of
+# the source, and is called before the read, which it also bounds. ``True`` means the
+# caller's budget covers it and ``n`` is charged; ``False`` means it does not, and the
+# probe must keep the verdict it has without reading or decoding.
+ProbeChargeDecode = Callable[[int], bool]
 
 
 @dataclass(frozen=True)
@@ -242,6 +248,23 @@ class MetadataContext:
     peek_header: Callable[[int], bytes]
     probe_decompressed_size: Callable[[], int | None]
     probe_lzip_index: Callable[[], tuple[int, int] | None]
+
+
+class _ProbeSample(io.BytesIO):
+    """A probe's sample, served at most ``_PROBE_PREFIX`` bytes per read.
+
+    It stays seekable, so the Brotli decoder can still tell bytes after a stream's end
+    from damage: on a decode error it replays from the start and then hands over, one
+    byte at a time, the input of the call that failed. The smaller reads bound that
+    byte-at-a-time stretch to one read. With the decoder's own 64 KiB reads, a 1 MiB
+    chain-decode sample that fails took a second to reject; 4 KiB reads take a few
+    milliseconds.
+    """
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        if size is None or size < 0 or size > _PROBE_PREFIX:
+            size = _PROBE_PREFIX
+        return super().read(size)
 
 
 # --- the codec descriptors -------------------------------------------------------------
@@ -342,6 +365,7 @@ class StreamCodec:
         *,
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
     ) -> bool:
         """Whether ``prefix`` is recognized as this codec's stream.
 
@@ -352,7 +376,8 @@ class StreamCodec:
         cannot fit, or an incomplete decode when the whole source is visible; ``None``
         means "unknown — do not reject on that basis." ``read_at`` is an optional bounded
         read facility for probes that follow a self-describing block chain past the
-        peeked prefix; absent by default.
+        peeked prefix; absent by default. ``charge_decode`` meters a decode past the
+        sample (see ``ProbeChargeDecode``); absent means the probe is not metered.
         """
         return False
 
@@ -432,6 +457,7 @@ class StreamCodec:
         *,
         source_length: int | None = None,
         require_output: bool = False,
+        sample_bytes: int = _PROBE_PREFIX,
     ) -> bool:
         """Whether a bounded ``prefix`` decodes cleanly through this codec (the probe primitive).
 
@@ -448,6 +474,9 @@ class StreamCodec:
         are not rejected here (the check is bounded, not a full drain). When the source is
         larger than the prefix, ``TruncatedError`` remains a match (there genuinely is more
         input). ``require_output`` rejects an empty successful read (LZMA Alone).
+        ``sample_bytes`` widens the bounded sample past the detection window for a probe
+        that has already read further (the Brotli chain decode); the output drain grows
+        with it.
         """
         # The registry imports every codec module, and so this one: import it here.
         from archivey.internal.streams.codecs.registry import open_codec_stream
@@ -457,7 +486,7 @@ class StreamCodec:
         fully_visible = source_length is not None and source_length <= len(prefix)
         # Feed the whole source when it is fully visible so "needs more input" means
         # incomplete; otherwise keep the bounded probe sample.
-        sample = prefix[:source_length] if fully_visible else prefix[:_PROBE_PREFIX]
+        sample = prefix[:source_length] if fully_visible else prefix[:sample_bytes]
         out_budget = (
             _PROBE_COMPLETENESS_OUTPUT
             if fully_visible
@@ -467,7 +496,7 @@ class StreamCodec:
         config = replace(_PROBE_STREAM_CONFIG, probe_read_bound=out_budget + 1)
         try:
             with open_codec_stream(
-                self.codec, io.BytesIO(sample), config=config
+                self.codec, _ProbeSample(sample), config=config
             ) as stream:
                 if fully_visible:
                     # Drain up to the budget in chunks. A truncated high-ratio stream

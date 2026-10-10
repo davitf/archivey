@@ -329,10 +329,10 @@ archive declares.
   keep the same 64. A larger cap let a small header drive the planner and the nested
   decode streams into a raw `RecursionError`.
 - 7z decodes one encoded-header layer and raises `CorruptionError` if the result is
-  another encoded header (`internal/backends/sevenzip_pipeline.py`
+  another encoded header (`internal/backends/sevenzip_parser.py`
   `parse_decoded_header`); a COPY header that decodes to itself would otherwise loop.
-  The running total of encoded-header folder unpack sizes is capped at
-  `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
+  An encoded header must have exactly one folder, as in 7-Zip, and its unpack size is
+  capped at `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
 - RAR checks `max_members` while parsing the member table at `open_archive`. It weighs
   the summed declared sizes of compressed RAR 1.5/2.x comments against
   `max_metadata_bytes` before decoding any, because the decode is the cost (one `unrar`
@@ -346,12 +346,13 @@ archive declares.
   itself; `internal/backends/iso_reader.py` hooks `pycdlib`'s `DirectoryRecord.parse`
   and the existing `RockRidge.parse` filter (both act only inside `IsoReader`'s own
   `open_fp`, through a `ContextVar`) and counts, per volume descriptor tree, every
-  record but `.` and `..` against `max_members`, and the bytes of each directory record
-  plus each Rock Ridge continuation area against `max_metadata_bytes`. A continuation
+  record but `.` and `..` against `max_members`, and, in one sum for the whole image,
+  the bytes of each directory record plus each Rock Ridge continuation area against
+  `max_metadata_bytes`. A continuation
   area is weighed every time it is parsed: `pycdlib` accepts any number of records whose
   `CE` names one area and parses it again for each, which made a 174 KB image peak at
   about 10.7 MB before. A third hook, on `PyCdlib._parse_path_table`, weighs each path
-  table's declared size (little- and big-endian, both parsed) with its tree before
+  table's declared size (little- and big-endian, both parsed) into that sum before
   `pycdlib` reads it, and refuses a table that runs past the image as
   `CorruptionError` whatever the limits: `pycdlib` parses a table into one object per
   8-byte record, about 29 times its size, and a 16 MiB table peaked at 471 MiB before.
@@ -415,8 +416,24 @@ and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are re
 stored, System Use areas included, not only the text kept. An image right at a cap can
 therefore be refused at open. Below the caps `pycdlib` still builds the whole tree, so
 memory at open stays linear in the records the budget allows: about 0.8 KB per plain
-record measured, so roughly 1 GiB at the default `max_members`. The UDF descriptors
-`pycdlib` also walks are not counted; archivey lists no UDF namespace.
+record measured, so roughly 1 GiB per tree at the default `max_members`. The UDF tree
+`pycdlib` also walks is counted as one more tree, though archivey lists no UDF
+namespace: each File Identifier but the parent entry is a member, and each File
+Identifier and each File Entry, with the extended attributes and allocation descriptors
+it declares, is weighed against `max_metadata_bytes`, the File Entry before `pycdlib`
+parses it. `pycdlib` keeps every tree it walked, so `max_metadata_bytes` is one sum for
+the whole image, every tree together (ruled by davi, 2026-10-10; reasons and the reopen
+condition in `dev-docs/formats/iso.md` §2.2). A budget per tree let an image carrying
+all three trees peak near 2.6 GiB at the default limits: a PVD tree and a Joliet tree
+at about 1 GiB each, plus a UDF tree, where a name weighs at least about 220 bytes and
+was measured at about 2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB.
+`max_members` stays per tree, because a Joliet tree repeats every file and one count
+would halve the cap for such an image. The ceiling is now the member cap per tree
+together with the byte sum: a record is at least 34 bytes, so 64 MiB holds about 2
+million records across the PVD and Joliet trees, which is about 1.5 GiB at 0.8 KB each
+(an estimate from the per-record figure, not measured at this scale). Any UDF bytes
+come out of the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660
+record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
@@ -446,7 +463,7 @@ the source really has.
 sizes come straight from the archive. Measured without a bound: a 10 KB tar asked for
 6 GiB, and a 51 KB ISO asked for 4 GiB, both dying on a bare `MemoryError`. So both
 libraries read through archivey's source (`internal/source.py` `ArchiveSource`) or
-decompressor (`tar_reader.py` `_EofProbeStream`), and both apply
+decompressor (`tar_reader.py` `_BoundedTarFileobj`), and both apply
 `streams/streamtools/binaryio.py` `read_within_reach`: where the remaining length is a
 fact (a path's `stat`, a `BytesIO` buffer, a regular file's `fstat`) the read is clamped
 to it; otherwise it is served in bounded steps, so the peak tracks the bytes that exist.
@@ -468,6 +485,14 @@ continuation areas `pycdlib` builds from those reads is the listing budget's
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
 40 MiB member arrives as one 40 MiB request.
 
+The xz footer's backward size is a third case, in archivey's own code: only the 12-byte
+footer has to be valid for it to be believed, and it can claim an index as large as the
+file. `xz_decoder.py` `_XzIndexSource` reads an index declared at most
+`_INDEX_READ_CHUNK` (1 MiB) long once, and re-reads a larger one from the file a chunk at
+a time for the CRC-32 check and for each record walk, so the peak is one chunk. Reading
+it whole cost about twice the file: a 128 MiB sparse file grew peak RSS by 244 MiB at
+open.
+
 **Tests.** `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`;
 `tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
 `::test_a_path_source_refuses_the_same_image`,
@@ -475,12 +500,17 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 `tests/test_iso_metadata_bounds.py`:
 `::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
 `::test_a_chained_continuation_area_past_its_block_is_refused_before_the_read`,
-`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`.
+`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`;
+`tests/test_seekable_streams.py::test_xz_index_scan_reads_a_huge_declared_index_in_chunks`,
+`::test_xz_open_archive_with_a_huge_declared_index_stays_small`.
 
 #### Decoder memory
 
 **Property.** A codec never allocates a working set larger than
-`DecoderLimits.max_decoder_memory` (2 GiB) because the archive declared one.
+`DecoderLimits.max_decoder_memory` (2 GiB) because the archive declared one. A decoder
+whose working set is not declared, but follows what the data decodes to, is held to the
+same cap where it runs in its own process: the rapidgzip accelerator for gzip, zlib and
+raw DEFLATE.
 
 **Mechanism.** `internal/config.py` `check_decoder_memory` runs before the decoder is
 built, on `open()` and `read()` as well as extraction. A 7z folder can hold several
@@ -502,15 +532,31 @@ what the program that will run allocates, measured per program (rar.md §7): `un
 touches the whole declared dictionary; `unrar` touches at most the unpacked bytes the
 read decodes, including the earlier members a shared name mask makes it decode.
 
+rapidgzip keeps whole decoded chunks in memory, so a small file of zeros can make it hold
+gigabytes, and nothing in the stream declares that size. So the cap is enforced after the
+allocation: the child process (`internal/streams/codecs/rapidgzip_worker.py`
+`watch_memory` and `check_memory`) reads its own peak resident memory every millisecond
+and before it answers each read, and exits with `MEMORY_LIMIT_EXIT` once the peak has
+grown by more than the cap since the source was opened. The cap travels in the child's
+`OPEN` frame, not in its environment. The parent treats that exit like a crash on the
+data: the standard library reads the rest of the stream from the last index point, so
+the caller gets the same bytes and no error.
+
 **Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
 memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
 (public in extracting.md §Limits). The RAR counts rest on measurements of `unrar` 7.00
-and `unar` 1.10.1; another version that allocates differently is not measured.
+and `unar` 1.10.1; another version that allocates differently is not measured. The
+rapidgzip child's peak can pass the cap by what it allocates between two checks (about
+17 MB measured on four cores; a check delayed on a busy machine is caught by the one
+before the next read). Where the platform does not report a process's peak memory
+(`VmHWM` on Linux, `getrusage` on macOS and the BSDs, `GetProcessMemoryInfo` on
+Windows), the child is not capped.
 
 **Tests.**
 `tests/test_sevenzip_bcj2.py::test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap`;
 for RAR, the tests after "the RAR dictionary counts against
-DecoderLimits.max_decoder_memory" in `tests/test_audit_rar_iso_dir.py`.
+DecoderLimits.max_decoder_memory" in `tests/test_audit_rar_iso_dir.py`; for the rapidgzip
+child, `tests/test_accelerator_memory_limit.py`.
 
 #### Key derivation
 
@@ -649,18 +695,22 @@ never reported as success. Public:
   index.
 - 7z header encryption has no check value, so a wrong key is caught by the encoded-header
   folder CRC when the writer stored one (7-Zip does; py7zr does not), then by the parse
-  failing. About 1 in 256 wrong keys decode to a leading `END` (or `HEADER`+`END`) that
-  parses as an empty archive (measured about 0.3% of py7zr salts). Legitimate writers
-  never encrypt an empty header, so `SevenZipReader._decode_encoded_header_block`
-  rejects a decoded header with zero file records as `EncryptionError`.
+  failing. The decoded header must start with `HEADER` and end at its final `END`
+  (`parse_decoded_header`), so a wrong key still parses as an empty archive only when it
+  decodes to a `HEADER` block with no file records, such as exactly `HEADER`+`END`.
+  Before those two checks, about 1 in 256 wrong keys decoded to a leading `END` or
+  `HEADER`+`END` that parsed as empty (measured about 0.3% of py7zr salts); that figure
+  is now an upper bound and has not been re-measured. Legitimate writers never encrypt an
+  empty header, so `SevenZipReader._decode_encoded_header_block` rejects a decoded header
+  with zero file records as `EncryptionError`.
 - A password only a weak check accepted, or none tested (RAR3/4 encrypted data has no
   check), is confirmed by the member's own CRC at EOF. Closing such a stream early emits
   `ENCRYPTED_MEMBER_UNVERIFIED`.
 
-**Residual.** Wrong-key 7z header garbage that parses into a non-empty plausible header
-survives in principle. Rejecting trailing bytes in the decoded header, or py7zr writing
-the encoded-header CRC, would narrow it further. Bytes returned before an error are of
-unknown quality.
+**Residual.** Wrong-key 7z header garbage survives in principle when it parses into a
+non-empty plausible header that also ends exactly at the end of the decoded buffer.
+py7zr writing the encoded-header CRC would narrow it further. Bytes returned before an
+error are of unknown quality.
 
 **Tests.**
 `tests/test_codecs.py::test_verify_mismatch_raises_at_eof_without_losing_final_chunk`,
@@ -686,7 +736,9 @@ decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib and raw DEFLATE (`internal/streams/codecs/rapidgzip_child.py`), and
 PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
 `internal/streams/codecs/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
-costs only the member.
+costs only the member. A rapidgzip child stopped at its memory cap
+([Decoder memory](#decoder-memory)) raises no error to the caller: the standard library
+reads the rest of the stream.
 
 **Residual.** `MemoryError` passes through, and an in-process native decoder can still
 abort the process ([accepted](#a-native-decoder-crash-or-memoryerror)).
@@ -722,16 +774,18 @@ writes itself) is exercised against mutated and coverage-guided input.
    group only.
 
 pycdlib loops forever when corrupt directory records form a back-edge, in any namespace
-`open_fp` walks. `internal/backends/iso_reader.py`
-`_install_pycdlib_directory_cycle_guard` installs a queue, confined to archivey's own
-`open_fp` call, that drops a directory extent already scheduled; valid trees never
-revisit one.
+`open_fp` walks, UDF included, where it also allocates on every pass. A UDF File
+Identifier naming an ancestor's ICB grew memory by about 65 MB a second under default
+limits. `internal/backends/iso_reader.py`
+`_install_pycdlib_directory_cycle_guard` installs a queue, confined to `pycdlib`'s
+namespace, that drops a directory extent or UDF File Entry already scheduled; valid
+trees never revisit one.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz is [after the first release](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet).
+Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
 
 ### Directory sources changed concurrently
 
@@ -839,15 +893,17 @@ member as fact.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
   about 8% of random data. The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
-  later overruns or trailing bytes found by a bounded block-chain walk. It decodes the
+  later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
+  to the first compressed block that walk reaches (within 1 MiB and the decode allowance),
+  which rejects data that only declares a long uncompressed run. It decodes the
   whole 4 KiB prefix (256 bytes let 7 of 800 Perl modules through; 4,096 let none),
   and re-checks a hit against the whole source up to `completion_window_bytes` (64 KiB
   under `BALANCED`, off under `FAST`). Probe-only confidence is `GUESS` for the
   uncompressed or metadata-first class; a later decode failure sets
   `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. OLE compound
-  files are not probed: their signature stops the probes. Other structured look-alikes
-  (COFF objects, MP3s whose ID3 tag starts with padding) can still be claimed, and stamp
-  the same way.
+  files are not probed: their signature stops the probes. LZMA Alone refuses a header followed by a
+  zero run, so MP3s whose ID3 tag starts with padding are not claimed. Other structured
+  look-alikes (COFF objects) can still be claimed, and stamp the same way.
 
 **Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
 fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the

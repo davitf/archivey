@@ -382,7 +382,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z, RAR and ISO): `open_archive` itself raises. ISO also weighs the directory records `pycdlib` parses at open against `max_metadata_bytes`. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z, RAR and ISO): `open_archive` itself raises. ISO also weighs the directory records, path tables and UDF descriptors `pycdlib` parses at open against `max_metadata_bytes`, and counts path-table entries and UDF names against `max_members`; the UDF tree is not listed, but `pycdlib` parses it all the same. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -492,10 +492,14 @@ the reader's lifetime.
 That read can show the member is not a link at all. A member flagged as a Windows
 reparse point whose data is not a reparse buffer is a file, and listing would have
 presented it as one. When extraction is the first to read it, under
-`read_link_targets=False` or in a streaming pass, `extract_all` re-types it and calls
-your `filter` a second time, now with the file, so a filter can see such a member twice.
-In random access it then writes the file's content. A streaming pass has already gone
-past that content, so the member fails under `on_error` instead.
+`read_link_targets=False` or in a streaming pass that has not read it yet,
+`extract_all` re-types it and calls your `filter` a second time, now with the file, so a
+filter can see such a member twice. In random access it then writes the file's content.
+A streaming pass has already gone past that content, so the member fails under
+`on_error` instead. A 7z `stream_members()` pass under the default
+`read_link_targets=True` is the exception: it reads the member's data when it reaches
+the member, re-types it there and yields the file with its content, so `extract_all`
+writes it as a file in either access mode.
 
 A hard link to a symlink, directly or through other hard links, goes the other way: your
 `filter` sees the HARDLINK the archive lists, and its result keeps that member, but what

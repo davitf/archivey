@@ -20,9 +20,10 @@ from archivey import (
     open_archive,
 )
 from archivey.cli import test_cmd
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import _report_extraction
-from archivey.cli.main import _inject_default_list, main
+from archivey.cli.info_cmd import _can_reread
+from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveMember, MemberType
@@ -245,6 +246,47 @@ def test_stdin_token_reserved() -> None:
     assert main(["-"]) == EXIT_USAGE
 
 
+@pytest.mark.parametrize("verb", ["list", "test", "info", "extract"])
+def test_empty_archive_argument_is_a_usage_error(
+    verb: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``archivey <verb> ""`` (an unset ``$ARCHIVE``) does not read the cwd.
+
+    ``Path("")`` is ``Path(".")``, so the empty string used to open the working
+    directory as a directory archive. It is a usage error, reported as a message.
+    """
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "precious.txt").write_text("keep")
+    monkeypatch.chdir(cwd)
+
+    assert main([verb, ""]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "empty" in err
+    assert "Traceback" not in err
+    assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]
+
+
+def test_extract_empty_dest_is_a_usage_error(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``-d ""`` (an unset ``$OUT``) does not extract into the cwd; ``-d .`` does."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "precious.txt").write_text("keep")
+    monkeypatch.chdir(cwd)
+
+    assert main(["x", str(sample_zip), "-d", ""]) == EXIT_USAGE
+    assert "--dest" in capsys.readouterr().err
+    assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]
+
+
 def test_reserved_verbs(sample_zip: Path) -> None:
     assert main(["create", str(sample_zip)]) == EXIT_USAGE
     assert main(["hash", str(sample_zip)]) == EXIT_USAGE
@@ -455,6 +497,68 @@ def test_info_prints_identity_once_when_the_open_fails(
     assert captured.out.count("path:") == 1
     assert "format:" in captured.out
     assert "open:" in captured.err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_info_on_a_fifo_reports_the_open_error_without_reopening(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed open on a FIFO must not run ``detect_format`` on the path again.
+
+    A pipe is read once, so a second open waits for a writer that never comes.
+    ``info`` must print the open error and return.
+    """
+    import threading
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        member = tarfile.TarInfo("a.txt")
+        member.size = 5
+        tf.addfile(member, io.BytesIO(b"hello"))
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, buf.getvalue())
+
+    result: list[int] = []
+    worker = threading.Thread(
+        target=lambda: result.append(main(["info", str(fifo)])), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+    if worker.is_alive():
+        # Unblock the stuck second open so the thread can finish, then fail.
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(5)
+        pytest.fail("archivey info blocked on a FIFO")
+    assert result == [EXIT_FAIL]
+    captured = capsys.readouterr()
+    assert "open:" in captured.err
+    # The detected format is named plainly, not as an enum repr.
+    assert "ArchiveFormat." not in captured.err
+
+
+def test_can_reread_skips_only_read_once_paths(tmp_path: Path) -> None:
+    """The fallback detection runs on anything but a FIFO, char device or socket.
+
+    A block device rereads the same bytes, so it stays eligible; the case needs root and
+    is not in the suite, so the predicate is pinned directly here.
+    """
+    regular = tmp_path / "a.zip"
+    regular.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    assert _can_reread(str(regular))
+    assert _can_reread(str(tmp_path))
+    assert not _can_reread(str(tmp_path / "missing"))
+    if os.path.exists(os.devnull) and stat.S_ISCHR(os.stat(os.devnull).st_mode):
+        assert not _can_reread(os.devnull)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_can_reread_rejects_a_fifo(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    assert not _can_reread(str(fifo))
 
 
 def test_info_on_a_directory_reports_the_directory_format(
@@ -865,6 +969,93 @@ def test_test_early_abort_reports_not_tested(
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     err = capsys.readouterr().err
     assert "1 OK, 1 failed, 1 not tested" in err
+
+
+class _StderrFailingAtFirstOk(io.StringIO):
+    """A stderr that raises ``exc`` when the first ``OK`` line is written: once, as
+    Ctrl-C arrives, or on that write and every later one, as a closed pipe does.
+    """
+
+    def __init__(self, exc: BaseException, *, every_later_write: bool) -> None:
+        super().__init__()
+        self._exc = exc
+        self._every_later_write = every_later_write
+        self._failed = False
+
+    @property
+    def failed(self) -> bool:
+        """Whether the injected error has been raised."""
+        return self._failed
+
+    def write(self, s: str) -> int:
+        if (s.startswith("OK   ") and not self._failed) or (
+            self._failed and self._every_later_write
+        ):
+            self._failed = True
+            raise self._exc
+        return super().write(s)
+
+
+def test_test_ctrl_c_mid_pass_exits_interrupted(sample_zip: Path) -> None:
+    """Ctrl-C during the read pass ends as ``interrupted`` and 130, as in ``extract``.
+
+    The interrupt leaves the loop while the member pass is suspended between members;
+    that pass must not then stop the reader from closing.
+    """
+    err = _StderrFailingAtFirstOk(KeyboardInterrupt(), every_later_write=False)
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_INTERRUPTED
+    assert "interrupted" in err.getvalue()
+    assert "Cannot close the archive reader" not in err.getvalue()
+
+
+def test_extract_ctrl_c_mid_pass_exits_interrupted(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ctrl-C during the extraction pass ends as ``interrupted`` and 130.
+
+    The progress callback runs inside the extraction loop while the member pass is
+    suspended, so an interrupt raised there must not leave that pass blocking the
+    reader's close.
+    """
+    import archivey.cli.extract_cmd as extract_mod
+
+    class _InterruptingProgress:
+        calls = 0
+
+        def __call__(self, progress: object) -> None:
+            self.calls += 1
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            pass
+
+    progress = _InterruptingProgress()
+    monkeypatch.setattr(extract_mod, "make_progress_callback", lambda **_: progress)
+    dest = tmp_path / "out"
+    assert main(["extract", str(sample_zip), "-d", str(dest)]) == EXIT_INTERRUPTED
+    assert progress.calls == 1
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
+    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stderr pipe closed during the pass gets the broken-pipe exit, not a usage
+    error about closing the reader while its member pass is active.
+    """
+    from archivey.cli import main as main_mod
+
+    # The real one closes sys.stdout / sys.stderr, which pytest's capture owns.
+    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    err = _StderrFailingAtFirstOk(
+        BrokenPipeError(32, "Broken pipe"), every_later_write=True
+    )
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+    # The pipe did close mid-pass: without this, a clean run passes the test too.
+    assert err.failed
 
 
 def test_test_summary_helper() -> None:
@@ -1653,6 +1844,75 @@ def test_extract_dest_before_dash_named_pattern(
     assert main(["x", str(z), "-d", str(dest), "--", "-file.txt"]) == EXIT_OK
     assert (dest / "-file.txt").read_bytes() == b"x"
     assert not (dest / "ok.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [["*.py", "--", "-file.txt"], ["--", "-file.txt", "*.py"]],
+    ids=["pattern-before-separator", "pattern-after-separator"],
+)
+def test_extract_dest_then_patterns_around_double_dash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: list[str]
+) -> None:
+    """A pattern before ``--`` must not turn ``--`` and later tokens into options."""
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "dash.zip", {"-file.txt": b"x", "a.py": b"y", "ok.txt": b"z"})
+    dest = tmp_path / "out"
+    assert main(["x", str(z), "-d", str(dest), *tail]) == EXIT_OK
+    assert (dest / "-file.txt").read_bytes() == b"x"
+    assert (dest / "a.py").read_bytes() == b"y"
+    assert not (dest / "ok.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "opts", [[], ["-d", "out"]], ids=["no-flags", "dest-before-separator"]
+)
+def test_parse_double_dash_pattern_named_double_dash(opts: list[str]) -> None:
+    """The first ``--`` is the separator; a second one is a pattern on every Python."""
+    argv = _inject_default_list(["x", "a.zip", *opts, "--", "--"])
+    args = _parse_cli_args(build_parser(), argv)
+    assert args.archive == "a.zip"
+    assert args.patterns == ["--"]
+    argv = _inject_default_list(["x", "a.zip", *opts, "--", "--", "b*"])
+    assert _parse_cli_args(build_parser(), argv).patterns == ["--", "b*"]
+
+
+@pytest.mark.parametrize(
+    "opts", [[], ["-d", "{dest}"]], ids=["no-flags", "dest-before-separator"]
+)
+def test_extract_member_named_double_dash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opts: list[str]
+) -> None:
+    """``x a.zip -- --`` extracts the member named ``--`` and nothing else."""
+    z = _zip(tmp_path / "dd.zip", {"--": b"x", "other.txt": b"y"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    # Without ``-d`` the extraction lands in the working directory.
+    monkeypatch.chdir(tmp_path if opts else dest)
+    flags = [o.format(dest=dest) for o in opts]
+    assert main(["x", str(z), *flags, "--", "--"]) == EXIT_OK
+    assert (dest / "--").read_bytes() == b"x"
+    assert not (dest / "other.txt").exists()
+
+
+def test_double_dash_archive_and_pattern_after_separator() -> None:
+    """Archive and patterns may both follow ``--``; dash names stay positionals."""
+    argv = _inject_default_list(["x", "--", "-a.zip", "-f", "--"])
+    args = _parse_cli_args(build_parser(), argv)
+    assert (args.archive, args.patterns) == ("-a.zip", ["-f", "--"])
+
+
+def test_unknown_option_before_double_dash_still_rejected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only tokens after ``--`` are positionals; a typo before it stays an error."""
+    z = _zip(tmp_path / "a.zip", {"a.txt": b"x"})
+    dest = tmp_path / "out"
+    args = ["x", str(z), "-d", str(dest), "a*", "--bogus", "--", "-f"]
+    assert main(args) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "unrecognized arguments: --bogus" in err
+    assert "-f" not in err.split("unrecognized arguments:")[-1]
 
 
 def test_extract_stop_on_error_reports_extracted_and_blocked(
@@ -2665,13 +2925,38 @@ def test_tar_flag_hint_matches_whole_options(
     assert "bare words" not in err
 
 
-@pytest.mark.parametrize(("bundle", "verb"), [("-xvf", "x"), ("-tzf", "t")])
+@pytest.mark.parametrize(
+    ("bundle", "verb"),
+    [
+        ("-xvf", "x"),
+        ("-tzf", "t"),
+        ("-zxvf", "x"),
+        ("-l", "l"),
+        ("-xZf", "x"),
+        ("-xmf", "x"),
+        ("-xhf", "x"),
+    ],
+)
 def test_tar_flag_hint_matches_short_option_bundles(
     bundle: str, verb: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # ``tar -xvf`` habit: the bundle's first verb letter is the verb meant.
     assert main([bundle, "a.tar"]) == EXIT_USAGE
     assert f"try 'archivey {verb} ARCHIVE'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["-exclude", "-file", "-name", "-dest", "-max", "-math", "-mix", "-all", "-tail"],
+)
+def test_tar_flag_hint_skips_single_dash_words(
+    word: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A mistyped long option is not a tar bundle: ``-exclude`` does not mean ``x``.
+    assert main(["l", "a.zip", word, "a*"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert f"unrecognized arguments: {word}" in err
+    assert "bare words" not in err
 
 
 def test_double_dash_lists_dash_named_archive(
