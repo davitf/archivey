@@ -586,12 +586,18 @@ class _PrintTracer:
             return self.leaves(node.left, scope, seen) + self.leaves(
                 node.right, scope, seen
             )
+        if isinstance(node, ast.BoolOp):  # ``a or b`` prints whichever operand wins
+            return [
+                leaf
+                for value in node.values
+                for leaf in self.leaves(value, scope, seen)
+            ]
         if isinstance(node, ast.Call):
             name = _call_name(node)
             if name in _CLI_RENDERERS:
                 return []
             local = (
-                self.functions.get(name) if isinstance(node.func, ast.Name) else None
+                self._function(name, scope) if isinstance(node.func, ast.Name) else None
             )
             if local is None:
                 return [node]
@@ -606,6 +612,20 @@ class _PrintTracer:
         if isinstance(node, ast.Name):
             return self._name_leaves(node, scope, seen)
         return [node]
+
+    def _function(
+        self, name: str, scope: ast.AST
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """The function a bare ``name(...)`` in *scope* calls: a helper defined inside
+        *scope* shadows a module-level one, as Python resolves it."""
+        for child in ast.walk(scope):
+            if (
+                isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and child is not scope
+                and child.name == name
+            ):
+                return child
+        return self.functions.get(name)
 
     def _name_leaves(
         self, node: ast.Name, scope: ast.AST, seen: frozenset[str]
