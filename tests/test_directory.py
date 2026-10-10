@@ -139,12 +139,23 @@ def test_directory_format_on_a_path_under_a_file_raises_what_the_os_reports(
 
     ``Path.exists()`` is False for this path too, and a check built on it reported
     ENOENT under ``DIRECTORY`` while ``ZIP`` and ``None`` raised ``NotADirectoryError``.
+    The class comes from the OS: POSIX reports ENOTDIR, Windows reports ERROR_PATH_NOT_FOUND
+    (``FileNotFoundError``).
     """
     (tmp_path / "a.txt").write_bytes(b"x")
     under_a_file = tmp_path / "a.txt" / "sub"
+    try:
+        open(under_a_file, "rb").close()  # noqa: SIM115
+    except OSError as e:
+        expected: type[OSError] = type(e)
+    else:  # pragma: no cover - no OS opens a path under a regular file
+        pytest.fail(f"opening {under_a_file} succeeded")
+    if sys.platform != "win32":
+        assert expected is NotADirectoryError
     for fmt in (ArchiveFormat.DIRECTORY, ArchiveFormat.ZIP, None):
-        with pytest.raises(NotADirectoryError):
+        with pytest.raises(OSError) as exc_info:
             open_archive(under_a_file, format=fmt)
+        assert type(exc_info.value) is expected, fmt
 
 
 def test_archive_info_format(simple_dir: Path) -> None:

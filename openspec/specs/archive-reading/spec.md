@@ -111,7 +111,7 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 | Directory path, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError`, naming the path and the requested format |
 | File path or stream, `format=ArchiveFormat.DIRECTORY` or an unnamed pair such as `(DIRECTORY, GZIP)` | `ArchiveyUsageError`, naming the source and the requested format |
 | Path that does not exist, `format=ArchiveFormat.DIRECTORY` | `FileNotFoundError`, as under `format=ArchiveFormat.ZIP` or `None`; not `ArchiveyUsageError` |
-| Path under a file (`a.txt/sub`), `format=ArchiveFormat.DIRECTORY` | `NotADirectoryError`, as under `format=ArchiveFormat.ZIP` or `None` |
+| Path under a file (`a.txt/sub`), `format=ArchiveFormat.DIRECTORY` | The OS's own error, the class it raises under `format=ArchiveFormat.ZIP` or `None` (`NotADirectoryError` on POSIX, `FileNotFoundError` on Windows) |
 
 ### Requirement: Declared member-stream capabilities
 
