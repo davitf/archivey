@@ -1350,6 +1350,27 @@ def test_password_eof_treated_as_no_password(
     assert "Password required" in text
 
 
+def test_password_prompt_says_a_retry_follows_a_wrong_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.cli import password as password_mod
+    from archivey.config import PasswordRequest
+
+    monkeypatch.setattr(password_mod.sys.stdin, "isatty", lambda: True)
+    prompts: list[str] = []
+
+    def _record(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return "pw"
+
+    monkeypatch.setattr(password_mod.getpass, "getpass", _record)
+    provider = password_mod.resolve_password(None)
+    assert callable(provider)
+    provider(PasswordRequest(member=None, attempt=1))
+    provider(PasswordRequest(member=None, attempt=2))
+    assert prompts == ["Password: ", "Wrong password, try again: "]
+
+
 def test_format_access_summary() -> None:
     from archivey.cli.format import format_access_summary
     from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
