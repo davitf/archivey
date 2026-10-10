@@ -689,8 +689,15 @@ def open_stream(
 
     ``format`` accepts a :class:`~archivey.StreamFormat`, a raw-stream
     :class:`~archivey.ArchiveFormat` (e.g. ``ArchiveFormat.GZ``), or ``None`` to
-    auto-detect. A container format (ZIP, TAR, …) is rejected — use
-    :func:`open_archive` for those.
+    auto-detect. A container format passed here (ZIP, TAR, ``TAR_GZ``, …) is rejected
+    — use :func:`open_archive` for those.
+
+    When auto-detection finds a compressed tar (``.tar.gz``, ``.tar.xz``, …), the
+    returned stream removes the compression layer only and yields the tar bytes, as
+    ``gzip.open`` does; ``open_archive(open_stream(p), streaming=True)`` then lists the
+    same members as ``open_archive(p)``. Detection that finds any other container (ZIP,
+    7z, RAR, ISO, an uncompressed tar) raises
+    :class:`~archivey.FormatDetectionError`: there is no compression layer to remove.
 
     A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
     returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
@@ -829,6 +836,14 @@ def _resolve_stream_format(
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
     detected = detect_format_into(open_source, config=config, collector=collector)
+    if (
+        detected.format.container is ContainerFormat.TAR
+        and detected.format.stream is not StreamFormat.UNCOMPRESSED
+    ):
+        # A compressed tar is a tar inside a single-file compressed stream: the pair's
+        # stream half is that outer codec (the detector built the pair from it). Peel
+        # that layer only and return the tar bytes, as gzip.open does for a .tar.gz.
+        return detected.format.stream
     if detected.format.container is not ContainerFormat.RAW_STREAM:
         # Detection found a container, not a compressed stream: to open_stream that is
         # the same answer as finding nothing it can open.
