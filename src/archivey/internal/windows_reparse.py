@@ -143,10 +143,14 @@ def reparse_payload_length(header: bytes) -> int:
 def parse_reparse_data(data: bytes) -> ReparsePoint | None:
     """Parse a ``REPARSE_DATA_BUFFER``, or return ``None`` when ``data`` is not one.
 
-    ``None`` means "this is not a link buffer I understand" — too short, a truncated
-    payload, or a tag that is not a symlink or a junction. Callers treat that as "no
-    link target here" and leave the member as they found it, because the alternative
-    is reporting arbitrary bytes as a filesystem path.
+    ``None`` means "this is not a link buffer I understand" — too short to hold the
+    header and the name offsets, or a tag that is not a symlink or a junction. Callers
+    treat that as "no link target here" and leave the member as they found it, because
+    the alternative is reporting arbitrary bytes as a filesystem path.
+
+    A payload length that runs past the end of ``data`` is cut to the bytes present,
+    and the buffer still parses: a name that then falls outside those bytes decodes as
+    ``""``, so the result is a link with no target rather than ``None``.
     """
     if len(data) < _HEADER.size:
         return None
