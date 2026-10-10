@@ -412,7 +412,7 @@ def test_lzip_version_0_is_unsupported_at_open(tmp_path: Path) -> None:
 def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
     from unittest.mock import patch
 
-    import archivey.internal.streams.lzip as lzip_mod
+    import archivey.internal.streams.codecs.lzip_decoder as lzip_mod
     from tests.streams_util import make_multi_member_lzip
 
     parts = [b"alpha-payload", b"beta" * 20, b"gamma"]
