@@ -33,6 +33,7 @@ __all__ = [
     "StreamConfig",
     "check_decoder_memory",
     "exceeds_decoder_memory",
+    "probe_lzma_dictionary",
     "stream_config_from_archivey",
 ]
 
@@ -69,6 +70,17 @@ class StreamConfig:
     report them as ``ARCHIVE_TRAILING_DATA``. Inside a ZIP or 7z the container bounds
     the coder's input, and what follows a coder's end there (a 7z AES stage's block
     padding) is the container's business, so the codec stops at its end silently.
+    ``probe_read_bound`` is set only by a detection probe: the most decompressed bytes
+    it reads from the stream. A codec whose decoder reserves a window the archive
+    declares builds it no larger than that read needs (:func:`probe_lzma_dictionary`
+    for the LZMA family; zstd, which cannot shrink a window, lowers
+    ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
+    no further.
+    ``refuse_input_after_end`` is set where the container's declared compressed size is
+    the codec's input exactly, with no padding allowed after it (a ZIP member): any
+    byte of that input after the codec's end of stream, a zero too, is then a
+    ``CorruptionError`` (DR-3), as 7-Zip reports "There are some data after the end of
+    the payload data" as an error there.
     """
 
     streaming: bool = False
@@ -81,6 +93,8 @@ class StreamConfig:
     decoder_limits: DecoderLimits = DecoderLimits()
     collector: DiagnosticCollector | None = field(default=None, compare=False)
     report_trailing_data: bool = False
+    probe_read_bound: int | None = None
+    refuse_input_after_end: bool = False
 
 
 def stream_config_from_archivey(
@@ -102,6 +116,36 @@ def stream_config_from_archivey(
 DEFAULT_STREAM_CONFIG = stream_config_from_archivey(
     DEFAULT_ARCHIVEY_CONFIG, streaming=False, seekable=False
 )
+
+
+# liblzma's smallest dictionary: the LZMA specification has a decoder round a smaller
+# declaration up to it, so a clamp below it would change nothing.
+_LZMA_DICT_MIN = 4096
+# Output a filter ahead of LZMA2 in an xz chain may ask of LZMA2 beyond what it hands
+# on: a BCJ filter holds back the bytes that may start an instruction (liblzma's x86
+# filter, at most 5). 64 covers that with margin. The test on a delta + x86 + LZMA2
+# chain at an 8 KiB bound needs a match 4 bytes past the bound, and an allowance of 0
+# fails it. Allowances of 1 to 3 pass that test too, but only because liblzma rounds a
+# declared dictionary up to a multiple of 16 bytes; they do not show that 1 byte of
+# lookahead is enough. Only the xz inner-TAR probe has such a chain today, and its
+# 512-byte bound sits under the 4 KiB floor.
+_LZMA_FILTER_LOOKAHEAD = 64
+
+
+def probe_lzma_dictionary(declared: int, read_bound: int | None) -> int:
+    """The LZMA dictionary to decode with when at most ``read_bound`` bytes are read.
+
+    An LZMA or LZMA2 match refers back at most as far as the output already produced,
+    so a dictionary as large as the output decodes it exactly as the declared one
+    does: liblzma's decoder produces only what it is asked for, and a dictionary it
+    never fills is only reserved. A detection probe reads a few KiB; the declaration
+    is the archive's, up to 4 GiB, and liblzma reserves all of it when the decoder is
+    built — under ``RLIMIT_AS`` or a strict commit limit that is a ``MemoryError``
+    during detection. ``None`` (not a probe) keeps the declared size.
+    """
+    if read_bound is None:
+        return declared
+    return min(declared, max(read_bound + _LZMA_FILTER_LOOKAHEAD, _LZMA_DICT_MIN))
 
 
 def exceeds_decoder_memory(declared: int, limits: DecoderLimits) -> bool:

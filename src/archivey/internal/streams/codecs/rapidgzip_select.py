@@ -164,9 +164,11 @@ class _StdlibSeekContract(DelegatingStream):
     before the start clamps to 0; only a negative ``SEEK_SET`` raises. rapidgzip clamps
     a target past the end to the size, and the gzip child refuses a relative underflow
     with ``ValueError``. An accelerator changes speed, not behaviour, so this outermost
-    layer resolves the target itself and remembers a position past the end. A read there
-    still goes to the stream below, which is at its end: the end-of-data checks under it
-    run as they would for any read at the end.
+    layer resolves the target itself and remembers a position past the end. The seek
+    that the stream below clamped has already run the end-of-data checks under it
+    (``_seek_reached_end`` in ``stdlib_takeover.py``); where those handed the stream to
+    the standard library, that seek returned the target and nothing is remembered here.
+    A read past the end still goes to the stream below, which is at its end.
     """
 
     def __init__(self, inner: BinaryIO) -> None:
@@ -281,6 +283,11 @@ def _open_rapidgzip(
     standard library, as ``AUTO`` does when rapidgzip is absent. Each of those fails
     before the child reads any of ``source``, so the caller's source is where it was.
     ``ON`` raises ``ResourceLimitError`` rather than decode in-process.
+
+    The child's memory is capped at ``DecoderLimits.max_decoder_memory``: rapidgzip
+    keeps decoded chunks, so a small file that decodes to gigabytes would otherwise
+    take that much. A child over the cap is stopped, and the standard library reads
+    the rest of the stream (``_StdlibOnAcceleratorError``).
     """
     reason = (
         f"the rapidgzip accelerator runs in a child process, and none can be started "
@@ -291,7 +298,11 @@ def _open_rapidgzip(
     if unavailable is not None:
         raise ResourceLimitError(f"{reason} ({unavailable}).")
     try:
-        return RapidgzipChildStream(source, label=label)
+        return RapidgzipChildStream(
+            source,
+            label=label,
+            max_memory=config.decoder_limits.max_decoder_memory,
+        )
     except RapidgzipChildStartError as exc:
         if config.use_rapidgzip is not AcceleratorMode.AUTO:
             raise ResourceLimitError(f"{reason} ({exc}).") from exc

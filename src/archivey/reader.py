@@ -21,6 +21,7 @@ from archivey.types import (
     ExtractionPolicyStr,
     ExtractionProgress,
     MemberFilter,
+    MemberSelectorArg,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -30,11 +31,19 @@ from archivey.types import (
 if TYPE_CHECKING:
     from archivey.internal.streams.archive_stream import ArchiveStream
 
-# Type alias for the member selector passed to stream_members() and extract_all().
-# Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
-MemberSelector = (
-    Collection[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None
-)
+# ``types.MemberSelectorArg`` is the one definition; this is its public name.
+MemberSelector = MemberSelectorArg
+"""Which members :meth:`~archivey.ForwardArchiveReader.stream_members` and
+:meth:`~archivey.ForwardArchiveReader.extract_all` act on. One of:
+
+- an iterable of member names (``str``) and :class:`~archivey.ArchiveMember` objects,
+  read once, so a generator works. A name selects every member with exactly that name
+  (a directory is ``"dir/"``); an ``ArchiveMember`` selects that member only, by
+  identity. A bare ``str`` is refused: pass ``["name"]`` for one member;
+- a predicate ``Callable[[ArchiveMember], bool]`` that returns ``True`` for the members
+  to select;
+- ``None``, for all members.
+"""
 
 
 class ForwardArchiveReader(ABC):
@@ -164,9 +173,10 @@ class ForwardArchiveReader(ABC):
         self, members: MemberSelector = None, *, file_copy_streams: bool = True
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
-        ``members`` is an optional selector (predicate, name/member collection, or
-        ``None`` for all). The yielded stream is valid only until the iterator advances;
-        it is ``None`` for non-file members.
+        ``members`` is an optional selector: a predicate, any iterable of names or
+        members (read once, so a generator works), or ``None`` for all. The yielded
+        stream is valid only until the iterator advances; it is ``None`` for non-file
+        members.
 
         The pass does not enforce ``ListingLimits``: it yields every member, and on an
         archive over a limit the listing calls after it raise ``ResourceLimitError``.
@@ -208,13 +218,13 @@ class ForwardArchiveReader(ABC):
     ) -> ExtractionReport:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
-        ``members`` selects which members to extract (names/``ArchiveMember``s, or a
-        predicate; ``None`` = all). ``filter`` runs after the ``policy`` transform and
-        before the safety checks, so it sees unsafe members too; it may rename/sanitize a
-        member (return a ``.replace()``d copy) or skip it (return ``None``), and the
-        safety checks run on what it returns. The call runs under the config
-        the reader was opened with; ``limits`` overrides its extraction limits for this
-        call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
+        ``members`` selects which members to extract: any iterable of names or
+        ``ArchiveMember``s (read once, so a generator works), a predicate, or ``None``
+        for all. ``filter`` runs after the ``policy`` transform and before the safety
+        checks, so it sees unsafe members too; it may rename/sanitize a member (return
+        a ``.replace()``d copy) or skip it (return ``None``), and the safety checks run
+        on what it returns. The call runs under the config the reader was opened with;
+        ``limits`` overrides its extraction limits for this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
         summary is the delta for this extraction call.
 
         ``abort_on`` names events that end the whole call the first time they occur —
@@ -239,6 +249,10 @@ class ForwardArchiveReader(ABC):
         afterwards fails as it would for any closed file, and closing it again is a
         no-op. The archive's own source is released after the last of them, never
         underneath a stream still reading through it.
+
+        A :meth:`stream_members` iterator (or a streaming reader's iteration) that is
+        still alive does not stop the close: the reader closes, and advancing that
+        iterator afterwards raises ``ArchiveyUsageError``.
 
         Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
         ...
@@ -277,7 +291,8 @@ class ArchiveReader(ForwardArchiveReader):
         """Look up a member by its normalized name, returning ``default`` if absent.
         This is the name-lookup entry point; :meth:`open`/:meth:`read` also accept a
         name directly. May trigger a scan; on a streaming reader raises
-        ``ArchiveyUsageError``. With duplicate member names, returns the last
+        ``ArchiveyUsageError``, as does a ``name`` that is not a ``str`` (a ``bytes``
+        name or an ``ArchiveMember``). With duplicate member names, returns the last
         (the one a sequential extraction would leave on disk)."""
         ...
 

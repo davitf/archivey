@@ -91,11 +91,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   an encrypted member's. An archive with nothing encrypted is unaffected — no password
   is handed to `unrar` at all. Watch for a password read from a file, which usually
   carries a trailing newline; strip it. → [RAR](formats.md#rar)
-- **TAR has two honesty residuals.** A trailer-less or `cat`-joined tar is *warned*
-  about, not raised — it is byte-identical to a truncation at a member boundary; set
+- **A trailer-less TAR is warned about, not raised.** A trailer-less or `cat`-joined
+  tar is byte-identical to a truncation at a member boundary; set
   `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or use `DiagnosticPolicy.strict()`) when you
-  need a provably complete listing. And a corrupt **final** header is caught in random
-  access but not in forward-only streaming. → [TAR](formats.md#tar-and-compressed-tar)
+  need a provably complete listing. A corrupt member header raises `CorruptionError` by
+  default in both access modes. → [TAR](formats.md#tar-and-compressed-tar)
 - **TAR trailing data is checked only 1 MiB past the trailer.** A non-zero byte in that
   window emits `ARCHIVE_TRAILING_DATA` (trailing junk, or a second archive concatenated
   on); zero padding passes, since `tar` writes 10 KiB records. A byte further out is not
@@ -148,7 +148,13 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   lives inside a member header, so an empty one has nothing to match and reaches the TAR
   reader only by file extension or an explicit `format=`.
   → [Errors and diagnostics](errors-and-diagnostics.md)
-- **Brotli without a `.br` name is identified by a content probe.** When the source
+- **A raw LZMA Alone, zlib or Brotli stream needs its extension.** With no name, or a
+  name for another format, `open_archive` and `detect_format` do not try these formats
+  and raise `FormatDetectionError`. Pass `format=`, use `open_stream()`, or set
+  `ArchiveyConfig(always_probe_content=True)`.
+  → [Formats — Detection](formats.md#detection)
+- **With `always_probe_content=True`, Brotli without a `.br` name is identified by a
+  content probe.** When the source
   length is known, a framing check rejects declared lengths that cannot fit; on a
   non-seekable stream of unknown length the gate is skipped. A residual can still open
   as a single fabricated member. If nothing corroborated the probe (no matching

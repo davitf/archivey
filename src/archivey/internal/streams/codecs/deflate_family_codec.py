@@ -59,8 +59,8 @@ class _DeflateFamilyCodec(StreamCodec):
     # would look like a second member.
     _bounds_source: ClassVar[bool] = True
     # Whether a stream rapidgzip ends before any output goes to the standard library
-    # (``empty_to_stdlib`` of :class:`_StdlibOnAcceleratorError`). gzip and zlib check
-    # that end in their own wrappers.
+    # (``empty_to_stdlib`` of :class:`_StdlibOnAcceleratorError`). zlib checks that
+    # end in its own wrapper.
     _empty_to_stdlib: ClassVar[bool] = False
 
     def open(

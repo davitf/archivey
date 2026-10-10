@@ -39,8 +39,12 @@ archivey.open_stream("access.log.gz")  # a stream: the decompressed bytes
 ```
 
 `open_archive` works on a plain `.gz` too — you get an archive with exactly one
-member, named after the file. Use `open_stream` when you just want the bytes and
-know there is no tar inside.
+member, named after the file. Use `open_stream` when you just want the decompressed
+bytes. On a `.tar.gz`, `.tar.xz` and the other compressed tars, `open_stream` removes
+the compression only and gives you the tar bytes, as `gzip.open` does, whether it
+detects the format or you pass `format=ArchiveFormat.TAR_GZ`. To read the files inside,
+use `open_archive`. `open_stream` refuses a ZIP, 7z, RAR, ISO or plain
+`.tar`, because there is no compression layer around them to remove.
 
 ## Which options to set
 
@@ -84,7 +88,9 @@ out-of-order read on a solid archive cannot slip in and decode a block again. An
 member stream can seek, so every member you read to its end gets its stored checksum
 checked, where the format stores one (ZIP, 7z, RAR). A TAR member has no checksum of its
 own. A compressed TAR, or a single-file stream such as a `.gz` or `.xz`, has its codec's
-trailer checked when the pass reaches the end.
+checksum checked when the pass reaches the end, where the codec carries one. For `.lz4`
+and `.zst` the checksum is the writer's choice, and legacy LZ4, Brotli, `.Z` and `.lzma`
+carry none ([details](formats.md#single-file-compressors)).
 [Details](access-and-cost.md#streaming-mode-is-one-pass)
 
 Its other limitations:
@@ -114,7 +120,10 @@ Its other limitations:
 | A sequence of paths or streams | The volumes of one multi-volume archive — see below |
 
 Passing a `format=` that says anything other than a directory, for a path that is one,
-raises `ArchiveyUsageError` rather than quietly reading the directory tree instead.
+raises `ArchiveyUsageError` rather than quietly reading the directory tree instead. The
+reverse, `format=ArchiveFormat.DIRECTORY` for a file or a stream, raises
+`ArchiveyUsageError` too. A path that cannot be reached at all raises the operating
+system's own error, such as `FileNotFoundError`, whatever `format=` says.
 
 **A seekable stream is read from wherever it currently is**, through to the end.
 Archivey treats the current position as byte 0 of the archive, so an archive stored
@@ -258,11 +267,17 @@ mislabel). You can still find out that the name lied.
 
 `detect_format` reports the same format `open_archive` would use; a directory path
 reports `ArchiveFormat.DIRECTORY`, since `open_archive` reads a directory as an
-archive. There is one wrinkle worth knowing: telling a `.tar.zst` from a plain `.zst`
-means decompressing a little of it to look for the tar header, so when that
-compressor's package is not installed the check cannot run and the bare compressor is
-reported instead. You are not left guessing: opening the file raises
-`PackageNotInstalledError`, naming the package to install.
+archive. A path to any part of a split set is detected on the whole set, so
+`backup.7z.002` reports 7-Zip. For a numbered split set (`.7z.NNN`, `.zip.NNN` or
+`.exe.NNN`), when a part before the last one is missing, part 1 included, it raises
+the same `TruncatedError` that opening does. The RAR schemes are not checked this way,
+as described under [Multi-volume archives](#multi-volume-archives). A lone first part
+with no siblings is where the two differ: `detect_format` names the format, while
+`open_archive` refuses the incomplete set. There is one more wrinkle worth knowing:
+telling a `.tar.zst` from a plain `.zst` means decompressing a little of it to look
+for the tar header, so when that compressor's package is not installed the check
+cannot run and the bare compressor is reported instead. You are not left guessing:
+opening the file raises `PackageNotInstalledError`, naming the package to install.
 See [Install and extras](install.md#what-each-format-needs).
 
 ## Passwords
@@ -365,6 +380,13 @@ reading where your `encoding=` would have given a different name, a
 differs from Python's `zipfile`
 `metadata_encoding` and from `unzip -O`, which apply the encoding to every ZIP name
 without the flag.
+
+Comments follow the same rule. A ZIP member comment decodes as its name would (the
+UTF-8 flag covers both), and the archive comment, which has no flag, decodes as a name
+without one. A RAR 1.5-4 comment decodes as UTF-8 when it is valid, otherwise with your
+`encoding=`, and otherwise as windows-1252. In both formats a byte the chosen encoding
+does not define becomes a surrogate escape, as in a name, so a comment can raise
+`UnicodeEncodeError` where a name can.
 
 The cost is that a legacy name whose bytes happen to form valid UTF-8 is read as UTF-8.
 For example, the Latin-1 name `Ã©.txt` is stored as the bytes `c3 a9 2e 74 78 74`,
