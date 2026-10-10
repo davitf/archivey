@@ -1991,12 +1991,15 @@ def _make_gzip_check_stream(inner, path):
 
     return _GzipTruncationCheckStream(
         _StdlibOnAcceleratorError(
-            inner, views=views, open_stdlib=open_stdlib, label="gzip"
+            inner,
+            views=views,
+            open_stdlib=open_stdlib,
+            label="gzip",
+            empty_to_stdlib=True,
         ),
         views=views,
         isize=isize,
         source_len=source_len,
-        open_stdlib=open_stdlib,
     )
 
 
@@ -2024,6 +2027,29 @@ def test_gzip_truncation_check_read0_mid_stream_is_not_eof(tmp_path) -> None:
     assert stream.read() == b""  # clean EOF: the full total matches ISIZE
 
 
+def test_gzip_truncation_check_drains_in_bounded_reads(tmp_path) -> None:
+    """A completing read(-1) drains the rest of the accelerator's output in reads of at
+    most 1 MiB, never with one more unbounded read."""
+    payload = bytes(range(256)) * (3 * 4096)  # 3 MiB
+    path = tmp_path / "f.gz"
+    path.write_bytes(gzip.compress(payload))
+    sizes: list[int] = []
+
+    class _Inner(io.BytesIO):
+        # Hands out at most 64 KiB per call, as the accelerator's stream may.
+        def read(self, size: int | None = -1, /) -> bytes:
+            size = -1 if size is None else size
+            sizes.append(size)
+            return super().read(1 << 16 if size < 0 else min(size, 1 << 16))
+
+    stream = _make_gzip_check_stream(_Inner(payload), path)
+    assert stream.read() == payload
+    # The caller's own read(-1) passes through; every drain read after it is bounded.
+    assert sizes[0] == -1
+    assert len(sizes) > 2
+    assert all(0 < size <= 1 << 20 for size in sizes[1:])
+
+
 def test_gzip_truncation_check_forwards_resume_offset(tmp_path) -> None:
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
@@ -2037,26 +2063,53 @@ def test_gzip_truncation_check_forwards_resume_offset(tmp_path) -> None:
     assert stream.nearest_resume_offset(100) == 9
 
 
-def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> None:
-    """Silent-empty fallback replaces `_inner`; seekable() must follow the new engine.
+def test_gzip_truncation_check_empty_output_switches_the_takeover(tmp_path) -> None:
+    """An accelerator that ends before its first byte hands the read to the standard
+    library through the takeover (``empty_to_stdlib``), which delivers the data, and
+    the backstop's checks stand down: the wrapper never opens a view of the source.
 
-    DelegatingStream caches is_seekable at construction. This is the one subclass
-    that assigns a new `_inner` afterwards. A fallback engine that is not seekable
-    must not leave the wrapper reporting the accelerator's cached True.
-    """
+    A cut file cannot show the last part: the standard library raises at the cut
+    before the wrapper sees an end. A check that ran on this valid file would open a
+    view to look for the trailer."""
+    from archivey.internal.config import DEFAULT_STREAM_CONFIG
+    from archivey.internal.streams.codecs.gzip_codec import (
+        _gzip_isize_and_length,
+        _GzipTruncationCheckStream,
+        _stdlib_gzip,
+    )
+    from archivey.internal.streams.codecs.stdlib_takeover import (
+        _SourceViews,
+        _StdlibOnAcceleratorError,
+    )
+
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
+    opened: list[str] = []
 
-    monkeypatch.setattr(
-        codecs_module.gzip_codec,
-        "GzipDecompressorStream",
-        lambda source, **_kwargs: NonSeekableBytesIO(payload),
+    def view():
+        opened.append("view")
+        return open(path, "rb")
+
+    # The takeover opens its fallback from the path; only the wrapper calls view().
+    views = _SourceViews(view, str(path))
+    source_len, isize = _gzip_isize_and_length(str(path))
+    takeover = _StdlibOnAcceleratorError(
+        io.BytesIO(b""),
+        views=views,
+        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
+        label="gzip",
+        empty_to_stdlib=True,
     )
-    stream = _make_gzip_check_stream(io.BytesIO(b""), path)
-    assert stream.seekable() is True
-    stream.read(5)
-    assert stream.seekable() is False
+    stream = _GzipTruncationCheckStream(
+        takeover, views=views, isize=isize, source_len=source_len
+    )
+    assert stream.read(5) == payload[:5]
+    assert takeover.switched
+    assert stream._inner is takeover
+    assert stream.read() == payload[5:]
+    assert stream.read() == b""
+    assert opened == []
 
 
 def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:
@@ -2498,6 +2551,87 @@ def test_gzip_later_member_with_unknown_method_is_unsupported() -> None:
     source = io.BytesIO(member + bytes(second))
     with open_codec_stream(Codec.GZIP, source, config=_STDLIB_GZIP) as stream:
         with pytest.raises(UnsupportedFeatureError):
+            stream.read()
+
+
+def _zlib_with_method(method: int) -> bytes:
+    """``CONTENT`` as a zlib stream whose CMF names compression ``method``, with FCHECK
+    fixed so zlib gets past "incorrect header check" to the method."""
+    data = bytearray(zlib.compress(CONTENT))
+    data[0] = (data[0] & 0xF0) | method
+    data[1] &= 0xE0
+    data[1] |= 31 - (data[0] * 256 + data[1]) % 31
+    return bytes(data)
+
+
+def test_zlib_unknown_compression_method_is_corruption() -> None:
+    """zlib: "unknown compression method" (CM other than 8) is damage, not an
+    unsupported feature as gzip's refused method is: RFC 1950 defines no zlib method
+    but 8. The message names the stream zlib."""
+    source = io.BytesIO(_zlib_with_method(7))
+    with open_codec_stream(Codec.ZLIB, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(CorruptionError, match="zlib stream") as excinfo:
+            stream.read()
+    assert is_corruption_not_truncation(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("codec", "label"), [(Codec.ZLIB, "zlib"), (Codec.DEFLATE, "deflate")]
+)
+def test_zlib_family_translator_names_the_stream(codec: Codec, label: str) -> None:
+    """The zlib and raw DEFLATE translators give every ``zlib.error`` as corruption
+    naming their own stream, a refused header included."""
+    translate = resolve_codec(codec, _STDLIB_GZIP).translate
+    for text in ("unknown compression method", "invalid block type"):
+        error = translate(zlib.error(f"Error -3 while decompressing data: {text}"))
+        assert is_corruption_not_truncation(error)
+        assert f"{label} stream" in str(error)
+
+
+@pytest.mark.parametrize("wbits", [-15, zlib.MAX_WBITS])
+def test_zlib_decompressor_stream_raises_typed_errors(wbits: int) -> None:
+    """``ZlibDecompressorStream`` used alone raises archivey's errors, not ``zlib.error``,
+    also after a resume at a DEFLATE block boundary."""
+    from archivey.internal.streams.codecs.deflate_decoder import (
+        ZlibDecoder,
+        ZlibDecompressorStream,
+    )
+    from archivey.internal.streams.codecs.deflate_resume import DeflateResume
+    from archivey.internal.streams.decompressor_stream import SeekPoint
+
+    label = "zlib" if wbits > 0 else "deflate"
+    bad = b"\xff" * 64 if wbits < 0 else zlib.compress(b"x")[:2] + b"\xff" * 64
+    with ZlibDecompressorStream(io.BytesIO(bad), wbits=wbits) as stream:
+        with pytest.raises(CorruptionError, match=f"Error reading {label} stream"):
+            stream.read()
+    resumed = ZlibDecoder(wbits).recreate(
+        SeekPoint(0, 0, DeflateResume(0, b"")), io.BytesIO()
+    )
+    with pytest.raises(CorruptionError, match=f"Error reading {label} stream"):
+        resumed.feed(b"\xff" * 64)
+
+
+@pytest.mark.parametrize(
+    ("codec", "label"),
+    [
+        (Codec.ZLIB, "zlib"),
+        (Codec.DEFLATE, "deflate"),
+        pytest.param(Codec.DEFLATE64, "deflate64", marks=requires("inflate64")),
+    ],
+)
+def test_a_cut_stream_names_its_format(codec: Codec, label: str) -> None:
+    """A cut stream's ``TruncatedError`` says "<format> stream is truncated"."""
+    if codec is Codec.DEFLATE64:
+        import inflate64
+
+        deflater = inflate64.Deflater()
+        data = deflater.deflate(CONTENT) + deflater.flush()
+        data = data[: len(data) // 2]
+    else:
+        data = _truncated(codec, "tail")
+    source = io.BytesIO(data)
+    with open_codec_stream(codec, source, config=_STDLIB_GZIP) as stream:
+        with pytest.raises(TruncatedError, match=f"^{label} stream is truncated"):
             stream.read()
 
 

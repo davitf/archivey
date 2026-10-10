@@ -7,6 +7,9 @@ built from the structure that the real files shared, never from their content.
 Each test asserts the behaviour a fix should give. A test whose defect still stands is
 marked ``xfail(strict=True)`` and the ``reason`` names it; the marker comes off when the
 fix lands, so an unmarked test pins a fix, or the mechanism a reproducer relies on.
+
+The probe reproducers pass ``always_probe_content=True``: by default a nameless source
+runs no content probe, so they would pass without reaching the probe they pin.
 """
 
 from __future__ import annotations
@@ -21,16 +24,18 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ArchiveFormat, FormatDetectionError
+from archivey import ArchiveFormat, ArchiveyConfig, FormatDetectionError
 from archivey.internal import detection
+from archivey.internal.streams import codecs as codecs_module
 from tests.conftest import requires
 
 # --- LZMA Alone: zero runs decode as an endless stream of zero literals. -------------
 #
 # The Alone probe checks the 13-byte header, then decodes a sample and requires output.
 # A range coder fed zero bytes decodes zero literals without error, so any header that
-# passes the gate and is followed by a zero run is accepted. Random blobs, which the spec's
-# "0 in 20 000" measurement used, never contain such runs; real files often do.
+# passes the gate and is followed by a zero run used to be accepted. Random blobs, which
+# the spec's "0 in 20 000" measurement used, never contain such runs; real files often do.
+# The probe now refuses a zero run at the start of the range-coder data.
 
 _SYNCSAFE_MASK = 0x7F
 
@@ -55,16 +60,19 @@ def _id3v23_mp3_with_padding() -> bytes:
 
 _OLE_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 
+ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LZMA Alone probe accepts a header followed by a zero run: an ID3v2.3 tag "
-        "with padding is detected as LZMA_ALONE (PROBABLE)"
-    ),
-)
+
 def test_id3_tagged_mp3_is_not_lzma_alone() -> None:
     with pytest.raises(FormatDetectionError):
+        archivey.detect_format(
+            io.BytesIO(_id3v23_mp3_with_padding()), config=ALWAYS_PROBE
+        )
+
+
+def test_a_nameless_mp3_reaches_no_probe_by_default() -> None:
+    # The scan's MP3s had names; a nameless one never reaches a content probe at all.
+    with pytest.raises(FormatDetectionError, match="always_probe_content"):
         archivey.detect_format(io.BytesIO(_id3v23_mp3_with_padding()))
 
 
@@ -74,12 +82,15 @@ def test_ole_magic_then_zeros_is_not_lzma_alone() -> None:
     # signature stops the content probes, so the Alone probe never sees this input.
     data = _OLE_MAGIC + b"\0" * 4088
     with pytest.raises(FormatDetectionError):
-        archivey.detect_format(io.BytesIO(data))
+        archivey.detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
+    # The probe refuses it on its own too: the stopping signature is defence in depth.
+    probe = codecs_module.LzmaAloneCodec().content_probe
+    assert probe(data, source_length=len(data)) is False
 
 
 def test_zero_run_after_an_alone_header_decodes_without_error() -> None:
-    # Pins the mechanism the two tests above rely on, so a liblzma change that starts
-    # rejecting it shows up here rather than as a mysterious XPASS.
+    # Pins the mechanism the probe's zero-run check guards against: liblzma itself
+    # accepts this, so only the probe can refuse it.
     header = bytes.fromhex("5d00001000ffffffffffffffff")
     out = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(
         header + b"\0" * 4096, max_length=1 << 16
@@ -97,7 +108,7 @@ def test_ole_header_then_zeros_is_not_brotli() -> None:
     header = _OLE_MAGIC + b"\0" * 16 + struct.pack("<HHHH", 0x3E, 3, 0xFFFE, 9)
     data = header + b"\0" * (256 * 1024 - len(header))
     with pytest.raises(FormatDetectionError):
-        archivey.detect_format(io.BytesIO(data))
+        archivey.detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
 
 
 def _ole_header() -> bytes:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, tzinfo
 from enum import Enum, Flag, StrEnum, auto
@@ -13,6 +13,7 @@ from typing import (
     Final,
     Literal,
     NamedTuple,
+    NoReturn,
     cast,
     overload,
 )
@@ -477,6 +478,55 @@ EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
 EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 
 
+class _ReadOnlyDict(dict[str, str]):
+    """A ``dict`` that refuses changes, the value of ``extra["tar.pax_headers"]``.
+
+    Members that carry only a TAR archive's PAX global records share one of these, so
+    a change made through one member would show on the others. Every method that
+    changes it raises ``TypeError``. It stays a ``dict``, so ``json.dumps`` and
+    ``isinstance(value, dict)`` accept it. A copy, a deep copy or a pickle round trip
+    gives a plain ``dict``, which the caller owns and may change.
+    """
+
+    __slots__ = ()
+
+    def _refuse(self, *args: object, **kwargs: object) -> NoReturn:
+        raise TypeError("extra['tar.pax_headers'] is read-only; copy it with dict()")
+
+    def __setitem__(self, key: str, value: str, /) -> NoReturn:
+        self._refuse()
+
+    def __delitem__(self, key: str, /) -> NoReturn:
+        self._refuse()
+
+    def __ior__(self, value: object, /) -> NoReturn:
+        self._refuse()
+
+    def clear(self) -> NoReturn:
+        self._refuse()
+
+    def pop(self, key: object, /, *default: object) -> NoReturn:
+        self._refuse()
+
+    def popitem(self) -> NoReturn:
+        self._refuse()
+
+    def setdefault(self, key: str, default: str = "", /) -> NoReturn:
+        self._refuse()
+
+    def update(self, *args: object, **kwargs: object) -> NoReturn:
+        self._refuse()
+
+    def __reduce__(self) -> tuple[type[dict[str, str]], tuple[dict[str, str]]]:
+        return (dict, (dict(self),))
+
+    def __copy__(self) -> dict[str, str]:
+        return dict(self)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> dict[str, str]:
+        return dict(self)
+
+
 class MemberExtra(dict[str, object]):
     """Per-member format-specific metadata on :class:`~archivey.ArchiveMember`.
 
@@ -514,7 +564,10 @@ class MemberExtra(dict[str, object]):
     * ``zip.aes_strength`` (``int``)
     * ``zip.aes_actual_method`` (``int``)
     * ``tar.type`` (``bytes``)
-    * ``tar.pax_headers`` (``dict[str, str]``)
+    * ``tar.pax_headers`` (``Mapping[str, str]``) — the member's PAX records, the
+      global ones in force included. Read-only: a change raises ``TypeError``, and
+      ``dict(...)`` gives a copy to change. It is a ``dict`` subclass, so
+      ``json.dumps`` takes it.
     * ``tar.devmajor`` (``int``)
     * ``tar.devminor`` (``int``)
     * ``gzip.original_filename`` (``str``)
@@ -562,7 +615,7 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["tar.type"], /) -> bytes: ...
     @overload
-    def __getitem__(self, key: Literal["tar.pax_headers"], /) -> dict[str, str]: ...
+    def __getitem__(self, key: Literal["tar.pax_headers"], /) -> Mapping[str, str]: ...
     @overload
     def __getitem__(self, key: Literal["tar.devmajor"], /) -> int: ...
     @overload
@@ -935,11 +988,13 @@ class ArchiveInfo:
 # Shared selector / filter aliases, used by both the public reader.py signature and the
 # internal coordinator.
 #
-# ``MemberSelectorArg`` — which members to extract: a collection of names / ArchiveMembers,
-# a predicate, or ``None`` (= all). The collection form is normalized to a predicate by the
-# shared ``normalize_member_selector`` helper (also used by ``stream_members``).
+# ``MemberSelectorArg`` — which members to extract: an iterable of names / ArchiveMembers
+# (read once, so a generator works), a predicate, or ``None`` (= all).
+# ``archivey.MemberSelector`` is the same alias, under its public name; internal modules
+# annotate with this one. The iterable form is normalized to a predicate by the shared
+# ``normalize_member_selector`` helper (also used by ``stream_members``).
 MemberSelectorArg = (
-    Collection["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
+    Iterable["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )
 # ``MemberFilter`` — a per-member sanitize/rename hook run after the policy transform and
 # before the safety checks, so it sees unsafe members too and can rename them; the

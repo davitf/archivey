@@ -162,6 +162,10 @@ class DelegatingStream(ReadOnlyIOStream):
     peels those and never every :class:`DelegatingStream` — a transforming wrapper
     (decrypt, BCJ, ``OutputCountingStream`` on a decompressor) must not report the
     underlying file's size as its own. Subclasses set ``peel_for_source_size = True``.
+    Setting it also asserts that a seek on the wrapper costs what a seek on its inner
+    costs: ``archivey.internal.source.seek_is_expensive`` peels the same layers to
+    decide whether a seek may re-decode, so a wrapper that changes seek cost (a spool
+    that makes it cheaper, a layer that makes it dearer) must not opt in.
 
     **Consistency caveat (``readinto_passthrough``).** By default ``readinto`` forwards straight
     to ``inner.readinto`` (zero-copy), which *bypasses this class's ``read``*. That is correct
