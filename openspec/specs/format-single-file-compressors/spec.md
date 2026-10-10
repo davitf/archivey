@@ -355,6 +355,7 @@ after the data decode as more codes.
 | `.lz` member + zero bytes + a damaged member | Size and CRC of the first member; its payload and one report |
 | Two `.xz` / `.lz` / `.zst` / `.lz4` / `.bz2` streams, one byte of the second stream's magic damaged | `CorruptionError` from the read and from `SEEK_END`, from a file and from a pipe; no size from the index |
 | Two `.zst` / `.lz4` / `.bz2` streams, the second stream's first magic byte set to zero | `CorruptionError` from the read, with the accelerator on and off for `.bz2` |
+| Two `.xz` / `.lz` / `.zst` / `.lz4` / `.bz2` streams, the second one's first one or two magic bytes set to zero and the file ending after its magic | `CorruptionError` from the read, from a file and from a pipe; accelerator on and off for `.bz2` |
 | A stream + 64 random bytes that match no magic in half of its positions | Full payload; one report |
 | A stream + its own first `len(magic) - 1` bytes, at the end of the file | Full payload; one report |
 | `.bz2` + `BZh0` and an empty stream's end-of-stream marker | `CorruptionError`, with the accelerator on and off |

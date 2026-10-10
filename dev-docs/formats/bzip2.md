@@ -165,12 +165,11 @@ Python exceptions only. So it runs in the caller's process, with these guards ar
   byte at the offset the standard library engine would. Before this skip, a trailing
   empty stream was reported as trailing data under the accelerator only. When that byte
   starts a stream header (`BZh` and a digit 1 to 9) or a damaged one, or when the one to
-three zeros before it start a damaged one (a damaged header may start in the padding,
-before the reported byte), the decoder
-  stopped short of a stream the standard library decodes or rejects (it does not read a
-  stream after zero padding, and leaves a cut or damaged empty stream alone), so the
-  standard library takes over at the end and gives the verdict instead of a
-  trailing-data report.
+  three zeros before it start a damaged one (a damaged header may start in the padding,
+  before the reported byte), the decoder stopped short of a stream the standard library
+  decodes or rejects (it does not read a stream after zero padding, and leaves a cut or
+  damaged empty stream alone), so the standard library takes over at the end and gives
+  the verdict instead of a trailing-data report.
 - **An exception from the caller's source must not abort the process.** `rapidgzip` calls
   `std::terminate` when a Python file object it reads from raises. The source is wrapped in
   `_TrappingSource`, which parks the exception, hands the decoder an end of data, and lets

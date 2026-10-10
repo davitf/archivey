@@ -587,9 +587,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   data, not trailing bytes. For `.xz`, `.lz`, `.zst`, `.lz4` and `.bz2`, bytes that
   hold at least half of the codec's stream magic, but not all of it, are a later stream
   with a damaged header: the read raises `CorruptionError` rather than return the
-  first stream alone. `.xz` and `.lz` keep their size and seeks when the
-  appended bytes are within 1 MiB, unless they are crafted to hold thousands of fake
-  end markers; further out the index is not found and the size reads as unknown.
+  first stream alone. `.xz` and `.lz` keep their size and seeks when the appended
+  bytes are within 1 MiB, unless they are crafted to hold thousands of fake end
+  markers; further out the index is not found and the size reads as unknown.
   A damaged end marker on the last of several `.xz` streams or `.lz` members is
   corruption, not appended bytes: the size reads as unknown, and the read or seek
   that reaches the damage raises `CorruptionError`.

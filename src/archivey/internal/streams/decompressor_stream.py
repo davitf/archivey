@@ -1225,8 +1225,8 @@ def near_stream_magic(data: bytes, magic: bytes | Sequence[Container[int]]) -> b
 
     archivey has no option like lzip's ``--loose-trailing``. A file whose appended
     bytes match by chance fails to read past its last stream, with nothing a caller
-    can set to get the rest of the data. Damage is not a policy
-    choice in this layer: a damaged last footer also raises with no option.
+    can set to get the rest of the data. Damage is not a policy choice in this
+    layer: a damaged last footer also raises with no option.
 
     ``magic`` is the magic's bytes, or the bytes each position may hold (bzip2's
     block-size digit, zstd's skippable-frame range). A ``data`` that starts with the

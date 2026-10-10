@@ -92,8 +92,8 @@ Both codecs run in archivey's engine as `FramedDecompressorStream`
 only when the next bytes are a frame or skippable-frame magic. Bytes that hold one of
 those magics in at least half of its positions, but not all, are a frame with a damaged
 magic and raise `CorruptionError`; a run of one to three zeros counts as the magic's
-first bytes there, since a damaged byte can be a zero. Anything else after a frame is trailing data,
-reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
+first bytes there, since a damaged byte can be a zero. Anything else after a frame is
+trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
 ([`single-file.md`](single-file.md) §2.3). The file-level readers the libraries offer
 (`compression.zstd.open`, `lz4.frame.open`) cannot do that: they take any bytes after a
 frame for the next frame and fail on them.

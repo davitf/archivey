@@ -243,8 +243,11 @@ class FramedDecoder(BaseDecoder):
         if self._between:
             # The file ends inside the bytes held after this stream. A short run of
             # zeros and the bytes after it can still be a magic wide, and a damaged
-            # stream (as in ``_next_stream``); anything shorter than a magic past the
-            # zeros is too short to tell, so it is what follows this one.
+            # stream (as in ``_next_stream``). The width counts from the first zero:
+            # ``\x00Zh9`` is a bzip2 magic wide and raises. Fewer bytes than that,
+            # zeros included, are too short to tell, so they are what follows this
+            # one. ``_held`` keeps at most ``width`` zeros (``_next_stream``), so the
+            # capped count decides ``zeros < width`` exactly as the uncapped one does.
             held = self._held
             if self._zero_padding:
                 self._judge_zero_run(held, len(held) - len(held.lstrip(b"\x00")))

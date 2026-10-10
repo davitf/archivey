@@ -261,10 +261,10 @@ first stream alone. The rule is lzip's for a corrupt header in a multimember fil
 shorter than the magic is too short to judge and is trailing data. Where zero bytes
 are padding (zstd, LZ4, bzip2), a run shorter than the magic is also judged as the
 magic's first bytes, since the damaged byte can be a zero, also when the file ends
-right after the magic. Unlike `lzip --loose-trailing`, nothing turns the rule off. gzip
-does not apply the rule (§7). Otherwise `DecompressorStream` stops reading the source,
-returns everything decoded, and emits one
-`ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` at that byte's offset.
+right after the magic. Unlike `lzip --loose-trailing`, nothing turns the rule off.
+gzip does not apply the rule (§7). Otherwise `DecompressorStream` stops reading the
+source, returns everything decoded, and emits one `ARCHIVE_TRAILING_DATA` with
+`expected_marker="end_of_stream"` at that byte's offset.
 Only a bare file, a compressed TAR's codec and `open_stream` report
 (`StreamConfig.report_trailing_data`); a codec inside a ZIP or 7z member stops silently,
 because the container's sizes decide there, and so do the detection and metadata probes.
