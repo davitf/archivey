@@ -67,6 +67,7 @@ from archivey.internal.backends.sevenzip_parser import (
     folder_is_encrypted,
     folder_unpack_size,
     materialize_archive,
+    packed_streams_end,
     parse_decoded_header,
     parse_header_block,
     read_signature_and_next_header,
@@ -436,24 +437,29 @@ class SevenZipReader(BaseArchiveReader):
         header_encrypted = False
         if isinstance(block, EncodedHeader):
             header_encrypted = encoded_header_needs_password(block)
+            self._archive_end = max(
+                self._archive_end, packed_streams_end(block.streams)
+            )
             block = self._decode_encoded_header_block(
                 fp, block, max_members=max_members
             )
         assert isinstance(block, PlainHeader)
+        self._archive_end = max(self._archive_end, packed_streams_end(block.streams))
         return materialize_archive(
             signature, block, is_header_encrypted=header_encrypted
         )
 
     def _report_trailing_data(self) -> None:
-        """Report a non-zero byte after the next header, the end of a 7z archive.
+        """Report a non-zero byte after the end of a 7z archive.
 
+        The end is the later of the next header's end and the last packed stream's.
         ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
         TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``
-        (DR-3). Zero padding is silent. 7-Zip warns "There are data after the end of
-        archive" for the same bytes. Runs after the header has parsed, so a wrong
-        header password or a damaged header is reported as that, not as this. A
-        self-extractor's tail (some SFX tools append a configuration block) is
-        reported too: it is outside the archive whatever wrote it.
+        (DR-3). Zero padding is silent under DR-3; 7-Zip warns about any tail, zeros
+        included. Runs after the header has parsed, so a wrong header password or a
+        damaged header is reported as that, not as this. A self-extractor's tail (the
+        certificate table of a code-signed one) is reported too: it is outside the
+        archive whatever wrote it.
         """
         fp = self._view(self._archive_end)
         try:
@@ -466,8 +472,9 @@ class SevenZipReader(BaseArchiveReader):
             code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
             message=(
                 "7z archive continues past its end: a non-zero byte appears "
-                f"{found} bytes after the end of its header. The listing does not "
-                "account for it (this file may hold something appended to the archive)."
+                f"{found} bytes after the end of its next header and packed streams. "
+                "The listing does not account for it (this file may hold something "
+                "appended to the archive)."
             ),
             context=ArchiveEofContext(
                 archive_name=self._archive_name,

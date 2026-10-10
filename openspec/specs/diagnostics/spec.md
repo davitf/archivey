@@ -138,7 +138,7 @@ returned bytes, since nothing unchecked was delivered.
 | Member blocked by a universal/policy check | No diagnostic; a `BLOCKED` `ExtractionResult` is the whole record |
 | `password=["a","b"]` on a format with no encryption | `PASSWORD_ARGUMENT_UNUSED`; context carries no candidate value and no count |
 | Non-zero byte within 1 MiB past a complete TAR trailer | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |
-| Non-zero byte within 1 MiB past a 7z archive's next header | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="7z"` |
+| Non-zero byte within 1 MiB past a 7z archive's end (next header or last packed stream) | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="7z"` |
 | Non-zero byte within 1 MiB past a RAR volume's end-of-archive block | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="rar"`, once per volume |
 | Non-zero bytes after a single-file codec's stream | `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` and the codec name as `format` |
 | Probe-only single-file read raises, uncorroborated `GUESS` | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |

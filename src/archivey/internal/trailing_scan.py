@@ -12,7 +12,8 @@ from __future__ import annotations
 from typing import BinaryIO
 
 # How far past the archive's end the scan looks, the same bound as the TAR scan's: an
-# effort limit, not a claim that the rest is zero. A non-zero byte past it goes unseen.
+# effort limit, not a claim that the rest is zero. A non-zero byte at or past it goes
+# unseen. Why a constant and not a config field: dev-docs/formats/tar.md §6.
 MAX_TRAILING_SCAN = 1 << 20
 
 _SCAN_CHUNK = 64 * 1024
