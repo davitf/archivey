@@ -195,6 +195,9 @@ _ZIP_EXTRA_UNICODE_PATH = 0x7075
 # Archive extra data record: written in front of a central directory that PKWARE
 # Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
 _ZIP_ARCHIVE_EXTRA_DATA_SIG = b"PK\x06\x08"
+# The classic and the ZIP64 end-of-central-directory record signatures.
+_EOCD_SIG = b"PK\x05\x06"
+_ZIP64_END_RECORD_SIG = b"PK\x06\x06"
 _STRONG_ENCRYPTION_MSG = (
     "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are)"
 )
@@ -1262,7 +1265,9 @@ class ZipReader(BaseArchiveReader):
                     )
                 # The overlap guard of stdlib's ZipFile.open, with archivey's own bounds
                 # (`_member_data_ends`): a member whose compressed payload extends past
-                # the next entry's start is a zip bomb.
+                # the next entry's start is a zip bomb. `info` is always an object from
+                # the `infolist()` the bounds were built from, so the lookup cannot miss.
+                assert info in self._data_end
                 if data_start + max(0, info.compress_size) > self._data_end[info]:
                     raise zipfile.BadZipFile(
                         f"Overlapped entries: {info.orig_filename!r} (possible zip bomb)"
@@ -2248,10 +2253,13 @@ def _member_data_ends(
     """Where each entry's data must end: the next local header, or the central directory.
 
     The bound for the overlap guard in ``_local_data_region``. stdlib sets the same
-    bound as ``ZipInfo._end_offset``, but only from Python 3.11.8, and 3.13 changed
-    which of two entries that share one local header gets the shared offset. Computed
-    here, the guard is the same on every Python, in the 3.11 order: the first such
-    entry in directory order reads, and each later one is an overlap.
+    bound as ``ZipInfo._end_offset``, but only from Python 3.11.8, so archivey
+    computes it here and the guard is the same on every Python.
+
+    Two entries over one local header: the first in directory order reads and each
+    later one is an overlap. stdlib before 3.13.7 does the same; 3.13.7 and later
+    warn and read both. archivey keeps refusing, because many directory entries over
+    one local header is the overlapping-entry amplification shape (DR-9a).
     """
     ends: dict[zipfile.ZipInfo, int] = {}
     end = start_dir
@@ -2400,7 +2408,7 @@ def _eocd_declares_split(fp: IO[bytes]) -> bool:
     """True when the end record stdlib parsed names a real non-zero disk.
 
     The disk fields come from ``_EndRecData``: the ZIP64 end record's when there is
-    one, else the classic record's. ``0xFFFF`` in a classic field is the ZIP64
+    one, else the classic record's. ``0xFFFF`` is the ZIP64
     sentinel ("value lives in the ZIP64 record"), not disk 65535, so it is skipped
     and a ZIP64 archive is not refused. A ZIP64 locator that counts several disks is
     already refused by stdlib (``_looks_like_multivolume``). ``fp``'s position is
@@ -2456,6 +2464,29 @@ def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:
     )
 
 
+# The ZIP64 end record without extensible data, plus the ZIP64 locator.
+_ZIP64_END_RECORDS_SIZE = 56 + 20
+
+
+def _directory_end(fp: IO[bytes], endrec: list[Any]) -> int:
+    """Where stdlib takes the central directory to end: the position of the end record
+    that follows it (the ZIP64 one when there is one).
+
+    For a ZIP64 archive, ``_EndRecData`` has shipped two layouts. CPython 3.11.14,
+    3.12.12, 3.13.10 and 3.14.1 move ``_ECD_LOCATION`` onto the ZIP64 end record.
+    Earlier patch levels leave it on the classic record, and ``_RealGetContents``
+    subtracts the ZIP64 record and locator (76 bytes) itself. The magic at
+    ``_ECD_LOCATION`` tells the two apart without a version check. ``fp``'s position
+    is left wherever the read leaves it.
+    """
+    location: int = endrec[_ECD_LOCATION]
+    if endrec[_ECD_SIGNATURE] == _ZIP64_END_RECORD_SIG:
+        fp.seek(location)
+        if fp.read(4) == _EOCD_SIG:
+            location -= _ZIP64_END_RECORDS_SIZE
+    return location
+
+
 def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
     """True when an archive extra data record sits where stdlib reads the central directory.
 
@@ -2465,22 +2496,23 @@ def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
     It is best-effort: the record is written in front of an encrypted central directory,
     but nothing else here can tell encrypted bytes from damaged ones.
 
-    Looks only where stdlib ``_RealGetContents`` reads: the EOCD position minus the
-    recorded directory size. The offset the EOCD records is not consulted: it matches
+    Looks only where stdlib ``_RealGetContents`` reads: the position of the end record
+    that follows the directory, minus the recorded directory size. The offset the EOCD records is not consulted: it matches
     that position whenever it is right, and in a stub-prefixed archive with stale offsets
     it points into the stub, where four arbitrary bytes would turn damage into a false
     Strong Encryption report. The record and size are the ones ``_EndRecData`` gives
-    stdlib, ZIP64 included. An end record stdlib cannot parse is not this case.
+    stdlib, ZIP64 included (``_directory_end`` handles both layouts of a ZIP64 end
+    record's location). An end record stdlib cannot parse is not this case.
     """
     pos = fp.tell()
     try:
         try:
             endrec = _end_rec_data(fp)
+            if endrec is None:
+                return False
+            start_dir = _directory_end(fp, endrec) - endrec[_ECD_SIZE]
         except (zipfile.BadZipFile, OSError):
             return False
-        if endrec is None:
-            return False
-        start_dir = endrec[_ECD_LOCATION] - endrec[_ECD_SIZE]
         if start_dir < 0:
             return False
         fp.seek(start_dir)

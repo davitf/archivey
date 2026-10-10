@@ -155,8 +155,9 @@ field `0x0017` SHALL list with `is_encrypted=True`, and opening it SHALL raise
 Listing a symlink of this kind SHALL leave `link_target` unset and emit
 `SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When stdlib
 cannot read the central directory and an archive extra data record
-(`PK\x06\x08`) sits where stdlib reads the directory (the end record's position
-minus the recorded directory size, from the ZIP64 end record when there is one),
+(`PK\x06\x08`) sits where stdlib reads the directory (the position of the end
+record that follows the directory, minus the directory size that record gives; for
+a ZIP64 archive both come from the ZIP64 end record, on every Python patch level),
 opening the archive SHALL
 raise `UnsupportedFeatureError` naming Strong Encryption rather than
 `CorruptionError`.
