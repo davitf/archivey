@@ -22,6 +22,7 @@ from archivey import (
     DiagnosticPolicy,
     DiagnosticRaisedError,
     FormatSupport,
+    PackageNotInstalledError,
     StreamNotSeekableError,
     format_availability,
     open_archive,
@@ -133,3 +134,29 @@ def test_mode_refusal_reports_an_unused_password_first() -> None:
             config=_PEDANTIC,
         )
     assert excinfo.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
+
+
+def test_availability_refusal_emits_no_argument_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The availability refusal comes before the argument diagnostics, so none is emitted.
+
+    ``.tar.lz4`` without ``lz4`` is refused as ``PackageNotInstalledError`` while the
+    reader is being chosen, before ``password=`` is checked. Under the pedantic preset
+    an emitted ``PASSWORD_ARGUMENT_UNUSED`` would raise ``DiagnosticRaisedError``
+    instead, so the error type is the proof. ``lz4`` is hidden the way the codec tests
+    hide it (``codecs.deps.lz4_frame = None``), so the case runs with or without it.
+    """
+    from archivey.internal.streams import codecs as codecs_module
+
+    monkeypatch.setattr(codecs_module.deps, "lz4_frame", None)
+    assert format_availability(ArchiveFormat.TAR_LZ4).support is FormatSupport.NONE
+
+    with pytest.raises(PackageNotInstalledError):
+        open_archive(
+            NonSeekableBytesIO(b""),
+            format=ArchiveFormat.TAR_LZ4,
+            streaming=False,
+            password="x",
+            config=_PEDANTIC,
+        )
