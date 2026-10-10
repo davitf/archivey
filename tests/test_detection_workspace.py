@@ -873,3 +873,70 @@ def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
     assert within_budget(receipt, budget) or any(
         s.reason in incomplete for s in info.unavailable_tiers
     ), (receipt, info.unavailable_tiers)
+
+
+def _small_tar_bytes() -> bytes:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        t.addfile(info, io.BytesIO(b"hello"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("backend_present", "budget_change", "reason"),
+    [
+        pytest.param(
+            True,
+            {"max_decode_input": 0, "max_decode_output": 0},
+            TierSkipReason.NOT_ENABLED_BY_POLICY,
+            id="off-backend-present",
+        ),
+        pytest.param(
+            False,
+            {"max_decode_input": 0, "max_decode_output": 0},
+            TierSkipReason.NOT_ENABLED_BY_POLICY,
+            id="off-backend-absent",
+        ),
+        pytest.param(
+            False,
+            {"max_decode_output": 256},
+            TierSkipReason.CAPABILITY_UNAVAILABLE,
+            id="short-budget-backend-absent",
+        ),
+        pytest.param(
+            True,
+            {"max_decode_output": 256},
+            TierSkipReason.BUDGET_EXHAUSTED,
+            id="short-budget-backend-present",
+        ),
+    ],
+)
+def test_inner_tar_skip_reason_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    backend_present: bool,
+    budget_change: dict[str, int],
+    reason: TierSkipReason,
+) -> None:
+    # The inner-TAR tier records one reason, in this order: the policy turned it off
+    # (NOT_ENABLED_BY_POLICY, which does not make the search incomplete), then the
+    # backend is absent (CAPABILITY_UNAVAILABLE: more budget would not help), then the
+    # budget cannot cover the probe (BUDGET_EXHAUSTED).
+    from dataclasses import replace
+
+    from archivey.detection_cost import TierSkip
+    from archivey.internal.streams import codecs
+
+    if not backend_present:
+        monkeypatch.setattr(codecs, "is_codec_available", lambda codec: False)
+    budget = replace(BALANCED_BUDGET, **budget_change)
+    info = detect_format(
+        io.BytesIO(gzip.compress(_small_tar_bytes())),
+        config=ArchiveyConfig(detection_budget=budget),
+    )
+    assert info.format == ArchiveFormat.GZ
+    inner = [s for s in info.unavailable_tiers if s.tier == "inner_tar"]
+    assert inner == [TierSkip("inner_tar", reason)]

@@ -80,6 +80,24 @@ def _zstd_window_log_max(limits: DecoderLimits) -> tuple[int, bool]:
     return max(low, min(wanted, high)), cap < 1 << high
 
 
+# The largest window a detection probe decodes (``StreamConfig.probe_read_bound``):
+# libzstd's own default ``window_log_max``, which is what ``zstd -d`` decodes without
+# ``--long`` or ``--memory``. Unlike LZMA, a zstd window cannot be shrunk to what the
+# read needs: libzstd refuses a frame whose window is over ``window_log_max``, and a
+# frame that does not declare its content size has the whole window reserved when
+# its header is read (measured: a 2 GiB window under a 256 MiB ``RLIMIT_AS`` fails
+# with libzstd's "Allocation error"). So a probe reserves at most this, and a frame
+# over it is refused, which the probe reads as "can't tell".
+_PROBE_WINDOW_LOG = 27
+
+
+def _probe_window_log_max(window_log_max: int, config: StreamConfig) -> int:
+    """``window_log_max`` lowered to :data:`_PROBE_WINDOW_LOG` for a detection probe."""
+    if config.probe_read_bound is None:
+        return window_log_max
+    return min(window_log_max, _PROBE_WINDOW_LOG)
+
+
 def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError:
     """Map libzstd's window refusal to the cap that caused it, or to its own ceiling."""
     window_log_max, is_cap = _zstd_window_log_max(limits)
@@ -126,6 +144,7 @@ class ZstdCodec(StreamCodec):
             )
         zstd = deps.zstd
         window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
+        window_log_max = _probe_window_log_max(window_log_max, config)
         options = {zstd.DecompressionParameter.window_log_max: window_log_max}
         return FramedDecompressorStream(
             source,
@@ -146,6 +165,13 @@ class ZstdCodec(StreamCodec):
                 and isinstance(exc, deps.zstd.ZstdError)
                 and _ZSTD_WINDOW_REFUSED in str(exc)
             ):
+                own, _ = _zstd_window_log_max(limits)
+                if _probe_window_log_max(own, config) < own:
+                    return UnsupportedFeatureError(
+                        "A zstd frame declares a window over "
+                        f"{1 << _PROBE_WINDOW_LOG} bytes, more than a detection "
+                        f"probe reserves: {exc}"
+                    )
                 return _zstd_window_refusal(exc, limits)
             return self.translate(exc)
 

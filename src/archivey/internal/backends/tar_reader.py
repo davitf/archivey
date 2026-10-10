@@ -222,6 +222,15 @@ _TAR_FORMATS: tuple[ArchiveFormat, ...] = (ArchiveFormat.TAR, *_TAR_COMPRESSED)
 _TAR_EXTENSIONS: dict[str, ArchiveFormat] = {
     f".{fmt.file_extension()}": fmt for fmt in _TAR_FORMATS
 }
+# A codec's extension aliases have their ``.tar.`` forms too (``.tar.brotli``).
+_TAR_EXTENSIONS.update(
+    {
+        f".tar{alias}": ArchiveFormat(ContainerFormat.TAR, codec.stream_format)
+        for codec in SINGLE_FILE_CODECS
+        if codec.stream_format is not None
+        for alias in codec.extension_aliases
+    }
+)
 _TAR_EXTENSIONS.update(
     {
         ".tgz": ArchiveFormat.TAR_GZ,
@@ -1224,8 +1233,9 @@ class TarReader(BaseArchiveReader):
 
     def _close_archive(self) -> None:
         # Close what this reader built, even when a close raises: teardown runs once.
-        # The source closes with the reader, after this.
-        with self._walk_guard():
+        # The source closes with the reader, after this. Under the handle lock, so a
+        # concurrent member read never runs on a stream being closed.
+        with self._handle_guard():
             self._release_owned_stream()
 
 
