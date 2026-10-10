@@ -107,6 +107,22 @@ def test_directory_format_on_a_file_raises_a_usage_error(
         open_archive(source, format=fmt)  # type: ignore[call-overload]
 
 
+def test_directory_format_on_a_missing_path_raises_file_not_found(
+    tmp_path: Path,
+) -> None:
+    """A path that does not exist is reported as missing, as under any other format=.
+
+    Not the usage error above: that one asserts the path is not a directory, which
+    nothing read for a path that is absent, and ``except FileNotFoundError`` around the
+    open has to keep catching it.
+    """
+    missing = tmp_path / "absent"
+    for fmt in (ArchiveFormat.DIRECTORY, ArchiveFormat.ZIP, None):
+        with pytest.raises(FileNotFoundError) as exc_info:
+            open_archive(missing, format=fmt)
+        assert exc_info.value.errno == errno.ENOENT
+
+
 def test_archive_info_format(simple_dir: Path) -> None:
     with open_archive(simple_dir) as reader:
         info = reader.info

@@ -575,8 +575,9 @@ def __contains__(self, member: ArchiveMember) -> bool: ...  # identity, O(1), an
 `get()` looks up by normalized name; duplicates → **last** (sequential extraction
 winner). On `streaming=True` SHALL raise `ArchiveyUsageError` regardless of
 loaded index. A `name` that is not a `str` (a `bytes` name, an `ArchiveMember`)
-SHALL raise `ArchiveyUsageError`, as `open()` does: answering `default` for it would
-report a member that exists as absent. For a no-scan peek use
+SHALL raise `ArchiveyUsageError`: answering `default` for it would report a member
+that exists as absent. `open()` refuses a `bytes` name the same way; it accepts an
+`ArchiveMember`, which `get()` does not, because `get()` looks up by name. For a no-scan peek use
 `members_report_if_available()`.
 
 `member in reader` is identity membership (yielded by this reader), O(1), any mode.

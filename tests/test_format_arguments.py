@@ -181,6 +181,27 @@ def test_open_archive_refuses_the_unknown_format_before_reading(value: object) -
     assert source.tell() == 0
 
 
+def test_open_archive_refuses_any_pair_with_an_unknown_container() -> None:
+    """The check is on the container: an unnamed UNKNOWN pair is refused the same way."""
+    fmt = ArchiveFormat(ContainerFormat.UNKNOWN, StreamFormat.GZIP)
+    with pytest.raises(ArchiveyUsageError, match="UNKNOWN"):
+        open_archive(io.BytesIO(b"x"), format=fmt)
+
+
+@pytest.mark.parametrize("value", [ArchiveFormat.UNKNOWN, "unknown"])
+def test_open_stream_refuses_unknown_without_sending_the_caller_to_open_archive(
+    value: object, gz_path: Path
+) -> None:
+    """``open_archive`` refuses UNKNOWN too, so naming it would be a second failure."""
+    with pytest.raises(ArchiveyUsageError) as exc_info:
+        open_stream(gz_path, format=value)  # type: ignore[arg-type]
+
+    message = str(exc_info.value)
+    assert "UNKNOWN" in message
+    assert "open_archive" not in message
+    assert "container format" not in message
+
+
 def test_open_archive_still_accepts_an_archive_format_and_none(zip_path: Path) -> None:
     for fmt in (None, ArchiveFormat.ZIP):
         with open_archive(zip_path, format=fmt) as reader:

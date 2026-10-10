@@ -90,7 +90,8 @@ magic and no extension.
 An explicit `format=` other than `DIRECTORY` on a directory path raises
 `ArchiveyUsageError` rather than being silently overruled; `format=DIRECTORY` is accepted.
 The mirror case, `format=DIRECTORY` on a file or a stream, raises the same
-`ArchiveyUsageError` in `_open_resolved`, before the backend is reached.
+`ArchiveyUsageError` in `_open_resolved`, before the backend is reached; a path that
+does not exist raises `FileNotFoundError` there instead, as under any other `format=`.
 `open_stream()` refuses a directory path with a message that points to `open_archive()`,
 rather than "not found".
 

@@ -70,7 +70,7 @@ the documentation SHALL NOT tell callers to branch on it.
 
 | Error split | Meaning |
 | --- | --- |
-| `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`, `format=ArchiveFormat.UNKNOWN`). |
+| `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`). |
 | `PackageNotInstalledError` | A package or external tool the format or member needs is absent: at open for a format whose backend or single codec is missing (ISO without `pycdlib`), at read for one member's codec. |
 | `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, a `DecoderLimits` cap on archive-declared decoder memory or key-derivation work, or `SpoolLimits`). |
 
@@ -567,7 +567,7 @@ and would silently switch the guard.
 | `stream_members(members=0)` | `ArchiveyUsageError` at the call, not on first `next()` |
 | `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
-| `reader.get(b"a.txt")`, `reader.get(member)` | `ArchiveyUsageError`, as `reader.open()`; never `None` for a member that exists |
+| `reader.get(b"a.txt")`, `reader.get(member)` | `ArchiveyUsageError`; never `None` for a member that exists. `reader.open(b"a.txt")` is refused the same way; `reader.open(member)` reads the member |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `TypeError: unsupported source type` — unchanged |
 
