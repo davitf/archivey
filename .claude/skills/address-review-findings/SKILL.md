@@ -120,11 +120,13 @@ Usually the answer is that the code is not self-documenting, which makes it 🟡
 a comment or an assertion that encodes the invariant, not a shrug. "Later" with no PR
 and no tracked item is just dropping it slowly.
 
-**A case the stated condition already decides gets the condition, not a new case.** When a
-finding asks a comment, rule or bound to cover one more case and the condition it states
-already decides that case, the reply quotes the condition and adds nothing. When a second
-finding lands on the same block, rewrite the block as the condition it was trying to state
-rather than adding a second case. A list of cases grows by one finding per round; in
+**Answer with the rule's own condition before adding a case.** When a finding asks a
+comment, rule or bound to cover one more case (a reviewer asks "what about pipes?" of
+"seeks are best-effort on non-seekable sources"), and the condition the text states
+already covers that case, the reply quotes the condition and the text stays as it is.
+When a second finding lands on the same block, rewrite the block as the condition behind
+its cases ("formats with a central directory", not "ZIP, 7z and ISO") rather than adding
+one more case. A list of cases grows by one finding per round; in
 another project's review loop one block took 24 findings over 9 rounds this way.
 
 ---
