@@ -946,15 +946,46 @@ def test_a_magic_damaged_to_a_zero_byte_is_corruption(
             reader.read(reader.members()[0])
 
 
+@pytest.mark.parametrize("zeros", [1, 2])
+@pytest.mark.parametrize("access", ["random", "streaming"])
+@pytest.mark.parametrize("suffix", _magic_params())
+def test_a_magic_damaged_to_zeros_at_the_end_of_the_file_is_corruption(
+    tmp_path: Path, suffix: str, access: str, zeros: int
+) -> None:
+    """The file ends right after the damaged magic: the zeros and the bytes after
+    them are one magic wide, and the end of the input judges them as the middle of
+    the file does, not as trailing data too short to be a stream."""
+    compress = _CODECS[suffix][1]
+    first = compress(_SMALL)
+    width = _MAGIC_LENGTHS[suffix]
+    data = first + b"\x00" * zeros + compress(_SMALL)[zeros:width]
+    if access == "streaming":
+        source = NonSeekableBytesIO(data)
+        with open_archive(source, streaming=True, format=_format(suffix)) as reader:
+            for _member, stream in reader.stream_members():
+                assert stream is not None
+                with raises_corruption_not_truncation():
+                    stream.read()
+        return
+    path = _write(tmp_path, suffix, data)
+    with open_archive(path, seekable_members=True) as reader:
+        with raises_corruption_not_truncation():
+            reader.read(reader.members()[0])
+
+
 @pytest.mark.parametrize("mode", _BZ2_MODES)
 @pytest.mark.parametrize(("zeros", "damaged"), [(1, True), (2, True), (4, False)])
+@pytest.mark.parametrize("at_end", [False, True], ids=["stream", "magic-at-end"])
 def test_bzip2_judges_a_short_zero_run_as_the_magic_in_both_modes(
-    tmp_path: Path, mode: AcceleratorMode, zeros: int, damaged: bool
+    tmp_path: Path, mode: AcceleratorMode, zeros: int, damaged: bool, at_end: bool
 ) -> None:
     """A run of zeros shorter than the magic, then the rest of a stream whose first
     bytes are gone, is a damaged stream; a run as long as the magic is padding, and
-    what follows it is trailing data."""
+    what follows it is trailing data. The same holds when the file ends after the
+    magic's fourth byte."""
     second = bz2.compress(_SMALL)
+    if at_end:
+        second = second[:4]
     first = bz2.compress(_SMALL)
     # One or two zeros in place of "B" or "BZ" leave three or two of the four magic
     # bytes. Four zeros before "Zh" are padding, and "Zh" is not near the magic.

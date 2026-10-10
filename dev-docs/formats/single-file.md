@@ -260,8 +260,10 @@ first stream alone. The rule is lzip's for a corrupt header in a multimember fil
 `near_stream_magic()` in `decompressor_stream.py` states it once for all five. A tail
 shorter than the magic is too short to judge and is trailing data. Where zero bytes
 are padding (zstd, LZ4, bzip2), a run shorter than the magic is also judged as the
-magic's first bytes, since the damaged byte can be a zero. Unlike `lzip
---loose-trailing`, nothing turns the rule off. gzip does not apply the rule (§7). Otherwise `DecompressorStream` stops reading the source, returns everything decoded, and emits one
+magic's first bytes, since the damaged byte can be a zero, also when the file ends
+right after the magic. Unlike `lzip --loose-trailing`, nothing turns the rule off. gzip
+does not apply the rule (§7). Otherwise `DecompressorStream` stops reading the source,
+returns everything decoded, and emits one
 `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` at that byte's offset.
 Only a bare file, a compressed TAR's codec and `open_stream` report
 (`StreamConfig.report_trailing_data`); a codec inside a ZIP or 7z member stops silently,
@@ -414,7 +416,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `password=` accepted and unused | `::test_password_is_accepted_and_recorded` |
 | `open_stream` is forward-only unless asked, and builds no index then | `tests/test_open_stream.py::test_open_stream_default_is_forward_only`, `::test_open_stream_xz_default_builds_no_index`, `::test_open_stream_xz_seekable_exposes_size` |
 | Bytes after the stream: payload, one report, zeros silent, strict raises, xz and lzip keep their index, containers silent | `tests/test_stream_trailing_data.py` |
-| A damaged magic on a later stream raises on a read and a seek; other bytes and a tail shorter than the magic still report; the rule is lzip's | `tests/test_stream_trailing_data.py::test_a_damaged_magic_on_a_later_stream_is_corruption`, `::test_other_bytes_after_a_stream_are_still_reported`, `::test_the_near_magic_rule_is_lzips` |
+| A damaged magic on a later stream raises on a read and a seek, also when a zero replaces its first bytes, in the middle of the file or at its end; other bytes and a tail shorter than the magic still report; the rule is lzip's | `tests/test_stream_trailing_data.py::test_a_damaged_magic_on_a_later_stream_is_corruption`, `::test_other_bytes_after_a_stream_are_still_reported`, `::test_the_near_magic_rule_is_lzips`, `::test_a_magic_damaged_to_a_zero_byte_is_corruption`, `::test_a_magic_damaged_to_zeros_at_the_end_of_the_file_is_corruption`, `::test_bzip2_judges_a_short_zero_run_as_the_magic_in_both_modes`, `::test_a_zero_run_is_judged_the_same_however_the_input_is_cut` |
 | A new codec needs only a descriptor | `tests/test_codec_descriptor.py` |
 | Probe order, completion window, `format_unconfirmed` | `tests/test_detection.py`, `tests/test_brotli_framing_gate.py::test_guess_decode_failure_sets_format_unconfirmed` |
 

@@ -140,6 +140,9 @@ class FramedDecoder(BaseDecoder):
     ) -> None:
         self._new = new_decompressor
         self._magic = magic
+        # The magic-based codecs only (not LZMA Alone): they also judge a short run of
+        # zeros as the start of a damaged magic.
+        self._magic_start = magic if isinstance(magic, MagicStart) else None
         self._zero_padding = zero_padding
         self._decomp = new_decompressor()
         self._fed = False
@@ -168,7 +171,7 @@ class FramedDecoder(BaseDecoder):
             # (``input_after_end``).
             self._input_after_end = True
         rest = data.lstrip(b"\x00") if self._zero_padding else data
-        width = self._magic.width if isinstance(self._magic, MagicStart) else 0
+        width = self._magic_start.width if self._magic_start is not None else 0
         # A run of ``width`` zeros or more is padding whatever its length, so no more
         # than ``width`` of them are kept: the decision then does not depend on where
         # the source's chunks end.
@@ -187,14 +190,23 @@ class FramedDecoder(BaseDecoder):
             self._decomp = self._new()
             self._between = False
             return rest
-        # A damaged first byte can be a zero, which the strip above took for padding.
-        # So a run shorter than the magic is also judged as its start.
-        if 0 < zeros < width and isinstance(self._magic, MagicStart):
-            if self._magic.damaged(data):
-                raise damaged_stream_error()
+        self._judge_zero_run(data, zeros)
         self._past_end(rest)
         self._done = True
         return b""
+
+    def _judge_zero_run(self, data: bytes, zeros: int) -> None:
+        """Raise when ``data``, past a stream's end, starts with ``zeros`` zeros that
+        begin a damaged stream.
+
+        A damaged first byte can be a zero, which the padding strip takes for padding.
+        So a run shorter than the magic is also judged as its start. ``_next_stream``
+        and ``flush`` both ask, so the end of the input judges the bytes as the middle
+        of the file does.
+        """
+        magic = self._magic_start
+        if magic is not None and 0 < zeros < magic.width and magic.damaged(data):
+            raise damaged_stream_error()
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if self._done:
@@ -229,9 +241,14 @@ class FramedDecoder(BaseDecoder):
         if self._done:
             return DecodeOut(b"")
         if self._between:
-            # Fewer bytes than a magic are where the file ends: too short to be a
-            # stream or a damaged one, so they are what follows this one.
-            self._past_end(self._held)
+            # The file ends inside the bytes held after this stream. A short run of
+            # zeros and the bytes after it can still be a magic wide, and a damaged
+            # stream (as in ``_next_stream``); anything shorter than a magic past the
+            # zeros is too short to tell, so it is what follows this one.
+            held = self._held
+            if self._zero_padding:
+                self._judge_zero_run(held, len(held) - len(held.lstrip(b"\x00")))
+            self._past_end(held)
             self._held = b""
             self._done = True
             return DecodeOut(b"")
