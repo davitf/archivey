@@ -1247,6 +1247,31 @@ record has no check value.
 | `-hp` RAR 1.5-4 whose end block is the first encrypted header | `EncryptionError` ("wrong password?") at open |
 | `-hp` RAR5 without a check value | `EncryptionError` ("wrong password?") at open |
 
+### Requirement: Report bytes after a RAR end-of-archive block
+
+After an intact end-of-archive block, the walk SHALL look at most 1 MiB further in
+that volume, and a non-zero byte there SHALL emit one `ARCHIVE_TRAILING_DATA` per
+volume after the members (`format="rar"`, `expected_marker="zeros_to_eof"`,
+`observed_kind="nonzero"`, `observed_bytes` the offset of that byte past the end
+block). It is a warning by default and raises under `DiagnosticPolicy.strict()`
+(DR-3). Zero bytes after the block SHALL be silent, and a byte more than 1 MiB past it
+goes unseen. With encrypted headers the block ends after its AES padding. In a set the
+message names the volume. A damaged end block is taken for one only when nothing
+follows it (previous requirement), so this check does not apply to it, and a RAR 1.5-4
+archive with no end block has nothing after its last header to check. `unrar` 7.00
+says nothing about these bytes; 7-Zip 23.01 warns "There are data after the end of
+archive", and DR-3 follows 7-Zip.
+
+#### Scenario: RAR trailing bytes
+
+| Case | Default policy | `strict()` |
+| --- | --- | --- |
+| RAR 1.5-4 or RAR5, headers plain or encrypted, ending at the end block | Nothing | Opens |
+| 4 KiB of zeros after the end block | Nothing | Opens |
+| `b"JUNK"` after the end block, or after zeros within 1 MiB | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
+| `b"JUNK"` after volume 1 of a set | Full listing; one `ARCHIVE_TRAILING_DATA` naming volume 1 | `DiagnosticRaisedError` |
+| Non-zero byte more than 1 MiB past the end block | Nothing | Opens |
+
 ### Requirement: A damaged header after the main header SHALL list the members before it
 
 When a header after the main header fails its CRC, and it is not taken as a damaged end

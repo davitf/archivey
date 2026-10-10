@@ -261,6 +261,14 @@ whose encryption record has no check value. A damaged block whose type byte is i
 the damaged byte is not recognised as `ENDARC`, so it falls under the damaged-header
 rule below.
 
+*Bytes after an intact end block.* The walk looks up to 1 MiB past the block (past its
+AES padding under `-hp`, as the walk's `data_offset` is a ciphertext offset) and keeps
+the first non-zero byte's offset in `RarArchive.trailing_data_volumes`. The reader
+reports each volume's as `ARCHIVE_TRAILING_DATA` (`expected_marker="zeros_to_eof"`) after
+the members, DR-3. Zeros pass. `unrar t` 7.00 exits 0 on such a file; 7-Zip warns.
+Measured: `rar` 7.00 writes a few zero bytes after the end block of a non-last volume, so
+the zero rule matters there. Tests: `tests/test_rar_trailing_data.py`.
+
 *Ordering with a cut.* When the merged listing is also truncated (a later volume cut),
 the reader raises `TruncatedError` before it reaches this diagnostic, as it does for the
 missing-block one. That is deliberate: under a strict policy, emitting first would

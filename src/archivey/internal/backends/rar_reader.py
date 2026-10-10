@@ -2432,6 +2432,7 @@ class RarReader(BaseArchiveReader):
             )
         self._emit_end_block_missing()
         self._emit_end_block_damaged()
+        self._emit_trailing_data()
 
     def _emit_end_block_damaged(self) -> None:
         """Report each volume whose end-of-archive block failed its header CRC.
@@ -2462,6 +2463,38 @@ class RarReader(BaseArchiveReader):
                     archive_name=self._archive_name,
                     format="rar",
                     expected_marker="end_of_archive_block",
+                    expected_bytes=0,
+                    observed_bytes=offset,
+                    observed_kind="nonzero",
+                ),
+                logger=logger,
+            )
+
+    def _emit_trailing_data(self) -> None:
+        """Report each volume with a non-zero byte after its end-of-archive block.
+
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer or a 7z next header: a warning by default, refused under
+        ``DiagnosticPolicy.strict()`` (DR-3), once per volume. Zero padding is silent.
+        ``unrar`` says nothing about these bytes; 7-Zip warns "There are data after
+        the end of archive", and DR-3 follows it. ``observed_bytes`` counts from the
+        end of that volume's end block.
+        """
+        in_set = self._archive.is_volume or self._volume_count > 1
+        for index, offset in sorted(self._archive.trailing_data_volumes.items()):
+            where = f"volume {index + 1} of the set" if in_set else "RAR archive"
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+                message=(
+                    f"{where[0].upper()}{where[1:]} continues past its end-of-archive "
+                    f"block: a non-zero byte appears {offset} bytes after it. The "
+                    "listing does not account for it (this file may hold something "
+                    "appended to the archive)."
+                ),
+                context=ArchiveEofContext(
+                    archive_name=self._archive_name,
+                    format="rar",
+                    expected_marker="zeros_to_eof",
                     expected_bytes=0,
                     observed_bytes=offset,
                     observed_kind="nonzero",

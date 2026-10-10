@@ -66,6 +66,7 @@ from archivey.internal.timestamps import (
     filetime_to_datetime,
     unix32_to_datetime,
 )
+from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.terminal import quoted
 
 
@@ -596,6 +597,13 @@ class RarArchive:
     #: is unproven: there a CRC mismatch reads the same as a wrong key, so the walk
     #: raises the wrong-password ``EncryptionError`` instead.
     end_block_damaged_volumes: dict[int, int] = field(default_factory=dict)
+    #: 0-based volume index -> offset, counted from the end of that volume's
+    #: end-of-archive block, of the first non-zero byte within
+    #: :data:`~archivey.internal.trailing_scan.MAX_TRAILING_SCAN` bytes after it.
+    #: Only for a volume whose end block was read intact: a damaged one is taken for
+    #: the end block only when nothing follows it. The reader reports each as
+    #: ``ARCHIVE_TRAILING_DATA`` after the members. Zero padding is not recorded.
+    trailing_data_volumes: dict[int, int] = field(default_factory=dict)
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
     #: of the set, decrypted with a matching CRC16, which proves the header password.
     #: :func:`parse_rar_volumes` passes it to the next volume's walk, since a set has
@@ -768,6 +776,7 @@ def parse_rar_volumes(
             merged.password_proven = merged.password_proven or part.password_proven
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
+            merged.trailing_data_volumes.update(part.trailing_data_volumes)
             for position, member in enumerate(part.members):
                 if gap and position == 0:
                     # Its earlier parts are in the missing volume: listed on its
@@ -1027,6 +1036,20 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
         source.seek(pos)
     except (OverflowError, OSError) as exc:
         raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
+
+
+def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
+    """Where the first non-zero byte after an end block at ``end`` lies, if any.
+
+    ``end`` is where the block's bytes stop in the volume: past its AES padding when
+    headers are encrypted, as the walk's ``data_offset`` is a ciphertext offset. The
+    read position is left at ``end``. See ``RarArchive.trailing_data_volumes``.
+    """
+    _seek_to(source, end)
+    try:
+        return first_nonzero_offset(source)
+    finally:
+        source.seek(end)
 
 
 def _ends_at(source: BinaryIO, pos: int) -> bool:
@@ -2014,6 +2037,7 @@ def _parse_rar3(
     damaged: str | None = None
     main_seen = False
     end_block_damaged_at: int | None = None
+    trailing_at: int | None = None
     # Set once an encrypted header decrypted with a matching CRC16, in this volume or
     # an earlier one of the set (the caller passes that in). The walk treats a
     # mismatch as proof of a wrong password, so a match proves the password the same
@@ -2151,6 +2175,7 @@ def _parse_rar3(
                 raise UnsupportedFeatureError(
                     "Need first volume of multi-volume RAR archive"
                 )
+            trailing_at = _scan_after_end_block(source, data_offset)
             break
 
         if block_type in (_RAR3_FILE, _RAR3_SUB):
@@ -2266,6 +2291,9 @@ def _parse_rar3(
             {volume_index: end_block_damaged_at}
             if end_block_damaged_at is not None
             else {}
+        ),
+        trailing_data_volumes=(
+            {volume_index: trailing_at} if trailing_at is not None else {}
         ),
         password_proven=password_proven,
     )
@@ -2878,6 +2906,7 @@ def _parse_rar5(
     main_seen = False
     end_block_seen = False
     end_block_damaged_at: int | None = None
+    trailing_at: int | None = None
     # Only the first MAIN of a volume is asked for the quick-open table. unrar
     # accepts a repeated MAIN, and each try reads a QO payload of up to
     # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
@@ -3036,6 +3065,7 @@ def _parse_rar5(
             endarc_flags, _ = load_vint(hdata, pos)
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             end_block_seen = True
+            trailing_at = _scan_after_end_block(source, data_offset)
             break
 
         if block_type in (_RAR5_FILE, _RAR5_SERVICE):
@@ -3101,6 +3131,9 @@ def _parse_rar5(
             {volume_index: end_block_damaged_at}
             if end_block_damaged_at is not None
             else {}
+        ),
+        trailing_data_volumes=(
+            {volume_index: trailing_at} if trailing_at is not None else {}
         ),
     )
 
