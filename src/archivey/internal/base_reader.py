@@ -3003,29 +3003,48 @@ class BaseArchiveReader(ArchiveReader):
         # already closed, so it cannot tell the owner from a late caller -- and
         # ArchiveStream.close tests `self.closed` outside its lock, so two concurrent
         # close() calls could otherwise both reach inner.close() on the same stream.
+        pending: Exception | None = None
         if self._state.claim_stream_shutdown():
             # A stream_members() pass suspended at a yield: close the backend's pass
             # iterator first, whose finally closes its last stream and then frees the
             # pass's own resources. The transition took a lease with the closer, so
             # no stream close in here can claim teardown; it runs at _maybe_teardown()
-            # below, after the closer and the stream shutdown. The streams are closed
-            # and the lease dropped even if the closer fails.
-            closer = self._state.take_pass_wind_down()
+            # below, after the closer and the stream shutdown. Teardown runs even when
+            # the wind-down or the stream shutdown fails: an Exception from either is
+            # held and handed to _maybe_teardown(), which raises it after teardown.
+            # An interrupt propagates alone; the finally still drops the lease, so the
+            # next close() or the last stream close reaches teardown. The closer is
+            # taken inside the try, so no interrupt can land between taking it and
+            # the finally that drops its lease.
             try:
+                closer = self._state.take_pass_wind_down()
                 if closer is not None:
                     closer()
+            except Exception as exc:  # noqa: BLE001 - raised by _maybe_teardown below
+                pending = exc
             finally:
                 try:
                     self._close_public_streams()
+                except Exception as exc:  # noqa: BLE001 - raised by _maybe_teardown
+                    pending = (
+                        exc
+                        if pending is None
+                        else ExceptionGroup(
+                            "winding down the pass and closing member streams "
+                            "both failed",
+                            [pending, exc],
+                        )
+                    )
                 finally:
-                    if closer is not None:
-                        self._state.finish_pass_wind_down()
+                    # Idempotent, and a no-op when the transition took no closer.
+                    self._state.finish_pass_wind_down()
         # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
         # so this is a no-op wherever mark_reader_closed() returned False for a good
         # reason. It is not a no-op after a close() interrupted just past the transition:
         # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
-        # although nothing tore the archive down.
-        self._maybe_teardown()
+        # although nothing tore the archive down. With teardown already claimed, it
+        # still raises ``pending``.
+        self._maybe_teardown(pending)
         self._closed = True
 
     def _close_public_streams(self) -> None:

@@ -169,8 +169,12 @@ class ReaderState:
         self._teardown_claimed = False
         self._stream_shutdown_claimed = False
         # A suspended pass's ``pass_closer``, handed over by the close transition with
-        # one lease in ``_lease_count``; see :meth:`take_pass_wind_down`.
+        # a lease of its own; see :meth:`take_pass_wind_down`. Like the reader's lease,
+        # that lease is a flag read by _outstanding_leases_locked, so taking and dropping
+        # it are one store each, and it is tracked apart from the closer so close() can
+        # drop it even when an interrupt lost the closer.
         self._pass_wind_down: Callable[[], None] | None = None
+        self._pass_wind_down_lease = False
         # Library-internal open windows (extract_all's coordinator, first-touch link
         # reads), keyed BY THREAD: the exemption from the live-stream gate and from
         # worker rejection applies only to the thread that entered the window. A plain
@@ -268,9 +272,14 @@ class ReaderState:
             return closer
 
     def finish_pass_wind_down(self) -> None:
-        """Drop the lease taken with the pass closer. Teardown is the caller's next step."""
+        """Drop the lease taken with the pass closer, if still held. Teardown is next.
+
+        Idempotent, and a no-op when the transition took no closer, so ``close()`` can
+        call it unconditionally from a ``finally``.
+        """
         with self._lock:
-            self._release_lease_locked()
+            self._pass_wind_down = None
+            self._pass_wind_down_lease = False
 
     def release_pass(self, token: OperationToken) -> None:
         with self._lock:
@@ -536,6 +545,10 @@ class ReaderState:
                         "Cannot close the archive reader while an open()/read() call "
                         "is still in progress."
                     )
+                # A root pass and in-flight workers exclude each other (acquire_pass /
+                # acquire_worker), so with a suspended pass the wait below never runs
+                # and the lock is held unbroken from the check above to the take below.
+                assert self._root is None or not self._workers
                 self._closing = True
                 try:
                     while self._workers:
@@ -543,14 +556,17 @@ class ReaderState:
                     # Notify last. If an interrupt lands after the transition but
                     # before the lease drop, the retry branch above finishes the drop.
                     self.lifecycle = LifecycleState.READER_CLOSED
-                    # In the same lock hold as the decision above, so the suspended
-                    # pass cannot resume and release itself in between. The lease
-                    # keeps teardown back until close() has run the closer: the
-                    # backend's pass cleanup must come before the source is closed.
+                    # In the same lock hold as the decision above (see the assert
+                    # before the wait), so the suspended pass cannot resume and
+                    # release itself in between. The lease keeps teardown back until
+                    # close() has run the closer: the backend's pass cleanup must
+                    # come before the source is closed.
                     root = self._root
                     if root is not None and root.pass_closer is not None:
+                        # Lease first: an interrupt between the two stores leaves a
+                        # lease that close() drops, never a closer without a lease.
+                        self._pass_wind_down_lease = True
                         self._pass_wind_down, root.pass_closer = root.pass_closer, None
-                        self._lease_count += 1
                     run_teardown = self._drop_reader_lease_locked()
                     self._close_cv.notify_all()
                     return run_teardown
@@ -617,7 +633,11 @@ class ReaderState:
         return self._teardown_due_locked()
 
     def _outstanding_leases_locked(self) -> int:
-        return self._lease_count + (1 if self._reader_lease_held else 0)
+        return (
+            self._lease_count
+            + (1 if self._reader_lease_held else 0)
+            + (1 if self._pass_wind_down_lease else 0)
+        )
 
     def _teardown_due_locked(self) -> bool:
         return (

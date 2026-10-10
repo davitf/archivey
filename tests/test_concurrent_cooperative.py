@@ -258,6 +258,50 @@ def test_close_winds_down_suspended_pass_before_teardown(
         next(it)
 
 
+@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+def test_close_tears_down_when_pass_wind_down_fails(
+    tmp_path: Path,
+    make_source,
+    streaming: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing wind-down propagates out of close(), and the archive is still torn down.
+
+    The wind-down lease keeps teardown back until the closer has run; a closer that
+    raises must not leave the archive and its source open.
+    """
+    events: list[str] = []
+    reader = open_archive(make_source(tmp_path), streaming=streaming)
+    real_pass = reader._iter_with_data
+    real_close_archive = reader._close_archive
+
+    def failing_pass(*args, **kwargs):  # noqa: ANN202 - a generator wrapper
+        try:
+            yield from real_pass(*args, **kwargs)
+        finally:
+            events.append("pass wound down")
+            raise RuntimeError("wind-down failed")
+
+    def recorded_close_archive() -> None:
+        events.append("archive closed")
+        real_close_archive()
+
+    monkeypatch.setattr(reader, "_iter_with_data", failing_pass)
+    monkeypatch.setattr(reader, "_close_archive", recorded_close_archive)
+    it = reader.stream_members()
+    stream = next(s for m, s in it if s is not None and m.size)
+    assert stream.read()
+    source = reader._source
+    with pytest.raises(RuntimeError, match="wind-down failed"):
+        reader.close()
+    assert events == ["pass wound down", "archive closed"]
+    assert source is None or source.closed
+    assert stream.closed
+    reader.close()  # idempotent after the failed close
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        next(it)
+
+
 def test_close_still_refused_while_pass_runs_on_another_thread(tmp_path: Path) -> None:
     """Only a pass suspended at a yield is closed underneath; a running one still blocks."""
     root = _dir_with_files(tmp_path)
