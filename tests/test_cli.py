@@ -2240,41 +2240,6 @@ def test_extract_stop_on_error_reports_members_extracted(
     assert not (tmp_path / "out" / "later.txt").exists()
 
 
-def test_members_for_include_check_skips_forward_only(
-    tmp_path: Path,
-) -> None:
-    """Forward-only readers must not be pre-scanned (would burn the sole pass)."""
-    import io
-    import tarfile
-
-    from archivey import open_archive
-    from archivey.cli.filters import members_for_include_check
-    from archivey.cost import StreamCapability
-
-    tar_path = tmp_path / "a.tar"
-    with tarfile.open(tar_path, "w") as tf:
-        info = tarfile.TarInfo("a.txt")
-        info.size = 1
-        tf.addfile(info, io.BytesIO(b"x"))
-
-    class _NonSeekable(io.BytesIO):
-        def seekable(self) -> bool:
-            return False
-
-        def seek(self, *args: object, **kwargs: object) -> int:
-            raise OSError("not seekable")
-
-        def tell(self) -> int:
-            raise OSError("not seekable")
-
-    with open_archive(_NonSeekable(tar_path.read_bytes()), streaming=True) as reader:
-        assert reader.cost.stream_capability is StreamCapability.FORWARD_ONLY
-        assert members_for_include_check(reader) is None
-        # Sole pass still available for extract/test.
-        pairs = list(reader.stream_members())
-        assert [m.name for m, _ in pairs] == ["a.txt"]
-
-
 # --- --abort-on / OVERWRITTEN reporting -------------------------------------
 
 

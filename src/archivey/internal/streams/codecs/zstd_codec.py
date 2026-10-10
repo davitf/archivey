@@ -157,7 +157,8 @@ class ZstdCodec(StreamCodec):
                 # The frame names a dictionary (its Dictionary_ID), and archivey has no
                 # way to be given one. zstd reports the same "Dictionary mismatch".
                 return UnsupportedFeatureError(
-                    f"zstd frame needs a dictionary, which is not supported: {exc!r}"
+                    f"zstd frame needs a dictionary, which is not supported: {exc!r}; "
+                    "a damaged header reads the same way"
                 )
             if "checksum" in str(exc):
                 # The frame's content checksum ("Restored data doesn't match
