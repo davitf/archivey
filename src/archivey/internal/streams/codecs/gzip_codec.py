@@ -28,7 +28,7 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.stdlib_takeover import (
-    _drain_to_end,
+    _drain_into,
     _OutputChecksum,
     _SourceViews,
     _StdlibOnAcceleratorError,
@@ -144,7 +144,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
        (``empty_to_stdlib``, set by ``GzipCodec._empty_to_stdlib``), so truncation is
        loud and any recoverable prefix is streamed (valid empty gzip still succeeds with
        zero bytes). This wrapper sees only that decoder's reads, and its checks stand
-       down after the switch.
+       down after the switch. That decoder reads a seekable view of the source, so it
+       is seekable too, and the ``seekable()`` that this wrapper and the ones above it
+       cached from rapidgzip stays true (``_StdlibOnAcceleratorError._open_stdlib_at``
+       asserts it).
     2. On EOF after **non-empty** delivery — check that rapidgzip decoded to the end of
        the source (its compressed position), then look for the member's trailer: the CRC-32
        of the output, kept as it goes by, and its length (mod 2**32), as the eight bytes
@@ -167,7 +170,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
     per-read reopen is needed and the tri-state is preserved: ``source_len < 18`` ⇒ a
     non-empty soft EOF is an incomplete member, handed to the standard library like a
     mismatch; a value ⇒ compare; ``source_len is None`` (unreadable) ⇒ return without
-    raising. ``views`` gives the multi-member scan and the stdlib fallback their own access
+    raising. ``views`` gives the trailer lookup and the multi-member scan their own access
     to the source (:class:`_SourceViews`), so neither disturbs the live accelerator's
     cursor.
 
@@ -231,11 +234,13 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 # Completing read (read/-1): observe soft EOF now and run ISIZE
                 # before returning. Callers that do only ``s.read(); s.close()`` must
                 # still get TruncatedError from the read — never from close (ADR 0014).
-                data += _drain_to_end(self._inner, self._count)
+                buf = bytearray(data)
+                _drain_into(self._inner, buf, self._count)
                 self._checked = True
                 more = self._verify_not_truncated(-1)
                 self._pos += len(more)
-                data += more
+                buf += more
+                return bytes(buf)
             return data
         if not self._checked:
             self._checked = True

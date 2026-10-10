@@ -332,6 +332,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         the newest of ``points``, in ascending order, at or before it. A point past it
         would only serve a later seek: the seek here ignores it."""
         stdlib = self._open_stdlib(self._views.for_stdlib())
+        # A view of a seekable source gives a seekable decoder. The wrappers above this
+        # stream cached seekable() from the accelerator, and the seek below needs it.
+        assert is_seekable(stdlib), "a standard-library fallback must be seekable"
         if points and isinstance(stdlib, DecompressorStream):
             stdlib.add_seek_points(points)
         try:
@@ -355,28 +358,29 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._replace_inner(self._open_stdlib_at())
 
 
-# How much output a completing ``read()`` of an end check asks the decoder for in one
-# call while it drains to the end of rapidgzip's output (:func:`_drain_to_end`).
+# How much output an end check asks the decoder for in one call while it reads ahead:
+# the drain of a completing ``read()`` (:func:`_drain_into`), and the zlib check's
+# read-through on a seek.
 _DRAIN_CHUNK = 1 << 20
 
 
-def _drain_to_end(
-    inner: BinaryIO, count: Callable[[bytes], None] | None = None
-) -> bytes:
+def _drain_into(
+    inner: BinaryIO, buf: bytearray, count: Callable[[bytes], None] | None = None
+) -> None:
     """Read ``inner`` to its end in ``_DRAIN_CHUNK`` pieces, pass each to ``count``, and
-    return them joined.
+    append it to ``buf``.
 
     The end checks around rapidgzip (gzip, zlib, raw DEFLATE) run on the read that meets
     the end of the output (ADR 0014: never from ``close()``), so a completing ``read()``
     drains the rest itself before it returns. No read here asks ``inner`` for an
-    unbounded size, so ``inner`` never builds the whole rest as one more copy.
+    unbounded size, so ``inner`` never builds the whole rest as one more copy. The
+    caller owns ``buf`` and makes the one ``bytes`` it returns from it, so the rest is
+    held once while it drains, not as pieces and then as their join.
     """
-    pieces: list[bytes] = []
     while more := inner.read(_DRAIN_CHUNK):
         if count is not None:
             count(more)
-        pieces.append(more)
-    return b"".join(pieces)
+        buf += more
 
 
 class _OutputChecksum:

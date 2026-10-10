@@ -2066,18 +2066,50 @@ def test_gzip_truncation_check_forwards_resume_offset(tmp_path) -> None:
 def test_gzip_truncation_check_empty_output_switches_the_takeover(tmp_path) -> None:
     """An accelerator that ends before its first byte hands the read to the standard
     library through the takeover (``empty_to_stdlib``), which delivers the data, and
-    the backstop's checks stand down."""
+    the backstop's checks stand down: the wrapper never opens a view of the source.
+
+    A cut file cannot show the last part: the standard library raises at the cut
+    before the wrapper sees an end. A check that ran on this valid file would open a
+    view to look for the trailer."""
+    from archivey.internal.config import DEFAULT_STREAM_CONFIG
+    from archivey.internal.streams.codecs.gzip_codec import (
+        _gzip_isize_and_length,
+        _GzipTruncationCheckStream,
+        _stdlib_gzip,
+    )
+    from archivey.internal.streams.codecs.stdlib_takeover import (
+        _SourceViews,
+        _StdlibOnAcceleratorError,
+    )
+
     payload = b"hello world" * 100
     path = tmp_path / "f.gz"
     path.write_bytes(gzip.compress(payload))
+    opened: list[str] = []
 
-    stream = _make_gzip_check_stream(io.BytesIO(b""), path)
-    takeover = stream._inner
+    def view():
+        opened.append("view")
+        return open(path, "rb")
+
+    # The takeover opens its fallback from the path; only the wrapper calls view().
+    views = _SourceViews(view, str(path))
+    source_len, isize = _gzip_isize_and_length(str(path))
+    takeover = _StdlibOnAcceleratorError(
+        io.BytesIO(b""),
+        views=views,
+        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
+        label="gzip",
+        empty_to_stdlib=True,
+    )
+    stream = _GzipTruncationCheckStream(
+        takeover, views=views, isize=isize, source_len=source_len
+    )
     assert stream.read(5) == payload[:5]
     assert takeover.switched
     assert stream._inner is takeover
     assert stream.read() == payload[5:]
     assert stream.read() == b""
+    assert opened == []
 
 
 def test_gzip_truncation_check_detects_short_output(tmp_path) -> None:

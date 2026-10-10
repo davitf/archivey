@@ -224,7 +224,8 @@ class GzipDecoder(BaseDecoder):
             return DecodeOut(out)
         if not self._between_members:
             # Inside a member, with all of its input fed: the member is cut. zlib can
-            # still hold output back until flush().
+            # still hold output back until flush(), but flush() gets no new input, so it
+            # cannot reach the trailer and end the member.
             try:
                 out += self._decomp.flush()
             except zlib.error as e:
