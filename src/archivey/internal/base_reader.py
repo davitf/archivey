@@ -2795,19 +2795,24 @@ class BaseArchiveReader(ArchiveReader):
                     link_target=current.link_target,
                 )
             current = target
-        # Refused by data, not by type: a tombstone and a special entry have none, and
-        # a directory has none unless its header declares some. A directory that does
-        # (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP and RAR;
-        # a 7z directory can carry a size too until the sweep that types a member
-        # with a stream as a file lands) opens here, and only here: the bytes the
-        # backend can decode are reachable through ``open()``, while
+        # A tombstone and a special entry are refused by type: there is nothing to
+        # deliver for them even where a header declares a size. A directory is
+        # refused by data: it has none unless its header declares some, and one that
+        # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP and
+        # RAR; a 7z directory can carry a size too until the sweep that types a
+        # member with a stream as a file lands) opens here, and only here: the bytes
+        # the backend can decode are reachable through ``open()``, while
         # ``stream_members()`` and extraction still route by type and skip them.
-        if current.type in (MemberType.ANTI, MemberType.OTHER) or (
-            current.type is MemberType.DIRECTORY and not current.size
-        ):
+        # Both messages end in "(not a file)", which ``archivey test`` classifies by.
+        if current.type in (MemberType.ANTI, MemberType.OTHER):
             raise ArchiveyUsageError(
-                f"Cannot open member {quoted(current.name)}: a "
-                f"{current.type.value!r} entry with no data (not a file)"
+                f"Cannot open member {quoted(current.name)}: type is "
+                f"{current.type.value!r} (not a file)"
+            )
+        if current.type is MemberType.DIRECTORY and not current.size:
+            raise ArchiveyUsageError(
+                f"Cannot open member {quoted(current.name)}: directory entry "
+                "declares no data (not a file)"
             )
         return self._open_member(current)
 

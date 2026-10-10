@@ -1046,7 +1046,7 @@ def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> Non
         assert diag.context.to_dict()["size"] == 0
         assert diag.context.to_dict()["compressed_size"] == 15
         assert "stores a 15-byte body" in diag.message
-        with pytest.raises(ArchiveyUsageError, match="with no data"):
+        with pytest.raises(ArchiveyUsageError, match="declares no data"):
             archive.read("-inul/")
 
 

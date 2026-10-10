@@ -2015,6 +2015,27 @@ def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
         assert HashAlgorithm.CRC32 in ar.get("d/f.txt").hashes
 
 
+def test_a_special_entry_is_refused_by_type_not_by_data(tmp_path: Path) -> None:
+    """A tombstone or special entry is refused for what it is, not for lacking data,
+    so the message names the type even when the header declares a size; only the
+    directory arm reasons about data."""
+    path = tmp_path / "device.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        info = zipfile.ZipInfo("dev/null")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFCHR | 0o666) << 16
+        z.writestr(info, b"twelve bytes")
+    with open_archive(path) as ar:
+        member = ar.get("dev/null")
+        if member.type is not MemberType.OTHER:
+            pytest.skip("a special-mode entry with data is typed by its data here")
+        assert member.size == 12
+        with pytest.raises(
+            ArchiveyUsageError, match="type is 'other' \\(not a file\\)"
+        ):
+            ar.read(member)
+
+
 def _zip_with_declared_empty_directory_body(path: Path) -> None:
     """``d/`` storing 2000 bytes with its uncompressed size field set to 0 in both the
     local header and the central directory: a body hidden one field away from the
@@ -2054,7 +2075,7 @@ def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> Non
         assert diag.context.to_dict()["size"] == 0
         assert diag.context.to_dict()["compressed_size"] == 2000
         assert "declares no data but stores a 2000-byte body" in diag.message
-        with pytest.raises(ArchiveyUsageError, match="with no data"):
+        with pytest.raises(ArchiveyUsageError, match="declares no data"):
             ar.read("d/")
         assert ar.read("d/f.txt") == b"visible"
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
