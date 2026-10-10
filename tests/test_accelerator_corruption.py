@@ -339,10 +339,46 @@ with rapidgzip.open(sys.argv[1], parallelization=0) as f:
 """
 
 
-def test_gzip_cut_member_with_a_forged_isize_raises(tmp_path: Path) -> None:
+def _seek_to_the_end(s: BinaryIO) -> None:
+    s.seek(0, io.SEEK_END)
+
+
+def _seek_to_the_end_then_read_from_the_start(s: BinaryIO) -> None:
+    s.seek(0, io.SEEK_END)
+    s.seek(0)
+    s.read()
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        pytest.param(lambda s: s.read(), id="read"),
+        pytest.param(_seek_to_the_end, id="seek-end"),
+        pytest.param(
+            _seek_to_the_end_then_read_from_the_start, id="seek-end-rewind-read"
+        ),
+    ],
+)
+@pytest.mark.parametrize("position_known", [True, False])
+def test_gzip_cut_member_with_a_forged_isize_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: Callable[[BinaryIO], object],
+    position_known: bool,
+) -> None:
     # The trailer of a cut file is whatever bytes the cut left there. Set to the length
     # rapidgzip delivers before its soft end, it matched, and the short read passed.
+    # rapidgzip's compressed position shows the cut here, but it is a measured
+    # behaviour that the check accepts as unknown (None): the CRC-32 must find the
+    # forgery without it. A seek to the end skips the output, so it must read it
+    # through for the CRC-32, not compare the forged length.
     pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    if not position_known:
+        from archivey.internal.streams.codecs.rapidgzip_child import (
+            RapidgzipChildStream,
+        )
+
+        monkeypatch.setattr(RapidgzipChildStream, "compressed_position", lambda _: None)
     cut = bytearray(
         gzip.compress(random.Random(1).randbytes(300_000) + b"x" * 600_000, mtime=0)[
             :200_000
@@ -362,9 +398,11 @@ def test_gzip_cut_member_with_a_forged_isize_raises(tmp_path: Path) -> None:
         # a soft end, and there is no soft end to forge a trailer for.
         pytest.skip("this rapidgzip build does not end softly on this cut")
     cut[-4:] = int(proc.stdout).to_bytes(4, "little")
-    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(cut)), config=_GZ_ON) as s:
-        with pytest.raises(TruncatedError):
-            s.read()
+    for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
+        config = StreamConfig(use_rapidgzip=mode, seekable=True)
+        with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(cut)), config=config) as s:
+            with pytest.raises(TruncatedError):
+                action(s)
 
 
 # --- rapidgzip truncation backstop on non-path (caller-owned) seekable sources ---------

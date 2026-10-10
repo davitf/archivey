@@ -22,6 +22,7 @@ import gzip
 import io
 import random
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -285,20 +286,54 @@ def _raw_deflate(data: bytes) -> bytes:
 # stream check that a seek to the end of a valid stream still works.
 _PATTERN = bytes(range(256)) * 2000
 _NOISE = random.Random(11).randbytes(1 << 20)
+_DEFLATE_CUT_PARTIAL = _raw_deflate(_NOISE)[:600_000]
+# The output before the cut: a declared size equal to it does not catch the cut by
+# itself, so the end check must.
+_BEFORE_THE_CUT = len(zlib.decompressobj(-15).decompress(_DEFLATE_CUT_PARTIAL))
+
+
+@dataclass(frozen=True)
+class _SeekEndCase:
+    codec: Codec
+    blob: bytes
+    # What the stream decodes to; None for a cut stream, which raises TruncatedError.
+    payload: bytes | None
+    # CodecParams.unpack_size: the takeover's limit only, no length check.
+    limit: int | None = None
+    # StreamConfig.expected_decompressed_size: puts a VerifyingStream on the seek path.
+    declared: int | None = None
+
+
 _SEEK_END_CASES = {
-    "gzip-cut-early": (Codec.GZIP, gzip.compress(_PATTERN, mtime=0)[:2000], None),
-    "gzip-cut-partial": (Codec.GZIP, gzip.compress(_NOISE, 1, mtime=0)[:600_000], None),
-    "gzip-whole": (Codec.GZIP, gzip.compress(_PATTERN, mtime=0), None),
-    "gzip-empty": (Codec.GZIP, gzip.compress(b"", mtime=0), None),
-    "deflate-cut-early": (Codec.DEFLATE, _raw_deflate(_PATTERN)[:1000], None),
-    "deflate-cut-early-sized": (
-        Codec.DEFLATE,
-        _raw_deflate(_PATTERN)[:1000],
-        len(_PATTERN),
+    "gzip-cut-early": _SeekEndCase(
+        Codec.GZIP, gzip.compress(_PATTERN, mtime=0)[:2000], None
     ),
-    "deflate-cut-partial": (Codec.DEFLATE, _raw_deflate(_NOISE)[:600_000], None),
-    "deflate-whole": (Codec.DEFLATE, _raw_deflate(_PATTERN), None),
-    "deflate-empty": (Codec.DEFLATE, _raw_deflate(b""), None),
+    "gzip-cut-partial": _SeekEndCase(
+        Codec.GZIP, gzip.compress(_NOISE, 1, mtime=0)[:600_000], None
+    ),
+    "gzip-whole": _SeekEndCase(Codec.GZIP, gzip.compress(_PATTERN, mtime=0), _PATTERN),
+    "gzip-empty": _SeekEndCase(Codec.GZIP, gzip.compress(b"", mtime=0), b""),
+    "deflate-cut-early": _SeekEndCase(
+        Codec.DEFLATE, _raw_deflate(_PATTERN)[:1000], None
+    ),
+    "deflate-cut-early-limit": _SeekEndCase(
+        Codec.DEFLATE, _raw_deflate(_PATTERN)[:1000], None, limit=len(_PATTERN)
+    ),
+    "deflate-cut-early-declared": _SeekEndCase(
+        Codec.DEFLATE, _raw_deflate(_PATTERN)[:1000], None, declared=len(_PATTERN)
+    ),
+    "deflate-cut-partial": _SeekEndCase(Codec.DEFLATE, _DEFLATE_CUT_PARTIAL, None),
+    "deflate-cut-partial-declared": _SeekEndCase(
+        Codec.DEFLATE, _DEFLATE_CUT_PARTIAL, None, declared=len(_NOISE)
+    ),
+    "deflate-cut-partial-declared-at-the-cut": _SeekEndCase(
+        Codec.DEFLATE, _DEFLATE_CUT_PARTIAL, None, declared=_BEFORE_THE_CUT
+    ),
+    "deflate-whole": _SeekEndCase(Codec.DEFLATE, _raw_deflate(_PATTERN), _PATTERN),
+    "deflate-whole-declared": _SeekEndCase(
+        Codec.DEFLATE, _raw_deflate(_PATTERN), _PATTERN, declared=len(_PATTERN)
+    ),
+    "deflate-empty": _SeekEndCase(Codec.DEFLATE, _raw_deflate(b""), b""),
 }
 
 
@@ -315,19 +350,28 @@ def test_a_seek_to_the_end_of_a_gzip_or_deflate_stream_gives_what_it_does_off(
     that a read there runs: it raises where the accelerator off raises, and does not
     return a short size. A read after a seek past the end must not return bytes from
     offset 0."""
-    codec, blob, unpack_size = _SEEK_END_CASES[case]
-    params = CodecParams(unpack_size=unpack_size)
+    c = _SEEK_END_CASES[case]
+    params = CodecParams(unpack_size=c.limit)
     outcomes = []
     for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
-        config = StreamConfig(seekable=True, use_rapidgzip=mode)
+        config = StreamConfig(
+            seekable=True, use_rapidgzip=mode, expected_decompressed_size=c.declared
+        )
         outcome: list[object] = []
         try:
             with open_codec_stream(
-                codec, io.BytesIO(blob), config=config, params=params
+                c.codec, io.BytesIO(c.blob), config=config, params=params
             ) as s:
                 outcome.append(s.seek(target, whence))
                 outcome += [s.read(16), s.tell()]
         except (CorruptionError, TruncatedError) as exc:
             outcome.append(type(exc))
         outcomes.append(outcome)
-    assert outcomes[1] == outcomes[0]
+    off, on = outcomes
+    if c.payload is None:
+        assert off[-1] is TruncatedError
+    else:
+        pos = max(0, len(c.payload) + target) if whence == io.SEEK_END else target
+        tail = c.payload[pos : pos + 16]
+        assert off == [pos, tail, pos + len(tail)]
+    assert on == off

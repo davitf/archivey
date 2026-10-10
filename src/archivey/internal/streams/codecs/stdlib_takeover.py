@@ -45,7 +45,9 @@ def _seek_reached_end(offset: int, whence: int, result: int) -> bool:
     they seek it again to ``offset``: it raises, or returns the caller's position.
 
     ``whence`` is ``SEEK_SET`` or ``SEEK_END``: ``_StdlibSeekContract``, outermost,
-    resolves a relative seek itself."""
+    resolves a relative seek itself. With ``SEEK_CUR``, ``result < offset`` would
+    compare a position with a distance."""
+    assert whence != io.SEEK_CUR, "a relative seek must be resolved above this layer"
     return whence == io.SEEK_END or result < offset
 
 

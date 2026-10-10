@@ -368,32 +368,33 @@ class _DeflateEndCheckStream(DelegatingStream):
       standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
       inside), which gives the verdict it gives with the accelerator off.
 
-    The check costs a decode of the output between the resume point and the end. The
-    child keeps its first point only once 4 MiB of output has been delivered
-    (``_MIN_QUERY_SPACING`` in ``rapidgzip_child.py``), so a stream with less output
-    than that is decoded again whole, by zlib in one thread: under ``ON`` such a member
-    pays a whole standard-library decode on top of rapidgzip's (measured on 2 MiB:
-    57 ms against 45 ms without the check, and 11 ms for zlib alone, since starting
-    the child already costs more than that). ``AUTO`` engages only from
-    16 MiB of compressed input (``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``), where the
-    decode is the stretch after the last point: measured on an 82 MiB stream, about
-    2 MiB and 10 ms. A point at the end itself cannot be had instead: its window is
-    the 32 KiB of output before the point, and the stream keeps only the 32 KiB
-    before the end.
+    The check costs a decode of the output between the resume point and the end, paid by
+    the read or the seek that reaches the end, so a bare ``seek(0, SEEK_END)`` size
+    query pays it too. The child keeps its first point only once 4 MiB of output has
+    been delivered (``_MIN_QUERY_SPACING`` in ``rapidgzip_child.py``), so a stream with
+    less output than that is decoded again whole, by zlib in one thread: under ``ON``
+    such a member pays a whole standard-library decode on top of rapidgzip's (measured
+    on 2 MiB: 57 ms against 45 ms without the check, and 11 ms for zlib alone, since
+    starting the child already costs more than that). ``AUTO`` engages only from 16 MiB
+    of compressed input (``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``), where the decode is
+    the stretch after the last point: measured on an 82 MiB stream, about 2 MiB and
+    10 ms. A point at the end itself cannot be had instead: its window is the 32 KiB of
+    output before the point, and the stream keeps only the 32 KiB before the end.
 
     The view is not guarded against ``OSError`` as the gzip member scan is: raw DEFLATE
     is container-only, so the view is a sibling of the handle the decode itself reads,
     and an error from it is the caller's source failing, which reaches the caller.
 
-    The check runs once, on the read that meets the end, as in
-    :class:`_GzipTruncationCheckStream` (ADR 0014: never from ``close()``); a
-    completing ``read()`` reaches the end itself so that it raises. A seek does not
-    disarm it, and a seek that stops at the end of rapidgzip's output (a seek to the
-    end, or one rapidgzip clamped) runs it there, as a read does; when the standard
-    library takes over, it seeks to the caller's target, and raises or holds that
-    position, as with the accelerator off. After a takeover the standard library owns
-    the end. With a declared
-    size, the ``VerifyingStream`` probe past that size is the read that meets the end,
+    The check runs once, on the first read or seek that meets the end of rapidgzip's
+    output, as in :class:`_GzipTruncationCheckStream` (ADR 0014: never from
+    ``close()``), and is spent after it. A completing ``read()`` reaches the end itself
+    so that it raises. A seek short of the end leaves the check armed. A seek that stops
+    at the end (a seek to the end, or one rapidgzip clamped) runs the same check a read
+    there runs, at the same offset: raw DEFLATE has no checksum that a skipped stretch
+    of output would leave behind. When the standard library takes over, it seeks to the
+    caller's target, and raises or holds that position, as with the accelerator off.
+    After a takeover the standard library owns the end. With a declared size, the
+    ``VerifyingStream`` probe past that size is the read that meets the end,
     and a failed verifying event withholds its chunk (as for zlib, see
     :class:`_ZlibAdlerCheckStream`): the error type is the same as with the
     accelerator off, and up to one chunk fewer arrives.

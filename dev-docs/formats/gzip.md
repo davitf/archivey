@@ -20,7 +20,7 @@ behaviour and links the row.
 | Size | `None`, for both. gzip's ISIZE is the last member's size mod 2³²; zlib has no size field |
 | Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too; under `rapidgzip`, archivey checks the Adler-32 when the stream is read to its end (§2.3) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
-| Truncation | Always raised by the standard library engine. Through `rapidgzip`, raised by a backstop that a seek does not turn off. It stands down only when it finds a further member that zlib confirms, so it is best-effort for a multi-member gzip (§2.3) |
+| Truncation | Always raised by the standard library engine. Through `rapidgzip`, raised by a backstop that runs on the read or seek that meets the end of its output. It stands down only when it finds a further member that zlib confirms, so it is best-effort for a multi-member gzip (§2.3) |
 | Refuses | A member whose method is not 8 (deflate) or whose header sets a reserved FLG bit, as `UnsupportedFeatureError` (gzip: "-- not supported"; `gzip_error`). A zlib stream with a preset dictionary fails to decode, since archivey holds no dictionary |
 
 **Four things a reader might expect and will not find.** The gzip trailer's CRC-32 is not
@@ -203,9 +203,9 @@ source that is seekable, `_GzipTruncationCheckStream` backs it up:
    on ten or more, which hands the read to the standard library engine. A real trailer
    turned down, when its CRC-32 occurs a second time by chance (about one file in 2²⁵) or
    is zero with padding after it, goes to the standard library engine too, which finds
-   nothing wrong. Only when a seek skipped output, so that there is no CRC-32 of it, is
-   the ISIZE trailer read at open (the file's last four bytes) compared with the length
-   instead. A mismatch hands the rest of the read to the standard library engine, which
+   nothing wrong. Only when a seek short of the end skipped output and a read then met
+   the end, so that there is no CRC-32 of that output, is the ISIZE trailer read at open
+   (the file's last four bytes) compared with the length instead. A mismatch hands the rest of the read to the standard library engine, which
    raises the truncation, raises the checksum error for a wrong ISIZE, or reports bytes
    appended to the file. The exception is a file with a further member: its trailer is
    only the last member's size, so a mismatch is expected and nothing is raised.
@@ -223,20 +223,25 @@ source that is seekable, `_GzipTruncationCheckStream` backs it up:
    library engine as well, which raises the truncation. A source whose length cannot be
    read is never called truncated.
 
-A seek does not turn the check off. The read that meets the end of `rapidgzip`'s output
-is at that output's length whatever seeks came before, so the check compares the position
-of that read, not a count of the bytes delivered (`rapidgzip` clamps a seek past the end
-to the end, and `_StdlibSeekContract` keeps the caller's position). A seek
-back to the start, or a forward seek that skips data, leaves the check armed. A seek that
-stops at the end of `rapidgzip`'s output (a seek to the end, or one `rapidgzip` clamped)
-runs the check there, as a read at the end does, so `seek(0, SEEK_END)` on a cut file
-raises as it does with the accelerator off rather than return `rapidgzip`'s short length.
-When the standard library engine takes over there, it seeks to the caller's target, so a
-read after a seek past the end never returns bytes from another offset. The raw DEFLATE
-end check (§2.3, *Other `rapidgzip` workarounds*) and bzip2 do the same. Once the
-standard library engine has raised, it raises again at every later end of data. A container member does
-not need it: the container declared the size, and `VerifyingStream` checks length and
-CRC. A bare zlib or raw DEFLATE stream has neither, which is why `AUTO` never gives one to
+The check runs once, on the first read or seek that meets the end of `rapidgzip`'s output,
+and is spent after it: no later read or seek runs it again. A seek back to the start, or a
+forward seek short of the end, leaves it armed. It compares the position at the end, not a
+count of the bytes delivered: a read that meets the end is at the output's length whatever
+seeks came before (`rapidgzip` clamps a seek past the end to the end, and
+`_StdlibSeekContract` keeps the caller's position). A seek that stops at the end of
+`rapidgzip`'s output (a seek to the end, or one `rapidgzip` clamped) runs the check there,
+so `seek(0, SEEK_END)` on a cut file raises as it does with the accelerator off rather than
+return `rapidgzip`'s short length. That seek first reads the output from the CRC-32
+frontier to the end, so the check finds the trailer by its CRC-32, as a read does, not by
+the four-byte ISIZE comparison that a forged trailer passes. A size query on a gzip not yet
+read so moves the whole decompressed output out of the child once. When the standard
+library engine takes over, at the check or during that read, it seeks to the caller's
+target, so a read after a seek past the end never returns bytes from another offset. The
+raw DEFLATE end check (§2.3, *Other `rapidgzip` workarounds*) and bzip2 do the same at the
+end, without the read-through: neither checks a checksum of the output, so output a seek
+skipped leaves their checks whole. Once the standard library engine has raised, it raises
+again at every later end of data. A container member does not need the check: the
+container declared the size, and `VerifyingStream` checks length and CRC. A bare zlib or raw DEFLATE stream has neither, which is why `AUTO` never gives one to
 `rapidgzip`.
 
 **The zlib Adler-32 check.** `rapidgzip` does not check a zlib stream's Adler-32: a damaged
