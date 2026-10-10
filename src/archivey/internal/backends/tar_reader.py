@@ -109,6 +109,7 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     StreamFormat,
+    _ReadOnlyDict,
 )
 
 # Read size for the trailing-bytes scan. The tail past the trailer is unbounded (a
@@ -882,7 +883,7 @@ class TarReader(BaseArchiveReader):
         # The last shared copy of the PAX global records a member was built from, and
         # the ``extra["tar.pax_headers"]`` every member built from it shares
         # (:meth:`_extra_pax_headers`).
-        self._shared_pax: tuple[_GlobalPaxRecords, dict[str, str]] | None = None
+        self._shared_pax: tuple[_GlobalPaxRecords, _ReadOnlyDict] | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
         # same critical-section shape covers init, progressive walk, extractfile, EOF,
@@ -1662,20 +1663,20 @@ class TarReader(BaseArchiveReader):
             return StreamCapability.SEEKABLE
         return StreamCapability.FORWARD_ONLY
 
-    def _extra_pax_headers(self, pax_headers: Mapping[str, str]) -> dict[str, str]:
+    def _extra_pax_headers(self, pax_headers: Mapping[str, str]) -> _ReadOnlyDict:
         """``extra["tar.pax_headers"]`` for a member whose records are ``pax_headers``.
 
-        A copy, so a caller's change to one member's ``extra`` does not reach the
-        ``TarInfo`` the reader reads it from. Members that carry only the PAX global
-        records share one copy, as they share the records
-        (:meth:`_TarFile.global_records`): one per member cost the global records
-        once for every 512-byte member header.
+        A read-only copy. Members that carry only the PAX global records share one,
+        as they share the records (:meth:`_TarFile.global_records`): one per member
+        cost the global records once for every 512-byte member header. Read-only so
+        that sharing it is invisible: a change made through one member cannot show
+        on another, or reach the ``TarInfo`` the reader reads.
         """
         if not isinstance(pax_headers, _GlobalPaxRecords):
-            return dict(pax_headers)
+            return _ReadOnlyDict(pax_headers)
         shared = self._shared_pax
         if shared is None or shared[0] is not pax_headers:
-            shared = self._shared_pax = (pax_headers, dict(pax_headers))
+            shared = self._shared_pax = (pax_headers, _ReadOnlyDict(pax_headers))
         return shared[1]
 
     def _to_member(self, info: tarfile.TarInfo, index: int) -> ArchiveMember:

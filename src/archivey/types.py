@@ -13,6 +13,7 @@ from typing import (
     Final,
     Literal,
     NamedTuple,
+    NoReturn,
     cast,
     overload,
 )
@@ -477,6 +478,40 @@ EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
 EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 
 
+class _ReadOnlyDict(dict[str, str]):
+    """A ``dict`` that refuses changes, the value of ``extra["tar.pax_headers"]``.
+
+    Members that carry only a TAR archive's PAX global records share one of these, so
+    a change made through one member would show on the others. Every method that
+    changes it raises ``TypeError``. It stays a ``dict``, so ``json.dumps`` and
+    ``isinstance(value, dict)`` accept it. A copy, a deep copy or a pickle round trip
+    gives a plain ``dict``, which the caller owns and may change.
+    """
+
+    __slots__ = ()
+
+    def _refuse(self, *args: object, **kwargs: object) -> NoReturn:
+        raise TypeError("extra['tar.pax_headers'] is read-only; copy it with dict()")
+
+    __setitem__ = _refuse  # type: ignore[assignment]
+    __delitem__ = _refuse  # type: ignore[assignment]
+    __ior__ = _refuse  # type: ignore[assignment]
+    clear = _refuse  # type: ignore[assignment]
+    pop = _refuse  # type: ignore[assignment]
+    popitem = _refuse  # type: ignore[assignment]
+    setdefault = _refuse  # type: ignore[assignment]
+    update = _refuse  # type: ignore[assignment]
+
+    def __reduce__(self) -> tuple[type[dict[str, str]], tuple[dict[str, str]]]:
+        return (dict, (dict(self),))
+
+    def __copy__(self) -> dict[str, str]:
+        return dict(self)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> dict[str, str]:
+        return dict(self)
+
+
 class MemberExtra(dict[str, object]):
     """Per-member format-specific metadata on :class:`~archivey.ArchiveMember`.
 
@@ -514,9 +549,10 @@ class MemberExtra(dict[str, object]):
     * ``zip.aes_strength`` (``int``)
     * ``zip.aes_actual_method`` (``int``)
     * ``tar.type`` (``bytes``)
-    * ``tar.pax_headers`` (``dict[str, str]``) — the member's PAX records, the
-      global ones in force included. Members with no records of their own share one
-      dict per set of global records, so treat it as read-only.
+    * ``tar.pax_headers`` (``Mapping[str, str]``) — the member's PAX records, the
+      global ones in force included. Read-only: a change raises ``TypeError``, and
+      ``dict(...)`` gives a copy to change. It is a ``dict`` subclass, so
+      ``json.dumps`` takes it.
     * ``tar.devmajor`` (``int``)
     * ``tar.devminor`` (``int``)
     * ``gzip.original_filename`` (``str``)
@@ -564,7 +600,7 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["tar.type"], /) -> bytes: ...
     @overload
-    def __getitem__(self, key: Literal["tar.pax_headers"], /) -> dict[str, str]: ...
+    def __getitem__(self, key: Literal["tar.pax_headers"], /) -> Mapping[str, str]: ...
     @overload
     def __getitem__(self, key: Literal["tar.devmajor"], /) -> int: ...
     @overload

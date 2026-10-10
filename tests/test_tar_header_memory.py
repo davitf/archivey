@@ -8,8 +8,12 @@ access modes (DR-9a), and an honest archive of the same shape must still list.
 
 from __future__ import annotations
 
+import copy
 import io
+import json
+import pickle
 import tarfile
+from typing import cast
 
 import pytest
 
@@ -294,3 +298,49 @@ def test_global_records_apply_to_the_members_after_them_only() -> None:
             "d": {"comment": "second"},
         }
         assert members["b"].uname == "own"
+
+
+def test_pax_records_in_extra_are_read_only() -> None:
+    """Members share one ``extra["tar.pax_headers"]`` per set of global records, so
+    a change through one member would show on the others. Every change raises
+    instead. The value still serializes and copies as a ``dict``, and a copy is the
+    caller's to change."""
+    data = (
+        _global({"comment": "g"})
+        + _plain("a")
+        + _plain("b")
+        + _extended(_pax_body({"uname": "own"}), tarfile.XHDTYPE)
+        + _plain("c")
+        + _TRAILER
+    )
+    with open_archive(io.BytesIO(data)) as ar:
+        members = ar.members()
+    for member in members:
+        pax = member.extra["tar.pax_headers"]
+        mutable = cast("dict[str, str]", pax)
+        changes = (
+            lambda: mutable.__setitem__("comment", "x"),
+            lambda: mutable.__delitem__("comment"),
+            lambda: mutable.__ior__({"comment": "x"}),
+            lambda: mutable.update(comment="x"),
+            lambda: mutable.pop("comment"),
+            lambda: mutable.popitem(),
+            lambda: mutable.setdefault("new", "x"),
+            lambda: mutable.clear(),
+        )
+        for change in changes:
+            with pytest.raises(TypeError, match="read-only"):
+                change()
+        assert pax["comment"] == "g"
+        assert json.loads(json.dumps(pax)) == dict(pax)
+        for copied in (
+            copy.copy(pax),
+            copy.deepcopy(pax),
+            pickle.loads(pickle.dumps(pax)),
+            copy.deepcopy(member.extra)["tar.pax_headers"],
+            pickle.loads(pickle.dumps(member.extra))["tar.pax_headers"],
+        ):
+            assert type(copied) is dict
+            assert copied == pax
+            copied["comment"] = "mine"
+    assert [m.extra["tar.pax_headers"]["comment"] for m in members] == ["g"] * 3
