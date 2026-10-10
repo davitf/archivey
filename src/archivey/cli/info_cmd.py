@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import sys
 from typing import TextIO
 
@@ -68,6 +70,15 @@ def _print_identity(archive: str, detected: FormatInfo, out: TextIO) -> None:
         _line("sfx_offset", detected.payload_offset, out)
 
 
+def _can_reread(path: str) -> bool:
+    """Whether opening ``path`` again reads the same bytes: a regular file or directory."""
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return False
+    return stat.S_ISREG(mode) or stat.S_ISDIR(mode)
+
+
 def run_info(
     *,
     archive: str,
@@ -114,8 +125,11 @@ def run_info(
     except ArchiveyError as exc:
         # When the open itself failed, identity comes from detection alone: printed
         # when the format was recognised (the open error is still a failure), and when
-        # it was not, detection's own error is the one to report.
-        if not identity_printed:
+        # it was not, detection's own error is the one to report. Detection opens the
+        # path again, so it runs only on a path that reads the same bytes twice: on a
+        # FIFO or a device the open has already drained it, and a second open can wait
+        # for a writer that never comes.
+        if not identity_printed and _can_reread(archive):
             _print_identity(archive, detect_format(archive), out)
         _field("open", format_error_detail(exc), err)
         return 1

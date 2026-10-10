@@ -278,7 +278,10 @@ also print the raw cost axes (`listing`, `access_cost`, `stream`,
 
 `info` SHALL detect once: the identity lines come from the reader's
 `format_info`, not from a separate `detect_format` call before the open. Only
-when the open fails does it call `detect_format`, to print what it can.
+when the open fails does it call `detect_format`, to print what it can, and only
+when the path is a regular file or a directory. Detection opens the path again,
+and a FIFO or device has already been drained by the failed open, so on those
+`info` prints the open error alone instead of waiting for more input.
 
 #### Scenario: info vs list
 
@@ -289,6 +292,7 @@ when the open fails does it call `detect_format`, to print what it can.
 | `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey info <archive>` that opens | Detection runs once, inside the open |
+| `archivey info <fifo>` whose open fails | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 
 ### Requirement: version reports package identity and optional format matrix

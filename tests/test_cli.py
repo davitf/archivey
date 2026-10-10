@@ -457,6 +457,44 @@ def test_info_prints_identity_once_when_the_open_fails(
     assert "open:" in captured.err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_info_on_a_fifo_reports_the_open_error_without_reopening(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed open on a FIFO must not run ``detect_format`` on the path again.
+
+    The open already drained the pipe, so a second open waits for a writer that never
+    comes. ``info`` must print the open error and return.
+    """
+    import threading
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        member = tarfile.TarInfo("a.txt")
+        member.size = 5
+        tf.addfile(member, io.BytesIO(b"hello"))
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, buf.getvalue())
+
+    result: list[int] = []
+    worker = threading.Thread(
+        target=lambda: result.append(main(["info", str(fifo)])), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+    if worker.is_alive():
+        # Unblock the stuck second open so the thread can finish, then fail.
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(5)
+        pytest.fail("archivey info blocked on a FIFO")
+    assert result == [EXIT_FAIL]
+    captured = capsys.readouterr()
+    assert "open:" in captured.err
+
+
 def test_info_on_a_directory_reports_the_directory_format(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
