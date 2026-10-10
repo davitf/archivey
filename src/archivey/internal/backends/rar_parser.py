@@ -461,6 +461,15 @@ class RarMemberInfo:
             and not self.is_directory
         )
 
+    @property
+    def is_stored(self) -> bool:
+        """Whether the member's data is stored (method M0), not compressed.
+
+        ``compress_type`` is normalised to the RAR3 method byte for both formats
+        (``_RAR3_M0`` plus the RAR5 method), so this holds for RAR4 and RAR5 alike.
+        """
+        return self.compress_type == _RAR3_M0
+
     def unknown_compression_version(self) -> str | None:
         """The compression version this member declares and ``unrar`` cannot decode.
 
@@ -471,7 +480,7 @@ class RarMemberInfo:
         ``UNP_VER`` 13 to 29. Outside them ``unrar`` reports "Unknown method" and
         "You may need a newer version of RAR" and writes nothing.
         """
-        if self.compress_type == _RAR3_M0:
+        if self.is_stored:
             return None
         if self.rar5_algorithm_version is not None:
             if self.rar5_algorithm_version > _RAR5_ALGO_NEWEST:
