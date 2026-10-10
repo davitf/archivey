@@ -608,6 +608,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   no checksum, so damaged data can decode to wrong bytes with no error, as a modern
   frame written without one can. It has no end mark either, so a file cut exactly
   between two of its blocks reads short with no error.
+- Brotli (`.br`), unix-compress (`.Z`) and LZMA Alone (`.lzma`) have no checksum
+  either, so damaged data can decode to wrong bytes with no error. Archivey does not
+  report this with a diagnostic on each file, because there is no check to skip. A
+  `.Z` file has no end mark, so a cut can also read short with no error (see the `.Z`
+  bullet above).
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 

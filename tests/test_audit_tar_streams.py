@@ -23,7 +23,9 @@ from archivey import (
     AcceleratorMode,
     ArchiveFormat,
     ArchiveyConfig,
+    ContainerFormat,
     ListingLimits,
+    StreamFormat,
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
@@ -609,6 +611,58 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
     # Which sizes land in which arm depends on the installed codec backends; the
     # reporting arm is pinned by the 64 KiB-padding test above.
     assert "raised" in outcomes
+
+
+def _checksumless_codec(codec: str, raw: bytes) -> bytes:
+    """``raw`` compressed with a codec whose stream carries no checksum at all."""
+    if codec == "br":
+        import brotli
+
+        return brotli.compress(raw)
+    if codec == "Z":
+        from tests.streams_util import make_unix_compress
+
+        return make_unix_compress(raw)
+    import lzma
+
+    return lzma.compress(raw, format=lzma.FORMAT_ALONE)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "codec",
+    [
+        pytest.param("br", marks=requires("brotli")),
+        pytest.param("Z", marks=requires("ncompress")),
+        "lzma",
+    ],
+)
+def test_checksumless_stream_past_scan_bound_is_not_unverifiable(
+    codec: str, streaming: bool
+) -> None:
+    """DR-1: Brotli, ``.Z`` and LZMA Alone carry no checksum, so no check is skipped.
+
+    The same 2 MiB of padding that makes a ``.tar.gz`` report DIGEST_UNVERIFIABLE (the
+    scan stops before the stream's checksum) reports nothing here: the docs say once
+    that these codecs carry no check, and a diagnostic on every archive would add
+    nothing.
+    """
+    payload = random.Random(1).randbytes(20_000)
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as t:
+        info = tarfile.TarInfo("a")
+        info.size = len(payload)
+        t.addfile(info, io.BytesIO(payload))
+    data = _checksumless_codec(codec, tar.getvalue() + b"\0" * 2 * 2**20)
+    fmt = ArchiveFormat(ContainerFormat.TAR, StreamFormat(codec))
+    with open_archive(io.BytesIO(data), format=fmt, streaming=streaming) as ar:
+        read = [
+            stream.read()
+            for _member, stream in ar.stream_members()
+            if stream is not None
+        ]
+        assert read == [payload]
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE not in ar.diagnostics.counts
 
 
 def _drain_closing(ar) -> None:
