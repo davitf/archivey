@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import struct
 import subprocess
+import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -51,24 +53,43 @@ def _with_mbr(image: bytes, partitions: list[tuple[int, int]]) -> bytes:
 
 
 def _with_gpt(
-    image: bytes, *, backup_lba: int, partitions: list[tuple[int, int]]
+    image: bytes,
+    *,
+    backup_lba: int,
+    partitions: list[tuple[int, int]],
+    entry_count: int | None = None,
+    entry_size: int = 128,
+    entries_lba: int = 2,
+    break_header_crc: bool = False,
+    break_entries_crc: bool = False,
 ) -> bytes:
-    """``image`` with a GPT header at LBA 1 and entries at LBA 2 (``(first, last)``)."""
+    """``image`` with a GPT header at LBA 1 listing ``(first, last)`` partitions.
+
+    ``entry_count`` entries are declared (default: one per partition), the unused
+    ones zeroed, as a real GPT declares 128. Both CRCs are set unless broken on purpose.
+    """
+    count = len(partitions) if entry_count is None else entry_count
     entries = b"".join(
-        b"\x01" * 16 + bytes(16) + struct.pack("<QQ", first, last) + bytes(80)
+        (b"\x01" * 16 + bytes(16) + struct.pack("<QQ", first, last)).ljust(
+            entry_size, b"\0"
+        )
         for first, last in partitions
-    )
-    header = (
+    ).ljust(count * entry_size, b"\0")
+    entries_crc = zlib.crc32(entries) ^ int(break_entries_crc)
+    header = bytearray(
         b"EFI PART"
-        + bytes(24)
-        + struct.pack("<Q", backup_lba)
+        + struct.pack("<II", 0x10000, 92)
+        + bytes(4)  # header CRC, set below
+        + bytes(4)
+        + struct.pack("<QQ", 1, backup_lba)
         + bytes(32)
-        + struct.pack("<QII", 2, len(partitions), 128)
+        + struct.pack("<QIII", entries_lba, count, entry_size, entries_crc)
     )
-    head = bytearray(image[: 4 * _SECTOR])
+    header[16:20] = struct.pack("<I", zlib.crc32(header) ^ int(break_header_crc))
+    head = bytearray(image[: 4 * _SECTOR + len(entries)])
     head[_SECTOR : _SECTOR + len(header)] = header
     head[2 * _SECTOR : 2 * _SECTOR + len(entries)] = entries
-    return bytes(head) + image[4 * _SECTOR :]
+    return bytes(head) + image[len(head) :]
 
 
 def _trailing(data: bytes) -> list[ArchiveEofContext]:
@@ -129,11 +150,99 @@ def test_gpt_partition_and_backup_header_are_part_of_the_image() -> None:
     assert context.observed_bytes == 10
 
 
+def test_gpt_with_unused_entries_after_the_partition() -> None:
+    # A real GPT declares 128 entries and zeroes the unused ones.
+    image = _iso()
+    first = len(image) // _SECTOR
+    data = _with_gpt(image, backup_lba=first, partitions=[(1, 3)], entry_count=128)
+    data += bytes(_SECTOR)  # the backup header's sector, zeroed
+    assert _trailing(data) == []
+    (context,) = _trailing(data + b"JUNK")
+    assert context.observed_bytes == 0
+
+
+_FAR = 1_000_000_000  # a partition end far past any test image
+
+
+def _far_gpt(image: bytes, **kwargs: object) -> bytes:
+    return _with_gpt(image, backup_lba=_FAR, partitions=[(1, _FAR)], **kwargs)  # type: ignore[arg-type]
+
+
+def _patch_gpt_header(data: bytes, offset: int, value: bytes) -> bytes:
+    """``data`` with one GPT header field replaced and the header CRC recomputed."""
+    out = bytearray(data)
+    at = _SECTOR + offset
+    out[at : at + len(value)] = value
+    out[_SECTOR + 16 : _SECTOR + 20] = bytes(4)
+    crc = zlib.crc32(out[_SECTOR : _SECTOR + 92])
+    out[_SECTOR + 16 : _SECTOR + 20] = struct.pack("<I", crc)
+    return bytes(out)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda i: _far_gpt(i, break_header_crc=True), id="gpt-header-crc"),
+        pytest.param(
+            lambda i: _far_gpt(i, break_entries_crc=True), id="gpt-entries-crc"
+        ),
+        pytest.param(lambda i: _far_gpt(i, entry_size=64), id="gpt-entry-too-small"),
+        pytest.param(lambda i: _far_gpt(i, entry_size=1024), id="gpt-entry-too-large"),
+        pytest.param(lambda i: _far_gpt(i, entry_size=132), id="gpt-entry-not-aligned"),
+        pytest.param(
+            lambda i: _patch_gpt_header(_far_gpt(i), 80, struct.pack("<I", 1025)),
+            id="gpt-too-many-entries",
+        ),
+        pytest.param(
+            lambda i: _far_gpt(i)[:_SECTOR] + b"NOT PART" + _far_gpt(i)[_SECTOR + 8 :],
+            id="gpt-no-signature",
+        ),
+        pytest.param(
+            lambda i: _patch_gpt_header(_far_gpt(i), 72, struct.pack("<Q", _FAR)),
+            id="gpt-entries-past-the-image",
+        ),
+        pytest.param(
+            lambda i: _patch_gpt_header(_far_gpt(i), 12, struct.pack("<I", 600)),
+            id="gpt-header-size-too-large",
+        ),
+        pytest.param(
+            lambda i: _with_mbr(i, [(1, _FAR)])[:510] + b"\0\0" + i[512:],
+            id="mbr-no-signature",
+        ),
+        pytest.param(
+            lambda i: (
+                _with_mbr(i, [(1, _FAR)])[:450]
+                + b"\0"
+                + _with_mbr(i, [(1, _FAR)])[451:]
+            ),
+            id="mbr-empty-type",
+        ),
+        pytest.param(
+            lambda i: (
+                _with_mbr(i, [(1, 0xFFFFFFFF)])[:450]
+                + b"\xee"
+                + _with_mbr(i, [(1, 0xFFFFFFFF)])[451:]
+            ),
+            id="mbr-protective-whole-medium",
+        ),
+    ],
+)
+def test_table_that_does_not_count_leaves_junk_reported(
+    build: Callable[[bytes], bytes],
+) -> None:
+    image = _iso()
+    data = build(image)
+    assert len(data) == len(image)
+    (context,) = _trailing(data + b"JUNK")
+    assert context.observed_bytes == 0
+
+
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
-    with pytest.raises(DiagnosticRaisedError):
+    with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(io.BytesIO(_iso() + b"JUNK"), config=config) as reader:
             reader.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
 def test_strict_policy_accepts_zero_padding() -> None:

@@ -709,25 +709,33 @@ def _install_pycdlib_path_table_bound() -> None:
 
 
 # MBR and GPT count in 512-byte sectors, whatever the ISO's logical block size. A GPT
-# lists 128 entries in the usual layout; the walk reads at most this many, so a header
-# cannot make the trailing-data check read much.
+# lists 128 entries of 128 bytes in the usual layout; a header declaring more than
+# 1024 entries, or entries larger than 512 bytes, is not taken, so the entry array read
+# at open is at most 512 KiB, on top of the trailing scan's 1 MiB.
 _PARTITION_SECTOR = 512
 _MAX_GPT_ENTRIES = 1024
 _MIN_GPT_ENTRY_SIZE = 128
-_MAX_GPT_ENTRY_SIZE = 4096
+_MAX_GPT_ENTRY_SIZE = 512
+_MIN_GPT_HEADER_SIZE = 92
+# An MBR entry of this type says "a GPT describes this disk" and spans the whole
+# medium, often as 0xFFFFFFFF sectors; it lists no partition of its own.
+_MBR_PROTECTIVE = 0xEE
 
 
 def _image_end(fp: BinaryIO, *, volume_end: int, image_length: int) -> int:
-    """Where an ISO image ends: its volume space or its last listed partition.
+    """Where an ISO image ends: its volume space or its furthest listed partition.
 
     A hybrid image (``xorriso -append_partition``, isohybrid) is a disk image as well
     as an ISO: its MBR, and often a GPT, sit in the system area and list partitions
     that can lie past the ISO 9660 volume space, such as an EFI system partition, with
     the GPT's backup header at the very end. Those bytes are the disk's, not
     something appended to it, so the end is the furthest of the volume space, every
-    MBR partition, every GPT partition, and the GPT backup header. A table that does
-    not parse adds nothing. The result can pass the image's length; the caller
-    compares it with ``image_length``. ``fp``'s position is not kept.
+    MBR partition, every GPT partition, and the GPT backup header. A GPT counts only
+    when its header CRC and its entry-array CRC both match, so a damaged GPT, or
+    ``EFI PART`` alone, widens nothing. An MBR has no checksum: its non-empty,
+    non-protective entries are taken as written (``0x55AA`` present), as a crafted
+    volume space would be. The result can pass the image's length; the caller compares
+    it with ``image_length``. ``fp``'s position is not kept.
     """
     end = volume_end
     fp.seek(0)
@@ -735,27 +743,40 @@ def _image_end(fp: BinaryIO, *, volume_end: int, image_length: int) -> int:
     if len(head) >= _PARTITION_SECTOR and head[510:512] == b"\x55\xaa":
         for slot in range(4):
             entry = head[446 + 16 * slot : 446 + 16 * (slot + 1)]
-            if entry[4] == 0:
+            if entry[4] in (0, _MBR_PROTECTIVE):
                 continue
             first, count = struct.unpack_from("<II", entry, 8)
             end = max(end, (first + count) * _PARTITION_SECTOR)
-    gpt = head[_PARTITION_SECTOR:]
-    if len(gpt) < 92 or gpt[:8] != b"EFI PART":
-        return end
+    return max(end, _gpt_end(fp, head[_PARTITION_SECTOR:], image_length=image_length))
+
+
+def _gpt_end(fp: BinaryIO, gpt: bytes, *, image_length: int) -> int:
+    """The end of the furthest GPT partition or backup header; 0 when none is valid."""
+    if len(gpt) < _MIN_GPT_HEADER_SIZE or gpt[:8] != b"EFI PART":
+        return 0
+    header_size, header_crc = struct.unpack_from("<II", gpt, 12)
+    if not _MIN_GPT_HEADER_SIZE <= header_size <= len(gpt):
+        return 0
+    header = bytearray(gpt[:header_size])
+    header[16:20] = bytes(4)
+    if zlib.crc32(header) != header_crc:
+        return 0
     (backup_lba,) = struct.unpack_from("<Q", gpt, 32)
     (entries_lba,) = struct.unpack_from("<Q", gpt, 72)
-    entry_count, entry_size = struct.unpack_from("<II", gpt, 80)
-    end = max(end, (backup_lba + 1) * _PARTITION_SECTOR)
+    entry_count, entry_size, entries_crc = struct.unpack_from("<III", gpt, 80)
     if not (
         _MIN_GPT_ENTRY_SIZE <= entry_size <= _MAX_GPT_ENTRY_SIZE
         and entry_size % 8 == 0
+        and entry_count <= _MAX_GPT_ENTRIES
         and entries_lba * _PARTITION_SECTOR < image_length
     ):
-        return end
-    count = min(entry_count, _MAX_GPT_ENTRIES)
+        return 0
     fp.seek(entries_lba * _PARTITION_SECTOR)
-    table = fp.read(count * entry_size)
-    for at in range(0, len(table) - entry_size + 1, entry_size):
+    table = fp.read(entry_count * entry_size)
+    if len(table) != entry_count * entry_size or zlib.crc32(table) != entries_crc:
+        return 0
+    end = (backup_lba + 1) * _PARTITION_SECTOR
+    for at in range(0, len(table), entry_size):
         if table[at : at + 16] == bytes(16):
             continue  # unused entry
         _first, last = struct.unpack_from("<QQ", table, at + 32)

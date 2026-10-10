@@ -277,10 +277,12 @@ end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 or a `Z
 
 An ISO image SHALL be taken to end at the furthest of: the end of its volume space
 (the primary volume descriptor's volume space size times its logical block size), the
-end of every partition its MBR lists (signature `0x55AA` at byte 510, non-empty
-entries, 512-byte sectors), and, when a GPT header (`EFI PART`) is at byte 512, its
-backup header's sector and the last sector of every used GPT entry (at most 1024
-entries are read). A hybrid image appends an EFI partition and a GPT backup header
+end of every partition its MBR lists (signature `0x55AA` at byte 510, entries neither
+empty nor of the protective type `0xEE`, 512-byte sectors), and, when a GPT header
+(`EFI PART`) is at byte 512 and both its header CRC and its entry-array CRC match, its
+backup header's sector and the last sector of every used GPT entry. A GPT declaring
+more than 1024 entries, or entries outside 128 to 512 bytes, SHALL NOT count, so the
+entry array read at open is at most 512 KiB. A hybrid image appends an EFI partition and a GPT backup header
 after the volume space; those bytes are the disk image's, so they SHALL NOT be
 reported. 7-Zip 23.01 warns on them; archivey departs from it here.
 
@@ -289,8 +291,9 @@ SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="iso"`,
 `expected_marker="zeros_to_eof"`, `observed_kind="nonzero"` and `observed_bytes` the
 offset of that byte past the end. It is a warning by default and raises under
 `DiagnosticPolicy.strict()` (DR-3). Zero bytes SHALL be silent (xorriso pads 300 KiB
-of zeros by default), and a byte at 1 MiB or more past the end goes unseen. A partition
-table that does not parse widens nothing.
+of zeros by default), and a byte at 1 MiB or more past the end goes unseen. A GPT that
+fails either CRC, and an MBR without its signature, widen nothing. An MBR has no
+checksum, so its entries are taken as written, as the volume space size is.
 
 #### Scenario: ISO trailing bytes
 
@@ -300,6 +303,8 @@ table that does not parse widens nothing.
 | `b"JUNK"` after the volume space, or after zeros within 1 MiB | `ARCHIVE_TRAILING_DATA`, `observed_bytes` = zeros skipped | `DiagnosticRaisedError` |
 | Hybrid image: EFI partition listed in the MBR or GPT after the volume space, GPT backup header at the end | Nothing | Opens |
 | Hybrid image followed by `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at the partition's or backup header's end | `DiagnosticRaisedError` |
+| `EFI PART` header with a bad header or entry CRC, or an out-of-range entry count or size, listing a partition past the file, then `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at the volume space's end | `DiagnosticRaisedError` |
+| Protective MBR entry (`0xEE`) spanning the whole medium, then `b"JUNK"` | `ARCHIVE_TRAILING_DATA` at the volume space's end | `DiagnosticRaisedError` |
 | Non-zero byte at 1 MiB or more past the end | Nothing | Opens |
 
 ### Requirement: Weigh every parsed directory tree against one image-wide metadata budget
