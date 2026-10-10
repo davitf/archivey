@@ -150,7 +150,10 @@ class MemberSelection:
         holds only the members before the damage, so it cannot say that a pattern
         matches nothing. It settles nothing and prints nothing. A verb with a pass of
         its own judges the patterns after that pass; ``list`` has no other pass and
-        prints the listing error instead.
+        prints the listing error instead. An upfront index that ends in damage always
+        makes that pass raise the damage at its end (``base_reader._listed_members``),
+        so the deferred report only ever fires for an archive that had no index at
+        all, such as a compressed TAR.
         """
         selected = [member for member in listing if self(member)]
         if listing.error is None:

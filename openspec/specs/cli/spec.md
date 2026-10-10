@@ -86,13 +86,13 @@ an aborted `extract` with no patterns does. On `list`, the patterns SHALL be
 checked against the member listing the command reads anyway, with the warnings
 before the member lines. A listing that ends in damage SHALL produce no pattern
 warning on `list`, because the members after the damage are unknown; `list` SHALL
-print the listing error and exit `1` instead. On `extract`,
-when there is exactly one unmatched include that names an existing directory or
-ends with `/`, the warning SHALL include a hint `(did you mean -d PATTERN?)`. Each
-invocation SHALL accept exactly **one** archive positional (multi-archive is out
-of scope for this capability). `--password` SHALL be accepted for encrypted
-archives; when an encrypted archive is opened, no `--password` was supplied, and
-stdin is a TTY, the system SHALL prompt for the password without echoing it.
+print the listing error and exit `1` instead. On `extract`, when there is exactly
+one unmatched include that names an existing directory or ends with `/`, the
+warning SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL
+accept exactly **one** archive positional (multi-archive is out of scope for this
+capability). `--password` SHALL be accepted for encrypted archives; when an
+encrypted archive is opened, no `--password` was supplied, and stdin is a TTY, the
+system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be

@@ -34,7 +34,10 @@ archivey extract photos.zip --stop-on-error
 # --exclude removed every match (list warns but stays 0). A sole unmatched
 # pattern that looks like a destination gets a -d hint. On an archive with no
 # index (a compressed TAR) these warnings come after the run: the run's own pass
-# is what checks the patterns, so the archive is decompressed once.
+# is what checks the patterns, so the archive is decompressed once. A listing
+# that ends in damage settles no pattern: no verb warns that a pattern matched
+# nothing, because the members past the damage are unknown, and an extract that
+# aborts there may leave the destination directory it created.
 archivey extract photos.zip -d out/ '*.py' --exclude '*_test.py'
 archivey extract photos.zip --policy trusted -d /tmp/out
 
