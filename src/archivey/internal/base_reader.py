@@ -91,7 +91,11 @@ from archivey.internal.selection import (
 )
 from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.archive_stream import (
+    ArchiveStream,
+    RewindWarning,
+    closed_source_error,
+)
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -99,6 +103,7 @@ from archivey.internal.streams.counting import (
 )
 from archivey.internal.streams.streamtools import (
     ReadableStream,
+    is_closed_file_error,
     is_seekable,
     read_exact,
     source_byte_size,
@@ -562,8 +567,9 @@ class BaseArchiveReader(ArchiveReader):
 
         The single backend-side error boundary (the out-of-stream counterpart of
         ``ArchiveStream._fail``): an already-typed ``ArchiveyError`` is stamped and
-        re-raised as-is; a raw exception the translator recognizes is stamped and raised
-        chained to the original; an unrecognized exception propagates unchanged (the
+        re-raised as-is; a closed source (``is_closed_file_error``) raises
+        ``closed_source_error()``, as it does inside a member stream; a raw exception the
+        translator recognizes is stamped and raised chained to the original; an unrecognized exception propagates unchanged (the
         catch-all-free rule in CONTRIBUTING). ``stamp_encryption=False`` skips member
         stamping for ``EncryptionError`` (ZIP's password errors carry their own message
         and must not be reattributed).
@@ -571,6 +577,10 @@ class BaseArchiveReader(ArchiveReader):
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
+        if is_closed_file_error(exc):
+            # Checked before the backend's translator, which may map every ValueError
+            # to corruption (ZIP's bad-offset rule, ISO's pycdlib rule).
+            raise closed_source_error() from exc
         translated = self._translate_exception(exc)
         if translated is None:
             raise exc

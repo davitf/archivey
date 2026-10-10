@@ -40,6 +40,7 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     check_read_size,
     check_seek_args,
+    is_closed_file_error,
     is_seekable,
     readinto_via_read,
 )
@@ -86,6 +87,19 @@ class RewindWarning:
 
 def _noop_stamp(_exc: ArchiveyError) -> None:
     return None
+
+
+def closed_source_error() -> ArchiveyUsageError:
+    """The error for a read that found the source under a member closed.
+
+    Typically the caller closed the ``BinaryIO`` they passed in. It is a usage error,
+    not damage: the archive bytes are fine. Raised from both error boundaries, inside a
+    member stream (``ArchiveStream._raise_translated``) and while a member opens
+    (``BaseArchiveReader._raise_translated``), so the two give the same answer.
+    """
+    return ArchiveyUsageError(
+        "Cannot read this member: its underlying caller-owned source has been closed."
+    )
 
 
 class ArchiveStream(ReadOnlyIOStream):
@@ -441,16 +455,14 @@ class ArchiveStream(ReadOnlyIOStream):
         if isinstance(e, ArchiveyError):
             self._stamp(e)
             raise e
-        if isinstance(e, ValueError) and "closed file" in str(e):
+        if is_closed_file_error(e):
             # The *inner* stream hit a closed handle underneath it — typically the
             # caller closed their supplied BinaryIO early. Mapped here, before the
             # per-library translator, so a backend's generic ValueError mapping cannot
             # claim it. The wrapper's own read-after-close never reaches _fail (plain
-            # ValueError from _ensure_open).
-            translated_closed = ArchiveyUsageError(
-                "Cannot read this member stream: its underlying caller-owned source "
-                "has been closed."
-            )
+            # ValueError from _ensure_open). BaseArchiveReader._raise_translated maps
+            # the same error raised while a member opens, with the same message.
+            translated_closed = closed_source_error()
             logger.debug("Translated exception: %r -> %r", e, translated_closed)
             raise translated_closed from e
         translated = self._translate(e)
