@@ -39,7 +39,7 @@ import stat
 import struct
 import zipfile
 import zlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -49,9 +49,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
-    Iterator,
     Literal,
-    Mapping,
     NoReturn,
     TypeVar,
     cast,
@@ -1270,8 +1268,8 @@ class ZipReader(BaseArchiveReader):
                     fname_str = local_name.decode(self._encoding or "cp437")
                 if fname_str != info.orig_filename:
                     raise zipfile.BadZipFile(
-                        "File name in directory %r and header %r differ."
-                        % (info.orig_filename, local_name)
+                        f"File name in directory {info.orig_filename!r} and header "
+                        f"{local_name!r} differ."
                     )
                 data_start = info.header_offset + 30 + name_len + extra_len
                 if data_start < 0 or data_start > _MAX_DATA_OFFSET:
@@ -2010,22 +2008,30 @@ class ZipReader(BaseArchiveReader):
             # Phase 2 — one shared CRC pass over the survivors.
             winner = disambiguate(survivors)
 
-            # Phase 3 — provider fallback: ask, cheap-check, per-candidate CRC pass, repeat.
-            attempt = 1
-            while winner is None and self._passwords.has_provider():
-                try:
-                    password = self._passwords.ask_provider(member, attempt)
-                except EncryptionError as exc:
-                    self._stamp_error_context(exc, member.name)
-                    raise
-                if password is None:
-                    break
-                if password in tried:
-                    break
-                tried.add(password)
-                if weak_ok(password):
-                    winner = disambiguate([password])
-                attempt += 1
+            # Phase 3 — provider fallback through ``iter_provider_answers``.
+            # The nested generator keeps ``except EncryptionError`` on the
+            # provider call. ``disambiguate`` reports a member-read failure
+            # through ``_reraise_member_error``, and that path does not stamp
+            # an ``EncryptionError`` (``stamp_encryption=False``). A ``try``
+            # around the ``for`` would stamp one raised while checking the
+            # answer. Each yielded answer is added to ``tried`` because phase 4
+            # reads that set: empty means "password required", and any answer
+            # already tried means "wrong password".
+            if winner is None:
+
+                def provider_answers() -> Iterator[bytes]:
+                    try:
+                        yield from self._passwords.iter_provider_answers(member, tried)
+                    except EncryptionError as exc:
+                        self._stamp_error_context(exc, member.name)
+                        raise
+
+                for password in provider_answers():
+                    tried.add(password)
+                    if weak_ok(password):
+                        winner = disambiguate([password])
+                        if winner is not None:
+                            break
         finally:
             raw.close()
 

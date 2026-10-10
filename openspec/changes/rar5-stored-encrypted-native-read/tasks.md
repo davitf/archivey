@@ -25,8 +25,8 @@
       **Maintainer decision (davitf, 2026-09-18,
       [#347](https://github.com/davitf/archivey/pull/347#issuecomment-5724553004)):**
       record the numbers here; the dedup itself — one PBKDF2 pass yielding all three
-      values, and removing the duplicate `_tweaked_verify_spec` evaluation — is **ARC-54**
-      and is not this change's job.
+      values, and removing the duplicate `_tweaked_verify_spec` evaluation — is tracked
+      internally and is not this change's job.
 - [ ] 1.3 **Confirm `_check_rar5_password` accepts a FILE `CRYPT` check value**, with a
       fixture pair: correct password returns `True`, wrong password raises
       `EncryptionError`. `design.md` §"PswCheck on a FILE record" says why this is an

@@ -69,8 +69,8 @@ no member replaces the destination itself.
 - `internal/filters.py` `check_universal` runs on every member under every policy,
   `TRUSTED` included, after the caller's filter, on the name about to be written. Under
   `STANDARD` and `TRUSTED`, `reroot_absolute` first drops a rooted name's root (a
-  leading `/` or `\`, or a drive letter with a separator after it) and a hardlink
-  target's, so the member lands inside the destination. It rejects `..` components
+  leading `/` or `\`, or a drive letter with a separator after it), so the member
+  lands inside the destination. It rejects `..` components
   (any separator), absolute paths including drive letters and UNC prefixes (every
   absolute name under `STRICT`; at any policy a drive-relative `C:x`, which has no
   root to drop, or an absolute name a filter returned), NUL bytes, names
@@ -78,17 +78,30 @@ no member replaces the destination itself.
   (`filters.disk_spelling`, which the coordinator applies first), special files
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is
   `"."` or `""` (which would replace the destination root with a file). It resolves
-  the parent and checks containment, and checks symlink and hardlink targets
-  lexically. A rejection names the member as listed, not its disk spelling.
+  the parent and checks containment, and checks symlink targets lexically. A
+  rejection names the member as listed, not its disk spelling.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
   target check and the parent resolution. A later member that changes a path the link
   resolved through gets it rechecked
   ([below](#a-later-member-cannot-make-an-extracted-symlink-escape)).
-- Hardlink targets resolve positionally to an earlier same-named member
-  (`internal/naming.py` `resolve_link_target_name`), so a duplicate name cannot
-  redirect a link.
+- A hardlink target must name an earlier member, and the member the link gets its bytes
+  from must not have been refused (maintainer decision, 2026-10-07). The target is a
+  member name, never a path: it resolves to the latest earlier member of that name
+  (`internal/naming.py` `resolve_link_target_name`, `..` and a leading `/` kept), so a
+  duplicate name cannot redirect a link, and the link is made to the file its source,
+  the end of the link chain (`link_target_member`), was written to (`_write_hardlink`,
+  `_place_link`). `check_universal` therefore reads nothing of the target string, and a
+  filter's change to it does nothing. `ExtractionCoordinator._source_refused` refuses a
+  link whose source was refused: this run's result for the source when there is one,
+  otherwise the policy's own checks on the source as listed (a selector or filter
+  excluded it). Without that, the second pass would write a refused member's bytes, such
+  as `../x`'s, under the link's name. A refused link in the middle of a chain refuses
+  nothing after it, and a hardlink to a symlink is written as that symlink and gets the
+  symlink checks (one to a symlink with no target fails, and is not refused for it). A
+  RAR file copy is a `FILE`, so its source lookup keeps the escape test instead
+  (`within_root`).
 - Overwrites replace a symlink rather than follow it (`_prepare_destination`,
   `_place_link`), and file data is written to a `.archivey-tmp-<random>` sibling
   (`_temp_sibling`) and moved with `os.replace` (`_write_file_atomic`), so an
@@ -106,10 +119,22 @@ files, which are safe to delete.
 `test_chained_symlink_attack_symlink_payload_rejected`,
 `test_chained_symlink_attack_file_payload_rejected`,
 `test_hardlink_duplicate_name_extraction_links_first_inode`,
+`test_check_universal_names_a_symlink_escape_not_a_hardlink_target`,
 `test_replace_symlink_no_write_through`,
 `test_hardlink_replaces_a_destination_symlink_without_following_it`,
 `test_error_when_dest_is_a_file_never_deletes_it`,
 `test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`.
+`tests/test_hardlink_target_rule.py`: `test_a_hardlink_to_a_refused_member_is_refused`,
+`test_a_hardlink_to_an_excluded_refused_member_is_refused`,
+`test_a_hardlink_to_a_selector_excluded_member_is_materialized`,
+`test_a_hardlink_to_a_later_member_still_fails`,
+`test_a_filter_that_rewrites_a_hardlink_target_changes_nothing`,
+`test_a_filter_that_makes_the_source_unsafe_refuses_its_links`,
+`test_a_hardlink_with_a_rooted_or_drive_target_gets_what_its_member_gets`,
+`test_a_hardlink_through_a_refused_middle_name_links_to_its_written_source`,
+`test_a_hardlink_to_a_refused_symlink_is_written_as_a_symlink`,
+`test_a_refused_source_refuses_links_through_a_safe_middle_name`,
+`test_check_universal_does_not_read_a_hardlink_target`.
 `tests/test_property_safety.py` covers `normalize_member_name`, `check_universal` and
 `resolve_link_target_name` over arbitrary input, and the mutation harness asserts the
 destination is still a directory after every successful extract.

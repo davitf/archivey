@@ -79,14 +79,14 @@ When a verifying member is short *and* carries a digest, Archivey raises `Trunca
 surface as truncation and vice versa). `except ReadError` catches both.
 ---
 
-## zstd — the open question (decision: migrate off `zstandard`)
+## zstd — settled: stdlib `compression.zstd` / `backports.zstd` (ADR 0009)
 
-zstd is the one codec whose choice was actively in doubt. The current backend, `zstandard`,
-has two real warts; the question was which of several candidates to move to.
+zstd is the one codec whose choice was actively in doubt. The backend at the time,
+`zstandard`, had two real warts; the question was which of several candidates to move to.
 
 ### Candidates
 
-- **`zstandard`** (current) — Gregory Szorc's CFFI/C wrapper of libzstd. Bespoke reader API.
+- **`zstandard`** (the backend then) — Gregory Szorc's CFFI/C wrapper of libzstd. Bespoke reader API.
 - **`pyzstd`** — Ma Lin's (animalize) wrapper; its `ZstdFile` is built on the stdlib
   `_compression` machinery (same family as `gzip`/`bz2`/`lzma`). It was the basis for CPython's
   stdlib module (PEP 784) and, as of 0.19, **depends on `backports.zstd` for Python < 3.14**.
@@ -167,8 +167,8 @@ rewinding seek"). The candidates were:
   `DecompressorStream` already provides for xz and lzip — so a small **native zstd
   frame-index reader** reusing that infrastructure would likely give the same seeking with no
   heavy dependency and no macOS risk. The note is no help for the common **single-frame** `.zst`
-  either way (one frame → one seek point). This is registered in `IDEAS.md` (Performance &
-  robustness), framed as "evaluate native frame-index reuse before depending on `indexed_zstd`".
+  either way (one frame → one seek point). This is in `IDEAS.md` (Performance), framed as
+  "evaluate native frame-index reuse before depending on `indexed_zstd`".
 - **`pyzstd.SeekableZstdFile`** — rejected as a general answer: it reads only the *Seekable Zstd*
   container (a seek table stored in a trailing skippable frame), **not** arbitrary `.zst`, so it
   cannot give random access to ordinary zstd streams or `.tar.zst`.
@@ -379,11 +379,3 @@ allowlist for features whose implementation is a later phase — currently empty
 dead or test-only dependency cannot slip back into an extra. `py7zr` is a **dev** oracle
 only (7z writing is not shipped as a user-facing extra).
 
-## Follow-up changes
-
-The decisions above that imply further work are tracked separately:
-
-- **Efficient seekable zstd** — optional; **evaluate a native frame-index reader first**
-  (reusing the xz/lzip `DecompressorStream` engine), since `indexed_zstd` only seeks at frame
-  granularity, which that infrastructure already provides — avoiding the heavy C++ dependency and
-  its macOS coexistence risk. Tracked in `IDEAS.md`.

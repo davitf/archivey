@@ -59,10 +59,11 @@ arbitrary bytes will sometimes say yes:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo

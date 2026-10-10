@@ -12,7 +12,7 @@ import os
 import re
 import sys
 import tempfile
-from typing import Callable
+from collections.abc import Callable
 
 import pytest
 

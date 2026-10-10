@@ -19,12 +19,12 @@ import operator
 import os
 import stat
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
     BinaryIO,
-    Callable,
     NoReturn,
     Protocol,
     TypeGuard,
@@ -137,7 +137,7 @@ def resolve_seek(offset: int, whence: int, *, pos: int, end: Callable[[], int]) 
     return max(0, end() + offset)
 
 
-def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:
+def try_readinto(stream: object, b: WriteableBuffer) -> int | None:
     """Call ``stream.readinto(b)`` when it is a real implementation.
 
     Returns the filled-byte count, or ``None`` if ``stream`` has no usable
@@ -188,7 +188,7 @@ def read_blocking(stream: ReadableStream, n: int = -1) -> bytes:
     return data
 
 
-def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
+def readinto_via_read(src: ReadableStream, b: WriteableBuffer) -> int:
     """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
 
     Copies at most ``len(b)`` bytes. A ``read`` that returns more than the
@@ -810,7 +810,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
     def read(self, size: int = -1, /) -> bytes:
         return read_blocking(self._raw, size)
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         n = try_readinto(self._raw, b)
         if n is not None:
             return n

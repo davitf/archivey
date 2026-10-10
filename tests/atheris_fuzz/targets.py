@@ -27,6 +27,7 @@ from archivey.internal.streams.codecs import (
     is_codec_available,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.gzip_codec import _MEMBER_PROBE_INPUT
 from archivey.types import FormatSupport
 from tests.atheris_fuzz.crc_fixup import (
     fixup_rar_header_crcs,
@@ -337,23 +338,32 @@ def _check_against_reference(what: str, got: bytes, ref: bytes, *, at: int = 0) 
 
 
 def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
-    """The content of ``data`` as gzip members whose ISIZE may be wrong, or ``None`` when
-    it fails on anything else.
+    """The content of a concatenated gzip ``data`` whose ISIZE may be wrong where the
+    spec accepts that, or ``None`` when it fails on anything else, or is a single member.
 
-    rapidgzip checks each member's CRC-32 but not its ISIZE, and the spec accepts that: a
-    wrong ISIZE over data the CRC-32 confirms is a malformed trailer, not damaged data.
-    The ISIZE backstop reads the last four bytes of the file, so zero padding can stand in
-    for the last member's ISIZE too. zlib checks the CRC-32 before the length, so a member
-    that fails only "incorrect length check" has its data confirmed. Fed a byte at a time
-    so the output before that error is kept and the member's end is known; only called on
-    the rare input where the two decodes disagree that way.
+    rapidgzip checks each member's CRC-32, and the spec accepts a wrong ISIZE over data
+    the CRC-32 confirms in a file of several members: a malformed trailer, not damaged
+    data. That is a member another member follows. The last member's is checked by the
+    backstop, and missed only when the further-member scan stands down early: with three
+    or more members (an earlier one can confirm), or a last member whose input is longer
+    than the scan's probe (``_MEMBER_PROBE_INPUT``). With two members and a small last one
+    the backstop catches it, so it is not excused here and the target keeps noticing.
+    A file of one member is never excused, with or without padding or other bytes after
+    it. The test for the last member is looser than the scan: it does not ask whether an
+    earlier member is itself right.
+    zlib checks the CRC-32 before the length, so a member that fails only "incorrect
+    length check" has its data confirmed. Fed a byte at a time so the output before that
+    error is kept and the member's end is known; only called on the rare input where the
+    two decodes disagree that way.
     """
     out = bytearray()
     pos = 0
+    members: list[tuple[bool, int]] = []  # (failed the length check, bytes it spans)
     while pos < len(data):
         if not any(data[pos:]):
             break  # zero padding after the last member, as GzipFile skips it
         decoder = zlib.decompressobj(31)
+        start, bad_length = pos, False
         while True:
             if pos >= len(data):
                 return None  # cut inside a member
@@ -363,10 +373,17 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
                 if "incorrect length check" not in str(exc):
                     return None
                 pos += 1
+                bad_length = True
                 break
             pos += 1
             if decoder.eof:
                 break
+        members.append((bad_length, pos - start))
+    if len(members) < 2:
+        return None
+    last_bad, last_size = members[-1]
+    if last_bad and len(members) < 3 and last_size <= _MEMBER_PROBE_INPUT:
+        return None
     return bytes(out)
 
 

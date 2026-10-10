@@ -187,7 +187,7 @@ document as a starting point rather than a plan.
 
 - Removed by `openspec/changes/archive/2026-09-02-retire-archive-writing-specs/` and
   `2026-09-02-drop-unshipped-write-claims/`
-- [`IDEAS.md`](../IDEAS.md) §Writing, done properly, later
+- [`IDEAS.md`](../IDEAS.md) §Writing
 - [`history/PLAN.md`](../history/PLAN.md) §Phase 9, the pre-0.2.0 roadmap entry this page replaces
 - [`threat-model.md`](../threat-model.md) C3 (metadata fidelity)
 - [`history/ARCHITECTURE.md`](../history/ARCHITECTURE.md) §5.4 — why writing is create-only

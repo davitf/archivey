@@ -389,6 +389,9 @@ def test_wall_drift_checks_regressions_and_noise() -> None:
             wall_s=0.02,
             bytes_decompressed=100,
             source_seek_count=1,
+            # run_cases always sets stdlib_wall_s with wall_ratio; 20 ms keeps the
+            # 1 ms time floor out of the way, so these cases test the ratio rules.
+            stdlib_wall_s=0.02,
             wall_ratio=ratio,
         )
 
@@ -446,10 +449,68 @@ def test_wall_drift_checks_regressions_and_noise() -> None:
     # New case not in previous — skip.
     assert _wall_drift_checks([_case("brand_new_case", 5.0)], previous) == []
 
+    # A hand-built result with no stdlib time is judged on the ratio rules alone.
+    no_stdlib = CaseResult(
+        case="zip_read_all",
+        format="zip",
+        operation="read_all",
+        wall_s=0.000_1,
+        bytes_decompressed=100,
+        source_seek_count=1,
+        wall_ratio=1.80,
+    )
+    assert len(_wall_drift_checks([no_stdlib], previous)) == 1
+
+
+def test_wall_drift_checks_ignore_drift_that_costs_under_a_millisecond() -> None:
+    """A ratio jump on a sub-millisecond case does not fail the drift gate.
+
+    Numbers from nightly run 37935834666 against the 2026-09-06 baseline: the RAR
+    listing ratio doubled on a 0.13 ms peer (+0.33 ms of wall time), while the
+    accelerated tar.gz read and the plain TAR read cost whole milliseconds more.
+    """
+    from benchmarks.harness import CaseResult, _wall_drift_checks
+
+    def _case(name: str, ratio: float, stdlib_s: float) -> CaseResult:
+        return CaseResult(
+            case=name,
+            format="x",
+            operation="read_all",
+            wall_s=ratio * stdlib_s,
+            bytes_decompressed=0,
+            source_seek_count=0,
+            stdlib_wall_s=stdlib_s,
+            wall_ratio=ratio,
+        )
+
+    previous = {
+        "results": [
+            {"case": "rar_open_list", "wall_ratio": 2.60},
+            {"case": "targz_read_all_accel_on", "wall_ratio": 0.43},
+            {"case": "tar_read_all", "wall_ratio": 1.75},
+        ]
+    }
+    current = [
+        _case("rar_open_list", 5.12, 0.000_13),
+        _case("targz_read_all_accel_on", 1.98, 0.023_3),
+        _case("tar_read_all", 2.36, 0.002_3),
+    ]
+
+    failures = _wall_drift_checks(current, previous)
+    assert [f.split(":")[0] for f in failures] == [
+        "targz_read_all_accel_on",
+        "tar_read_all",
+    ]
+    assert "+36.1 ms" in failures[0]
+
+    # With no time floor, the sub-millisecond case fails as it did before.
+    no_floor = _wall_drift_checks(current, previous, min_extra_s=0.0)
+    assert "rar_open_list" in no_floor[0]
+
 
 def test_wall_baseline_provenance_and_republish(tmp_path: Path) -> None:
     """measured_at age drives the 30d force-run; re-publish preserves it."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import UTC, datetime, timedelta
 
     from benchmarks.wall_baseline import (
         MEASURE_MAX_AGE_SECONDS,
@@ -460,7 +521,7 @@ def test_wall_baseline_provenance_and_republish(tmp_path: Path) -> None:
         wall_ratio_map,
     )
 
-    measured = datetime(2026, 6, 1, 6, 17, tzinfo=timezone.utc)
+    measured = datetime(2026, 6, 1, 6, 17, tzinfo=UTC)
     payload = {
         "measured_at": measured.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_run_id": "111",
@@ -497,3 +558,49 @@ def test_wall_baseline_provenance_and_republish(tmp_path: Path) -> None:
 
     assert wall_ratio_map({"results": [{"case": "a", "wall_ratio": True}]}) == {}
     assert measured_at_age_seconds({"results": []}) is None
+
+
+def test_main_passes_wall_drift_min_extra_ms_as_milliseconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--wall-drift-min-extra-ms`` reaches the drift gate in milliseconds.
+
+    The case below drifts 1.00 → 2.00 on a 2 ms stdlib peer: +2 ms of wall time. A
+    1 ms floor fails it and a 5 ms floor passes it. Read as seconds, both floors
+    would pass it, and the nightly drift gate could never fail.
+    """
+    from types import SimpleNamespace
+
+    from benchmarks import harness
+    from benchmarks.fixtures import SCALES
+    from benchmarks.harness import CaseResult
+
+    current = CaseResult(
+        case="zip_read_all",
+        format="zip",
+        operation="read_all",
+        wall_s=0.004,
+        bytes_decompressed=100,
+        source_seek_count=1,
+        stdlib_wall_s=0.002,
+        wall_ratio=2.0,
+    )
+    monkeypatch.setattr(
+        harness,
+        "materialize_fixtures",
+        lambda *_a, **_k: SimpleNamespace(root=tmp_path, scale=SCALES["ci"]),
+    )
+    monkeypatch.setattr(harness, "run_cases", lambda *_a, **_k: [current])
+    monkeypatch.setattr(harness, "_structural_checks", lambda *_a, **_k: [])
+    baseline = tmp_path / "prev.json"
+    baseline.write_text(
+        json.dumps({"results": [{"case": "zip_read_all", "wall_ratio": 1.0}]})
+    )
+
+    def run(*extra: str) -> int:
+        argv = ["--mode", "full", "--scale", "ci", "--wall-drift-baseline"]
+        return harness.main([*argv, str(baseline), *extra])
+
+    assert run() == 1  # default floor: 1 ms
+    assert run("--wall-drift-min-extra-ms", "1") == 1
+    assert run("--wall-drift-min-extra-ms", "5") == 0

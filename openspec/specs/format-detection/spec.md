@@ -418,7 +418,7 @@ such later hit the short one is used, which keeps a 7z followed by trailing data
 | `MZ` + ZIP local magic (`PK\x03\x04`) at offset N | `ZIP`, `payload_offset == N`; real ZIP members listed |
 | `MZ` + low-entropy filler + RAR/7z/ZIP magic in window | Same as above — **not** `BROTLI` / fabricated single-file member |
 | **Strong** executable cue (validated PE / ELF), no RAR/7z/ZIP in window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
-| **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `open-issues.md` P12 |
+| **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `dev-docs/topics/detection.md` |
 | Stub containing a decoy needle the validator rejects | The scan resumes past it and finds the real payload |
 | Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
@@ -459,7 +459,7 @@ real streams — see *A content probe SHALL NOT accept framing the source cannot
 
 The residual — arbitrary non-archive data that the Brotli probe claims, which is a far
 wider problem than executable prefixes — remains out of scope *here* and stays tracked
-separately (`dev-docs/open-issues.md` P12, `dev-docs/threat-model.md` O10). The
+separately (`dev-docs/topics/detection.md`, `dev-docs/threat-model.md` O10). The
 **first-block** framing check narrows it from 3.5% of a real `/usr` tree to ~0.15%
 (61/39 859 measured); the deferred chain walk would cut further to ~0.035%. It does not
 close the residual, and the registered wording needs three clauses, not one: the listing

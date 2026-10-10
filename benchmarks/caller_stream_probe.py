@@ -58,8 +58,9 @@ import json
 import statistics
 import sys
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import BinaryIO, Callable, Iterable
+from typing import BinaryIO
 
 from archivey import open_archive
 from benchmarks import fixtures

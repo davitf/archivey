@@ -735,10 +735,13 @@ the member-name namespace: `.` and empty segments are dropped and `..` is
 the member stored as `a/../b` and never the member `b`. Symlink targets are
 filesystem paths: they join to the link's directory first and `..` is collapsed.
 A hardlink target's leading `/` is kept, as in a member name, so `/a` names the member
-stored as `/a` (`tar -P` writes both). Absolute symlink targets and `..`-escaping
-targets of either kind stay unresolved (`None`; open → `LinkTargetNotFoundError`); the
-escape test runs on the collapsed form, with a hardlink's leading `/` set aside. Directory
-lookup tries bare and `/`-suffixed forms.
+stored as `/a` (`tar -P` writes both), and so is a `..` that climbs out of the root:
+`../a` names the member stored as `../a` (extraction refuses that member, and every
+link to it; `safe-extraction`). Absolute and `..`-escaping symlink targets stay
+unresolved (`None`; open → `LinkTargetNotFoundError`); the escape test runs on the
+collapsed form. A RAR file copy's source lookup keeps that escape test for its
+hardlink-style target (`format-rar`). Directory lookup tries bare and `/`-suffixed
+forms.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
 depth limit. Missing target → `LinkTargetNotFoundError`; cycle → `ReadError`.
@@ -760,7 +763,7 @@ that one `open()` operation.
 | Symlink `dir/link` → `../file` | Lookup `file` |
 | Absolute / `..`-escaping symlink | `link_target_member is None`; open → `LinkTargetNotFoundError` |
 | Hardlink `/b` → `/a`, archive holds `/a` | Resolves to the `/a` member |
-| Hardlink → `/../a` | Unresolved (escapes after the `/` is set aside) |
+| Hardlink → `../a` or `/../a`, archive holds a member of that name | Resolves to that member |
 | Duplicate names, hardlink | Most recent occurrence strictly before the link |
 | Duplicate names, symlink (RA) | Last occurrence overall |
 | Hardlink source only later | No target in either mode, in every format (`LinkTargetNotFoundError`): a hardlink refers to an earlier member, as `tar(1)` and `unrar` treat it (`format-tar`, `format-rar`) |

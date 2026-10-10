@@ -10,8 +10,8 @@
 #
 # Why this matters beyond convenience: the RAR *data* tests and the benchmark
 # gate's rar_* cases skip cleanly when `unrar` is absent. A skip is quiet, so an
-# environment missing it silently tests less than it appears to — and
-# `--update-baselines` there would rewrite structural.json without those cases.
+# environment missing it silently tests less than it appears to. (`--update-baselines`
+# refuses to run there rather than writing a structural.json without those cases.)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

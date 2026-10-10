@@ -419,6 +419,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         bcj2.Bcj2DecoderStream,  # owns its one resume point: the folder start
         codecs.rapidgzip_inprocess._AcceleratorStream,  # owns rapidgzip available_block_offsets
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
+        codecs.zlib_codec._DeflateEndCheckStream,
         codecs.gzip_codec._GzipTruncationCheckStream,
         codecs.zlib_codec._ZlibAdlerCheckStream,
         codecs.bzip2_codec._Bzip2EmptyStreamCheck,
@@ -604,6 +605,7 @@ def test_delegating_stream_close_inventory() -> None:
         counting.OutputCountingStream,
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
+        codecs.zlib_codec._DeflateEndCheckStream,
         codecs.gzip_codec._GzipTruncationCheckStream,
         codecs.zlib_codec._ZlibAdlerCheckStream,
         codecs.bzip2_codec._Bzip2EmptyStreamCheck,

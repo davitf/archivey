@@ -243,11 +243,17 @@ _FILESYSTEM_CASES = {
         ("y", "sym", ".."),
         ("x/f", "file", 0),
     ],
-    # A hardlink to a file, and one whose source the archive never wrote.
+    # A hardlink to a file, one whose source the archive never wrote, one to a
+    # refused source (refused too), and one through a refused middle name to a
+    # written file (linked).
     "hardlinks": [
         ("f", "file", b"content"),
         ("h", "hard", "f"),
         ("orphan", "hard", "missing"),
+        ("../x", "file", b"payload"),
+        ("refused", "hard", "../x"),
+        ("../m", "hard", "f"),
+        ("via", "hard", "../m"),
     ],
     # Duplicate names and a file where a directory was.
     "duplicates": [

@@ -6,9 +6,11 @@ RESOLVED and leave the body as historical. Living truth:
 
 Dated 2026-09-02.
 
-> **Status: open.** Adoption in progress on PR #280. Update this header when the pilot
-> format page exists and the entry-point commands are muscle memory. Spec thinning
-> direction (related): [`2026-09-specs-to-handbook-and-tests.md`](2026-09-specs-to-handbook-and-tests.md).
+> **Status: RESOLVED (2026-10-09).** Historical. PR #280 merged, the pilot format pages
+> exist (`formats/7z.md`, `formats/rar.md`), and the review loop now runs from the
+> `review` label (`../review-loop.md`); the Cursor steps below no longer apply. The live
+> loop is [`../pair-workflow.md`](../pair-workflow.md). Spec thinning direction
+> (related): [`2026-09-specs-to-handbook-and-tests.md`](../discussions/2026-09-specs-to-handbook-and-tests.md).
 
 ## How to start (checklist)
 
@@ -36,7 +38,7 @@ skills** plus the handbook. Use upstream plugins only as optional desktop extras
 | Need | Source | In this repo | Why this shape |
 | --- | --- | --- | --- |
 | Sharpen plan + write decisions | Matt `grill-me` / `grill-with-docs` / `domain-modeling` | **Skill** [`grill-with-handbook`](../../.claude/skills/grill-with-handbook/SKILL.md) | Writes format/topic pages, not ADR spam |
-| Diátaxis + sentence craft | pstack `technical-writing` | **Skill** [`technical-writing`](../../.claude/skills/technical-writing/SKILL.md) | User `docs/` + handbook prose |
+| Diátaxis + sentence craft | pstack `technical-writing` | **Skill** `technical-writing` (since folded into [`write-user-docs`](../../.claude/skills/write-user-docs/SKILL.md)) | User `docs/` + handbook prose |
 | Strip AI tells | pstack `unslop` | **Skill** [`unslop`](../../.claude/skills/unslop/SKILL.md) (standalone; AGENTS standing rule) | Chat / packets / PR comments without loading technical-writing |
 | Agent-facing doc craft | Matt `writing-for-agents` | Apply by hand when editing `AGENTS.md` / skills | Triggers in description; progressive body; checkable done criteria |
 | Deep-module vocabulary | Matt `codebase-design` | Optional later **doc** under `topics/` | Borrow terms; don’t import TS tooling |

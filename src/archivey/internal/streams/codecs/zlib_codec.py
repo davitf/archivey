@@ -25,6 +25,7 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.stdlib_takeover import (
+    _OutputChecksum,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
@@ -33,6 +34,7 @@ from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     gzip_corruption,
 )
+from archivey.internal.streams.deflate_resume import stream_end
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import StreamFormat
@@ -183,9 +185,8 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         # The end of the furthest bytes read() has returned. A seek's read-through
         # moves the frontier, not this.
         self._returned = 0
-        # Output bytes [0, _frontier) are covered by _adler.
-        self._frontier = 0
-        self._adler = 1  # Adler-32 of the empty string
+        # Output bytes [0, frontier) are covered by the Adler-32 (1 for the empty string).
+        self._sum = _OutputChecksum(zlib.adler32, 1)
         self._checked = False
         self._verdict: _StreamChecksumError | None = None
 
@@ -221,7 +222,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         if not self._checked:
             if whence == io.SEEK_END:
                 self._read_through(None)
-            elif offset > self._frontier:
+            elif offset > self._sum.frontier:
                 self._read_through(offset)
         self._pos = self._inner.seek(offset, whence)
         return self._pos
@@ -234,16 +235,13 @@ class _ZlibAdlerCheckStream(DelegatingStream):
 
     def _count(self, data: bytes) -> None:
         end = self._pos + len(data)
-        if not self._checked and self._pos <= self._frontier < end:
-            self._adler = zlib.adler32(
-                memoryview(data)[self._frontier - self._pos :], self._adler
-            )
-            self._frontier = end
+        if not self._checked:
+            self._sum.feed(self._pos, data)
         self._pos = end
 
     def _read_through(self, target: int | None) -> None:
         """Advance the frontier to ``target`` (``None``: the end) by reading."""
-        self._pos = self._inner.seek(self._frontier)
+        self._pos = self._inner.seek(self._sum.frontier)
         while target is None or self._pos < target:
             want = 1 << 20 if target is None else min(1 << 20, target - self._pos)
             data = self._inner.read(want)
@@ -264,10 +262,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         its bytes past that point."""
         if self._verdict is not None:
             raise self._verdict.with_traceback(None)
-        if self._checked or self._pos < self._frontier:
+        if self._checked or self._pos < self._sum.frontier:
             return b""
         self._checked = True
-        if self._trailer == self._adler:
+        if self._trailer == self._sum.value:
             return b""
         try:
             self._confirm_with_stdlib()
@@ -307,9 +305,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         first = True
         try:
             with self._views.view() as f:
-                while produced <= self._frontier:
+                while produced <= self._sum.frontier:
                     if decoder.eof:
-                        if produced == self._frontier:
+                        if produced == self._sum.frontier:
                             break
                         if first and self._returned <= produced:
                             # zlib checked this stream's Adler-32. Without the
@@ -329,17 +327,113 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     out = decoder.decompress(pending, 1 << 20)
                     pending = decoder.unconsumed_tail
                     # Only the bytes rapidgzip delivered are compared.
-                    adler = zlib.adler32(out[: self._frontier - produced], adler)
+                    adler = zlib.adler32(out[: self._sum.frontier - produced], adler)
                     produced += len(out)
         except zlib.error as exc:
             raise _StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
-        if adler == self._adler and (stopped_short or produced > self._frontier):
+        if adler == self._sum.value and (
+            stopped_short or produced > self._sum.frontier
+        ):
             raise _ZlibStoppedShort
-        if produced != self._frontier or adler != self._adler:
+        if produced != self._sum.frontier or adler != self._sum.value:
             raise _StreamChecksumError(
                 "zlib stream is damaged: the data does not match its Adler-32 "
                 "(the rapidgzip accelerator does not check it)"
             )
+
+
+class _DeflateEndCheckStream(DelegatingStream):
+    """Check that a raw DEFLATE stream rapidgzip ends without an error reached its end.
+
+    rapidgzip ends a raw DEFLATE stream cut after a whole block, or inside its last
+    one, with no error: it returns the output so far, then ``b""`` (found by the
+    accelerator fuzz targets). The standard library raises ``TruncatedError`` there,
+    since the stream never reached a final block. A declared size does not catch it:
+    when the size equals the output before the cut, the ``VerifyingStream`` outside
+    sees a complete member.
+
+    So when rapidgzip's output ends, this wrapper decodes the end of the stream again
+    with zlib, from the newest resume point at or before that offset
+    (:func:`~archivey.internal.streams.deflate_resume.stream_end`), or from the start
+    when there is none. Raw DEFLATE has no checksum, so the resumed decode is a full
+    answer:
+
+    - zlib reaches a final block: the stream is whole. That block can end before the
+      offset, when rapidgzip read on into a second stream after it, within the size the
+      container declared (past that size, ``limit`` of ``_StdlibOnAcceleratorError``
+      hands over). The ``compressed-streams`` spec accepts that difference: the
+      declared size and CRC decide.
+    - zlib does not reach a final block (a cut or damaged stream): the read goes to the
+      standard library (``switch_to_stdlib`` on the ``_StdlibOnAcceleratorError``
+      inside), which gives the verdict it gives with the accelerator off.
+
+    The check costs a decode of the output between the resume point and the end. The
+    child keeps its first point only once 4 MiB of output has been delivered
+    (``_MIN_QUERY_SPACING`` in ``rapidgzip_child.py``), so a stream with less output
+    than that is decoded again whole, by zlib in one thread: under ``ON`` such a member
+    pays a whole standard-library decode on top of rapidgzip's (measured on 2 MiB:
+    57 ms against 45 ms without the check, and 11 ms for zlib alone, since starting
+    the child already costs more than that). ``AUTO`` engages only from
+    16 MiB of compressed input (``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``), where the
+    decode is the stretch after the last point: measured on an 82 MiB stream, about
+    2 MiB and 10 ms. A point at the end itself cannot be had instead: its window is
+    the 32 KiB of output before the point, and the stream keeps only the 32 KiB
+    before the end.
+
+    The view is not guarded against ``OSError`` as the gzip member scan is: raw DEFLATE
+    is container-only, so the view is a sibling of the handle the decode itself reads,
+    and an error from it is the caller's source failing, which reaches the caller.
+
+    The check runs once, on the read that meets the end, as in
+    :class:`_GzipTruncationCheckStream` (ADR 0014: never from ``close()``); a
+    completing ``read()`` reaches the end itself so that it raises. A seek does not
+    disarm it. After a takeover the standard library owns the end. With a declared
+    size, the ``VerifyingStream`` probe past that size is the read that meets the end,
+    and a failed verifying event withholds its chunk (as for zlib, see
+    :class:`_ZlibAdlerCheckStream`): the error type is the same as with the
+    accelerator off, and up to one chunk fewer arrives.
+    """
+
+    readinto_passthrough = False
+
+    def __init__(
+        self, inner: _StdlibOnAcceleratorError, *, views: _SourceViews
+    ) -> None:
+        super().__init__(inner)
+        # The same object as ``_inner``, typed: the handover calls it.
+        self._takeover = inner
+        self._views = views
+        self._checked = False
+
+    def read(self, size: int = -1, /) -> bytes:
+        if size == 0:
+            return b""
+        data = self._inner.read(size)
+        if data and size >= 0:
+            return data
+        if data:
+            # A completing read: reach the end now, so the check raises from this read.
+            while more := self._inner.read(1 << 20):
+                data += more
+        return data + self._at_end(size)
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)
+
+    def _at_end(self, size: int) -> bytes:
+        """Check the end of rapidgzip's output; return what a read of ``size`` there
+        gets: nothing, or after a handover, the standard library's read."""
+        if self._checked or self._takeover.switched:
+            return b""
+        self._checked = True
+        end = self._takeover.position
+        resume_point = getattr(self._takeover.accelerator, "resume_point", None)
+        point = resume_point(end) if resume_point is not None else None
+        with self._views.view() as f:
+            if stream_end(f, point, end) is not None:
+                return b""
+        self._takeover.switch_to_stdlib()
+        return self._inner.read(size)
 
 
 class _ZlibErrorCodec(_DeflateFamilyCodec):
@@ -376,6 +470,15 @@ class DeflateCodec(_ZlibErrorCodec):
             # real stream that has it decodes without the accelerator.
             return None
         return super()._open_accelerated(source, params, config)
+
+    def _end_check(
+        self,
+        source: CodecSource,
+        config: StreamConfig,
+        accel_source: CodecSource,
+        views: _SourceViews,
+    ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
+        return lambda stream: _DeflateEndCheckStream(stream, views=views)
 
     def _accelerated_limit(
         self, params: CodecParams, config: StreamConfig

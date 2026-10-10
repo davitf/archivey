@@ -69,7 +69,7 @@ provisioned Linux laptop; they do not run on CI.
 | `test_rar_reader.py::test_qo_listing_matches_file_walk_with_comment` | live `rar a -qo+ -z`; archive comment field parity |
 
 Committing a small SFX payload (and a real `-sfx` stub) the way this directory
-already does for volumes would close the gap. Tracked in `dev-docs/IDEAS.md`.
+already does for volumes would close the gap. Tracked internally.
 
 ## Many-member listing fixtures
 

@@ -62,12 +62,16 @@ def _accelerator_engaged(stream: object) -> bool:
     from archivey.internal.streams.codecs.stdlib_takeover import (
         _StdlibOnAcceleratorError,
     )
-    from archivey.internal.streams.codecs.zlib_codec import _ZlibAdlerCheckStream
+    from archivey.internal.streams.codecs.zlib_codec import (
+        _DeflateEndCheckStream,
+        _ZlibAdlerCheckStream,
+    )
 
     while isinstance(
         inner,
         (
             VerifyingStream,
+            _DeflateEndCheckStream,
             _GzipTruncationCheckStream,
             _StdlibOnAcceleratorError,
             _StdlibSeekContract,

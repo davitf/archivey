@@ -32,7 +32,7 @@ Three vehicles, per `CONTRIBUTING.md` and `AGENTS.md`:
 | **Docs-only PR** | Published prose is wrong or missing; no contract change | `docs/` edit; `mkdocs.yml` nav if a new page |
 
 **The red–green signal.** 16 assertions in
-[`tests/test_review_simplicity_consistency.py`](../../tests/test_review_simplicity_consistency.py)
+[`tests/test_review_simplicity_consistency.py`](../../../tests/test_review_simplicity_consistency.py)
 are `@pytest.mark.xfail(strict=True)` — they encode the behaviour the review argues for.
 When a fix lands, its red half **XPASSes, which fails the suite**. That is the signal, and
 the last step of each deliverable is to delete the marker. Do not delete a marker without
@@ -374,7 +374,7 @@ documents the gap and will need deleting when the sweep runs.
 
 **Holding the solid-block decoder open across `open()` calls (O2b), and what that means
 under `concurrent_members` (O2c).** Registered as backlog in
-[`dev-docs/IDEAS.md`](../../dev-docs/IDEAS.md) §Performance & robustness with the full
+[`dev-docs/IDEAS.md`](../../../dev-docs/IDEAS.md) §Performance & robustness with the full
 argument and the measurements.
 
 The direction is agreed and the payoff is real — a single-folder solid 7z costs **4.5× one

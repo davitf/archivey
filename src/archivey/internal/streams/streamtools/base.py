@@ -68,7 +68,7 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
         # forgotten read() fails loudly instead of looping via RawIOBase.
         raise NotImplementedError
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         """Canonical ``readinto``: read into ``b`` via the subclass's ``read``."""
         return readinto_via_read(self, b)
 
@@ -257,7 +257,7 @@ class DelegatingStream(ReadOnlyIOStream):
         # passing it on would hand callers a non-bytes they would take for EOF.
         return read_blocking(self._inner, n)
 
-    def readinto(self, b: "WriteableBuffer", /) -> int:
+    def readinto(self, b: WriteableBuffer, /) -> int:
         # Zero-copy passthrough when allowed and the inner exposes a usable
         # readinto; otherwise route through self.read() so an overridden
         # read() is not bypassed. try_readinto treats a missing, refused, or

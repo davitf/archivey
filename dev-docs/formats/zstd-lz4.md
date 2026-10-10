@@ -226,7 +226,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - **Seekable zstd.** The frames of a `pzstd` file, or the seek table of the seekable-zstd
   format, are restart points. `indexed_zstd` is frame-granular and bundles the same native
   core as `indexed_bzip2`, the library ADR 0008 keeps out, so a native frame index is
-  preferred. Parked in [`IDEAS.md`](../IDEAS.md) §Efficient seekable zstd.
+  preferred. See [`IDEAS.md`](../IDEAS.md) §Performance.
 
 ## 8. Verify
 

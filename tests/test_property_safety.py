@@ -452,16 +452,21 @@ def test_resolve_symlink_absolute_is_none(link_name: str, target: str) -> None:
     assert resolve_link_target_name(link_name, target, MemberType.SYMLINK) is None
 
 
+@example(link_name="a/b", target="../x", member_type=MemberType.HARDLINK)
 @given(link_name=_pathish, target=_pathish, member_type=_link_types)
 def test_resolve_link_never_returns_escaping_name(
     link_name: str, target: str, member_type: MemberType
 ) -> None:
-    result = resolve_link_target_name(link_name, target, member_type)
+    """A symlink target, and a hardlink-kind target under ``within_root`` (a RAR file
+    copy), never resolves outside the archive namespace. A plain hardlink target is a
+    member name and may (``../x``); extraction refuses a link whose source was
+    refused."""
+    result = resolve_link_target_name(link_name, target, member_type, within_root=True)
     if result is None:
         return
     # Returned names must not escape the archive namespace (same gate as the impl).
     # A hardlink target keeps a leading "/": it names the member stored with one
-    # (``tar -P``), which extraction re-roots or refuses along with the link.
+    # (``tar -P``).
     if member_type is MemberType.HARDLINK:
         result = result.lstrip("/")
     assert result not in ("", ".", "/", "..")
@@ -489,6 +494,21 @@ def test_resolve_symlink_joins_to_link_dir(link_dir: str, target: str) -> None:
 def test_resolve_hardlink_uses_target_as_archive_path(target: str) -> None:
     result = resolve_link_target_name("ignored/link", target, MemberType.HARDLINK)
     assert result == target
+
+
+@example(target="../x")
+@example(target="/../a")
+@example(target="a/../b")
+@given(target=_pathish)
+def test_resolve_hardlink_keeps_dot_dot_like_a_member_name(target: str) -> None:
+    """Without ``within_root``, a hardlink target resolves to the name
+    ``normalize_member_name`` gives a member stored under it, ``..`` included."""
+    result = resolve_link_target_name("ignored/link", target, MemberType.HARDLINK)
+    if result is None:
+        return
+    assert result == normalize_member_name(
+        target, MemberType.FILE, backslash_is_separator=False
+    )
 
 
 @example(link_name="a/b", target="../x", member_type=MemberType.SYMLINK)

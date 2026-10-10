@@ -25,7 +25,17 @@ FENCED = re.compile(r"```.*?```", re.DOTALL)
 TREES = (
     ROOT / "dev-docs",
     ROOT / ".claude" / "skills",
+    ROOT / "review",
 )
+# Agent entry points at the repository root.
+ROOT_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md", ROOT / "CONTRIBUTING.md")
+
+
+def iter_sources() -> list[Path]:
+    sources = [path for path in ROOT_FILES if path.is_file()]
+    for tree in TREES:
+        sources.extend(iter_markdown(tree))
+    return sources
 
 
 def iter_markdown(tree: Path) -> list[Path]:
@@ -41,28 +51,28 @@ def link_targets(text: str) -> set[str]:
 
 def main() -> int:
     problems: list[str] = []
-    for tree in TREES:
-        for source in iter_markdown(tree):
-            text = source.read_text(encoding="utf-8")
-            for target in sorted(link_targets(text)):
-                if not target or target.startswith("#"):
-                    continue
-                path_part = target.split("?", 1)[0]
-                resolved = (source.parent / path_part).resolve()
-                try:
-                    resolved.relative_to(ROOT.resolve())
-                except ValueError:
-                    problems.append(
-                        f"{source.relative_to(ROOT)} links to {target!r}, "
-                        f"which resolves outside the repository."
-                    )
-                    continue
-                if not resolved.exists():
-                    problems.append(
-                        f"{source.relative_to(ROOT)} links to {target!r}, "
-                        f"which does not exist "
-                        f"(expected {resolved.relative_to(ROOT)})."
-                    )
+    sources = iter_sources()
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        for target in sorted(link_targets(text)):
+            if not target or target.startswith("#"):
+                continue
+            path_part = target.split("?", 1)[0]
+            resolved = (source.parent / path_part).resolve()
+            try:
+                resolved.relative_to(ROOT.resolve())
+            except ValueError:
+                problems.append(
+                    f"{source.relative_to(ROOT)} links to {target!r}, "
+                    f"which resolves outside the repository."
+                )
+                continue
+            if not resolved.exists():
+                problems.append(
+                    f"{source.relative_to(ROOT)} links to {target!r}, "
+                    f"which does not exist "
+                    f"(expected {resolved.relative_to(ROOT)})."
+                )
 
     if problems:
         print(f"{len(problems)} broken relative link(s):", file=sys.stderr)
@@ -70,9 +80,9 @@ def main() -> int:
             print(f"  {problem}", file=sys.stderr)
         return 1
 
-    n = sum(len(iter_markdown(tree)) for tree in TREES)
     print(
-        f"internal md links: {n} files under dev-docs/ and .claude/skills/, all resolve."
+        f"internal md links: {len(sources)} files under dev-docs/, .claude/skills/, "
+        "review/ and the root agent files, all resolve."
     )
     return 0
 

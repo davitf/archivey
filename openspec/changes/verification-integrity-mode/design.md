@@ -155,8 +155,8 @@ Both are cheaper to answer alongside the design constraint below than on their o
 ## Design constraint — one question with `stream.verified`
 
 The maintainer attached this to the STRICT half in September: `STRICT` and the
-*"Verification state as data: `stream.verified` plus an on-demand `verify()`"* entry
-in `dev-docs/IDEAS.md` are **one design question, not two**.
+*"Verification state as data"* entry in `dev-docs/IDEAS.md` (first sketched as
+`stream.verified` plus an on-demand `verify()`) are **one design question, not two**.
 
 The shared mechanism is real rather than speculative. `MemberVerifier`
 (`src/archivey/internal/streams/verify.py`) is the class a mode would be threaded

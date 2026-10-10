@@ -181,7 +181,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | A non-Brotli file lists as one `.uncompressed` member | **format** | No magic (§1); the gates narrow it, and the claim is `GUESS` or stamped (§2.1) |
-| `format_unconfirmed` on a genuine `.brotli` file that failed to read | **archivey** | `.brotli` is not a registered extension (open-issues P13) |
+| `format_unconfirmed` on a genuine `.brotli` file that failed to read | **archivey** | `.brotli` is not a registered extension (tracked internally) |
 | A read delivers bytes, then raises | **format** | A fabricated claim decodes for a while before it fails (§4) |
 | `member.size` is `None` | **format** | No size field |
 | Damaged data reads with no error | **format** | No checksum |
@@ -239,8 +239,7 @@ the meta-block header parser.
 
 - RFC 7932 (Brotli): §9.1 stream header and WBITS, §9.2 meta-block header
 - Investigation: [`brotli-content-probe-results.md`](../investigations/brotli-content-probe-results.md)
-- Registers: [`threat-model.md`](../threat-model.md) O10, O11 ·
-  [`open-issues.md`](../open-issues.md) P12, P13
+- Registers: [`threat-model.md`](../threat-model.md) O10, O11
 - Decisions: [`library-analysis.md`](../library-analysis.md) §brotli
 - Code: `internal/streams/codecs/brotli_codec.py` (`BrotliCodec`) · `internal/streams/brotli_framing.py`
   · `internal/streams/decompress.py` (`BrotliDecoder`) · `internal/detection.py`

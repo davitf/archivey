@@ -5,7 +5,7 @@ Produced after merging nine capability-worker verdicts into `claims.md` (2026-08
 
 Known upcoming decisions (do **not** block verification; surface if verdicts bear on them):
 
-- **P11** (`dev-docs/open-issues.md`): RAR stream temp spill needs a signal —
+- **P11** (formerly `dev-docs/open-issues.md`, now tracked internally): RAR stream temp spill needs a signal —
   `CostReceipt.notes`, a diagnostic, or both. Blocks writing E-71's prose, not verifying.
 - **scope.md Q3 / §D**: whether `api.md` enumerates the 21 undocumented exception types.
   Timing only; blocks writing `errors-and-diagnostics.md`.
@@ -158,7 +158,7 @@ These rows are **verified** as “the defect/silence exists.” They are not in 
 | F3 | **Fixed** | Twelve `cfg` rows restored to `verified · cfg `[all]``; per-cluster evidence pointers added (MD3 option B) |
 | F4 | **Fixed** | Sweep restated via `list_known_formats()` (26×FULL); SESSION + claims re-measure note |
 | F5 | **Disproven** as contradiction; **deferred** clarity to page PR | `gotchas.md:45-48` is true for its own trigger; suggest naming the trigger / linking the path residual when that page is rewritten. Home: pass-1 `gotchas.md` page PR worklist |
-| MD4 (validator) | **Deferred** | Small `claims.md` completeness check (non-empty V; stated counts match). Home: `review/backlog.md` under Topic 8 follow-ups / Definition-of-done row 8 |
+| MD4 (validator) | **Deferred** | Small `claims.md` completeness check (non-empty V; stated counts match). Home: tracked internally (Topic 8 follow-ups) / Definition-of-done row 8 |
 | **MD1** (A-34 priority) | **Decided: B** (2026-08-18) | Raise priority. Silent-success regression is mandatory. Vehicles: OpenSpec changes on #253 |
 
 Maintainer product calls still open: Q2–Q5. **MD1 closed** (B).

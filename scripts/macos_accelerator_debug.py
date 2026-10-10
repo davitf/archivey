@@ -51,7 +51,7 @@ import platform
 import subprocess
 import sys
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 # --------------------------------------------------------------------------------------------
 # Per-module knobs: how to build payloads and open streams, raw and via archivey.

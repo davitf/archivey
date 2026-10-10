@@ -61,8 +61,8 @@ not become a decompression-bomb surface of its own.
 ## Sequencing — designed together with `stream.verified`
 
 **STRICT is not ready to implement, and this is why.** The maintainer attached a
-constraint to it: STRICT and the *"Verification state as data: `stream.verified`
-plus an on-demand `verify()`"* idea in `dev-docs/IDEAS.md` are **one design
+constraint to it: STRICT and the *"Verification state as data"* idea in
+`dev-docs/IDEAS.md` (first sketched as `stream.verified` plus `verify()`) are **one design
 question, not two**. Both thread through the same class — `MemberVerifier`
 (`src/archivey/internal/streams/verify.py`) is where a mode would be plumbed and
 where a `verified` level would be computed.

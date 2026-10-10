@@ -6,8 +6,10 @@ is the code nobody has read, not the code someone just changed. #315 is the hub 
 *is* `main` and its base is an orphan branch, so inline comments re-anchor against current
 code and it is never merged.
 
-This directory holds the conventions. The state — which files are swept, and what each
-reading found — lives on #315 itself.
+**#315 was closed on 2026-10-02, after the first pass over `src/`.** The formal sweep is
+planned for after the release; until then no batch is running. This directory holds the
+conventions for that sweep, and the markers and threads on #315 are the record of the first
+pass.
 
 | | Where |
 |---|---|
