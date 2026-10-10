@@ -94,8 +94,9 @@ encrypted members fail as if no password had been given.
   working directory, where `--overwrite` decides what happens to entries already there.
   It skips the move when the entry is a symlink, or when a symlink in it leaves it on
   the way to its target (or is absolute), because such a link would point somewhere
-  else after the move. It also skips the move when part of the entry could not be listed, since it
-  may hold such a link. It prints a line saying why the files stayed in the wrapper.
+  else after the move. It also skips the move when part of the entry could not be
+  listed, since it may hold such a link. It prints a line saying why the files stayed
+  in the wrapper.
 - `test` exits `1` when its summary reports members as not tested, or digests as not
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip

@@ -49,22 +49,29 @@ def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
     """Stem used for the smart enclosing directory.
 
     Prefer the format's canonical extension (covers ``.tar.Z``, ``.tzst``, …); fall
-    back to stripping a final suffix and a remaining ``.tar``. Never return empty
-    (a file named exactly ``.tar.gz`` would otherwise become cwd and splatter).
+    back to stripping a final suffix and a remaining ``.tar``. Never return empty,
+    ``.`` or ``..``: the result becomes a destination path, so an empty stem (a file
+    named exactly ``.tar.gz``) or ``.`` (``..zip``) would splatter into the cwd, and
+    ``..`` (``...zip``, ``...tar.gz``) would write into the parent directory. Those
+    names give ``"archive"`` instead.
     """
     name = path.name
     ext = format.file_extension()
     if ext:
         suffix = f".{ext}"
         if name.lower().endswith(suffix.lower()):
-            stem = name[: -len(suffix)]
-            return stem or "archive"
+            return _safe_stem(name[: -len(suffix)])
     stem_path = path
     if stem_path.suffix:
         stem_path = stem_path.with_suffix("")
         if stem_path.suffix.lower() == ".tar":
             stem_path = stem_path.with_suffix("")
-    return stem_path.name or "archive"
+    return _safe_stem(stem_path.name)
+
+
+def _safe_stem(stem: str) -> str:
+    """``stem``, or ``"archive"`` when it is not a usable single-segment name."""
+    return "archive" if stem in ("", ".", "..") else stem
 
 
 def _top_level_names(members: list[ArchiveMember]) -> set[str]:
@@ -125,7 +132,7 @@ def resolve_smart_dest(
     """Choose the default dest without forcing a streaming metadata pass (D1).
 
     - Single-file / raw-stream → cwd.
-    - Indexed archive → tops on the **filtered** member set (wrap / reuse / cwd).
+    - Indexed archive → tops on the **filtered** member set (wrap / cwd).
     - No cheap index (tar, future stdin, …) → always a new ``./<stem>/``, then
       :func:`maybe_hoist_single_root` may lift a single extracted top entry to cwd.
     """

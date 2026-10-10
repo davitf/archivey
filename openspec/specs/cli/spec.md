@@ -123,9 +123,11 @@ future stdin sources, …), the destination SHALL initially be `./<archive-stem>
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
 the cwd and remove the wrapper. Whether the hoist runs SHALL depend only on what
-the run extracted, never on what was at the wrapper's name before. The hoist SHALL
-NOT run when the only entry is a symlink (the move changes the directory its target is
-read from), or when a symlink in the entry leaves the entry on the way to its target
+the run extracted, never on what was at the wrapper's name before; what the hoist
+does (flatten in place, or merge under the overwrite policy) can still depend on it,
+as described below. The hoist SHALL NOT run when the only entry is a symlink (the move
+changes the directory its target is read from), or when a symlink in the entry leaves
+the entry on the way to its target
 or part of the entry could not be listed (it may hold such a link).
 Extraction checked those links against the wrapper, and a path that climbs above the
 hoisted entry and back down through the wrapper's name (`top/k ->
@@ -143,9 +145,12 @@ directories under any policy. A collision
 the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
 under the wrapper, and exit nonzero — mirroring the failure a direct extraction
-would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
-containing `src/`) SHALL be flattened in place, not treated as a collision, and the
-wrapper SHALL then take that root's mode and times. A directory stored without owner
+would have hit. When the container got the plain stem name, a sole root sharing the
+wrapper's own name (`src.tar.gz` containing `src/`) SHALL be flattened in place, not
+treated as a collision, and the wrapper SHALL then take that root's mode and times.
+When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`, the
+sole root no longer shares its name, and the hoist merges the root into the existing
+`./<archive-stem>/` under the overwrite policy like any other root. A directory stored without owner
 write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
 and search permission for the move and then puts its mode back, as a direct extraction
 into the cwd would have succeeded.
@@ -194,6 +199,7 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a regular file (for example the archive itself, when it has no extension), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; the file is untouched |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>/` is an existing directory, any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written into the existing directory |
 | `archivey extract <no-index-archive>` with a single top-level dir `root/` when `./<archive-stem>/` is an existing directory, any `--overwrite` | Extracts into `./<archive-stem> (N)/`, then hoists `root/` to the cwd and removes the wrapper; the existing directory is untouched |
+| `archivey extract <no-index-archive>` whose single top-level dir is named like the stem (`src.tar` holding `src/`) when `./src/` is an existing directory | Extracts into `./src (N)/`, then hoists `src/` into the existing `./src/` under the overwrite policy: `replace` replaces colliding files, `skip` keeps them, `rename` writes `name (N)` beside them; under `--overwrite error` a colliding file stops the hoist, the remainder stays under `./src (N)/src/`, and the exit code is `1` |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
@@ -429,9 +435,10 @@ say that nothing was written. With no `-d`, it SHALL name the smart default dest
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,
 and use that place in the closing summary. Where a real run would keep that entry in
-the destination (the entry is a symlink, a symlink in it leaves it, or part of the entry could not be listed, which here means part of the
-scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
-reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
+the destination (the entry is a symlink, a symlink in it leaves it, or part of the
+entry could not be listed, which here means part of the scratch tree could not be
+read), it SHALL print `would keep in <stem>/:` with the same reason, judged from the
+symlinks the dry run created. It SHALL NOT check for collisions with entries
 already at that place, nor whether an existing directory there can be written into: a
 real run whose hoist is refused by that directory's permissions fails where the dry run
 predicted the move.

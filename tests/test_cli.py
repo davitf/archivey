@@ -1041,6 +1041,14 @@ def test_archive_stem_uses_format_extension() -> None:
 
     assert _archive_stem(Path("photos.tar.gz"), format=ArchiveFormat.TAR_GZ) == "photos"
     assert _archive_stem(Path(".tar.gz"), format=ArchiveFormat.TAR_GZ) == "archive"
+    # "." and ".." are not usable folder names: they would splatter into the cwd or
+    # write into the parent directory.
+    assert _archive_stem(Path("..zip"), format=ArchiveFormat.ZIP) == "archive"
+    assert _archive_stem(Path("...zip"), format=ArchiveFormat.ZIP) == "archive"
+    assert _archive_stem(Path("...tar.gz"), format=ArchiveFormat.TAR_GZ) == "archive"
+    # The suffix-stripping fallback (name does not end in the format's extension).
+    assert _archive_stem(Path("...bin"), format=ArchiveFormat.ZIP) == "archive"
+    assert _archive_stem(Path("..bin"), format=ArchiveFormat.ZIP) == "archive"
     tar_z = ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNIX_COMPRESS)
     assert _archive_stem(Path("data.tar.Z"), format=tar_z) == "data"
 
@@ -2934,12 +2942,91 @@ def test_hoist_runs_when_a_directory_has_the_wrapper_name(
     assert main(args) == EXIT_OK
     err = capsys.readouterr().err
     assert "into bundle (1)/" in err
-    assert "move to root/" in err if dry_run else "moved to root/" in err
+    needle = "would move to root/" if dry_run else "moved to root/"
+    assert needle in err
     assert "already there" not in err
     assert sorted(p.name for p in (tmp_path / "bundle").iterdir()) == ["notes.txt"]
     assert not (tmp_path / "bundle (1)").exists()
     if not dry_run:
         assert (tmp_path / "root" / "a.txt").read_bytes() == b"x"
+
+
+@pytest.mark.parametrize(
+    ("overwrite", "code", "expected", "leftover"),
+    [
+        # A colliding file stops the hoist; the rest stays in the new wrapper.
+        (
+            "error",
+            EXIT_FAIL,
+            {"src/a.txt": b"mine-a", "src/c.txt": b"mine-c"},
+            {"src (1)/src/a.txt": b"new-a", "src (1)/src/b.txt": b"new-b"},
+        ),
+        (
+            "replace",
+            EXIT_OK,
+            {"src/a.txt": b"new-a", "src/b.txt": b"new-b", "src/c.txt": b"mine-c"},
+            {},
+        ),
+        (
+            "skip",
+            EXIT_OK,
+            {"src/a.txt": b"mine-a", "src/b.txt": b"new-b", "src/c.txt": b"mine-c"},
+            {},
+        ),
+        (
+            "rename",
+            EXIT_OK,
+            {
+                "src/a.txt": b"mine-a",
+                "src/a (1).txt": b"new-a",
+                "src/b.txt": b"new-b",
+                "src/c.txt": b"mine-c",
+            },
+            {},
+        ),
+    ],
+)
+def test_hoist_merges_root_named_like_stem_into_existing_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    code: int,
+    expected: dict[str, bytes],
+    leftover: dict[str, bytes],
+) -> None:
+    # src.tar holding src/, with ./src taken: the wrapper is "src (1)/", the sole
+    # root no longer shares its name, so it is merged into ./src under the policy
+    # instead of flattened in place.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.txt").write_bytes(b"mine-a")
+    (tmp_path / "src" / "c.txt").write_bytes(b"mine-c")
+    archive = _tar(tmp_path / "src.tar", {"src/a.txt": b"new-a", "src/b.txt": b"new-b"})
+    assert main(["x", "--overwrite", overwrite, str(archive)]) == code
+    assert "into src (1)/" in capsys.readouterr().err
+    found = {
+        p.relative_to(tmp_path).as_posix(): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file() and p != archive
+    }
+    assert found == {**expected, **leftover}
+    if not leftover:
+        assert not (tmp_path / "src (1)").exists()
+
+
+def test_extract_dot_dot_stem_writes_under_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "...zip" strips to "..": the wrapper must not be the parent directory.
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    archive = _zip(cwd / "...zip", {"a.txt": b"a", "b.txt": b"b"})
+    assert main(["x", "--overwrite", "error", str(archive)]) == EXIT_OK
+    assert (cwd / "archive" / "a.txt").read_bytes() == b"a"
+    assert (cwd / "archive" / "b.txt").read_bytes() == b"b"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["work"]
 
 
 # --- S24-K6: an incomplete ``test`` run exits nonzero even with no failure ---

@@ -420,8 +420,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dest",
         default=None,
         help=(
-            "destination directory (default: a new folder named after the archive, "
-            "or . for a single top-level folder; use -d . for cwd)"
+            "destination directory. By default, extract into a new folder named "
+            "after the archive, or into the current directory when the archive holds "
+            "a single top-level folder. Pass -d . to extract into the current "
+            "directory in any case."
         ),
     )
     p_extract.add_argument(
