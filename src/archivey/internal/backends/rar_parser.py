@@ -1450,13 +1450,17 @@ def _normalize_password_utf16le(password: str | bytes) -> bytes:
     return wstr[: _RAR_MAX_PASSWORD * 2]
 
 
-def _decode_comment_text(raw: bytes) -> str:
+def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
     """Decode an 8-bit RAR 1.5-4 comment the way ``unrar`` reads it.
 
     The text ends at the first NUL, because ``unrar`` hands the bytes to a C-string
     conversion (``DoGetComment``, ``Archive::ReadCommentData``). What is left is
-    UTF-8 if it is valid, else windows-1252, with U+FFFD for the five bytes that
-    code page leaves undefined.
+    UTF-8 if it is valid, else the caller's ``encoding=``, else windows-1252. A byte
+    the code page cannot decode (five are undefined in windows-1252) survives as a lone
+    surrogate, as it does in a name. The order and the error handler are the ones
+    ``_decode_rar3_8bit_name`` uses for a name, and the ones a ZIP comment uses; keep
+    them in step. Only the last fallback differs from a name's: ``unrar`` reads a
+    comment as windows-1252 whatever the host OS.
 
     A RAR 1.5-4 comment is 8-bit text whose code page is not recorded. It is never
     guessed as UTF-16LE: almost any even-length byte string decodes that way, so
@@ -1467,7 +1471,16 @@ def _decode_comment_text(raw: bytes) -> str:
     try:
         return text.decode("utf8")
     except UnicodeDecodeError:
-        return text.decode("windows-1252", "replace")
+        pass
+    if encoding is not None:
+        try:
+            return text.decode(encoding, "surrogateescape")
+        except UnicodeError:
+            # A codec that refuses the bytes or the handler outright (``utf-32`` on a
+            # length that is not a multiple of four, ``idna``): decode as without
+            # ``encoding=``.
+            pass
+    return text.decode("windows-1252", "surrogateescape")
 
 
 def _decode_rar3_8bit_name(raw: bytes, *, host_os: int, encoding: str | None) -> str:
@@ -1487,6 +1500,8 @@ def _decode_rar3_8bit_name(raw: bytes, *, host_os: int, encoding: str | None) ->
 
     A codec ``open_archive`` accepted can still fail on these bytes (``idna``, which
     has no ``surrogateescape``); the name then decodes as it would without one.
+    ``_decode_comment_text`` decodes an 8-bit comment in the same order; keep the two
+    in step.
     """
     try:
         return raw.decode("utf-8")
@@ -1974,7 +1989,7 @@ def _fix_rar3_astral_truncation(unicode_name: str, std_name: bytes) -> str:
 
 
 def _parse_rar3_old_comment_subblocks(
-    hdata: bytes, pos: int
+    hdata: bytes, pos: int, *, encoding: str | None
 ) -> str | _Rar3Comment | None:
     """Read a RAR 1.5/2.x COMMENT subblock appended to a MAIN or FILE header.
 
@@ -2001,7 +2016,7 @@ def _parse_rar3_old_comment_subblocks(
                 comment = None
             elif compress_type == _RAR3_M0:
                 if _crc32(packed) & 0xFFFF == crc16:
-                    comment = _decode_comment_text(packed)
+                    comment = _decode_comment_text(packed, encoding=encoding)
             else:
                 comment = _Rar3Comment(
                     packed=packed,
@@ -2139,7 +2154,9 @@ def _parse_rar3(
             )
             main_seen = True
             if flags & _RAR3_MAIN_COMMENT:
-                comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
+                comment = _parse_rar3_old_comment_subblocks(
+                    hdata, crc_pos, encoding=name_encoding
+                )
             _seek_after_packed(source, data_offset, add_size)
             continue
 
@@ -2247,7 +2264,9 @@ def _parse_rar3(
                 # unp_ver=20.
                 # File-version history rows (FILE_VERSION) are kept as members.
                 if flags & _RAR3_FILE_COMMENT:
-                    member.comment = _parse_rar3_old_comment_subblocks(hdata, crc_pos)
+                    member.comment = _parse_rar3_old_comment_subblocks(
+                        hdata, crc_pos, encoding=name_encoding
+                    )
                 if _emit_file_member(members, member, max_members=max_members):
                     needs_next_volume = True
             elif (
@@ -2272,7 +2291,7 @@ def _parse_rar3(
                     text = even.decode("utf-16le", "replace")
                     cmt = text.split("\0", 1)[0]
                 else:
-                    cmt = _decode_comment_text(raw)
+                    cmt = _decode_comment_text(raw, encoding=name_encoding)
                 if member.file_solid and members:
                     members[-1].comment = cmt
                 else:

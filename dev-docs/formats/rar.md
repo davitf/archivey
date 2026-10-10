@@ -723,17 +723,21 @@ so RAR no longer emits `ENCODING_ARGUMENT_UNUSED`. Comments follow `unrar`: a RA
 is UTF-16LE, read in whole 2-byte units (an odd trailing byte is dropped, as `unrar`
 reads `CmtSize / 2` units) and cut at the first U+0000. Every other RAR 1.5-4 comment
 (an unflagged stored `CMT`, or an old-style COMMENT subblock, stored or compressed) is
-8-bit text cut at the first NUL, decoded as strict UTF-8 and then windows-1252, with
-U+FFFD for the five bytes windows-1252 leaves undefined. It is never guessed as
-UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to list as
-CJK. `encoding=` does not apply to comments. A compressed `CMT` SERVICE header is not
-decoded: the parser reads only a stored one, so such an archive lists with no comment
-and no diagnostic. A stored `CMT` is read from the span the walk skips after its
-header, which is its PACK_SIZE whether or not LONG_BLOCK is set, as `unrar` reads it.
-So no byte is read both as comment data and as a later header; a read that could
-overlap the next headers would let a stack of 35-byte `CMT` headers each re-read the
-rest of the archive (DR-9a). A stored `CMT` whose PACK_SIZE runs past the end of the
-file is a `CorruptionError`, with LONG_BLOCK set or clear.
+8-bit text cut at the first NUL, decoded as strict UTF-8, then with the caller's
+`encoding=` when one was passed, then windows-1252. A byte the code page leaves undefined
+(five in windows-1252) survives as a lone surrogate (`surrogateescape`). That is the
+order and the error handler an 8-bit name uses, and the ones a ZIP comment uses, because
+a comment records its code page no more than a name does; only the last fallback differs
+from a name's (`unrar`'s windows-1252 rather than the host's OEM code page). It is never
+guessed as UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to
+list as CJK. A compressed `CMT` SERVICE header is not decoded: the parser reads only a
+stored one, so such an archive lists with no comment and no diagnostic. A stored `CMT` is
+read from the span the walk skips after its header, which is its PACK_SIZE whether or not
+LONG_BLOCK is set, as `unrar` reads it. So no byte is read both as comment data and as a
+later header; a read that could overlap the next headers would let a stack of 35-byte
+`CMT` headers each re-read the rest of the archive (DR-9a). A stored `CMT` whose
+PACK_SIZE runs past the end of the file is a `CorruptionError`, with LONG_BLOCK set or
+clear.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.

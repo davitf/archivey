@@ -4,7 +4,9 @@
 
 Each archive goes through ``extract_all(dry_run=True)``, the real extraction pass with
 file bodies discarded, so nothing is kept on disk. Files are found by content, not by
-extension; a file ``detect_format`` cannot place is skipped.
+extension; a file ``detect_format`` cannot place is skipped. The scan runs every content
+probe (``always_probe_content=True``), so a raw LZMA Alone, zlib or Brotli file is found
+whatever its name, and a probe's false claims show up in the results.
 
 Three outputs:
 
@@ -240,8 +242,9 @@ class _WarningCapture(logging.Handler):
 
 def _scan_config(default_limits: bool) -> ArchiveyConfig:
     if default_limits:
-        return ArchiveyConfig()
+        return ArchiveyConfig(always_probe_content=True)
     return ArchiveyConfig(
+        always_probe_content=True,
         extraction_limits=ExtractionLimits.UNLIMITED,
         listing_limits=ListingLimits.UNLIMITED,
         spool_limits=SpoolLimits.UNLIMITED,

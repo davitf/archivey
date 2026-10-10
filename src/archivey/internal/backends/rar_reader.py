@@ -2608,7 +2608,7 @@ class RarReader(BaseArchiveReader):
             return None
         if unpacked is None or zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
             return None
-        return _decode_comment_text(unpacked)
+        return _decode_comment_text(unpacked, encoding=self._encoding)
 
     def _to_member(self, info: RarMemberInfo, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
