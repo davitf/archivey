@@ -682,9 +682,11 @@ def detect_format(
     """Identify the archive format of ``source`` without fully opening it.
 
     Returns a :class:`FormatInfo`. Raises :class:`FormatDetectionError` when no magic
-    pattern matches and no extension guess is available. Detection diagnostics are on
-    the returned :attr:`FormatInfo.diagnostics`, recorded into a standalone collector
-    made from ``config`` (or the library default).
+    pattern matches and no extension guess is available. A non-blocking stream with
+    nothing ready (its ``read`` returns ``None``) raises ``BlockingIOError`` instead:
+    bytes that have not arrived are not the same as no bytes. Detection diagnostics
+    are on the returned :attr:`FormatInfo.diagnostics`, recorded into a standalone
+    collector made from ``config`` (or the library default).
 
     What detection may read and decode is ``config.detection_budget``
     (:attr:`ArchiveyConfig.detection_budget`), ``BALANCED`` by default — the same

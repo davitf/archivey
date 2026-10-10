@@ -152,6 +152,38 @@ def test_over_returning_inner_raises() -> None:
         wrapped.read(4)
 
 
+def test_over_returning_inner_after_a_short_read_raises() -> None:
+    """The gathered follow-up is held to the same "at most ``n``" contract."""
+
+    class _ShortThenOverlong(io.RawIOBase):
+        def __init__(self) -> None:
+            super().__init__()
+            self._chunks = [b"abcd", b"EFGHIJKLM"]
+
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1) -> bytes:  # type: ignore[override]
+            return self._chunks.pop(0) if self._chunks else b""
+
+    wrapped = ArchiveSource.for_stream(_ShortThenOverlong())  # type: ignore[arg-type]  # RawIOBase double
+    with pytest.raises(ValueError, match="inner returned 13 bytes for read\\(10\\)"):
+        wrapped.read(10)
+
+
+def test_over_returning_inner_with_a_fact_length_raises() -> None:
+    """The fact-length fast path refuses an over-read too, rather than passing it on."""
+
+    class _OverReadBuffer(io.BytesIO):
+        def read(self, n: int | None = -1, /) -> bytes:
+            return super().read(-1 if n is None or n < 0 else n + 5)
+
+    wrapped = ArchiveSource.for_stream(_OverReadBuffer(b"abcdefghij"))
+    assert wrapped._length is not None
+    with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(4\\)"):
+        wrapped.read(4)
+
+
 def test_sized_read_past_eof_returns_the_remainder() -> None:
     """Stop-on-empty, not raise: a sized read past EOF is a short return.
 

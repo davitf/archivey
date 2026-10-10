@@ -180,7 +180,8 @@ def read_blocking(stream: ReadableStream, n: int = -1) -> bytes:
     return ``b""``. archivey's readers pull synchronously and cannot make progress on a
     non-blocking source, so this raises ``BlockingIOError`` instead of fabricating
     ``b""``, which would look like EOF and silently truncate the data. The ``readinto``
-    counterpart is :func:`try_readinto`.
+    counterpart is :func:`try_readinto`. :func:`read_exact` writes the same refusal
+    inline, for speed; a change to it belongs in both.
     """
     data: bytes | None = stream.read(n)
     if data is None:
@@ -249,7 +250,10 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     # An empty first return is terminal *on this call*: reading again would waste
     # I/O at EOF. ``None`` is not EOF but a non-blocking stream with nothing ready;
     # returning ``b""`` for it would end the caller's data early, and reading again
-    # would busy-loop, so it raises.
+    # would busy-loop, so it raises. This is ``read_blocking``'s refusal, written out
+    # here and in the loop below rather than called: the call cost 35-45 ns a read
+    # (+37% on a 64-byte read, +20% on 4 KiB) on this hot path. The shared
+    # ``_BLOCKING_READ_MESSAGE`` keeps the copies saying the same thing.
     data: bytes | None = stream.read(n)
     if not data:
         if data is None:

@@ -114,7 +114,9 @@ accident of iteration: `confidence` is a provisional grade and `detected_by` an 
 so a later release may grade evidence more finely without breaking a caller that treats
 unknown values as possible. A source with no bytes left at its current position (empty,
 or already read to its end) SHALL raise `FormatDetectionError` saying there are no bytes
-to read, not that nothing matched.
+to read, not that nothing matched. A non-blocking stream whose `read` returns `None` has
+not run out of bytes; it SHALL raise `BlockingIOError`, whether nothing has arrived or only
+part of the prefix has (`access-mode-and-cost`, "a non-blocking read is not end of file").
 
 #### Scenario: unrecognised bytes, no path
 

@@ -307,6 +307,9 @@ def open_archive(
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
     A non-seekable stream keeps the bytes detection peeked in a replay prefix that the
     backend's first reads drain, so detection never consumes bytes the backend needs.
+    A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
+    returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
+    error.
 
     A seekable stream source is taken to hold the archive **starting at its current
     position**: detection peeks from there and restores the position, and the opener

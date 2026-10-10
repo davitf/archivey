@@ -161,7 +161,14 @@ class _GatheringReader:
             )
         if got == 0:
             return b""
-        return data + read_exact(self._inner, n - got)
+        rest = read_exact(self._inner, n - got)
+        if len(rest) > n - got:
+            # ``read_exact`` keeps what each read hands back; an over-read in the
+            # follow-up is refused here, as the first read's is above.
+            raise ValueError(
+                f"inner returned {got + len(rest)} bytes for read({n}): {self._inner!r}"
+            )
+        return data + rest
 
 
 class ArchiveSource(ReadOnlyIOStream):
@@ -514,6 +521,12 @@ class ArchiveSource(ReadOnlyIOStream):
             if avail <= 0:
                 return b""
             data = read_blocking(reader, avail)
+            if len(data) > avail:
+                # The excess is already consumed and cannot be given back, so this
+                # refuses rather than clamps, as the gathering reader does.
+                raise ValueError(
+                    f"inner returned {len(data)} bytes for read({avail}): {reader!r}"
+                )
             self._pos += len(data)
             return data
         if n == 0:

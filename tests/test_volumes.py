@@ -1263,20 +1263,36 @@ def test_short_returning_seekable_volume_item_reads_through_boundary() -> None:
     joined.close()
 
 
-class _SeekableNothingReady(io.BytesIO):
-    """A seekable caller stream that answers ``read`` with ``None``, as non-blocking."""
+class _SeekableStallsOnce(io.BytesIO):
+    """A seekable caller stream that answers its first ``read`` with ``None``.
+
+    That is a non-blocking stream with nothing ready yet; later reads serve the bytes.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self._stalled = False
 
     def read(self, n: int | None = -1, /) -> bytes:  # type: ignore[override]  # None is the point
-        return None  # type: ignore[return-value]  # non-blocking answer
+        if not self._stalled:
+            self._stalled = True
+            return None  # type: ignore[return-value]  # non-blocking answer
+        return super().read(n)
 
 
 def test_concatenated_file_refuses_none_from_a_caller_volume() -> None:
-    """``None`` from a caller's volume stream is not a volume that ended early."""
-    joined = ConcatenatedFile([io.BytesIO(b"abc"), _SeekableNothingReady(b"def")])
+    """``None`` from a caller's volume stream is not a volume that ended early.
+
+    The read crosses from the first volume into the stalled one, so it has already
+    taken ``abc`` when the stall arrives. The position goes back to the start of the
+    read, and a retry once the data has arrived returns all six bytes.
+    """
+    joined = ConcatenatedFile([io.BytesIO(b"abc"), _SeekableStallsOnce(b"def")])
     try:
-        assert joined.read(3) == b"abc"
         with pytest.raises(BlockingIOError, match="non-blocking"):
-            joined.read(3)
+            joined.read(6)
+        assert joined.tell() == 0
+        assert joined.read(6) == b"abcdef"
     finally:
         joined.close()
 
