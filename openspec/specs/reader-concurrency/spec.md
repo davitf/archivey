@@ -113,10 +113,13 @@ it closes the reader, winds the backend's pass down (last yielded stream, then
 pass-scoped resources), closes any other open member stream, and only then tears the
 archive down, holding a lease from the close transition until the member streams are
 closed, so no stream close can start teardown early. Teardown runs even when the
-wind-down fails, and the failure then propagates out of `close()`. A `close()`
-interrupted inside that step (`KeyboardInterrupt`) leaves it to the next `close()`, or,
-when none comes, to the generator's own close or finalization; a concurrent `close()`
-that returned while another was in the step does not stop either. Resuming the
+wind-down fails, and the failure then propagates out of whatever finished the step. A
+`close()` interrupted inside that step (`KeyboardInterrupt`) leaves it to the next
+`close()`, or, when none comes, to the generator's own close or finalization; a
+concurrent `close()` that returned while another was in the step does not stop either.
+A failure in a step finished that way comes out of that `close()`, out of the
+generator's own `close()`, or, when the collected generator finished it, through
+`sys.unraisablehook`: the caller sees nothing. Resuming the
 generator then raises `ArchiveyUsageError` (maintainer's ruling, 2026-10-10). A pass
 that is executing still makes a non-`CONCURRENT` `close()` raise. A caller needing
 simultaneous streams SHALL materialize and use random `open()`.
@@ -317,5 +320,5 @@ prevent final teardown from racing each call.
 | Inner-close + teardown both fail on final member close | Lease/state released once; `ExceptionGroup` of both |
 | `close()` under a suspended `stream_members()` pass: wind-down + member-stream close both fail | Both steps run; teardown runs; `ExceptionGroup` of both ("winding down the pass and closing member streams both failed") |
 | `close()` under a suspended `stream_members()` pass: wind-down (or member-stream close) + teardown both fail | Teardown runs once; `TEARDOWN_COMPLETE`; `ExceptionGroup` of the close-time failure and the teardown failure ("close-time cleanup and archive teardown both failed") |
-| `close()` under a suspended `stream_members()` pass interrupted inside its wind-down step | `READER_CLOSED`; the next `close()`, or else closing or collecting the pass generator, finishes the step; pass wound down once; `TEARDOWN_COMPLETE`; source closed |
+| `close()` under a suspended `stream_members()` pass interrupted inside its wind-down step | `READER_CLOSED`; the next `close()`, or else closing or collecting the pass generator, finishes the step; pass wound down once; `TEARDOWN_COMPLETE`; source closed. A failure in the recovered step or its teardown comes out of that `close()`, out of the generator's `close()`, or, for a collected generator, through `sys.unraisablehook` |
 | Idle leased stream after `reader.close()` | Later stream I/O via lease-bound worker entry until stream close |

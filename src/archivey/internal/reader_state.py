@@ -623,6 +623,11 @@ class ReaderState:
         with self._lock:
             return self._stream_shutdown_done
 
+    def lifecycle_is_open(self) -> bool:
+        """Whether the reader is still open: ``close()`` has not started its transition."""
+        with self._lock:
+            return self.lifecycle is LifecycleState.OPEN
+
     def abandon_stream_shutdown(self, ticket: object) -> None:
         """Hand back the claim ``ticket`` holds, unless it was spent. For an interrupt.
 

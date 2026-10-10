@@ -7,8 +7,10 @@ Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
 from __future__ import annotations
 
 import contextvars
+import gc
 import gzip
 import io
+import sys
 import tarfile
 import threading
 import zipfile
@@ -513,6 +515,49 @@ def test_interrupted_close_tears_down_when_the_pass_iterator_goes(
         p.reader.close()
     assert state.lifecycle is LifecycleState.READER_CLOSED
     p.it.close()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    _assert_wound_down_once_in_order(p.events)
+    assert p.source is None or p.source.closed
+    assert p.stream.closed
+
+
+_RECOVERED_STEP_FAILURES = {
+    "wind-down": (frozenset({"wind-down"}), RuntimeError, "wind-down failed"),
+    "teardown": (frozenset({"teardown"}), OSError, "teardown failed"),
+}
+
+
+@pytest.mark.parametrize("route", ["generator close", "collect"])
+@pytest.mark.parametrize("fail", list(_RECOVERED_STEP_FAILURES))
+def test_failure_in_a_step_the_pass_iterator_finished_comes_out_of_it(
+    tmp_path: Path, fail: str, route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing step finished by the pass iterator surfaces where the iterator ended.
+
+    An interrupted close() handed the step back; the pass iterator then finishes it.
+    Closed explicitly, the failure comes out of its ``close()``. Collected, there is no
+    caller to raise to, so it goes to ``sys.unraisablehook``. Teardown runs on both.
+    """
+    steps, exc_type, message = _RECOVERED_STEP_FAILURES[fail]
+    p = _open_under_suspended_pass(
+        _zip_with_files(tmp_path), False, monkeypatch, fail=steps
+    )
+    state = p.reader._state
+    _interrupt_close_at(state, "claim", monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        p.reader.close()
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    if route == "generator close":
+        with pytest.raises(exc_type, match=message):
+            p.it.close()
+    else:
+        unraisable: list[BaseException | None] = []
+        monkeypatch.setattr(
+            sys, "unraisablehook", lambda args: unraisable.append(args.exc_value)
+        )
+        del p.it
+        gc.collect()
+        assert [(type(e), str(e)) for e in unraisable] == [(exc_type, message)]
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
     _assert_wound_down_once_in_order(p.events)
     assert p.source is None or p.source.closed

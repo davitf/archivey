@@ -86,7 +86,6 @@ from archivey.internal.naming import (
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
 from archivey.internal.reader_state import (
-    LifecycleState,
     LiveStreamReservation,
     ReaderState,
 )
@@ -2877,7 +2876,9 @@ class BaseArchiveReader(ArchiveReader):
             # back with the pass wind-down lease still held. Finish it here, so
             # dropping this iterator still reaches teardown without another close().
             # A no-op when close() finished the step, or the reader is still open.
-            if self._state.lifecycle is not LifecycleState.OPEN:
+            # A failure here propagates out of the generator's close(), or, when the
+            # generator is being collected, goes to sys.unraisablehook.
+            if not self._state.lifecycle_is_open():
                 self._maybe_teardown(self._finish_stream_shutdown_step())
 
     def _check_extraction_dest(self, dest: Path) -> None:
