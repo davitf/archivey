@@ -652,6 +652,10 @@ def parse_header_block(
     ``max_members`` is ``ListingLimits.max_members`` from the reader config
     (``None`` disables). Omitting it applies the ``ListingLimits`` default, as the
     RAR parser's entry points do; header size still bounds bombs either way.
+
+    An undefined first property ID here is ``UnsupportedFeatureError``, as it may be a
+    future 7z feature; ``parse_decoded_header`` makes the same bytes a
+    ``CorruptionError``, because a decoded blob can only be damage or a wrong key.
     """
     if not header_data:
         return PlainHeader(_StreamsInfo(), [], None)
