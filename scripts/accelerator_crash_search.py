@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import bz2
+import faulthandler
 import gzip
 import hashlib
 import json
@@ -118,6 +119,9 @@ _CASE = struct.Struct("<BI")
 _SOURCE_KINDS = ("bytesio", "path")
 _OUTCOMES = ("clean", "raised", "capped")
 _STARTED = b"S"
+# Seconds past --timeout before the supervisor gives up on itself: the bounded waits of
+# one case (the write, the start, the kill) add up to well under this.
+_CASE_WATCHDOG = 300
 
 
 # --- the worker ---------------------------------------------------------------------------
@@ -412,15 +416,28 @@ class _Worker:
             stderr=self.stderr,
         )
         self.answers: queue.SimpleQueue[bytes] = queue.SimpleQueue()
+        self._writer: threading.Thread | None = None
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self) -> None:
-        assert self.proc.stdout is not None
-        while True:
-            byte = self.proc.stdout.read(1)
-            self.answers.put(byte)
-            if not byte:
-                return
+        """Read the worker's answers. This thread owns the worker's stdout and closes it
+        at its end: a close from another thread would wait for a read in progress, for
+        good if the worker cannot be ended."""
+        stdout = self.proc.stdout
+        assert stdout is not None
+        try:
+            while True:
+                byte = stdout.read(1)
+                self.answers.put(byte)
+                if not byte:
+                    return
+        except (OSError, ValueError):
+            self.answers.put(b"")
+        finally:
+            try:
+                stdout.close()
+            except OSError:
+                pass
 
     def send(self, kind: int, data: bytes, timeout: float) -> bool | None:
         """Write one case. ``False`` if the worker died, ``None`` if it did not take the
@@ -441,9 +458,9 @@ class _Worker:
             else:
                 result.append(True)
 
-        writer = threading.Thread(target=write, daemon=True)
-        writer.start()
-        writer.join(timeout)
+        self._writer = threading.Thread(target=write, daemon=True)
+        self._writer.start()
+        self._writer.join(timeout)
         return result[0] if result else None
 
     def answer(self, timeout: float) -> bytes | None:
@@ -462,10 +479,13 @@ class _Worker:
         return returncode, text
 
     def close(self) -> None:
-        for pipe in (self.proc.stdin, self.proc.stdout):
+        # Closing stdin tells an idle worker to exit. A write still in progress holds
+        # the pipe's lock, so a close would wait for it; the worker is killed instead,
+        # and the pipe is left to the garbage collector.
+        stdin = self.proc.stdin
+        if stdin is not None and (self._writer is None or not self._writer.is_alive()):
             try:
-                if pipe is not None:
-                    pipe.close()
+                stdin.close()
             except OSError:
                 pass
         self._wait_or_kill()
@@ -527,6 +547,9 @@ def search(
                 if deadline is not None and time.monotonic() >= deadline:
                     break
                 data, mutation = case_input(codec, seed, index, corpus)
+            # Every wait in a case is bounded, so a case that runs far past them is a bug
+            # in this script: print every thread's stack and exit rather than stall.
+            faulthandler.dump_traceback_later(timeout + _CASE_WATCHDOG, exit=True)
             kind = index % len(_SOURCE_KINDS)
             if worker is None:
                 worker = _Worker(codec, parallelization)
@@ -578,6 +601,7 @@ def search(
             if progress and index % 200 == 0:
                 print(f"  {codec}: {index} cases", file=sys.stderr)
     finally:
+        faulthandler.cancel_dump_traceback_later()
         if worker is not None:
             worker.close()
     return report
