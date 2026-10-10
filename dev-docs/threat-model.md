@@ -476,6 +476,14 @@ continuation areas `pycdlib` builds from those reads is the listing budget's
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
 40 MiB member arrives as one 40 MiB request.
 
+The xz footer's backward size is a third case, in archivey's own code: only the 12-byte
+footer has to be valid for it to be believed, and it can claim an index as large as the
+file. `xz_decoder.py` `_XzIndexSource` reads an index declared at most
+`_INDEX_READ_CHUNK` (1 MiB) long once, and re-reads a larger one from the file a chunk at
+a time for the CRC-32 check and for each record walk, so the peak is one chunk. Reading
+it whole cost about twice the file: a 128 MiB sparse file grew peak RSS by 244 MiB at
+open.
+
 **Tests.** `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`;
 `tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
 `::test_a_path_source_refuses_the_same_image`,
@@ -483,7 +491,9 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 `tests/test_iso_metadata_bounds.py`:
 `::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
 `::test_a_chained_continuation_area_past_its_block_is_refused_before_the_read`,
-`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`.
+`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`;
+`tests/test_seekable_streams.py::test_xz_index_scan_reads_a_huge_declared_index_in_chunks`,
+`::test_xz_open_archive_with_a_huge_declared_index_stays_small`.
 
 #### Decoder memory
 
