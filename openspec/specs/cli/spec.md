@@ -422,10 +422,8 @@ SHALL open it in streaming mode, because the user has no option to choose the mo
 `extract` SHALL extract them in one pass. When the format cannot be read in one
 forward pass (ZIP, 7z, RAR, ISO), the verb SHALL exit `1` with a message that names
 the format by its file extension (`zip`, `7z`, `rar`, `iso`) and tells the user to
-copy the input to a regular file first. When the format's optional package is not
-installed, the verb SHALL report the missing package first, as it does for a regular
-file. The message MUST NOT suggest `streaming=True` or a `BytesIO`, which a CLI user
-cannot pass. A block device rereads the same bytes and
+copy the input to a regular file first. The message MUST NOT suggest `streaming=True`
+or a `BytesIO`, which a CLI user cannot pass. A block device rereads the same bytes and
 opens as a regular file does.
 
 A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
@@ -440,7 +438,7 @@ separate and stays reserved (below).
 | `archivey test <tar-fifo>` | Verifies every file member in one pass; exit `0` |
 | `archivey extract <tar-fifo> -d out` | Extracts every member into `out`; exit `0` |
 | `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
-| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first. When the format's optional package is not installed (ISO without `pycdlib`), the message names the missing package instead |
+| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first |
 | `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
 
 ### Requirement: the stdin token `-` is reserved, not supported in v1
