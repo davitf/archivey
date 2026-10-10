@@ -429,7 +429,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
 
     def _fall_back_to_stdlib(self) -> None:
         """Replace a decoder that read the stream as empty with the standard library,
-        from the start; a read and a seek fall back here alike."""
+        from the start; a read and a seek fall back here alike. The seek is why this is
+        not ``empty_to_stdlib`` of :class:`_StdlibOnAcceleratorError`, which acts on a
+        read only."""
         self._armed = False
         self._end_unchecked = False  # the stdlib engine reports its own end
         self._replace_inner(_stdlib_bzip2(self._views.for_stdlib(), self._config))
