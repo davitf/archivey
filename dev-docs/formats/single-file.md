@@ -258,8 +258,10 @@ appended data. xz, lzip, zstd, LZ4 and bzip2 raise `CorruptionError` there, on t
 forward read and in the xz and lzip index searches, so a file is never read as its
 first stream alone. The rule is lzip's for a corrupt header in a multimember file;
 `near_stream_magic()` in `decompressor_stream.py` states it once for all five. A tail
-shorter than the magic is too short to judge and is trailing data. gzip does not apply
-the rule (§7). Otherwise `DecompressorStream` stops reading the source, returns everything decoded, and emits one
+shorter than the magic is too short to judge and is trailing data. Where zero bytes
+are padding (zstd, LZ4, bzip2), a run shorter than the magic is also judged as the
+magic's first bytes, since the damaged byte can be a zero. Unlike `lzip
+--loose-trailing`, nothing turns the rule off. gzip does not apply the rule (§7). Otherwise `DecompressorStream` stops reading the source, returns everything decoded, and emits one
 `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` at that byte's offset.
 Only a bare file, a compressed TAR's codec and `open_stream` report
 (`StreamConfig.report_trailing_data`); a codec inside a ZIP or 7z member stops silently,

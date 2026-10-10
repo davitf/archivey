@@ -360,28 +360,36 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         standard library decodes or refuses; ``None`` when there is no such byte."""
         with self._views.view() as view:
             view.seek(end)
-            # ``held`` is the start of an empty stream that the previous chunk cut, or
-            # nothing. ``offset`` is the source offset of ``data[0]``.
+            # ``held`` is what the previous chunk left undecided: at most a magic's
+            # length of zeros, then the start of an empty stream or a header that the
+            # chunk cut. ``offset`` is the source offset of ``data[0]``.
             offset = end
             held = b""
             while True:
                 chunk = view.read(_TRAILING_SCAN_CHUNK)
                 data = held + chunk
-                skipped = _padding_and_empty_bzip2_streams(data)
+                skipped, run_start = _padding_and_last_zero_run(data)
                 rest = data[skipped:]
                 # A short ``rest`` that could begin an empty stream, or is shorter than
                 # a stream header, waits for the next chunk. An empty ``chunk`` means
                 # the end of the source: ``rest`` cannot become a whole stream, so it is
                 # reported.
                 short = len(rest) < _BZIP2_HEADER_LEN
+                # The zeros just before ``rest``, up to a magic's length. A shorter run
+                # can hold a damaged magic's first bytes, as in ``FramedDecoder``, so
+                # it is judged with ``rest`` and kept when ``rest`` must wait.
+                zeros = min(skipped - run_start, len(_BZIP2_MAGIC))
                 if rest and not (chunk and (short or _starts_empty_bzip2_stream(rest))):
                     header = _BZIP2_HEADER.match(rest) is not None
-                    damaged = near_stream_magic(rest, _BZIP2_MAGIC)
+                    damaged = near_stream_magic(rest, _BZIP2_MAGIC) or (
+                        0 < zeros < len(_BZIP2_MAGIC)
+                        and near_stream_magic(data[skipped - zeros :], _BZIP2_MAGIC)
+                    )
                     return offset + skipped, header or damaged
                 if not chunk:
                     return None
-                held = rest
-                offset += skipped
+                held = data[skipped - zeros :]
+                offset += skipped - zeros
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # The one caller, _StdlibSeekContract, resolves a relative seek itself and
@@ -654,16 +662,24 @@ def _run_end(pattern: re.Pattern[bytes], data: bytes, pos: int) -> int:
 
 
 def _padding_and_empty_bzip2_streams(data: bytes) -> int:
-    """How many bytes at the start of ``data`` are zeros and whole empty streams.
+    """How many bytes at the start of ``data`` are zeros and whole empty streams."""
+    return _padding_and_last_zero_run(data)[0]
+
+
+def _padding_and_last_zero_run(data: bytes) -> tuple[int, int]:
+    """How many bytes at the start of ``data`` are zeros and whole empty streams, and
+    where the run of zeros at the end of them starts.
 
     A run of zeros and a run of empty streams are matched in turn. One pattern with a
     zero byte and a stream as alternatives costs about fifty times the CPU on a chunk of
     zeros, and allocates megabytes.
     """
+    run_start = 0
     pos = _run_end(_ZERO_RUN, data, 0)
     while (after := _run_end(_EMPTY_BZIP2_STREAM_RUN, data, pos)) != pos:
+        run_start = after
         pos = _run_end(_ZERO_RUN, data, after)
-    return pos
+    return pos, run_start
 
 
 def _starts_empty_bzip2_stream(data: bytes) -> bool:

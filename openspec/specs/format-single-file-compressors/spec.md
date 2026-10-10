@@ -297,11 +297,13 @@ then stop reading the source. Bytes after the end SHALL be classified this way:
 - for xz, lzip, zstd, LZ4 and bzip2, bytes that match the codec's stream magic in at
   least half of its positions, but not in all of them, are a further stream with a
   damaged header: the read, and a seek that reaches them, SHALL raise `CorruptionError`.
-  The positions compared are the first `len(magic)` bytes after the stream and after
-  any padding the codec skips (xz stream padding, zero bytes for zstd, LZ4 and bzip2;
-  none for lzip). This is lzip's rule for a corrupt header in a multimember file. A tail
-  shorter than the magic is not judged by it. gzip, zlib, LZMA Alone and Brotli do not
-  apply it;
+  The positions compared are the first `len(magic)` bytes after any padding the codec
+  skips (xz stream padding, zero bytes for zstd, LZ4 and bzip2; none for lzip). For
+  zstd, LZ4 and bzip2, a run of zero bytes shorter than the magic SHALL also be
+  compared as the first bytes of the magic, since a damaged byte can be zero; a run as
+  long as the magic or longer is padding. This is lzip's rule for a corrupt header in a
+  multimember file. A tail shorter than the magic is not judged by it. gzip, zlib, LZMA
+  Alone and Brotli do not apply it;
 - zero bytes are padding and SHALL NOT be reported;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
@@ -352,6 +354,7 @@ after the data decode as more codes.
 | Two concatenated `.xz` streams (with or without stream padding) or `.lz` members, last footer or trailer damaged | Size and CRC unknown; data up to the damage, then `CorruptionError` from the read or `SEEK_END` |
 | `.lz` member + zero bytes + a damaged member | Size and CRC of the first member; its payload and one report |
 | Two `.xz` / `.lz` / `.zst` / `.lz4` / `.bz2` streams, one byte of the second stream's magic damaged | `CorruptionError` from the read and from `SEEK_END`, from a file and from a pipe; no size from the index |
+| Two `.zst` / `.lz4` / `.bz2` streams, the second stream's first magic byte set to zero | `CorruptionError` from the read, with the accelerator on and off for `.bz2` |
 | A stream + 64 random bytes that match no magic in half of its positions | Full payload; one report |
 | A stream + its own first `len(magic) - 1` bytes, at the end of the file | Full payload; one report |
 | `.bz2` + `BZh0` and an empty stream's end-of-stream marker | `CorruptionError`, with the accelerator on and off |

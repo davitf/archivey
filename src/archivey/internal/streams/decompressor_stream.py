@@ -1169,10 +1169,18 @@ def near_stream_magic(data: bytes, magic: bytes | Sequence[Container[int]]) -> b
     matches and xz's 6-byte one five, so the damage the rule exists for is always
     caught. Random appended bytes match a 4-byte magic about once in 11 000 tails,
     zstd's and LZ4's skippable-frame magic (16 values for its first byte) about once in
-    1 300, and xz's magic about once in 800 000. A tail shorter than the magic does not
-    match: ``lzip`` also refuses a few bytes that begin like its magic, but
-    a tail that short holds too little to tell damage from appended bytes, so it is
-    reported as trailing data like any other.
+    1 300, and xz's magic about once in 850 000. A codec is judged against each magic
+    it accepts after a stream, so its rate is the sum: about once in 1 160 tails for
+    zstd (a frame or a skippable frame) and once in 1 050 for LZ4 (a frame, a legacy
+    stream or a skippable frame). A tail shorter than the magic does not match:
+    ``lzip`` also refuses a few bytes that begin like its magic, but a tail that short
+    holds too little to tell damage from appended bytes, so it is reported as trailing
+    data like any other.
+
+    ``lzip --loose-trailing`` turns the refusal off; archivey has no such option. A file
+    whose appended bytes match by chance fails to read past its last stream, with
+    nothing a caller can set to get the rest of the data. Damage is not a policy
+    choice in this layer: a damaged last footer also raises with no option.
 
     ``magic`` is the magic's bytes, or the bytes each position may hold (bzip2's
     block-size digit, zstd's skippable-frame range). A ``data`` that starts with the
@@ -1188,7 +1196,14 @@ def near_stream_magic(data: bytes, magic: bytes | Sequence[Container[int]]) -> b
 
 
 def damaged_stream_error(offset: int | None = None) -> CorruptionError:
-    """The error for bytes after a stream that :func:`near_stream_magic` matches."""
+    """The error for bytes after a stream that :func:`near_stream_magic` matches.
+
+    ``offset`` is where the damaged stream starts in the source. The xz and lzip
+    decoders and their index searches know it and pass it. ``FramedDecoder`` (zstd, LZ4,
+    bzip2) does not: it sees only the bytes it is fed, and only the
+    ``DecompressorStream`` that feeds it knows their source offset. Its error still
+    names the archive, member and format, from the error context.
+    """
     where = "" if offset is None else f" at offset {offset}"
     return CorruptionError(
         f"Damaged stream header{where}: the bytes after a complete stream hold at "

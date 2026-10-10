@@ -4,7 +4,6 @@ zstd, LZ4): the stream-start magic that tells a following stream from trailing d
 
 from __future__ import annotations
 
-import functools
 import os
 from collections.abc import Callable
 from typing import BinaryIO, Protocol
@@ -53,30 +52,58 @@ StreamStart = Callable[[bytes], bool | None]
 
 def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
     """A :data:`StreamStart` matching any of ``alternatives``, per-position bytes or ranges."""
-    magic: StreamMagic = tuple(
-        tuple(frozenset(position) for position in alternative)
-        for alternative in alternatives
+    return MagicStart(
+        tuple(
+            tuple(frozenset(position) for position in alternative)
+            for alternative in alternatives
+        )
     )
-    return functools.partial(_magic_state, magic=magic)
+
+
+class MagicStart:
+    """The :data:`StreamStart` that :func:`stream_magic` makes: a check of ``magic``.
+
+    :class:`FramedDecoder` also asks it whether bytes that begin inside a short run of
+    zeros are a damaged stream (:meth:`damaged`), since a damaged byte can be a zero.
+    """
+
+    def __init__(self, magic: StreamMagic) -> None:
+        self.magic = magic
+        # The longest alternative. A run of this many zeros is padding, not the start
+        # of a damaged magic.
+        self.width = max((len(alternative) for alternative in magic), default=0)
+
+    def __call__(self, data: bytes) -> bool | None:
+        return _magic_state(data, self.magic)
+
+    def damaged(self, data: bytes) -> bool:
+        """Whether ``data`` starts like a damaged stream (:func:`near_stream_magic`)."""
+        return any(near_stream_magic(data, alternative) for alternative in self.magic)
 
 
 def _magic_state(data: bytes, magic: StreamMagic) -> bool | None:
-    """True when ``data`` starts a stream, None when it may once more bytes come.
+    """True when ``data`` starts a stream, False when it does not, None when the bytes
+    so far cannot tell.
 
-    Bytes that start like a damaged stream (:func:`near_stream_magic`) raise
-    :class:`CorruptionError`. Telling them needs a whole magic, so a shorter ``data``
-    is waited on; at the end of the source it is trailing data (``flush``).
+    ``None`` comes for a ``data`` that is a prefix of a magic, and also for any
+    ``data`` shorter than an alternative that it does not start: such bytes cannot
+    start that stream, but bytes that start like a damaged stream
+    (:func:`near_stream_magic`) raise :class:`CorruptionError`, and that test needs a
+    whole magic. So a short ``data`` is waited on; at the end of the source it is
+    trailing data (``flush``).
     """
     for alternative in magic:
         seen = min(len(data), len(alternative))
         if all(data[i] in alternative[i] for i in range(seen)):
             return True if seen == len(alternative) else None
+    undecided = False
     for alternative in magic:
         if len(data) < len(alternative):
-            return None
+            undecided = True
+            continue
         if near_stream_magic(data, alternative):
             raise damaged_stream_error()
-    return False
+    return None if undecided else False
 
 
 class FramedDecoder(BaseDecoder):
@@ -90,10 +117,12 @@ class FramedDecoder(BaseDecoder):
     ``magic`` begin another stream (a concatenated file); zeros are padding; bytes that
     hold at least half of the magic, but not all, are a damaged stream and raise
     :class:`CorruptionError` (:func:`near_stream_magic`); anything else ends the data
-    and sets :attr:`trailing_bytes`. A codec with no magic (LZMA Alone) passes a
-    :data:`StreamStart` check of the header instead, which may raise to refuse the next
-    stream. ``zero_padding=False`` hands zeros to that check too (raw
-    LZMA, where 7-Zip refuses any byte after the end marker).
+    and sets :attr:`trailing_bytes`. A run of zeros shorter than the magic is also
+    judged as the start of a damaged stream, since the damaged byte can be a zero. A
+    codec with no magic (LZMA Alone) passes a :data:`StreamStart` check of the header
+    instead, which may raise to refuse the next stream. ``zero_padding=False`` hands
+    zeros to that check too (raw LZMA, where 7-Zip refuses any byte after the end
+    marker).
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
@@ -134,17 +163,30 @@ class FramedDecoder(BaseDecoder):
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
         rest = data.lstrip(b"\x00") if self._zero_padding else data
+        width = self._magic.width if isinstance(self._magic, MagicStart) else 0
+        # A run of ``width`` zeros or more is padding whatever its length, so no more
+        # than ``width`` of them are kept: the decision then does not depend on where
+        # the source's chunks end.
+        zeros = len(data) - len(rest)
+        data = data[max(0, zeros - width) :]
         if not rest:
+            self._held = data
+            self._need_more = bool(data)
             return b""
         state = self._magic(rest)
         if state is None:
-            self._held = rest
+            self._held = data
             self._need_more = True
             return b""
         if state:
             self._decomp = self._new()
             self._between = False
             return rest
+        # A damaged first byte can be a zero, which the strip above took for padding.
+        # So a run shorter than the magic is also judged as its start.
+        if 0 < zeros < width and isinstance(self._magic, MagicStart):
+            if self._magic.damaged(data):
+                raise damaged_stream_error()
         self._past_end(rest)
         self._done = True
         return b""
