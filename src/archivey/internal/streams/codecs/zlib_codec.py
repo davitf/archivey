@@ -457,7 +457,12 @@ class DeflateCodec(_ZlibErrorCodec):
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
-        return ZlibDecompressorStream(source, wbits=-15)
+        return ZlibDecompressorStream(
+            source,
+            wbits=-15,
+            collector=config.collector,
+            report_trailing_data=config.report_trailing_data,
+        )
 
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
