@@ -109,16 +109,23 @@ an indexed decompressor backend and resolve accelerator `AUTO`, and they MUST NO
 what metadata a member reports. A seekable source SHALL yield the same `member.size` with
 and without the declaration; a non-seekable source SHALL yield `None` for every
 index/trailer-derived size, and no probe SHALL force a decompression pass to obtain one.
-A source whose seek may re-decode (another archive's member stream, bare or under a
-pass-through buffer: `seek_is_expensive`) counts as one that cannot reach its end
-cheaply: the xz index and the lzip trailers sit at the end, and reaching them would
-decompress the whole member, so the size is `None`.
+Another archive's member stream, bare or under a pass-through buffer
+(`seek_is_expensive`), counts as a source that cannot reach its end cheaply, so the size
+is `None`. The xz index and the lzip trailers sit at the end, and on a member stream
+that decompresses (a deflated ZIP entry, a `.gz`'s content) reaching them decompresses
+the whole member. Member streams are treated this way as a group: a stored ZIP entry or
+a TAR member, whose seek is a slice of its container, also reports `size=None`.
 
-`member.compressed_size` SHALL be the source's length when that is cheap to learn: the
-source's cheap size (a path's `stat`, a `BytesIO`'s buffer, a member stream's advertised
-`size`), else one `seek(0, SEEK_END)` on a seekable source whose seek is cheap. A pipe,
-and a source whose seek may re-decode and that advertises no length, SHALL report `None`
-rather than seek to the end.
+`member.compressed_size` SHALL be the source's length when that is cheap to learn, on a
+seekable source: the source's cheap size (a path's `stat`, a `BytesIO`'s buffer, a
+member stream's advertised `size`), else one `seek(0, SEEK_END)` when the seek is cheap.
+A pipe SHALL report `None`, also when it has a `size` attribute, and so SHALL a member
+stream that advertises no length, rather than seek to the end. An advertised `size` is a
+claim (the size the member's archive declares, or any attribute a caller's stream
+carries) and is not checked here. It is more than metadata: the per-member
+decompression-ratio guard in extraction divides by it. A ZIP member that holds fewer
+bytes than it declares is refused with `TruncatedError` when it is read; a TAR member
+stream answers `SEEK_END` from the same declared length, so no seek could learn more.
 
 When a decoder learns the true uncompressed size after EOF, the member MAY be
 updated to that byte count.
@@ -134,7 +141,9 @@ updated to that byte count.
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None`; no decode pass is forced |
 | `.xz` / `.lz` opened from another archive's member stream | Size is `None`; the member is not seeked to its end |
+| `.xz` / `.lz` opened from a stored ZIP entry or a TAR member | Size is `None`, as for any member stream, though that seek would be a slice |
 | `.gz` from a path or `BytesIO` | `compressed_size` is the source's length |
+| `.gz` from a pipe with a `size` attribute | `compressed_size` is `None` |
 | `.gz` from a member stream that advertises its length | `compressed_size` is that length; no seek to the end |
 | `.gz` from a member stream with no advertised length | `compressed_size` is `None`; no seek to the end |
 | Alone stream with known header size | `member.size` equals that size |
@@ -240,7 +249,7 @@ caller does a plain `open_archive()` and never asks to `seek()`.
 | Multi-member `.lz`, seekable source | `CRC32` present (= combine of per-member trailers) |
 | `.lz` seekable, with and without `seekable_members=True` | Same `hashes` both ways |
 | `.lz` from a pipe | no digest key |
-| `.lz` opened from another archive's member stream | no digest key |
+| `.lz` opened from another archive's member stream, a stored ZIP entry or a TAR member included | no digest key |
 | `.bz2` / `.xz` / `.zlib` / `.br` / `.Z` | no digest key |
 | Any of the above, full `read()` | verification unchanged; hashes are metadata only |
 

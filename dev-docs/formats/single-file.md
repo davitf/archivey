@@ -145,7 +145,7 @@ What is filled in on the member, and where from:
 | --- | --- |
 | `name` | The source's filename, as in §1 |
 | `size` | xz: the stream index; lzip: the member trailers; LZMA Alone: the header, when it is not the "unknown" marker. `None` for every other codec |
-| `compressed_size` | The source's length: its cheap size (a path's `stat`, a `BytesIO`, a member stream's advertised `size`), else one `seek(0, SEEK_END)` on a seekable source. `None` on a pipe, and on a member stream that advertises no length |
+| `compressed_size` | The source's length, on a seekable source: its cheap size (a path's `stat`, a `BytesIO`, a member stream's advertised `size`), else one `seek(0, SEEK_END)`. `None` on a pipe (also one with a `size` attribute), and on a member stream that advertises no length |
 | `modified` | gzip's `MTIME`, when non-zero. `None` for every other codec |
 | `raw_name`, `extra["gzip.original_filename"]` | gzip's `FNAME` ([`gzip.md`](gzip.md) §2.2) |
 | `hashes` | lzip only: the CRC-32 of the whole content, combined from each member's trailer ([`xz.md`](xz.md) §2.2) |
@@ -156,14 +156,20 @@ declaration is about seeking the member stream, and the peek hands nobody a stre
 it to the flag would make the same `.xz` report `size=None` on a plain open and its size
 with the flag. The peeks run with the accelerators off, since they decode nothing.
 
-A source whose seek may re-decode is not peeked: another archive's member stream, for
-example a `.xz` stored deflated in a ZIP and passed to `open_archive(member_stream)`
-(`seek_is_expensive`, the same test detection uses, [`topics/detection.md`](../topics/detection.md)).
-A seek to its end decompresses the whole member, and the restore decompresses it again.
-Such a source reports `size=None`, no lzip `CRC32`, and a `compressed_size` only when
-the member stream advertises its length. These fields are metadata: the decoder still
-checks the xz index and the lzip trailers when the member is read. The gzip codec's own
-ISIZE peek at codec open ([`gzip.md`](gzip.md) §2.3) is separate and still runs.
+Another archive's member stream, passed to `open_archive(member_stream)`, is not peeked
+(`seek_is_expensive`, the same test detection uses,
+[`topics/detection.md`](../topics/detection.md)). For a `.xz` stored deflated in a ZIP, a
+seek to its end decompresses the whole member, and the restore decompresses it again.
+The rule covers member streams as a group, so a `.xz` in a stored ZIP entry or in a TAR,
+whose seek is only a slice of the container, is not peeked either. Any such source
+reports `size=None`, no lzip `CRC32`, and a `compressed_size` only when the member stream
+advertises its length. `size` and `CRC32` are metadata: the decoder still checks the xz
+index and the lzip trailers when the member is read. `compressed_size` is more than
+that, since the per-member decompression-ratio guard divides by it, and a member
+stream's advertised length is what its archive declares. A ZIP member that holds less
+than it declares is refused with `TruncatedError` on read; a TAR member answers a
+`SEEK_END` from the same declared length. The gzip codec's own ISIZE peek at codec open
+([`gzip.md`](gzip.md) §2.3) is separate and still runs.
 
 `ArchiveInfo` has `member_count=1`, `format_version=None`, `comment=None` and
 `is_solid=False`.

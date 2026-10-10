@@ -12,6 +12,7 @@ import subprocess
 import sys
 import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import BinaryIO
 
 import pytest
@@ -572,3 +573,57 @@ def assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:
     # The message the shared rule in ``check_seek_args`` gives, so the public layer
     # and the backends behind it cannot drift apart.
     assert str(excinfo.value) == "Invalid whence: 7"
+
+
+# ---------------------------------------------------------------------------
+# Seeks on a member stream: the tail rule shared by detection and the readers
+# ---------------------------------------------------------------------------
+
+# A seek that lands in a member stream's last this-many bytes is a trailer read. The
+# number is the UDIF trailer window detection reads; it serves as "the tail" for the
+# single-file reader's index and trailer probes too.
+MEMBER_TAIL_BYTES = 512
+
+
+@dataclass(frozen=True)
+class MemberSeek:
+    """One ``ArchiveStream.seek``: which stream, and its position before and after."""
+
+    stream: int  # ``id`` of the ``ArchiveStream`` that was seeked
+    before: int
+    after: int
+
+
+def spy_member_seeks(patch: pytest.MonkeyPatch) -> list[MemberSeek]:
+    """Record every ``ArchiveStream.seek`` as (stream, position before, position after).
+
+    Positions, not arguments: a ``SEEK_END``, a ``SEEK_SET`` and a relative
+    ``SEEK_CUR`` that reach the same place record the same thing, so no ``whence`` can
+    slip past :func:`assert_no_member_tail_seek`.
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    seeks: list[MemberSeek] = []
+    real_seek = ArchiveStream.seek
+
+    def spy(self: ArchiveStream, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        before = self.tell()
+        pos = real_seek(self, offset, whence)
+        seeks.append(MemberSeek(id(self), before, pos))
+        return pos
+
+    patch.setattr(ArchiveStream, "seek", spy)
+    return seeks
+
+
+def assert_no_member_tail_seek(seeks: list[MemberSeek], sizes: dict[int, int]) -> None:
+    """No seek moves forward into a member stream's last ``MEMBER_TAIL_BYTES``.
+
+    A member stream's seek may re-decode: reaching its tail decodes the whole member
+    on the way. ``sizes`` maps each member's ``id`` to its length. A no-op seek that a
+    read makes at its own position is free and is not counted. Detection
+    (``tests/test_detection_workspace.py``) and the single-file reader's open
+    (``tests/test_single_file.py``) both hold a member stream to this rule.
+    """
+    forward = [s for s in seeks if s.after > s.before]
+    assert all(s.after < sizes[s.stream] - MEMBER_TAIL_BYTES for s in forward), seeks

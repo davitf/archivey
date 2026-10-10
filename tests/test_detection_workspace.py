@@ -25,7 +25,6 @@ import io
 import os
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -49,11 +48,15 @@ from archivey.internal.sfx import (
     iter_magic_in_prefix,
 )
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.volumes import resolve_source
 from archivey.types import ArchiveFormat
 from tests.detection_cost_util import trailer_allowance, within_budget
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import (
+    MemberSeek,
+    NonSeekableBytesIO,
+    assert_no_member_tail_seek,
+    spy_member_seeks,
+)
 
 
 class InstrumentedBytesIO(io.RawIOBase):
@@ -233,46 +236,22 @@ def _zip_of(members: dict[str, bytes]) -> io.BytesIO:
     return buf
 
 
-@dataclass(frozen=True)
-class _Seek:
-    stream: int  # ``id`` of the ``ArchiveStream`` that was seeked
-    before: int
-    after: int
-
-
-def _seek_spy(patch: pytest.MonkeyPatch) -> list[_Seek]:
-    """Record every ``ArchiveStream.seek`` as (stream, position before, position after)."""
-    seeks: list[_Seek] = []
-    real_seek = ArchiveStream.seek
-
-    def spy(self: ArchiveStream, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        before = self.tell()
-        pos = real_seek(self, offset, whence)
-        seeks.append(_Seek(id(self), before, pos))
-        return pos
-
-    patch.setattr(ArchiveStream, "seek", spy)
-    return seeks
-
-
 def _assert_detection_seeks_are_cheap(
-    seeks: list[_Seek], sizes: dict[int, int]
+    seeks: list[MemberSeek], sizes: dict[int, int]
 ) -> None:
     """Backward seeks: 0, not counting the exit restore (format-detection matrix).
 
     Each member here is freshly opened, so its entry position is 0. A stream may be
     seeked backward once, and only onto that entry position: the restore. Any other
-    backward seek re-decodes the member from its start. ``sizes`` maps each member's
-    ``id`` to its length: a seek that moves into a member's last 512 bytes is the
-    trailer read, which decodes the whole member on the way (a no-op seek that a read
-    makes at its own position is free and is not counted).
+    backward seek re-decodes the member from its start. Forward seeks follow the tail
+    rule the single-file reader's open is held to as well
+    (:func:`tests.streams_util.assert_no_member_tail_seek`).
     """
     backward = [s for s in seeks if s.after < s.before]
     assert all(s.after == 0 for s in backward), seeks
     per_stream = [s.stream for s in backward]
     assert len(per_stream) == len(set(per_stream)), seeks
-    forward = [s for s in seeks if s.after > s.before]
-    assert all(s.after < sizes[s.stream] - 512 for s in forward), seeks
+    assert_no_member_tail_seek(seeks, sizes)
 
 
 def test_koly_image_detects_as_dmg_when_the_tail_is_cheap() -> None:
@@ -307,7 +286,7 @@ def test_member_stream_is_not_seeked_to_its_tail(
     ):
         assert member.seekable()
         member_id = id(member)
-        seeks = _seek_spy(patch)
+        seeks = spy_member_seeks(patch)
         info = detect_format(wrap(member))
     # The trailer step was reached and declined, so the guard is what kept the seek
     # off. The answer is the near-magic one.
@@ -324,7 +303,7 @@ def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
     import archivey.core
 
     image = _koly_image()
-    detection_seeks: list[_Seek] = []
+    detection_seeks: list[MemberSeek] = []
     real_detect = archivey.core.detect_format_into
 
     def detect_and_snapshot(*args: Any, **kwargs: Any) -> FormatInfo:
@@ -338,7 +317,7 @@ def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
         monkeypatch.context() as patch,
     ):
         member_id = id(member)
-        seeks = _seek_spy(patch)
+        seeks = spy_member_seeks(patch)
         patch.setattr(archivey.core, "detect_format_into", detect_and_snapshot)
         with open_archive(member) as nested:
             assert nested.format_info.format == ArchiveFormat.BZ2
@@ -364,7 +343,7 @@ def test_volume_list_of_member_streams_is_not_seeked_to_its_tail(
         resolved = resolve_source([first, second])
         with resolved.source as source, monkeypatch.context() as patch:
             assert source.seek_is_expensive
-            seeks = _seek_spy(patch)
+            seeks = spy_member_seeks(patch)
             info = detect_format(source)
     assert info.format == ArchiveFormat.BZ2
     assert _TRAILER_DECLINED in info.unavailable_tiers

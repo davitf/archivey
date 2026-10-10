@@ -269,10 +269,12 @@ class SingleFileReader(BaseArchiveReader):
         """:meth:`_on_seekable_source` for a metadata probe that reads the source's tail.
 
         ``OSError`` gives ``None``. So does a source whose seek may re-decode
-        (``seek_is_expensive``, a member stream): the xz index and the lzip trailer sit at
-        the end, and reaching them decompresses the whole member, then the restore
-        decompresses it again. Those probes only fill metadata (``size``, the lzip
-        CRC-32); the decoder still checks its own index and trailers on read.
+        (``seek_is_expensive``, any member stream): the xz index and the lzip trailer sit
+        at the end, and on a member that decompresses, reaching them decompresses the
+        whole member, then the restore decompresses it again. The test covers member
+        streams as a group, so a stored ZIP entry or a TAR member, whose seek is a slice,
+        is skipped too. Those probes only fill metadata (``size``, the lzip CRC-32); the
+        decoder still checks its own index and trailers on read.
         """
         src = self._source
         assert src is not None  # always set in __init__
@@ -286,15 +288,25 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_compressed_size(self) -> int | None:
         """Byte length of the compressed source, when it is cheap to learn.
 
-        The source's cheap size comes first: a path's ``stat``, a ``BytesIO``'s buffer, a
-        member stream's advertised ``size`` (``ArchiveSource.size_hint``, measured once by
-        ``source_byte_size``). Without one, any seekable source answers with one
-        ``SEEK_END``, so the same bytes report the same size from a path, a ``BytesIO`` or
-        an unrecognized seekable stream. The exception is a source whose seek may
-        re-decode (``seek_is_expensive``: a member stream with no advertised length):
-        a seek to its end decompresses the whole member, so it reports ``None``.
-        A missing path raises ``OSError`` inside ``_on_seekable_source``, and
-        ``_try_on_seekable_source`` turns it into ``None``.
+        On a seekable source, its cheap size comes first: a path's ``stat``, a
+        ``BytesIO``'s buffer, a member stream's advertised ``size``
+        (``ArchiveSource.size_hint``, measured once by ``source_byte_size``). Without
+        one, one ``SEEK_END`` answers, so the same bytes report the same size from a
+        path, a ``BytesIO`` or an unrecognized seekable stream. The exception is a
+        source whose seek may re-decode (``seek_is_expensive``: a member stream with no
+        advertised length): a seek to its end may decompress the whole member, so it
+        reports ``None``. A non-seekable source reports ``None`` too, even when it has a
+        ``size`` attribute. A missing path raises ``OSError`` inside
+        ``_on_seekable_source``, and ``_try_on_seekable_source`` turns it into ``None``.
+
+        The size hint can be a claim rather than a measurement: a member stream's
+        ``size`` is the size its archive declares, and a caller's stream can carry any
+        ``size`` attribute. The value is not only metadata, because the per-member
+        decompression-ratio guard in extraction divides by ``compressed_size``. Nothing
+        here checks the claim, and a ``SEEK_END`` could not do better: a TAR member
+        stream answers it from the same declared length. A ZIP member that holds fewer
+        bytes than it declares is refused with ``TruncatedError`` when it is read, by the
+        member stream's own checks.
 
         The absolute ``SEEK_END`` is the member's length, not the handle's, because the
         source reaching a reader is already normalized to begin at offset 0 — a caller
@@ -305,6 +317,10 @@ class SingleFileReader(BaseArchiveReader):
         """
         src = self._source
         assert src is not None  # always set in __init__
+        if not src.seekable():
+            # A pipe reports ``None``, also when it has a ``size`` attribute: that
+            # attribute is only the caller's claim.
+            return None
         if src.size_hint is not None:
             return src.size_hint
         # ``_try_on_seekable_source`` gives ``None`` for an expensive seek.
@@ -329,10 +345,11 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
 
-        The source has to be seekable and cheap to seek, not be a path and not have the
-        caller's ``seekable_members`` declaration: ``_try_on_seekable_source`` gives the probe a
-        handle either way and returns ``None`` for a non-seekable source or one whose seek
-        may re-decode. Returns ``None`` when the index is unavailable or corrupt.
+        The source has to be seekable, and its seek has to be cheap. It does not have to
+        be a path, and does not need the caller's ``seekable_members`` declaration:
+        ``_try_on_seekable_source`` gives the probe a handle either way, and returns
+        ``None`` for a non-seekable source or one whose seek may re-decode. Returns
+        ``None`` when the index is unavailable or corrupt.
         """
         if self._codec is not Codec.LZIP:
             return None
@@ -351,13 +368,13 @@ class SingleFileReader(BaseArchiveReader):
     def _probe_decompressed_size(self) -> int | None:
         """Decompressed size from the stream index/trailer, when cheaply available.
 
-        Needs a seekable source whose seek is cheap, not a path and not the caller's
-        ``seekable_members`` declaration: ``_try_on_seekable_source`` opens a fresh handle
-        for a path, returns ``None`` for a source whose seek may re-decode, and restores
-        a caller stream's position afterwards; ``_metadata_config`` asks the
-        codec for its index because the *source* can seek. The codec is opened over a
-        non-owning :class:`SlicingStream` view, so closing the probe's decompressor never
-        closes a stream the caller owns.
+        Needs a seekable source whose seek is cheap. It does not have to be a path, and
+        does not need the caller's ``seekable_members`` declaration:
+        ``_try_on_seekable_source`` opens a fresh handle for a path, returns ``None`` for
+        a source whose seek may re-decode, and restores a caller stream's position
+        afterwards; ``_metadata_config`` asks the codec for its index because the
+        *source* can seek. The codec is opened over a non-owning :class:`SlicingStream`
+        view, so closing the probe's decompressor never closes a stream the caller owns.
         """
 
         # Deliberately no collector here: a degraded index reports into
