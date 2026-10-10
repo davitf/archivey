@@ -17,8 +17,7 @@ from types import FunctionType
 
 import pytest
 
-from archivey.internal.streams.codecs import ppmd_worker as ppmd_worker
-from archivey.internal.streams.codecs import rapidgzip_worker as rapidgzip_worker
+from archivey.internal.streams.codecs import ppmd_worker, rapidgzip_worker
 
 
 def _code_without_docstring(function: FunctionType) -> str:

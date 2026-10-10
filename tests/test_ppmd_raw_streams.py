@@ -735,7 +735,7 @@ def test_ppmd_decoder_truncated_flush_caps_nul_max_length() -> None:
     _run_ppmd_child(
         textwrap.dedent(
             """\
-            from archivey.internal.streams.codecs import ppmd_decoder as decompress_module
+            from archivey.internal.streams.codecs import ppmd_decoder
             from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecoder
             from tests.test_ppmd_raw_streams import (
                 _CONTENT,
@@ -763,7 +763,7 @@ def test_ppmd_decoder_truncated_flush_caps_nul_max_length() -> None:
             assert spy.lengths, "expected native decode calls"
             assert all(length >= 0 for length in spy.lengths), spy.lengths
             assert (
-                spy.lengths[-1] <= decompress_module._PPMD_EXTRA_NUL_MAX_OUTPUT
+                spy.lengths[-1] <= ppmd_decoder._PPMD_EXTRA_NUL_MAX_OUTPUT
             ), spy.lengths
             print("ok")
             """

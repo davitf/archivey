@@ -40,8 +40,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams.codecs import Codec, open_codec_stream
-from archivey.internal.streams.codecs import rapidgzip_child as rapidgzip_child
+from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
