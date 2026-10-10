@@ -25,6 +25,7 @@ import io
 import os
 import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -233,18 +234,46 @@ def _zip_of(members: dict[str, bytes]) -> io.BytesIO:
     return buf
 
 
-def _seek_spy(patch: pytest.MonkeyPatch) -> list[int]:
-    """Record the position every ``ArchiveStream.seek`` lands on."""
-    targets: list[int] = []
+@dataclass(frozen=True)
+class _Seek:
+    stream: int  # ``id`` of the ``ArchiveStream`` that was seeked
+    before: int
+    after: int
+
+
+def _seek_spy(patch: pytest.MonkeyPatch) -> list[_Seek]:
+    """Record every ``ArchiveStream.seek`` as (stream, position before, position after)."""
+    seeks: list[_Seek] = []
     real_seek = ArchiveStream.seek
 
     def spy(self: ArchiveStream, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        before = self.tell()
         pos = real_seek(self, offset, whence)
-        targets.append(pos)
+        seeks.append(_Seek(id(self), before, pos))
         return pos
 
     patch.setattr(ArchiveStream, "seek", spy)
-    return targets
+    return seeks
+
+
+def _assert_detection_seeks_are_cheap(
+    seeks: list[_Seek], sizes: dict[int, int]
+) -> None:
+    """Backward seeks: 0, not counting the exit restore (format-detection matrix).
+
+    Each member here is freshly opened, so its entry position is 0. A stream may be
+    seeked backward once, and only onto that entry position: the restore. Any other
+    backward seek re-decodes the member from its start. ``sizes`` maps each member's
+    ``id`` to its length: a seek that moves into a member's last 512 bytes is the
+    trailer read, which decodes the whole member on the way (a no-op seek that a read
+    makes at its own position is free and is not counted).
+    """
+    backward = [s for s in seeks if s.after < s.before]
+    assert all(s.after == 0 for s in backward), seeks
+    per_stream = [s.stream for s in backward]
+    assert len(per_stream) == len(set(per_stream)), seeks
+    forward = [s for s in seeks if s.after > s.before]
+    assert all(s.after < sizes[s.stream] - 512 for s in forward), seeks
 
 
 def test_koly_image_detects_as_dmg_when_the_tail_is_cheap() -> None:
@@ -278,13 +307,14 @@ def test_member_stream_is_not_seeked_to_its_tail(
         monkeypatch.context() as patch,
     ):
         assert member.seekable()
-        targets = _seek_spy(patch)
+        member_id = id(member)
+        seeks = _seek_spy(patch)
         info = detect_format(wrap(member))
     # The trailer step was reached and declined, so the guard is what kept the seek
     # off. The answer is the near-magic one.
     assert info.format == ArchiveFormat.BZ2
     assert _TRAILER_DECLINED in info.unavailable_tiers
-    assert all(t < len(image) - 512 for t in targets), targets
+    _assert_detection_seeks_are_cheap(seeks, {member_id: len(image)})
 
 
 def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
@@ -295,12 +325,12 @@ def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
     import archivey.core
 
     image = _koly_image()
-    detection_targets: list[int] = []
+    detection_seeks: list[_Seek] = []
     real_detect = archivey.core.detect_format_into
 
     def detect_and_snapshot(*args: Any, **kwargs: Any) -> FormatInfo:
         info = real_detect(*args, **kwargs)
-        detection_targets.extend(targets)
+        detection_seeks.extend(seeks)
         return info
 
     with (
@@ -308,12 +338,14 @@ def test_open_archive_does_not_seek_a_member_stream_to_its_tail(
         reader.open("m.dmg") as member,
         monkeypatch.context() as patch,
     ):
-        targets = _seek_spy(patch)
+        member_id = id(member)
+        seeks = _seek_spy(patch)
         patch.setattr(archivey.core, "detect_format_into", detect_and_snapshot)
         with open_archive(member) as nested:
             assert nested.format_info.format == ArchiveFormat.BZ2
             assert _TRAILER_DECLINED in nested.format_info.unavailable_tiers
-    assert all(t < len(image) - 512 for t in detection_targets), detection_targets
+    assert detection_seeks, "the spy saw no seek during detection"
+    _assert_detection_seeks_are_cheap(detection_seeks, {member_id: len(image)})
 
 
 def test_volume_list_of_member_streams_is_not_seeked_to_its_tail(
@@ -329,20 +361,43 @@ def test_volume_list_of_member_streams_is_not_seeked_to_its_tail(
         reader.open("a.001") as first,
         reader.open("a.002") as second,
     ):
+        sizes = {id(first): half, id(second): len(image) - half}
         resolved = resolve_source([first, second])
         with resolved.source as source, monkeypatch.context() as patch:
             assert source.seek_is_expensive
-            targets = _seek_spy(patch)
+            seeks = _seek_spy(patch)
             info = detect_format(source)
     assert info.format == ArchiveFormat.BZ2
     assert _TRAILER_DECLINED in info.unavailable_tiers
-    assert all(t < len(image) - half - 512 for t in targets), targets
+    _assert_detection_seeks_are_cheap(seeks, sizes)
 
 
 def test_pipe_records_the_trailer_it_could_not_read() -> None:
     info = detect_format(NonSeekableBytesIO(_koly_image()))
     assert info.format == ArchiveFormat.BZ2
     assert _TRAILER_DECLINED in info.unavailable_tiers
+
+
+@pytest.mark.parametrize(
+    ("data", "expected", "skipped"),
+    [
+        # Magic settles a ZIP before the trailer step: nothing is skipped.
+        (_zip_bytes(), ArchiveFormat.ZIP, ()),
+        # Plain bzip2, no ``koly`` block: the trailer step is reached and declined.
+        (bz2.compress(os.urandom(64 * 1024)), ArchiveFormat.BZ2, (_TRAILER_DECLINED,)),
+        # Shorter than the 512-byte block: there is no block to miss.
+        (bz2.compress(b"hi"), ArchiveFormat.BZ2, ()),
+    ],
+    ids=["zip", "bz2", "bz2_under_512"],
+)
+def test_pipe_receipt_matches_the_pipe_behaviour_rows(
+    data: bytes, expected: ArchiveFormat, skipped: tuple[TierSkip, ...]
+) -> None:
+    # The *pipe behaviour* rows in ``detection-cost``: a pipe's ``unavailable_tiers``
+    # is empty only when detection does not reach the trailer step.
+    info = detect_format(NonSeekableBytesIO(data))
+    assert info.format == expected
+    assert info.unavailable_tiers == skipped
 
 
 def test_path_detection_access_shape(tmp_path: Path) -> None:

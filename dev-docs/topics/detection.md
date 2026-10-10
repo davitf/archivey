@@ -162,8 +162,10 @@ the file is read as an ISO. It runs before the content probes, so a zlib-first i
 is named as the image. What a compressed block contains, and why that is not a
 signature detection can use, is on [`formats/dmg.md`](../formats/dmg.md) §1. The read is
 one seek to the last 512 bytes on a path or a plain seekable stream, then a seek back to
-the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end, and the
-receipt records `trailer` as `CAPABILITY_UNAVAILABLE`. When the length is unknown the
+the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end. When
+the source is 512 bytes or more, the receipt records `trailer` as
+`CAPABILITY_UNAVAILABLE`; a shorter source records nothing, as it has no block to
+miss. When the length is unknown the
 far-magic step has already read its window, so an image that fits in that window is
 refused: the block is in the prefix. A longer zlib-first image still opens as zlib. A
 source shorter than 512 bytes skips the read too.
@@ -400,9 +402,9 @@ A backward seek puts the handle back. It does not re-read the prefix:
 | --- | --- | --- |
 | Path | Opens its own handle for detection | Nothing missing |
 | Seekable stream | Reads forward from the caller's position, restores it; the archive is taken to start where the caller positioned it | Nothing missing |
-| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block. Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
+| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when detection reaches that step and the source is 512 bytes or more). Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
 | Non-seekable, raw, to `detect_format` | Reads what it peeks | The caller loses those bytes unless it buffers the stream itself |
-| Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE`), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
+| Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
 | Directory | Nothing | Nothing to do |
 
 Detection never spools a pipe to a temporary file. The one temporary copy the library makes

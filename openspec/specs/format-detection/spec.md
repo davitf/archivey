@@ -557,7 +557,8 @@ not asked for the trailer, because a rewind would re-decode, and it decodes the 
 forward once. That holds whether the member stream reaches detection bare, under a
 pass-through buffer, wrapped in the `ArchiveSource` that `open_archive` builds, or as a
 volume in a list passed to `open_archive`. A source that is not asked records `trailer`
-as *capability unavailable* (detection-cost). The rule is stated flatly rather than
+as *capability unavailable* (detection-cost), unless it is shorter than the 512-byte
+block: then there is no block to miss and nothing is recorded. The rule is stated flatly rather than
 derived from a cost model because `StreamCapability` cannot distinguish a cheap seek
 from an expensive one.
 

@@ -216,5 +216,6 @@ content probe that would read past what the budget lets a pipe buffer SHALL be r
 
 | Case | Expected |
 | --- | --- |
-| Pipe, default budget | Prefix tiers run; `unavailable_tiers` empty; no unbounded buffering |
+| Pipe, default budget, settled before the trailer step (ZIP, gzip) | Prefix tiers run; `unavailable_tiers` empty; no unbounded buffering |
+| Pipe, default budget, reaches the trailer step (bzip2, xz or zlib, 512 bytes or more) | Prefix tiers run; tail not read; `trailer` recorded *capability unavailable* (see *receipt reflects the source kind*); no unbounded buffering |
 | Detection finds a format whose backend cannot consume the source | `open_archive` raises the capability error rather than opening |

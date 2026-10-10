@@ -429,7 +429,10 @@ def _peel_passthrough(stream: object) -> object:
     wrappers (decrypt, BCJ, ``OutputCountingStream``) must not opt in — their
     cheap size is not the inner file's. The peel is for the cheapness decision
     and metadata; :func:`source_byte_size` still I/Os the original wrapper on
-    the ``SEEK_END`` fallback so the counter sees those seeks.
+    the ``SEEK_END`` fallback so the counter sees those seeks. The flag also
+    asserts that a seek on the wrapper costs what a seek on its inner costs:
+    ``archivey.internal.source.seek_is_expensive`` reads it through
+    :func:`underlying_stream` to decide whether a seek may re-decode.
     """
     seen: set[int] = set()
     while getattr(stream, "peel_for_source_size", False) is True:

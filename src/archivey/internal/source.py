@@ -780,11 +780,18 @@ def seek_is_expensive(stream: BinaryIO) -> bool:
     The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
     which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
     well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
-    hands a member stream to detection. Detection reads this to keep its trailer and
-    probe reads off such a stream (``dev-docs/topics/detection.md`` §4.2).
+    hands a member stream to detection, and for a joined set with such a volume. Those
+    two record the fact when they are built, so they are asked for it first, before
+    any type test: a join handed to ``for_stream`` or passed here directly is neither
+    peeled nor a member stream, and must still give the answer it gives itself. The
+    peel is the fallback for everything else. Detection reads this to keep its trailer
+    and probe reads off such a stream (``dev-docs/topics/detection.md`` §4.2).
     """
-    if isinstance(stream, ArchiveSource):
-        return stream.seek_is_expensive
+    # ``ArchiveSource`` and ``JoinedVolumes`` both carry the fact as a bool property;
+    # anything else that does not is answered by the peel.
+    own = getattr(stream, "seek_is_expensive", None)
+    if isinstance(own, bool):
+        return own
     return isinstance(underlying_stream(stream), ArchiveStream)
 
 

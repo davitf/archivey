@@ -853,7 +853,9 @@ def test_seek_is_expensive_sees_a_member_stream_under_every_pass_through_layer(
     """A member stream re-decodes on a seek however it is wrapped; a file never does.
 
     Fails against a predicate that type-tests only the outermost object (the buffered
-    shapes answer ``False``), and against a source or a join that drops the fact.
+    shapes answer ``False``), against a source or a join that drops the fact, and
+    against a predicate that does not ask a join for its own answer (a join handed to
+    ``for_stream`` or straight to the predicate is neither peeled nor a member stream).
     """
     import zipfile
 
@@ -882,6 +884,10 @@ def test_seek_is_expensive_sees_a_member_stream_under_every_pass_through_layer(
             "join": ArchiveSource.for_volumes(
                 ConcatenatedFile([io.BytesIO(b"x"), member])
             ),
+            "bare join": ConcatenatedFile([io.BytesIO(b"x"), member]),
+            "join as a stream": ArchiveSource.for_stream(
+                ConcatenatedFile([io.BytesIO(b"x"), member])  # type: ignore[arg-type]
+            ),
         }
         for label, stream in expensive.items():
             assert seek_is_expensive(stream), label
@@ -894,7 +900,7 @@ def test_seek_is_expensive_sees_a_member_stream_under_every_pass_through_layer(
         for label, stream in cheap.items():
             assert not seek_is_expensive(stream), label
         for stream in (*expensive.values(), *cheap.values()):
-            if isinstance(stream, ArchiveSource):
+            if isinstance(stream, (ArchiveSource, ConcatenatedFile)):
                 stream.close()
 
 
