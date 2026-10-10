@@ -136,7 +136,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     is wrapped by ``_wrap_accelerated_length``, whose ``VerifyingStream`` has the same
     size as its ``expected_size`` and bounds each of its reads to what remains of it.
     There the only read that reaches past ``limit`` is that verifier's one-byte
-    over-run probe at the declared size (``_probe_past_declared``): this branch is
+    over-run probe at the declared size (``MemberVerifier._conclude``): this branch is
     what decides an over-run on the accelerated path. A 7z coder is the other case.
     It declares an unpack size but no ``expected_decompressed_size``, so
     ``_wrap_accelerated_length`` adds no verifier: ``limit`` is the coder's unpack
@@ -175,10 +175,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
 
     Once switched, a data error of the standard library leaves as the codec's typed
     error (``translate``), as it does from the outer translator with the accelerator
-    off. A raw ``zlib.error`` would be taken for the accelerator's opaque end-of-input
-    error by the over-run probe of a declared size (``_probe_past_declared``), which
-    reads it as "no more data": a ZIP member declared empty with a body that is not
-    DEFLATE read as empty, where the accelerator off raises. Only the DEFLATE family
+    off. Only the DEFLATE family
     passes ``translate``: bzip2's accelerated path adds no ``_wrap_accelerated_length``
     verifier, so no over-run probe sits inside it, and its translator maps every
     ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage

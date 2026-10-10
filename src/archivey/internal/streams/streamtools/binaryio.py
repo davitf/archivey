@@ -73,6 +73,15 @@ def ask_resume_offset(inner: object | None, target: int) -> int | None:
     return offset if isinstance(offset, int) else None
 
 
+def is_closed_file_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is the ``ValueError`` a read or seek on a closed ``io`` stream raises.
+
+    ``io`` has no type for it, so the message decides, as it does for every
+    ``io`` stream (``"I/O operation on closed file."``).
+    """
+    return isinstance(exc, ValueError) and "closed file" in str(exc)
+
+
 def check_read_size(n: int | None) -> int:
     """Return ``read``'s size argument as an ``int``, refusing what ``io`` refuses.
 
