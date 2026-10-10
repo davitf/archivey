@@ -161,3 +161,31 @@ def test_a_worker_that_stops_reading_is_a_hang_not_a_stall() -> None:
     finally:
         stuck.proc.kill()
         stuck.proc.wait()
+
+
+def test_a_cut_in_a_later_concatenated_stream_ends_early() -> None:
+    """The search concatenates streams now and then, and rapidgzip reads past the first
+    one. A cut in the second is Bug 4's trigger too (seen on Windows CI, 2026-10-10)."""
+    import zlib
+
+    first = zlib.compress(b"first " * 1000)
+    second = zlib.compress(base64.encodebytes(random.Random(2).randbytes(20_000)))
+    assert search._stdlib_reading("zlib", first + second) == "clean"
+    assert search._stdlib_reading("zlib", first + second[:-500]) == "ends early"
+    assert search._classify("zlib", "exit code 3 (0x3)", first + second[:-500]) == (
+        search._UNNAMED_TRUNCATION_ABORT,
+        True,
+    )
+
+
+def test_reading_a_stream_whose_end_falls_inside_a_size_limited_call_ends() -> None:
+    """A raw DEFLATE stream that expands past one 1 MiB call and ends inside the next,
+    with data after it: reading must stop at the end marker (it used to loop for good,
+    which stalled the Windows search)."""
+    import zlib
+
+    compressor = zlib.compressobj(6, wbits=-15)
+    big = compressor.compress(b"\0" * (3 << 20)) + compressor.flush()
+    tail = b"\x55" * 9000
+    assert search._stdlib_reading("deflate", big + tail) in ("error", "ends early")
+    assert search._stdlib_reading("deflate", big) == "clean"

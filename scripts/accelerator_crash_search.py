@@ -354,14 +354,21 @@ def signature_of(returncode: int | None, stderr: bytes) -> str:
 
 def _stdlib_reading(codec: str, data: bytes) -> str:
     """How the standard library reads ``data`` as a DEFLATE-family stream: ``"clean"``,
-    ``"ends early"`` (before its end marker, with no error before that; gzip: in any
-    member) or ``"error"``."""
+    ``"ends early"`` (before its end marker, with no error before that) or ``"error"``.
+
+    Every stream in it is read, as rapidgzip reads them: the search concatenates two or
+    three now and then, and a cut in a later one is still a cut. A gzip stream is
+    followed only by another gzip member; anything else after it is trailing data."""
     wbits = _WBITS[codec]
     rest = data
     while True:
         decompressor = zlib.decompressobj(wbits)
         try:
-            while rest:
+            # Stop at the end marker: past it, a call with a size limit leaves the input
+            # after the marker in unconsumed_tail and appends it to unused_data again,
+            # so looping on the tail never ends (it stalled the Windows search, the only
+            # one that classifies crashes this way).
+            while rest and not decompressor.eof:
                 decompressor.decompress(rest, 1 << 20)
                 rest = decompressor.unconsumed_tail
         except zlib.error:
@@ -369,7 +376,7 @@ def _stdlib_reading(codec: str, data: bytes) -> str:
         if not decompressor.eof:
             return "ends early"
         rest = decompressor.unused_data
-        if codec != "gzip" or not rest.startswith(b"\x1f\x8b"):
+        if not rest or (codec == "gzip" and not rest.startswith(b"\x1f\x8b")):
             return "clean"
 
 
