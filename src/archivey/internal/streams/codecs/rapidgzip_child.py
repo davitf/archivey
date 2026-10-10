@@ -59,8 +59,11 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     ARG_MIN,
     ERR,
     FRAME,
+    MEMORY_LIMIT_EXIT,
+    NO_MEMORY_LIMIT,
     OK,
     OPEN,
+    OPEN_LIMIT,
     OPEN_PATH,
     OPEN_STREAM,
     POINTS,
@@ -81,6 +84,9 @@ from archivey.internal.streams.decompressor_stream import SeekPoint
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
 _WORKER = Path(__file__).with_name("rapidgzip_worker.py")
+
+# The largest memory limit the OPEN frame holds (OPEN_LIMIT is a signed 64-bit integer).
+_MAX_LIMIT = (1 << 63) - 1
 
 # The least a READ asks for once reads are sequential (see ``read``). Measured over a
 # tar.gz, whose reader reads in small pieces, a round trip per piece was the cost.
@@ -184,13 +190,16 @@ _CRASHED = "_archivey_rapidgzip_child_crashed"
 
 
 def crashed_on_data(exc: BaseException) -> bool:
-    """Whether ``exc`` reports a rapidgzip child that crashed while decoding.
+    """Whether ``exc`` reports a rapidgzip child that crashed while decoding, or that
+    was stopped over its memory limit.
 
     rapidgzip 0.16 aborts on a stream that ends early, so a crash is a verdict on the
     data (``TruncatedError``, or ``CorruptionError`` when the abort gave no reason)
     that the standard-library decoder can give more precisely, and it can read the
-    data before the fault that rapidgzip's read-ahead lost. A child killed from
-    outside, or one that ended after the caller's source failed, is not marked.
+    data before the fault that rapidgzip's read-ahead lost. A child over its memory
+    limit (``ResourceLimitError``) was stopped by what the data decodes to, and the
+    standard-library decoder reads the same data in bounded memory. A child killed
+    from outside, or one that ended after the caller's source failed, is not marked.
     """
     return getattr(exc, _CRASHED, False) is True
 
@@ -306,13 +315,22 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     trip: the position is kept here.
 
     ``label`` names the codec in error messages (``gzip``, ``zlib``, ``deflate``).
+    ``max_memory`` is ``DecoderLimits.max_decoder_memory``: the child is ended when its
+    memory grows by more than that many bytes after the open (``watch_memory`` in the
+    worker), and every later call raises ``ResourceLimitError``. ``None`` sets no
+    limit. It has no default, so every caller decides.
     """
 
     def __init__(
-        self, source: str | os.PathLike[str] | BinaryIO, *, label: str
+        self,
+        source: str | os.PathLike[str] | BinaryIO,
+        *,
+        label: str,
+        max_memory: int | None,
     ) -> None:
         # Everything close() reads is assigned before anything that can raise.
         self._label = label
+        self._max_memory = max_memory
         self._proc: subprocess.Popen[bytes] | None = None
         self._stderr: IO[bytes] | None = None
         self._finalizer: weakref.finalize | None = None
@@ -351,10 +369,19 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._since_query = 0
         self._query_after = _MIN_QUERY_SPACING
         if isinstance(source, (str, os.PathLike)):
-            open_kind, open_payload = OPEN_PATH, os.fsencode(os.fspath(source))
+            open_kind, open_path = OPEN_PATH, os.fsencode(os.fspath(source))
         else:
             self._source = source
-            open_kind, open_payload = OPEN_STREAM, b""
+            open_kind, open_path = OPEN_STREAM, b""
+        # The limit goes in the OPEN frame, not the environment, so a variable the
+        # caller's process happens to hold cannot set one. A cap past what the frame
+        # holds is past any address space, so the largest it holds means the same.
+        open_payload = (
+            OPEN_LIMIT.pack(
+                NO_MEMORY_LIMIT if max_memory is None else min(max_memory, _MAX_LIMIT)
+            )
+            + open_path
+        )
         super().__init__()
         argv = python_argv(_WORKER, _start_error)
         try:
@@ -363,7 +390,12 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             raise _start_error(str(exc)) from exc
         self._stderr = stderr
         try:
-            self._proc = spawn(argv, _start_error, stdin=subprocess.PIPE, stderr=stderr)
+            self._proc = spawn(
+                argv,
+                _start_error,
+                stdin=subprocess.PIPE,
+                stderr=stderr,
+            )
         except RapidgzipChildStartError:
             stderr.close()
             raise
@@ -565,6 +597,15 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 f"the rapidgzip decoder process for this {label} stream ended ({how}) "
                 f"after a read from the source failed: {caused_by_source!r}"
             )
+        elif returncode == MEMORY_LIMIT_EXIT:
+            cls = ResourceLimitError
+            message = (
+                f"the rapidgzip decoder process for this {label} stream was stopped: "
+                "its memory grew past DecoderLimits.max_decoder_memory="
+                f"{self._max_memory}. The decoder keeps decoded chunks in memory, and "
+                "this stream decodes to large chunks. Raise the limit if the data is "
+                "trusted, or set use_rapidgzip=AcceleratorMode.OFF."
+            )
         elif is_crash(returncode) and truncated:
             cls = TruncatedError
             message = (
@@ -593,7 +634,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 "be valid; try reading it again."
             )
         self._death = (cls, message)
-        self._crashed = caused_by_source is None and is_crash(returncode)
+        self._crashed = caused_by_source is None and (
+            is_crash(returncode) or returncode == MEMORY_LIMIT_EXIT
+        )
         return self._death_error()
 
     # --- the stream -----------------------------------------------------------------

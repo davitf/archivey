@@ -1460,7 +1460,15 @@ class ZipReader(BaseArchiveReader):
         (:attr:`_ZipCipher.keyed_settings`).
         """
         size = member.size
-        config = replace(self._stream_config, expected_decompressed_size=size)
+        # The member's compressed size is the codec's input exactly, so a byte after
+        # the codec's end of stream is CorruptionError (DR-3; 7-Zip: "There are some
+        # data after the end of the payload data", an error in ZIP). LZMA refuses it
+        # on its own, in 7z too (``LzmaDataAfterEndError``).
+        config = replace(
+            self._stream_config,
+            expected_decompressed_size=size,
+            refuse_input_after_end=True,
+        )
         if sequential_body:
             config = replace(
                 config,
