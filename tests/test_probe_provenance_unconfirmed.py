@@ -40,6 +40,10 @@ from tests.streams_util import truncated_brotli
 
 TAR_BROTLI = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI)
 
+# Most sources below are unnamed or carry a name of another format, and detection runs
+# a content probe on such a source only when the config asks for all of them.
+PROBE_ALL = ArchiveyConfig(always_probe_content=True)
+
 
 def _open_and_read(
     source: Path | io.BytesIO,
@@ -105,7 +109,7 @@ def _chain_surviving_guess_residual() -> bytes:
 @requires("brotli")
 def test_compressed_first_probable_failure_sets_format_unconfirmed() -> None:
     blob = _probable_brotli_probe_only_residual()
-    info = detect_format(io.BytesIO(blob))
+    info = detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
@@ -113,7 +117,7 @@ def test_compressed_first_probable_failure_sets_format_unconfirmed() -> None:
 
     diagnostics: list[Diagnostic] = []
     with pytest.raises(CorruptionError) as caught:
-        _open_and_read(io.BytesIO(blob), diagnostics)
+        _open_and_read(io.BytesIO(blob), diagnostics, config=PROBE_ALL)
     exc = caught.value
     assert exc.format_unconfirmed is True
     assert "unconfirmed" in exc.message.lower()
@@ -126,7 +130,7 @@ def test_compressed_first_probable_failure_sets_format_unconfirmed() -> None:
 
 def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
     blob = _lzma_alone_probe_only_residual()
-    info = detect_format(io.BytesIO(blob))
+    info = detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
@@ -134,7 +138,7 @@ def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
 
     # Bytes 1-4 declare a 2.5 GiB dictionary, over the default cap;
     # this case lifts the cap to reach the decode failure, and the next one keeps it.
-    config = ArchiveyConfig(decoder_limits=DecoderLimits.UNLIMITED)
+    config = replace(PROBE_ALL, decoder_limits=DecoderLimits.UNLIMITED)
     diagnostics: list[Diagnostic] = []
     with pytest.raises(CorruptionError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics, config=config)
@@ -154,7 +158,7 @@ def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
     blob = _lzma_alone_probe_only_residual()
     diagnostics: list[Diagnostic] = []
     with pytest.raises(ResourceLimitError) as caught:
-        _open_and_read(io.BytesIO(blob), diagnostics)
+        _open_and_read(io.BytesIO(blob), diagnostics, config=PROBE_ALL)
     assert caught.value.format_unconfirmed is True
     message = str(caught.value)
     assert "unconfirmed" in message
@@ -223,13 +227,14 @@ def test_disagreeing_extension_does_not_corroborate(tmp_path: Path, name: str) -
     """
     path = tmp_path / name
     path.write_bytes(_probable_brotli_probe_only_residual())
-    info = detect_format(path)
+    # The name points away from Brotli, so only probing everything reaches the probe.
+    info = detect_format(path, config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
     with pytest.raises(CorruptionError) as caught:
-        _open_and_read(path)
+        _open_and_read(path, config=PROBE_ALL)
     assert caught.value.format_unconfirmed is True
 
 
@@ -263,13 +268,13 @@ def test_inner_tar_upgrade_is_corroborated_and_probable() -> None:
         info.size = len(payload)
         tar.addfile(info, io.BytesIO(payload))
     full = brotli.compress(buf.getvalue())
-    info = detect_format(io.BytesIO(full))
+    info = detect_format(io.BytesIO(full), config=PROBE_ALL)
     assert info.format == TAR_BROTLI
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
     assert info.corroborated is True
 
-    with open_archive(io.BytesIO(full)) as reader:
+    with open_archive(io.BytesIO(full), config=PROBE_ALL) as reader:
         members = list(reader)
         assert members
         assert reader.open(members[0]).read() == b"hi"
@@ -293,10 +298,10 @@ def test_inner_tar_decode_failure_does_not_stamp() -> None:
     truncated_tar = buf.getvalue()[:1024]
     assert truncated_tar[257:262] == b"ustar"
     blob = brotli.compress(truncated_tar)
-    info = detect_format(io.BytesIO(blob))
+    info = detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert info.format == TAR_BROTLI
     assert info.corroborated is True
-    with open_archive(io.BytesIO(blob)) as reader:
+    with open_archive(io.BytesIO(blob), config=PROBE_ALL) as reader:
         with pytest.raises(CorruptionError) as caught:
             list(reader)
         assert caught.value.format_unconfirmed is False
@@ -310,11 +315,11 @@ def test_probe_only_clean_read_stays_success() -> None:
     import brotli
 
     data = brotli.compress(b"payload " * 40)
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
-    with open_archive(io.BytesIO(data)) as reader:
+    with open_archive(io.BytesIO(data), config=PROBE_ALL) as reader:
         assert reader.open(next(iter(reader))).read() == b"payload " * 40
         assert not reader.diagnostics.retained
 
@@ -322,7 +327,7 @@ def test_probe_only_clean_read_stays_success() -> None:
 @requires("brotli")
 def test_pedantic_probable_probe_keeps_typed_error() -> None:
     blob = _probable_brotli_probe_only_residual()
-    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
+    cfg = replace(PROBE_ALL, diagnostic_policy=DiagnosticPolicy.pedantic())
     diagnostics: list[Diagnostic] = []
     with pytest.raises(CorruptionError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics, config=cfg)
@@ -336,15 +341,19 @@ def test_confidence_matrix_unchanged_by_provenance() -> None:
     """Pin GUESS/PROBABLE so this change is not mistaken for a confidence retune."""
     import brotli
 
-    guess = detect_format(io.BytesIO(_chain_surviving_guess_residual()))
+    guess = detect_format(
+        io.BytesIO(_chain_surviving_guess_residual()), config=PROBE_ALL
+    )
     assert guess.confidence == DetectionConfidence.GUESS
 
     compressed = brotli.compress(b"payload " * 40)
     assert parse_metablock(compressed).outcome is BrotliBlock.COMPRESSED
-    probable = detect_format(io.BytesIO(compressed))
+    probable = detect_format(io.BytesIO(compressed), config=PROBE_ALL)
     assert probable.confidence == DetectionConfidence.PROBABLE
 
-    residual = detect_format(io.BytesIO(_probable_brotli_probe_only_residual()))
+    residual = detect_format(
+        io.BytesIO(_probable_brotli_probe_only_residual()), config=PROBE_ALL
+    )
     assert residual.confidence == DetectionConfidence.PROBABLE
 
 
