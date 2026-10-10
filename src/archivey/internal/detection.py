@@ -77,7 +77,7 @@ from archivey.diagnostics import (
     FormatConflictContext,
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
-from archivey.internal.arg_checks import check_config
+from archivey.internal.arg_checks import check_config, require_source
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import DETECTION_LIMIT, PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
@@ -103,7 +103,6 @@ from archivey.internal.streams.codecs.brotli_framing import (
 )
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
-    require_source,
     source_name,
 )
 from archivey.internal.volumes import first_volume_for_stub

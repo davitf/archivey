@@ -11,7 +11,9 @@ same reason the enum arguments beside it do (see
 one vocabulary shared with the CLI beats two that drift. Given something that is neither
 a format nor a spelling of one, every entry point answers the same way —
 :class:`~archivey.ArchiveyUsageError`, which sits outside ``ArchiveyError`` (ADR 0012)
-so ``except ArchiveyError`` cannot swallow a caller bug.
+so ``except ArchiveyError`` cannot swallow a caller bug. A string that names no format
+gets the private subclass that is also a ``ValueError``; any other type gets the one
+that is also a ``TypeError``.
 
 An ``ArchiveFormat`` is a ``(container, stream)`` pair rather than an ``Enum``, so it
 has no ``value`` to spell. Its two spellings are:
@@ -43,7 +45,11 @@ import functools
 from enum import Enum
 from typing import Literal, NoReturn, overload
 
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    _UsageTypeError,
+    _UsageValueError,
+)
 from archivey.internal.enum_args import _lookup, normalize_spelling, spelling_table
 from archivey.types import _FORMAT_NAMES, ArchiveFormat, ContainerFormat, StreamFormat
 
@@ -144,7 +150,7 @@ def coerce_archive_format(
         fmt = _archive_format_spellings().get(normalize_spelling(value))
         if fmt is not None:
             return fmt
-    raise ArchiveyUsageError(
+    raise _usage_error_for(value)(
         f"{call} takes an ArchiveFormat (or its name as a string), but got "
         f"{_describe(value)}. Accepted: {_accepted_archive_formats()}."
     )
@@ -179,11 +185,16 @@ def coerce_stream_or_archive_format(
         stream = _lookup(StreamFormat).get(spelling)
         if stream is not None:
             return stream
-    raise ArchiveyUsageError(
+    raise _usage_error_for(value)(
         f"{call} takes a StreamFormat or an ArchiveFormat (or either spelled as a "
         f"string), but got {_describe(value)}. "
         f"Accepted: {_accepted_stream_formats()}."
     )
+
+
+def _usage_error_for(value: object) -> type[ArchiveyUsageError]:
+    """A string that names no format is a bad value; anything else is the wrong type."""
+    return _UsageValueError if isinstance(value, str) else _UsageTypeError
 
 
 def _reject_wrong_enum(value: Enum, *, call: str, expected: str) -> NoReturn:
@@ -200,7 +211,7 @@ def _reject_wrong_enum(value: Enum, *, call: str, expected: str) -> NoReturn:
             "(container, stream) pair; pass the pair instead"
             + _container_pair_hint(value)
         )
-    raise ArchiveyUsageError(
+    raise _UsageTypeError(
         f"{call} takes {expected}, but got {type(value).__name__}.{value.name}.{hint}"
     )
 
@@ -216,7 +227,7 @@ def _container_pair_hint(container: ContainerFormat) -> str:
 
 
 def _reject_stream_format(value: StreamFormat, *, call: str) -> NoReturn:
-    raise ArchiveyUsageError(
+    raise _UsageTypeError(
         f"{call} takes an ArchiveFormat, but got {_describe(value)}. A StreamFormat is "
         f"only the codec half of an ArchiveFormat's (container, stream) pair"
         + _pair_hint(value)

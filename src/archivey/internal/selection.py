@@ -6,7 +6,7 @@ from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING
 
 from archivey.diagnostics import DiagnosticCode, SelectorUnmatchedContext
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import _UsageTypeError
 from archivey.internal.arg_checks import describe_value
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember
@@ -161,11 +161,11 @@ def normalize_member_selector(
         # bytes gets no list-wrapping advice: Pass [b'notes.txt'] is itself a
         # usage error (names are str). The str branch is the common slip.
         if isinstance(members, bytes):
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 f"members= takes names (str) or ArchiveMembers, but got "
                 f"{describe_value(members)}."
             )
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"members= takes a collection of names or members, but got "
             f"{describe_value(members)}. Pass [{members!r}] to select one member."
         )
@@ -182,7 +182,7 @@ def normalize_member_selector(
         # and the intersection returns ``object``. A negative ``isinstance`` does drop
         # it, so the value that reaches the return below is already a predicate.
         if not callable(members):
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 f"members= takes a collection of names or members, a predicate, or "
                 f"None, but got {describe_value(members)}."
             )
@@ -196,7 +196,7 @@ def normalize_member_selector(
             # member name, so the entry was dropped and the call still reported
             # success. A selector that silently selects nothing is the one outcome
             # a caller cannot distinguish from an archive that has nothing.
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 f"members= takes names (str) or ArchiveMembers, but one entry was "
                 f"{describe_value(entry)}."
             )

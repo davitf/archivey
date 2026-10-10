@@ -284,7 +284,15 @@ class ArchiveyUsageError(Exception):
     reader's mode forbids (``members()`` on a ``streaming=True`` reader), using a closed
     reader, opening a second overlapping member stream without
     ``concurrent_members=True`` (the message names the ``open_archive()`` call site),
-    and driving the reader from inside a diagnostic callback.
+    and driving the reader from inside a diagnostic callback. Those raise this class
+    itself.
+
+    A wrong argument raises it too, as a private subclass that is also a
+    ``TypeError`` (an argument of a type the call cannot use: ``config="strict"``,
+    ``open_archive(0)``) or a ``ValueError`` (a usable type with a value the call
+    refuses: an unknown format spelling, a negative limit). So ``except TypeError``,
+    ``except ValueError`` and ``except ArchiveyUsageError`` all catch a bad argument.
+    The subclasses are not public names; catch the builtin or this class.
 
     The message is escaped on the same terms as :class:`ArchiveyError`'s. A usage
     error's text is mostly archivey's own, so the escaping is usually a no-op — but
@@ -304,6 +312,22 @@ class ArchiveyUsageError(Exception):
 
     def __str__(self) -> str:
         return self.message
+
+
+class _UsageTypeError(ArchiveyUsageError, TypeError):
+    """A public argument of a type the call cannot use.
+
+    Private on purpose: a caller catches ``TypeError`` or
+    :class:`ArchiveyUsageError`, and neither needs a third name to do it.
+    """
+
+
+class _UsageValueError(ArchiveyUsageError, ValueError):
+    """A public argument of a usable type whose value the call refuses.
+
+    An unknown enum or format spelling, a negative or NaN limit, a codec name Python
+    does not know. Private for the same reason as :class:`_UsageTypeError`.
+    """
 
 
 class DiagnosticRaisedError(ArchiveyError):

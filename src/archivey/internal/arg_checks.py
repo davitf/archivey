@@ -12,13 +12,15 @@ beside their arguments:
 * :meth:`archivey.reader.ArchiveReader.open` — the member argument (needs the
   reader to tell "wrong type" from "not this reader's member")
 
-What this module covers: ``config=``, ``limits=``, ``encoding=``, and the
-``on_progress=`` / ``filter=`` callbacks. There is no useful conversion from a
+What this module covers: ``config=``, ``limits=``, ``encoding=``, ``extract_all``'s
+``dest``, and the ``on_progress=`` / ``filter=`` callbacks. There is no useful conversion from a
 wrong-typed one of these, so the answer is an error.
 
 Every check answers with :class:`~archivey.ArchiveyUsageError`, which sits outside
 ``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot swallow a
-caller bug.
+caller bug. The class raised is one of its two private subclasses, so the error is also
+a ``TypeError`` (wrong type) or a ``ValueError`` (a ``str`` that names no usable codec),
+as DR-15 asks.
 
 What this module is for is narrower than "validate everything". The error contract
 already permits a short list of raw exceptions to reach a caller — ``KeyError`` for
@@ -40,16 +42,24 @@ listing or the extraction is already under way.
 from __future__ import annotations
 
 import codecs
+import os
+from typing import NoReturn
 
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import _UsageTypeError, _UsageValueError
+from archivey.internal.streams import streamtools
 
 __all__ = [
     "check_callable",
     "check_config",
+    "check_dest",
     "check_encoding",
     "check_extraction_limits",
     "check_instance",
     "describe_value",
+    "raise_if_text_stream",
+    "raise_if_write_only_stream",
+    "reject_source",
+    "require_source",
 ]
 
 
@@ -90,7 +100,7 @@ def check_instance(
     """
     if isinstance(value, expected) or (value is None and allow_none):
         return
-    raise ArchiveyUsageError(
+    raise _UsageTypeError(
         f"{call} takes {_article(expected.__name__)} {expected.__name__}"
         f"{' or None' if allow_none else ''}, "
         f"but got {describe_value(value, expected=expected)}."
@@ -123,8 +133,21 @@ def check_callable(value: object, *, call: str) -> None:
     """
     if value is None or callable(value):
         return
-    raise ArchiveyUsageError(
+    raise _UsageTypeError(
         f"{call} takes a callable or None, but got {describe_value(value)}."
+    )
+
+
+def check_dest(value: object, *, call: str) -> None:
+    """Raise ``ArchiveyUsageError`` unless ``value`` is a ``str`` or path-like.
+
+    ``Path(0)`` would otherwise raise ``expected str, bytes or os.PathLike object, not
+    int``, which names neither the call nor the argument.
+    """
+    if isinstance(value, (str, os.PathLike)):
+        return
+    raise _UsageTypeError(
+        f"{call} takes a directory path (str or Path), but got {describe_value(value)}."
     )
 
 
@@ -147,7 +170,7 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
     if value is None and allow_none:
         return
     if not isinstance(value, str):
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{call} takes a codec name as a str"
             f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
         )
@@ -159,14 +182,51 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
     try:
         info = codecs.lookup(value)
     except LookupError:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{call} got {value!r}, which is not a codec Python knows. {advice}"
         ) from None
     if not info._is_text_encoding:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{call} got {value!r}, which is a byte-to-byte transform rather than a "
             f"character encoding, so it cannot decode a member name. {advice}"
         )
+
+
+# The source refusals live in ``streamtools``, which imports nothing from archivey and
+# so raises a plain ``TypeError``. These wrappers re-raise the same message as the
+# usage error, for the entry points that refuse a caller's ``source``.
+
+
+def require_source(obj: object) -> None:
+    """:func:`streamtools.require_source`, raising the usage error."""
+    try:
+        streamtools.require_source(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
+
+
+def reject_source(obj: object) -> NoReturn:
+    """:func:`streamtools.reject_source`, raising the usage error."""
+    try:
+        streamtools.reject_source(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
+
+
+def raise_if_text_stream(obj: object) -> None:
+    """:func:`streamtools.raise_if_text_stream`, raising the usage error."""
+    try:
+        streamtools.raise_if_text_stream(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
+
+
+def raise_if_write_only_stream(obj: object) -> None:
+    """:func:`streamtools.raise_if_write_only_stream`, raising the usage error."""
+    try:
+        streamtools.raise_if_write_only_stream(obj)
+    except TypeError as exc:
+        raise _UsageTypeError(str(exc)) from None
 
 
 def _article(name: str) -> str:

@@ -116,6 +116,19 @@ as the parameter that would have allowed the operation.
   not caller misuse. A link that resolves to a non-`FILE` then hits the
   non-payload rule above.
 
+A usage error about one argument's type or value SHALL also be a builtin exception, so
+that `except TypeError` / `except ValueError` catches it as DR-15 promises: an argument
+of a type the call cannot use raises an `ArchiveyUsageError` that is also a
+`TypeError`, and an argument of a usable type with a value the call refuses raises one
+that is also a `ValueError`. The two classes are private subclasses in
+`archivey.exceptions` and are not exported; callers catch the builtin or
+`ArchiveyUsageError`. From the list above, an `ArchiveMember` from another reader,
+`open_archive(streaming=True, concurrent_members=True)`, `open_stream()` given a
+container `format=`, and `open()` / `read()` of a non-payload member are value errors.
+The rest of the list (overlap, reentry, a closed reader or source, the access mode)
+SHALL raise a plain `ArchiveyUsageError` that is neither a `TypeError` nor a
+`ValueError`.
+
 The later operation SHALL fail before changing state and MUST leave the earlier
 operation/stream usable. Internal owner-child operations are exempt only through
 explicit internal tokens; public reentry does not inherit them. Closed stream I/O
@@ -132,6 +145,9 @@ raise `io.UnsupportedOperation`.
 | Operation/property after `reader.close()` | `ArchiveyUsageError`; already-open member stream follows lifecycle lease |
 | Repeated `reader.close()` | No error; no repeated backend teardown |
 | Unsupported `seek()` on a stream | `io.UnsupportedOperation`, not archivey-typed |
+| `open_archive(src, config="strict")` | Caught by `except TypeError` and by `except ArchiveyUsageError` |
+| `extract_all(dest, overwrite="nonsense")` | Caught by `except ValueError` and by `except ArchiveyUsageError` |
+| Operation after `reader.close()` | A plain `ArchiveyUsageError`: not caught by `except TypeError` or `except ValueError` |
 
 ### Requirement: Close teardown failures preserve state and causes
 
@@ -491,9 +507,9 @@ unstamped, as above.
 ### Requirement: Object-typed public arguments are refused at the boundary
 
 Every public entry point SHALL raise `ArchiveyUsageError` — outside `ArchiveyError`,
-per the misuse requirement above — when a non-enum argument is of a type it cannot
-use, and SHALL do so at the call the caller wrote rather than wherever the value is
-eventually read.
+per the misuse requirement above, and also a `TypeError` (a `ValueError` for a refused
+value of a usable type) — when a non-enum argument is of a type it cannot use, and SHALL
+do so at the call the caller wrote rather than wherever the value is eventually read.
 
 Enum-typed parameters are **out of scope of this requirement**, and this requirement
 says nothing about how they behave. It covers the arguments listed below and no
@@ -512,8 +528,9 @@ The arguments covered:
 | --- | --- |
 | `open_archive()`, `open_stream()`, `detect_format()` | `config` |
 | `detect_format()` | `budget` (a `DetectionBudget`; a `DetectionBudgetPreset` is an enum and out of scope) |
+| `open_archive()`, `open_stream()`, `detect_format()` | `source` |
 | `open_archive()` | `encoding`, `password` |
-| `ArchiveReader.extract_all()` | `limits`, `on_progress` |
+| `ArchiveReader.extract_all()` | `dest`, `limits`, `on_progress` |
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
@@ -536,8 +553,8 @@ so that a byte-to-byte transform (`"rot13"`, `"base64"`) is refused where it is 
 rather than several frames into a member-name decode.
 
 The raw exceptions the contract already permits SHALL continue to escape unchanged:
-`KeyError` for an unknown member **name**, `TypeError` for `len()` / `in` and for a
-wrong-typed `source` or `dest`, `io.UnsupportedOperation` for an unsupported `seek`,
+`KeyError` for an unknown member **name**, `TypeError` for `len()` / `in`,
+`io.UnsupportedOperation` for an unsupported `seek`,
 `ValueError` for I/O on a closed stream, and `OSError`. Boolean flags read for their
 truthiness are not covered, there being no wrong type to find, except
 `ArchiveyConfig`'s guard switches (`rar_allow_glob_member_concatenation`,
@@ -568,14 +585,18 @@ and would silently switch the guard.
 | `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
-| `open_archive(0)` | `TypeError: unsupported source type` — unchanged |
+| `open_archive(0)` | `ArchiveyUsageError` that is also a `TypeError`: `unsupported source type` |
+| `extract_all(0)` | `ArchiveyUsageError` that is also a `TypeError`, naming `dest`; never `expected str, bytes or os.PathLike object` |
+| `ListingLimits(max_members=-1)` | `ArchiveyUsageError` that is also a `ValueError` |
 
 ### Requirement: Enum-typed public arguments are converted at the boundary
 
 Every public entry point that declares an `Enum`-typed parameter SHALL accept the
 member **spelled as a string** and convert it to the member before any branch on its
 value, and SHALL raise `ArchiveyUsageError` — outside `ArchiveyError`, per the misuse
-requirement above — on a value that is neither a member nor a recognised spelling.
+requirement above — on a value that is neither a member nor a recognised spelling. That
+error SHALL also be a `ValueError` for a string that is not a recognised spelling, and a
+`TypeError` for any other type, a member of a different enum included.
 
 This is a boundary rule, not a check at the point of use. The consuming code tests
 these values with `is`, so an unconverted value is not refused where it is read: it

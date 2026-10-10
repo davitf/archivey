@@ -14,7 +14,7 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.internal.arg_checks import (
     check_callable,
     check_encoding,
@@ -183,7 +183,7 @@ def _check_limit(
     if value is None:
         if allow_none:
             return
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{cls}.{field_name} is not optional and takes "
             f"{'a number' if allow_float else 'an int'}, but got None."
         )
@@ -197,19 +197,19 @@ def _check_limit(
         number = None
 
     if number is None:
-        raise ArchiveyUsageError(
+        raise _UsageTypeError(
             f"{cls}.{field_name} takes {'a number' if allow_float else 'an int'}"
             f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
         )
     if isinstance(number, float) and not math.isfinite(number):
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{cls}.{field_name} takes a finite number, but got {value!r}. A NaN "
             f"compares false against everything and an infinity is never exceeded, so "
             f"either one would leave this guard switched off without saying so; pass "
             f"None if that is what you want."
         )
     if number < 0:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"{cls}.{field_name} cannot be negative, but got {value!r}."
             + (" Pass None to disable this guard." if allow_none else "")
         )

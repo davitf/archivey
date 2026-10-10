@@ -61,13 +61,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
+from archivey.internal.arg_checks import raise_if_text_stream
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ReadOnlyIOStream,
     SlicingStream,
     ensure_bufferedio,
     is_seekable,
-    raise_if_text_stream,
     read_exact,
     read_within_reach,
     source_byte_size,

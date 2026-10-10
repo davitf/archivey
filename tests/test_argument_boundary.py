@@ -19,12 +19,14 @@ argument added with no check a failure here rather than a silence.
 (``error-handling`` and ``archive-reading``):
 
 * :class:`~archivey.ArchiveyUsageError` — a detected caller bug (ADR 0012), outside
-  ``ArchiveyError`` so ``except ArchiveyError`` cannot swallow it. The usual answer.
-* :class:`~archivey.exceptions.ArchiveyError` — an archive/environment failure.
-* ``TypeError`` for a wrong-typed **source** or ``dest``, and for ``len()``/``in``.
-  ``open_archive(0)`` raising ``TypeError: unsupported source type`` is deliberate:
-  it is raised at the boundary with a message that names the problem, and a
-  wrong-typed positional raising ``TypeError`` is what a Python caller expects.
+  ``ArchiveyError`` so ``except ArchiveyError`` cannot swallow it. The only answer, and
+  it must also be a ``TypeError`` or a ``ValueError`` (DR-15), so a caller's
+  ``except TypeError`` catches a wrong type as it would anywhere else in Python. That
+  holds for **source** and ``dest`` too: ``open_archive(0)`` raises a usage error that
+  is a ``TypeError``, never a bare one.
+* :class:`~archivey.exceptions.ArchiveyError` — an archive/environment failure, and
+  only on a source row, where a wrong-typed value can also be real archive bytes.
+* ``TypeError`` for ``len()``/``in``, which this file does not exercise.
 * ``KeyError`` for an unknown member name (``archive-reading`` specifies it), plus
   ``io.UnsupportedOperation`` for an unsupported ``seek`` and ``ValueError`` for I/O
   on a closed stream — neither of which this file exercises.
@@ -61,8 +63,9 @@ from archivey import (
 from archivey.detection_cost import BALANCED_BUDGET, DetectionBudgetPreset
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 
-# TypeError is permitted only for the arguments named here; see the module docstring.
-_TYPE_ERROR_OK = frozenset({"source", "dest"})
+# An ArchiveyError is permitted only for the arguments named here; see the module
+# docstring.
+_ARCHIVE_ERROR_OK = frozenset({"source"})
 
 
 @pytest.fixture
@@ -491,11 +494,16 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
 
     offenders: list[str] = []
     for _entry, argument, label, call in _cases(archive, dest):
-        lenient = argument in _TYPE_ERROR_OK
+        lenient = argument in _ARCHIVE_ERROR_OK
         try:
             call()
-        except ArchiveyUsageError:
-            continue
+        except ArchiveyUsageError as exc:
+            # DR-15: a wrong argument is also the builtin a Python caller catches.
+            if not isinstance(exc, (TypeError, ValueError)):
+                offenders.append(
+                    f"{label}: ArchiveyUsageError that is neither a TypeError nor "
+                    f"a ValueError: {exc}"
+                )
         except ArchiveyError as exc:
             # Only the source rows may answer this way, and only because a wrong-typed
             # source can also be a real one that fails to open (``b"PK\x03\x04"`` is a
@@ -505,9 +513,6 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
                 offenders.append(
                     f"{label}: {type(exc).__name__} (want ArchiveyUsageError): {exc}"
                 )
-        except TypeError as exc:
-            if not lenient:
-                offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — the point is to catch everything
             offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
         else:
@@ -778,3 +783,152 @@ def test_class_of_the_wrong_kind_gets_no_constructor_hint() -> None:
     message = str(info.value)
     assert "the ListingLimits class itself" in message
     assert "did you mean" not in message
+
+
+def _closed_reader_members(archive: Path) -> Any:
+    reader = open_archive(archive)
+    reader.close()
+    return reader.members()
+
+
+def _foreign_member(archive: Path, tmp_path: Path) -> Any:
+    other = tmp_path / "other.zip"
+    with zipfile.ZipFile(other, "w") as zf:
+        zf.writestr("h.txt", "other")
+    with open_archive(other) as reader:
+        foreign = reader.members()[0]
+    return _open_member(archive, foreign)
+
+
+# (label, call, the builtin the error must also be). One row per boundary helper and
+# per entry point, not the sweep: that is :func:`test_no_raw_exception_escapes`.
+_BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] = [
+    ("open_archive(0)", lambda a, t: open_archive(0), TypeError),
+    ("open_archive(StringIO)", lambda a, t: open_archive(io.StringIO("x")), TypeError),
+    ("open_archive([])", lambda a, t: open_archive([]), ValueError),
+    ("open_stream(0)", lambda a, t: open_stream(0), TypeError),
+    ("detect_format(0)", lambda a, t: detect_format(0), TypeError),
+    (
+        "open_archive(config='strict')",
+        lambda a, t: open_archive(a, config="strict"),
+        TypeError,
+    ),
+    ("open_archive(password=0)", lambda a, t: open_archive(a, password=0), TypeError),
+    ("open_archive(encoding=0)", lambda a, t: open_archive(a, encoding=0), TypeError),
+    (
+        "open_archive(encoding='rot13')",
+        lambda a, t: open_archive(a, encoding="rot13"),
+        ValueError,
+    ),
+    (
+        "open_archive(format='nonsense')",
+        lambda a, t: open_archive(a, format="nonsense"),
+        ValueError,
+    ),
+    ("open_archive(format=0)", lambda a, t: open_archive(a, format=0), TypeError),
+    (
+        "open_stream(format='zip')",
+        lambda a, t: open_stream(a, format="zip"),
+        ValueError,
+    ),
+    (
+        "open_archive(streaming=True, concurrent_members=True)",
+        lambda a, t: open_archive(a, streaming=True, concurrent_members=True),
+        ValueError,
+    ),
+    (
+        "ListingLimits(max_members='x')",
+        lambda a, t: ListingLimits(max_members="x"),
+        TypeError,
+    ),
+    (
+        "ListingLimits(max_members=-1)",
+        lambda a, t: ListingLimits(max_members=-1),
+        ValueError,
+    ),
+    (
+        "ExtractionLimits(max_ratio=nan)",
+        lambda a, t: ExtractionLimits(max_ratio=float("nan")),
+        ValueError,
+    ),
+    (
+        "ArchiveyConfig(use_rapidgzip='sometimes')",
+        lambda a, t: ArchiveyConfig(use_rapidgzip="sometimes"),
+        ValueError,
+    ),
+    (
+        "DiagnosticPolicy(overrides=0)",
+        lambda a, t: DiagnosticPolicy(overrides=0),
+        TypeError,
+    ),
+    ("extract_all(0)", lambda a, t: _extract_all(a, 0, None), TypeError),
+    (
+        "extract_all(overwrite='nonsense')",
+        lambda a, t: _extract_all(a, t / "o1", None, overwrite="nonsense"),
+        ValueError,
+    ),
+    (
+        "extract_all(abort_on='blocked_member')",
+        lambda a, t: _extract_all(a, t / "o2", None, abort_on="blocked_member"),
+        TypeError,
+    ),
+    (
+        "extract_all(members='h.txt')",
+        lambda a, t: _extract_all(a, t / "o3", "h.txt"),
+        TypeError,
+    ),
+    (
+        "extract_all(filter returning 0)",
+        lambda a, t: _extract_all(a, t / "o4", None, filter=lambda m: 0),
+        TypeError,
+    ),
+    (
+        "stream_members(file_copy_streams='no')",
+        lambda a, t: _stream_members(a, None, file_copy_streams="no"),
+        TypeError,
+    ),
+    ("reader.open(0)", lambda a, t: _open_member(a, 0), TypeError),
+    ("reader.open(foreign member)", _foreign_member, ValueError),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "builtin"),
+    [pytest.param(call, builtin, id=label) for label, call, builtin in _BUILTIN_CASES],
+)
+def test_wrong_argument_is_caught_by_the_builtin_and_the_usage_error(
+    archive: Path,
+    tmp_path: Path,
+    call: Callable[[Path, Path], Any],
+    builtin: type[Exception],
+) -> None:
+    """DR-15: ``except TypeError`` / ``except ValueError`` and
+    ``except ArchiveyUsageError`` each catch a wrong argument; ``except ArchiveyError``
+    does not."""
+    with pytest.raises(builtin) as caught:
+        call(archive, tmp_path)
+    assert isinstance(caught.value, ArchiveyUsageError)
+    assert not isinstance(caught.value, ArchiveyError)
+    # Exactly one of the two: a wrong type is not also a bad value.
+    other = ValueError if builtin is TypeError else TypeError
+    assert not isinstance(caught.value, other)
+
+
+def test_misuse_that_is_not_an_argument_stays_a_plain_usage_error(
+    archive: Path,
+) -> None:
+    """A closed reader is a usage error, but not a ``TypeError`` or ``ValueError``."""
+    with pytest.raises(ArchiveyUsageError) as caught:
+        _closed_reader_members(archive)
+    assert not isinstance(caught.value, (TypeError, ValueError))
+
+
+def test_argument_error_classes_are_not_public() -> None:
+    """The two subclasses are private: no new public name (DR-15 ruling, 2026-10-10)."""
+    import archivey
+    from archivey import exceptions
+
+    for name in ("_UsageTypeError", "_UsageValueError"):
+        assert not hasattr(archivey, name)
+        assert name not in archivey.__all__
+        assert issubclass(getattr(exceptions, name), ArchiveyUsageError)

@@ -16,18 +16,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, TypeGuard
 
 from archivey.exceptions import (
-    ArchiveyUsageError,
     OpenError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
+    _UsageValueError,
 )
+from archivey.internal.arg_checks import raise_if_text_stream, reject_source
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
     is_stream,
-    raise_if_text_stream,
     readinto_via_read,
-    reject_source,
     resolve_seek,
     source_name,
 )
@@ -634,7 +633,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         # refused its input.
         self._path_handles: OrderedDict[int, _CachedPathHandle] = OrderedDict()
         if not sources:
-            raise ArchiveyUsageError("at least one volume is required")
+            raise _UsageValueError("at least one volume is required")
         # Retained so format-specific openers (RAR) can recover real volume paths —
         # unrar needs sibling files on disk, not a concatenated byte stream.
         self._volume_paths: list[Path] = [
@@ -981,8 +980,8 @@ def _sequence_scheme_and_base(
     return _volume_scheme_and_base(name)
 
 
-def _different_sets_error(first: str, second: str) -> ArchiveyUsageError:
-    return ArchiveyUsageError(
+def _different_sets_error(first: str, second: str) -> _UsageValueError:
+    return _UsageValueError(
         f"Volume parts belong to different sets: {display_path(first)} and "
         f"{display_path(second)}. A volume sequence must be the parts of one archive; "
         f"concatenating parts of two would produce bytes that are neither."
@@ -1064,7 +1063,7 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
         if marked_scheme is None:
             marked_scheme, marked_base = scheme, part_base
         elif scheme != marked_scheme:
-            raise ArchiveyUsageError(
+            raise _UsageValueError(
                 f"Volume parts belong to different sets: {display_path(marked_base)} "
                 f"is named {_SCHEME_NAMES[marked_scheme]} and "
                 f"{display_path(part_base)} is named {_SCHEME_NAMES[scheme]}. A volume "
@@ -1181,7 +1180,7 @@ def join_volumes(paths: Sequence[Path]) -> ConcatenatedFile:
     """Concatenate an ordered volume set into one seekable file-like object."""
 
     if not paths:
-        raise ArchiveyUsageError("volume path sequence must not be empty")
+        raise _UsageValueError("volume path sequence must not be empty")
     # Both checks are on names alone, and run for every scheme: a sequence naming two
     # archives is refused whatever they are named, and the numbering is then checked
     # where there is one.
@@ -1246,7 +1245,7 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
     if _is_source_sequence(source):
         raw_items = list(source)
         if not raw_items:
-            raise ArchiveyUsageError("source sequence must not be empty")
+            raise _UsageValueError("source sequence must not be empty")
         if len(raw_items) == 1:
             return _resolve_single(raw_items[0])
         items = [_coerce_path_or_stream(item) for item in raw_items]

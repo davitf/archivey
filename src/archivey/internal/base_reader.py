@@ -52,10 +52,13 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     UnsupportedFeatureError,
+    _UsageTypeError,
+    _UsageValueError,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
     check_callable,
+    check_dest,
     check_extraction_limits,
     describe_value,
 )
@@ -2654,7 +2657,7 @@ class BaseArchiveReader(ArchiveReader):
                 # answer. `in` raises TypeError here (a spec'd escape for the operator
                 # protocol); this is an ordinary argument, so it takes the usage error.
                 if not isinstance(member, ArchiveMember):
-                    raise ArchiveyUsageError(
+                    raise _UsageTypeError(
                         f"reader.open() takes a member name (str) or an ArchiveMember "
                         f"yielded by this reader, but got {describe_value(member)}."
                     )
@@ -2664,7 +2667,7 @@ class BaseArchiveReader(ArchiveReader):
                 # data (e.g. the directory backend would read whatever sits at the same
                 # relative path under this reader's root).
                 if member._archive_id != self._archive_id:
-                    raise ArchiveyUsageError(
+                    raise _UsageValueError(
                         f"Member {quoted(member.name)} does not belong to this reader; open a "
                         f"member yielded by this reader, or look it up by name with "
                         f"reader.get(name)."
@@ -2754,7 +2757,7 @@ class BaseArchiveReader(ArchiveReader):
                 )
             current = target
         if current.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
-            raise ArchiveyUsageError(
+            raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is {current.type.value!r} "
                 f"(not a file)"
             )
@@ -2779,7 +2782,7 @@ class BaseArchiveReader(ArchiveReader):
         each handle forward-only); ``tell()`` works.
         """
         if not isinstance(file_copy_streams, bool):
-            raise ArchiveyUsageError(
+            raise _UsageTypeError(
                 "stream_members(file_copy_streams=…) takes True or False, but got "
                 f"{describe_value(file_copy_streams)}."
             )
@@ -2909,6 +2912,7 @@ class BaseArchiveReader(ArchiveReader):
         # created. Same reason as filter: a refusal that has already touched the disk
         # is a side effect of a call the caller got wrong.
         normalize_member_selector(members)
+        check_dest(dest, call="extract_all(dest=…)")
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
