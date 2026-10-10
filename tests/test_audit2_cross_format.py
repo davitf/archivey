@@ -1590,7 +1590,7 @@ class _LinkOpenStub:
     "exc",
     [
         pytest.param(LinkTargetNotFoundError("Link target not found"), id="absent"),
-        pytest.param(ReadError("Link cycle detected at 'a'"), id="cycle"),
+        pytest.param(ReadError("Link cycle detected", member_name="a"), id="cycle"),
         pytest.param(
             ArchiveyUsageError(
                 "Cannot open member 'd': type is 'directory' (not a file)"
@@ -1604,6 +1604,27 @@ def test_cli_test_ignores_where_a_link_points(exc: Exception) -> None:
 
     link = ArchiveMember(type=MemberType.SYMLINK, name="l")
     _verify_link(_LinkOpenStub(exc), link)  # type: ignore[arg-type]
+
+
+def test_cli_test_ignores_a_real_link_cycle() -> None:
+    """The CLI tells a cycle apart by the message the reader raises; pin it against
+    the real reader so a change to that message cannot slip past the stub above."""
+    from archivey.cli.test_cmd import _verify_link
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, target in (("a", "b"), ("b", "a")):
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            tf.addfile(info)
+    buf.seek(0)
+    with open_archive(buf) as reader:
+        link = reader.get("a")
+        assert link is not None
+        with pytest.raises(ReadError, match="Link cycle detected"):
+            reader.open(link)
+        _verify_link(reader, link)
 
 
 @pytest.mark.parametrize(

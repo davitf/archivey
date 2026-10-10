@@ -520,6 +520,7 @@ refuses its links; any other is recovered as above.
 | HARDLINK `hl` → SYMLINK with no target (`/s` under `STRICT`, or `s`) | `hl` `FAILED`, not refused for `/s`'s name: `ExtractionError` naming the source's type when the listing was read first, else `LinkTargetNotFoundError` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
+| `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 
 ### Requirement: Policy-Specific Metadata Transforms
 
@@ -939,7 +940,12 @@ streaming pass does not learn it until EOF, by which time the member has already
 written or not. Those SHALL take the per-member failure that an unresolved target
 takes, and the library default aborts the archive there. Settling them in a streaming
 pass would mean holding a reparse point's data until the member is written, which is a
-different guarantee and is not required here.
+different guarantee and is not required here. One pass does learn it at the member: a 7z
+pass under `read_link_targets=True` reads a reparse-flagged member's data as it reaches
+it, so a member whose bytes are not a link buffer is a file by the time extraction sees
+it, and is written as one. A directory-shaped entry is the exception: it stays a link
+with no target (`archive-reading`, "Link targets stored as member data are read only
+when configured").
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and
