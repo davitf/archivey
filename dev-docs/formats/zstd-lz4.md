@@ -88,13 +88,13 @@ not read, because it describes one frame and nothing says the file has one (§7)
 ### 2.3 Member data
 
 Both codecs run in archivey's engine as `FramedDecompressorStream`
-(`internal/streams/codecs/framed_decoder.py`): one library decompressor per frame, and a new one
-only when the bytes right after a frame are a frame or skippable-frame magic. Anything
-else after a frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is
-zeros that run to the end of the file ([`single-file.md`](single-file.md) §2.3). After
-zeros, any byte ends the data, a further frame's magic too (§6). The file-level readers the libraries offer
-(`compression.zstd.open`, `lz4.frame.open`) cannot do that: they take any bytes after a
-frame for the next frame and fail on them.
+(`internal/streams/codecs/framed_decoder.py`): one library decompressor per frame, and a
+new one only when the bytes right after a frame are a frame or skippable-frame magic.
+Anything else after a frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless
+it is zeros that run to the end of the file ([`single-file.md`](single-file.md) §2.3).
+After zeros, any byte ends the data, a further frame's magic too (§6). The file-level
+readers the libraries offer (`compression.zstd.open`, `lz4.frame.open`) cannot do that:
+they take any bytes after a frame for the next frame and fail on them.
 
 **zstd.** The decompressor is `compression.zstd.ZstdDecompressor`, or `backports.zstd`'s
 before Python 3.14, the same API (ADR 0009). It skips skippable frames and checks each

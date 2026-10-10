@@ -808,24 +808,38 @@ def _accelerator_config(
     )
 
 
+# The second size ends the NULs at a 64 KiB boundary, the size of a compressed read, so
+# the stream after them starts a fresh read with no NUL in front of it: what was seen in
+# the read before has to carry over.
+_NUL_GAPS = [
+    pytest.param(lambda first: 4, id="gap-4"),
+    pytest.param(
+        lambda first: (1 << 16) - first % (1 << 16), id="gap-to-read-boundary"
+    ),
+]
+
+
 @pytest.mark.parametrize("seekable", [False, True], ids=["random", "seekable"])
 @pytest.mark.parametrize("mode", _ACCELERATOR_MODES)
+@pytest.mark.parametrize("gap_for", _NUL_GAPS)
 @pytest.mark.parametrize(("suffix", "compress"), _NUL_CODECS)
 def test_a_stream_after_nul_padding_is_trailing_data(
     tmp_path: Path,
     suffix: str,
     compress: Callable[[bytes], bytes],
+    gap_for: Callable[[int], int],
     mode: AcceleratorMode,
     seekable: bool,
 ) -> None:
     """The first stream is the data; the report names the stream after the NULs."""
     first = compress(_PAYLOAD)
-    path = _write(tmp_path, suffix, first + b"\x00" * 4 + compress(_PAYLOAD))
+    gap = gap_for(len(first))
+    path = _write(tmp_path, suffix, first + b"\x00" * gap + compress(_PAYLOAD))
     config = _accelerator_config(mode)
     with open_archive(path, config=config, seekable_members=seekable) as reader:
         assert reader.read(reader.members()[0]) == _PAYLOAD
         (report,) = _reports(reader)
-    assert report.observed_bytes == len(first) + 4
+    assert report.observed_bytes == len(first) + gap
 
 
 @pytest.mark.parametrize("mode", _ACCELERATOR_MODES)

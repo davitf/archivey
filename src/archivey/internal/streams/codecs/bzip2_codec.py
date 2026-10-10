@@ -129,21 +129,21 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     end, falls back there: the error arrives at the seek, as it would at a read.
 
     The decoder also skips what it cannot read between blocks. It finds blocks by their
-    magic, so junk between a stream header at the start of the file and the first
-    block, a stream whose header is damaged, or one whose block and end-of-stream
-    magics are both damaged is passed over with no error, and the output goes on with
-    the next block it recognises: measured on rapidgzip 0.16, ``BZh9`` and forty zero
-    bytes before a stream read as that stream, and three
-    streams with two bytes flipped in the second read as the first and the third. The
-    combined CRC check below does not see it, since nothing of the skipped region is in
-    the index. Before a read returns, :class:`_Bzip2Layout` checks the index built so
-    far: each stream starts where the one before it ended, after nothing but empty
-    streams, which the standard library also reads. At the first place that does not
-    hold, the read stops, and the standard library takes over there and gives the
-    verdict, as with the accelerator off. The index is fetched again only
-    when a read ends past the entries already walked and the decoder has read further
-    into the source. Each fetch copies rapidgzip's whole index, so the cost grows with
-    the square of the block count (``dev-docs/formats/bzip2.md`` §2.3).
+    magic, so junk between a stream header at the start of the file and the first block,
+    a stream whose header is damaged, or one whose block and end-of-stream magics are
+    both damaged is passed over with no error, and the output goes on with the next
+    block it recognises: measured on rapidgzip 0.16, ``BZh9`` and forty zero bytes
+    before a stream read as that stream, and three streams with two bytes flipped in the
+    second read as the first and the third. The combined CRC check below does not see
+    it, since nothing of the skipped region is in the index. Before a read returns,
+    :class:`_Bzip2Layout` checks the index built so far: each stream starts where the
+    one before it ended, after nothing but empty streams, which the standard library
+    also reads. At the first place that does not hold, the read stops, and the standard
+    library takes over there and gives the verdict, as with the accelerator off. The
+    index is fetched again only when a read ends past the entries already walked and the
+    decoder has read further into the source. Each fetch copies rapidgzip's whole index,
+    so the cost grows with the square of the block count (``dev-docs/formats/bzip2.md``
+    §2.3).
 
     At the end, the decoder can also stop short: it leaves a cut or damaged stream
     right after the last one alone, where the standard library decodes it and raises.
@@ -329,14 +329,14 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         but does not count them in its compressed position: after the last read, that
         position is the end of the last stream that produced data (see
         ``compressed_position``). It stops at zero bytes and at junk, with a warning on
-        stderr and no exception. The bytes from there to the end of the source are read (a
-        fresh view, so the decoder's cursor does not move) by
+        stderr and no exception. The bytes from there to the end of the source are read
+        (a fresh view, so the decoder's cursor does not move) by
         :meth:`_first_trailing_byte`, which accepts what the standard-library path
         accepts. Where a stream header follows with no zeros before it, the standard
         library decodes that stream, or raises on it, and the decoder here stopped
         before it, so the standard library takes over at the end and decides (class
-        docstring). For a container coder's single stream the standard library would
-        not read a further stream either, so that stream is reported as trailing bytes
+        docstring). For a container coder's single stream the standard library would not
+        read a further stream either, so that stream is reported as trailing bytes
         instead. Return whether the standard library took over.
         """
         end = getattr(self._accelerator(), "compressed_position", lambda: None)()

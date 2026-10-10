@@ -79,11 +79,14 @@ class FramedDecoder(BaseDecoder):
     that run to the end of the input are padding; anything else ends the data and sets
     :attr:`trailing_bytes`. That includes any byte after zeros, a further stream's
     magic too: the first non-zero byte after them is where the trailing bytes start.
-    ``bzip2``, ``zstd``, ``lz4``, ``xz --format=lzma`` and 7-Zip stop at zeros between
-    streams too (``dev-docs/formats/single-file.md`` §6). A codec with no magic (LZMA
-    Alone) passes a :data:`StreamStart` check of the header instead, which may raise to
-    refuse the next stream. ``zero_padding=False`` hands zeros to that check too (raw
-    LZMA, where 7-Zip refuses any byte after the end marker).
+    Each codec's own tool stops at zeros between streams too: ``bzip2``, ``zstd``,
+    ``lz4`` and ``xz --format=lzma``, and 7-Zip for bzip2 and LZMA Alone. ``zstd``,
+    ``lz4`` and ``xz --format=lzma`` also refuse zeros at the end of the file, which
+    archivey accepts on purpose, as for every codec (``dev-docs/formats/single-file.md``
+    §6). A codec with no magic (LZMA Alone) passes a :data:`StreamStart` check of the
+    header instead, which may raise to refuse the next stream. ``zero_padding=False``
+    hands zeros to that check too (raw LZMA, where 7-Zip refuses any byte after the end
+    marker).
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
