@@ -42,12 +42,14 @@ clamping on a hint that understates would truncate a legitimate read. :attr:`siz
 fact alone, so every slice or shared view built over this object — which asks
 ``source_byte_size``, and that reads ``size`` first — clamps on a fact or steps too. The
 hint survives as :attr:`size_hint` for the questions that want the cheap answer and
-bound no read: detection's cost receipt takes it as the total size, and
-``compressed_source_size`` reports it as the archive-wide ratio denominator, with the
-complement deciding whether a live byte counter stands in for it. That last one does not
-take a caller's non-seekable stream's hint: nothing can check a pipe's claim, and an
-inflated one would switch off both ratio guards. A member stream's hint is its
-container's declared length (:attr:`seek_is_expensive`) and is taken, seekable or not.
+bound no read: detection's cost receipt takes it as the total size, and the reader's
+``_trusted_source_size`` filters it for extraction's archive-wide ratio, where it is both
+``compressed_source_size`` (the denominator) and the complement that decides whether a
+live byte counter stands in. ``_trusted_source_size`` does not take a caller's
+non-seekable stream's hint: nothing can check a pipe's claim, and an inflated one would
+switch off both ratio guards. A member stream's hint is its container's declared length
+(:attr:`seek_is_expensive`) and is taken, seekable or not; that declaration is unchecked
+too until the container's end-of-member check runs, after the payload is decoded.
 
 What stays outside, as wrappers over this object that keep its guarantees: measurement
 (``SeekCountingStream``), and ZIP's start offset (a ``SlicingStream``). Member-level

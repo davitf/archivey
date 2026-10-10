@@ -2388,19 +2388,22 @@ class BaseArchiveReader(ArchiveReader):
         ``safe-extraction``): for zip/7z/rar/compressed-tar the source size *is* the
         compressed size, and for a plain tar or other uncompressed container the
         resulting ~1:1 ratio simply never trips the guard. Cheap only — see
-        ``source_byte_size``: path ``stat``, a ``size`` attribute (fsspec convention,
-        also on archivey's own member/codec streams, enabling nested archives), a
-        ``try_get_size()`` index scan, or a ``SEEK_END`` probe restricted to provably
-        O(1) types (never a decompressor). Backends record their source in
-        ``self._source``; readers without one (directory) or with an unknowable
-        source report ``None``.
+        ``source_byte_size``: path ``stat``, a ``size`` attribute on a seekable source
+        or on an archivey member stream (enabling nested archives), a ``try_get_size()``
+        index scan, or a ``SEEK_END`` probe restricted to provably O(1) types (never a
+        decompressor). Backends record their source in ``self._source``; readers
+        without one (directory) or with an unknowable source report ``None``.
 
         A caller's **non-seekable** stream reports ``None`` even when it has a ``size``
         attribute: that is the caller's claim, and a pipe has no end to check it
         against. An inflated claim would make the static ratio unreachable and, as the
         complement below, switch off the live counter too. A member stream of another
-        archive keeps its ``size`` whether it seeks or not, because that is the length
-        its container declares (``ArchiveSource.seek_is_expensive`` marks it).
+        archive keeps its ``size`` whether it seeks or not
+        (``ArchiveSource.seek_is_expensive`` marks it). That ``size`` is the length the
+        container declares, and the container is untrusted input as well: a member
+        shorter than its declaration is refused by the container's end-of-member check
+        only after its payload is decoded, so for a nested archive ``max_extracted_bytes``
+        is the bound that holds.
         """
         self._state.require_open("compressed_source_size")
         return self._trusted_source_size()
@@ -2410,8 +2413,8 @@ class BaseArchiveReader(ArchiveReader):
 
         The one answer ``compressed_source_size`` reports and ``_wrap_compressed_input``
         complements. A seekable source's hint counts, and so does a member stream's
-        declared length (``seek_is_expensive``). A caller's non-seekable stream's
-        ``size`` does not.
+        declared length (``seek_is_expensive``), itself unchecked until the member ends.
+        A caller's non-seekable stream's ``size`` does not.
         """
         src = self._source
         if src is None:
