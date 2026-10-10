@@ -39,18 +39,21 @@ archives` to classify. These are headers that do not parse:
 | Header block | A bad checksum; a number field that is neither octal nor base-256; a negative size |
 | PAX records | A record length that does not land on its newline |
 | Old GNU sparse | A map number, in the header or an extension block, that is neither octal nor base-256 or is past 2**63 - 1 |
-| Header chain | An extended header followed by a zero block or by a block that is not a header |
+| Header chain | An extended header followed by a block that is not a header |
 
 The walk SHALL raise `TruncatedError` when the stream ends inside a header or a data
 area, or right after an extended header, and `CorruptionError` for a PAX `size` that is
-not a number.
+not a number. An `x`, `X`, `L` or `K` header followed by a zero block SHALL end the
+walk as an end-of-archive marker, as GNU tar reads it. A `g` header describes no member,
+so a zero block after it is an ordinary end-of-archive marker.
 
 #### Scenario: header refusal matrix
 
 | Case | Expected |
 | --- | --- |
 | A rejected header after the first member | `CorruptionError` after the members before it, in both access modes |
-| A PAX header followed by the end-of-archive marker | `CorruptionError` after the members before it; never a clean end |
+| A PAX `x`, global `g` or GNU long-name header followed by the end-of-archive marker | A clean end after the members before it |
+| A PAX header followed by a block that is not a header | `CorruptionError` after the members before it |
 | The stream ends right after a PAX header or a GNU long-name header | `TruncatedError` |
 
 ### Requirement: Read GNU sparse maps
@@ -281,7 +284,7 @@ the access mode:
 - **Rejected header → `CorruptionError`, whatever the diagnostic policy.** When the
   walk stopped on a header that does not parse (a bad checksum or number field, a
   negative size, PAX records that do not parse, a bad number in an old GNU sparse
-  extension block, or an extended header followed by no member header), ending the
+  extension block, or an extended header followed by a block that is not a header), ending the
   listing there would shorten it silently. A
   conformant, complete tar never produces this (its two-or-more null trailer blocks
   end the scan first). It SHALL be `CorruptionError` in **both** access modes whatever

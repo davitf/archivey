@@ -184,10 +184,12 @@ One loop, no recursion. `next_entry(budget) -> TarEntry | TarEnd`.
    seek (today's `_BoundedTarFileobj.seek` check).
 2. Read one block and parse it. A zero block, a rejected block or a short read ends the
    walk with a `TarEnd` that says which, at which offset. The reader turns that into the
-   existing EOF classification (§"EOF and trailing data"). After an extended header the
-   chain must end in a member header: a zero block or a rejected block there is a
-   rejected `TarEnd` (tarfile raises for both), and the stream ending there is
-   `TruncatedError`. A bad number in an old GNU extension block is a rejected `TarEnd`
+   existing EOF classification (§"EOF and trailing data"). After an `x`, `X`, `L` or
+   `K` header the chain must end in a member header. A rejected block there is a
+   rejected `TarEnd`, and the stream ending there is `TruncatedError`. A zero block
+   there ends the walk as a zero block, as GNU tar 1.35 lists such an archive (DR-6;
+   tarfile raises): the `TarEnd` reason names the unused header. A `g` header describes
+   no member, so it starts no chain. A bad number in an old GNU extension block is a rejected `TarEnd`
    too, as tarfile rejects the header for it.
 3. An extended header: read its data with `read_within_reach` in steps (never one read
    sized from the field), after charging the declared size to the member's budget. A
@@ -304,8 +306,8 @@ message: `CorruptionError` (a PAX sparse map that does not parse, a sparse versi
 with no map, a PAX `size` that is not a number), `TruncatedError` (short read inside a header or data area),
 `ResourceLimitError` (budget), `UnsupportedFeatureError` (out-of-order or overlapping
 sparse map). Damage that tarfile reports as an invalid header (a block that is no
-header, PAX records that do not parse, an extended header with no member header after
-it, an old GNU sparse map number that does not parse) is a rejected `TarEnd`, not an exception, so the reader's EOF policy decides it as
+header, PAX records that do not parse, an extended header followed by a block that is no
+header, an old GNU sparse map number that does not parse) is a rejected `TarEnd`, not an exception, so the reader's EOF policy decides it as
 today. That deletes `_translate_exception`, `_translate_open_error`,
 `_raised_by_tarfile` and `_passes_through_tarfile`, and with them the traceback-frame
 inspection and the matching of tarfile's message text. An `OSError` from the source
@@ -363,6 +365,7 @@ All of these are fixes; none changes a public name or signature.
 | A member that inherits a global `hdrcharset=BINARY` is decoded as one that declares it: its PAX values follow the ustar rule. `name` is unchanged in every case checked on `main` (UTF-8 and Latin-1 bytes, with and without `encoding="latin-1"`), and a valid-UTF-8 value under `encoding=` now emits `MEMBER_NAME_ENCODING_INFERRED`, as it does under the member's own `BINARY` | POSIX scopes `hdrcharset` this way; DR-7 and the valid-UTF-8-wins ruling (2026-10-07) for a field that declares no encoding |
 | A v7 or old GNU header with bytes at 345 to 500 no longer joins them to the name as a `prefix`: a GNU incremental archive (`tar -G`) lists `d/f.txt`, not `15262452373/d/f.txt` | DR-6: GNU tar reads `prefix` only in ustar headers |
 | The stream ending right after an extended header (PAX `x` or `g`, GNU `L` or `K`) raises `TruncatedError`; today it is `CorruptionError` ("empty header", from tarfile parsing the next header inside the extended one) | DR-5: the same error every other mid-walk stream end gives |
+| An `x` or `L` header right before the end-of-archive marker ends the listing cleanly after the members before it, with no diagnostic; today it is `CorruptionError` | DR-6: GNU tar 1.35 lists these archives with exit 0. A new diagnostic code would be a public change, so none is added |
 | The member list is the same on every Python 3.11 to 3.15 patch release | DR-5 |
 | A streaming pass holds one list of members, not two | DR-9a; removes a sharp-edges row and threat-model O1's TAR note |
 | Error messages name offsets and fields, not tarfile's wording | Message text is not contract |
