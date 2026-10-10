@@ -7,6 +7,9 @@ built from the structure that the real files shared, never from their content.
 Each test asserts the behaviour a fix should give. A test whose defect still stands is
 marked ``xfail(strict=True)`` and the ``reason`` names it; the marker comes off when the
 fix lands, so an unmarked test pins a fix, or the mechanism a reproducer relies on.
+
+The probe reproducers pass ``always_probe_content=True``: by default a nameless source
+runs no content probe, so they would pass without reaching the probe they pin.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ArchiveFormat, FormatDetectionError
+from archivey import ArchiveFormat, ArchiveyConfig, FormatDetectionError
 from archivey.internal import detection
 from archivey.internal.streams import codecs as codecs_module
 from tests.conftest import requires
@@ -57,9 +60,19 @@ def _id3v23_mp3_with_padding() -> bytes:
 
 _OLE_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 
+ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
+
 
 def test_id3_tagged_mp3_is_not_lzma_alone() -> None:
     with pytest.raises(FormatDetectionError):
+        archivey.detect_format(
+            io.BytesIO(_id3v23_mp3_with_padding()), config=ALWAYS_PROBE
+        )
+
+
+def test_a_nameless_mp3_reaches_no_probe_by_default() -> None:
+    # The scan's MP3s had names; a nameless one never reaches a content probe at all.
+    with pytest.raises(FormatDetectionError, match="always_probe_content"):
         archivey.detect_format(io.BytesIO(_id3v23_mp3_with_padding()))
 
 
@@ -69,7 +82,7 @@ def test_ole_magic_then_zeros_is_not_lzma_alone() -> None:
     # signature stops the content probes, so the Alone probe never sees this input.
     data = _OLE_MAGIC + b"\0" * 4088
     with pytest.raises(FormatDetectionError):
-        archivey.detect_format(io.BytesIO(data))
+        archivey.detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     # The probe refuses it on its own too: the stopping signature is defence in depth.
     probe = codecs_module.LzmaAloneCodec().content_probe
     assert probe(data, source_length=len(data)) is False
@@ -95,7 +108,7 @@ def test_ole_header_then_zeros_is_not_brotli() -> None:
     header = _OLE_MAGIC + b"\0" * 16 + struct.pack("<HHHH", 0x3E, 3, 0xFFFE, 9)
     data = header + b"\0" * (256 * 1024 - len(header))
     with pytest.raises(FormatDetectionError):
-        archivey.detect_format(io.BytesIO(data))
+        archivey.detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
 
 
 def _ole_header() -> bytes:

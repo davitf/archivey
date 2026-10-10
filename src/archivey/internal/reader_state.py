@@ -23,8 +23,11 @@ Leases, and why teardown is separate from close
 
 Marking the reader closed does not close the archive. A lease is held by whatever still
 reads through the source: the reader itself (one lease, from construction until
-``close()``, kept as ``_reader_lease_held``) plus each live member stream or reservation
-(counted in ``_lease_count``). The underlying file handle or ``unrar`` /
+``close()``, kept as ``_reader_lease_held``), each live member stream or reservation
+(counted in ``_lease_count``), and a ``stream_members()`` pass that ``close()`` found
+suspended at a yield (one lease, ``_pass_wind_down_lease``, from the close transition
+until ``close()`` has wound the pass down and closed the streams; a flag for the same
+reason as the reader's). The underlying file handle or ``unrar`` /
 ``7z`` process is torn down by whoever drops the **last** lease. ``close()`` drops the
 reader's lease first and then closes the still-open member streams, so with streams open
 the last lease usually goes with the last stream's close, not with the reader's. That is
@@ -53,6 +56,8 @@ from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from archivey.internal.open_site import OpenSite
     from archivey.internal.streams.archive_stream import ArchiveStream
 
@@ -103,8 +108,16 @@ class OperationToken:
     # loop body, so a call from that thread is not re-entry from a callback and
     # ``_same_thread_token_locked`` skips the token. While the generator is executing a
     # step (where a diagnostic callback fires) the flag is False and the token counts.
-    # Set with :meth:`ReaderState.set_suspended`.
+    # Set with :meth:`ReaderState.set_suspended`. A suspended pass also does not block
+    # ``close()``: the reader closes and the pass is wound down (see ``pass_closer``).
     suspended: bool = field(default=False, repr=False)
+    # Winds down the backend side of a ``stream_members()`` pass: closes the format's
+    # own member iterator, whose ``finally`` closes its last stream and releases
+    # pass-scoped resources (a solid block, an ``unrar`` pipe). When ``close()`` closes
+    # the reader under a pass suspended at a yield, :meth:`ReaderState.mark_reader_closed`
+    # hands it over together with a lease, so teardown waits until it has run. Set with
+    # :meth:`ReaderState.set_pass_closer`, under the lock like ``suspended``.
+    pass_closer: Callable[[], None] | None = field(default=None, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
@@ -157,7 +170,20 @@ class ReaderState:
         # interrupted before that store is finished by the next mark_reader_closed().
         self._reader_lease_held = True
         self._teardown_claimed = False
-        self._stream_shutdown_claimed = False
+        # The stream-shutdown claim (see :meth:`claim_stream_shutdown`): the ticket of
+        # the close() that holds it, and whether that close() finished the step. An
+        # interrupted holder hands the claim back, so the next close() retakes it.
+        self._stream_shutdown_owner: object | None = None
+        self._stream_shutdown_done = False
+        # A suspended pass's ``pass_closer``, handed over by the close transition with
+        # a lease of its own; see :meth:`take_pass_wind_down`. Like the reader's lease,
+        # that lease is a flag read by _outstanding_leases_locked, so taking and dropping
+        # it are one store each, and it is tracked apart from the closer so close() can
+        # drop it even when an interrupt lost the closer. Only the holder of the
+        # stream-shutdown claim drops it, in :meth:`finish_stream_shutdown`; that is a
+        # close() or, after an interrupted one, the suspended pass's own finally.
+        self._pass_wind_down: Callable[[], None] | None = None
+        self._pass_wind_down_lease = False
         # Library-internal open windows (extract_all's coordinator, first-touch link
         # reads), keyed BY THREAD: the exemption from the live-stream gate and from
         # worker rejection applies only to the thread that entered the window. A plain
@@ -235,6 +261,25 @@ class ReaderState:
         """Mark a generator-held pass as suspended at a yield, or running again."""
         with self._lock:
             token.suspended = suspended
+
+    def set_pass_closer(
+        self, token: OperationToken, closer: Callable[[], None] | None
+    ) -> None:
+        """Record how ``close()`` winds down this pass if it is suspended at a yield."""
+        with self._lock:
+            token.pass_closer = closer
+
+    def take_pass_wind_down(self) -> Callable[[], None] | None:
+        """The closer the close transition took from a suspended pass, once.
+
+        The transition also took a lease for it, so teardown cannot be claimed until
+        the holder of the stream-shutdown claim has run the closer and called
+        :meth:`finish_stream_shutdown`. ``None`` when no suspended pass had a closer,
+        or an earlier, interrupted ``close()`` took it.
+        """
+        with self._lock:
+            closer, self._pass_wind_down = self._pass_wind_down, None
+            return closer
 
     def release_pass(self, token: OperationToken) -> None:
         with self._lock:
@@ -449,7 +494,9 @@ class ReaderState:
         artificial timeout.
 
         Without ``CONCURRENT``, overlapping worker calls still raise
-        :class:`~archivey.exceptions.ArchiveyUsageError`. Concurrent double-``close()`` is
+        :class:`~archivey.exceptions.ArchiveyUsageError`, as does a reader-wide pass
+        that is executing. A pass whose generator is suspended at a yield does not
+        block: the reader closes under it. Concurrent double-``close()`` is
         idempotent: one thread drains and closes; others wait for that transition and
         return without running teardown again.
         """
@@ -484,7 +531,11 @@ class ReaderState:
                         # Invariant: False is returned only when lifecycle is not OPEN.
                         continue
                     return False
-                if self._root is not None:
+                # A pass suspended at a yield is not running: the caller holds its
+                # iterator. Close anyway, as zipfile.ZipFile.close() does with member
+                # handles open; resuming that iterator then raises (maintainer's
+                # ruling, 2026-10-10). Only a pass that is executing refuses the close.
+                if self._root is not None and not self._root.suspended:
                     raise ArchiveyUsageError(
                         "Cannot close the archive reader while another reader "
                         f"operation ({self._root.name!r}) is active."
@@ -494,6 +545,10 @@ class ReaderState:
                         "Cannot close the archive reader while an open()/read() call "
                         "is still in progress."
                     )
+                # A root pass and in-flight workers exclude each other (acquire_pass /
+                # acquire_worker), so with a suspended pass the wait below never runs
+                # and the lock is held unbroken from the check above to the take below.
+                assert self._root is None or not self._workers
                 self._closing = True
                 try:
                     while self._workers:
@@ -501,6 +556,17 @@ class ReaderState:
                     # Notify last. If an interrupt lands after the transition but
                     # before the lease drop, the retry branch above finishes the drop.
                     self.lifecycle = LifecycleState.READER_CLOSED
+                    # In the same lock hold as the decision above (see the assert
+                    # before the wait), so the suspended pass cannot resume and
+                    # release itself in between. The lease keeps teardown back until
+                    # close() has run the closer: the backend's pass cleanup must
+                    # come before the source is closed.
+                    root = self._root
+                    if root is not None and root.pass_closer is not None:
+                        # Lease first: an interrupt between the two stores leaves a
+                        # lease that close() drops, never a closer without a lease.
+                        self._pass_wind_down_lease = True
+                        self._pass_wind_down, root.pass_closer = root.pass_closer, None
                     run_teardown = self._drop_reader_lease_locked()
                     self._close_cv.notify_all()
                     return run_teardown
@@ -509,8 +575,8 @@ class ReaderState:
                     self._close_cv.notify_all()
                     raise
 
-    def claim_stream_shutdown(self) -> bool:
-        """True exactly once, for the caller that should close live member streams.
+    def claim_stream_shutdown(self, ticket: object) -> bool:
+        """True for the one caller that should wind the pass down and close live streams.
 
         The same shape as :meth:`claim_teardown`, and needed for the same reason.
         ``mark_reader_closed`` returns ``False`` both for "I performed the transition
@@ -521,14 +587,57 @@ class ReaderState:
         reach ``inner.close()`` on the same stream. A backend that is not re-entrant on
         close (rapidgzip especially) would be entered twice.
 
-        Like teardown, the claim is not retried: a ``close()`` whose stream shutdown
-        raises has already consumed it.
+        ``ticket`` is an object the calling ``close()`` made for itself; the claim is
+        held by storing it, one store. :meth:`finish_stream_shutdown` spends the claim
+        for good: a ``close()`` whose wind-down or stream shutdown raises an
+        ``Exception`` still finishes, and the step is not retried. An interrupt is
+        different: the ``close()`` hands the claim back with
+        :meth:`abandon_stream_shutdown`, so the next caller of the step retakes it
+        and drops the pass wind-down lease that the interrupted one still held: a later
+        ``close()``, or the suspended pass's own ``finally`` when its iterator is
+        closed or collected.
         """
         with self._lock:
-            if self._stream_shutdown_claimed:
+            if self._stream_shutdown_done or self._stream_shutdown_owner is not None:
                 return False
-            self._stream_shutdown_claimed = True
+            self._stream_shutdown_owner = ticket
             return True
+
+    def finish_stream_shutdown(self, ticket: object) -> None:
+        """Spend the claim ``ticket`` holds and drop the pass wind-down lease.
+
+        A no-op unless ``ticket`` holds the claim. The lease is dropped before the
+        claim is marked spent: an interrupt between the two leaves a claim that
+        :meth:`abandon_stream_shutdown` hands back, never a spent claim with the
+        lease still held.
+        """
+        with self._lock:
+            if self._stream_shutdown_owner is not ticket:
+                return
+            self._pass_wind_down = None
+            self._pass_wind_down_lease = False
+            self._stream_shutdown_done = True
+
+    def stream_shutdown_done(self) -> bool:
+        """Whether the stream-shutdown step finished and its claim is spent."""
+        with self._lock:
+            return self._stream_shutdown_done
+
+    def lifecycle_is_open(self) -> bool:
+        """Whether the reader is still open: ``close()`` has not started its transition."""
+        with self._lock:
+            return self.lifecycle is LifecycleState.OPEN
+
+    def abandon_stream_shutdown(self, ticket: object) -> None:
+        """Hand back the claim ``ticket`` holds, unless it was spent. For an interrupt.
+
+        The pass wind-down lease, and the closer if nobody took it, stay: the next
+        ``close()``, or the pass's own ``finally``, retakes the claim, runs what is
+        left and drops the lease.
+        """
+        with self._lock:
+            if self._stream_shutdown_owner is ticket and not self._stream_shutdown_done:
+                self._stream_shutdown_owner = None
 
     def claim_teardown(self) -> bool:
         with self._lock:
@@ -567,7 +676,11 @@ class ReaderState:
         return self._teardown_due_locked()
 
     def _outstanding_leases_locked(self) -> int:
-        return self._lease_count + (1 if self._reader_lease_held else 0)
+        return (
+            self._lease_count
+            + (1 if self._reader_lease_held else 0)
+            + (1 if self._pass_wind_down_lease else 0)
+        )
 
     def _teardown_due_locked(self) -> bool:
         return (

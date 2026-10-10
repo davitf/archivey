@@ -7,6 +7,7 @@ import lzma
 import os
 import random
 import zlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,10 @@ from tests.streams_util import (
     truncated_brotli,
 )
 
+# The sources below are unnamed, and detection runs content probes on an unnamed source
+# only when the config asks for all of them.
+PROBE_ALL = ArchiveyConfig(always_probe_content=True)
+
 
 def _compressed_second_header() -> bytes:
     """A non-first meta-block header that classifies as COMPRESSED (walk stops)."""
@@ -63,7 +68,7 @@ def test_small_real_brotli_survives_completeness() -> None:
         data = brotli.compress(payload)
         assert len(data) <= DETECTION_LIMIT
         assert BrotliCodec().content_probe(data, source_length=len(data)) is True
-        info = detect_format(io.BytesIO(data))
+        info = detect_format(io.BytesIO(data), config=PROBE_ALL)
         assert info.format == ArchiveFormat.BROTLI
 
 
@@ -79,10 +84,10 @@ def test_mid_positioned_stream_detects_valid_brotli() -> None:
     for pad in (16, 4096):
         buf = io.BytesIO(b"\x00" * pad + payload)
         buf.seek(pad)
-        info = detect_format(buf)
+        info = detect_format(buf, config=PROBE_ALL)
         assert info.format == ArchiveFormat.BROTLI, f"pad={pad}"
         buf.seek(pad)
-        with open_archive(buf) as archive:
+        with open_archive(buf, config=PROBE_ALL) as archive:
             assert archive.read(next(iter(archive))) == raw
 
 
@@ -119,7 +124,7 @@ def test_completeness_rejects_tiny_nonterminating_file() -> None:
     assert parse_metablock(blob).outcome is BrotliBlock.COMPRESSED
     assert BrotliCodec().content_probe(blob, source_length=len(blob)) is False
     with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(blob))
+        detect_format(io.BytesIO(blob), config=PROBE_ALL)
 
 
 @requires("brotli")
@@ -144,7 +149,7 @@ def test_real_brotli_corpus_includes_sub_100_byte_payloads() -> None:
                     data = brotli.compress(payload, quality=quality, lgwin=lgwin)
                 except brotli.error:
                     continue
-                info = detect_format(io.BytesIO(data))
+                info = detect_format(io.BytesIO(data), config=PROBE_ALL)
                 assert info.format == ArchiveFormat.BROTLI, (
                     f"missed q={quality} lgwin={lgwin} len={len(payload)}"
                 )
@@ -158,7 +163,9 @@ def test_zlib_completeness_rejects_fully_visible_nonterminating() -> None:
 
 def test_zlib_complete_small_stream_still_accepted() -> None:
     data = zlib.compress(b"zlib payload")
-    assert detect_format(io.BytesIO(data)).format == ArchiveFormat.ZLIB
+    assert (
+        detect_format(io.BytesIO(data), config=PROBE_ALL).format == ArchiveFormat.ZLIB
+    )
     assert ZlibCodec().content_probe(data, source_length=len(data)) is True
 
 
@@ -267,7 +274,7 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
         is False
     )
     with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(ole))
+        detect_format(io.BytesIO(ole), config=PROBE_ALL)
 
     coff_header = bytes.fromhex("6486100100")
     framing = parse_metablock(coff_header)
@@ -282,7 +289,7 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
     )
     assert first_block_overruns_source(coff, len(coff)) is False
     with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(coff))
+        detect_format(io.BytesIO(coff), config=PROBE_ALL)
 
 
 @requires("brotli")
@@ -295,7 +302,9 @@ def test_unknown_length_keeps_today_behaviour_for_both_rules() -> None:
 @requires("brotli")
 def test_nonseekable_unknown_length_skips_both_rules() -> None:
     stub = b"MZ" + b"\x90" * 4094
-    info = detect_format(ArchiveSource.for_stream(NonSeekableBytesIO(stub)))
+    info = detect_format(
+        ArchiveSource.for_stream(NonSeekableBytesIO(stub)), config=PROBE_ALL
+    )
     assert info.format == ArchiveFormat.BROTLI
 
 
@@ -335,7 +344,7 @@ def test_sixteen_mib_vacuous_first_block_caught_by_walk(tmp_path: Path) -> None:
 @requires("brotli")
 def test_guess_residual_surviving_chain_is_still_guess() -> None:
     blob = _guess_residual_surviving_chain()
-    info = detect_format(io.BytesIO(blob))
+    info = detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert info.confidence == DetectionConfidence.GUESS
 
@@ -363,7 +372,7 @@ def test_text_that_decodes_for_256_bytes_is_not_brotli() -> None:
     # check, so the larger probe sample alone has to turn this away.
     for source in (io.BytesIO(_PERL_LIKE_TEXT), NonSeekableBytesIO(_PERL_LIKE_TEXT)):
         with pytest.raises(FormatDetectionError):
-            detect_format(source)
+            detect_format(source, config=PROBE_ALL)
 
 
 @requires("brotli")
@@ -375,12 +384,12 @@ def test_probe_hit_under_the_completion_window_is_checked_whole() -> None:
     # The window alone says Brotli; the whole source says the stream never ends.
     assert BrotliCodec().content_probe(blob[:DETECTION_LIMIT], source_length=len(blob))
     with pytest.raises(FormatDetectionError):
-        detect_format(io.BytesIO(blob))
+        detect_format(io.BytesIO(blob), config=PROBE_ALL)
 
     # ``FAST`` has no completion window, so the window's answer stands, and the
     # receipt says the check was off.
     fast = detect_format(
-        io.BytesIO(blob), config=ArchiveyConfig(detection_budget=FAST_BUDGET)
+        io.BytesIO(blob), config=replace(PROBE_ALL, detection_budget=FAST_BUDGET)
     )
     assert fast.format == ArchiveFormat.BROTLI
     assert any(
@@ -402,7 +411,7 @@ def test_complete_stream_under_the_completion_window_still_detects() -> None:
 
     data = brotli.compress(random.Random(1).randbytes(15_000).hex().encode())
     assert DETECTION_LIMIT < len(data) <= BALANCED_BUDGET.completion_window_bytes
-    info = detect_format(io.BytesIO(data))
+    info = detect_format(io.BytesIO(data), config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert info.cost_receipt is not None
     # The completion decode is charged: the whole source on top of the window.
@@ -415,22 +424,20 @@ def test_probe_hit_above_the_completion_window_is_accepted_on_the_window() -> No
     from archivey.detection_cost import BALANCED_BUDGET
 
     blob = truncated_brotli(BALANCED_BUDGET.completion_window_bytes + 1)
-    info = detect_format(io.BytesIO(blob))
+    info = detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert info.format == ArchiveFormat.BROTLI
     assert not any(s.tier == "probe_completion" for s in info.unavailable_tiers)
 
 
 @requires("brotli")
 def test_completion_the_decode_allowance_cannot_cover_is_recorded() -> None:
-    from dataclasses import replace
-
     from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
 
     blob = truncated_brotli(20_000)
     # Enough for the probes' windows, not for the whole source on top.
     budget = replace(BALANCED_BUDGET, max_decode_input=4 * DETECTION_LIMIT)
     info = detect_format(
-        io.BytesIO(blob), config=ArchiveyConfig(detection_budget=budget)
+        io.BytesIO(blob), config=replace(PROBE_ALL, detection_budget=budget)
     )
     assert info.format == ArchiveFormat.BROTLI
     assert any(

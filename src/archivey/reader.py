@@ -235,6 +235,10 @@ class ForwardArchiveReader(ABC):
         no-op. The archive's own source is released after the last of them, never
         underneath a stream still reading through it.
 
+        A :meth:`stream_members` iterator (or a streaming reader's iteration) that is
+        still alive does not stop the close: the reader closes, and advancing that
+        iterator afterwards raises ``ArchiveyUsageError``.
+
         Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
         ...
 
@@ -272,7 +276,8 @@ class ArchiveReader(ForwardArchiveReader):
         """Look up a member by its normalized name, returning ``default`` if absent.
         This is the name-lookup entry point; :meth:`open`/:meth:`read` also accept a
         name directly. May trigger a scan; on a streaming reader raises
-        ``ArchiveyUsageError``. With duplicate member names, returns the last
+        ``ArchiveyUsageError``, as does a ``name`` that is not a ``str`` (a ``bytes``
+        name or an ``ArchiveMember``). With duplicate member names, returns the last
         (the one a sequential extraction would leave on disk)."""
         ...
 

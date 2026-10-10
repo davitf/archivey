@@ -16,7 +16,6 @@ The child runs ``ppmd_worker.py`` as a script, which imports nothing from ``arch
 
 from __future__ import annotations
 
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -31,10 +30,7 @@ from archivey.internal.streams.child_process import (
     reap,
     spawn,
 )
-
-_OPEN = struct.Struct("<BBIB")
-_REQUEST = struct.Struct("<iI")
-_REPLY = struct.Struct("<BBBI")
+from archivey.internal.streams.codecs.ppmd_worker import OPEN, REPLY, REQUEST
 
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
@@ -143,8 +139,8 @@ class PpmdChildDecoder:
 
     One child per instance. ``decode`` blocks for the child's reply. After the child
     dies, every later ``decode`` raises the same error again, and :meth:`close` still
-    reaps it. ``eof`` and ``needs_input`` are the values the child reported with its
-    last reply.
+    reaps it. ``eof``, ``needs_input`` and ``unused_size`` (the length of the
+    decoder's ``unused_data``) are the values the child reported with its last reply.
     """
 
     def __init__(
@@ -152,6 +148,8 @@ class PpmdChildDecoder:
     ) -> None:
         self.eof = False
         self.needs_input = True
+        # ``len(unused_data)`` of the child's decoder, as of its last reply.
+        self.unused_size = 0
         # Set when a reply was cut short (see ``_receive``).
         self._interrupted = False
         # Set when the child died: what every later ``decode`` raises again.
@@ -169,7 +167,7 @@ class PpmdChildDecoder:
         # the decoder (see ``ppmd_worker``); a death between the two is the
         # constructor's allocation of ``mem_size``.
         try:
-            self._send(_OPEN.pack(variant, order, mem_size, restore_method))
+            self._send(OPEN.pack(variant, order, mem_size, restore_method))
             self._receive()
         except (PpmdChildError, PpmdChildReportedError) as exc:
             self.close()
@@ -233,8 +231,8 @@ class PpmdChildDecoder:
         proc = self._proc
         assert proc is not None and proc.stdout is not None
         try:
-            status, eof, needs_input, size = _REPLY.unpack(
-                _read_exact(proc.stdout, _REPLY.size)
+            status, eof, needs_input, unused, size = REPLY.unpack(
+                _read_exact(proc.stdout, REPLY.size)
             )
             payload = _read_exact(proc.stdout, size)
         except PpmdChildError as exc:
@@ -247,6 +245,7 @@ class PpmdChildDecoder:
             raise
         self.eof = bool(eof)
         self.needs_input = bool(needs_input)
+        self.unused_size = unused
         if status == 0:
             return payload
         name, _, message = payload.decode("utf-8", "replace").partition("\n")
@@ -257,7 +256,7 @@ class PpmdChildDecoder:
 
     def decode(self, data: bytes | bytearray | memoryview, length: int) -> bytes:
         try:
-            self._send(_REQUEST.pack(length, len(data)), bytes(data))
+            self._send(REQUEST.pack(length, len(data)), bytes(data))
             return self._receive()
         except PpmdChildError as exc:
             if is_crash(exc.returncode):
