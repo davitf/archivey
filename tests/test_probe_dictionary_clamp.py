@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyConfig, detect_format
+from archivey import ArchiveFormat, detect_format
 from archivey.detection_cost import TierSkip, TierSkipReason
 from archivey.exceptions import TruncatedError
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, probe_lzma_dictionary
@@ -408,9 +408,7 @@ def test_tar_lzma_probe_clamps_the_header_dictionary(
 ) -> None:
     written = lzma.compress(_TARBALL, format=lzma.FORMAT_ALONE)
     hostile = _declare_alone_dictionary(written, _FOUR_GIB_MINUS_ONE)
-    # LZMA Alone has no magic: an unnamed source reaches its probe only on opt-in.
-    probe_all = ArchiveyConfig(always_probe_content=True)
-    info = detect_format(io.BytesIO(hostile), config=probe_all)
+    info = detect_format(io.BytesIO(hostile))
     assert info.format == _tar_of(StreamFormat.LZMA_ALONE)
     assert _largest_dictionary(lzma_decoders) <= 64 * 1024 + 1 + 64
 
