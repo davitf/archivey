@@ -99,7 +99,7 @@ format-specific reliability limits:
 | BZ2, ZLIB, BR, Z | `None` until full decompression; `.Z` has no size trailer (best-effort truncation via nonzero leftover bits) |
 | XZ, ZST | Header size when encoder wrote it; otherwise `None` |
 | LZ4 | Frame content-size field when present; otherwise `None` |
-| LZIP | Available from the trailer on a seekable source |
+| LZIP | Available from the trailer on a seekable source that is not another archive's member stream |
 | LZMA Alone | 8-byte Alone header size when not the unknown marker (`0xFFFFFFFFFFFFFFFF`); otherwise `None` |
 
 Availability of an index/trailer-derived size SHALL be decided by **the source's shape**,
@@ -147,7 +147,7 @@ updated to that byte count.
 | `.gz` opened | Single member size is `None` |
 | `.bz2` before full decompression | Size is `None` |
 | `.bz2` fully read to EOF | Size may update to actual uncompressed byte count |
-| `.lz` opened from a seekable source | Size is available from the trailer |
+| `.lz` opened from a seekable source, not a member stream | Size is available from the trailer |
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
 | `.xz` / `.lz` from a pipe | Size is `None`; no decode pass is forced |
 | `.xz` / `.lz` opened from another archive's member stream | Size is `None`; the member is not seeked to its end |
@@ -236,7 +236,7 @@ caller does a plain `open_archive()` and never asks to `seek()`.
   false-matches in large compressed data). After a full read it would add nothing: the
   decoder has already checked every member's CRC, and a digest is worth having only
   before a read (to skip one) or to verify one.
-- **LZIP:** on a seekable source, surface `CRC32` of the whole synthetic member from the
+- **LZIP:** on a seekable source that is not a member stream, surface `CRC32` of the whole synthetic member from the
   lzip index. For multi-member files, the value SHALL equal
   `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
   each member's exact uncompressed `data_size` (combine algebra). Single-member
