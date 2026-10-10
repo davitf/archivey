@@ -2430,6 +2430,38 @@ def test_a_retried_listing_keeps_one_walk_view() -> None:
         assert [view.closed for view in views] == [True, True, False]
 
 
+def test_a_concurrent_reader_closes_its_streams_under_the_handle_lock(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, "w") as t:
+        t.addfile(tarfile.TarInfo("a"), io.BytesIO())
+    ar: Any = open_archive(path, concurrent_members=True)
+    held = []
+    release = ar._release_owned_stream
+
+    def recorded() -> None:
+        held.append(ar._handle_lock.locked())
+        release()
+
+    ar._release_owned_stream = recorded
+    ar.close()
+    assert held == [True]
+
+
+def test_a_member_stream_seeks_past_its_end_like_a_file(tmp_path: Path) -> None:
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, "w") as t:
+        info = tarfile.TarInfo("a")
+        info.size = 3
+        t.addfile(info, io.BytesIO(b"abc"))
+    with open_archive(path, seekable_members=True) as ar, ar.open("a") as stream:
+        assert stream.seek(10) == 10
+        assert stream.read() == b""
+        assert stream.seek(1) == 1
+        assert stream.read() == b"bc"
+
+
 def test_global_pax_path_wins_over_a_gnu_long_name() -> None:
     """A global ``path`` applies to every member after it, over a GNU long name, as
     GNU tar 1.35 lists it (``tar tvf`` shows ``g``)."""

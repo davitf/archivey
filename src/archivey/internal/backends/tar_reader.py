@@ -1233,8 +1233,9 @@ class TarReader(BaseArchiveReader):
 
     def _close_archive(self) -> None:
         # Close what this reader built, even when a close raises: teardown runs once.
-        # The source closes with the reader, after this.
-        with self._walk_guard():
+        # The source closes with the reader, after this. Under the handle lock, so a
+        # concurrent member read never runs on a stream being closed.
+        with self._handle_guard():
             self._release_owned_stream()
 
 
