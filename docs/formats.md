@@ -117,7 +117,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   inferred for an unflagged name, a `member_name_encoding_inferred` diagnostic records it.
   So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
   Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
-  name. One signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
+  name. Comments decode the same way: a member comment follows its name's flag, and the
+  archive comment, which has no flag, decodes as an unflagged name. A byte the chosen
+  encoding does not define stays in the comment as a surrogate escape, as in a name. One
+  signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
   whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
   the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
@@ -427,11 +430,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `rar_allow_glob_member_concatenation`, as it does for a member name that holds `*`
   or `?`.
 - **Comments.** A RAR 1.5-4 comment is 8-bit text that does not say which code page
-  it is in. Archivey reads it up to the first NUL, as UTF-8 if it is valid and as
-  windows-1252 otherwise. The one exception is a RAR 2.9-4 comment flagged as
-  Unicode, which is UTF-16LE. `encoding=` does not apply to comments, so a DOS
-  comment written in cp437 is decoded as windows-1252 even when you pass
-  `encoding="cp437"`.
+  it is in. Archivey reads it up to the first NUL, as UTF-8 if it is valid, otherwise
+  with the `encoding=` you passed, and otherwise as windows-1252. A byte that code page
+  does not define stays in the comment as a surrogate escape, as in a name. The one
+  exception is a RAR 2.9-4 comment flagged as Unicode, which is UTF-16LE. A RAR5
+  comment is UTF-8.
 - **Several members under one name.** `unrar` emits every member a name selects, in
   archive order: two members with the same name, or two names `unrar` reads the same
   way. Archivey skips to the one you asked for, so each read returns that member's own
