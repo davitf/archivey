@@ -540,8 +540,9 @@ def _open_resolved(
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     # Detection claims a recognised-only format (DMG) so this refusal can name it and
-    # carry ``archive_name``. ``reader_for_format`` and the backend's ``open_read``
-    # raise the same text for a caller that reaches them, and neither has the name.
+    # carry ``archive_name``. It comes before ``reader_for_format``, which raises the
+    # same text but takes no archive name. Such a backend's own ``open_read`` must
+    # raise the same refusal too, as ``UdifBackend`` does; nothing provides that.
     registry = get_registry()
     unread_message = registry.unread_format_message(resolved_format)
     if unread_message is not None:

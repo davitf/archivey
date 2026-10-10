@@ -79,6 +79,16 @@ class _OptionalMissingBackend(ReadBackend):
         raise NotImplementedError
 
 
+class _RecognisedOnlyBackend(ReadBackend):
+    FORMATS = (ArchiveFormat.ZIP,)
+    READ_IMPLEMENTED = False  # and no UNSUPPORTED_MESSAGE: the fallback text applies
+
+    def open_read(
+        self, source, streaming, password, encoding, archive_name
+    ):  # pragma: no cover
+        raise NotImplementedError
+
+
 @pytest.fixture
 def registry() -> BackendRegistry:
     reg = BackendRegistry()
@@ -138,6 +148,22 @@ def test_reader_for_missing_dependency_raises_with_hint(
 def test_reader_for_unknown_format_raises(registry: BackendRegistry) -> None:
     with pytest.raises(UnsupportedFeatureError):
         registry.reader_for_format(ArchiveFormat.SEVEN_Z)
+
+
+def test_recognised_only_backend_is_refused_with_its_message(
+    registry: BackendRegistry,
+) -> None:
+    # Any READ_IMPLEMENTED-false backend, not only DMG. Without UNSUPPORTED_MESSAGE
+    # the refusal still has text.
+    registry.register_reader(_RecognisedOnlyBackend)
+    expected = f"Reading {ArchiveFormat.ZIP.display_name} is not supported."
+    assert registry.unread_format_message(ArchiveFormat.ZIP) == expected
+    with pytest.raises(UnsupportedFeatureError) as excinfo:
+        registry.reader_for_format(ArchiveFormat.ZIP)
+    assert expected in str(excinfo.value)
+    # A readable format and an unregistered one have no refusal text.
+    assert registry.unread_format_message(ArchiveFormat.TAR) is None
+    assert registry.unread_format_message(ArchiveFormat.SEVEN_Z) is None
 
 
 # ---------------------------------------------------------------------------
