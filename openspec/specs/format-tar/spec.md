@@ -59,6 +59,7 @@ rules:
 | `uname`, `gname`, `uid`, `gid` | Directly from `TarInfo` |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from `linkname` |
+| old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
 | `raw_name` | The stored name bytes: a PAX `path` record as UTF-8 (the codec tarfile decoded it with; under `hdrcharset=BINARY`, or when the name holds surrogateescape bytes from tarfile's fallback decode, the archive `encoding`); a ustar or GNU long name with the archive `encoding`. `None` when no codec reproduces the name — never an exception out of the listing |
 
 If `TarInfo.mtime` cannot be represented as a Python `datetime`, `modified`
@@ -81,6 +82,7 @@ in every format; the record name appears only in the message.
 | PAX `LIBARCHIVE.creationtime` present (bsdtar, where the OS has a birth time) | `created` is timezone-aware UTC |
 | Neither PAX record | `created is None` and `ctime is None` |
 | `LNKTYPE` entry | `member.type=MemberType.HARDLINK`; `member.link_target=linkname` |
+| `AREGTYPE` entry `d/` with 15 bytes of data, then a file | `d/` is a `DIRECTORY`; the file after it lists and reads, in both access modes. The same holds when the slash comes from a PAX `path` or a GNU long name |
 | PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
@@ -244,6 +246,7 @@ whatever the diagnostic policy, in both random-access and streaming modes.
 | Zero block, then a non-null block, after at least one member | both | `nonzero` (`expected_marker="second_zero_block"`) | `ARCHIVE_EOF_MARKER_MISSING`; every member listed and read; `extract_all` writes every member; trailing scan runs past the block | `DiagnosticRaisedError` after delivery |
 | Zero block, then a non-null block, no member | both | `nonzero` | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Truncation inside member data / partial header | both | — | `TruncatedError` during iteration | `TruncatedError` during iteration |
+| A size field puts the next header past the largest file the filesystem holds (base-256 size of 2**62): ext4 refuses the seek, APFS and a `BytesIO` take it | both | — | `TruncatedError` during iteration, from every source on every OS | `TruncatedError` during iteration |
 | Corruption during `extract_all` | both | `nonzero` | Salvageable members written, then `CorruptionError` | same |
 | Diagnostic code resolves to `IGNORE`, rejected header | both | `nonzero` | Count increments without delivery; `CorruptionError` raises | same |
 | Diagnostic code resolves to `IGNORE`, `absent`/`short` | both | `absent`/`short` | Count increments without delivery; no error | — |
