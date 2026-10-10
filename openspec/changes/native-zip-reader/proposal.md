@@ -53,7 +53,7 @@ directory is the simplest of the three.
 - Public API: none in stages 1 and 2. Stage 3 changes a declared capability: ZIP's
   `SUPPORTS_STREAMING_NON_SEEKABLE` becomes true, so the public `required_source` for
   ZIP moves from `SEEKABLE` to `FORWARD_ONLY`, and it adds one `ArchiveMember` field,
-  working name `is_final`, in every format (question D).
+  working name `member_state_final`, in every format (question D).
   Stages 5 to 7 may add diagnostic codes and `CompressionAlgorithm` members. Every new
   public name goes to the maintainer before merging.
 - Tests: `zipfile` stays as a test oracle and fixture writer. Tests that reach into

@@ -445,8 +445,9 @@ question: the tail read costs one seek, and a member that is complete when yield
 no fixing later. Reopen if a seekable source where the tail read is expensive (a remote
 object) turns out to matter more than complete members. A member that archivey will
 still update in place says so on the member itself, with a field (working name
-`is_final`), not on the cost receipt, which describes cost; it covers data-stored link
-targets not yet read as well as a ZIP read from a pipe (davi, 2026-10-10).
+`member_state_final`), not on the cost receipt, which describes cost; it covers
+data-stored link targets not yet read, `is_current` in any forward-only pass, and a ZIP
+read from a pipe (davi, 2026-10-10).
 
 **Do not** recommend "lazy by default, complete on request".
 

@@ -229,8 +229,8 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   `comment` are `None` until the directory has been read, not guessed. The type cannot
   be `None`: it is `FILE` or `DIRECTORY` from the name until then. Then the members
   already yielded are updated in place (`ArchiveMember` is mutable, ADR 0007), before
-  the pass ends. Each such member has `is_final` false until then (question D), so a
-  caller sees the gap on the member before reading anything (DR-8).
+  the pass ends. Each such member has `member_state_final` false until then (question
+  D), so a caller sees the gap on the member before reading anything (DR-8).
 - Extraction writes each member as it arrives, then at the end of the pass applies
   modes, turns a member the directory types as a symlink into a link (its target is the
   data just written, at most the link-target cap), and removes what it wrote for a
@@ -381,7 +381,7 @@ One PR each, in order; every PR goes through the review label.
    `backend-registry` (the `required_source` table), `access-mode-and-cost` (the
    trailing-index row), `safe-extraction` if the filter re-run needs a sentence there,
    `docs/access-and-cost.md` (the checklist tells users to buffer ZIP),
-   `archive-data-model` (the new `is_final` field, every format),
+   `archive-data-model` (the new `member_state_final` field, every format),
    `docs/formats.md`, handbook §1, §2.2, §5, §6.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
    (question B, answered). Format-zip spec, handbook §2.2 and §5, `docs/formats.md`,
@@ -442,15 +442,17 @@ yielded (DR-8), and nothing needs fixing at the end. The local-header walk is fo
 non-seekable sources only.
 
 **D. How a caller sees that a forward pass fills some fields only at the end.**
-Answered (davi, 2026-10-10): a per-member field saying the member will not change
-again, working name `is_final` (to match `is_current`; the stage 3 PR settles the
-name). The cost receipt was rejected: it describes what listing and reading cost, not
-whether a member's fields are settled. The field is not ZIP-specific. It is false
-wherever archivey later updates a member in place: a ZIP member yielded in a forward
-pass until the directory has been read, and, in every format, a link whose target is
-stored as member data until that target has been read (`read_link_targets=False`, or a
-listing from the index alone). It is true everywhere else, so a caller checks it on
-each member before reading anything.
+Answered (davi, 2026-10-10): a per-member field saying the member's state will not
+change again, working name `member_state_final` (davi chose an explicit name over
+`is_final`, which reads like `is_current` and `is_dir`; the stage 3 PR settles it).
+The cost receipt was rejected: it describes what listing and reading cost, not whether
+a member's fields are settled. The field is not ZIP-specific. It is false wherever
+archivey can still update a member in place: a ZIP member yielded in a forward pass
+until the directory has been read; any member of a forward-only pass in any format
+(TAR included) until the pass ends, because a later member with the same name can still
+make it `is_current=False`; and a link whose target is stored as member data until that
+target has been read (`read_link_targets=False`, or a listing from the index alone). It
+is true everywhere else, so a caller checks it on each member before reading anything.
 
 ## Out of scope
 
