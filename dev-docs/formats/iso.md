@@ -115,7 +115,13 @@ descriptors when present. That is where the cost is, so `ListingLimits` are chec
 as `pycdlib` parses, rather than only when members are registered: a hook on
 `DirectoryRecord.parse` counts each record but `.` and `..` against `max_members`, per
 volume descriptor tree, and weighs the bytes of each record, plus each Rock Ridge
-continuation area every time `pycdlib` parses it, against `max_metadata_bytes`. A hook on
+continuation area every time `pycdlib` parses it, against `max_metadata_bytes`. The
+bytes are one sum for the whole image, every tree together, because `pycdlib` keeps
+every tree it parses; a budget per tree let one image retain it once per tree (ruled
+by davi, 2026-10-10). Members stay counted per tree: an image with a Joliet tree has
+every file twice, and one count would halve its member cap. Revisit this if `pycdlib`
+stops keeping trees it was not asked to parse, or parses directory records lazily:
+either would make a byte budget per tree defensible again. A hook on
 `PyCdlib._parse_path_table` adds each path table's declared size to the same count
 before `pycdlib` reads the table, once for the little-endian table and once for the
 big-endian one, since `pycdlib` parses both, and a hook on `PathTableRecord.parse`
@@ -129,11 +135,11 @@ and `rr_moved` count), so an image right at a cap can be refused at open;
 `ListingLimits.UNLIMITED` turns the hook off. The UDF tree, which archivey does not list
 but `pycdlib` parses all the same, counts as one more tree: hooks on
 `pycdlib.udf.parse_file_ident` and `pycdlib.udf.parse_file_entry` count each File
-Identifier but the parent entry against `max_members`, and weigh each File Identifier
-and each File Entry against `max_metadata_bytes`. A File Entry is weighed before
-`pycdlib` parses it, as its fixed part plus the extended-attribute and
-allocation-descriptor lengths it declares, since `pycdlib` makes one object per
-allocation descriptor. After it,
+Identifier but the parent entry against the UDF tree's own `max_members` count, and add
+each File Identifier and each File Entry to the image's `max_metadata_bytes` sum. A File
+Entry is weighed before `pycdlib` parses it, as its fixed part plus the
+extended-attribute and allocation-descriptor lengths it declares, since `pycdlib` makes
+one object per allocation descriptor. After it,
 listing touches only records already in memory
 (`test_listing_reads_nothing_from_the_image`), which is what lets the member walk run
 without the handle lock. Two exceptions read a directory's extent once more, under the
