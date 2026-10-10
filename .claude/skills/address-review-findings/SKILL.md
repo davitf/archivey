@@ -43,6 +43,26 @@ push without asking, and what stops for a human) that this skill does not state.
 
 ---
 
+## Anti-patterns (read these first)
+
+They sit at the top so they survive when a long session trims this file.
+
+- Reading only the top-level comment and missing the inline threads (or vice versa).
+- Treating a maintainer's inline question as a finding to be closed rather than answered.
+- "Fixed in `a1b2c3d`" with no statement of what was wrong or how it was verified.
+- Fixing a false positive to make a comment go away.
+- Batching every open decision into one wall of numbered questions.
+- Getting a decision from the maintainer in chat and never posting it, so the PR still shows
+  an open question and the implementor re-opens it.
+- Writing a settled maintainer decision as if it were the reviewer's suggestion — or your
+  own un-ruled preference as if it were settled.
+- Pushing after `ruff` without `pyrefly` / `ty` / `pytest`.
+- Marking a change complete and leaving it unarchived, or checking the last box early to
+  look finished.
+- Claiming a finding "does not reproduce" without showing what you ran.
+
+---
+
 ## 1. Gather everything (all four channels)
 
 Review feedback on this repo arrives on **four separate channels**, and it is normal for
@@ -383,21 +403,3 @@ do not spend a round on fixes the review already described.
 **After an approving verdict with CI green**, you may merge a straightforward PR; a tricky
 one goes to the maintainer. What counts as tricky: `AGENTS.md` §Working with the
 maintainer.
-
----
-
-## Anti-patterns
-
-- Reading only the top-level comment and missing the inline threads (or vice versa).
-- Treating a maintainer's inline question as a finding to be closed rather than answered.
-- "Fixed in `a1b2c3d`" with no statement of what was wrong or how it was verified.
-- Fixing a false positive to make a comment go away.
-- Batching every open decision into one wall of numbered questions.
-- Getting a decision from the maintainer in chat and never posting it, so the PR still shows
-  an open question and the implementor re-opens it.
-- Writing a settled maintainer decision as if it were the reviewer's suggestion — or your
-  own un-ruled preference as if it were settled.
-- Pushing after `ruff` without `pyrefly` / `ty` / `pytest`.
-- Marking a change complete and leaving it unarchived, or checking the last box early to
-  look finished.
-- Claiming a finding "does not reproduce" without showing what you ran.

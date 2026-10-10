@@ -35,6 +35,17 @@ different output shape, and it will edit code. (Cursor's
 **Repo default — report findings, edit nothing** unless the user asks. Output is markdown
 prose in the three-block shape (§3), never a host-specific findings tool.
 
+**Stop rules**, detailed in §6 and listed here so they survive when a long session trims
+this file:
+
+- Edit nothing; the implementer fixes (§6 "Do not fix while reviewing").
+- Do not re-run the gates or re-measure what an earlier round recorded; run a command
+  only to reproduce or check a claim, and say what you ran.
+- Never add the `review` label; your verdict says whether another round is wanted.
+- Submit with `event: COMMENT` and carry the verdict in the text; GitHub refuses an
+  approval on your own PR.
+- End every review body, inline comment and reply with the attribution footer.
+
 ## 1. What are you reviewing?
 
 | Reviewing | Read | Why it is separate |
