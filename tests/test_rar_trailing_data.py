@@ -2,15 +2,17 @@
 
 A non-zero byte after the end block of any volume is a warning by default and refused
 under ``DiagnosticPolicy.strict()``; zero padding is silent. ``unrar`` says nothing
-about such bytes; 7-Zip 23.01 warns "There are data after the end of archive". The
-listing is native, so none of these tests needs ``unrar``.
+about such bytes; 7-Zip 23.01 warns "There are data after the end of archive", for
+zeros too. The listing is native, so none of these tests needs ``unrar``.
 """
 
 from __future__ import annotations
 
 import io
 import shutil
+import struct
 import subprocess
+import zlib
 from pathlib import Path
 
 import pytest
@@ -95,9 +97,10 @@ def test_junk_past_the_scan_bound_goes_unseen() -> None:
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
     data = _data("basic_nonsolid__.rar") + b"JUNK"
-    with pytest.raises(DiagnosticRaisedError):
+    with pytest.raises(DiagnosticRaisedError) as ei:
         with open_archive(io.BytesIO(data), config=config) as reader:
             reader.members()
+    assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
 def test_strict_policy_accepts_zero_padding() -> None:
@@ -105,6 +108,76 @@ def test_strict_policy_accepts_zero_padding() -> None:
     data = _data("basic_nonsolid__.rar") + b"\x00" * 512
     with open_archive(io.BytesIO(data), config=config) as reader:
         assert reader.members()
+
+
+@requires("cryptography")
+def test_committed_padded_set_is_silent(tmp_path: Path) -> None:
+    # tinyvol_hp (rar 7.00 -v900b -hp) pads parts 1-3 with 142 zero bytes after the
+    # end block, so a set rar wrote stays clean on every CI leg, encrypted headers too.
+    for part in sorted(_FIXTURES.glob("tinyvol_hp.part*.rar")):
+        shutil.copy(part, tmp_path / part.name)
+    first = tmp_path / "tinyvol_hp.part1.rar"
+    assert _trailing(first, "header_password") == []
+    with first.open("ab") as handle:
+        handle.write(b"JUNK")
+    (context,) = _trailing(first, "header_password")
+    assert context.observed_bytes == 142
+
+
+@pytest.mark.parametrize(
+    ("first", "parts"),
+    [
+        pytest.param(
+            "tinyvol.part1.rar", ["tinyvol.part1.rar", "tinyvol.part2.rar"], id="rar5"
+        ),
+        pytest.param(
+            "tinyvol_rnn.rar", ["tinyvol_rnn.rar", "tinyvol_rnn.r00"], id="rar4"
+        ),
+    ],
+)
+def test_junk_after_two_volumes_is_reported_once_per_volume(
+    tmp_path: Path, first: str, parts: list[str]
+) -> None:
+    for part in parts:
+        shutil.copy(_FIXTURES / part, tmp_path / part)
+        with (tmp_path / part).open("ab") as handle:
+            handle.write(b"JUNK")
+    with open_archive(tmp_path / first) as reader:
+        assert reader.members()
+        found = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+    messages = [d.message.lower() for d in found]
+    assert len(messages) == 2
+    assert "volume 1" in messages[0]
+    assert "volume 2" in messages[1]
+
+
+@pytest.mark.parametrize("zeros", [0, 8, 142])
+@pytest.mark.parametrize(
+    ("name", "flip"),
+    [
+        # RAR 1.5-4: a header CRC byte of the 7-byte end block.
+        pytest.param("basic_nonsolid__rar4.rar", -7, id="rar4"),
+        # RAR5: the end-of-archive flags vint, so the CRC fails and the shape holds.
+        pytest.param("basic_nonsolid__.rar", -1, id="rar5"),
+    ],
+)
+def test_damaged_end_block_followed_by_zeros_keeps_the_listing(
+    name: str, flip: int, zeros: int
+) -> None:
+    intact = _data(name)
+    data = bytearray(intact)
+    data[flip] ^= 0x02
+    with open_archive(io.BytesIO(intact)) as reader:
+        expected = [m.name for m in reader.members()]
+    with open_archive(io.BytesIO(bytes(data) + bytes(zeros))) as reader:
+        assert [m.name for m in reader.members()] == expected
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING in codes
+    assert DiagnosticCode.ARCHIVE_TRAILING_DATA not in codes
 
 
 def test_junk_after_a_middle_volume_names_that_volume(tmp_path: Path) -> None:
@@ -126,8 +199,8 @@ def test_junk_after_a_middle_volume_names_that_volume(tmp_path: Path) -> None:
 
 @requires_binary("rar")
 def test_zeros_rar_writes_after_a_non_last_volume_are_silent(tmp_path: Path) -> None:
-    # rar 7.00 -v ends every volume but the last with eight zero bytes after the end
-    # block, so the zero rule is what keeps an untouched set clean.
+    # rar 7.00 pads a volume that comes out at exactly the -v size with zeros up to it;
+    # here that is eight bytes after the end block of part 1.
     (tmp_path / "big.bin").write_bytes(bytes(range(256)) * 1200)
     subprocess.run(
         ["rar", "a", "-idq", "-m0", "-v100k", "vol.rar", "big.bin"],
@@ -137,3 +210,14 @@ def test_zeros_rar_writes_after_a_non_last_volume_are_silent(tmp_path: Path) -> 
     first = tmp_path / "vol.part1.rar"
     assert first.read_bytes()[-8:] == b"\x00" * 8
     assert _trailing(first, None) == []
+
+
+def test_data_area_an_end_block_declares_is_part_of_the_archive() -> None:
+    # RAR5 end block rewritten with a 4-byte data area (header flags 0x06: data area,
+    # skip if unknown). rar writes none, but every other block ends past its data area.
+    body = b"\x04\x05\x06\x04\x00"  # header size, ENDARC, flags, data size, end flags
+    end_block = struct.pack("<I", zlib.crc32(body)) + body
+    data = _data("basic_nonsolid__.rar")[:-8] + end_block + b"DATA"
+    assert _trailing(io.BytesIO(data), None) == []
+    (context,) = _trailing(io.BytesIO(data + b"\x00\x00JUNK"), None)
+    assert context.observed_bytes == 2

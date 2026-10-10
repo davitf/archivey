@@ -585,9 +585,9 @@ class RarArchive:
     #: encrypted), for the volumes whose end block failed its header CRC. A header whose
     #: CRC failed is taken for the end block only if all three hold: its type reads
     #: as the end block, it has an end block's shape (no data area, a header no
-    #: larger than an end block's), and the file ends right after it. One flipped
-    #: byte cannot make a MAIN or FILE header pass: either the shape fails or
-    #: blocks follow it. Anything else stays a ``CorruptionError``. The block sits
+    #: larger than an end block's), and nothing but zero padding follows it in the
+    #: volume. One flipped byte cannot make a MAIN or FILE header pass: either the
+    #: shape fails or blocks follow it. Anything else stays a ``CorruptionError``. The block sits
     #: after the last member, so the walk keeps the members before it and stops
     #: there; the reader reports the damage as ``ARCHIVE_EOF_MARKER_MISSING`` after
     #: the members, and a strict policy refuses. The block's flags are not data once
@@ -601,7 +601,7 @@ class RarArchive:
     #: end-of-archive block, of the first non-zero byte within
     #: :data:`~archivey.internal.trailing_scan.MAX_TRAILING_SCAN` bytes after it.
     #: Only for a volume whose end block was read intact: a damaged one is taken for
-    #: the end block only when nothing follows it. The reader reports each as
+    #: the end block only when nothing but zeros follows it. The reader reports each as
     #: ``ARCHIVE_TRAILING_DATA`` after the members. Zero padding is not recorded.
     trailing_data_volumes: dict[int, int] = field(default_factory=dict)
     #: RAR 1.5-4 only: an encrypted header of this volume, or of an earlier volume
@@ -1041,9 +1041,10 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
 def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
     """Where the first non-zero byte after an end block at ``end`` lies, if any.
 
-    ``end`` is where the block's bytes stop in the volume: past its AES padding when
-    headers are encrypted, as the walk's ``data_offset`` is a ciphertext offset. The
-    read position is left at ``end``. See ``RarArchive.trailing_data_volumes``.
+    ``end`` is where the block's bytes stop in the volume: past any data area it
+    declares, as every other block ends, and past its AES padding when headers are
+    encrypted, as the walk's ``data_offset`` is a ciphertext offset. The read position
+    is left at ``end``. See ``RarArchive.trailing_data_volumes``.
     """
     _seek_to(source, end)
     try:
@@ -1052,12 +1053,17 @@ def _scan_after_end_block(source: BinaryIO, end: int) -> int | None:
         source.seek(end)
 
 
-def _ends_at(source: BinaryIO, pos: int) -> bool:
-    """Whether the file ends exactly at ``pos``; the read position is kept."""
+def _only_zeros_after(source: BinaryIO, pos: int) -> bool:
+    """Whether nothing but zero padding follows ``pos``; the read position is kept.
+
+    The same test an intact end block's tail gets, so a damaged end block on a volume
+    ``rar`` padded with zeros is still recognised as one.
+    """
     here = source.tell()
-    end = source.seek(0, io.SEEK_END)
-    source.seek(here)
-    return pos == end
+    try:
+        return _scan_after_end_block(source, pos) is None
+    finally:
+        source.seek(here)
 
 
 def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
@@ -2139,7 +2145,7 @@ def _parse_rar3(
         if block_type == _RAR3_ENDARC:
             # The type was read from the same unverified bytes, so a MAIN or FILE
             # header with one flipped byte reads as ENDARC too. Only a header shaped
-            # as an end block, with nothing after it, is one. Damage after the last
+            # as an end block, with nothing but zeros after it, is one. Damage after the last
             # member keeps the listing, and the flags, the next-volume flag among
             # them, are not read. unrar lists such an archive and tests every member
             # OK, then reports one error. An unproven key still reads as a wrong
@@ -2148,7 +2154,7 @@ def _parse_rar3(
                 header_crc != _crc32(hdata[2:header_size]) & 0xFFFF
                 and (password_proven or not block_encrypted)
                 and _rar3_end_block_shaped(flags, header_size)
-                and _ends_at(source, data_offset)
+                and _only_zeros_after(source, data_offset)
             ):
                 end_block_damaged_at = header_start
                 break
@@ -2175,7 +2181,7 @@ def _parse_rar3(
                 raise UnsupportedFeatureError(
                     "Need first volume of multi-volume RAR archive"
                 )
-            trailing_at = _scan_after_end_block(source, data_offset)
+            trailing_at = _scan_after_end_block(source, data_offset + add_size)
             break
 
         if block_type in (_RAR3_FILE, _RAR3_SUB):
@@ -2949,10 +2955,10 @@ def _parse_rar5(
             if truncated is not None:
                 break
             if isinstance(exc, _RarEndBlockCrcError):
-                # As in the RAR3 walk: only a block with nothing after it is the
-                # end block. Damage after the last member keeps the listing, and
+                # As in the RAR3 walk: only a block with nothing but zeros after it is
+                # the end block. Damage after the last member keeps the listing, and
                 # the block's next-volume flag is not read.
-                if _ends_at(source, exc.data_offset):
+                if _only_zeros_after(source, exc.data_offset):
                     end_block_seen = True
                     end_block_damaged_at = header_start
                     break
@@ -3065,7 +3071,7 @@ def _parse_rar5(
             endarc_flags, _ = load_vint(hdata, pos)
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
             end_block_seen = True
-            trailing_at = _scan_after_end_block(source, data_offset)
+            trailing_at = _scan_after_end_block(source, data_offset + add_size)
             break
 
         if block_type in (_RAR5_FILE, _RAR5_SERVICE):

@@ -354,9 +354,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   before that it is `EncryptionError`.
 - **Bytes after the end-of-archive block** are reported as `ARCHIVE_TRAILING_DATA`
   with `format="rar"`, once per volume that has them: a warning under the default
-  policy, raised under `strict()`. Zero padding passes, and the check looks at most
-  1 MiB past the block. `unrar` says nothing about such bytes; 7-Zip warns "There are
-  data after the end of archive", and archivey follows 7-Zip here.
+  policy, raised under `strict()`. Zero padding passes, because `rar` pads volumes
+  with zeros, and the check looks at most 1 MiB past the block. `unrar` says nothing
+  about such bytes; 7-Zip warns "There are data after the end of archive", for zeros
+  too.
 - **A damaged member header lists the members before it.** When a header after the main
   header fails its checksum, the members before it are listed and read normally, and
   the listing then ends with `CorruptionError`. No later member of the damaged header's

@@ -67,6 +67,7 @@ provisioned Linux laptop; they do not run on CI.
 | `test_rar_reader.py::test_unreadable_qo_falls_back_to_file_walk` | live `rar a -qo+`, then a flipped QO payload byte |
 | `test_rar_reader.py::test_qo_listing_matches_file_walk_live` | live `rar a` shapes vs `use_qo=False` FILE walk |
 | `test_rar_reader.py::test_qo_listing_matches_file_walk_with_comment` | live `rar a -qo+ -z`; archive comment field parity |
+| `test_rar_trailing_data.py::test_zeros_rar_writes_after_a_non_last_volume_are_silent` | live `rar a -v100k`; the committed `tinyvol_hp` set covers the padded case on CI |
 
 Committing a small SFX payload (and a real `-sfx` stub) the way this directory
 already does for volumes would close the gap. Tracked internally.

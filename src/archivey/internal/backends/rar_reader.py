@@ -1280,7 +1280,7 @@ class RarReader(BaseArchiveReader):
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
-        if self._archive.is_volume or self._volume_count > 1:
+        if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
         # Built once from the parse, and only when the caller chose unar: it holds the
         # refusals and the pipe layout, and none of it applies to unrar.
@@ -2434,6 +2434,11 @@ class RarReader(BaseArchiveReader):
         self._emit_end_block_damaged()
         self._emit_trailing_data()
 
+    @property
+    def _in_set(self) -> bool:
+        """Whether this archive is a volume set, which decides how diagnostics name it."""
+        return self._archive.is_volume or self._volume_count > 1
+
     def _emit_end_block_damaged(self) -> None:
         """Report each volume whose end-of-archive block failed its header CRC.
 
@@ -2444,9 +2449,8 @@ class RarReader(BaseArchiveReader):
         block's next-volume flag, so a set continued past that volume only where a
         member's own header said its data continues.
         """
-        in_set = self._archive.is_volume or self._volume_count > 1
         for index, offset in sorted(self._archive.end_block_damaged_volumes.items()):
-            if in_set:
+            if self._in_set:
                 detail = (
                     f"the end-of-archive block of volume {index + 1}, at byte "
                     f"{offset}, fails its header CRC. Its flags were not used, so "
@@ -2475,14 +2479,14 @@ class RarReader(BaseArchiveReader):
 
         ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
         TAR trailer or a 7z next header: a warning by default, refused under
-        ``DiagnosticPolicy.strict()`` (DR-3), once per volume. Zero padding is silent.
-        ``unrar`` says nothing about these bytes; 7-Zip warns "There are data after
-        the end of archive", and DR-3 follows it. ``observed_bytes`` counts from the
-        end of that volume's end block.
+        ``DiagnosticPolicy.strict()`` (DR-3), once per volume. Zero padding is silent,
+        since ``rar`` pads volumes with zeros. ``unrar`` says nothing about these
+        bytes; 7-Zip warns "There are data after the end of archive" for any tail,
+        zeros included. ``observed_bytes`` counts from the end of that volume's end
+        block.
         """
-        in_set = self._archive.is_volume or self._volume_count > 1
         for index, offset in sorted(self._archive.trailing_data_volumes.items()):
-            where = f"volume {index + 1} of the set" if in_set else "RAR archive"
+            where = f"volume {index + 1} of the set" if self._in_set else "RAR archive"
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
                 message=(
@@ -2514,7 +2518,7 @@ class RarReader(BaseArchiveReader):
         missing = self._archive.end_block_missing_volumes
         if not missing:
             return
-        if self._archive.is_volume or self._volume_count > 1:
+        if self._in_set:
             where = "volume(s) " + ", ".join(str(index + 1) for index in missing)
         else:
             where = "the archive"
