@@ -25,6 +25,10 @@ argument added with no check a failure here rather than a silence.
   ``open_archive(0)`` raising ``TypeError: unsupported source type`` is deliberate:
   it is raised at the boundary with a message that names the problem, and a
   wrong-typed positional raising ``TypeError`` is what a Python caller expects.
+* ``ValueError`` for an empty string as a **source** or ``dest``: ``Path("")`` is
+  ``Path(".")``, so it would otherwise name the current directory. The sweep has an
+  empty-string row for every path argument and accepts ``ValueError`` only when its
+  message says the path is empty.
 * ``KeyError`` for an unknown member name (``archive-reading`` specifies it), plus
   ``io.UnsupportedOperation`` for an unsupported ``seek`` and ``ValueError`` for I/O
   on a closed stream — neither of which this file exercises.
@@ -65,8 +69,21 @@ from archivey.detection_cost import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 
-# TypeError is permitted only for the arguments named here; see the module docstring.
+# TypeError, and ValueError for an empty path, are permitted only for the arguments
+# named here; see the module docstring.
 _TYPE_ERROR_OK = frozenset({"source", "dest"})
+
+
+@pytest.fixture(autouse=True)
+def _scratch_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run every probe from a scratch directory.
+
+    The empty-path rows name the current directory if their refusal regresses, and
+    an extraction there would land in the checkout.
+    """
+    scratch = tmp_path / "scratch-cwd"
+    scratch.mkdir()
+    monkeypatch.chdir(scratch)
 
 
 @pytest.fixture
@@ -94,6 +111,10 @@ class _Case(NamedTuple):
     argument: str
     label: str
     call: Callable[[], Any]
+
+
+def _is_empty_path_row(case: _Case) -> bool:
+    return case.argument in _TYPE_ERROR_OK and "''" in case.label
 
 
 def _case(
@@ -269,6 +290,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         None,
         io.StringIO("x"),
         io.BufferedWriter(io.BytesIO()),
+        "",
     ):
         rows += [
             _case(
@@ -294,7 +316,19 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
         ]
 
-    for bad in (0, None, object()):
+    # An empty string inside a volume list, in either position: each item is a path.
+    for volumes in ([archive, ""], ["", archive]):
+        rows.append(
+            _case(
+                "open_archive",
+                "source",
+                volumes,
+                lambda v=volumes: open_archive(v),
+                label=f"open_archive([{', '.join(repr(str(p)) for p in volumes)}])",
+            )
+        )
+
+    for bad in (0, None, object(), ""):
         rows.append(
             _case(
                 "extract_all", "dest", bad, lambda b=bad: _extract_all(archive, b, None)
@@ -476,7 +510,7 @@ def _open_member(archive: Path, member: Any) -> Any:
         return reader.open(member)
 
 
-def _extract_all(archive: Path, dest: Path, members: Any, **kwargs: Any) -> Any:
+def _extract_all(archive: Path, dest: str | Path, members: Any, **kwargs: Any) -> Any:
     with open_archive(archive) as reader:
         return reader.extract_all(dest, members=members, **kwargs)
 
@@ -527,6 +561,9 @@ def test_no_raw_exception_escapes(archive: Path, tmp_path: Path) -> None:
                 )
         except TypeError as exc:
             if not lenient:
+                offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
+        except ValueError as exc:
+            if not (lenient and "empty path" in str(exc)):
                 offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 — the point is to catch everything
             offenders.append(f"{label}: raw {type(exc).__name__}: {exc}")
@@ -801,39 +838,30 @@ def test_class_of_the_wrong_kind_gets_no_constructor_hint() -> None:
     assert "did you mean" not in message
 
 
-def _empty_path_calls(archive: Path) -> list[tuple[str, Callable[[], Any]]]:
-    return [
-        ("open_archive('')", lambda: open_archive("")),
-        ("open_archive([''])", lambda: open_archive([""])),
-        ("open_archive([archive, ''])", lambda: open_archive([archive, ""])),
-        ("open_archive(['', archive])", lambda: open_archive(["", archive])),
-        ("detect_format('')", lambda: detect_format("")),
-        ("open_stream('')", lambda: open_stream("")),
-        ("extract_all('')", lambda: _extract_all(archive, _as_any(""), None)),
-    ]
-
-
-@pytest.mark.parametrize(
-    "index", range(7), ids=[label for label, _ in _empty_path_calls(Path("a.zip"))]
-)
 def test_empty_string_path_is_refused(
-    archive: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    index: int,
+    archive: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An empty string is a wrong argument, not the current directory.
 
-    ``Path("")`` is ``Path(".")``, so an empty string (an unset environment variable,
-    typically) used to open the working directory as a directory archive, or extract
-    into it. ``open("")`` raises; so does every archivey entry point that takes a path.
+    The sweep proves each empty-path row raises within the contract; this proves the
+    working directory is left alone. ``Path("")`` is ``Path(".")``, so an empty string
+    (an unset environment variable, typically) used to open the working directory as a
+    directory archive, or extract into it.
     """
+    dest = tmp_path / "out"
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / "precious.txt").write_text("keep")
     monkeypatch.chdir(cwd)
 
-    _label, call = _empty_path_calls(archive)[index]
-    with pytest.raises(ValueError, match="empty path"):
-        call()
+    rows = [case for case in _cases(archive, dest) if _is_empty_path_row(case)]
+    assert {case.entry for case in rows} == {
+        "open_archive",
+        "open_stream",
+        "detect_format",
+        "extract_all",
+    }
+    for case in rows:
+        with pytest.raises(ValueError, match="empty path"):
+            case.call()
     assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]
