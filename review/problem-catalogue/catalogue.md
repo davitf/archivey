@@ -2015,19 +2015,18 @@ fixture and a corrupted compressed archive whose garbage decode parses as an inv
 (deep review finding W1). The behaviour is in `tarfile.TarFile.next()`: the invalid-header
 error is re-raised only at offset 0.
 
-**Answer today.** An end-of-archive check backstops the library: when the stopped scan lands
-on a rejected non-null header block, a corruption error is raised by default, while an
-archive that merely ended without the two zero blocks is reported as a warning that a
-stricter setting escalates. In random-access mode a probe inspects the final header attempt
-so the case is caught even when the bad header is the archive's last block, without seeking
-back. Decided in `2026-07-19-decide-strict-archive-eof-default` (Option F). **Residual:** in
-forward-only mode the library hides its header reads, so a rejected *final* header is still
-misclassified as a missing trailer; a native header walker is the named structural fix
-(`open-issues.md` P3).
+**Answer today.** An end-of-archive check backstops the library. The header-parse hook
+records which error ended the walk, a zero block or a rejected header, before the library
+swallows it. A rejected header raises a corruption error by default, in both random-access
+and forward-only mode and whatever follows it, after the members before it are delivered.
+An archive that merely ended without the two zero blocks is reported as a warning that a
+stricter setting escalates: a complete tar without a trailer and one truncated at a member
+boundary are the same bytes. Decided in `2026-07-19-decide-strict-archive-eof-default`
+(Option F); the error-class check replaced the earlier read-probe in PR #701. A native
+header walker, which would let a listing salvage past a bad header, is tracked internally.
 
-**Sources.** `known-issues.md` §tarfile; `open-issues.md` P3, §Longer-term;
-`review/archive/2026-07-12-codebase-deep-review/` (W1);
-`openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/`; ADR 0015.
+**Sources.** `known-issues.md` §tarfile; `review/archive/2026-07-12-codebase-deep-review/`
+(W1); `openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/`; ADR 0015.
 
 ---
 

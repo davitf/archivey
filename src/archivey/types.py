@@ -936,9 +936,10 @@ class ArchiveInfo:
 # internal coordinator.
 #
 # ``MemberSelectorArg`` — which members to extract: an iterable of names / ArchiveMembers
-# (read once, so a generator works), a predicate, or ``None`` (= all). The iterable form
-# is normalized to a predicate by the shared ``normalize_member_selector`` helper (also
-# used by ``stream_members``).
+# (read once, so a generator works), a predicate, or ``None`` (= all).
+# ``archivey.MemberSelector`` is the same alias, under its public name; internal modules
+# annotate with this one. The iterable form is normalized to a predicate by the shared
+# ``normalize_member_selector`` helper (also used by ``stream_members``).
 MemberSelectorArg = (
     Iterable["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )
