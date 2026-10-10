@@ -431,6 +431,125 @@ def test_pycdlib_directory_cycle_does_not_hang(
         assert "file1.txt" in names
 
 
+def _udf_file_identifiers(data: bytes | bytearray) -> list[int]:
+    """Offsets of every UDF File Identifier Descriptor (ECMA-167 4/14.4, tag 257)."""
+    from pycdlib import udf
+
+    return [
+        offset
+        for offset in range(0, len(data) - 40, 4)  # descriptors are 4-byte aligned
+        if data[offset : offset + 2] == b"\x01\x01"
+        and data[offset + 5] == 0
+        and udf._compute_csum(bytes(data[offset : offset + 16])) == data[offset + 4]
+    ]
+
+
+def _udf_directory_cycle_image() -> bytes:
+    """An ISO 9660 + UDF image whose UDF directory ``/D`` points back at the root.
+
+    No tool writes a cyclic UDF tree, so the image is crafted (DR-24): pycdlib writes
+    ``/D/F.TXT`` in both trees, then the root's File Identifier for ``D`` gets the
+    root's own ICB block, and its tag CRC and checksum are recomputed so it still
+    parses. The ISO 9660 tree is untouched.
+    """
+    import pycdlib
+    from pycdlib import udf
+
+    iso = pycdlib.PyCdlib()
+    iso.new(udf="2.60")
+    iso.add_directory("/D", udf_path="/D")
+    iso.add_fp(io.BytesIO(b"x"), 1, "/D/F.TXT;1", udf_path="/D/F.TXT")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = bytearray(out.getvalue())
+
+    def icb_block(offset: int) -> int:
+        return int(struct.unpack_from("<I", data, offset + 24)[0])
+
+    def identifier(offset: int) -> bytes:
+        length = data[offset + 19]
+        start = offset + 38 + struct.unpack_from("<H", data, offset + 36)[0]
+        return bytes(data[start : start + length])
+
+    fids = _udf_file_identifiers(data)
+    # The root's parent entry (characteristics bit 3) names the root's own ICB.
+    root_block = next(icb_block(off) for off in fids if data[off + 18] & 0x08)
+    (target,) = [off for off in fids if identifier(off) == b"\x08D"]
+    struct.pack_into("<I", data, target + 24, root_block)
+    crc_length = struct.unpack_from("<H", data, target + 10)[0]
+    body = bytes(data[target + 16 : target + 16 + crc_length])
+    struct.pack_into("<H", data, target + 8, udf.crc_ccitt(body))
+    data[target + 4] = udf._compute_csum(bytes(data[target : target + 16]))
+    return bytes(data)
+
+
+@pytest.mark.timeout(10)
+def test_pycdlib_udf_directory_cycle_does_not_hang() -> None:
+    """A UDF directory naming an ancestor must not hang pycdlib's walk in ``open_fp``.
+
+    ``PyCdlib._walk_udf_directories`` enqueues each directory's File Entry with no
+    visit tracking, so this image made it parse the root's entries again and again,
+    with memory growing about 65 MB a second, under default limits. The listing comes
+    from the ISO 9660 tree, as ``7z l`` lists the same image.
+    """
+    image = _udf_directory_cycle_image()
+    with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
+        names = sorted(m.name for m in ar.members())
+    assert names == ["D/", "D/F.TXT"]
+
+
+def _udf_image_with_links(count: int) -> bytes:
+    """An image whose ISO 9660 tree holds one file and whose UDF tree holds ``count``.
+
+    A UDF hard link adds a name to the UDF tree only, so the UDF tree can outgrow the
+    ISO 9660 one and a limit can be set between the two.
+    """
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(udf="2.60")
+    iso.add_fp(io.BytesIO(b"x"), 1, "/F.TXT;1", udf_path="/F0.TXT")
+    for index in range(1, count):
+        iso.add_hard_link(udf_old_path="/F0.TXT", udf_new_path=f"/F{index}.TXT")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def test_listing_limits_count_udf_entries_as_pycdlib_parses_them() -> None:
+    """``max_members`` counts the UDF tree pycdlib parses at open, per tree.
+
+    The ISO 9660 tree holds one file and the UDF tree twenty names, so a budget of
+    five fits the tree archivey lists. pycdlib still parses every UDF entry inside
+    ``open_fp``, so the UDF tree is held to the same cap.
+    """
+    image = _udf_image_with_links(20)
+    fits = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
+    with open_archive(io.BytesIO(image), config=fits) as reader:
+        assert [m.name for m in reader.members()] == ["F.TXT"]
+
+    below = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
+    with pytest.raises(ResourceLimitError, match="max_members=5.*UDF"):
+        open_archive(io.BytesIO(image), config=below)
+
+
+def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
+    """``max_metadata_bytes`` weighs the UDF File Identifiers and File Entries too.
+
+    Each UDF name costs a File Identifier and a File Entry of at least 176 bytes, so
+    twenty names hold more than 4000 bytes while the ISO 9660 tree, with one file,
+    holds well under 2000.
+    """
+    image = _udf_image_with_links(20)
+    tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2000))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=2000.*UDF"):
+        open_archive(io.BytesIO(image), config=tight)
+    with open_archive(io.BytesIO(_udf_image_with_links(1)), config=tight) as reader:
+        assert [m.name for m in reader.members()] == ["F.TXT"]
+
+
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
     # A genuine OSError (missing file) is unrelated to ISO decoding and must propagate
     # unchanged, not be reclassified as CorruptionError (error-handling spec).
@@ -717,10 +836,11 @@ def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
     """Every hook archivey installs in pycdlib leaves a direct pycdlib open alone.
 
     The hooks on ``DirectoryRecord.parse``, ``RockRidge.parse``,
-    ``PyCdlib._parse_path_table`` and ``PathTableRecord.parse`` act only while
-    ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``; outside,
-    both are unset, and a Rock Ridge and Joliet image (path tables included) opens
-    and reads through pycdlib as it would without archivey.
+    ``PyCdlib._parse_path_table``, ``PathTableRecord.parse``,
+    ``pycdlib.udf.parse_file_ident`` and ``pycdlib.udf.parse_file_entry`` act only
+    while ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``;
+    outside, both are unset, and a Rock Ridge and Joliet image (path tables included)
+    and a UDF image open and read through pycdlib as they would without archivey.
     """
     import pycdlib
 
@@ -732,6 +852,19 @@ def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
     iso.open_fp(io.BytesIO(_build_iso(rock_ridge=True, joliet=True)))
     try:
         assert iso.get_record(rr_path="/subdir/n.txt").get_data_length() == 7
+    finally:
+        iso.close()
+    iso = pycdlib.PyCdlib()
+    iso.open_fp(io.BytesIO(_udf_image_with_links(3)))
+    try:
+        # pycdlib yields ``None`` for the root's parent entry.
+        children = iso.list_children(udf_path="/")
+        names = [entry.file_identifier() for entry in children if entry is not None]
+        assert sorted(names) == [
+            b"F0.TXT",
+            b"F1.TXT",
+            b"F2.TXT",
+        ]
     finally:
         iso.close()
 

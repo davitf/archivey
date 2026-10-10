@@ -126,7 +126,14 @@ member the listing counts anyway. Crossing
 either raises `ResourceLimitError` from `open_archive`, before any member is listed or
 streamed. The counts are a superset of the listing's (a multi-extent file's extra records
 and `rr_moved` count), so an image right at a cap can be refused at open;
-`ListingLimits.UNLIMITED` turns the hook off. UDF descriptors are not counted. After it,
+`ListingLimits.UNLIMITED` turns the hook off. The UDF tree, which archivey does not list
+but `pycdlib` parses all the same, counts as one more tree: hooks on
+`pycdlib.udf.parse_file_ident` and `pycdlib.udf.parse_file_entry` count each File
+Identifier but the parent entry against `max_members`, and weigh each File Identifier
+and each File Entry against `max_metadata_bytes`. A File Entry is weighed before
+`pycdlib` parses it, as its fixed part plus the extended-attribute and
+allocation-descriptor lengths it declares, since `pycdlib` makes one object per
+allocation descriptor. After it,
 listing touches only records already in memory
 (`test_listing_reads_nothing_from_the_image`), which is what lets the member walk run
 without the handle lock. Two exceptions read a directory's extent once more, under the
@@ -351,9 +358,13 @@ ISO-specific only. General extraction and name hazards are §2.4.
 
 - **The directory graph can close a cycle.** `pycdlib`'s own parse walk (inside
   `open_fp`, over every tree) has no visit tracking and loops forever on a record that
-  points back at an ancestor — the mutation harness found it with one flipped bit. Two
-  guards cover it: `_install_pycdlib_directory_cycle_guard` replaces `collections` inside
-  `pycdlib.pycdlib` with a proxy whose `deque` drops an already-scheduled extent, and
+  points back at an ancestor — the mutation harness found it with one flipped bit. The
+  UDF walk loops the same way on a File Identifier that names an ancestor's ICB, and
+  allocates on every pass (about 65 MB a second under default limits, from a 600 KB
+  image). Two guards cover it: `_install_pycdlib_directory_cycle_guard` replaces
+  `collections` inside `pycdlib.pycdlib` with a proxy whose `deque` drops an
+  already-scheduled directory extent or UDF File Entry (two sets, as the two are
+  numbered in different spaces), and
   archivey's own `_walk_records` enters each extent once. The first is process-global
   within `pycdlib`: `import archivey` imports the ISO backend eagerly to register it, and
   that import installs the guard once and for good, confined to `pycdlib`'s namespace
@@ -361,13 +372,15 @@ ISO-specific only. General extraction and name hazards are §2.4.
   `pycdlib` directly sees the guarded `deque` too. That is a deliberate trade, hang safety
   on hostile input over leaving another caller's `pycdlib` untouched, and it changes no
   result on a valid tree, which never revisits an extent
-  (`test_pycdlib_directory_cycle_does_not_hang`, found on a Joliet tree). The same import
+  (`test_pycdlib_directory_cycle_does_not_hang`, found on a Joliet tree;
+  `test_pycdlib_udf_directory_cycle_does_not_hang` for UDF). The same import
   replaces `pycdlib.rockridge.RockRidge.parse` with the System Use filter (§2.2), but that
   wrapper acts only inside `IsoReader`'s own `open_fp` call, where a `ContextVar` is set,
   so other callers are untouched (`test_pycdlib_used_directly_is_not_filtered`). The
   `ListingLimits` hooks on `pycdlib.dr.DirectoryRecord.parse`,
-  `pycdlib.pycdlib.PyCdlib._parse_path_table` and
-  `pycdlib.path_table_record.PathTableRecord.parse` (§2.2) are gated the same way
+  `pycdlib.pycdlib.PyCdlib._parse_path_table`,
+  `pycdlib.path_table_record.PathTableRecord.parse`, `pycdlib.udf.parse_file_ident` and
+  `pycdlib.udf.parse_file_entry` (§2.2) are gated the same way
   (`test_the_pycdlib_hooks_are_inert_outside_archivey_opens`). The
   mutation-harness finding is in [`threat-model.md`](../threat-model.md).
 - **Records multiply what `pycdlib` builds at open.** Every record costs `pycdlib` about
@@ -497,7 +510,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Boot catalog reads and extracts, and one declared past the image end reads short | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_boot_catalog_declared_past_the_image_end_reads_short` |
 | Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag is not a chain; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_is_not_one_file`, `::test_the_raw_directory_walk_crosses_sector_padding` |
 | No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
-| Cycle guard in `pycdlib`'s own walk, in all three trees | `::test_pycdlib_directory_cycle_does_not_hang` |
+| Cycle guard in `pycdlib`'s own walk, in all three trees and in UDF | `::test_pycdlib_directory_cycle_does_not_hang`, `::test_pycdlib_udf_directory_cycle_does_not_hang` |
+| UDF tree counted against `max_members` and `max_metadata_bytes` at open | `::test_listing_limits_count_udf_entries_as_pycdlib_parses_them`, `::test_listing_limits_count_udf_bytes_as_pycdlib_parses_them` |
 | Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens. The chained tests exercise the check only on `pycdlib` 1.21+; on the locked 1.16 they pin `pycdlib`'s own refusal of a second `CE` (`_pycdlib_follows_ce_chains`), so run them with `uv run --with pycdlib==1.21.0` after touching the hook | `tests/test_iso_metadata_bounds.py` |
 | Directory length bound; path sources go through the source; handles released on failure | `::test_directory_data_length_does_not_drive_the_allocation`, `::test_a_path_source_is_read_through_the_archive_source`, `::test_a_refused_path_source_does_not_hold_its_handle`, `::test_a_failure_after_open_fp_is_translated_and_releases` |
 | Corrupt input is `CorruptionError`; handle `OSError` is not | `::test_corrupt_iso_raises`, `::test_filesystem_oserror_propagates_unwrapped` |

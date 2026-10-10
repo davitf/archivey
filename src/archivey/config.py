@@ -328,8 +328,9 @@ class ListingLimits:
     ``stream_members`` / ``streaming=True`` / forward-only iteration do not
     enforce these caps. 7z, RAR and ISO apply ``max_members`` at parse, RAR weighs its
     comments against ``max_metadata_bytes`` (the declared sizes of compressed RAR
-    1.5/2.x comments before decoding them), and ISO the directory records and path
-    tables ``pycdlib`` parses, so ``open_archive`` raises and none is an escape hatch.
+    1.5/2.x comments before decoding them), and ISO the directory records, path
+    tables and UDF descriptors ``pycdlib`` parses, so ``open_archive`` raises and none
+    is an escape hatch.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
     member anyway, so real images never notice.
