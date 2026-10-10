@@ -22,9 +22,48 @@ re-exports it as the archivey-facing name.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 from archivey.internal.streams.streamtools.binaryio import ask_resume_offset
 
-__all__ = ["ResumeReachedStreamEnd", "ask_resume_offset"]
+__all__ = [
+    "ResumeReachedStreamEnd",
+    "ask_resume_offset",
+    "ask_seek_resume_offset",
+    "planning_seek",
+]
+
+_PLANNING_SEEK: ContextVar[bool] = ContextVar("archivey_planning_seek", default=False)
+
+
+def ask_seek_resume_offset(inner: object | None, target: int) -> int | None:
+    """``ask_resume_offset`` for a caller about to seek ``inner`` to ``target``.
+
+    The plain query reads each seek-point table as it stands, so a diagnostic never
+    changes the cost it reports. A caller planning a seek wants the answer the seek
+    itself would act on: a ``DecompressorStream`` builds its index on a forward seek
+    (an lzip or xz trailer read) and may then jump. While this call runs, such a
+    stream builds that index first (:func:`planning_seek`). The flag rides a context
+    variable, so the wrappers that forward the query need no change.
+    """
+    with _planning_seek():
+        return ask_resume_offset(inner, target)
+
+
+@contextmanager
+def _planning_seek() -> Iterator[None]:
+    token = _PLANNING_SEEK.set(True)
+    try:
+        yield
+    finally:
+        _PLANNING_SEEK.reset(token)
+
+
+def planning_seek() -> bool:
+    """True inside :func:`ask_seek_resume_offset`: answer for the seek about to run."""
+    return _PLANNING_SEEK.get()
 
 
 class ResumeReachedStreamEnd(Exception):

@@ -133,11 +133,6 @@ Each idea carries a status:
   member can reach, and a `verify(at_least=…)` method. It would replace the
   `ENCRYPTED_MEMBER_UNVERIFIED` diagnostic. The `verification-integrity-mode` change under
   `openspec/changes/` depends on this design.
-- **Keep the checksum across seeks.** *Open idea.* Any seek other than one to 0 turns the
-  member digest off today (`MemberVerifier.note_seek`, ADR 0014). Most formats decode the
-  bytes a forward seek skips anyway, so the digest could keep running; more generally,
-  the verifier could remember how far it has hashed and resume from there. The WinZip AES
-  stage already does this for its HMAC.
 - **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
   contribution.** To keep the HMAC across seeks, the read that returns an AES member's last
   byte first reads the ciphertext the seeks skipped. `docs/gotchas.md` states this, but

@@ -1341,14 +1341,35 @@ def test_a_raise_mid_read_keeps_the_decoded_bytes(small_seek_cap: int, n: int) -
         assert stream.seek(0, io.SEEK_END) == len(full)
 
 
+def test_planning_a_seek_builds_the_index_the_seek_would() -> None:
+    """The plain resume query reads the table as it stands; one for a planned seek
+    builds the index a forward seek would build first, so the answer is the point
+    that seek will jump to."""
+    from archivey.internal.streams.resume import (
+        ask_resume_offset,
+        ask_seek_resume_offset,
+    )
+
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    target = sum(len(part) for part in LZIP_PARTS[:10]) + 5
+    with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read(10) == LZIP_PARTS[0][:10]
+        assert ask_resume_offset(stream, target) == 0
+        planned = ask_seek_resume_offset(stream, target)
+        assert planned == target - 5
+        assert ask_resume_offset(stream, target) == planned
+
+
 @pytest.mark.parametrize("wrapper", ["ArchiveStream", "VerifyingStream"])
 def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     small_seek_cap: int, wrapper: str
 ) -> None:
     """Both verifying wrappers learn where a seek that raised left the stream.
 
-    The raise comes after the inner seek moved, so the verifier must drop the
-    digest and track the new position, or reading on reports a false truncation.
+    The raise comes after the inner seek moved, so the verifier must track the new
+    position and drop the digest on the read that skips the gap, or reading on
+    reports a false truncation or mismatch. The target lies past an index point, so
+    the seek jumps rather than decoding the gap through the verifier.
     """
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.streams.archive_stream import ArchiveStream
@@ -1377,9 +1398,9 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
         )
     with stream:
         with pytest.raises(DiagnosticRaisedError):
-            stream.seek(500)
-        assert stream.tell() == 500
-        assert stream.read() == full[500:]
+            stream.seek(4000)
+        assert stream.tell() == 4000
+        assert stream.read() == full[4000:]
 
 
 @pytest.mark.parametrize("n", [-1, 700])

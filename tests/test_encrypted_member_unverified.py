@@ -289,18 +289,29 @@ def test_rar4_read_to_eof_is_not_reported() -> None:
 
 
 @requires_binary("unrar")
-def test_rar4_seek_then_partial_read_is_reported_as_a_seek() -> None:
+def test_rar4_seek_then_partial_read_is_reported_as_a_partial_read() -> None:
+    # The forward seek decodes the bytes it skips (unrar's pipe), so the member's
+    # verifier hashes them and keeps the CRC: what misses it is closing early.
     with open_archive(_RAR4, password="password", seekable_members=True) as reader:
         with reader.open(_member(reader, "secret.txt")) as stream:
             stream.seek(8)
             assert stream.read(2) == _RAR_SECRET[8:10]
         (context,) = _unverified(reader)
-        assert context.reason == "seek"
+        assert context.reason == "partial_read"
         assert _unverified_message(reader) == (
-            "Encrypted RAR member 'secret.txt' gave up its checksum by seeking, and it "
-            "carries no password check: the bytes read may have been decrypted with a "
-            "wrong password."
+            "Encrypted RAR member 'secret.txt' was closed before its checksum was "
+            "reached, and it carries no password check: the bytes read may have been "
+            "decrypted with a wrong password."
         )
+
+
+@requires_binary("unrar")
+def test_rar4_seek_then_read_to_eof_is_not_reported() -> None:
+    with open_archive(_RAR4, password="password", seekable_members=True) as reader:
+        with reader.open(_member(reader, "secret.txt")) as stream:
+            stream.seek(8)
+            assert stream.read() == _RAR_SECRET[8:]
+        assert _unverified(reader) == []
 
 
 @requires_binary("unrar")

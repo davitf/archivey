@@ -539,15 +539,18 @@ class ArchiveStream(ReadOnlyIOStream):
         offset, whence = check_seek_args(offset, whence)
         inner = self._ensure_open()  # outside the try, same as read()
         before: int | None = None
+        verifier = self._verifier
         try:
             before = inner.tell()
-            result = inner.seek(offset, whence)
+            if verifier is not None:
+                # The verifier may read the skipped bytes through its hashers when
+                # the inner would decode them anyway (``MemberVerifier.seek``).
+                result = verifier.seek(inner, offset, whence)
+            else:
+                result = inner.seek(offset, whence)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._note_raised_seek(inner, before)
             self._fail(e)
-        verifier = self._verifier
-        if verifier is not None:
-            verifier.note_seek(result)
         if self._verdict is not None:
             self._verdict_rewound = True
         self._maybe_warn_rewind(before, result)
@@ -568,6 +571,14 @@ class ArchiveStream(ReadOnlyIOStream):
                 self._maybe_warn_rewind(before, after)
             except Exception:  # noqa: BLE001 - the seek's own error propagates instead
                 pass
+
+    def digest_intact(self) -> bool | None:
+        """Whether the fused verifier's digest can still run (``ask_digest_intact``).
+
+        ``None`` without a fused verifier: a codec-level stream has no member digest.
+        """
+        verifier = self._verifier
+        return verifier.digest_intact if verifier is not None else None
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""
