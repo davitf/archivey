@@ -6,19 +6,24 @@ beside their arguments:
 * :mod:`archivey.internal.format_args` — ``format=``, which *coerces* rather than
   only refusing: ``format="zip"`` resolves to ``ArchiveFormat.ZIP``, and only an
   unrecognised value is an ``ArchiveyUsageError``.
-* :mod:`archivey.config` — ``*Limits`` fields and ``ArchiveyConfig``'s own fields
+* :mod:`archivey.config` — ``ArchiveyConfig``'s own fields, and the ``__post_init__``
+  of each ``*Limits`` dataclass (``DetectionBudget`` in
+  :mod:`archivey.detection_cost` too), which call :func:`check_limit_fields` here
 * :mod:`archivey.internal.selection` — ``members=``
 * :mod:`archivey.internal.password` — ``password=``
 * :meth:`archivey.reader.ArchiveReader.open` — the member argument (needs the
   reader to tell "wrong type" from "not this reader's member")
 
-What this module covers: ``config=``, ``limits=``, ``encoding=``, and the
-``on_progress=`` / ``filter=`` callbacks. There is no useful conversion from a
-wrong-typed one of these, so the answer is an error.
+What this module covers: ``config=``, ``limits=``, ``encoding=``, the
+``on_progress=`` / ``filter=`` callbacks, the numeric limit fields, and the empty
+string as a path. There is no useful conversion from a wrong one of these, so the
+answer is an error.
 
 Every check answers with :class:`~archivey.ArchiveyUsageError`, which sits outside
 ``ArchiveyError`` (ADR 0012) so a caller's ``except ArchiveyError`` cannot swallow a
-caller bug.
+caller bug. The exception is :func:`check_path_not_empty`, which raises
+``ValueError``: the path parameters already answer a wrong type with ``TypeError``,
+and a wrong value of the right type is a ``ValueError`` (DR-15).
 
 What this module is for is narrower than "validate everything". The error contract
 already permits a short list of raw exceptions to reach a caller — ``KeyError`` for
@@ -40,8 +45,14 @@ listing or the extraction is already under way.
 from __future__ import annotations
 
 import codecs
+import math
+from dataclasses import fields
+from typing import TYPE_CHECKING
 
 from archivey.exceptions import ArchiveyUsageError
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 __all__ = [
     "check_callable",
@@ -49,6 +60,9 @@ __all__ = [
     "check_encoding",
     "check_extraction_limits",
     "check_instance",
+    "check_limit",
+    "check_limit_fields",
+    "check_path_not_empty",
     "describe_value",
 ]
 
@@ -171,3 +185,125 @@ def check_encoding(value: object, *, call: str, allow_none: bool = True) -> None
 
 def _article(name: str) -> str:
     return "an" if name[:1].upper() in "AEIOU" else "a"
+
+
+def check_limit(
+    value: object,
+    *,
+    cls: str,
+    field_name: str,
+    allow_float: bool = False,
+    allow_none: bool = True,
+) -> None:
+    """Validate one numeric limit field at construction.
+
+    The guards these fields drive are all comparisons, so a wrong-typed one is not
+    found until something is actually being counted — ``ListingLimits(max_members="x")``
+    built fine and then failed mid-listing as ``TypeError: '>' not supported between
+    instances of 'int' and 'str'``, naming neither the field nor the class. A limit is
+    a promise about a future operation; checking it where the caller wrote it is the
+    only place the message can still name what they wrote.
+
+    ``bool`` is refused explicitly: it is an ``int`` subclass, so ``max_members=True``
+    would otherwise pass and cap the listing at one member. The type test is spelled
+    out per branch rather than parameterised, because a parameterised ``isinstance``
+    narrows nothing and leaves the comparison below unprovable.
+
+    Two further shapes are refused for the same reason the wrong type is, namely that
+    they switch a guard off silently rather than loudly:
+
+    * ``allow_none=False`` for a field that is not ``| None``. ``None`` reads as
+      "disable this guard" on every other field, but ``ratio_activation_threshold``
+      is read unconditionally, so a ``None`` there is a ``TypeError`` during the
+      extraction rather than a disabled guard.
+    * a NaN or an infinity on a float field. Every comparison against a NaN is false
+      and nothing ever exceeds an infinity, so ``max_ratio=float("nan")`` constructs,
+      extracts, and enforces nothing. ``None`` is the way to say that on purpose.
+    """
+    if value is None:
+        if allow_none:
+            return
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} is not optional and takes "
+            f"{'a number' if allow_float else 'an int'}, but got None."
+        )
+    if isinstance(value, bool):
+        number: int | float | None = None
+    elif isinstance(value, int):
+        number = value
+    elif allow_float and isinstance(value, float):
+        number = value
+    else:
+        number = None
+
+    if number is None:
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} takes {'a number' if allow_float else 'an int'}"
+            f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
+        )
+    if isinstance(number, float) and not math.isfinite(number):
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} takes a finite number, but got {value!r}. A NaN "
+            f"compares false against everything and an infinity is never exceeded, so "
+            f"either one would leave this guard switched off without saying so; pass "
+            f"None if that is what you want."
+        )
+    if number < 0:
+        raise ArchiveyUsageError(
+            f"{cls}.{field_name} cannot be negative, but got {value!r}."
+            + (" Pass None to disable this guard." if allow_none else "")
+        )
+
+
+# The annotations a limits field may have, as (allow_float, allow_none).
+_LIMIT_ANNOTATIONS: dict[str, tuple[bool, bool]] = {
+    "int": (False, False),
+    "int | None": (False, True),
+    "float | None": (True, True),
+}
+
+
+def check_limit_fields(limits: DataclassInstance, *, cls: str) -> None:
+    """Run :func:`check_limit` on every field of a limits dataclass, in field order.
+
+    The limits dataclasses are ``ExtractionLimits``, ``ListingLimits``,
+    ``DecoderLimits``, ``SpoolLimits`` (all in :mod:`archivey.config`) and
+    ``DetectionBudget`` (:mod:`archivey.detection_cost`). This module is a leaf, so
+    both can import it: ``config`` imports ``detection_cost``, so the check cannot live
+    in ``config``.
+
+    ``allow_float`` and ``allow_none`` come from the field's annotation (a string,
+    under ``from __future__ import annotations``), which must be one of
+    ``_LIMIT_ANNOTATIONS``. ``cls`` is passed in rather than read from
+    ``type(limits)``, so a user subclass still gets the documented class in the message.
+    """
+    for f in fields(limits):
+        flags = _LIMIT_ANNOTATIONS.get(str(f.type))
+        if flags is None:
+            raise AssertionError(
+                f"{cls}.{f.name} is annotated {f.type!r}, which check_limit_fields "
+                f"does not know; spell it as one of {sorted(_LIMIT_ANNOTATIONS)}."
+            )
+        allow_float, allow_none = flags
+        check_limit(
+            getattr(limits, f.name),
+            cls=cls,
+            field_name=f.name,
+            allow_float=allow_float,
+            allow_none=allow_none,
+        )
+
+
+def check_path_not_empty(value: object, *, call: str) -> None:
+    """Raise ``ValueError`` if ``value`` is the empty string.
+
+    ``Path("")`` is ``Path(".")``, so an empty string (typically an unset environment
+    variable) would otherwise name the current directory: a source opens it as a
+    directory archive and a destination extracts into it. ``open("")`` raises too.
+    Only ``str`` is checked; an empty ``Path`` cannot be told apart from ``Path(".")``.
+    """
+    if isinstance(value, str) and not value:
+        raise ValueError(
+            f"{call} got an empty path; an empty string would name the current "
+            f'directory. Pass "." to mean the current directory.'
+        )

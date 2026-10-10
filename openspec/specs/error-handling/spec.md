@@ -511,17 +511,17 @@ The arguments covered:
 | Entry point | Arguments |
 | --- | --- |
 | `open_archive()`, `open_stream()`, `detect_format()` | `config` |
-| `detect_format()` | `budget` (a `DetectionBudget`; a `DetectionBudgetPreset` is an enum and out of scope) |
 | `open_archive()` | `encoding`, `password` |
 | `ArchiveReader.extract_all()` | `limits`, `on_progress` |
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
-| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references` |
+| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
+| `DetectionBudget(...)` | every field |
 
-`ArchiveyConfig` and the two `*Limits` types SHALL validate their own fields at
-construction. Validating `config=` at an entry point does not reach them: the object
+`ArchiveyConfig`, the `*Limits` types and `DetectionBudget` SHALL validate their own
+fields at construction, through one shared field check. Validating `config=` at an entry point does not reach them: the object
 passed there is of the right type and the wrong one is a field in, and a limit is a
 promise about an operation that has not begun, so construction is the last place a
 message can still name what the caller wrote.
@@ -544,6 +544,13 @@ truthiness are not covered, there being no wrong type to find, except
 `read_link_targets`), which SHALL be a `bool`: a string such as `"false"` is truthy
 and would silently switch the guard.
 
+An empty string passed as a path SHALL raise `ValueError` at the entry point, before
+anything is read or created. This covers the `source` of `open_archive()` (alone or as
+an item of a volume list), `open_stream()` and `detect_format()`, and the `dest` of
+`ArchiveReader.extract_all()`. `Path("")` is `Path(".")`, so an empty string, typically
+an unset environment variable, would otherwise open the current directory as a
+directory archive or extract into it.
+
 #### Scenario: object argument refusal matrix
 
 | Case | Expected |
@@ -558,6 +565,7 @@ and would silently switch the guard.
 | `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `ExtractionLimits(ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
 | `ExtractionLimits(max_extracted_bytes=True)` | `ArchiveyUsageError`; `bool` is an `int` subclass and would cap at one byte |
+| `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
 | `open_archive(src, encoding=0)` | `ArchiveyUsageError`; not silently ignored |
 | `extract_all(dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
@@ -565,11 +573,13 @@ and would silently switch the guard.
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |
 | `extract_all(dest, members=0)` | `ArchiveyUsageError` at the call, before `dest` is created |
 | `stream_members(members=0)` | `ArchiveyUsageError` at the call, not on first `next()` |
-| `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
+| `ArchiveyConfig(detection_budget=0)` | `ArchiveyUsageError` naming `detection_budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
 | `reader.get(b"a.txt")`, `reader.get(member)` | `ArchiveyUsageError`; never `None` for a member that exists. `reader.open(b"a.txt")` is refused the same way; `reader.open(member)` reads the member |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `TypeError: unsupported source type` — unchanged |
+| `open_archive("")`, `open_archive(["", ...])`, `detect_format("")`, `open_stream("")` | `ValueError` naming the empty path; the current directory is not read |
+| `extract_all("")` | `ValueError` before anything is written; nothing is extracted into the current directory |
 
 ### Requirement: Enum-typed public arguments are converted at the boundary
 
@@ -590,9 +600,8 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2` |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
 | `DiagnosticPolicy(...)` | `default`, and the keys and values of `overrides` |
-| `detect_format()` | `budget` (a `DetectionBudget` passes through unconverted) |
 
 A member SHALL be reachable by its `value`, by its member **name**, in any case, and
 with `-` and `_` used interchangeably, so the dash spelling the CLI's `--help`
@@ -631,7 +640,7 @@ vocabulary rather than two that can drift.
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
 | `DiagnosticPolicy(default="raise")` | Field holds `DiagnosticDisposition.RAISE`; a diagnostic the policy covers raises |
 | `DiagnosticPolicy(overrides={"ARCHIVE_TRAILING_DATA": "raise"})` | The key is `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
-| `detect_format(src, budget="fast")` | Detects under the FAST preset |
-| `detect_format(src, budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
+| `ArchiveyConfig(detection_budget="fast")` | Detection under that config uses the FAST preset |
+| `ArchiveyConfig(detection_budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
 | `coerce to OverwritePolicy` given `AbortOn.BLOCKED_MEMBER` | `ArchiveyUsageError` reporting a wrong **type**, though `AbortOn` is a `str` subclass |
 | `except ArchiveyError` around any of the refusals | Does not catch it |

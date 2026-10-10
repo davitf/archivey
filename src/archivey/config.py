@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar
 
@@ -14,12 +13,12 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
-from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.arg_checks import (
     check_callable,
     check_encoding,
     check_instance,
-    describe_value,
+    check_limit,
+    check_limit_fields,
 )
 from archivey.internal.enum_args import coerce_enum
 from archivey.types import ArchiveMember
@@ -147,109 +146,6 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
-def _check_limit(
-    value: object,
-    *,
-    cls: str,
-    field_name: str,
-    allow_float: bool = False,
-    allow_none: bool = True,
-) -> None:
-    """Validate one numeric limit field at construction.
-
-    The guards these fields drive are all comparisons, so a wrong-typed one is not
-    found until something is actually being counted — ``ListingLimits(max_members="x")``
-    built fine and then failed mid-listing as ``TypeError: '>' not supported between
-    instances of 'int' and 'str'``, naming neither the field nor the class. A limit is
-    a promise about a future operation; checking it where the caller wrote it is the
-    only place the message can still name what they wrote.
-
-    ``bool`` is refused explicitly: it is an ``int`` subclass, so ``max_members=True``
-    would otherwise pass and cap the listing at one member. The type test is spelled
-    out per branch rather than parameterised, because a parameterised ``isinstance``
-    narrows nothing and leaves the comparison below unprovable.
-
-    Two further shapes are refused for the same reason the wrong type is, namely that
-    they switch a guard off silently rather than loudly:
-
-    * ``allow_none=False`` for a field that is not ``| None``. ``None`` reads as
-      "disable this guard" on every other field, but ``ratio_activation_threshold``
-      is read unconditionally, so a ``None`` there is a ``TypeError`` during the
-      extraction rather than a disabled guard.
-    * a NaN or an infinity on a float field. Every comparison against a NaN is false
-      and nothing ever exceeds an infinity, so ``max_ratio=float("nan")`` constructs,
-      extracts, and enforces nothing. ``None`` is the way to say that on purpose.
-    """
-    if value is None:
-        if allow_none:
-            return
-        raise ArchiveyUsageError(
-            f"{cls}.{field_name} is not optional and takes "
-            f"{'a number' if allow_float else 'an int'}, but got None."
-        )
-    if isinstance(value, bool):
-        number: int | float | None = None
-    elif isinstance(value, int):
-        number = value
-    elif allow_float and isinstance(value, float):
-        number = value
-    else:
-        number = None
-
-    if number is None:
-        raise ArchiveyUsageError(
-            f"{cls}.{field_name} takes {'a number' if allow_float else 'an int'}"
-            f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
-        )
-    if isinstance(number, float) and not math.isfinite(number):
-        raise ArchiveyUsageError(
-            f"{cls}.{field_name} takes a finite number, but got {value!r}. A NaN "
-            f"compares false against everything and an infinity is never exceeded, so "
-            f"either one would leave this guard switched off without saying so; pass "
-            f"None if that is what you want."
-        )
-    if number < 0:
-        raise ArchiveyUsageError(
-            f"{cls}.{field_name} cannot be negative, but got {value!r}."
-            + (" Pass None to disable this guard." if allow_none else "")
-        )
-
-
-# The annotations a limits field may have, as (allow_float, allow_none).
-_LIMIT_ANNOTATIONS: dict[str, tuple[bool, bool]] = {
-    "int": (False, False),
-    "int | None": (False, True),
-    "float | None": (True, True),
-}
-
-
-def _check_limit_fields(
-    limits: ExtractionLimits | ListingLimits | DecoderLimits | SpoolLimits, *, cls: str
-) -> None:
-    """Run :func:`_check_limit` on every field of a limits dataclass, in field order.
-
-    ``allow_float`` and ``allow_none`` come from the field's annotation (a string,
-    under ``from __future__ import annotations``), which must be one of
-    ``_LIMIT_ANNOTATIONS``. ``cls`` is passed in rather than read from
-    ``type(limits)``, so a user subclass still gets the documented class in the message.
-    """
-    for f in fields(limits):
-        flags = _LIMIT_ANNOTATIONS.get(str(f.type))
-        if flags is None:
-            raise AssertionError(
-                f"{cls}.{f.name} is annotated {f.type!r}, which _check_limit_fields "
-                f"does not know; spell it as one of {sorted(_LIMIT_ANNOTATIONS)}."
-            )
-        allow_float, allow_none = flags
-        _check_limit(
-            getattr(limits, f.name),
-            cls=cls,
-            field_name=f.name,
-            allow_float=allow_float,
-            allow_none=allow_none,
-        )
-
-
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
@@ -309,7 +205,7 @@ class ExtractionLimits:
 
     def __post_init__(self) -> None:
         # allow_none and allow_float come from the field annotations.
-        _check_limit_fields(self, cls="ExtractionLimits")
+        check_limit_fields(self, cls="ExtractionLimits")
 
 
 ExtractionLimits.UNLIMITED = ExtractionLimits(
@@ -364,7 +260,7 @@ class ListingLimits:
     UNLIMITED: ClassVar[ListingLimits]
 
     def __post_init__(self) -> None:
-        _check_limit_fields(self, cls="ListingLimits")
+        check_limit_fields(self, cls="ListingLimits")
 
 
 ListingLimits.UNLIMITED = ListingLimits(
@@ -576,7 +472,7 @@ class DecoderLimits:
     UNLIMITED: ClassVar[DecoderLimits]
 
     def __post_init__(self) -> None:
-        _check_limit_fields(self, cls="DecoderLimits")
+        check_limit_fields(self, cls="DecoderLimits")
 
 
 DecoderLimits.UNLIMITED = DecoderLimits(
@@ -639,7 +535,7 @@ class SpoolLimits:
     UNLIMITED: ClassVar[SpoolLimits]
 
     def __post_init__(self) -> None:
-        _check_limit_fields(self, cls="SpoolLimits")
+        check_limit_fields(self, cls="SpoolLimits")
 
 
 SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
@@ -838,7 +734,7 @@ class ArchiveyConfig:
             call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
             allow_none=False,
         )
-        _check_limit(
+        check_limit(
             self.max_retained_diagnostic_references,
             cls="ArchiveyConfig",
             field_name="max_retained_diagnostic_references",
