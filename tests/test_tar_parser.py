@@ -1,0 +1,707 @@
+"""Unit tests for the native TAR header parser and walker (``tar_parser.py``).
+
+The archives here are written by stdlib ``tarfile`` (the fixture writer for TAR) or
+built block by block where only a crafted archive has the shape. The differential
+tests against ``tarfile`` and GNU tar listings are in
+``test_tar_parser_differential.py``.
+"""
+
+from __future__ import annotations
+
+import io
+import tarfile
+from collections.abc import Callable
+
+import pytest
+
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
+from archivey.internal.backends.tar_parser import (
+    BLOCKSIZE,
+    HeaderBlock,
+    HeaderFormat,
+    NameSource,
+    RejectedBlock,
+    SparseFormat,
+    SparseMap,
+    TarEnd,
+    TarEntry,
+    TarWalker,
+    ZeroBlock,
+    parse_header_block,
+    parse_number,
+    parse_pax_records,
+    read_sparse_map_1_0,
+    sparse_map_0_0,
+    sparse_map_0_1,
+    validate_sparse_map,
+)
+
+
+def _octal(value: int, width: int) -> bytes:
+    return f"{value:0{width - 1}o}".encode() + b"\x00"
+
+
+def _block(
+    name: bytes = b"f",
+    *,
+    size: int = 0,
+    typeflag: bytes = b"0",
+    magic: bytes = b"ustar\x0000",
+    linkname: bytes = b"",
+    prefix: bytes = b"",
+    patch: Callable[[bytearray], None] | None = None,
+    checksum: bool = True,
+) -> bytes:
+    """One header block, built field by field."""
+    h = bytearray(BLOCKSIZE)
+    h[0 : len(name)] = name
+    h[100:108] = _octal(0o644, 8)
+    h[108:116] = _octal(1000, 8)
+    h[116:124] = _octal(1000, 8)
+    h[124:136] = _octal(size, 12)
+    h[136:148] = _octal(1_700_000_000, 12)
+    h[156:157] = typeflag
+    h[157 : 157 + len(linkname)] = linkname
+    h[257 : 257 + len(magic)] = magic
+    h[345 : 345 + len(prefix)] = prefix
+    if patch is not None:
+        patch(h)
+    if checksum:
+        h[148:156] = b" " * 8
+        h[148:156] = f"{sum(h):06o}".encode() + b"\x00 "
+    return bytes(h)
+
+
+def _data(payload: bytes) -> bytes:
+    return payload + b"\x00" * (-len(payload) % BLOCKSIZE)
+
+
+def _rec(key: bytes, value: bytes) -> bytes:
+    """One PAX record, its length prefix computed."""
+    payload = b" " + key + b"=" + value + b"\n"
+    length = len(payload) + 1
+    while length != len(str(length)) + len(payload):
+        length = len(str(length)) + len(payload)
+    return str(length).encode() + payload
+
+
+def _pax(
+    records: dict[str, str] | list[tuple[str, str]], *, typeflag: bytes = b"x"
+) -> bytes:
+    """A PAX header block and its records."""
+    items = records.items() if isinstance(records, dict) else records
+    body = b"".join(_rec(key.encode(), value.encode()) for key, value in items)
+    return _block(b"PaxHeader", size=len(body), typeflag=typeflag) + _data(body)
+
+
+_END = b"\x00" * (2 * BLOCKSIZE)
+
+
+def _walk(
+    data: bytes, *, seekable: bool = True, budget=None
+) -> tuple[list[TarEntry], TarEnd]:
+    walker = TarWalker(io.BytesIO(data), seekable=seekable)
+    entries = []
+    while isinstance(entry := walker.next_entry(budget), TarEntry):
+        entries.append(entry)
+    assert walker.end is not None
+    return entries, walker.end
+
+
+def _tarfile_bytes(build: Callable[[tarfile.TarFile], None], **kwargs) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", **kwargs) as t:
+        build(t)
+    return buf.getvalue()
+
+
+def _add(t: tarfile.TarFile, name: str, data: bytes = b"", **attrs) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    for key, value in attrs.items():
+        setattr(info, key, value)
+    t.addfile(info, io.BytesIO(data) if data else None)
+
+
+# ---------------------------------------------------------------------- numbers
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        (b"0000644\x00", 0o644),
+        (b"   644 \x00", 0o644),
+        (b"00000000017\x00", 15),
+        (b"\x00" * 8, 0),
+        (b" " * 8, 0),
+        (b"", 0),
+        # GNU base-256: 0x80 positive, 0xFF negative, two's complement.
+        (b"\x80" + (2**40).to_bytes(11, "big"), 2**40),
+        (b"\xff" * 12, -1),
+        (b"\xff" + b"\xff" * 10 + b"\xfe", -2),
+    ],
+)
+def test_parse_number(field: bytes, expected: int) -> None:
+    assert parse_number(field) == expected
+
+
+@pytest.mark.parametrize(
+    "field", [b"12a\x00", b"0x12\x00", b"1_0\x00", b"+12\x00", b"9\x00"]
+)
+def test_parse_number_refuses_what_is_not_octal(field: bytes) -> None:
+    with pytest.raises(ValueError):
+        parse_number(field)
+
+
+# ------------------------------------------------------------------ header blocks
+
+
+def test_zero_block() -> None:
+    assert parse_header_block(bytes(BLOCKSIZE), 1024) == ZeroBlock(1024)
+
+
+@pytest.mark.parametrize(
+    ("block", "reason"),
+    [
+        (_block(checksum=False), "bad header checksum"),
+        (
+            _block(
+                patch=lambda h: h.__setitem__(slice(148, 156), b"0001234\x00"),
+                checksum=False,
+            ),
+            "bad header checksum",
+        ),
+        (
+            _block(
+                patch=lambda h: h.__setitem__(slice(124, 136), b"12z4\x00" + bytes(7))
+            ),
+            "the size field is not a number",
+        ),
+        (
+            _block(patch=lambda h: h.__setitem__(slice(124, 136), b"\xff" * 12)),
+            "negative size -1",
+        ),
+        (b"\xff" * BLOCKSIZE, "bad header checksum"),
+    ],
+)
+def test_rejected_blocks(block: bytes, reason: str) -> None:
+    parsed = parse_header_block(block, 0)
+    assert parsed == RejectedBlock(0, reason)
+
+
+def test_signed_checksum_is_accepted() -> None:
+    """Old Sun tar summed the block as signed bytes; GNU tar accepts either sum."""
+    name = b"\xe9t\xe9"  # bytes >= 0x80 make the two sums differ
+
+    def signed(h: bytearray) -> None:
+        h[0:3] = name
+        h[148:156] = b" " * 8
+        total = sum(b - 256 if b >= 0x80 else b for b in h)
+        h[148:156] = f"{total:06o}".encode() + b"\x00 "
+
+    parsed = parse_header_block(_block(patch=signed, checksum=False), 0)
+    assert isinstance(parsed, HeaderBlock)
+    assert parsed.name == name
+
+
+def test_header_layouts() -> None:
+    ustar = parse_header_block(_block(b"name", prefix=b"some/dir"), 0)
+    assert isinstance(ustar, HeaderBlock)
+    assert (ustar.format, ustar.name) == (HeaderFormat.USTAR, b"some/dir/name")
+    # Old GNU has no prefix: its bytes 345.. hold atime, ctime and sparse slots.
+    gnu = parse_header_block(
+        _block(b"name", magic=b"ustar  \x00", prefix=b"00000000001"), 0
+    )
+    assert isinstance(gnu, HeaderBlock)
+    assert (gnu.format, gnu.name) == (HeaderFormat.GNU, b"name")
+    v7 = parse_header_block(_block(b"name", magic=b"", prefix=b"junk"), 0)
+    assert isinstance(v7, HeaderBlock)
+    assert (v7.format, v7.name) == (HeaderFormat.V7, b"name")
+
+
+# ---------------------------------------------------------------------- PAX records
+
+
+def test_pax_records_in_order_with_padding() -> None:
+    data = _rec(b"path", b"abc") + _rec(b"a", b"\xff\xfe") + b"\x00" * 20
+    records = parse_pax_records(data, binary_default=False)
+    assert [(k, v.value, v.binary) for k, v in records] == [
+        (b"path", b"abc", False),
+        (b"a", b"\xff\xfe", False),
+    ]
+
+
+def test_pax_hdrcharset_binary_marks_the_block() -> None:
+    data = _rec(b"hdrcharset", b"BINARY") + _rec(b"path", b"abc")
+    assert all(v.binary for _, v in parse_pax_records(data, binary_default=False))
+    assert parse_pax_records(b"12 path=abc\n", binary_default=True)[0][1].binary
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"13 path=abc\n",  # length one past the record
+        b"11 path=abc\n",  # length one short
+        b"4 x=\n",  # shorter than any record
+        b"x path=abc\n",
+        b"12 pathabc\nX",  # no "="
+        b"6 =ab\n",  # no key
+        b"99 path=abc\n",  # runs past the data
+    ],
+)
+def test_pax_records_refuse_bad_framing(data: bytes) -> None:
+    with pytest.raises(CorruptionError):
+        parse_pax_records(data, binary_default=False)
+
+
+# ---------------------------------------------------------------------- sparse maps
+
+
+def _never(nbytes: int, what: str) -> None:
+    raise AssertionError("charged")
+
+
+def _budget(limit: int) -> Callable[[int, str], None]:
+    left = [limit]
+
+    def charge(nbytes: int, what: str) -> None:
+        if nbytes > left[0]:
+            raise ResourceLimitError(f"{what} {nbytes} > {left[0]}")
+        left[0] -= nbytes
+
+    return charge
+
+
+def test_sparse_0_1() -> None:
+    sparse = sparse_map_0_1(b"0,5,100,3", "f", _budget(48))
+    assert (list(sparse.offsets), list(sparse.lengths)) == ([0, 100], [5, 3])
+    with pytest.raises(ResourceLimitError):
+        sparse_map_0_1(b"0,5,100,3", "f", _budget(47))
+    with pytest.raises(CorruptionError):
+        sparse_map_0_1(b"0,5,100", "f", _budget(100))
+    with pytest.raises(CorruptionError):
+        sparse_map_0_1(b"0,5,-1,3", "f", _budget(100))
+
+
+def test_sparse_0_1_is_charged_before_it_is_parsed() -> None:
+    """A map of 100 000 entries is refused from its comma count alone."""
+    value = b",".join([b"1"] * 200_000)
+    with pytest.raises(ResourceLimitError):
+        sparse_map_0_1(value, "f", _budget(1024))
+
+
+def test_sparse_0_0() -> None:
+    records = parse_pax_records(
+        _rec(b"GNU.sparse.offset", b"0")
+        + _rec(b"GNU.sparse.numbytes", b"5")
+        + _rec(b"GNU.sparse.offset", b"100")
+        + _rec(b"GNU.sparse.numbytes", b"3"),
+        binary_default=False,
+    )
+    sparse = sparse_map_0_0(records, "f", _budget(48))
+    assert (list(sparse.offsets), list(sparse.lengths)) == ([0, 100], [5, 3])
+    with pytest.raises(CorruptionError):
+        sparse_map_0_0(records[:3], "f", _budget(48))
+
+
+def _reader(data: bytes) -> Callable[[int], bytes]:
+    return io.BytesIO(data).read
+
+
+def test_sparse_1_0() -> None:
+    map_text = _data(b"2\n0\n5\n100\n3\n")
+    sparse, used = read_sparse_map_1_0(
+        _reader(map_text + b"abcdexyz"), len(map_text) + 8, "f", _budget(48)
+    )
+    assert (list(sparse.offsets), list(sparse.lengths), used) == (
+        [0, 100],
+        [5, 3],
+        BLOCKSIZE,
+    )
+
+
+def test_sparse_1_0_map_over_several_blocks() -> None:
+    entries = 200
+    text = (
+        f"{entries}\n" + "".join(f"{i * 1000}\n7\n" for i in range(entries))
+    ).encode()
+    map_text = _data(text)
+    assert len(map_text) > BLOCKSIZE
+    sparse, used = read_sparse_map_1_0(
+        _reader(map_text), len(map_text), "f", _budget(10**6)
+    )
+    assert len(sparse) == entries and used == len(map_text)
+
+
+@pytest.mark.parametrize(
+    ("data", "stored", "error"),
+    [
+        (_data(b"1\n" + b"9" * 21 + b"\n5\n"), BLOCKSIZE, CorruptionError),  # 21 digits
+        (_data(b"1" * 600), 2 * BLOCKSIZE, CorruptionError),  # a number with no end
+        (_data(b"2\n0\n5\n"), BLOCKSIZE, CorruptionError),  # map runs past the data
+        (b"2\n0\n5\n", BLOCKSIZE, TruncatedError),  # archive ends inside the map
+        (_data(b"1\nx\n5\n"), BLOCKSIZE, CorruptionError),
+    ],
+)
+def test_sparse_1_0_refusals(data: bytes, stored: int, error: type[Exception]) -> None:
+    with pytest.raises(error):
+        read_sparse_map_1_0(_reader(data), stored, "f", _budget(10**6))
+
+
+def test_sparse_1_0_is_charged_from_its_count() -> None:
+    with pytest.raises(ResourceLimitError):
+        read_sparse_map_1_0(_reader(_data(b"1000000\n")), BLOCKSIZE, "f", _budget(1024))
+
+
+def _map(*pairs: int) -> SparseMap:
+    return SparseMap.from_pairs(list(pairs))
+
+
+@pytest.mark.parametrize(
+    ("sparse", "size", "stored", "error"),
+    [
+        (_map(0, 5, 100, 3, 200, 0), 200, 8, None),
+        (_map(), 0, 0, None),
+        (
+            _map(0, 5, 0, 0, 100, 3),
+            200,
+            8,
+            None,
+        ),  # an empty entry is never out of order
+        (_map(0, -5), 200, 0, CorruptionError),
+        (_map(190, 20), 200, 20, CorruptionError),  # past the logical size
+        (_map(0, 5), 200, 6, CorruptionError),  # a stored byte nothing names
+        (_map(0, 5), 200, 4, CorruptionError),  # claims more than is stored
+        (_map(100, 3, 0, 5), 200, 8, UnsupportedFeatureError),  # out of order
+        (_map(0, 5, 3, 5), 200, 10, UnsupportedFeatureError),  # overlapping
+        (_map(100, 3, 0, 5), 200, 9, CorruptionError),  # damage outranks order
+        (_map(0, 1), 2**63, 1, CorruptionError),
+    ],
+)
+def test_validate_sparse_map(
+    sparse: SparseMap, size: int, stored: int, error: type[Exception] | None
+) -> None:
+    result = validate_sparse_map(sparse, size, stored, "f")
+    if error is None:
+        assert result is None
+    else:
+        assert type(result) is error
+
+
+# --------------------------------------------------------------------------- walker
+
+
+def test_walk_plain_members_and_their_data() -> None:
+    data = _tarfile_bytes(
+        lambda t: (_add(t, "a", b"hello"), _add(t, "b", b"x" * 600)),
+        format=tarfile.USTAR_FORMAT,
+    )
+    entries, end = _walk(data)
+    assert [(e.name, e.size, e.stored_size) for e in entries] == [
+        (b"a", 5, 5),
+        (b"b", 600, 600),
+    ]
+    assert entries[0].data_offset == BLOCKSIZE
+    assert data[entries[1].data_offset : entries[1].data_offset + 600] == b"x" * 600
+    assert end.kind == "zero_block"
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_walk_ends(seekable: bool) -> None:
+    one = _block(b"a", size=3) + _data(b"abc")
+    assert _walk(one + _END, seekable=seekable)[1] == TarEnd("zero_block", 1024)
+    assert _walk(one, seekable=seekable)[1] == TarEnd("absent", 1024)
+    assert _walk(one + b"\x00" * 100, seekable=seekable)[1] == TarEnd(
+        "short", 1024, observed_bytes=100
+    )
+    end = _walk(one + b"\xff" * BLOCKSIZE, seekable=seekable)[1]
+    assert (end.kind, end.offset) == ("rejected", 1024)
+
+
+@pytest.mark.parametrize("seekable", [True, False])
+def test_walk_truncated_inside_member_data(seekable: bool) -> None:
+    data = _block(b"a", size=2000) + b"x" * 1500
+    walker = TarWalker(io.BytesIO(data), seekable=seekable)
+    assert isinstance(walker.next_entry(), TarEntry)
+    with pytest.raises(TruncatedError):
+        walker.next_entry()
+
+
+def test_walk_truncated_inside_an_extended_header() -> None:
+    data = _block(b"PaxHeader", size=1000, typeflag=b"x") + b"20 path=x\n"
+    with pytest.raises(TruncatedError):
+        _walk(data)
+
+
+def test_walk_refuses_an_offset_past_any_file() -> None:
+    def huge(h: bytearray) -> None:
+        h[124:136] = b"\x80" + (2**63 - 600).to_bytes(11, "big")
+
+    data = _block(b"a", patch=huge) + _END
+    walker = TarWalker(io.BytesIO(data), seekable=True)
+    assert isinstance(walker.next_entry(), TarEntry)
+    with pytest.raises(CorruptionError):
+        walker.next_entry()
+
+
+def test_pax_overrides_and_gnu_long_names() -> None:
+    long = "d/" + "n" * 150
+    data = _tarfile_bytes(lambda t: _add(t, long, b"x"), format=tarfile.GNU_FORMAT)
+    (entry,), _ = _walk(data)
+    assert (entry.name, entry.name_source) == (long.encode(), NameSource.GNU_LONG)
+    data = _tarfile_bytes(
+        lambda t: _add(t, long, b"x", uid=5, uname="me", pax_headers={"uid": "7"}),
+        format=tarfile.PAX_FORMAT,
+    )
+    (entry,), _ = _walk(data)
+    assert (entry.name, entry.name_source, entry.uid, entry.uname) == (
+        long.encode(),
+        NameSource.PAX,
+        7,
+        b"me",
+    )
+
+
+@pytest.mark.parametrize("pax_first", [True, False])
+def test_pax_path_wins_over_a_gnu_long_name_in_either_order(pax_first: bool) -> None:
+    """GNU tar applies the PAX records last, whichever header came first."""
+    long_name = _block(b"././@LongLink", size=6, typeflag=b"L") + _data(b"gnu-n\x00")
+    pax = _pax({"path": "pax-n"})
+    chain = pax + long_name if pax_first else long_name + pax
+    (entry,), _ = _walk(chain + _block(b"short") + _END)
+    assert entry.name == b"pax-n"
+
+
+def test_empty_pax_value_cancels_a_global() -> None:
+    data = (
+        _pax({"uname": "global"}, typeflag=b"g")
+        + _block(b"a")
+        + _pax({"uname": ""})
+        + _block(b"b")
+        + _END
+    )
+    a, b = _walk(data)[0]
+    assert a.uname_pax is not None and a.uname_pax.value == b"global"
+    assert b.uname_pax is None
+
+
+def test_global_records_are_shared_until_a_global_header_changes_them() -> None:
+    data = (
+        _pax({"comment": "one"}, typeflag=b"g")
+        + _block(b"a")
+        + _block(b"b")
+        + _pax({"comment": "x"})
+        + _block(b"c")
+        + _pax({"comment": "two"}, typeflag=b"g")
+        + _block(b"d")
+        + _END
+    )
+    a, b, c, d = _walk(data)[0]
+    assert a.pax is b.pax
+    assert c.pax[b"comment"].value == b"x" and c.has_own_pax
+    assert d.pax[b"comment"].value == b"two"
+    assert a.pax[b"comment"].value == b"one"  # the old snapshot is unchanged
+
+
+def test_global_empty_value_deletes_the_key() -> None:
+    data = (
+        _pax({"comment": "one"}, typeflag=b"g")
+        + _pax({"comment": ""}, typeflag=b"g")
+        + _block(b"a")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert b"comment" not in entry.pax
+
+
+def test_global_hdrcharset_binary_applies_to_later_members() -> None:
+    data = (
+        _pax({"hdrcharset": "BINARY"}, typeflag=b"g")
+        + _pax({"path": "p"})
+        + _block(b"a")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert (entry.name, entry.name_binary) == (b"p", True)
+
+
+def test_a_link_name_is_kept_only_on_a_link() -> None:
+    long_link = _block(b"././@LongLink", size=4, typeflag=b"K") + _data(b"tgt\x00")
+    data = (
+        long_link
+        + _block(b"file", linkname=b"stale")
+        + long_link
+        + _block(b"sym", typeflag=b"2")
+        + _END
+    )
+    file, sym = _walk(data)[0]
+    assert file.linkname is None
+    assert (sym.linkname, sym.linkname_source) == (b"tgt", NameSource.GNU_LONG)
+
+
+def test_old_style_directory_data_is_skipped() -> None:
+    """An AREGTYPE (NUL) entry named "d/" is a directory; GNU tar skips its declared
+    data, so a header inside that data is not listed."""
+    smuggled = _block(b"smuggled", size=0)
+    data = (
+        _block(b"d/", size=BLOCKSIZE, typeflag=b"\x00")
+        + smuggled
+        + _block(b"after")
+        + _END
+    )
+    entries, end = _walk(data)
+    assert [(e.name, e.old_style_directory) for e in entries] == [
+        (b"d/", True),
+        (b"after", False),
+    ]
+    assert end.kind == "zero_block"
+
+
+def test_old_style_directory_uses_the_final_name() -> None:
+    long_name = _block(b"././@LongLink", size=9, typeflag=b"L") + _data(b"longdir/\x00")
+    data = (
+        long_name
+        + _block(b"x", size=BLOCKSIZE, typeflag=b"\x00")
+        + _block(b"smuggled")
+        + _block(b"after")
+        + _END
+    )
+    entries, _ = _walk(data)
+    assert [e.name for e in entries] == [b"longdir/", b"after"]
+
+
+@pytest.mark.parametrize("typeflag", [b"1", b"2", b"3", b"4", b"5", b"6"])
+def test_types_without_a_data_area(typeflag: bytes) -> None:
+    """A link, device, FIFO or directory announces no data with its size field:
+    ``tarfile`` and GNU tar read the next block as a header."""
+    data = _block(b"n", size=5, typeflag=typeflag) + _block(b"next") + _END
+    entries, _ = _walk(data)
+    assert [e.name for e in entries] == [b"n", b"next"]
+    assert entries[0].stored_size == 0
+
+
+def test_unknown_types_have_their_data_skipped() -> None:
+    data = (
+        _block(b"vol", size=5, typeflag=b"V") + _data(b"xxxxx") + _block(b"next") + _END
+    )
+    assert [e.name for e in _walk(data)[0]] == [b"vol", b"next"]
+
+
+def test_extended_header_chain_shares_one_budget() -> None:
+    """Four 300 KB PAX headers ahead of one member exceed a 1 MiB cap together."""
+    chunk = "a" * 300_000
+    data = b"".join(_pax({f"k{i}": chunk}) for i in range(4)) + _block(b"m") + _END
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=1048576"):
+        _walk(data, budget=(1 << 20, 1 << 20))
+    entries, _ = _walk(data, budget=(1 << 22, 1 << 22))
+    assert len(entries) == 1
+
+
+def test_extended_header_is_charged_before_it_is_read() -> None:
+    """A header declaring 8 GiB over a few bytes of archive is refused, not read."""
+    data = _block(b"PaxHeader", size=8 << 30, typeflag=b"x") + b"20 path=x\n"
+    with pytest.raises(ResourceLimitError):
+        _walk(data, budget=(1 << 20, 1 << 20))
+
+
+def test_old_gnu_sparse_with_extension_blocks() -> None:
+    chunks = [(i * 1024, 512) for i in range(30)]
+    realsize = 30 * 1024
+
+    def header(h: bytearray) -> None:
+        for i, (offset, length) in enumerate(chunks[:4]):
+            h[386 + 24 * i : 398 + 24 * i] = _octal(offset, 12)
+            h[398 + 24 * i : 410 + 24 * i] = _octal(length, 12)
+        h[482] = 1
+        h[483:495] = _octal(realsize, 12)
+
+    extension = bytearray(BLOCKSIZE)
+    for i, (offset, length) in enumerate(chunks[4:25]):
+        extension[24 * i : 24 * i + 12] = _octal(offset, 12)
+        extension[24 * i + 12 : 24 * i + 24] = _octal(length, 12)
+    extension[504] = 1
+    last = bytearray(BLOCKSIZE)
+    for i, (offset, length) in enumerate(chunks[25:]):
+        last[24 * i : 24 * i + 12] = _octal(offset, 12)
+        last[24 * i + 12 : 24 * i + 24] = _octal(length, 12)
+    stored = 30 * 512
+    data = (
+        _block(b"sp", size=stored, typeflag=b"S", magic=b"ustar  \x00", patch=header)
+        + bytes(extension)
+        + bytes(last)
+        + b"d" * stored
+        + _block(b"after")
+        + _END
+    )
+    (entry, after), _ = _walk(data)
+    assert entry.sparse_format is SparseFormat.OLD_GNU
+    assert entry.sparse is not None
+    assert list(zip(entry.sparse.offsets, entry.sparse.lengths, strict=True)) == chunks
+    assert (entry.size, entry.stored_size, entry.data_offset) == (
+        realsize,
+        stored,
+        3 * BLOCKSIZE,
+    )
+    assert (
+        validate_sparse_map(entry.sparse, entry.size, entry.stored_size, "sp") is None
+    )
+    assert after.name == b"after"
+    with pytest.raises(ResourceLimitError):
+        _walk(data, budget=(10 * 24, 10 * 24))
+
+
+def test_pax_sparse_1_0_member() -> None:
+    map_text = _data(b"1\n10\n3\n")
+    records = {
+        "GNU.sparse.major": "1",
+        "GNU.sparse.minor": "0",
+        "GNU.sparse.name": "real",
+        "GNU.sparse.realsize": "20",
+    }
+    data = (
+        _pax(records)
+        + _block(b"GNUSparseFile.1/real", size=len(map_text) + 3)
+        + map_text
+        + _data(b"abc")
+        + _END
+    )
+    (entry,), _ = _walk(data)
+    assert (entry.name, entry.sparse_format, entry.size, entry.sparse) == (
+        b"real",
+        SparseFormat.PAX_1_0,
+        20,
+        None,
+    )
+    assert entry.stored_size == BLOCKSIZE + 3
+
+
+def test_pax_sparse_minor_version_we_do_not_know() -> None:
+    data = (
+        _pax({"GNU.sparse.major": "1", "GNU.sparse.minor": "1"}) + _block(b"a") + _END
+    )
+    with pytest.raises(UnsupportedFeatureError):
+        _walk(data)
+
+
+def test_bad_pax_size_is_damage() -> None:
+    with pytest.raises(CorruptionError):
+        _walk(_pax({"size": "12x"}) + _block(b"a") + _END)
+
+
+def test_forward_only_data_stream() -> None:
+    data = _tarfile_bytes(lambda t: (_add(t, "a", b"hello"), _add(t, "b", b"world")))
+    walker = TarWalker(io.BytesIO(data), seekable=False)
+    a = walker.next_entry()
+    assert isinstance(a, TarEntry)
+    stream = walker.open_data(a)
+    assert stream.read(2) == b"he"
+    b = walker.next_entry()  # reads through the rest of "a"
+    assert isinstance(b, TarEntry)
+    with pytest.raises(ValueError):
+        stream.read()
+    assert walker.open_data(b).read() == b"world"
