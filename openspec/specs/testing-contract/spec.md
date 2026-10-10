@@ -608,7 +608,7 @@ and views that no boundary buffer sits in front of.
 | --- | --- |
 | Each declarative-corpus format, `max_chunk=1` | Listing, member types/sizes/link targets, and member bytes match the full-count open |
 | Each committed RAR / ZIP / 7z fixture that opens from a full-count source | Same parity; a fixture that does not open standalone (volume part, deliberately broken) skips |
-| `open_stream`, each raw-stream format × `seekable=False` and `True` | Decoded bytes match the full-count open |
+| `open_stream`, each format it accepts (`outer_stream_format(fmt) is not None`: every raw-stream format and every compressed tar) × `seekable=False` and `True` | Decoded bytes match the full-count open |
 | `parse_rar_archive` driven directly from a short-returning source | `header_offset` / `header_size` / `data_offset` / `compress_size` identical — a coalescing layer must report the logical position, not a buffer position |
 | Healthy archive, short-returning source | Never `CorruptionError` / `TruncatedError` |
 | Each streaming-capable format, `ShortReadNonSeekable(max_chunk=1)`, detected and with explicit `format=` | Both match the full-count open; the explicit-`format=` case does not depend on a replay prefix having been read |
