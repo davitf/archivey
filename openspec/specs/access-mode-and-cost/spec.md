@@ -33,7 +33,11 @@ source into memory or a temp file). `streaming=True` is the fix for pipes and
 sockets **only where the backend reads front to back** (TAR, the single-file
 compressors). A format that needs seek in either mode (ZIP, ISO, 7z, RAR) SHALL be
 refused with one message naming a seekable source as the fix, in both modes, rather
-than proposing a `streaming=True` retry the same call would then refuse.
+than proposing a `streaming=True` retry the same call would then refuse. That refusal
+SHALL come before the format's availability check: a pipe cannot be read even with the
+optional package installed, so a missing package MUST NOT be reported first. The
+`streaming=False` refusal for a format that does read front to back stays after the
+availability check, because there the missing package is a real step on the way.
 Eager seek-point building is not exposed.
 
 Every source `open_archive` and `open_stream` take SHALL cross one boundary, which
@@ -102,6 +106,8 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
 | `streaming=False` on non-seekable source, backend reads front to back | Error at open (before member data) naming `streaming=True` — library does not buffer |
 | Either mode on non-seekable source, backend needs seek | Same error and same message in both modes, naming a seekable source (buffer to disk or a `BytesIO`) — library does not buffer |
+| Either mode on non-seekable source, backend needs seek, its optional package missing (ISO without `pycdlib`) | The same seekability error, not `PackageNotInstalledError` |
+| `streaming=False` on non-seekable source, backend reads front to back, its codec package missing (`.tar.lz4` without `lz4`) | `PackageNotInstalledError` first; the `streaming=True` hint follows once the package is installed |
 | Seekable stream source, either mode | Full-count `read(n)` from the `ArchiveSource`: a source that is not already buffered gets a fixed-size read buffer (bounded readahead only), and one that already is (a `BytesIO`, an `open()` handle) gets no readahead. Never materialized to memory or disk |
 | Non-seekable stream source, `streaming=True` | The `ArchiveSource` gives full-count `read(n)` with no read-ahead beyond the detection prefix: `seekable()` stays `False`; reads drain the prefix first, and once it is drained (or when an explicit `format=` meant it was never filled) a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary may still buffer — `DecompressorStream` wraps its input in a `BufferedReader`, so an end-to-end `read(20)` on a compressed non-seekable open takes `io.DEFAULT_BUFFER_SIZE` from the source (8 KiB through 3.13, 128 KiB from 3.14) |
 | Non-seekable stream that is already `io.BufferedReader` | No second full-count buffer is added: the caller's buffer supplies full-count. The detection prefix sits in front of it when detection ran, and is drained first. `fileno()` forwards through the `ArchiveSource` |

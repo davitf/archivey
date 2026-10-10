@@ -155,7 +155,7 @@ command from the same metadata exposed by `format_availability()`.
 
 | Missing component kind | Support | Later error |
 | --- | --- | --- |
-| Single-codec format backend/codec missing (ISO without `pycdlib`, `.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `PackageNotInstalledError` at open with hint |
+| Single-codec format backend/codec missing (ISO without `pycdlib`, `.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `PackageNotInstalledError` at open with hint, except a non-seekable source for a format that needs seek (ISO), which gets `StreamNotSeekableError` (`access-mode-and-cost`) |
 | Multi-codec container missing optional member codec/tool | PARTIAL | Opens/lists; member read raises `PackageNotInstalledError` or documented missing-tool error |
 | 7z writing (not yet implemented) | Read support unaffected | Write raises `UnsupportedFeatureError` |
 

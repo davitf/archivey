@@ -569,7 +569,8 @@ def _open_resolved(
 
     # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
     # of the availability check, so the answer does not depend on pycdlib; a
-    # non-seekable source is left to the seekability refusal below.
+    # non-seekable source is left to the read-once refusal below, which is also ahead
+    # of it.
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
@@ -582,6 +583,27 @@ def _open_resolved(
     if unread_message is not None:
         raise UnsupportedFeatureError(
             unread_message,
+            source_format=resolved_format,
+            archive_name=archive_name,
+        )
+
+    # Access-mode contract: streaming=False never implicitly buffers a pipe.
+    # streaming=True still needs a front-to-back format (TAR, raw codecs); trailing
+    # indexes (ZIP CD, ISO) cannot.
+    source_is_read_once = (
+        not archive_source.is_directory and not archive_source.seekable()
+    )
+    # Capability first, mode second: for a format that needs seek in *either* mode
+    # the requested mode is not what went wrong, so both modes get the one message
+    # naming the only fix. Proposing streaming=True here would send the caller into
+    # a second refusal explaining the retry could never have worked. Ahead of the
+    # availability check for the same reason: a piped ISO without pycdlib would
+    # otherwise be told to install it, and only then that a pipe cannot be read.
+    if source_is_read_once and registry.needs_seekable_source(resolved_format):
+        raise StreamNotSeekableError(
+            f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
+            f"in either access mode (its index/metadata is not at the front of "
+            f"the stream). Buffer it to disk or a BytesIO and reopen.",
             source_format=resolved_format,
             archive_name=archive_name,
         )
@@ -628,31 +650,18 @@ def _open_resolved(
             ),
         )
 
-    # Access-mode contract: streaming=False never implicitly buffers a pipe.
-    # streaming=True still needs a front-to-back format (TAR, raw codecs); trailing
-    # indexes (ZIP CD, ISO) cannot.
-    if not archive_source.is_directory and not archive_source.seekable():
-        # Capability first, mode second: for a format that needs seek in *either* mode
-        # the requested mode is not what went wrong, so both modes get the one message
-        # naming the only fix. Proposing streaming=True here would send the caller into
-        # a second refusal explaining the retry could never have worked.
-        if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
-            raise StreamNotSeekableError(
-                f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
-                f"in either access mode (its index/metadata is not at the front of "
-                f"the stream). Buffer it to disk or a BytesIO and reopen.",
-                source_format=resolved_format,
-                archive_name=archive_name,
-            )
-        if not streaming:
-            raise StreamNotSeekableError(
-                f"Random access (streaming=False) requires a seekable source. Open with "
-                f"streaming=True for a single forward pass over this "
-                f"{resolved_format.display_name} stream, "
-                f"or buffer it to disk or a BytesIO and reopen.",
-                source_format=resolved_format,
-                archive_name=archive_name,
-            )
+    # The mode half of the access-mode refusal; the capability half is above. This one
+    # stays after the availability check: the format can be read from a pipe, so the
+    # missing package is a real step on the way, not a detour.
+    if source_is_read_once and not streaming:
+        raise StreamNotSeekableError(
+            f"Random access (streaming=False) requires a seekable source. Open with "
+            f"streaming=True for a single forward pass over this "
+            f"{resolved_format.display_name} stream, "
+            f"or buffer it to disk or a BytesIO and reopen.",
+            source_format=resolved_format,
+            archive_name=archive_name,
+        )
 
     # Mid-file seekable streams: rebase so every backend sees tell()==0 at the first
     # archive byte (done after detection, which peeked from the same origin).

@@ -341,6 +341,20 @@ class BackendRegistry:
             or f"Reading {fmt.display_name} is not supported."
         )
 
+    def needs_seekable_source(self, fmt: ArchiveFormat) -> bool:
+        """Whether ``fmt`` cannot be read from a non-seekable source in either mode.
+
+        Read from the backend class, never from its optional package, so the answer
+        is the same whether or not that package imports. ``open_archive`` refuses a
+        read-once source with it before ``reader_for_format``, so a pipe is not told to
+        install a package it still could not be read with. ``False`` for a format with
+        no backend: ``reader_for_format`` names that absence instead.
+        """
+        backend_cls = self._readers.get(fmt)
+        return (
+            backend_cls is not None and not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE
+        )
+
     def reader_for_format(self, fmt: ArchiveFormat) -> type[ReadBackend]:
         availability = self.format_availability(fmt)
         if availability.support is FormatSupport.NONE:
