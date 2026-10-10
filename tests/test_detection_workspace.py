@@ -317,10 +317,11 @@ def test_negative_candidate_origin_is_discarded() -> None:
     def peek_more_decoy(n: int) -> bytes:
         return (b"\x00" * 100 + b"ustar" + b"\x00" * 400)[:n]
 
-    hits = iter_magic_in_prefix(
-        peek_more_decoy, (ScanNeedle(b"ustar", 257),), limit=512
+    hit = next(
+        iter_magic_in_prefix(peek_more_decoy, (ScanNeedle(b"ustar", 257),), limit=512),
+        None,
     )
-    assert next(hits, None) is None
+    assert hit is None
 
     # ustar at absolute 257 → candidate origin 0.
     def peek_more_tar(n: int) -> bytes:

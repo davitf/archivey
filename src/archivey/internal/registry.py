@@ -134,9 +134,6 @@ class BackendRegistry:
         # Unique reader classes in registration order (a class may serve several formats).
         self._reader_classes: list[type[ReadBackend]] = []
         self._extension_map_cache: dict[str, ArchiveFormat] | None = None
-        self._extensions_longest_first_cache: (
-            tuple[tuple[str, str, ArchiveFormat], ...] | None
-        ) = None
 
     def register_reader(self, backend_cls: type[ReadBackend]) -> None:
         if backend_cls not in self._reader_classes:
@@ -144,7 +141,6 @@ class BackendRegistry:
         for fmt in backend_cls.FORMATS:
             self._readers[fmt] = backend_cls
         self._extension_map_cache = None
-        self._extensions_longest_first_cache = None
 
     def register_writer(self, backend_cls: type[WriteBackend]) -> None:
         for fmt in backend_cls.FORMATS:
@@ -243,7 +239,8 @@ class BackendRegistry:
         """The merged ``extension -> format`` map across backends and the stream codecs.
 
         Cached after first build: registration is import-time (and rare in tests), while
-        ``open_archive`` looks the map up on every call. Invalidated on ``register_reader``.
+        detection (``_detect_format_body``) looks the map up on every ``detect_format``
+        call, so once per ``open_archive``. Invalidated on ``register_reader``.
         """
         cached = self._extension_map_cache
         if cached is not None:
@@ -257,26 +254,6 @@ class BackendRegistry:
                     merged[ext] = codec.single_file_format
         self._extension_map_cache = merged
         return merged
-
-    def extensions_longest_first(self) -> tuple[tuple[str, str, ArchiveFormat], ...]:
-        """:meth:`extension_map` as ``(lowered, extension, format)``, longest first.
-
-        Detection matches a name against this order so ``.tar.gz`` beats ``.gz``.
-        Cached with :meth:`extension_map` and invalidated with it.
-        """
-        cached = self._extensions_longest_first_cache
-        if cached is not None:
-            return cached
-        ordered = tuple(
-            (ext.lower(), ext, fmt)
-            for ext, fmt in sorted(
-                self.extension_map().items(),
-                key=lambda item: len(item[0]),
-                reverse=True,
-            )
-        )
-        self._extensions_longest_first_cache = ordered
-        return ordered
 
     # --- availability --------------------------------------------------------------------
 

@@ -150,23 +150,6 @@ def test_magic_and_extension_tables_aggregate(registry: BackendRegistry) -> None
     assert registry.extension_map()[".tar"] == ArchiveFormat.TAR
 
 
-def test_extensions_longest_first_follows_a_later_registration(
-    registry: BackendRegistry,
-) -> None:
-    # The order is cached; registering a reader must rebuild it, or a longer extension
-    # registered later would lose to a shorter suffix.
-    class _TarGzBackend(_CoreBackend):
-        EXTENSIONS: Mapping[str, ArchiveFormat] = {".TAR.GZ": ArchiveFormat.TAR_GZ}
-
-    before = registry.extensions_longest_first()
-    assert all(ext != ".TAR.GZ" for _, ext, _ in before)
-    registry.register_reader(_TarGzBackend)
-    after = registry.extensions_longest_first()
-    assert after[0] == (".tar.gz", ".TAR.GZ", ArchiveFormat.TAR_GZ)
-    lengths = [len(ext) for _, ext, _ in after]
-    assert lengths == sorted(lengths, reverse=True)
-
-
 # ---------------------------------------------------------------------------
 # Tri-state PARTIAL: a multi-codec container missing an optional member codec
 # ---------------------------------------------------------------------------
