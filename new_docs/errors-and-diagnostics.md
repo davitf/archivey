@@ -42,3 +42,12 @@ a catch-all for archive problems never hides a bug. The ones you're most likely 
 member stream while another is still open, without `concurrent_members=True`. [Choosing how to
 read](reading.md) explains both. A source that isn't a path or a file object raises `TypeError`, and
 asking for a member name the archive doesn't have raises `KeyError`, as a dictionary would.
+
+Errors that aren't about the archive also pass through as themselves. A missing file raises
+`FileNotFoundError`, and a disk or permission error while reading or writing raises `OSError`, so
+catch `OSError` next to `ArchiveyError` if your program cares about both. Any other exception type
+from inside archivey is a bug, and we'd like to hear about it.
+
+Exception messages are safe to print. Control characters from the archive, such as a member name
+built to move the terminal cursor, are escaped in the message. Attributes like `e.member_name` keep
+the raw value.
