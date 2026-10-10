@@ -163,9 +163,12 @@ is named as the image. What a compressed block contains, and why that is not a
 signature detection can use, is on [`formats/dmg.md`](../formats/dmg.md) §1. The read is
 one seek to the last 512 bytes on a path or a plain seekable stream, then a seek back to
 the end of the prefix. A pipe and an `ArchiveStream` are not seeked to the end. When
-the length is unknown the far-magic step has already read its window, so an image
-that fits in that window is refused: the block is in the prefix. A longer zlib-first
-image still opens as zlib. A source shorter than 512 bytes skips the read too.
+the source is 512 bytes or more, the receipt records `trailer` as
+`CAPABILITY_UNAVAILABLE`; a shorter source records nothing, as it has no block to
+miss. When the length is unknown the
+far-magic step has already read its window, so an image that fits in that window is
+refused: the block is in the prefix. A longer zlib-first image still opens as zlib. A
+source shorter than 512 bytes skips the read too.
 
 A hit is `DMG` / `CERTAIN` / `magic`. Nothing reads the image. `open_archive` raises
 `UnsupportedFeatureError` naming UDIF. `format_availability` reports `NONE` with an
@@ -416,8 +419,9 @@ A backward seek puts the handle back. It does not re-read the prefix:
 | --- | --- | --- |
 | Path | Resolved first, as `open_archive` resolves it (§2.7); then opens its own handle for detection. Resolution's listing and peeks run before the receipt starts, so `cost_receipt` does not count them | Nothing missing |
 | Seekable stream | Reads forward from the caller's position, restores it; the archive is taken to start where the caller positioned it | Nothing missing |
-| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block. Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
+| Non-seekable, through `open_archive` / `open_stream` | Peeks through the `ArchiveSource` replay prefix; the backend reads the same object and drains the prefix first | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when detection reaches that step and the source is 512 bytes or more). Length is unknown unless the source ends inside the peek, so the probes' length-based checks do not run |
 | Non-seekable, raw, to `detect_format` | Reads what it peeks | The caller loses those bytes unless it buffers the stream itself |
+| Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
 | Directory | Nothing | Nothing to do |
 
 Detection never spools a pipe to a temporary file. The one temporary copy the library makes
@@ -439,6 +443,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
 | `detect_format` on a raw pipe leaves the caller without the bytes it read | **archivey** | By design: `open_archive` and `open_stream` keep them (§4.3) |
 | A polyglot opens as whichever format comes first | **archivey** | The tie rule (§3.1); pass `format=` |
+| A bzip2- or xz-compressed `.dmg` read from a pipe or as a member stream detects as `BZ2` / `XZ`, with `trailer` in `unavailable_tiers` | **archivey** | Its `koly` block is at the end, and those sources are not seeked there (§2.4, §4.3) |
 
 ## 6. Decisions
 
