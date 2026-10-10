@@ -1164,7 +1164,7 @@ SHALL raise `ResourceLimitError`.
 
 The system SHALL count members actually written to disk during one extraction call
 and raise `ResourceLimitError` once the count exceeds `max_entries`. The default is
-`1_048_576`; callers override through `ExtractionLimits`, and `None` disables the
+`262_144`; callers override through `ExtractionLimits`, and `None` disables the
 guard. The counter protects against inode/per-directory/syscall bombs made of many
 tiny entries and is independent of byte and ratio limits.
 

@@ -539,12 +539,9 @@ encrypted stored members before any byte is served.
 - ISO path-table entries count against `max_members` (2026-10-06, PR 612).
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
-- Default numbers (decided 2026-10-07, **not yet applied**): `max_members` and
-  `max_entries` 262,144; `max_key_derivation_rounds` 2**25. These replace the 2026-10-01
-  decision to keep 1,048,576 and 2**27, after measuring per-member listing cost. Until
-  the change lands, the shipped defaults are still 1,048,576 and 2**27. It has to land
-  in `config.py`, the archive-reading and safe-extraction specs, `docs/extracting.md`
-  and the threat model together.
+- Default numbers (decided 2026-10-07): `max_members` and `max_entries` 262,144;
+  `max_key_derivation_rounds` 2**25. These replace the 2026-10-01 decision to keep
+  1,048,576 and 2**27, after measuring per-member listing cost.
 
 **Reopen if** a measured real archive class hits a default.
 

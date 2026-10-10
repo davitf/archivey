@@ -307,7 +307,7 @@ Each budget below is a byte, count or rounds budget. None of them bounds time; t
 archive declares.
 
 **Mechanism.**
-- `ListingLimits` (`max_members` 1,048,576, `max_metadata_bytes` 64 MiB) is enforced by
+- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
   materialized list (`members()`, `scan_members()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
@@ -573,8 +573,8 @@ however many salts or candidates it involves.
 in the archive, each capped at 2^24 per derivation. That bounds one derivation, not the
 total: a crafted RAR can use a fresh salt per member at the maximum cost and a PswCheck
 no password matches, which costs 4.4 s per member per candidate (0.013 s at the usual
-2^15). So `DecoderLimits.max_key_derivation_rounds` (default `2**27`, maintainer,
-2026-09-23) bounds summed declared rounds per open archive. `internal/config.py`
+2^15). So `DecoderLimits.max_key_derivation_rounds` (default `2**25`, maintainer,
+2026-10-07; `2**27` from 2026-09-23) bounds summed declared rounds per open archive. `internal/config.py`
 `KeyDerivationBudget.spend` charges a cache miss before the derivation runs, since the
 derivation runs in `hashlib` and cannot be interrupted. The caches
 (`internal/backends/sevenzip_aes.py` `SevenZipKeyCache`, `rar_parser.py` `RarKdfCache`)
@@ -639,7 +639,7 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Mechanism.** `internal/extraction.py` `BombTracker` enforces `ExtractionLimits`: total
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
-live ratio for sources of unknown size, and an entry cap (1,048,576). The global guards
+live ratio for sources of unknown size, and an entry cap (262,144). The global guards
 raise `_AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
 
 **Residual.** The tracker is per archive and not nesting-aware
