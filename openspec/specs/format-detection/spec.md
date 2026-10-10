@@ -413,6 +413,14 @@ scan goes on, and a later 7z hit that ends exactly at end of source wins over it
 stub that embeds a whole small 7z archive does not hide the real payload after it. With no
 such later hit the short one is used, which keeps a 7z followed by trailing data readable.
 
+The window bounds where a magic may **start**, not how far its validator reads. A
+candidate that starts inside the window SHALL be judged on its whole header, read up to
+`VALIDATOR_PEEK_MAX` past the window end, so the same bytes give the same answer at the
+window end, inside the window, and on a non-seekable source. After
+`MAX_VALIDATED_CANDIDATES` (256) rejected candidates the scan SHALL stop with no answer
+and record `sfx_scan` as *budget exhausted*: the same cap the RAR and 7z parser scans
+apply, so a file of decoys means the same thing to detection as to a forced `format=`.
+
 #### Scenario: SFX matrix
 
 | Case | Expected |
@@ -424,6 +432,9 @@ such later hit the short one is used, which keeps a 7z followed by trailing data
 | **Strong** executable cue (validated PE / ELF), no RAR/7z/ZIP in window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `dev-docs/topics/detection.md` |
 | Stub containing a decoy needle the validator rejects | The scan resumes past it and finds the real payload |
+| RAR decoy whose header (bad CRC) crosses the window end | Rejected, as at any offset inside the window and on a pipe |
+| Real RAR whose main header crosses the window end | `RAR`, `payload_offset` at its marker; receipt within budget |
+| 256 rejected decoys before the real payload | No `sfx_scan` answer; `sfx_scan` recorded *budget exhausted*; forced `format=RAR` raises `CorruptionError` naming the cap |
 | Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
 | A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |

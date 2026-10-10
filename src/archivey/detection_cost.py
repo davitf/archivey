@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from archivey.internal.sfx import SFX_MAX
+
 
 class DetectionBudgetPreset(Enum):
     """Named detection budgets. ``BALANCED`` is the ``detect_format`` default."""
@@ -121,7 +123,9 @@ class DetectionCostReceipt:
 
 # ISO CD001 ends at offset 32 773 inclusive → 32 774 bytes from origin.
 _ISO_FAR_BYTES = 32_774
-_SFX_SCAN_BYTES = 2 * 1024 * 1024
+# The SFX tier's structural bound: a wider budget field would scan past what the
+# parsers accept, and a narrower default would record every miss as cut short.
+_SFX_SCAN_BYTES = SFX_MAX
 _COMPLETION_WINDOW = 64 * 1024
 _INNER_TAR_DECODE = 1 << 20
 

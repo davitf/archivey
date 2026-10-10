@@ -32,6 +32,7 @@ from archivey.detection_cost import (
     DetectionBudget,
 )
 from archivey.exceptions import (
+    CorruptionError,
     FormatDetectionError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -53,6 +54,7 @@ from archivey.internal.sfx import (
     _SCAN_CHUNK,
     MAX_VALIDATED_CANDIDATES,
     SFX_MAX,
+    VALIDATOR_PEEK_MAX,
     ExecutableCue,
     HitOutcome,
     MagicHit,
@@ -1136,7 +1138,7 @@ def test_zip_local_header_validator_accepts_a_real_header_and_rejects_a_decoy() 
 
 
 def test_zip_clamped_name_extra_peek_is_valid_when_remaining_is_known() -> None:
-    """A scan-window clamp is not a reject once remaining proves the bytes exist (F7)."""
+    """With ``remaining`` known, name/extra existence is a length compare, not a peek."""
     name = b"abcdefghijklmnop"
     extra = b"xy"
     header = (
@@ -1313,58 +1315,33 @@ def test_rar_main_header_validator_crc_fail_is_damaged() -> None:
 
 
 @pytest.mark.parametrize(
-    "filename",
-    ["stored_m0.rar", "basic_nonsolid__rar4.rar"],
-    ids=["rar5", "rar4"],
+    ("filename", "cut"),
+    [
+        ("stored_m0.rar", len(RAR5_ID)),
+        ("stored_m0.rar", 13),
+        ("stored_m0.rar", 18),
+        ("basic_nonsolid__rar4.rar", len(RAR_ID)),
+        ("basic_nonsolid__rar4.rar", 18),
+    ],
+    ids=["rar5-magic", "rar5-vint", "rar5-header", "rar4-magic", "rar4-header"],
 )
-def test_rar_clamped_header_peek_is_valid_when_remaining_is_known(
-    filename: str,
+def test_rar_short_peek_is_not_a_rar_even_when_remaining_is_known(
+    filename: str, cut: int
 ) -> None:
-    """A scan-window clamp is not a reject once remaining proves the header exists (F7)."""
+    """A header the validator was not given is not checked, so it is not ``VALID``.
+
+    Both scans give a validator every byte up to ``VALIDATOR_PEEK_MAX`` that the
+    source holds, so a short peek means the bytes are not there. A ``remaining`` that
+    claims they are cannot stand in for the header CRC.
+    """
     payload = (_RAR_FIXTURES / filename).read_bytes()
 
-    def clamped(n: int) -> bytes:
-        return payload[: min(n, 18)]
+    def short(n: int) -> bytes:
+        return payload[: min(n, cut)]
 
-    assert validate_rar_main_header(clamped, len(payload)) is HitOutcome.VALID
-    assert validate_rar_main_header(clamped, None) is HitOutcome.NOT_THIS_FORMAT
+    assert validate_rar_main_header(short, len(payload)) is HitOutcome.NOT_THIS_FORMAT
+    assert validate_rar_main_header(short, None) is HitOutcome.NOT_THIS_FORMAT
     assert validate_rar_main_header(_peek_view(payload), None) is HitOutcome.VALID
-
-
-@pytest.mark.parametrize(
-    ("filename", "magic"),
-    [("stored_m0.rar", RAR5_ID), ("basic_nonsolid__rar4.rar", RAR_ID)],
-    ids=["rar5", "rar4"],
-)
-def test_rar_magic_only_peek_is_valid_when_remaining_is_known(
-    filename: str, magic: bytes
-) -> None:
-    """A window clamped right after the magic is judged against remaining (R3-K9)."""
-    payload = (_RAR_FIXTURES / filename).read_bytes()
-
-    def clamped(n: int) -> bytes:
-        return payload[: min(n, len(magic))]
-
-    assert validate_rar_main_header(clamped, len(payload)) is HitOutcome.VALID
-    assert validate_rar_main_header(clamped, None) is HitOutcome.NOT_THIS_FORMAT
-    assert validate_rar_main_header(clamped, len(magic)) is HitOutcome.NOT_THIS_FORMAT
-
-
-@pytest.mark.parametrize("clamp", range(len(RAR5_ID) + 5, len(RAR5_ID) + 7))
-def test_rar5_clamp_inside_the_hdrlen_vint_is_valid_when_remaining_is_known(
-    clamp: int,
-) -> None:
-    """A clamp that cuts a two-byte ``hdrlen`` vint is a clamp, not a decoy (R3-K9)."""
-    # CRC, then hdrlen 0x80 0x01 = 128: the vint spans candidate bytes 12-13.
-    payload = RAR5_ID + b"\xaa\xbb\xcc\xdd" + b"\x80\x01" + bytes(200)
-
-    def clamped(n: int) -> bytes:
-        return payload[: min(n, clamp)]
-
-    assert validate_rar_main_header(clamped, len(payload)) is HitOutcome.VALID
-    assert validate_rar_main_header(clamped, None) is HitOutcome.NOT_THIS_FORMAT
-    # With every byte in hand the same bytes are judged, and the CRC fails.
-    assert validate_rar_main_header(_peek_view(payload), None) is HitOutcome.DAMAGED
 
 
 def test_rar5_truncated_vint_with_every_byte_in_hand_is_not_a_rar() -> None:
@@ -1814,3 +1791,120 @@ def test_fat_macho_stub_plus_7z_opens_real_members(tmp_path: Path) -> None:
     with open_archive(path) as archive:
         members = {m.name: archive.read(m) for m in archive.members() if m.is_file}
     assert members == _FILES
+
+
+# A RAR5 marker, a wrong header CRC, then ``hdrlen`` 60 000 (vint e0 d4 03): a decoy
+# whose CRC can only be judged by reading 60 000 bytes past the marker.
+_RAR5_LONG_DECOY = RAR5_ID + b"\xde\xad\xbe\xef" + bytes([0xE0, 0xD4, 0x03])
+
+
+@pytest.mark.parametrize(
+    "budget", [BALANCED_BUDGET, FAST_BUDGET], ids=["balanced", "fast"]
+)
+def test_rar_decoy_crossing_the_scan_window_end_is_rejected_like_one_inside(
+    tmp_path: Path, budget: DetectionBudget
+) -> None:
+    """A decoy whose header crosses the window end still gets its CRC checked.
+
+    The same bytes one window-half earlier are rejected, and a pipe rejects them at
+    both places, so the window edge must not turn them into ``RAR``.
+    """
+    window = budget.max_scan_bytes
+    config = ArchiveyConfig(detection_budget=budget)
+    for at in (window // 2, window - 100):
+        body = bytearray(b"MZ" + b"\x00" * (window + 200_000))
+        body[at : at + len(_RAR5_LONG_DECOY)] = _RAR5_LONG_DECOY
+        data = bytes(body)
+        path = tmp_path / f"decoy-{at}.bin"
+        path.write_bytes(data)
+        for source in (path, io.BytesIO(data), NonSeekableBytesIO(data)):
+            with pytest.raises(FormatDetectionError):
+                detect_format(source, config=config)  # type: ignore[arg-type]  # NonSeekableBytesIO is a binary stream
+
+
+@pytest.mark.parametrize(
+    "budget", [BALANCED_BUDGET, FAST_BUDGET], ids=["balanced", "fast"]
+)
+def test_real_rar_crossing_the_scan_window_end_is_found_within_budget(
+    tmp_path: Path, budget: DetectionBudget
+) -> None:
+    """A real RAR whose main header crosses the window end validates and is found."""
+    payload = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    at = budget.max_scan_bytes - 10
+    path = tmp_path / "edge.bin"
+    path.write_bytes(b"MZ" + b"\x00" * (at - 2) + payload)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
+    assert info.format == ArchiveFormat.RAR
+    assert info.detected_by == "sfx_scan"
+    assert info.payload_offset == at
+    assert info.cost_receipt is not None
+    assert within_budget(info.cost_receipt, budget)
+
+
+def test_every_validator_peek_fits_the_validator_allowance() -> None:
+    """The detector lets a validator read ``VALIDATOR_PEEK_MAX`` past the window.
+
+    Each validator's largest peek, on a source of unknown length, must fit in it, or
+    a candidate near the window end is judged on bytes it was not given.
+    """
+    zip_header = b"PK\x03\x04" + struct.pack(
+        "<HHHHHIIIHH", 20, 0, 8, 0, 0, 0, 0, 0, 0xFFFF, 0xFFFF
+    )
+    # ``hdrlen`` 65 536, the RAR5 validator's cap (vint 80 80 04).
+    rar5 = RAR5_ID + b"\x00\x00\x00\x00" + b"\x80\x80\x04"
+    rar4 = RAR_ID + struct.pack("<HBHH", 0, 0x73, 0, 0xFFFF)
+    cases = [
+        (validate_zip_local_header, zip_header),
+        (validate_rar_main_header, rar5),
+        (validate_rar_main_header, rar4),
+        (validate_sevenzip_signature_header, MAGIC_7Z + bytes(26)),
+    ]
+    for validator, head in cases:
+        data = head + bytes(VALIDATOR_PEEK_MAX * 2)
+        asked: list[int] = []
+
+        def peek_more(n: int, data: bytes = data, asked: list[int] = asked) -> bytes:
+            asked.append(n)
+            return data[:n]
+
+        validator(peek_more, None)
+        assert max(asked) <= VALIDATOR_PEEK_MAX, (validator.__name__, max(asked))
+
+
+# A RAR5 marker and a 10-byte header whose CRC is wrong: rejected after 23 bytes.
+_RAR5_SHORT_DECOY = RAR5_ID + b"\x00\x00\x00\x00\x0a" + bytes(10)
+
+
+@pytest.mark.parametrize(
+    ("decoys", "found"),
+    [(MAX_VALIDATED_CANDIDATES - 1, True), (MAX_VALIDATED_CANDIDATES, False)],
+    ids=["under-cap", "at-cap"],
+)
+def test_detector_and_parser_stop_at_the_same_rejected_candidate_cap(
+    tmp_path: Path, decoys: int, found: bool
+) -> None:
+    """Both SFX scans give up after ``MAX_VALIDATED_CANDIDATES`` rejected candidates.
+
+    A file of decoys means the same thing to detection as to forced ``format=RAR``,
+    and a capped detection records ``sfx_scan`` as cut short.
+    """
+    from archivey.detection_cost import TierSkip, TierSkipReason
+
+    payload = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    stub = _STUB + _RAR5_SHORT_DECOY * decoys
+    path = tmp_path / "carpet.rar"
+    path.write_bytes(stub + payload)
+    cut_short = TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+
+    info = detect_format(path)
+    if found:
+        assert info.detected_by == "sfx_scan"
+        assert info.payload_offset == len(stub)
+        assert cut_short not in info.unavailable_tiers
+        with open_archive(path, format=ArchiveFormat.RAR) as archive:
+            assert archive.members()
+    else:
+        assert info.detected_by == "extension"
+        assert cut_short in info.unavailable_tiers
+        with pytest.raises(CorruptionError, match="candidate"):
+            open_archive(path, format=ArchiveFormat.RAR)

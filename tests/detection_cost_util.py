@@ -7,6 +7,7 @@ decodes no more than its :class:`~archivey.detection_cost.DetectionBudget` decla
 from __future__ import annotations
 
 from archivey.detection_cost import DetectionBudget, DetectionCostReceipt
+from archivey.internal.sfx import VALIDATOR_PEEK_MAX
 from archivey.internal.streams.brotli_framing import CHAIN_HEADER_READ, CHAIN_MAX_LINKS
 
 
@@ -27,7 +28,9 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     Seek-based content-probe ``read_at`` charges ``unique_bytes_read`` without growing
     the prefix. Those bytes are allowed up to ``CHAIN_MAX_LINKS * CHAIN_HEADER_READ``,
     the Brotli walk's own cap, on top of the prefix/far/scan ceiling. A trailer block
-    is the same kind of extra read: :func:`trailer_allowance` bytes, once.
+    is the same kind of extra read: :func:`trailer_allowance` bytes, once. So is an
+    SFX hit validator reading the header of a candidate near the scan window's end:
+    up to ``VALIDATOR_PEEK_MAX`` bytes past ``max_scan_bytes``.
 
     ``prefix_bytes`` is the one counter not compared: it bills overlapping requests in
     full, so ``unique_bytes_read`` stands in for it.
@@ -45,7 +48,8 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     )
     return (
         receipt.unique_bytes_read
-        <= n * (read_ceiling + probe_allowance + trailer_allowance())
+        <= n
+        * (read_ceiling + probe_allowance + trailer_allowance() + VALIDATOR_PEEK_MAX)
         and receipt.far_bytes <= n * budget.max_far_bytes
         and receipt.scanned_bytes <= n * budget.max_scan_bytes
         and receipt.decode_input <= n * budget.max_decode_input

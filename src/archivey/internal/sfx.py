@@ -48,17 +48,25 @@ _T = TypeVar("_T")
 # installer stubs are of the same order) while keeping a miss cheap and bounded.
 SFX_MAX = 2 * 1024 * 1024
 
-# Rejected-candidate cap for :func:`scan_for_magic` when a validator is passed. A 2 MiB
-# window of planted 6-byte decoys is otherwise an unbounded validation loop. This is
-# structural, not a ``ListingLimits`` / ``DetectionBudget`` knob: a real SFX stub does
-# not carry hundreds of format magics, and the native parsers that call this have no
-# detection budget. 256 is a starting value; raise it here if a real archive needs more.
-#
-# :func:`iter_magic_in_prefix` is left uncapped on purpose: its search is linear in
-# the window (see :class:`_EarliestFinder`), and what the detector then spends on
-# each candidate is the detection budget's business (threat-model O11), not a
-# structural cap's.
+# Rejected-candidate cap shared by both SFX scans: :func:`scan_for_magic` when a
+# validator is passed, and the detector's scan over :func:`iter_magic_in_prefix`. A
+# 2 MiB window of planted 6-byte decoys is otherwise an unbounded validation loop, and
+# each RAR decoy can make its validator read and CRC up to 64 KiB. This is structural,
+# not a ``ListingLimits`` / ``DetectionBudget`` knob: a real SFX stub does not carry
+# hundreds of format magics, and the native parsers that call this have no detection
+# budget. The two scans share it so a file of decoys means the same thing to detection
+# as to a forced ``format=``. 256 is a starting value; raise it here if a real archive
+# needs more.
 MAX_VALIDATED_CANDIDATES = 256
+
+# How far past its candidate origin a hit validator may read. The scan window bounds
+# where a magic may *start*; a candidate that starts inside it is judged on its whole
+# header, even when that header crosses the window end. The detector extends each
+# validator's view by this much past ``scan_limit``, so no validator ever sees a short
+# peek that the source could have filled. It must cover every validator's largest
+# peek: a ZIP local header with maximal name and extra on a source of unknown length
+# (30 + 2 * 65 535 bytes), and a RAR main header at its 64 KiB cap; 7z reads 32 bytes.
+VALIDATOR_PEEK_MAX = 132 * 1024
 
 # Read granularity for the forward scan. Large enough that a full 2 MiB window is 32
 # reads, small enough that a match near the front stops early.
@@ -131,19 +139,15 @@ class HitValidator(Protocol):
     it with ``scan_limit``. The scan always passes it; ``None`` is a value, not
     an omitted argument.
 
-    ``peek_more(n)`` may return fewer than ``n`` bytes, and a short answer does
-    not by itself mean the source ended. The two callers differ:
-
-    - :func:`scan_for_magic` escalates on demand: it reads the source forward
-      until it holds ``n`` bytes past the candidate, so a short answer is EOF.
-    - The detector's SFX scan hands out a
-      :meth:`~archivey.internal.detection_workspace.PrefixWorkspace.candidate_view`
-      clamped at ``scan_limit``, so a candidate near the end of the window gets
-      a short answer while the source continues past it.
-
-    A validator must therefore judge every short peek against ``remaining``:
-    when ``remaining`` covers the bytes it needs, the peek was clamped and the
-    shortfall is not evidence against the candidate.
+    ``peek_more(n)`` returns fewer than ``n`` bytes only when the source ends,
+    for any ``n`` up to :data:`VALIDATOR_PEEK_MAX`. :func:`scan_for_magic`
+    reads the source forward until it holds ``n`` bytes past the candidate; the
+    detector's SFX scan hands out a
+    :meth:`~archivey.internal.detection_workspace.PrefixWorkspace.candidate_view`
+    that reaches :data:`VALIDATOR_PEEK_MAX` past ``scan_limit``, so a candidate
+    near the end of the window is judged on the same bytes as one inside it. A
+    short peek is therefore evidence: the header the candidate needs is not
+    there. A validator must not read more than :data:`VALIDATOR_PEEK_MAX`.
     """
 
     def __call__(

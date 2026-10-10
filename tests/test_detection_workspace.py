@@ -38,6 +38,7 @@ from archivey.detection_cost import (
 )
 from archivey.internal.detection_workspace import PrefixWorkspace
 from archivey.internal.sfx import (
+    VALIDATOR_PEEK_MAX,
     ScanNeedle,
     candidate_origin_for_hit,
     find_magic_in_prefix,
@@ -423,7 +424,8 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
 
 def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
-    # is the Brotli walk plus one trailer block.
+    # is the Brotli walk, one trailer block, and an SFX validator's header read past
+    # the scan window.
     from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.brotli_framing import (
         CHAIN_HEADER_READ,
@@ -431,7 +433,9 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     )
 
     scan = BALANCED_BUDGET.max_scan_bytes
-    allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance()
+    allowance = (
+        CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance() + VALIDATOR_PEEK_MAX
+    )
     at_cap = DetectionCostReceipt(
         unique_bytes_read=scan + allowance,
         scanned_bytes=scan,

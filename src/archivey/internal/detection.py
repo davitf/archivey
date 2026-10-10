@@ -87,11 +87,14 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.sfx import (
+    MAX_VALIDATED_CANDIDATES,
     SFX_MAX,
+    VALIDATOR_PEEK_MAX,
     ExecutableCue,
     HitOutcome,
     HitSelector,
     HitValidator,
+    ScanMiss,
     ScanNeedle,
     executable_cue,
     iter_magic_in_prefix,
@@ -596,8 +599,10 @@ def _scan_for_sfx_payload(
     candidate-internal offset (today all zero for ZIP/RAR/7z; TAR ``ustar`` → 257 once
     that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
     the raw needle position. Hits are graded by their format-owned validator (none
-    means ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback and no
-    cap: earliest *valid* match, not earliest needle. A CRC-valid decoy in the stub
+    means ``VALID``) and chosen by :class:`HitSelector` with no damaged fallback and the
+    parsers' :data:`MAX_VALIDATED_CANDIDATES` rejection cap: earliest *valid* match, not
+    earliest needle. A scan that reaches the cap answers nothing and records
+    ``sfx_scan`` as cut short, as the parsers' scan reports ``ScanMiss.CAPPED``. A CRC-valid decoy in the stub
     that ends early (``VALID_SHORT``) must not beat the real payload appended after
     it, so a later ``VALID`` hit of the *same format* displaces a held short hit; a
     ``VALID`` hit of another format ends the scan with the short hit, so the
@@ -612,7 +617,9 @@ def _scan_for_sfx_payload(
     ``scan_limit`` is the budget-clamped window (``min(SFX_MAX, budget.max_scan_bytes)``);
     the charge lands whether the scan hits or misses so the receipt reflects the work.
     This is the one place that records the ``sfx_scan`` tier as cut short, or as not
-    enabled when the window is zero.
+    enabled when the window is zero. The window bounds where a needle may start; a
+    validator may read :data:`VALIDATOR_PEEK_MAX` past it, so a candidate near the end
+    is judged on its whole header, and those bytes are charged to the prefix.
 
     ``restrict_to_validated`` is the shebang cue: a script is text, so magics appear
     as literals. Search only formats that have a hit validator — derived from
@@ -630,14 +637,17 @@ def _scan_for_sfx_payload(
     # The selector holds (format, origin); the one FormatInfo is built from the winner,
     # so a decoy-carpeted window costs no construction per candidate.
     selector: HitSelector[tuple[ArchiveFormat, int]] = HitSelector(
-        keep_damaged=False, cap=None
+        keep_damaged=False, cap=MAX_VALIDATED_CANDIDATES
     )
+    # The window bounds where a magic may start, not how far its validator reads: a
+    # candidate inside it is judged on its whole header (``VALIDATOR_PEEK_MAX``).
+    view_limit = scan_limit + VALIDATOR_PEEK_MAX
     for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
         entry = by_needle[hit.needle]
         validator = validators.get(entry.format)
         outcome = HitOutcome.VALID
         if validator is not None:
-            view = workspace.candidate_view(hit.candidate_origin, limit=scan_limit)
+            view = workspace.candidate_view(hit.candidate_origin, limit=view_limit)
             source_len = workspace.remaining_known()
             remaining = (
                 None
@@ -647,7 +657,7 @@ def _scan_for_sfx_payload(
             outcome = validator(view, remaining)
         if selector.offer(entry.format, (entry.format, hit.candidate_origin), outcome):
             break
-    chosen, _ = selector.result()
+    chosen, miss = selector.result()
     result = (
         None
         if chosen is None
@@ -667,7 +677,8 @@ def _scan_for_sfx_payload(
     cut_short = scan_limit < SFX_MAX and (source_len is None or source_len > scan_limit)
     # Take the flag on its own line: the call clears it, so it must always run.
     clamped = workspace.take_clamped_view_read()
-    if clamped or (result is None and cut_short):
+    # A capped scan stopped before the end of its window, so its miss is cut short too.
+    if clamped or miss is ScanMiss.CAPPED or (result is None and cut_short):
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     return result
 
