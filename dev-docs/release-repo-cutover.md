@@ -4,11 +4,13 @@ Maintainer runbook for promoting this repository (formerly `archivey-2`, the v2
 clean-slate reimplementation) to the canonical **`archivey`** name for public
 release, while retiring the v1 repos.
 
-**Status (2026-07-25):** rename is done — this repo is `davitf/archivey`; the
-prior v1 release repo is `davitf/archivey-old` (runbook step 1 originally said
-`archivey-v1`; the name used in practice is `archivey-old`). Remaining steps
-below are discovery metadata, Pages, PyPI Trusted Publishing, and local-clone
-remote tidy-up. Delete this page once the full cutover is complete.
+**Status (2026-10-10):** steps 1, 2 and 6 are done: this repo is `davitf/archivey`,
+and the prior v1 release repo is `davitf/archivey-old` (runbook step 1 originally said
+`archivey-v1`). Pages is enabled, with `https://davitf.github.io/archivey/` as the
+repo homepage, and `publish.yml` no longer routes on the old name. Still to confirm
+before the first release: the description and topics (step 3), the PyPI Trusted
+Publisher and the `pypi` environment (step 5), and steps 7 and 8. Delete this page once
+the full cutover is complete.
 
 ## Why rename rather than push-into or delete
 
@@ -49,7 +51,7 @@ Do these in order — the `archivey` name must be free before this repo can take
 3. **Re-apply discovery metadata** on the new `archivey`:
     - Description: `Python library for reading zip, tar, rar, 7z and other archives`
     - Topics: `python` `compression` `zip` `tar` `rar` `decompression` `archive` `7zip`
-4. **GitHub Pages.** Settings → Pages → Source = **GitHub Actions**. `mkdocs.yml`'s
+4. **GitHub Pages.** *(Enabled.)* Settings → Pages → Source = **GitHub Actions**. `mkdocs.yml`'s
    `site_url` is already `https://davitf.github.io/archivey/`, so no code change; re-set a
    custom domain if one was used.
 5. **PyPI publishing** (see `.github/workflows/publish.yml`):

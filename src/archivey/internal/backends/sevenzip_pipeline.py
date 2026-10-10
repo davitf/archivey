@@ -956,8 +956,10 @@ def _declared_decoder_memory(chain: _Chain, sources: Sequence[BinaryIO]) -> list
     """The decoder memory each decoder of a chain declares, over every BCJ2 branch.
 
     Counts what ``max_decoder_memory`` bounds per decoder: LZMA1/LZMA2 dictionary
-    sizes, the PPMd memory size and the zstd window. Other codecs declare no working
-    memory. PPMd properties that do not parse count as 0 here; the PPMd stage refuses
+    sizes, the PPMd memory size and the zstd window. The other codecs (Deflate,
+    Deflate64, BZip2, LZ4, Brotli) also hold working memory, but their formats cap it
+    at a few MiB, so they declare none here and ``max_decoder_memory`` does not count
+    them. PPMd properties that do not parse count as 0 here; the PPMd stage refuses
     them itself when it opens.
 
     A zstd window is declared in the frame header, not in the coder properties, so it
