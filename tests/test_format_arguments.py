@@ -216,15 +216,17 @@ def test_open_stream_refuses_unknown_before_any_io(kind: str, tmp_path: Path) ->
     Checked after the source probe, a missing path said "not found" and a directory said
     "use open_archive()", which refuses the same ``format=``.
     """
-    stream = io.BytesIO(gzip.compress(CONTENT))
-    source: object = {
-        "missing": tmp_path / "absent.gz",
-        "directory": tmp_path,
-        "unread stream": stream,
-    }[kind]
+    source: object
+    if kind == "missing":
+        source = tmp_path / "absent.gz"
+    elif kind == "directory":
+        source = tmp_path
+    else:
+        source = io.BytesIO(gzip.compress(CONTENT))
     with pytest.raises(ArchiveyUsageError, match="names no format"):
         open_stream(source, format="unknown")  # type: ignore[arg-type]
-    assert stream.tell() == 0
+    if isinstance(source, io.BytesIO):
+        assert source.tell() == 0
 
 
 def test_open_archive_still_accepts_an_archive_format_and_none(zip_path: Path) -> None:

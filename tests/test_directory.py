@@ -138,8 +138,9 @@ def test_directory_format_on_a_path_under_a_file_raises_what_the_os_reports(
     """The OS's own error, the same class under every format=.
 
     ``Path.exists()`` is False for this path too, and a check built on it reported
-    ENOENT under ``DIRECTORY`` while ``ZIP`` and ``None`` raised ``NotADirectoryError``.
-    The class comes from the OS: POSIX reports ENOTDIR, Windows reports ERROR_PATH_NOT_FOUND
+    ENOENT under ``DIRECTORY`` while ``ZIP`` and ``None`` raised whatever the OS
+    reported. The class comes from the OS: POSIX reports ENOTDIR
+    (``NotADirectoryError``), Windows reports ERROR_PATH_NOT_FOUND
     (``FileNotFoundError``).
     """
     (tmp_path / "a.txt").write_bytes(b"x")
