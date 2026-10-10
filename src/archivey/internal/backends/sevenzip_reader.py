@@ -28,6 +28,7 @@ import stat
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from itertools import accumulate
 from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
@@ -363,6 +364,12 @@ class SevenZipReader(BaseArchiveReader):
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+        self._folder_prefixes = {
+            folder_index: list(
+                accumulate((_member_stream_size(m) for m in members), initial=0)
+            )
+            for folder_index, members in self._folder_members.items()
+        }
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
         """A source view whose ``start`` is measured from the signature header.
@@ -1118,8 +1125,9 @@ class SevenZipReader(BaseArchiveReader):
         assert isinstance(raw, _MemberRaw)
         if raw.folder_index is None or raw.file_in_folder is None:
             return 0
-        prior = self._folder_members.get(raw.folder_index, [])[: raw.file_in_folder]
-        return sum(_member_stream_size(p) for p in prior)
+        # Running sums built once at open: summing the earlier members here, once per
+        # member, made a data pass over a solid folder quadratic in its member count.
+        return self._folder_prefixes[raw.folder_index][raw.file_in_folder]
 
     def _wrap_folder_member(
         self,

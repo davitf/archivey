@@ -563,3 +563,53 @@ def test_pipeline_helpers_require_max_members(helper: str) -> None:
         "max_members"
     ]
     assert param.default is inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# Solid folder data pass cost
+# ---------------------------------------------------------------------------
+
+
+def test_solid_folder_data_pass_sizes_each_member_a_bounded_number_of_times(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One COPY folder holding n one-byte members. Each member's offset in the folder
+    # is the sum of the earlier members' sizes; recomputing that sum for every member
+    # made a full pass over a solid folder cost n**2 / 2 size reads (125,000 here).
+    # Counting the size reads keeps the check exact and free of timing.
+    from archivey.internal.backends import sevenzip_reader
+
+    count = 500
+    payload = bytes(index % 251 for index in range(count))
+    header = _header(
+        folders=[_linear([_coder(_COPY)])],
+        coder_unpack_sizes=[[count]],
+        pack_sizes=[count],
+        names=[str(index) for index in range(count)],
+        substreams=b"\x0d"
+        + _num(count)
+        + b"\x09"
+        + b"".join(_num(1) for _ in range(count - 1)),
+    )
+    data = _archive(payload, header)
+
+    calls = 0
+    real = sevenzip_reader._member_stream_size
+
+    def counting(member: object) -> int:
+        nonlocal calls
+        calls += 1
+        return real(member)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sevenzip_reader, "_member_stream_size", counting)
+
+    with open_archive(io.BytesIO(data)) as reader:
+        streamed = b"".join(stream.read() for _, stream in reader.stream_members())
+        opened = b""
+        for member in reader.members():
+            with reader.open(member) as stream:
+                opened += stream.read()
+    assert streamed == payload
+    assert opened == payload
+    # Linear: a few size reads per member for each of the two passes.
+    assert calls <= 10 * count, calls
