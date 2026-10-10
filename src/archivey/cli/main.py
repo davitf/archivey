@@ -641,12 +641,12 @@ def main(
 
     try:
         with cli_logging(verbose=bool(args.verbose), err=err_stream):
-            code = _dispatch(args, out=out_stream, err=err_stream)
+            exit_code = _dispatch(args, out=out_stream, err=err_stream)
             # Flush here, not at interpreter exit, so a reader that closed the pipe
             # after the last write is still a broken pipe handled below.
             out_stream.flush()
             err_stream.flush()
-            return code
+            return exit_code
     except CliError as exc:
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not
         # escape its own message the way ArchiveyError does — and an archive-derived name
