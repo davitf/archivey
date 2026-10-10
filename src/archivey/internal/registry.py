@@ -237,7 +237,8 @@ class BackendRegistry:
         """The merged ``extension -> format`` map across backends and the stream codecs.
 
         Cached after first build: registration is import-time (and rare in tests), while
-        ``open_archive`` looks the map up on every call. Invalidated on ``register_reader``.
+        detection (``_detect_format_body``) looks the map up on every ``detect_format``
+        call, so once per ``open_archive``. Invalidated on ``register_reader``.
         """
         cached = self._extension_map_cache
         if cached is not None:
