@@ -663,7 +663,8 @@ class ArchiveyConfig:
     when those bytes are not valid UTF-8. The default is cp437, as the ZIP specification
     (APPNOTE) says. Set a local code page (for example ``"cp1252"`` or ``"shift_jis"``)
     for archives known to come from one. An explicit ``encoding=`` on
-    :func:`~archivey.open_archive` overrides this and turns off the UTF-8 attempt.
+    :func:`~archivey.open_archive` replaces this fallback for that archive; a name
+    whose bytes are valid UTF-8 is still decoded as UTF-8.
     """
 
     rar_allow_glob_member_concatenation: bool = False

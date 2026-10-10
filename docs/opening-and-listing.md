@@ -297,18 +297,17 @@ recipe and what each failure means.
 
 ## Names that do not decode
 
-A TAR stores member names as bytes. Archivey decodes them as UTF-8 unless you pass
-`encoding=`, whatever the process locale, so the same archive lists the same way on
-every machine. A PAX `path` record is decoded as UTF-8 first; only when its bytes are
-not valid UTF-8 does the `encoding=` you passed apply, and without one they are escaped
-as described below.
+A TAR stores member names as bytes. Archivey decodes them as UTF-8, whatever the
+process locale, so the same archive lists the same way on every machine. Only when a
+name's bytes are not valid UTF-8 does the `encoding=` you passed apply, and without one
+they are escaped as described below.
 
 On a host whose filesystem encoding is not UTF-8, this also changes what extraction
 writes. A name is written in the filesystem encoding rather than as the bytes stored in
 the archive, and a name that encoding cannot represent is rejected by the extraction
 guard (`FilterRejectionError`, "Member name cannot be encoded for the filesystem").
-Passing the locale's encoding as `encoding=` makes each name encode back to its stored
-bytes on disk.
+Passing the locale's encoding as `encoding=` makes each name that is not valid UTF-8
+encode back to its stored bytes on disk.
 
 A name written in a legacy encoding, such as Latin-1 `caf\xe9.txt`, is not valid
 UTF-8. Archivey keeps such a name rather than failing: each byte that does not decode
@@ -326,41 +325,47 @@ handle it:
 - **Name the encoding.** If you know which encoding the archive uses, pass it:
   `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP, TAR, ISO and
   RAR read `encoding=`; the other formats decode names their own way, and passing it to
-  them emits `ENCODING_ARGUMENT_UNUSED`. In some cases a name that is valid UTF-8
-  ignores it; see the next section.
+  them emits `ENCODING_ARGUMENT_UNUSED`. A name that is valid UTF-8 ignores it; see
+  the next section.
 
 ### When valid UTF-8 wins over `encoding=`
 
-You might expect `encoding=` to decide how every name is decoded. For some names it
-does not: archivey tries UTF-8 first, and uses your encoding only when the bytes are
-not valid UTF-8.
+You might expect `encoding=` to decide how every name is decoded. It does not: where
+the archive does not say which encoding a name uses, archivey tries UTF-8 first, in
+every format, and uses your encoding only when the bytes are not valid UTF-8. Your
+encoding takes the place of the format's own fallback (cp437 for ZIP, the writer's code
+page for RAR 1.5-4, escapes for TAR and ISO).
 
 | Where the name comes from | What `encoding=` does |
 | --- | --- |
 | ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8 |
-| ZIP, a name without the flag | Decodes the name, and turns off the UTF-8 guess |
+| ZIP, a name without the flag | Used only when the bytes are not valid UTF-8, in place of `zip_unflagged_fallback_encoding` |
 | ZIP, a name without the flag that has a matching Unicode Path extra field | Ignored; the name is the field's UTF-8 copy |
-| TAR, the name in the header block | Decodes every name |
+| TAR, the name, link target, `uname` or `gname` in the header block | Used only when the bytes are not valid UTF-8 |
 | TAR, a PAX `path` or `linkpath` record | Used only when the bytes are not valid UTF-8 |
 | ISO, a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target | Used only when the bytes are not valid UTF-8; without it, see below |
 | ISO, a Joliet name | Ignored; Joliet names are UTF-16 |
-| RAR 1.5-4, a name stored only as 8-bit bytes | Decodes the name, and turns off the UTF-8 guess |
-| RAR 1.5-4, a name with the Unicode flag and no UTF-16 copy | Used only when the bytes are not valid UTF-8 |
+| RAR 1.5-4, a name stored only as 8-bit bytes, with or without the Unicode flag | Used only when the bytes are not valid UTF-8 |
 | RAR5, or a RAR 1.5-4 name with a UTF-16 copy | Ignored; the name is UTF-8 or UTF-16 |
 
 The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. So does a ZIP
 Unicode Path extra field, which Info-ZIP's `zip` writes: a second copy of the name in
 UTF-8, with a checksum of the stored bytes that shows it still describes them. Its UTF-8
 bytes are then `member.raw_name`, and the stored bytes are in
-`member.extra["alternate_raw_name"]`. An ISO image never says which
-encoding its Rock Ridge names are in. Most tools write UTF-8, and older ones write
-whatever encoding the author's system used. Trying UTF-8 first means a legacy
-`encoding=` fixes the old names without turning the UTF-8 names in the same image, or
-in the next image you open with the same code, into mojibake.
+`member.extra["alternate_raw_name"]`. The other names never say which encoding they
+are in. Most tools today write UTF-8, and older ones write whatever encoding the
+author's system used. Trying UTF-8 first means a legacy `encoding=` fixes the old names
+without turning the UTF-8 names in the same archive, or in the next archive you open
+with the same code, into mojibake. When a ZIP, TAR or RAR 1.5-4 name takes the UTF-8
+reading where your `encoding=` would have given a different name, a
+`member_name_encoding_inferred` diagnostic says so and names your encoding. This
+differs from Python's `zipfile`
+`metadata_encoding` and from `unzip -O`, which apply the encoding to every ZIP name
+without the flag.
 
 The cost is that a legacy name whose bytes happen to form valid UTF-8 is read as UTF-8.
 For example, the Latin-1 name `Ã©.txt` is stored as the bytes `c3 a9 2e 74 78 74`,
-which are also the UTF-8 for `é.txt`. The ISO backend lists it as `'é.txt'` even with
+which are also the UTF-8 for `é.txt`. Archivey lists it as `'é.txt'` even with
 `encoding="latin-1"`. Real text rarely does this, because Latin-1 letters seldom fall
 into valid UTF-8 sequences. When you need a specific decoding for every name,
 `member.raw_name` holds the stored bytes in these cases, and you can decode them
@@ -377,10 +382,11 @@ symlink target is decoded to match: each part of it that names a file or directo
 the image is spelled the way that member's name is.
 
 A ZIP name without the UTF-8 flag is decoded as UTF-8 when its bytes are valid UTF-8,
-and otherwise with `ArchiveyConfig.zip_unflagged_fallback_encoding` (see
-[ZIP](formats.md#zip)). The default fallback, `cp437`, decodes every byte, so such a
-name is not escaped, though it can come back as the wrong characters. If you set the
-fallback to another encoding, bytes it cannot decode are escaped in the same way.
+and otherwise with your `encoding=`, or without one with
+`ArchiveyConfig.zip_unflagged_fallback_encoding` (see [ZIP](formats.md#zip)). The
+default fallback, `cp437`, decodes every byte, so such a name is not escaped, though it
+can come back as the wrong characters. If you pass or set another encoding, bytes it
+cannot decode are escaped in the same way.
 
 On extraction, `STRICT` (the default) and `STANDARD` write each escaped byte
 percent-encoded, as `caf%E9.txt`; only `TRUSTED` writes the stored bytes.
