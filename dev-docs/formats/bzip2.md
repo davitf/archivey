@@ -342,7 +342,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   [`library-analysis.md`](../library-analysis.md) §bzip2
 - Code: `internal/streams/codecs/bzip2_codec.py` (`Bzip2Codec`, `_Bzip2EmptyStreamCheck`),
   `rapidgzip_select.py` (`_bound_rapidgzip_source`, `_open_rapidgzip`),
-  `internal/streams/rapidgzip_child.py` (`RapidgzipChildStream`),
-  `internal/streams/rapidgzip_worker.py`
+  `rapidgzip_child.py` (`RapidgzipChildStream`), `rapidgzip_worker.py`
 - Handbook: [`single-file.md`](single-file.md) · [`gzip.md`](gzip.md) (the DEFLATE side of
   `rapidgzip`) · [`tar.md`](tar.md) (`.tar.bz2`)

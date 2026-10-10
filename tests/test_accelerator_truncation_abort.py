@@ -41,13 +41,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams import rapidgzip_child
-from archivey.internal.streams.codecs import Codec, open_codec_stream
-from archivey.internal.streams.rapidgzip_child import (
+from archivey.internal.streams.codecs import Codec, open_codec_stream, rapidgzip_child
+from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
 )
-from archivey.internal.streams.rapidgzip_worker import ERR, READ, SEEK
+from archivey.internal.streams.codecs.rapidgzip_worker import ERR, READ, SEEK
 from tests.conftest import requires
 from tests.corruption_util import is_corruption_not_truncation
 
@@ -466,7 +465,7 @@ def test_bzip2_runs_in_a_child_process() -> None:
         import bz2, io, sys
         from archivey.internal.config import AcceleratorMode, StreamConfig
         from archivey.internal.streams.codecs import Codec, open_codec_stream
-        from archivey.internal.streams.rapidgzip_child import RapidgzipChildStream
+        from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
         config = StreamConfig(seekable=True, use_indexed_bzip2=AcceleratorMode.ON)
         source = io.BytesIO(bz2.compress(b"x" * 1000))
         with open_codec_stream(Codec.BZIP2, source, config=config) as stream:
@@ -682,7 +681,7 @@ def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
     # worker's function is run in a fresh interpreter.
     probe = """
         import ctypes
-        from archivey.internal.streams.rapidgzip_worker import disable_core_dumps
+        from archivey.internal.streams.codecs.rapidgzip_worker import disable_core_dumps
         disable_core_dumps()
         print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))  # PR_GET_DUMPABLE
     """

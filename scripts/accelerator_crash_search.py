@@ -2,8 +2,8 @@
 """Look for inputs that crash rapidgzip's decoders when they run in-process.
 
 archivey runs rapidgzip in a child process for every codec it decodes (gzip, zlib, raw
-DEFLATE and bzip2; ``src/archivey/internal/streams/rapidgzip_child.py``), so a crash in
-its C++ code costs one stream and not the caller's program. This script answers whether
+DEFLATE and bzip2; ``src/archivey/internal/streams/codecs/rapidgzip_child.py``), so a
+crash in its C++ code costs one stream and not the caller's program. This script answers whether
 that isolation is still needed: it runs the decoders **in-process**, the way a caller
 without archivey would, on damaged input, and reports every crash by its signature.
 

@@ -27,13 +27,23 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
-from archivey.internal.streams.bzip2_resume import Bzip2Resume
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
     CodecSource,
     StreamCodec,
+)
+from archivey.internal.streams.codecs.bzip2_resume import Bzip2Resume
+from archivey.internal.streams.codecs.framed_decoder import (
+    FramedDecompressorStream,
+    stream_magic,
+)
+from archivey.internal.streams.codecs.rapidgzip_child import (
+    crashed_on_data,
+    from_callers_source,
+    rapidgzip_child_unavailable_reason,
+    reported_by_child,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
     _RAPIDGZIP_REQUIREMENT,
@@ -48,19 +58,9 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
-from archivey.internal.streams.decompress import (
-    FramedDecompressorStream,
-    stream_magic,
-)
 from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     report_trailing_data,
-)
-from archivey.internal.streams.rapidgzip_child import (
-    crashed_on_data,
-    from_callers_source,
-    rapidgzip_child_unavailable_reason,
-    reported_by_child,
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream

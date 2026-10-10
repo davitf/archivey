@@ -147,7 +147,7 @@ which pays the child's start on every stream, small ones included.
 stream that ends early. The throw comes from a destructor, so it happens for a path, a
 file object and a `BytesIO` alike; on an 8 MB gzip, 27 of 30 random cuts aborted the
 interpreter, and no `try` can catch it. So gzip, zlib and raw DEFLATE go through
-`RapidgzipChildStream` (`internal/streams/rapidgzip_child.py`), which runs
+`RapidgzipChildStream` (`internal/streams/codecs/rapidgzip_child.py`), which runs
 `rapidgzip_worker.py` in a separate Python (`python -P`, importing nothing from archivey).
 The abort then costs the member, not the caller. bzip2 has not been seen to abort, and runs in
 the same kind of child anyway ([`bzip2.md`](bzip2.md) §2.3). The child turns off its own core dumps before it
@@ -538,8 +538,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   [`library-analysis.md`](../library-analysis.md) §gzip, §raw Deflate / zlib
 - Code: `internal/streams/codecs/` (`gzip_codec.py`: `GzipCodec`,
   `_GzipTruncationCheckStream`; `zlib_codec.py`: `ZlibCodec`, `DeflateCodec`;
-  `rapidgzip_select.py`: the accelerator selection; `stdlib_takeover.py`) ·
-  `internal/streams/decompress.py` (`GzipDecoder`, `ZlibDecoder`) · `internal/streams/rapidgzip_child.py`,
-  `rapidgzip_worker.py`
+  `rapidgzip_select.py`: the accelerator selection; `stdlib_takeover.py`;
+  `deflate_decoder.py`: `GzipDecoder`, `ZlibDecoder`; `rapidgzip_child.py`,
+  `rapidgzip_worker.py`)
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (DEFLATE members) ·
   [`tar.md`](tar.md) (`.tar.gz`)

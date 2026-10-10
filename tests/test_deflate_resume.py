@@ -18,18 +18,18 @@ import zlib
 import pytest
 
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.internal.streams.decompress import (
+from archivey.internal.streams.codecs.deflate_decoder import (
     GzipDecompressorStream,
     ZlibDecoder,
     ZlibDecompressorStream,
 )
-from archivey.internal.streams.decompressor_stream import SeekPoint
-from archivey.internal.streams.deflate_resume import (
+from archivey.internal.streams.codecs.deflate_resume import (
     WINDOW_SIZE,
     DeflateResume,
     DeflateResumeDecoder,
     stream_end,
 )
+from archivey.internal.streams.decompressor_stream import SeekPoint
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 
 _WORDS = [

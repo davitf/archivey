@@ -7,7 +7,10 @@ decodes no more than its :class:`~archivey.detection_cost.DetectionBudget` decla
 from __future__ import annotations
 
 from archivey.detection_cost import DetectionBudget, DetectionCostReceipt
-from archivey.internal.streams.brotli_framing import CHAIN_HEADER_READ, CHAIN_MAX_LINKS
+from archivey.internal.streams.codecs.brotli_framing import (
+    CHAIN_HEADER_READ,
+    CHAIN_MAX_LINKS,
+)
 
 
 def trailer_allowance() -> int:

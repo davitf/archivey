@@ -18,7 +18,9 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.decompress import Deflate64DecompressorStream
+from archivey.internal.streams.codecs.deflate64_decoder import (
+    Deflate64DecompressorStream,
+)
 from archivey.types import MissingComponent
 
 

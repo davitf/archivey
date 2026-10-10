@@ -17,7 +17,7 @@ from types import FunctionType
 
 import pytest
 
-from archivey.internal.streams import ppmd_worker, rapidgzip_worker
+from archivey.internal.streams.codecs import ppmd_worker, rapidgzip_worker
 
 
 def _code_without_docstring(function: FunctionType) -> str:
@@ -53,7 +53,7 @@ def test_turning_off_core_dumps_survives_a_python_without_ctypes(worker: str) ->
         f"""
         import sys
         sys.modules["ctypes"] = None  # import ctypes now raises ImportError
-        from archivey.internal.streams.{worker} import disable_core_dumps
+        from archivey.internal.streams.codecs.{worker} import disable_core_dumps
         disable_core_dumps()
         print("returned")
         """
