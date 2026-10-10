@@ -119,7 +119,7 @@ The costs were measured on one 2.8 GHz core.
 
 A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16
 for RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member, so
-eight such members reach the default. Each password you try costs the same work again.
+two such members reach the default. Each password you try costs the same work again.
 
 Going over a limit raises `ResourceLimitError`.
 

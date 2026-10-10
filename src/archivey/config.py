@@ -241,10 +241,12 @@ class ListingLimits:
     max_members: int | None = 262_144
     """Most members a listing may hold.
 
-    Each listed member costs roughly 1 KB of memory whatever its name, so the default
-    allows about 256 MB at open on 7z, RAR and ISO, where a tiny compressed header can
-    declare that many members. A current Linux kernel source tree has about 90 000 files,
-    a third of the default; raise this for archives with more members.
+    Each listed member costs about 1.5 KiB of memory (measured by
+    ``scripts/measure_limit_costs.py``), so the default allows about 384 MiB at open on
+    7z, RAR and ISO, where a tiny compressed header can declare that many members. A
+    current Linux kernel source tree has about 90 000 files, a third of the default;
+    raise this for archives with more members, and lower it when opening untrusted
+    archives on a server with less memory to spare.
     """
 
     max_metadata_bytes: int | None = 64 * 2**20
