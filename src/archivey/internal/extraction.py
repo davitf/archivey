@@ -95,6 +95,20 @@ _DRY_RUN_PREFIX = "archivey-dry-run-"
 # on POSIX.
 _WINDOWS = os.name == "nt"
 
+
+def _dir_mode_as_stored(mode: int) -> int:
+    """The mode ``os.stat`` reports for a directory after ``os.chmod(path, mode)``.
+
+    On Windows a mode carries only the read-only attribute, taken from the owner-write
+    bit, and ``os.stat`` reports a directory as ``0o777`` or, read-only, ``0o555``.
+    Comparing the member's mode as given would report every existing directory as
+    having kept its mode there (``0o755`` against ``0o777``) when applying the
+    member's would have changed nothing."""
+    if not _WINDOWS:
+        return mode
+    return 0o777 if mode & stat.S_IWUSR else 0o555
+
+
 # Win32 error codes matched on ``OSError.winerror``, which exists only on Windows.
 _ERROR_INVALID_NAME = 123
 _ERROR_FILENAME_EXCED_RANGE = 206
@@ -1804,7 +1818,7 @@ class ExtractionCoordinator:
                 # the same rule as --no-overwrite-dir.
                 wanted = self._effective_mode(transformed)
                 current = stat.S_IMODE(os.stat(dest_path).st_mode)
-                if wanted is not None and wanted != current:
+                if wanted is not None and _dir_mode_as_stored(wanted) != current:
                     kept_mode = current
             else:
                 self._defer_directory_metadata(dest_path, transformed)

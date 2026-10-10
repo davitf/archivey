@@ -2729,7 +2729,11 @@ def test_hoist_reports_an_existing_directory_keeping_its_mode(
     operator's keeps its mode, and the hoist says so with the line ``-d .`` prints.
 
     Only the library printed it, and after a hoist the library never meets the
-    operator's directory: the merge does."""
+    operator's directory: the merge does.
+
+    On Windows a mode is only the read-only attribute, and 0700 is as writable as
+    0755, so the operator's directory there is a read-only one (0500, shown as 0555)."""
+    mine_mode, shown = (0o500, 0o555) if os.name == "nt" else (0o700, 0o700)
     (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
         tmp_path,
         monkeypatch,
@@ -2737,15 +2741,15 @@ def test_hoist_reports_an_existing_directory_keeping_its_mode(
         "t.tar",
         {"top/": b"", "top/a.txt": b"ARCHIVE"},
         {"top/m": b"MINE"},
-        mine_modes={"top": 0o700},
+        mine_modes={"top": mine_mode},
     )
     assert hoisted == direct
-    line = "kept existing directory's mode 0700: top"
+    line = f"kept existing directory's mode {shown:04o}: top"
     assert _report_lines(direct_err, "kept ") == [line]
     assert _report_lines(hoist_err, "kept ") == [line]
     assert _as_direct(hoist_err) == _as_direct(direct_err)
     for how in ("hoist", "direct"):
-        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == 0o700
+        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == shown
 
 
 def test_stopped_hoist_names_members_left_in_the_wrapper(
