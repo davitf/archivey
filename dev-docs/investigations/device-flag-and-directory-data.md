@@ -4,9 +4,12 @@ Investigation for two questions the 2026-10-10 code sweep left open: a device, F
 socket entry that carries data, and a directory entry that declares data. Research only;
 the sweep's pull requests (#683, #698, #706) kept the earlier behaviour until the maintainer
 ruled on this report (2026-10-10, both recommendations accepted; see
-[`design-rules.md`](../design-rules.md) DR-25). The raw tool output and the scripts are kept
-with the project's working files, not in the repo; the fixtures are rebuilt by the snippets
-under "Reproduce".
+[`design-rules.md`](../design-rules.md) DR-25, applied by PR 730 and PR 731). The raw tool
+output and the scripts are kept with the project's working files, not in the repo. Every
+crafted fixture named below is rebuilt by the script under "Reproduce"; the four real-tool
+fixtures by the two command lines there. Every `file:line` is as of archivey `a5aba3e`,
+the commit measured; `design-rules.md` is cited by rule, since this report's own pull
+request moves its lines.
 
 Tools measured here: Info-ZIP zip 3.0 / unzip 6.00, 7-Zip 23.01 (Linux), bsdtar 3.7.2
 (libarchive), GNU tar 1.35, rar / unrar 7.00, Python 3.13.16 (`zipfile`, `tarfile`),
@@ -42,8 +45,10 @@ member that has *no data* (an anti item, a data-less `OTHER`, a directory with s
 `None`). Extraction keeps creating the directory. This puts the case at the top of DR-1's
 ranking (nothing lost, everything reported) instead of "silent loss", and gives the user who
 needs the bytes a way in without a new API name. Fire only on declared uncompressed size
-greater than 0: the Java `jar` tool writes directories with compressed size 2 and
-uncompressed size 0, and Go's `archive/zip` had to learn to tolerate that. Also re-type the
+greater than 0: a deflated empty directory body (compressed size 2, uncompressed 0) is a
+shape Go's `archive/zip` had to learn to tolerate, attributed in its source to the Java
+`jar` tool (the `jar` 21.0.12 in this container stores directories with both sizes 0, so
+the attribution is Go's, not a measurement here; §Sources). Also re-type the
 TAR `REGTYPE` entry named `d/` with data to `DIRECTORY` under the same rule (GNU tar and
 7-Zip do; today archivey makes it the `FILE` `d`, the inconsistency sweep note zip-10 found).
 7z has no "directory with data" shape at all (a record with a stream is never a directory
@@ -118,20 +123,26 @@ stream-less FIFO entry as an empty regular file.
 
 ### What archivey does today, and where
 
-- Type: `zip_reader.py:999-1002`, `sevenzip_reader.py:849-861`, `rar_reader.py:2850-2857`,
-  `tar_reader.py:455-465`, `iso_reader.py:1626-1632`; shared test
-  `internal/unix_mode.py:16-28` ("`OTHER`, whatever bytes it stores").
-- `open()` refuses by type: `base_reader.py:2756-2760`. Extraction refuses `OTHER` in the
-  universal filter: `filters.py:320-324`; the writer treats it as unreachable:
-  `extraction.py:1826-1831`.
+Paths are under `src/archivey/`; lines as of `a5aba3e`.
+
+- Type: `internal/backends/zip_reader.py:999-1002`, `internal/backends/sevenzip_reader.py:849-861`,
+  `internal/backends/rar_reader.py:2850-2857`, `internal/backends/tar_reader.py:455-465`,
+  `internal/backends/iso_reader.py:1626-1632`; shared test `internal/unix_mode.py:16-28`
+  ("`OTHER`, whatever bytes it stores").
+- `open()` refuses by type: `internal/base_reader.py:2756-2760`. Extraction refuses `OTHER`
+  in the universal filter: `internal/filters.py:320-324`; the writer treats it as
+  unreachable: `internal/extraction.py:1826-1831`.
 - The file-type bits are dropped: `ArchiveMember.mode` is `S_IMODE` only
-  (`types.py:677-678`; `zip_reader.py:975`, `sevenzip_reader.py:735`,
-  `rar_reader.py:2602`, `tar_reader.py:1525`, `iso_reader.py:1656`). The only format that
-  keeps *which* special type is TAR, through `extra["tar.type"]`, `tar.devmajor`,
-  `tar.devminor` (`types.py:563-569`). `size` is kept for ZIP/7z/RAR `OTHER`
-  (spec `archive-data-model/spec.md:109`) but `None` for TAR `OTHER`
-  (`tar_reader.py:1520`), a small DR-5 gap of its own.
-- Rulings: `design-rules.md:196-198` and `:356` ("useless as files", 2026-10-06, PR 610).
+  (`types.py:677-678`; `internal/backends/zip_reader.py:975`,
+  `internal/backends/sevenzip_reader.py:735`, `internal/backends/rar_reader.py:2602`,
+  `internal/backends/tar_reader.py:1525`, `internal/backends/iso_reader.py:1656`). The
+  only format that keeps *which* special type is TAR, through `extra["tar.type"]`,
+  `tar.devmajor`, `tar.devminor` (`types.py:563-569`). `size` is kept for ZIP/7z/RAR
+  `OTHER` (spec `openspec/specs/archive-data-model/spec.md:109`) but `None` for TAR
+  `OTHER` (`internal/backends/tar_reader.py:1520`), a small DR-5 gap of its own.
+- Rulings: `design-rules.md`, the "Is the tool's result useful?" factor under "When
+  consistency and the official tool disagree", and the DR-5 ruling list ("useless as
+  files", 2026-10-06, PR 610).
 
 ### Weighing it
 
@@ -187,8 +198,8 @@ extraction writes as a file, which is harder to explain than `FILE` plus an `ext
 
 - **ZIP.** APPNOTE 4.3.8: "Zero-byte files, directories, and other file types that contain
   no content MUST NOT include file data." The only known producer that puts *anything*
-  behind a directory entry is the Java `jar` tool: a Deflate stream of nothing (compressed
-  size 2, uncompressed 0). Go's `archive/zip` documents the lesson:
+  behind a directory entry writes a Deflate stream of nothing (compressed size 2,
+  uncompressed 0); Go's `archive/zip` names the Java `jar` tool and documents the lesson:
 
   > We previously tried failing here if f.CompressedSize64 != 0, but it turns out that a
   > number of implementations (namely, the Java jar tool) don't properly set the storage
@@ -196,7 +207,10 @@ extraction writes as a file, which is harder to explain than `FILE` plus an `ext
   > size == 0. We still want to fail when a directory has associated uncompressed data …
 
   and returns `ErrFormat` from `Open()` on a directory whose uncompressed size is not 0.
-  A directory with real uncompressed bytes is a malformed or hand-built archive.
+  Measured here: `jar` 21.0.12 (`jar cf`) stores its directory entries with both sizes 0,
+  so the deflated shape is an older `jar` or a repackager (Debian bug 654899, §Sources);
+  Python's `zipfile` writes it for any deflated empty entry. A directory with real
+  uncompressed bytes is a malformed or hand-built archive.
 - **TAR.** A `DIRTYPE` (`5`) header with a size is damage to every tar reader (below).
   A regular-file typeflag whose name ends in `/` is the old V7 directory spelling; with
   data behind it, it is hand-built: `tar` never writes one.
@@ -213,8 +227,8 @@ extraction writes as a file, which is harder to explain than `FILE` plus an `ext
 ### What readers do with it
 
 Fixtures: `zip_dir_data_stored.zip`, `zip_dir_data_deflate.zip`, `zip_dir_data_dos.zip`
-(FAT host, attribute 0x10), `zip_dir_empty_deflate.zip` (the jar shape),
-`tar_dirtype_data.tar` (GNU and ustar), `tar_regtype_slash_data.tar`,
+(FAT host, attribute 0x10), `zip_dir_empty_deflate.zip` (the deflated empty directory),
+`tar_dirtype_data.tar` / `tar_dirtype_data_ustar.tar`, `tar_regtype_slash_data.tar`,
 `tar_aregtype_slash_data.tar`.
 
 | Reader | ZIP `d/` with 28 bytes | TAR `5` with data | TAR `0` or NUL typeflag, name `d/`, with data |
@@ -225,10 +239,10 @@ Fixtures: `zip_dir_data_stored.zip`, `zip_dir_data_deflate.zip`, `zip_dir_data_d
 | GNU tar | — | Directory, "Skipping to next header", exit 2 | Directory, data skipped **silently**, exit 0 |
 | Python `zipfile` | `read("d/")` returns the 28 bytes; `extractall` creates the directory and drops them | — | — |
 | Python `tarfile` | — | Lists `isdir` with size 28; does not skip the data | `0`: `FILE` `d/`, data readable; NUL: converted to `DIRTYPE`, data not skipped |
-| Go `archive/zip` | `Open()` → `ErrFormat` (tolerates the jar shape) | — | — |
+| Go `archive/zip` | `Open()` → `ErrFormat` (tolerates the deflated empty directory) | — | — |
 | archivey main | `DIRECTORY`, `size=28`; `read()` refused by type; `extract_all` → `EXTRACTED`, no diagnostic | `CorruptionError` (matches GNU tar's failure) | `0`: `FILE` `d` with data plus `MEMBER_NAME_NORMALIZED`; NUL: `CorruptionError` (PR #706 makes it a directory and skips the data) |
 
-The jar shape (`zip_dir_empty_deflate.zip`) is handled silently by every tool, archivey
+The deflated empty directory (`zip_dir_empty_deflate.zip`) is handled silently by every tool, archivey
 included; any new check must keep it that way.
 
 ### Weighing it
@@ -268,7 +282,7 @@ hand-built archives, so this is acceptable (DR-5a within DR-1).
 
 ### Diagnostic shape
 
-`MEMBER_DIRECTORY_DATA_IGNORED` (name open), context: member name, declared size,
+`MEMBER_DIRECTORY_DATA_IGNORED` (the name PR 731 uses), context: member name, declared size,
 compressed size, format. Emitted at listing time (the sizes are in the header), once per
 member, in ZIP, TAR (`0`/NUL `d/` after the retype, and PR #706's NUL case) and RAR. Default
 `collect`; in `DiagnosticPolicy.strict()`'s raise set. `extract_all` keeps status
@@ -276,6 +290,11 @@ member, in ZIP, TAR (`0`/NUL `d/` after the retype, and PR #706's NUL case) and 
 TAR and RAR and `docs/errors-and-diagnostics.md` get one row each.
 
 ## Other questions worth deciding
+
+Dispositions as of 2026-10-10: items 1, 2, 4 and 5 are settled by DR-25 as recommended
+here (1: advisory; 2: the key on `OTHER` too; 4: `d/` with data is a directory; 5: a
+non-empty extent under a special mode is a `FILE`); item 7 is DR-25 itself. Items 3 and 6
+are open and listed in `design-rules.md` §Open gaps.
 
 1. **Strict policy on Q1's diagnostic.** My recommendation is advisory only (real producer,
    bytes delivered). If you prefer parity with Q2 and `ARCHIVE_TRAILING_DATA`, it goes in
@@ -323,29 +342,45 @@ mkfifo pipe2; tar -cf tar_fifo.tar pipe2; bsdtar -cf bsdtar_fifo.tar pipe2; 7z a
 ```
 
 Crafted shapes, with the standard library (the same construction as
-`tests/test_zip.py::test_unix_special_file_is_other`):
+`tests/test_zip.py::test_unix_special_file_is_other`). This builds every crafted fixture the
+tables above name:
 
 ```python
 import io, stat, tarfile, zipfile
 DATA = b"directory or device payload\n"
-with zipfile.ZipFile("zip_fifo_data.zip", "w") as z:
-    zi = zipfile.ZipInfo("fifo", (2026, 1, 1, 0, 0, 0))
-    zi.create_system = 3
-    zi.external_attr = (stat.S_IFIFO | 0o644) << 16
-    z.writestr(zi, DATA)
-    z.writestr("after.txt", b"after\n")
-with zipfile.ZipFile("zip_dir_data.zip", "w") as z:
-    zi = zipfile.ZipInfo("d/", (2026, 1, 1, 0, 0, 0))
-    zi.create_system = 3
-    zi.external_attr = (stat.S_IFDIR | 0o755) << 16
-    z.writestr(zi, DATA)
-    z.writestr("after.txt", b"after\n")
-with tarfile.open("tar_chr_data.tar", "w", format=tarfile.GNU_FORMAT) as t:
-    ti = tarfile.TarInfo("chrdev"); ti.type = tarfile.CHRTYPE; ti.size = len(DATA)
-    ti.devmajor, ti.devminor = 1, 3
-    t.addfile(ti, io.BytesIO(DATA))
-    ti = tarfile.TarInfo("after.txt"); ti.size = 6
-    t.addfile(ti, io.BytesIO(b"after\n"))
+AFTER = b"after\n"
+
+def zip_with(out, name, attr, data, compress=zipfile.ZIP_STORED, create_system=3):
+    with zipfile.ZipFile(out, "w") as z:
+        zi = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
+        zi.create_system = create_system
+        zi.external_attr = attr << 16 if create_system == 3 else attr
+        zi.compress_type = compress
+        z.writestr(zi, data)
+        z.writestr("after.txt", AFTER)
+
+zip_with("zip_chr_data.zip", "chrdev", stat.S_IFCHR | 0o644, DATA)
+zip_with("zip_fifo_data.zip", "fifo", stat.S_IFIFO | 0o644, DATA)
+zip_with("zip_dir_data_stored.zip", "d/", stat.S_IFDIR | 0o755, DATA)
+zip_with("zip_dir_data_deflate.zip", "d/", stat.S_IFDIR | 0o755, DATA, zipfile.ZIP_DEFLATED)
+zip_with("zip_dir_empty_deflate.zip", "d/", stat.S_IFDIR | 0o755, b"", zipfile.ZIP_DEFLATED)
+zip_with("zip_dir_data_dos.zip", "d/", 0x10, DATA, create_system=0)  # FAT host, attribute 0x10
+
+def tar_with(out, name, typ, data, fmt=tarfile.GNU_FORMAT):
+    with tarfile.open(out, "w", format=fmt) as t:
+        ti = tarfile.TarInfo(name); ti.type = typ; ti.size = len(data); ti.mtime = 0
+        ti.mode = 0o755 if typ == tarfile.DIRTYPE else 0o644
+        if typ in (tarfile.CHRTYPE, tarfile.BLKTYPE): ti.devmajor, ti.devminor = 1, 3
+        t.addfile(ti, io.BytesIO(data))
+        ti = tarfile.TarInfo("after.txt"); ti.size = len(AFTER); ti.mtime = 0; ti.mode = 0o644
+        t.addfile(ti, io.BytesIO(AFTER))
+
+tar_with("tar_chr_data.tar", "chrdev", tarfile.CHRTYPE, DATA)
+tar_with("tar_fifo_data.tar", "fifo", tarfile.FIFOTYPE, DATA)
+tar_with("tar_dirtype_data.tar", "d/", tarfile.DIRTYPE, DATA)
+tar_with("tar_dirtype_data_ustar.tar", "d/", tarfile.DIRTYPE, DATA, tarfile.USTAR_FORMAT)
+tar_with("tar_regtype_slash_data.tar", "d/", tarfile.REGTYPE, DATA)
+tar_with("tar_aregtype_slash_data.tar", "d/", tarfile.AREGTYPE, DATA)
 ```
 
 Then list and extract each with `unzip`, `7z l -slt` / `7z x`, `bsdtar -tvf` / `-xvf`,
@@ -369,5 +404,6 @@ Then list and extract each with `unzip`, `7z l -slt` / `7z x`, `bsdtar -tvf` / `
 - PKWARE APPNOTE 4.3.8 and 4.4.15: <https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT>
 - Debian bug 654899 (javahelper's jh_manifest turned a jar's `META-INF/` directory entry into
   compressed size 2, uncompressed 0, and `unzip -t` flagged it: "ucsize 0 <> csize 2 for STORED
-  entry"), the jar-tool shape in the wild:
+  entry"), the deflated-empty-directory shape in the wild, from a repackager rather than
+  `jar` itself (`jar` 21.0.12 measured here stores directories with both sizes 0):
   <https://alioth-lists.debian.net/pipermail/pkg-java-maintainers/2012-January/036676.html>
