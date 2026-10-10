@@ -172,8 +172,8 @@ def parallel_plaintext_crc32(
 ) -> list[tuple[bytes, int]]:
     """Decrypt ``body`` with each password in parallel; return ``(password, crc32)``.
 
-    ``body`` is the ZipCrypto ciphertext *after* the 12-byte encryption header (e.g. a
-    :class:`~archivey.internal.streams.streamtools.slice.SlicingStream` over that range).
+    ``body`` is the ZipCrypto ciphertext *after* the 12-byte encryption header: a
+    seekable view of the member's payload, positioned after that header.
     Constant memory beyond the current chunk: one ZipCrypto state and running CRC per
     candidate. Candidate order is preserved (ties resolved by the caller via first match).
     """

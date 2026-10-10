@@ -878,6 +878,23 @@ def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
         assert ar.read("a.txt") == b"hello"
 
 
+@pytest.mark.parametrize(
+    ("this_disk", "cd_start_disk"),
+    [(2, 0), (0, 2)],
+    ids=["this_disk", "cd_start_disk"],
+)
+def test_zip64_end_record_nonzero_disk_fields_rejected(
+    this_disk: int, cd_start_disk: int
+) -> None:
+    # The ZIP64 end record's disk fields replace the classic record's 0xFFFF sentinels,
+    # so a split set's last part is refused there too.
+    raw = _genuine_zip64_bytes(
+        zip64_this_disk=this_disk, zip64_cd_start_disk=cd_start_disk
+    )
+    with pytest.raises(UnsupportedFeatureError, match="(?i)multi-volume"):
+        open_archive(io.BytesIO(raw))
+
+
 def test_plain_prefixed_and_empty_zip_still_open(tmp_path: Path) -> None:
     plain = tmp_path / "plain.zip"
     plain.write_bytes(_stdlib_zip_bytes("a.txt", b"hi"))
@@ -1124,6 +1141,46 @@ def test_overlapping_entries_bomb_translated_to_corruption() -> None:
             assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
 
 
+def test_overlap_guard_does_not_depend_on_stdlib_end_offsets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Python before 3.11.8 sets no `ZipInfo._end_offset`. Simulate that: the guard must
+    # still refuse every overlapping member.
+    real = zipfile.ZipFile._RealGetContents  # type: ignore[attr-defined]
+
+    def without_end_offsets(self: zipfile.ZipFile) -> None:
+        real(self)
+        for info in self.filelist:
+            with contextlib.suppress(AttributeError):
+                del info._end_offset  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(zipfile.ZipFile, "_RealGetContents", without_end_offsets)
+    with open_archive(io.BytesIO(_overlapping_entries_zip())) as ar:
+        overlapping = [m for m in ar.members() if m.name != "f7"]
+        for member in overlapping:
+            with raises_corruption_not_truncation(match="Overlapped entries"):
+                ar.read(member)
+        assert ar.read("f7") == b"\x00" * (1024 * 1024)
+
+
+def test_entries_sharing_one_local_header_read_only_once() -> None:
+    # Two central directory entries that point at the same local header. The first in
+    # directory order reads; the second is an overlap. stdlib picks the readable one
+    # differently on 3.11/3.12 and on 3.13+, so archivey decides it itself.
+    raw = bytearray(_stdlib_zip_bytes("a.txt", b"hello"))
+    cd = raw.index(b"PK\x01\x02")
+    eocd = raw.rindex(b"PK\x05\x06")
+    entry = bytes(raw[cd:eocd])
+    raw[eocd:eocd] = entry
+    eocd += len(entry)
+    struct.pack_into("<HHI", raw, eocd + 8, 2, 2, 2 * len(entry))
+    with open_archive(io.BytesIO(bytes(raw))) as ar:
+        first, second = ar.members()
+        assert ar.read(first) == b"hello"
+        with raises_corruption_not_truncation(match="Overlapped entries"):
+            ar.read(second)
+
+
 # ---------------------------------------------------------------------------
 # Encrypted symlink targets and explicit metadata encoding
 # ---------------------------------------------------------------------------
@@ -1253,6 +1310,18 @@ _STUB = b"#!/bin/sh\necho stub\n" + bytes(64)
 def test_encrypted_central_directory_is_unsupported(prefix: bytes) -> None:
     with pytest.raises(UnsupportedFeatureError, match="central directory"):
         open_archive(io.BytesIO(prefix + _zip_with_encrypted_directory()))
+
+
+def test_encrypted_zip64_central_directory_is_unsupported() -> None:
+    # A ZIP64 archive keeps the directory size in the ZIP64 end record; the classic
+    # record holds only 0xFFFFFFFF there. The check reads where stdlib reads.
+    raw = bytearray(_genuine_zip64_bytes())
+    cd = raw.index(b"PK\x01\x02")
+    cd_end = raw.index(b"PK\x06\x06")
+    body = cd_end - cd - 8
+    raw[cd:cd_end] = b"PK\x06\x08" + struct.pack("<I", body) + bytes([0xA5]) * body
+    with pytest.raises(UnsupportedFeatureError, match="central directory"):
+        open_archive(io.BytesIO(bytes(raw)))
 
 
 def test_record_at_the_stale_declared_offset_is_not_read_as_encryption() -> None:

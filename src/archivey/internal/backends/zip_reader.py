@@ -78,6 +78,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.backends.zip_aes import (
+    ZIP_WRONG_PASSWORD_MSG,
     WinZipAesInfo,
     iter_extra_fields,
     open_winzip_aes_member,
@@ -261,6 +262,8 @@ _ECD_SIZE: int = _zipfile_private("_ECD_SIZE")
 _ECD_COMMENT_SIZE: int = _zipfile_private("_ECD_COMMENT_SIZE")
 _ECD_COMMENT: int = _zipfile_private("_ECD_COMMENT")
 _ECD_LOCATION: int = _zipfile_private("_ECD_LOCATION")
+_ECD_DISK_NUMBER: int = _zipfile_private("_ECD_DISK_NUMBER")
+_ECD_DISK_START: int = _zipfile_private("_ECD_DISK_START")
 _EOCD_SIZE = 22
 _CD_HEADER_SIZE = 46
 
@@ -307,6 +310,13 @@ _CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
 # stdlib zipfile's wording when its handle is gone; archivey's own guards raise the same
 # message so the two are indistinguishable to a caller.
 _CLOSED_ARCHIVE_MESSAGE = "Attempt to use ZIP archive that was already closed"
+
+
+# A password candidate that passed the header check but then failed the member's own
+# checks; shared by the compressed and the STORED confirmation paths.
+_CANDIDATE_FAILED_MSG = (
+    "Password candidate failed integrity validation for this ZIP member"
+)
 
 
 def _closed_archive_error() -> ArchiveyUsageError:
@@ -690,7 +700,8 @@ def _reparse_fallback_type(
 
 
 class ZipReader(BaseArchiveReader):
-    """Reads a ZIP archive via stdlib ``zipfile``."""
+    """Reads a ZIP archive: the central directory via stdlib ``zipfile``, member data
+    via archivey's own local-header parse, decrypt stages and codec layer."""
 
     _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
@@ -838,13 +849,16 @@ class ZipReader(BaseArchiveReader):
         # index while still listing cleanly — refuse here before a convincing listing
         # turns a later local-header miss into CorruptionError.
         fp = self._archive.fp
-        if fp is not None and _classic_eocd_declares_split(fp):
+        if fp is not None and _eocd_declares_split(fp):
             self._archive.close()
             raise UnsupportedFeatureError(
                 ZIP_MULTI_VOLUME_MSG,
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
+        self._data_end = _member_data_ends(
+            self._archive.infolist(), start_dir=self._archive.start_dir
+        )
         # Reported after the members (``_iter_members``), so the listing completes.
         # Computed here rather than there because the handle is still private to
         # ``__init__``: these seeks need no ``_handle_guard()``, while the same reads
@@ -1113,8 +1127,7 @@ class ZipReader(BaseArchiveReader):
             member.is_encrypted = True
         if info.comment:
             member.comment = _decode_with_fallback(info.comment)
-        if create_system is not None:
-            member.create_system = create_system
+        member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
         if inferred_encoding is not None:
@@ -1247,13 +1260,10 @@ class ZipReader(BaseArchiveReader):
                     raise zipfile.BadZipFile(
                         f"Absurd local-header data offset: {data_start}"
                     )
-                # Mirror stdlib zipfile's overlap guard (ZipFile.open): a member whose
-                # compressed payload extends past the next entry's start is a zip bomb.
-                end_offset = getattr(info, "_end_offset", None)
-                if (
-                    end_offset is not None
-                    and data_start + max(0, info.compress_size) > end_offset
-                ):
+                # The overlap guard of stdlib's ZipFile.open, with archivey's own bounds
+                # (`_member_data_ends`): a member whose compressed payload extends past
+                # the next entry's start is a zip bomb.
+                if data_start + max(0, info.compress_size) > self._data_end[info]:
                     raise zipfile.BadZipFile(
                         f"Overlapped entries: {info.orig_filename!r} (possible zip bomb)"
                     )
@@ -1539,7 +1549,7 @@ class ZipReader(BaseArchiveReader):
             keys, check = keys_after_header(password, header)
             if check != check_byte:
                 raw.close()
-                raise wrong_password_error("Wrong password for this ZIP member")
+                raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
             return ZipCryptoDecryptStream(
                 raw, keys, length=max(0, info.compress_size - ZIPCRYPTO_HEADER_LEN)
             )
@@ -1780,9 +1790,7 @@ class ZipReader(BaseArchiveReader):
         limit_holder: list[ResourceLimitError] = []
 
         def candidate_failed(cause: Exception | None) -> EncryptionError:
-            failure = EncryptionError(
-                "Password candidate failed integrity validation for this ZIP member"
-            )
+            failure = EncryptionError(_CANDIDATE_FAILED_MSG)
             if cause is not None:
                 failure.__cause__ = cause
             if not ambiguous_holder:
@@ -1961,9 +1969,7 @@ class ZipReader(BaseArchiveReader):
                     else None
                 )
                 if winner is None:
-                    failure = EncryptionError(
-                        "Password candidate failed integrity validation for this ZIP member"
-                    )
+                    failure = EncryptionError(_CANDIDATE_FAILED_MSG)
                     if ambiguous_failure is None:
                         ambiguous_failure = failure
                 return winner
@@ -2020,7 +2026,7 @@ class ZipReader(BaseArchiveReader):
             required = EncryptionError("Password required to read this ZIP member")
             self._stamp_error_context(required, member.name)
             raise required
-        wrong = wrong_password_error("Wrong password for this ZIP member")
+        wrong = wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
         self._stamp_error_context(wrong, member.name)
         raise wrong
 
@@ -2236,43 +2242,23 @@ class ZipReader(BaseArchiveReader):
             self._archive.close()
 
 
-def _find_classic_eocd(fp: IO[bytes]) -> tuple[bytes, int, int] | None:
-    """Locate the classic end-of-central-directory record in ``fp``'s tail.
+def _member_data_ends(
+    infos: Sequence[zipfile.ZipInfo], *, start_dir: int
+) -> dict[zipfile.ZipInfo, int]:
+    """Where each entry's data must end: the next local header, or the central directory.
 
-    Returns ``(tail, idx, file_size)``: the buffer read from the end of the file, the
-    signature's index within it, and the file size (so the record's absolute position is
-    ``file_size - len(tail) + idx``). ``None`` when the file is too short or holds no
-    signature. ``fp``'s position is restored.
-
-    Uses the same search as stdlib ``zipfile._EndRecData``, so callers inspect the EOCD
-    stdlib actually parsed: first a comment-less record ending at EOF, then the
-    last-occurrence ``rfind`` for ``PK\\x05\\x06``. A decoy signature earlier in the file,
-    in the comment, or inside the record's own fields cannot make the two disagree about
-    which record is real. Callers bound-check the fields they unpack.
+    The bound for the overlap guard in ``_local_data_region``. stdlib sets the same
+    bound as ``ZipInfo._end_offset``, but only from Python 3.11.8, and 3.13 changed
+    which of two entries that share one local header gets the shared offset. Computed
+    here, the guard is the same on every Python, in the 3.11 order: the first such
+    entry in directory order reads, and each later one is an overlap.
     """
-    pos = fp.tell()
-    try:
-        fp.seek(0, io.SEEK_END)
-        size = fp.tell()
-        if size < 22:
-            return None
-        window = min(size, (1 << 16) + 22)
-        fp.seek(size - window)
-        tail = fp.read(window)
-        # stdlib's fast path: a record with no comment at the very end of the file.
-        idx = len(tail) - 22
-        if (
-            idx >= 0
-            and tail[idx : idx + 4] == b"PK\x05\x06"
-            and tail[-2:] == b"\x00\x00"
-        ):
-            return tail, idx, size
-        idx = tail.rfind(b"PK\x05\x06")
-        if idx < 0:
-            return None
-        return tail, idx, size
-    finally:
-        fp.seek(pos)
+    ends: dict[zipfile.ZipInfo, int] = {}
+    end = start_dir
+    for info in sorted(infos, key=lambda info: info.header_offset, reverse=True):
+        ends[info] = end
+        end = info.header_offset
+    return ends
 
 
 def _end_record_findings(
@@ -2410,22 +2396,26 @@ def _central_directory_overrun(
     return None
 
 
-def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
-    """True when the classic EOCD names a real non-zero disk.
+def _eocd_declares_split(fp: IO[bytes]) -> bool:
+    """True when the end record stdlib parsed names a real non-zero disk.
 
-    Reads only the two uint16 fields at EOCD+4/+6. ``0xFFFF`` is the ZIP64
-    sentinel ("value lives in the ZIP64 EOCD"), not disk 65535 — skip it so a
-    legitimate ZIP64 archive is not refused. ZIP64 multi-disk sets are already
-    caught via the locator path (``_looks_like_multivolume``).
+    The disk fields come from ``_EndRecData``: the ZIP64 end record's when there is
+    one, else the classic record's. ``0xFFFF`` in a classic field is the ZIP64
+    sentinel ("value lives in the ZIP64 record"), not disk 65535, so it is skipped
+    and a ZIP64 archive is not refused. A ZIP64 locator that counts several disks is
+    already refused by stdlib (``_looks_like_multivolume``). ``fp``'s position is
+    restored.
     """
-    found = _find_classic_eocd(fp)
-    if found is None:
+    pos = fp.tell()
+    try:
+        endrec = _end_rec_data(fp)
+    finally:
+        fp.seek(pos)
+    if endrec is None:
         return False
-    tail, idx, _size = found
-    if idx + 8 > len(tail):
-        return False
-    this_disk, cd_start_disk = struct.unpack_from("<HH", tail, idx + 4)
-    return _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk)
+    return _disk_field_is_split(endrec[_ECD_DISK_NUMBER]) or _disk_field_is_split(
+        endrec[_ECD_DISK_START]
+    )
 
 
 def _unicode_path_name(extra: bytes, stored_name: bytes) -> bytes | None:
@@ -2479,22 +2469,20 @@ def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
     recorded directory size. The offset the EOCD records is not consulted: it matches
     that position whenever it is right, and in a stub-prefixed archive with stale offsets
     it points into the stub, where four arbitrary bytes would turn damage into a false
-    Strong Encryption report. Classic EOCD only: a ZIP64 archive stores ``0xFFFFFFFF``
-    there and keeps the real size in the ZIP64 EOCD, which this does not read, so an
-    encrypted ZIP64 central directory is reported as corruption.
+    Strong Encryption report. The record and size are the ones ``_EndRecData`` gives
+    stdlib, ZIP64 included. An end record stdlib cannot parse is not this case.
     """
-    found = _find_classic_eocd(fp)
-    if found is None:
-        return False
-    tail, idx, size = found
-    if idx + 16 > len(tail):
-        return False
-    (cd_size,) = struct.unpack_from("<I", tail, idx + 12)
-    start_dir = size - len(tail) + idx - cd_size
-    if not 0 <= start_dir <= size - 4:
-        return False
     pos = fp.tell()
     try:
+        try:
+            endrec = _end_rec_data(fp)
+        except (zipfile.BadZipFile, OSError):
+            return False
+        if endrec is None:
+            return False
+        start_dir = endrec[_ECD_LOCATION] - endrec[_ECD_SIZE]
+        if start_dir < 0:
+            return False
         fp.seek(start_dir)
         return fp.read(4) == _ZIP_ARCHIVE_EXTRA_DATA_SIG
     finally:

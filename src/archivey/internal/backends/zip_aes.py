@@ -39,6 +39,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
 )
 
+# The wrong-password message of every ZIP decrypt path (ZipCrypto and WinZip AES), so
+# the paths cannot drift apart.
+ZIP_WRONG_PASSWORD_MSG = "Wrong password for this ZIP member"
+
 # WinZip AES extra-field header id.
 _AES_EXTRA_ID = 0x9901
 _HMAC_LEN = 10
@@ -335,7 +339,7 @@ def open_winzip_aes_member(
         password, salt=salt, key_len=aes.key_len
     )
     if not hmac.compare_digest(stored_verify, pw_verify):
-        raise wrong_password_error("Wrong password for this ZIP member")
+        raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
 
     cipher_len = compress_size - overhead
     return WinZipAesDecryptStream(

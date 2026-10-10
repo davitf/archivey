@@ -155,8 +155,9 @@ field `0x0017` SHALL list with `is_encrypted=True`, and opening it SHALL raise
 Listing a symlink of this kind SHALL leave `link_target` unset and emit
 `SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When stdlib
 cannot read the central directory and an archive extra data record
-(`PK\x06\x08`) sits where stdlib reads the directory (the EOCD position minus
-the recorded directory size), opening the archive SHALL
+(`PK\x06\x08`) sits where stdlib reads the directory (the end record's position
+minus the recorded directory size, from the ZIP64 end record when there is one),
+opening the archive SHALL
 raise `UnsupportedFeatureError` naming Strong Encryption rather than
 `CorruptionError`.
 
@@ -253,8 +254,9 @@ any other missing path.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
 rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:
-Info-ZIP `.zNN` segment names, non-zero classic EOCD disk fields (`0xFFFF` is the
-ZIP64 sentinel, not a disk number), and ZIP64 locator `disks > 1`. Info-ZIP
+Info-ZIP `.zNN` segment names, non-zero EOCD disk fields (the ZIP64 end record's
+when there is one; a classic `0xFFFF` is the ZIP64 sentinel, not a disk number), and
+ZIP64 locator `disks > 1`. Info-ZIP
 `zip -s` writes a genuinely spanned
 set addressed by `(disk, offset-within-disk)`, which stdlib `zipfile` cannot
 resolve; a linear join lists correctly and then reads only whichever members
