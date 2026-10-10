@@ -211,7 +211,7 @@ there both lists grow for the whole pass.
 
 | Field | From |
 | --- | --- |
-| `type` | typeflag through tarfile's predicates: directory, symlink, hardlink, file. Everything else, including devices, FIFOs and contiguous files, is `OTHER`, with `extra["tar.type"]` holding the typeflag byte and `extra["special_file_type"]` the cross-format kind (`"unknown"` for a typeflag that is none of `3`, `4`, `6`). TAR has no data-bearing special entry: GNU tar and libarchive ignore the size field of a device or FIFO header, so a non-zero size there is damage (`CorruptionError`), never a `FILE` |
+| `type` | typeflag through tarfile's predicates: directory, symlink, hardlink, file (a contiguous file, typeflag `7`, is a regular file to tarfile). Everything else, including devices, FIFOs, GNU dumpdirs and volume headers, is `OTHER`, with `extra["tar.type"]` holding the typeflag byte; a device or FIFO (`3`, `4`, `6`) also gets `extra["special_file_type"]`, the cross-format kind. TAR has no data-bearing special entry: GNU tar and libarchive ignore the size field of a device or FIFO header, so a non-zero size there is damage (`CorruptionError`), never a `FILE` |
 | `name` | tarfile's decoded name after PAX and GNU overrides, normalized with `backslash_is_separator=False`, since a backslash is a legal POSIX filename character. `./` prefixes go and a directory gets a trailing `/`, with `MEMBER_NAME_NORMALIZED` for each change |
 | `raw_name` | Rebuilt by `_recover_raw_name`. A PAX `path` is UTF-8 unless its own block says `hdrcharset=BINARY`; a ustar or GNU long name is re-encoded with the archive `encoding` and tarfile's `surrogateescape`. tarfile does not record where a name came from, so a name equal to `pax_headers["path"]` is taken as PAX. `None` when no codec reproduces it |
 | `link_target` | `linkname` exactly as stored, for symlinks and hardlinks. A hardlink stores an archive path, so a tar made from `./d` stores `./d/b` while the member it names is listed as `d/b`. `link_target_member` is the resolved one |
@@ -222,7 +222,7 @@ there both lists grow for the whole pass.
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
 | `mode`, `uid`, `gid`, `uname`, `gname` | Straight from the header. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
 | `is_sparse` | `TarInfo.issparse()`, which is true for the old GNU `S` typeflag and for all three PAX sparse encodings |
-| `extra` | `tar.type` always; `special_file_type` on `OTHER` members; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
+| `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
 
 `encoding=` reaches `tarfile.open`; without it the reader passes `"utf-8"`, not
 tarfile's own default (`tarfile.ENCODING`, the filesystem encoding on POSIX), so a

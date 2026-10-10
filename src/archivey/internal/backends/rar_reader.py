@@ -727,9 +727,9 @@ def _rar_member_extra_and_link(
     extra = MemberExtra()
     link_target: str | None = None
     special = _rar_special_file_type(info)
-    if special is not None and not (
-        info.is_directory or info.is_symlink or info.is_hardlink_or_copy
-    ):
+    if special is not None:
+        # Whatever type ``_member_type`` gives the entry (a file copy is a FILE even
+        # though it carries a redirect), the key records what the mode said (DR-25).
         extra[EXTRA_SPECIAL_FILE_TYPE] = special
     if info.file_redir is not None:
         link_target = _rar5_redirect_target(info.file_redir)

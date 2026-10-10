@@ -9,7 +9,9 @@ format's directory marker, and when the entry carries a data stream the entry is
 ``FILE`` whose bytes are the content, as unzip, 7-Zip, bsdtar and ``zipfile`` deliver
 them (Info-ZIP's ``zip -FI`` writes exactly that shape for a named pipe). A special-mode
 entry with no stream is ``OTHER``: an empty file in its place would lose what the
-archive said it was. Either way ``extra["special_file_type"]`` keeps the stored type.
+archive said it was. Whatever type the member ends up with, ``extra["special_file_type"]``
+records what the mode's file-type bits (or the TAR typeflag) named, so a re-typed entry
+(a RAR file copy, a reparse point whose data is not a link) never loses it.
 """
 
 from __future__ import annotations
@@ -55,8 +57,12 @@ def special_file_type(mode: int) -> SpecialFileType | None:
     return _SPECIAL_FILE_TYPES.get(mode & UNIX_FILE_TYPE_MASK, "unknown")
 
 
-def special_file_type_from_tar_typeflag(typeflag: bytes) -> SpecialFileType:
-    """The ``extra["special_file_type"]`` value for a TAR member that tarfile's
-    predicates typed neither file, directory, symlink nor hard link: a device or
-    FIFO typeflag, or anything unknown (a GNU long-name placeholder, a vendor type)."""
-    return _TAR_SPECIAL_TYPEFLAGS.get(typeflag, "unknown")
+def special_file_type_from_tar_typeflag(typeflag: bytes) -> SpecialFileType | None:
+    """The ``extra["special_file_type"]`` value for a TAR typeflag, or ``None``.
+
+    Only the character-device, block-device and FIFO typeflags (``3``, ``4``, ``6``)
+    name a special file. The other typeflags tarfile types ``OTHER`` (a GNU dumpdir
+    ``D``, a volume header ``V``, a vendor type) are not special files, so they get no
+    key: the key means "the archive recorded a device, FIFO or socket" in every format.
+    """
+    return _TAR_SPECIAL_TYPEFLAGS.get(typeflag)

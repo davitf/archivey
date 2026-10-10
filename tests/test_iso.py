@@ -980,6 +980,25 @@ def test_a_rock_ridge_device_node_without_data_is_other(tmp_path: Path) -> None:
     assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
 
 
+_PX_DIRECTORY = struct.pack("<I", 0o040755) + struct.pack(">I", 0o040755)
+
+
+def test_a_directory_mode_on_an_empty_file_record_is_other_without_a_kind() -> None:
+    """A PX mode of ``S_IFDIR`` on a file record (not a directory record) over an
+    empty extent is OTHER, but it names no device, FIFO or socket, so there is no
+    ``extra["special_file_type"]``: the key records a special file, not "OTHER"."""
+    data = _build_rr_iso(_empty_and_regular_rr_files)
+    assert data.count(_PX_REGULAR) == 2
+    data = data.replace(_PX_REGULAR, _PX_DIRECTORY, 1)
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["aaa"].type is MemberType.OTHER
+        assert "special_file_type" not in by_name["aaa"].extra
+        assert by_name["bbb"].type is MemberType.FILE
+        codes = [d.code for d in ar.diagnostics.retained]
+        assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
+
+
 def test_a_rock_ridge_device_node_with_data_is_a_file(tmp_path: Path) -> None:
     """A device mode over a non-empty extent is a FILE whose bytes are the content:
     the extent is the structure, the PX mode an attribute (DR-25). The stored type

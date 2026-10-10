@@ -1081,7 +1081,9 @@ class ZipReader(BaseArchiveReader):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
-        if special is not None and member_type in (MemberType.FILE, MemberType.OTHER):
+        if special is not None:
+            # Whatever the type decided above, the key records what the mode said, so
+            # a reparse point that settles or re-types to FILE keeps it (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if alternate_raw_name is not None:
             extra[EXTRA_ALTERNATE_RAW_NAME] = alternate_raw_name
@@ -1160,7 +1162,9 @@ class ZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
-        if special is not None and member_type is MemberType.FILE:
+        if special is not None and member.type is MemberType.FILE:
+            # member.type, not member_type: the settle above can re-type a reparse
+            # point with no reparse data to the fallback FILE.
             self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)

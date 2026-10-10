@@ -88,12 +88,18 @@ the file-type bits of the stored mode (a mode with no file-type bits is not spec
 when the entry has no data stream, even where the format's own tool writes it as an
 empty regular file (unzip, 7-Zip): an empty file in its place would hide what the
 archive said it was. An entry whose mode names a special file but that owns a data
-stream (ZIP, 7z, RAR, ISO; TAR cannot, its typeflag is the structure) SHALL be
-`MemberType.FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported: the stream is the
-structure and the mode an attribute, and `OTHER` would hide bytes every official tool
-writes out (design rule DR-25). Every special-mode member, `FILE` or `OTHER`, SHALL
+stream (ZIP, 7z, RAR, ISO) SHALL be `MemberType.FILE` with
+`MEMBER_SPECIAL_FILE_HAS_DATA` reported: the stream is the structure and the mode an
+attribute, and `OTHER` would hide bytes every official tool writes out (design rule
+DR-25). In TAR the typeflag is the structure and GNU tar ignores the size field of a
+device or FIFO header, so a header of typeflag `3`, `4` or `6` with a non-zero size
+SHALL be refused as `CorruptionError`. Every member whose stored mode's file-type bits
+(or TAR typeflag `3`/`4`/`6`) named a device, FIFO, socket or unknown file type SHALL
 carry `extra["special_file_type"]` ∈ `{"fifo","char_device","block_device","socket",
-"unknown"}` so the stored kind is never lost. `MemberType.ANTI` SHALL be a
+"unknown"}`, whatever type the member ends up with (a RAR file copy is `FILE` by its
+redirect record), so the stored kind is never lost; an `OTHER` member that recorded no
+such mode (a GNU dumpdir, an ISO file record with a directory's `S_IFDIR` mode) has no
+key. `MemberType.ANTI` SHALL be a
 deletion/tombstone marker (`is_file` false, no payload); it SHALL NOT be treated as
 `OTHER`.
 

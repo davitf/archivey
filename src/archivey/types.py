@@ -485,8 +485,8 @@ EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
 EXTRA_SPECIAL_FILE_TYPE: Final = "special_file_type"
 
 SpecialFileType = Literal["fifo", "char_device", "block_device", "socket", "unknown"]
-"""Values of ``extra["special_file_type"]``: the stored type of a device, FIFO, socket
-or unknown entry, as the format recorded it."""
+"""Values of ``extra["special_file_type"]``: the stored type of a device, FIFO or socket
+entry as the format recorded it, or ``"unknown"`` for file-type bits no Unix type uses."""
 
 
 class MemberExtra(dict[str, object]):
@@ -514,10 +514,13 @@ class MemberExtra(dict[str, object]):
       stores once under an earlier member (a RAR5 file reference, ``rar -oi``).
       ``link_target`` names that source and ``link_target_member`` is it.
     * ``special_file_type`` (``"fifo" | "char_device" | "block_device" | "socket" |
-      "unknown"``) — every format. The entry's stored type when it is a device, FIFO,
-      socket or an unknown kind: set on the stream-less ``OTHER`` member that type
-      makes, and on the ``FILE`` that a special-mode entry carrying data becomes (its
-      bytes are the content, as every extractor delivers them). TAR keeps
+      "unknown"``) — every format. What the entry's stored Unix mode (ZIP, 7z, RAR,
+      Rock Ridge) or TAR typeflag named when that is a device, FIFO or socket;
+      ``"unknown"`` is a mode whose file-type bits no Unix type uses. Set whatever type
+      the member ends up with: the stream-less ``OTHER`` such an entry usually is, the
+      ``FILE`` it becomes when it carries data (its bytes are the content, as unzip,
+      7-Zip, bsdtar and ``zipfile`` deliver them), or a RAR file copy. Absent on an
+      ``OTHER`` member that is not a special file (a GNU dumpdir in TAR). TAR keeps
       ``tar.type`` as well.
     * ``alternate_raw_name`` (``bytes``) — ZIP. The other stored spelling of the
       name, when the archive stores two and ``raw_name`` is the one ``name`` was

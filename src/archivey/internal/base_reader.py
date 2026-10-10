@@ -1852,11 +1852,18 @@ class BaseArchiveReader(ArchiveReader):
         assert isinstance(special, str)
         size = member.size
         stored = "data" if size is None else f"{size} bytes"
+        # "unknown" stands for file-type bits no Unix type uses; the four named
+        # kinds read as nouns.
+        kind = (
+            "an unrecognized file type"
+            if special == "unknown"
+            else f"a {special.replace('_', ' ')}"
+        )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA,
             message=(
                 f"Member {quoted(member.name)} is listed as a file: the archive marks "
-                f"it as a {special.replace('_', ' ')} and stores {stored} for it."
+                f"it as {kind} and stores {stored} for it."
             ),
             context=SpecialFileDataContext(
                 archive_name=self._archive_name,

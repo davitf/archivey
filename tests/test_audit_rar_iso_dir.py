@@ -346,6 +346,49 @@ def test_unix_special_file_with_data_is_a_file(
             assert (tmp_path / "out" / "@atfile").read_bytes() == payloads["@atfile"]
 
 
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_file_copy_with_a_special_mode_keeps_its_kind(tmp_path: Path) -> None:
+    """A RAR5 file copy (``rar -oi``) is typed FILE by its redirect record, so the
+    data-based rule never runs for it; ``extra["special_file_type"]`` still records
+    what its mode said, and the advisory diagnostic reports the data it names."""
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = b"".join(b"line %05d of the copied file\n" % i for i in range(200))
+    (src / "r1.bin").write_bytes(payload)
+    (src / "r2.bin").write_bytes(payload)
+    built = tmp_path / "copies.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ep1", "-oi:1000", str(built), "r1.bin", "r2.bin"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    blocks = _rar5_parse(built.read_bytes())
+    files = _rar5_file_blocks(blocks)
+    copy = next(block for block in files if block["name"] == b"r2.bin")
+    assert copy["host_os"] == 1 and copy["data"] == b""  # Unix; a redirect, no data
+    copy["attr"] = 0o010644  # FIFO
+    path = tmp_path / "fifo-copy.rar"
+    path.write_bytes(_rar5_build(blocks))
+
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        member = archive.get("r2.bin")
+        assert member.type is MemberType.FILE
+        assert member.extra["is_file_copy"] is True
+        assert member.extra["special_file_type"] == "fifo"
+        assert "special_file_type" not in archive.get("r1.bin").extra
+        assert archive.read(member) == payload
+        [diag] = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["special_file_type"] == "fifo"
+        assert diag.context.to_dict()["size"] == len(payload)
+
+
 @requires_binary("unrar")
 def test_unix_special_file_without_data_is_other(tmp_path: Path) -> None:
     """A device-mode entry with no data is OTHER, as in TAR, 7z and ISO: there is

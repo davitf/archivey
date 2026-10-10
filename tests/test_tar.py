@@ -33,6 +33,7 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
+    CorruptionError,
     DiagnosticRaisedError,
     ReadError,
     ResourceLimitError,
@@ -2472,3 +2473,41 @@ def test_special_entries_are_other_and_name_their_type(
         ar.extract_all(tmp_path / "out")
     assert not (tmp_path / "out" / "dev").exists()
     assert (tmp_path / "out" / "reg.txt").read_bytes() == b"hi"
+
+
+def test_a_sized_fifo_header_is_corruption() -> None:
+    """A device or FIFO header that declares data is damage: GNU tar and libarchive
+    ignore the size field of typeflags 3/4/6 and read the next header where the
+    "data" starts. tarfile does the same, so an all-null payload reads as the end
+    marker and every later member silently disappears; archivey refuses the header
+    instead of dropping members."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        info = tarfile.TarInfo("pipe")
+        info.type = tarfile.FIFOTYPE
+        info.size = 512
+        t.addfile(info, io.BytesIO(b"\0" * 512))
+        reg = tarfile.TarInfo("reg.txt")
+        reg.size = 2
+        t.addfile(reg, io.BytesIO(b"hi"))
+    with (
+        open_archive(io.BytesIO(buf.getvalue())) as ar,
+        pytest.raises(CorruptionError, match="fifo.*declares 512 bytes"),
+    ):
+        ar.members()
+
+
+def test_other_entries_that_are_not_special_files_get_no_special_file_type() -> None:
+    """A GNU dumpdir (``D``) is OTHER but not a device, FIFO or socket, so it has no
+    ``extra["special_file_type"]``: the key means "the archive recorded a special
+    file" in every format, not "the member is OTHER"."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:") as t:
+        info = tarfile.TarInfo("dump")
+        info.type = b"D"
+        t.addfile(info)
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        [member] = ar.members()
+        assert member.type is MemberType.OTHER
+        assert member.extra["tar.type"] == b"D"
+        assert "special_file_type" not in member.extra

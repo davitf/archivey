@@ -1763,11 +1763,13 @@ class IsoReader(BaseArchiveReader):
             member_type = MemberType.DIRECTORY
         elif (
             special is not None or (raw_mode is not None and not stat.S_ISREG(raw_mode))
-        ) and not self._file_size(record):
+        ) and self._file_size(record) == 0:
             # A Rock Ridge PX mode names a device, FIFO or socket, and the extent is
             # empty (genisoimage and xorriso write a FIFO so): OTHER. A non-empty extent
             # under such a mode is a FILE whose bytes are the content (DR-25), with
-            # ``extra["special_file_type"]`` keeping the stored type.
+            # ``extra["special_file_type"]`` keeping the stored type. ``== 0``, not
+            # ``not``: ``_file_size`` is ``None`` for a non-empty extent whose length
+            # was lost, and that record is a FILE with ``size=None`` like a regular one.
             member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
@@ -1790,12 +1792,11 @@ class IsoReader(BaseArchiveReader):
             if version is not None
             else MemberExtra()
         )
-        if member_type in (MemberType.FILE, MemberType.OTHER) and (
-            special is not None or member_type is MemberType.OTHER
-        ):
-            extra[EXTRA_SPECIAL_FILE_TYPE] = (
-                special if special is not None else "unknown"
-            )
+        if special is not None:
+            # Only a mode that names a special or unknown file type: a non-regular mode
+            # that is a directory's (``S_IFDIR`` on a file record) still makes OTHER
+            # above but recorded no special file, so it gets no key.
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
 
         modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
         mode = stat.S_IMODE(raw_mode) if raw_mode is not None else None
@@ -1850,7 +1851,7 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
-        if EXTRA_SPECIAL_FILE_TYPE in extra and member_type is MemberType.FILE:
+        if special is not None and member.type is MemberType.FILE:
             self._emit_special_file_has_data(member, index)
         # The message names the normalized name, so it is built here, not in
         # ``_timestamps``.

@@ -463,7 +463,8 @@ def _member_type(info: tarfile.TarInfo) -> MemberType:
         return MemberType.HARDLINK
     if info.isfile():
         return MemberType.FILE
-    # Character/block devices, FIFOs, contiguous files, GNU long-name placeholders, …
+    # Character/block devices, FIFOs, GNU dumpdirs and volume headers, vendor types, …
+    # (a contiguous file, typeflag 7, is a regular file to tarfile and so a FILE).
     return MemberType.OTHER
 
 
@@ -1509,14 +1510,26 @@ class TarReader(BaseArchiveReader):
         )
 
         extra = MemberExtra({"tar.type": info.type})
-        if member_type is MemberType.OTHER:
-            # The typeflag is structure in TAR: GNU tar ignores the size field of a
-            # device or FIFO header, so there is no data-bearing special entry here
-            # (one is damage, raised as CorruptionError). The cross-format key still
-            # says which kind the archive recorded (DR-25).
-            extra[EXTRA_SPECIAL_FILE_TYPE] = special_file_type_from_tar_typeflag(
-                info.type
-            )
+        special = special_file_type_from_tar_typeflag(info.type)
+        if special is not None:
+            if info.size:
+                # The typeflag is structure in TAR, so a device or FIFO header has no
+                # data: GNU tar and libarchive ignore its size field and resync at the
+                # next header ("Skipping to next header", exit 2). tarfile does not
+                # skip the declared blocks either, so a non-zero size usually
+                # desynchronises the walk and already surfaced as CorruptionError; an
+                # all-zero payload instead reads as the end-of-archive marker and the
+                # declared size would vanish without a word. Refused here, at the
+                # header, so both shapes are the same damage (DR-25).
+                raise CorruptionError(
+                    f"TAR header for {quoted(name)} is a {special.replace('_', ' ')} "
+                    f"that declares {info.size} bytes of data; a device or FIFO entry "
+                    "has no data, and tar skips such a header as damaged",
+                    archive_name=self._archive_name,
+                    member_name=name,
+                )
+            # The cross-format key says which kind the archive recorded (DR-25).
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
         if info.pax_headers:
             extra["tar.pax_headers"] = dict(info.pax_headers)
         if info.isdev():

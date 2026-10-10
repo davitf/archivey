@@ -771,7 +771,9 @@ class SevenZipReader(BaseArchiveReader):
             else MemberExtra()
         )
         special = self._special_file_type(record)
-        if special is not None and member_type in (MemberType.FILE, MemberType.OTHER):
+        if special is not None:
+            # Whatever the type decided above, the key records what the mode said, so
+            # a reparse point that settles or re-types to FILE keeps it (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
         ctime = None
         if created is not None and written_on_unix:
@@ -809,7 +811,9 @@ class SevenZipReader(BaseArchiveReader):
         self._settle_empty_reparse_point(
             member, reparse_fallback=reparse_fallback, member_id=index
         )
-        if EXTRA_SPECIAL_FILE_TYPE in extra and member_type is MemberType.FILE:
+        if special is not None and member.type is MemberType.FILE:
+            # member.type, not member_type: the settle above can re-type a reparse
+            # point with no reparse data to the fallback FILE.
             self._emit_special_file_has_data(member, index)
         for issue in ts_issues:
             self._emit_timestamp_invalid(member, index, issue)

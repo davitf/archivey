@@ -1946,6 +1946,28 @@ def test_unix_special_file_with_data_is_a_file(
     assert (tmp_path / "out" / "f.txt").read_bytes() == b"data"
 
 
+def test_unknown_file_type_bits_with_data_name_an_unrecognized_type(
+    tmp_path: Path,
+) -> None:
+    """File-type bits no Unix type uses (``0o070000``) are special but nameless: the
+    key says ``"unknown"`` and the message says so in words."""
+    path = tmp_path / "odd.zip"
+    _zip_with_special_entry(path, 0o070000, b"xyz")
+    with open_archive(path) as ar:
+        dev = ar.get("dev")
+        assert dev.type is MemberType.FILE
+        assert dev.extra["special_file_type"] == "unknown"
+        [diag] = [
+            d
+            for d in dev.diagnostics
+            if d.code is DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA
+        ]
+        assert "marks it as an unrecognized file type and stores 3 bytes" in (
+            diag.message
+        )
+        assert ar.read(dev) == b"xyz"
+
+
 def test_special_file_with_data_is_not_refused_by_strict(tmp_path: Path) -> None:
     """MEMBER_SPECIAL_FILE_HAS_DATA is advisory: a documented writer option produces
     the shape (``zip -FI``), so strict does not refuse it."""
@@ -1968,7 +1990,9 @@ def test_info_zip_fifo_content_reads_as_a_file(tmp_path: Path) -> None:
     os.mkfifo(fifo)
     archive = tmp_path / "fifo.zip"
     # The producer thread blocks in open() until zip opens the pipe for reading.
-    feeder = threading.Thread(target=fifo.write_bytes, args=(b"hello from fifo\n",))
+    feeder = threading.Thread(
+        target=fifo.write_bytes, args=(b"hello from fifo\n",), daemon=True
+    )
     feeder.start()
     try:
         subprocess.run(
