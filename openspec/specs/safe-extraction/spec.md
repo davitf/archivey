@@ -520,6 +520,7 @@ refuses its links; any other is recovered as above.
 | HARDLINK `hl` → SYMLINK with no target (`/s` under `STRICT`, or `s`) | `hl` `FAILED`, not refused for `/s`'s name: `ExtractionError` naming the source's type when the listing was read first, else `LinkTargetNotFoundError` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
+| `REPLACE` routes a HARDLINK onto a path that holds its own source's content (`a`, then `A` → `a` under `STRICT`/`STANDARD`; or two excluded-source links `L`, `l`), either mode | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact |
 
 ### Requirement: Policy-Specific Metadata Transforms
 

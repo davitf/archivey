@@ -3509,6 +3509,51 @@ def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> Non
     assert not _overwritten(report)
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_o2_hardlink_folded_onto_its_own_source(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # `A` folds onto `a` under STRICT and STANDARD, so REPLACE routes the link onto the
+    # path its own source was written to. The link wins that path as any later member
+    # would: the source is revised to OVERWRITTEN, and the file keeps its content.
+    archive = _tar_bytes([("file", "a", b"data"), ("hard", "A", "a")])
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest, overwrite=OverwritePolicy.REPLACE, on_error=OnError.CONTINUE
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("a", ExtractionStatus.OVERWRITTEN),
+        ("A", ExtractionStatus.EXTRACTED),
+    ]
+    assert report.results[1].path == dest / "a"
+    assert sorted(p.name for p in dest.iterdir()) == ["a"]
+    assert (dest / "a").read_bytes() == b"data"
+
+
+def test_o2_orphan_hardlinks_folded_onto_each_other(tmp_path: Path) -> None:
+    # The second pass writes the excluded source's content at `L`; `l` folds onto it.
+    # Under REPLACE `l` takes that path, and `L` is revised to OVERWRITTEN.
+    archive = _tar_bytes(
+        [("file", "src", b"data"), ("hard", "L", "src"), ("hard", "l", "src")]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            members=["L", "l"],
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("L", ExtractionStatus.OVERWRITTEN),
+        ("l", ExtractionStatus.EXTRACTED),
+    ]
+    assert report.results[1].path == dest / "L"
+    assert sorted(p.name for p in dest.iterdir()) == ["L"]
+    assert (dest / "L").read_bytes() == b"data"
+
+
 # ---------------------------------------------------------------------------
 # Bidi override/isolate names are refused; directional marks are not
 # ---------------------------------------------------------------------------

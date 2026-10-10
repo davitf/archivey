@@ -2415,10 +2415,13 @@ class ExtractionCoordinator:
             )
 
         if source.member_id in self._state.source_paths:
+            # Taken before ``_make_room``: under REPLACE a link can land on one of its
+            # own source's paths, which ``_make_room`` then forgets.
+            candidates = list(self._state.source_paths[source.member_id])
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
-            self._place_link(source.member_id, dest_path, transformed)
+            self._place_link(source.member_id, candidates, dest_path, transformed)
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
@@ -2675,11 +2678,15 @@ class ExtractionCoordinator:
             orphan.report_stored_spelling(exc)
             raise
         try:
+            # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link
+            # of the group that failed after its ``_make_room`` can have taken the
+            # last path; ``_place_link`` then fails this link as well.
+            candidates = list(self._state.source_paths.get(source_id, ()))
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
-                self._place_link(source_id, resolved, orphan.transformed)
+                self._place_link(source_id, candidates, resolved, orphan.transformed)
                 self._state.written_paths.add(resolved)
                 result = ExtractionResult(
                     orphan.original, resolved, ExtractionStatus.EXTRACTED, None
@@ -3185,12 +3192,18 @@ class ExtractionCoordinator:
                 emit_progress()
 
     def _place_link(
-        self, source_id: int, new_path: Path, member: ArchiveMember
+        self,
+        source_id: int,
+        candidates: list[Path],
+        new_path: Path,
+        member: ArchiveMember,
     ) -> None:
-        """Create ``new_path`` as a hardlink to the source's content, trying the recorded
-        on-disk paths newest first; when none takes the link for a reason of its own
-        (see ``_link_refused_here``), copy from an existing path. Appends ``new_path``
-        so a later same-device link can reuse it — which is what keeps a fan-out across
+        """Create ``new_path`` as a hardlink to the source's content, trying
+        ``candidates`` (the source's recorded on-disk paths, taken before
+        ``_make_room`` cleared ``new_path``) newest first; when none takes the link for
+        a reason of its own (see ``_link_refused_here``), copy from an existing path.
+        Records ``new_path`` under ``source_id`` so a later same-device link can reuse
+        it — which is what keeps a fan-out across
         one device boundary to a single copy per device rather than one per link, and a
         fan-out past the link-count limit to one copy per full file.
 
@@ -3213,7 +3226,12 @@ class ExtractionCoordinator:
         unlink an existing destination first and leave a hole if the link then fails.
         ``os.replace`` moves the link itself and never follows the entry it replaces, so
         a destination symlink is replaced rather than written through."""
-        existing = self._state.source_paths[source_id]
+        if new_path in candidates and _is_regular_file(new_path):
+            # The link landed on a path that already holds its source's content (a
+            # case-folded name under REPLACE): the file is already in place. Linking
+            # it onto itself would only make a temp name to throw away.
+            self._state.source_paths.setdefault(source_id, []).append(new_path)
+            return
         # Each path was a regular file this run wrote, and ``_forget_source_path``
         # drops one once another member replaces it. Checked again here because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
@@ -3226,7 +3244,7 @@ class ExtractionCoordinator:
             linked = False
             at_link_limit = False
             copy_from: Path | None = None
-            for candidate in reversed(existing):
+            for candidate in reversed(candidates):
                 if not _is_regular_file(candidate):
                     continue
                 if copy_from is None:
@@ -3274,7 +3292,7 @@ class ExtractionCoordinator:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
-        existing.append(new_path)
+        self._state.source_paths.setdefault(source_id, []).append(new_path)
 
     @staticmethod
     def _temp_sibling(parent: Path) -> Path:
