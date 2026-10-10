@@ -253,7 +253,11 @@ The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both measured **
 positives in 20 000 random blobs**, so the confidence downgrade would cost honesty rather
 than buy it. (Alone was additionally re-measured at 0 over 4 000 blobs of 64 KiB; its
 real-world residual is a framing problem, not a confidence one — see the framing
-requirement.)
+requirement.) Random blobs never hold a zero run, so that measurement does not cover a
+plausible Alone header followed by zeros, which decodes cleanly: before the zero-run rule
+in the framing requirement, 356 of 3 143 libmagic signatures followed by zeros were
+claimed, and ID3-tagged MP3s with tag padding; the libmagic scan found that refusing a
+leading zero run removes all 356.
 
 Within Brotli, a probe-only hit whose **first meta-block is compressed** SHALL keep
 `PROBABLE`: measured on random data, that class is accepted 0.014% of the time against
@@ -296,6 +300,19 @@ not about the sentinel — a header carrying a real uncompressed size, as the LZ
 encoder writes, is as welcome as one carrying the sentinel. The two header fields are
 independent: a stream with a zero dictionary size and a real payload is still detected.
 
+It SHALL refuse, before decoding, a header whose range-coder data holds a run of **16 zero
+bytes starting in its first 32 bytes**. A range coder fed zeros decodes zero literals
+without error, so any plausible header followed by a few hundred zero bytes, or by a zero
+byte, a few other bytes and then zeros, decodes as a valid stream of zeros, and reading
+it gives a member of zeros with no error. No encoder writes such a run: the longest zero
+run measured anywhere in real payloads is 3 bytes from liblzma and 7 from the LZMA SDK
+encoder (7-Zip), the 7 being a two-zero-byte input whose whole payload is zeros. The
+measurement and its inputs are recorded at the rule in `lzma_codec.py`. Unlike the other
+Alone rules this one rests on what encoders write, not on what the format allows: an
+encoder that coded a long run of zero bytes as literals would write such a run, and none
+does, because a real encoder codes the third byte of a run as a match. A stream refused
+here still opens through a `.lzma` name.
+
 #### Scenario: content-probe matrix
 
 | Case | Expected |
@@ -322,6 +339,8 @@ independent: a stream with a zero dictionary size and a real payload is still de
 | Alone header carrying a real uncompressed size rather than the sentinel | `LZMA_ALONE`, `content_probe` — unaffected |
 | Zero-filled source of any length (padding, a sparse or zero-truncated file) | No Alone claim — the header declares zero output |
 | Zero-filled source with `CD001` at 32 769 | `ISO` at the far-magic step; no Alone claim |
+| Plausible Alone header (e.g. an ID3v2.3 tag) followed by a zero run, or by `00`, a few bytes and a zero run | No Alone claim — no encoder writes the run, though it decodes |
+| Real Alone stream of an all-zero input (liblzma or LZMA SDK, any level) | `LZMA_ALONE`, `content_probe` — unaffected |
 
 ### Requirement: Compressed streams are probed for an inner TAR
 

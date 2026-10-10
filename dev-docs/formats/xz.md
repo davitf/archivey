@@ -91,7 +91,10 @@ is not exactly zero. The dictionary size is not checked: every value is legal, a
 specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
 are a valid, complete, empty Alone stream, so without it a run of zero padding would be
 claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
-Then the probe decodes the sample and requires at least one byte of output
+So is a run of 16 zero bytes starting in the first 32 bytes after the header: a range
+coder fed zeros decodes zero literals without error, so a header followed by zeros
+decodes, but no encoder writes that run (the longest measured is 7 bytes, from 7-Zip;
+liblzma's is 3). Then the probe decodes the sample and requires at least one byte of output
 ([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
 probe-only match is stamped `format_unconfirmed`.
 
@@ -235,7 +238,8 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
 | An lzip member followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and the CRC-32 from the trailers. The lzip manual allows trailing data |
-| COFF object files, MP3s whose ID3 tag starts with padding | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
+| COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
+| MP3s whose ID3 tag starts with padding, any plausible header followed by zeros | Not claimed: the zero run after the header is refused |
 | OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5) |
 
 ## 4. Threat surface

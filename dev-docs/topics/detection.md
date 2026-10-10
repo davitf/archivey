@@ -195,8 +195,10 @@ guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
   files are a constant header followed by zero runs, which the Brotli and LZMA Alone probes
   both accept. A scan of a backup drive found 437 files claimed as Brotli, all but two of
   which failed to decode. OLE files were among them, but they were not counted separately,
-  and the scan did not record what the two that decoded were. Neither probe's own framing
-  can reject these files, and the spec forbids a threshold. An eight-byte signature is as
+  and the scan did not record what the two that decoded were. Brotli's own framing cannot
+  reject these files, and the spec forbids a threshold there; the LZMA Alone probe now
+  refuses a zero run after its header, so for it the signature is defence in depth. An
+  eight-byte signature is as
   specific as archive magic. The signature also turns off the SFX scan (§2.2): an OLE file
   is not a stub, and a ZIP stored inside a document is not the document's payload. With no
   extension, the error names the signature, as it names a `STRONG` cue.
