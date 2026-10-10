@@ -272,7 +272,8 @@ class ArchiveReader(ForwardArchiveReader):
         """Look up a member by its normalized name, returning ``default`` if absent.
         This is the name-lookup entry point; :meth:`open`/:meth:`read` also accept a
         name directly. May trigger a scan; on a streaming reader raises
-        ``ArchiveyUsageError``. With duplicate member names, returns the last
+        ``ArchiveyUsageError``, as does a ``name`` that is not a ``str`` (a ``bytes``
+        name or an ``ArchiveMember``). With duplicate member names, returns the last
         (the one a sequential extraction would leave on disk)."""
         ...
 

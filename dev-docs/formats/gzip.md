@@ -170,7 +170,34 @@ What crosses the boundary:
 - **How the child ended**, when it dies: its exit status and its standard error, scanned
   for `rapidgzip`'s abort message. An abort that names the truncation is `TruncatedError`,
   another crash `CorruptionError`, `SIGKILL` `ResourceLimitError` (usually the
-  out-of-memory killer), anything else `ReadError`. Every later call raises the same error.
+  out-of-memory killer), the exit status `MEMORY_LIMIT_EXIT` `ResourceLimitError` (the
+  memory cap below), anything else `ReadError`. Every later call raises the same error.
+
+**Memory.** `rapidgzip` keeps decoded chunks in memory, and a chunk is as large as its
+output, so its memory follows what the data decodes to: zeros compressed to 255 KB held 285
+MB, and a 1 MB file brought in the out-of-memory killer. No `rapidgzip` setting bounds it.
+`chunk_size` changed the peak but did not stop it growing with four threads. An
+address-space limit (`RLIMIT_AS`, `RLIMIT_DATA`) cannot bound it either: the allocator
+reserves about 2 GB of address space before the first byte (1.5 GB with one thread), and a
+decode under a smaller limit ends in a segmentation fault. So the child watches its own
+peak resident memory once the source is open, from a thread every millisecond and again
+before it answers each `READ` or `SEEK`, and exits with `MEMORY_LIMIT_EXIT` when it has
+grown by more than `DecoderLimits.max_decoder_memory` (`watch_memory` and `check_memory`
+in `rapidgzip_worker.py`). The cap travels at the start of the `OPEN` payload (-1 for
+none), so nothing in the caller's environment can set one. The parent marks that death
+like a crash on the data, so the standard library takes over from the last index point
+and reads the rest in bounded memory. Measured on 64 MiB of zeros, the child's peak was
+its start-up memory plus the cap plus about 17 MB, for caps of 8, 16 and 32 MiB; without a
+cap it was 87 MB. On a busy machine the watching thread can wait for a processor; the
+check before the next `READ` or `SEEK` reply then stops the child, so no reply to a
+request that decodes leaves it once its peak is past the cap. Ordinary data on four
+threads held about 55 MB over start-up, so the 2 GiB default leaves room for about 140
+threads. The peak is read from `VmHWM` in `/proc/self/status` (Linux), `getrusage` (macOS,
+the BSDs) or `GetProcessMemoryInfo` (Windows); where none works, no cap applies. Not
+`getrusage` on Linux: there a child's `ru_maxrss` starts at its parent's peak, because
+`exec` keeps the high-water mark of the memory it replaces. A parent that had once held
+more than the child's decode plus the cap left the child never stopped
+(`test_the_limit_counts_from_the_childs_own_memory_not_the_parents_peak`).
 
 Where no child can start — a frozen application, no `sys.executable`, archivey imported
 from a zip so the worker is not a file, or a spawn or temporary file the system refuses —

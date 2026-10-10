@@ -89,12 +89,23 @@ above 2 SHALL raise `CorruptionError` (7-Zip: "Data Error"). Under ZipCrypto the
 settings are decrypted data, so both SHALL raise `CorruptionError` there, which the
 password confirmation counts as the candidate failing (see below).
 
+A member's compressed size is its codec's input exactly. Any byte of it after the
+codec's end of stream, a zero byte or a second stream included (a Zstd skippable
+frame too), SHALL raise `CorruptionError`, for every method and for encrypted members
+too, as 7-Zip reports an error for it (DR-3), and under ZipCrypto the password
+confirmation counts it as the candidate failing, as above. An LZMA member raises
+`LzmaDataAfterEndError`, its subclass. A PPMd member is checked when its end mark
+follows right at the declared size, as 7-Zip writes it; a PPMd stream without an end
+mark cannot be told from input past its size, and reads clean.
+
 #### Scenario: ZIP codec-layer decoding
 
 | Case | Expected |
 | --- | --- |
 | STORED / DEFLATE / BZIP2 / LZMA member, unencrypted | Decodes via the shared codec layer; CRC verified through `VerifyingStream` |
 | LZMA member with compressed data after its end marker (a second stream, or one zero byte), whatever the declared size covers | `CorruptionError`, as 7-Zip reports "Data Error"; with bit 1 clear, only a marker right at the declared size is checked |
+| DEFLATE, Deflate64, BZIP2, Zstd or PPMd member with compressed data after its end of stream (a zero byte, junk, or a second stream), inside the declared compressed size | `CorruptionError`, as 7-Zip reports "There are some data after the end of the payload data" (PPMd: "Data Error"), under the accelerators too; a PPMd member is checked only when an end mark follows right at the declared size |
+| DEFLATE member under rapidgzip holding two streams whose output the declared size and CRC both cover | Both streams' content (the `compressed-streams` accelerator exception); `CorruptionError` with the accelerator off |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
@@ -196,7 +207,7 @@ rules:
 | --- | --- |
 | `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; Extended Timestamp `0x5455` UTC Unix times override present fields |
-| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints |
+| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER`); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
 | `is_encrypted` | `flag_bits & 0x1 != 0`, or `compress_type == 99` (WinZip AES) whatever bit 0 says |
 
@@ -229,6 +240,9 @@ halts with `DiagnosticRaisedError`.
 | Creation time stored (NTFS or Extended Timestamp third time), FAT / OS2 / NTFS / VFAT host | `created` holds it (the Extended Timestamp wins); `ctime is None` |
 | Creation time stored, Unix or any other host | `created is None`; `ctime` holds it (7-Zip and libarchive on Linux and macOS store `st_ctime`) |
 | `flag_bits & 0x1`, or method 99 with bit 0 clear | `member.is_encrypted is True` |
+| Unix-origin entry named `a\` | `FILE` named `a\` on every host OS |
+| DOS-origin entry named `a\` | `DIRECTORY` named `a/` on every host OS; any data it declares is not reachable (no `open()`, extraction writes an empty directory) and `size` still reports it |
+| Header name without a trailing `/`, Unicode Path field `dir/` | `DIRECTORY` named `dir/` on every Python version |
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 | Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |

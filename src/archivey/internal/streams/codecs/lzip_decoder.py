@@ -87,7 +87,7 @@ def _check_version(header: bytes, offset: int) -> None:
         )
 
 
-@dataclass
+@dataclass(slots=True)
 class _MemberBounds:
     compressed_start: int
     decompressed_start: int
