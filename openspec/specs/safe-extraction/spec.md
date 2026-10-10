@@ -466,13 +466,13 @@ materialized path, and write nothing if every selected link is skipped. The
 materialized file gets the selected link's transformed metadata. An equivalent
 hidden temp inside `dest` is permitted.
 
-Recovering orphaned links SHALL take at most one extra pass: a seekable source gets
-one conditional second pass after the main pass, and a forward-only source makes the
-orphaned link unrecoverable and therefore a per-member failure governed by `OnError`.
-When a free member list exists (`members_report_if_available()`), the coordinator MAY
-plan recovery into the first pass instead, as `format-tar` describes; archivey does
-not, so recovering an orphan in a solid archive decodes the solid stream a second
-time. A hardlink that merely precedes its selected source is linked after the source
+Recovering orphaned links SHALL take at most one extra pass and no speculative upfront
+scan to find them: a seekable source gets one conditional second pass after the main
+pass, and a forward-only source makes the orphaned link unrecoverable and therefore a
+per-member failure governed by `OnError`. When a free member list exists
+(`members_report_if_available()`), the coordinator MAY plan recovery into the first
+pass instead, as `format-tar` describes; archivey does not, so recovering an orphan in
+a solid archive decodes the solid stream a second time. A hardlink that merely precedes its selected source is linked after the source
 is written, with one read and one bomb-limit count for the source bytes.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
