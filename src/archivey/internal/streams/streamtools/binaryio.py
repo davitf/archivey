@@ -1007,11 +1007,13 @@ class _NonClosingBufferedReader(io.BufferedReader):
         return getattr(self, "_detached", False) or self.raw is None or super().closed
 
 
-def ensure_bufferedio(obj: object) -> io.BufferedIOBase:
+def ensure_bufferedio(
+    obj: object, buffer_size: int = io.DEFAULT_BUFFER_SIZE
+) -> io.BufferedIOBase:
     """Return ``obj`` as a buffered reader, without taking ownership of it.
 
     An already-buffered stream is returned unchanged; otherwise it is wrapped in a
-    non-closing ``BufferedReader``. ``io.BufferedReader`` requires its underlying object to
+    non-closing ``BufferedReader`` of ``buffer_size`` bytes. ``io.BufferedReader`` requires its underlying object to
     be an ``io.RawIOBase`` (it rejects a merely stream-like object), so a non-``RawIOBase``
     source is first adapted via :class:`BinaryIOWrapper` (which *is* a ``RawIOBase``) — this
     is why we branch on ``RawIOBase`` here rather than calling :func:`ensure_binaryio`,
@@ -1044,4 +1046,4 @@ def ensure_bufferedio(obj: object) -> io.BufferedIOBase:
         raw = obj
     else:
         raw = BinaryIOWrapper(obj)
-    return _NonClosingBufferedReader(raw)
+    return _NonClosingBufferedReader(raw, buffer_size)

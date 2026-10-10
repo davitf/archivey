@@ -169,6 +169,11 @@ _EofFinding = Literal[
 # (``7``) and old GNU sparse (``S``). Every other typeflag that is not a directory or
 # a link lists as OTHER, its data skipped by size.
 _FILE_TYPES = frozenset((b"0", b"\x00", b"7", b"S"))
+# The random-access walk's read-ahead. Fixed rather than io's default, which Python 3.14
+# raised from 8 KiB to 128 KiB: on a compressed tar a larger read-ahead decodes further
+# past the end-of-archive marker, into a damaged codec tail the listing does not need.
+_WALK_BUFFER = 8 * 1024
+
 # GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
 # lists the directory's contents at dump time. GNU tar extracts it as a directory; the
 # list is skipped.
@@ -475,7 +480,9 @@ class TarReader(BaseArchiveReader):
             return TarWalker(self._stream, seekable=False)
         view = cast(
             "BinaryIO",
-            ensure_bufferedio(SharedView(self._stream, 0, lock=self._io_guard())),
+            ensure_bufferedio(
+                SharedView(self._stream, 0, lock=self._io_guard()), _WALK_BUFFER
+            ),
         )
         self._walker_streams.append(view)
         return TarWalker(view, seekable=True)
