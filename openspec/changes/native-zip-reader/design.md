@@ -93,12 +93,23 @@ do today, in one place:
   keeps reading. With `start_offset` the reader already slices the source, so `base` is
   computed inside the slice as today.
 
-`CentralDirectoryWalk` reads the directory forward in 64 KiB chunks (DR-10a), one entry
-at a time. Every read goes through `read_at`, which the reader implements under its lock
-with the handle position saved and restored, so the parser knows nothing of locking. Each entry
-resolves its ZIP64 extra field (`0x0001`) in the order APPNOTE gives, reading only the
-fields whose 32-bit value is `0xFFFFFFFF`. It stops at `cd_size` bytes, as stdlib does,
-and cuts a name, extra or comment that runs past that point, which is one of the findings.
+`CentralDirectoryWalk` reads the directory forward in 1 MiB pieces, one entry at a
+time. The piece size trades memory (one piece plus one entry) against the number of
+reads, each a seek and a read on the shared handle: a directory of 1 MiB or less is one
+read, and a 46 MB one is 46. It is an implementation constant (DR-9). Every read goes
+through `read_at`, which the reader implements under its lock with the handle position
+saved and restored, so the parser knows nothing of locking. Each entry resolves its
+ZIP64 extra field (`0x0001`) in the order APPNOTE gives, reading only the fields whose
+32-bit value is `0xFFFFFFFF`. It stops at `cd_size` bytes, as stdlib does, and cuts a
+name, extra or comment that runs past that point, which is one of the findings.
+
+The walk takes no limit and no charge callback. An entry's variable fields are three
+16-bit lengths, so the most one entry can make the parser hold is 46 + 3 × 65 535 bytes,
+plus the piece it is reading: the format bounds it, not the archive. The reader charges
+each member it builds against `max_members` and `max_metadata_bytes` before it asks the
+walk for the next entry, so the listing limits apply entry by entry. TAR differs here:
+a header declares the size of the record after it, so the TAR parser charges that size
+before reading it.
 
 `read_local_header` is today's `_local_data_region` without the name decode: it compares
 the local name **bytes** with the central name bytes, so a name that is not valid UTF-8
@@ -119,18 +130,34 @@ can no longer raise `UnicodeDecodeError` there.
   parsed. `ListingLimits` therefore see members as they are read, not after the whole
   directory has been built. The end-record findings are emitted after the last member, as
   today.
-- `_get_archive_info`: `member_count` is the number of entries a complete walk read (one
-  walk, cached as a count, with no members built). A walk that fails reports `None`,
-  following DR-1 (absence over a wrong value).
+- `_get_archive_info`: `member_count` is the number of entries a complete walk read. A
+  walk that fails, or stops at `max_members`, reports `None`, following DR-1 (absence
+  over a wrong value). The count comes from the listing walk when that has run to the
+  end, and otherwise from the index pass below; the directory is never walked a third
+  time. The cost receipt stays `INDEXED`, `DIRECT`, `SEEKABLE` for a seekable source;
+  §"What the caller sees in a forward pass" has the forward-pass values.
+- At open (not under `streaming=True`), an archive whose end record declares more
+  entries than `max_members` raises `ResourceLimitError`, when the directory is large
+  enough to hold that many (`cd_size` at least 46 bytes per declared entry). That is the
+  cheap check at open (DR-15b). A declared count the directory cannot hold is a wrong
+  field, not a breach: it stays the count-mismatch finding, and the walk charges what is
+  really there.
 
 ### The overlap guard
 
 stdlib refuses a member whose payload runs into the next local header ("Overlapped
 entries", the zip-bomb shape). The bound for a member is the smallest header offset above
-its own, or the directory start. That needs every offset, and the walk is lazy. The reader
-builds a sorted array of header offsets the first time a member is opened, from one pass
-over the fixed 46-byte fields (8 bytes per entry, and the pass is bounded by the directory
-size, which the file size bounds). Listing alone never pays for it.
+its own, or the directory start. That needs every offset, and the walk is lazy.
+
+The listing walk records each entry's header offset as it goes (8 bytes per entry, in an
+`array('Q')`), so after a listing that ran to the end the offsets and the count are
+already known. Only when a member is opened, or `member_count` is asked for, before the
+listing has finished does the reader run an **index pass**: one more pass over the fixed
+46-byte fields that builds no members and keeps only the offsets and the count. Both
+collections charge `max_members`: the index pass stops past it, the same limit the
+listing that any member open needs has already enforced. A member open after the pass
+stopped raises the listing's `ResourceLimitError`. Listing alone never pays for the
+array beyond the offsets of the members it listed.
 
 ## Streaming: a forward walk over local headers
 
@@ -144,8 +171,10 @@ for `streaming=True` on a non-seekable source, which ZIP refuses today. ZIP then
 
 The fixed-header parsing is shared by both walks; only where the bytes come from
 differs. `parse_central_header(buf, pos)` and `parse_local_header(buf, pos)` work on
-bytes. `CentralDirectoryWalk` feeds them from `read_at`; the forward walk feeds them
-from a `ForwardReader` over the source (read, never seek):
+bytes. `CentralDirectoryWalk` feeds them from `read_at`. The forward walk takes the
+source as a `BinaryIO` that it only reads, never seeks, and counts the bytes it has
+consumed, which is the offset every local entry is matched by. That is the shape
+`TarWalker` uses for a forward-only stream; there is no new reader type.
 
 ```python
 class LocalEntry:                 # what one local header says, plus where it was
@@ -154,7 +183,7 @@ class LocalEntry:                 # what one local header says, plus where it wa
     sizes_known: bool             # False under bit 3: the data descriptor has them
 
 class LocalHeaderWalk:
-    def __init__(self, reader: ForwardReader) -> None: ...
+    def __init__(self, stream: BinaryIO) -> None: ...
     def __iter__(self) -> Iterator[LocalEntry]: ...   # the caller consumes each body
     def finish_member(self, consumed: int, crc: int) -> DataDescriptor | None: ...
     def central_directory(self) -> Iterator[CentralEntry]: ...  # after the last member
@@ -170,8 +199,17 @@ the directory is then read forward from the same stream with the same entry pars
 | --- | --- |
 | Sizes in the local header (bit 3 clear) | `compressed_size` bytes |
 | Bit 3, a codec with an end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark) | The codec's own end, then the data descriptor: signature optional, 8-byte sizes when the local header has a ZIP64 extra field, else 4-byte. Its CRC and sizes are checked against what was read |
-| Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for `PK\x07\x08` followed by a CRC and a compressed size that match the bytes since the data start. libarchive reads it the same way. A descriptor without its signature cannot be found this way: `UnsupportedFeatureError` |
-| Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext: the compressed size must match; the CRC (ZipCrypto, AE-1) or the HMAC (AES) checks the plaintext |
+| Bit 3, STORED (stdlib `zipfile` writes this to a pipe: measured, every member) | Scan forward for `PK\x07\x08` followed by a CRC and a compressed size that match the bytes since the data start, and then by a local header, central header or end record signature. libarchive reads it the same way. A descriptor without its signature cannot be found this way: `UnsupportedFeatureError` |
+| Bit 3, STORED under ZipCrypto or WinZip AES | The same scan, on the ciphertext. The descriptor's CRC covers the plaintext, so the scan matches on the compressed size and the signature after it only; the CRC (ZipCrypto, AE-1) or the HMAC (AES) then checks the plaintext as for any member |
+
+The STORED scan can be fooled on purpose: a member that carries, inside its own data, a
+descriptor for a prefix of itself followed by a local header signature ends early, and
+its CRC matches. The central entry is the check that catches it. At the end of the pass
+a size or CRC that came from a data descriptor and differs from the central entry raises
+`CorruptionError` for that member. This is not question A, which is about two headers
+that state the same field differently; here the local header stated no size at all. In
+a streaming extraction the short file is already on disk by then, so it is removed
+(DR-18: archivey created it) and the error names the member.
 | Bit 3, LZMA without the EOS bit, PPMd without an end mark | No way to find the end: `UnsupportedFeatureError` in this mode, naming the reason. A seekable source reads it |
 
 ### What only the central directory says
@@ -187,15 +225,25 @@ archivey reads them and applies them at the end of the pass, so that streaming a
 seekable extraction end up the same on disk (the 2026-10-02 ruling):
 
 - `stream_members()` yields each member with what its local header gives (name, flags,
-  method, sizes, times from the local extra fields). The central-only fields are unset
-  and its type is `FILE` or `DIRECTORY` from the name, until the directory has been
-  read. Then the members already yielded are updated in place (`ArchiveMember` is
-  mutable, ADR 0007), before the pass ends.
+  method, sizes, times from the local extra fields). `mode`, `create_system` and
+  `comment` are `None` until the directory has been read, not guessed. The type cannot
+  be `None`: it is `FILE` or `DIRECTORY` from the name until then. Then the members
+  already yielded are updated in place (`ArchiveMember` is mutable, ADR 0007), before
+  the pass ends. How a caller sees this gap before the pass starts (DR-8) is question D.
 - Extraction writes each member as it arrives, then at the end of the pass applies
   modes, turns a member the directory types as a symlink into a link (its target is the
   data just written, at most the link-target cap), and removes what it wrote for a
   member the directory types `OTHER`. It only touches what it created (DR-18). This is
   the same end-of-pass step that already resolves links in a streaming pass.
+- A member whose type the directory changes goes through the caller's `filter` and the
+  extraction policy's checks **again**, on the updated member (name, type, link
+  target), before the link is made, exactly as `extract_all` already calls the filter
+  again for a link target it reads after the filter ran (`safe-extraction`, the
+  `read_link_targets` paragraph). If either refuses it, the regular file written for it
+  is removed and the refusal is reported as for any refused member. A symlink that
+  escapes the destination is therefore refused from a pipe as from a file. Links are
+  made only after the last member has been written, so no member is ever written
+  through one.
 - The directory is authoritative. Each local entry is matched to its directory entry by
   offset. A local entry no directory entry points to (an appended update, a planted
   member) is removed from disk and reported: data outside any member is a warning
@@ -205,15 +253,43 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 
 ### Other shapes the walk meets
 
-- A stub before the first local header (self-extractors): the detector already reports
-  `payload_offset`, and the walk starts there.
+- A stub before the first local header (self-extractors): when the detector reports
+  `payload_offset`, the walk starts there. The detector finds it only within its scan
+  budget (2 MiB, or 256 KiB under `FAST`), and a caller can name the format and skip
+  detection. When the stream does not start with a local header or an end record and no
+  offset was given, the walk scans forward for a local header that the detector's ZIP
+  hit validator (`validate_zip_local_header`) accepts, within the same 2 MiB window
+  (`SFX_MAX`), and starts there. Nothing found in the window is `CorruptionError`
+  naming the reason. In the seekable
+  read a missed stub costs nothing, because `base` recovers the offsets; the forward
+  walk has no end record to recover them from until the end.
 - Bytes between the last member and the directory (an APK signing block, for one) are
   read past to the directory signature. The end record, read last, confirms where the
   directory started; the seekable read skips the same bytes without reading them.
 - An empty archive: the stream starts with the end record.
 - Order: members come in file order. A seekable read lists them in directory order.
   Writers put both in the same order; when they differ, member ids follow the
-  directory once it has been read.
+  directory once it has been read, and so does `is_current`: of two members with the
+  same name, the current one is the later in the directory, in both modes. A streaming
+  extraction writes copies in file order, so when the directory order of two same-name
+  members is the reverse of their file order, the file on disk holds the copy the
+  directory supersedes. The end of the pass removes that file and raises
+  `CorruptionError` naming the member; the other members stay written. Writers do not
+  produce this; a crafted or hand-edited archive does.
+
+### What the caller sees in a forward pass
+
+| Field | During the pass | After the end record |
+| --- | --- | --- |
+| `cost.listing_cost` | `REQUIRES_SCANNING`: members are found by walking local headers | same |
+| `cost.access_cost` | `DIRECT`: each member's data is independent | same |
+| `cost.stream_capability` | from the source (`FORWARD_ONLY`), as TAR does | same |
+| `member_count` | `None` (DR-1): the count is in the end record | the number of directory entries |
+| `comment` | `None` | the archive comment |
+| `members_report_if_available()` | `None`, as `access-mode-and-cost` already states for a trailing index on a non-seekable source | the complete report, as for TAR after a completed pass |
+
+`get_archive_info()` builds a new `ArchiveInfo` on each call, so a call after the pass
+returns the count and the comment.
 
 ### Seekable sources under `streaming=True`
 
@@ -258,8 +334,31 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 
 Nothing else may change. The acceptance bar is the full suite as it stands once the
 three ZIP fix PRs have merged, plus a differential test: for every ZIP under
-`tests/fixtures/` and every archive `tests/create_adversarial.py` builds, the parser's
-entries match `zipfile.infolist()` field by field wherever `zipfile` opens the archive.
+`tests/fixtures/`, every archive `tests/create_adversarial.py` builds and the sample
+corpus, the parser's entries match `zipfile.infolist()` wherever `zipfile` opens the
+archive.
+
+- **Compared, per entry:** the stored name bytes, header offset, both sizes, CRC, flags,
+  method, create system, both version bytes, both attribute fields, extra, comment,
+  `date_time`, the raw DOS time and whether the name ends in `/`. The disk number is
+  compared unless stdlib holds the ZIP64 sentinel `0xFFFF`. Per archive: the directory
+  start and the archive comment.
+- **Not compared, and why:** the decoded name (the parser returns bytes; stdlib's
+  `orig_filename` is re-encoded with the codec the flag names, which recovers the stored
+  bytes exactly); `filename`, which 3.12+ replaces from the Unicode Path field; and
+  `_end_offset`, which is not a stored field.
+- **Where the parser parts from stdlib on purpose**, each its own test rather than the
+  comparison: a cut or overrunning extra field (stdlib refuses the archive, the parser
+  keeps it), a ZIP64 extra field that is absent although a value is deferred (both
+  keep the 32-bit value), the decoy end record in a comment.
+- **Interpreters:** the comparison runs on every Python in the CI matrix. stdlib's
+  version differences (the Unicode Path field from 3.12) change only whether it opens
+  an archive, never a compared field, so on each version the test compares what that
+  version opens and a floor on the count of compared archives stops it comparing
+  nothing.
+- **Shown to fail** against three mutants: the header offset without `base`, the ZIP64
+  sizes read compressed-first (caught only by a test with both sizes deferred and
+  different, added for this), and the two attribute fields swapped.
 
 ## Stages
 
@@ -275,11 +374,21 @@ One PR each, in order; every PR goes through the review label.
 3. **Streaming.** The forward local-header walk and the end-of-pass reconciliation,
    for non-seekable sources (seekable ones read the directory first, question C). `stream_members()` and
    `extract_all()` over a pipe, tested against the same archives read seekably: the
-   files on disk must match.
+   files on disk must match. This stage changes a public declaration: ZIP's
+   `SUPPORTS_STREAMING_NON_SEEKABLE` becomes true, so `required_source` for ZIP moves
+   from `SEEKABLE` to `FORWARD_ONLY`. Specs and docs that move with it: format-zip,
+   `backend-registry` (the `required_source` table), `access-mode-and-cost` (the
+   trailing-index row), `safe-extraction` if the filter re-run needs a sentence there,
+   `docs/access-and-cost.md` (the checklist tells users to buffer ZIP),
+   `docs/formats.md`, handbook §1, §2.2, §5, §6.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
-   (question B, answered).
+   (question B, answered). Format-zip spec, handbook §2.2 and §5, `docs/formats.md`,
+   and the DR-21 ruling in `design-rules.md`, which says the refusal lasts until this
+   rewrite.
 5. **Header disagreement.** Cases 1 and 2 read with a new diagnostic code (its name goes
    to the maintainer in the PR); case 3 stays refused (question A, answered).
+   Format-zip spec, `docs/errors-and-diagnostics.md`, handbook §5, and
+   the backup-scan investigation's §3.3-3.4 status.
 6. **ZIPs over 4 GiB without ZIP64.** macOS Finder writes a classic ZIP past 4 GiB and
    stores every offset modulo 2³². The rule recorded in `IDEAS.md`: offsets must
    increase, so when one falls below the previous member's end, add 2³² until it does
@@ -287,22 +396,29 @@ One PR each, in order; every PR goes through the review label.
    local header with the entry's name sits at the corrected offset, the CRC check stays,
    and a diagnostic records the correction. A single member over 4 GiB (its sizes wrap
    too) stays out until a real archive from a current Mac settles it. The diagnostic may
-   need a new code, which goes to the maintainer.
+   need a new code, which goes to the maintainer. Format-zip spec, handbook §3 and §5,
+   `docs/formats.md`, and the `IDEAS.md` item, which this stage closes.
 7. **Methods 1 (Shrink) and 6 (Implode).** Two small pure-Python decoders under
    `internal/streams/codecs/`, registered with the codec layer like the others (DR-20:
    no native code). Only DOS-era archives use them, so speed does not matter. They need
    `CompressionAlgorithm` members, which are public names and go to the maintainer.
+   Format-zip spec, `docs/formats.md`, handbook §2.3.
 
 Stages 6 and 7 are independent of 3 to 5 and can run beside them.
 
-## Open questions for the maintainer
+## Questions for the maintainer
 
-**A. Central and local headers that disagree.** Answered 2026-10-10: read cases 1 and 2
-with a new diagnostic (strict refuses), keep refusing case 3, as recommended below. Archivey refuses a member in three cases
-that `unzip` reads, found by the backup-drive scan
-(`dev-docs/investigations/2026-10-backup-scan.md` §3.3-3.5; each pinned by an
-`xfail(strict)` test in `tests/test_audit_backup_scan.py`). ZIP has no single official
-tool (design rules, Open gaps), so DR-6 does not settle it.
+A, B and C were answered by the maintainer (davi) on 2026-10-10 in the thread that
+commissioned this change. The format-specific rulings (A, B) are recorded in
+`dev-docs/formats/zip.md` §6 and C, which is not ZIP-specific, under DR-8 in
+`dev-docs/design-rules.md`; the text below keeps the reasoning they were asked with.
+
+**A. Central and local headers that disagree.** Answered (davi, 2026-10-10): read cases
+1 and 2 with a new diagnostic (strict refuses), keep refusing case 3, as recommended
+below. Archivey refuses a member in three cases that `unzip` reads, found by the
+backup-drive scan (`dev-docs/investigations/2026-10-backup-scan.md` §3.3-3.5; each
+pinned by an `xfail(strict)` test in `tests/test_audit_backup_scan.py`). ZIP has no
+single official tool (design rules, Open gaps), so DR-6 does not settle it.
 
 | Case | `unzip` | 7-Zip | Recommendation |
 | --- | --- | --- | --- |
@@ -312,20 +428,30 @@ tool (design rules, Open gaps), so DR-6 does not settle it.
 
 Reading cases 1 and 2 needs a new diagnostic code (a public name). Strict refuses both.
 
-**B. Two stored names that decode to the same name.** Answered 2026-10-10: keep. The
-per-name decode can turn `c3 a9` (valid UTF-8) and `82` (cp437) into the same `é.txt`;
-the later member supersedes the earlier one like any duplicate (`is_current=False`,
-`SUPERSEDED` on extraction, the two `raw_name`s differ). No new public name.
+**B. Two stored names that decode to the same name.** Answered (davi, 2026-10-10): keep.
+The per-name decode can turn `c3 a9` (valid UTF-8) and `82` (cp437) into the same
+`é.txt`; the later member supersedes the earlier one like any duplicate
+(`is_current=False`, `SUPERSEDED` on extraction, the two `raw_name`s differ). No new
+public name.
 
-**C. A seekable source under `streaming=True`.** Answered 2026-10-10: directory first.
-One read at the tail, then forward reads only; every member is complete when yielded
-(DR-8), and nothing needs fixing at the end. The local-header walk is for non-seekable
-sources only.
+**C. A seekable source under `streaming=True`.** Answered (davi, 2026-10-10): directory
+first. One read at the tail, then forward reads only; every member is complete when
+yielded (DR-8), and nothing needs fixing at the end. The local-header walk is for
+non-seekable sources only.
+
+**D. How a caller sees that a forward pass fills some fields only at the end.** Open.
+In a forward pass a member's type is a guess from its name, and its mode, host and
+comment are `None`, until the directory arrives after the last member (§"What only the
+central directory says"). DR-8 asks for a way to see that before the pass starts. The
+options: a new public bool on the cost receipt, true only for this mode (recommended:
+visible at open, one field for the one mode that needs it); the docs and the `None`
+fields alone, with no new name; or a per-member bool. A new public name goes to the
+maintainer; the stage 3 PR proposes it.
 
 ## Out of scope
 
 - Listing an archive whose directory is lost, by walking local headers forward. The
-  walk above is the tool for it; salvage is planned after 0.2.0 (`IDEAS.md`).
+  walk above is the tool for it; it stays an idea for later (`IDEAS.md`).
 - Info-ZIP spanned sets (`.z01`…`.zip`). The parser exposes `disk_start`, which is what a
   later reader would follow; they stay refused.
 - Writing.
@@ -339,4 +465,7 @@ sources only.
 | Keep stdlib's end-record search and `concat` rule | Prefixed archives and decoy signatures in comments resolve exactly as today, and the differential test can compare against stdlib | 7-Zip's search, which differs on crafted inputs and would change detection results |
 | Stop the walk at `cd_size`, cutting an overrunning field | Same listing as today; the overrun stays a finding | Reading the field from past the directory, which changes names on crafted input |
 | Apply central-only fields at the end of a forward pass | Matches seekable extraction on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive does (a symlink becomes a file: DR-1); spooling the archive to find the directory first |
+| Positioned reads through a `read_at(offset, n)` callable for the directory walk | The walk is lazy, so it runs between reads of member data on the same handle; a positioned read under the reader's lock leaves the handle where the member stream needs it, and the parser stays free of locking | A `LockedStream` over the handle, which serialises each call but shares one position, so every walk read would need a seek and a read as one locked step, which is `read_at` |
+| The forward walk reads a `BinaryIO` and counts what it consumed | The same shape as `TarWalker` on a forward-only stream; no new reader type | A separate `ForwardReader` class |
+| No charge callback into the ZIP parser | One entry is at most 46 + 3 × 65 535 bytes by the format, and the reader charges each member against the listing limits before asking for the next | Passing `Charge` as the TAR parser does, which it needs because a TAR header declares the size of the record after it |
 | Keep `zipfile` in the tests | It writes most fixtures and is the oracle for the differential test | Dropping it, which loses the cheapest independent check of the parser |

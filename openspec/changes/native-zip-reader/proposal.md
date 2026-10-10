@@ -41,18 +41,28 @@ directory is the simplest of the three.
 - Behaviour that changes, each in its own stage PR: a lying UTF-8 flag costs one name,
   not the archive; a damaged directory lists its intact members and then raises; the
   outcome no longer depends on the Python version.
-- Later stages add what the native parser makes cheap: header-disagreement handling
-  (needs a ruling), ZIPs over 4 GiB written without ZIP64, and methods 1 (Shrink) and
-  6 (Implode).
+- Later stages add what the native parser makes cheap: reading two of the three kinds
+  of central and local header disagreement (ruled 2026-10-10), ZIPs over 4 GiB written
+  without ZIP64, and methods 1 (Shrink) and 6 (Implode).
 - ADR 0006 (stdlib `zipfile` for the ZIP core) is superseded by a new ADR.
 
 ## Impact
 
 - Code: new `zip_parser.py`; `zip_reader.py` loses its `zipfile` import and the
   workarounds listed in `design.md` §"What the parser removes".
-- Public API: none in the first three stages. Later stages may add diagnostic codes and
-  `CompressionAlgorithm` members; those go to the maintainer before merging.
+- Public API: none in stages 1 and 2. Stage 3 changes a declared capability: ZIP's
+  `SUPPORTS_STREAMING_NON_SEEKABLE` becomes true, so the public `required_source` for
+  ZIP moves from `SEEKABLE` to `FORWARD_ONLY`, and it may add one field (question D).
+  Stages 5 to 7 may add diagnostic codes and `CompressionAlgorithm` members. Every new
+  public name goes to the maintainer before merging.
 - Tests: `zipfile` stays as a test oracle and fixture writer. Tests that reach into
   `ZipInfo` through `member._raw` change to the parser's entry type.
-- Docs: `dev-docs/formats/zip.md` (§2.2, §5, §6), the format-zip spec, ADR 0006,
-  `dev-docs/IDEAS.md` (the native reader item), `docs/formats.md`.
+- Specs and docs, each moved by the stage that changes the behaviour (`design.md`
+  §Stages lists them per stage): the format-zip spec; for stage 3 also the
+  `backend-registry` and `access-mode-and-cost` specs and `docs/access-and-cost.md`;
+  `dev-docs/formats/zip.md`; ADR 0006; `dev-docs/IDEAS.md`; `dev-docs/design-rules.md`
+  (the DR-21 ruling); `docs/formats.md`; `docs/errors-and-diagnostics.md`.
+- No spec delta in this change (`skip_specs`). The change lands as seven PRs over time,
+  and each edits the live specs for the behaviour it ships, as the ZIP fix PRs do. A
+  delta written now would describe the end state while main moves through the
+  intermediate ones, and would be stale before it could be archived.
