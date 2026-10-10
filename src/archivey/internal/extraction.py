@@ -2680,7 +2680,9 @@ class ExtractionCoordinator:
         try:
             # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link
             # of the group that failed after its ``_make_room`` can have taken the
-            # last path; ``_place_link`` then fails this link as well.
+            # last path; ``_place_link`` then fails this link as well. No archive
+            # reaches that alone: the earlier link has to fail in ``os.link`` or
+            # ``os.replace``, which needs the filesystem to change under the run.
             candidates = list(self._state.source_paths.get(source_id, ()))
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
@@ -3202,9 +3204,9 @@ class ExtractionCoordinator:
         ``_make_room`` cleared ``new_path``) newest first; when none takes the link for
         a reason of its own (see ``_link_refused_here``), copy from an existing path.
         Records ``new_path`` under ``source_id`` so a later same-device link can reuse
-        it — which is what keeps a fan-out across
-        one device boundary to a single copy per device rather than one per link, and a
-        fan-out past the link-count limit to one copy per full file.
+        it — which is what keeps a fan-out across one device boundary to a single copy
+        per device rather than one per link, and a fan-out past the link-count limit to
+        one copy per full file.
 
         The first path at the link-count limit ends the search with a copy. The paths
         recorded before it are older names of the same file, of a file that filled up
@@ -3227,12 +3229,16 @@ class ExtractionCoordinator:
         a destination symlink is replaced rather than written through."""
         if new_path in candidates and _is_regular_file(new_path):
             # The link landed on a path that already holds its source's content (a
-            # case-folded name under REPLACE): the file is already in place. Linking
-            # it onto itself would only make a temp name to throw away.
+            # case-folded name under REPLACE). The callers' ``_make_room`` ran with
+            # ``atomic=True``, which leaves an existing file for the swap rather than
+            # unlinking it, so the file is still in place and there is nothing to link.
             self._state.source_paths.setdefault(source_id, []).append(new_path)
             return
         # Each path was a regular file this run wrote, and ``_forget_source_path``
-        # drops one once another member replaces it. Checked again here because
+        # drops one once another member replaces it. ``candidates`` was taken before
+        # the callers' ``_make_room``, so the one path that can be stale here is
+        # ``new_path``: the early return above takes it while it is a regular file,
+        # and the check below skips it when it is not. Checked again here because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,

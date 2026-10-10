@@ -3542,7 +3542,7 @@ def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> Non
     assert not _overwritten(report)
 
 
-@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 def test_o2_hardlink_folded_onto_its_own_source(
     tmp_path: Path, streaming: bool
 ) -> None:
@@ -3562,6 +3562,35 @@ def test_o2_hardlink_folded_onto_its_own_source(
     assert report.results[1].path == dest / "a"
     assert sorted(p.name for p in dest.iterdir()) == ["a"]
     assert (dest / "a").read_bytes() == b"data"
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_duplicate_hardlink_name_under_replace_leaves_no_temp(
+    tmp_path: Path, streaming: bool, policy: ExtractionPolicy
+) -> None:
+    # The first `b` is superseded and parked at its name, which keeps the source's
+    # inode but is no longer a recorded source path. The second `b` is then linked
+    # onto another name of the same file, where rename(2) does nothing; the temp
+    # name was left behind.
+    archive = _tar_bytes(
+        [("file", "a", b"data"), ("hard", "b", "a"), ("hard", "b", "a")]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            policy=policy,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("a", ExtractionStatus.EXTRACTED),
+        ("b", ExtractionStatus.SUPERSEDED),
+        ("b", ExtractionStatus.EXTRACTED),
+    ]
+    assert sorted(p.name for p in dest.iterdir()) == ["a", "b"]
+    assert os.path.samefile(dest / "a", dest / "b")
 
 
 def test_o2_orphan_hardlinks_folded_onto_each_other(tmp_path: Path) -> None:
