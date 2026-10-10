@@ -386,7 +386,10 @@ NOT be decoded:
   bits, can only handle 16 bits").
 
 A header the tool reports as damaged stays `CorruptionError`, such as a gzip header CRC
-that does not match.
+that does not match. A damaged byte in one of the fields listed above reads the same as
+the unsupported value, since nothing tells the two apart; the `UnsupportedFeatureError`
+message SHALL say that a damaged header reads the same way (the `error-handling` error
+split carries the general rule).
 
 #### Scenario: unsupported stream headers
 

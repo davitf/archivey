@@ -1,7 +1,7 @@
 name: Deploy docs
 
 # Publishes the MkDocs site to GitHub Pages on every push to the default branch.
-# PR-time validation lives in ci.yml ("Docs build", `mkdocs build --strict`); this
+# PR-time validation lives in docs-checks.yml ("Docs build", `mkdocs build --strict`); this
 # workflow is deploy-only. Uses GitHub's Actions-based Pages deployment, so no
 # `gh-pages` branch is needed — but the repo must have Pages "Source" set to
 # "GitHub Actions" once (Settings → Pages).

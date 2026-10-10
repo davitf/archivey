@@ -57,6 +57,7 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_callable,
     check_extraction_limits,
+    check_path_not_empty,
     describe_value,
 )
 from archivey.internal.diagnostics_collector import (
@@ -91,7 +92,11 @@ from archivey.internal.selection import (
 )
 from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
+from archivey.internal.streams.archive_stream import (
+    ArchiveStream,
+    RewindWarning,
+    as_closed_source_error,
+)
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -189,17 +194,20 @@ The extension code is also the empty-listing code, which
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     """Stamp is_current for duplicate names (last same-name entry wins).
 
-    Members whose ``name`` appears only once are left unchanged so format-specific
-    non-current rows (RAR ``path;N`` file-version history) keep the flag the backend
-    already set.
+    A member the backend already marked not current (a RAR ``path;N`` file-version
+    history row, an older plain ISO 9660 version) keeps that flag and takes no part
+    in the count: a superseded version stays superseded even when a crafted archive
+    repeats it. Members whose ``name`` appears only once among the rest are left
+    unchanged.
     """
     counts: dict[str, int] = {}
     for member in members:
-        counts[member.name] = counts.get(member.name, 0) + 1
+        if member.is_current:
+            counts[member.name] = counts.get(member.name, 0) + 1
 
     seen: set[str] = set()
     for member in reversed(members):
-        if counts[member.name] < 2:
+        if counts.get(member.name, 0) < 2 or not member.is_current:
             continue
         if member.name in seen:
             member.is_current = False
@@ -534,15 +542,22 @@ class BaseArchiveReader(ArchiveReader):
 
         The single backend-side error boundary (the out-of-stream counterpart of
         ``ArchiveStream._fail``): an already-typed ``ArchiveyError`` is stamped and
-        re-raised as-is; a raw exception the translator recognizes is stamped and raised
-        chained to the original; an unrecognized exception propagates unchanged (the
-        catch-all-free rule in CONTRIBUTING). ``stamp_encryption=False`` skips member
-        stamping for ``EncryptionError`` (ZIP's password errors carry their own message
-        and must not be reattributed).
+        re-raised as-is; a closed source (``as_closed_source_error``) raises a usage
+        error naming ``member_name``, as it does inside a member stream; a
+        raw exception the translator recognizes is stamped and raised chained to the
+        original; an unrecognized exception propagates unchanged (the catch-all-free
+        rule in CONTRIBUTING). ``stamp_encryption=False`` skips member stamping for
+        ``EncryptionError`` (ZIP's password errors carry their own message and must
+        not be reattributed).
         """
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
+        closed = as_closed_source_error(exc, member_name)
+        if closed is not None:
+            # Checked before the backend's translator, which may map every ValueError
+            # to corruption (ZIP's bad-offset rule, ISO's pycdlib rule).
+            raise closed from exc
         translated = self._translate_exception(exc)
         if translated is None:
             raise exc
@@ -943,6 +958,7 @@ class BaseArchiveReader(ArchiveReader):
                 verify_member=verify_member,
                 archive_name=self._archive_name,
                 rewind_warning=rewind_warning,
+                member_name=member_name,
             )
 
         assert inner is not None
@@ -966,6 +982,7 @@ class BaseArchiveReader(ArchiveReader):
             verify_member=verify_member,
             archive_name=self._archive_name,
             rewind_warning=rewind_warning,
+            member_name=member_name,
         )
 
     @abstractmethod
@@ -2580,6 +2597,15 @@ class BaseArchiveReader(ArchiveReader):
         self, name: str, default: ArchiveMember | None = None
     ) -> ArchiveMember | None:
         self._require_random_access("get()")
+        # Without this a ``bytes`` name answered "absent" for a member that exists (a
+        # wrong answer), and an ArchiveMember escaped as ``unhashable type``. ``open()``
+        # refuses a ``bytes`` name the same way; it takes a member object, which get()
+        # does not, because get() looks up by name.
+        if not isinstance(name, str):
+            raise ArchiveyUsageError(
+                f"reader.get() takes a member name (str), but got "
+                f"{describe_value(name)}."
+            )
         token = self._state.acquire_worker("get")
         try:
             materialized = self._materialize_members()
@@ -2876,6 +2902,7 @@ class BaseArchiveReader(ArchiveReader):
         # passed on, because ``members`` may be a one-shot iterable that a second read
         # would find empty.
         selector = normalize_member_selector(members)
+        check_path_not_empty(dest, call="extract_all()")
         self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives

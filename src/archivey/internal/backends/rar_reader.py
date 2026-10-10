@@ -3999,8 +3999,10 @@ class RarReader(BaseArchiveReader):
         # open(), and so a spawn-count right after open() is 1 (the live-stream
         # gate's "refused second open does not spawn" pin). Password and
         # corruption still map on the completing read — the exit status is only
-        # known after the process ends.
-        inner = spawn()
+        # known after the process ends. The boundary maps a stream source closed
+        # before its first spool to disk, as every format's member open does.
+        with self._translated_errors(member.name):
+            inner = spawn()
         try:
             rewind: RewindWarning | None = None
             if self._seek_declared():

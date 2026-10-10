@@ -493,10 +493,14 @@ the reader's lifetime.
 That read can show the member is not a link at all. A member flagged as a Windows
 reparse point whose data is not a reparse buffer is a file, and listing would have
 presented it as one. When extraction is the first to read it, under
-`read_link_targets=False` or in a streaming pass, `extract_all` re-types it and calls
-your `filter` a second time, now with the file, so a filter can see such a member twice.
-In random access it then writes the file's content. A streaming pass has already gone
-past that content, so the member fails under `on_error` instead.
+`read_link_targets=False` or in a streaming pass that has not read it yet,
+`extract_all` re-types it and calls your `filter` a second time, now with the file, so a
+filter can see such a member twice. In random access it then writes the file's content.
+A streaming pass has already gone past that content, so the member fails under
+`on_error` instead. A 7z `stream_members()` pass under the default
+`read_link_targets=True` is the exception: it reads the member's data when it reaches
+the member, re-types it there and yields the file with its content, so `extract_all`
+writes it as a file in either access mode.
 
 A hard link to a symlink, directly or through other hard links, goes the other way: your
 `filter` sees the HARDLINK the archive lists, and its result keeps that member, but what

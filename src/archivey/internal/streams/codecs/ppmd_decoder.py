@@ -191,6 +191,10 @@ class PpmdDecoder(BaseDecoder):
         # no decoder to go on with.
         self._refusal: str | None = None
         self._decomp: _PpmdNativeDecoder | None = None
+        # ``_check_end_mark`` has run; ``_end_probe_parked``: its call left the
+        # worker waiting for input, so ``_quiesce_worker`` still has to run.
+        self._end_checked = False
+        self._end_probe_parked = False
 
     def _open_native(self, *, in_child: bool) -> None:
         """Create the decoder ``_decomp``, in this process or in a child one.
@@ -499,6 +503,7 @@ class PpmdDecoder(BaseDecoder):
         self._draining = False
         max_length = self._max_length()
         if max_length == 0:
+            self._check_end_mark()
             return DecodeOut(b"")
         out = b""
         if not self._native.eof and getattr(self._native, "needs_input", False):
@@ -520,6 +525,58 @@ class PpmdDecoder(BaseDecoder):
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")
         return DecodeOut(out)
+
+    def _check_end_mark(self) -> None:
+        """At the declared size, look for a PPMd8 end mark and input left after it.
+
+        Called once, at compressed EOF, when the output has reached ``unpack_size``.
+        7-Zip writes a ZIP PPMd8 member with an end mark and reports a member with
+        input after it as "Data Error". pyppmd decodes the end mark only when asked
+        for more output than the data holds, and only then does ``unused_data`` show
+        the input after it (pyppmd 1.3.1, measured on a ``7z a -tzip -mm=PPMd``
+        member). So one more symbol is asked for. At ``eof`` with an empty return,
+        the end mark is there, and any ``unused_data`` is input after the end
+        (:attr:`input_after_end`). Anything else means no end mark at the size: a
+        stream written without one, which pyppmd cannot tell from input past the
+        size, so it reads clean, as a marker-less LZMA1 stream does. The extra symbol
+        is dropped. A decoder already at ``eof`` is not asked; its ``unused_data`` is
+        checked the same way.
+
+        The symbol is asked only of a worker that stopped on its output budget with
+        input left (``needs_input`` False): with all input consumed, nothing can
+        follow the stream, and resuming a worker parked on empty input is the crash
+        path ``_note_decoded`` describes. One symbol is far inside the over-decode
+        pyppmd survives (``_PPMD_UNSIZED_DECODE_CHUNK``). PPMd7 (7z) has no end mark
+        and is not asked.
+        """
+        if (
+            self._end_checked
+            or self._variant != 8
+            or self._unpack_size is None
+            or self._exhausted
+            or self._decomp is None
+        ):
+            return
+        self._end_checked = True
+        native = self._native
+        # Already at ``eof``, the end mark is decoded and is not asked for again.
+        # pyppmd 1.3.1 sets ``eof`` on PPMd8 only when the end symbol decodes (the
+        # early ``eof`` of a range coder at ``Code == 0`` is PPMd7's alone), so
+        # ``unused_data`` then holds exactly the input after the end mark.
+        if not native.eof:
+            if getattr(native, "needs_input", True):
+                return
+            extra = native.decode(b"", 1)
+            if extra or not native.eof:
+                # No end mark here. A worker that returned nothing waits for input.
+                self._end_probe_parked = not extra and not native.eof
+                return
+        if isinstance(native, PpmdChildDecoder):
+            unused = native.unused_size
+        else:
+            unused = len(getattr(native, "unused_data", b"") or b"")
+        if unused:
+            self._input_after_end = True
 
     @property
     def finished(self) -> bool:
@@ -560,8 +617,9 @@ class PpmdDecoder(BaseDecoder):
         try:
             # A fully-decoded member exited its worker on budget / the end mark;
             # only an incomplete (truncated / abandoned) decode can leave one
-            # parked. Skip the happy path so valid closes cost nothing.
-            if self.finished:
+            # parked. Skip the happy path so valid closes cost nothing. The end-mark
+            # probe (``_check_end_mark``) can park one after the member finished.
+            if self.finished and not self._end_probe_parked:
                 return
             for _ in range(_PPMD_QUIESCE_MAX_CALLS):
                 # ``not needs_input`` is the "worker not parked" signal — the last
@@ -612,6 +670,7 @@ def PpmdDecompressorStream(
     unpack_size: int | None = None,
     pack_size: int | None = None,
     in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
+    refuse_input_after_end: bool = False,
     collector: DiagnosticCollector | None = None,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
@@ -636,4 +695,5 @@ def PpmdDecompressorStream(
         ),
         collector=collector,
         codec_name="ppmd",
+        refuse_input_after_end=refuse_input_after_end,
     )
