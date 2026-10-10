@@ -1687,9 +1687,10 @@ class IsoReader(BaseArchiveReader):
         record that carries the multi-extent flag continues into the next record if
         that is a file record of the same kind (associated or not). Each entry is
         listed, as ZIP and TAR list two members with one name and as 7-Zip lists such
-        an image; the shared duplicate-name rule then makes the later one current. Records whose matched fields are all equal hold the
-        same data, so which takes which place changes no member's data. If a record
-        cannot be matched, each record of the group is listed on its own.
+        an image; the shared duplicate-name rule then makes the later one current.
+        Records whose matched fields are all equal hold the same data, so which takes
+        which place changes no member's data. If a record cannot be matched, each
+        record of the group is listed on its own.
         """
         if len(group) == 1:
             return group
