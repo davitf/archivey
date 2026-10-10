@@ -20,7 +20,13 @@ from archivey import (
     open_archive,
 )
 from archivey.cli import test_cmd
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import (
+    EXIT_BROKEN_PIPE,
+    EXIT_FAIL,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    EXIT_USAGE,
+)
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, main
@@ -999,22 +1005,90 @@ def test_extract_ctrl_c_mid_pass_exits_interrupted(
     assert "interrupted" in capsys.readouterr().err
 
 
-def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
-    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+def test_test_closed_stderr_pipe_mid_pass_exits_broken_pipe(
+    sample_zip: Path,
 ) -> None:
     """A stderr pipe closed during the pass gets the broken-pipe exit, not a usage
-    error about closing the reader while its member pass is active.
+    error about closing the reader while its member pass is active, and not 0: the
+    archive was only partly verified.
     """
-    from archivey.cli import main as main_mod
-
-    # The real one closes sys.stdout / sys.stderr, which pytest's capture owns.
-    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
     err = _StderrFailingAtFirstOk(
         BrokenPipeError(32, "Broken pipe"), every_later_write=True
     )
-    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_BROKEN_PIPE
     # The pipe did close mid-pass: without this, a clean run passes the test too.
     assert err.failed
+
+
+class _ClosedPipeStdout(io.StringIO):
+    """A stdout whose every write raises ``BrokenPipeError``, as a closed pipe does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes = 0
+
+    def write(self, s: str) -> int:
+        self.writes += 1
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+@pytest.mark.parametrize("verb", ["list", "info"])
+def test_closed_stdout_pipe_exits_broken_pipe(sample_zip: Path, verb: str) -> None:
+    """A verb whose stdout pipe closes exits 141 (128 + SIGPIPE), quietly."""
+    out = _ClosedPipeStdout()
+    err = io.StringIO()
+    assert main([verb, str(sample_zip)], out=out, err=err) == EXIT_BROKEN_PIPE
+    assert out.writes >= 1
+    assert err.getvalue() == ""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a write to a pipe with no reader is EINVAL on Windows, not EPIPE",
+)
+@pytest.mark.parametrize(
+    ("closed", "argv"),
+    [
+        ("stdout", ["list"]),
+        ("stderr", ["test", "-v"]),
+        ("stderr", ["test"]),
+    ],
+)
+@pytest.mark.parametrize("members", [1, 2000])
+def test_closed_pipe_subprocess_exits_141_without_traceback(
+    tmp_path: Path, closed: str, argv: list[str], members: int
+) -> None:
+    """``archivey list x | head`` and ``archivey test x 2>&1 | head`` exit 141.
+
+    The pipe's read end is closed before the process starts, so the first write that
+    reaches it fails, deterministically. With 2000 members that is a write in the
+    middle of the pass; with one member it is the flush as the process ends. The
+    other stream is captured: it must hold no traceback and no "Exception ignored".
+    """
+    import subprocess
+
+    archive = _zip(
+        tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(members)}
+    )
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        if closed == "stdout":
+            streams = {"stdout": write_end, "stderr": subprocess.PIPE}
+        else:
+            streams = {"stdout": subprocess.PIPE, "stderr": write_end}
+        proc = subprocess.run(
+            [sys.executable, "-m", "archivey", *argv, str(archive)],
+            check=False,
+            **streams,
+        )
+    finally:
+        os.close(write_end)
+    other = proc.stderr if closed == "stdout" else proc.stdout
+    assert proc.returncode == EXIT_BROKEN_PIPE, other
+    assert b"Traceback" not in other
+    assert b"Exception ignored" not in other
+    assert b"Broken pipe" not in other
 
 
 def test_test_summary_helper() -> None:

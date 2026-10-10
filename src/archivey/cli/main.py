@@ -23,7 +23,13 @@ from archivey import (
 )
 from archivey.cli.choices import cli_choices
 from archivey.cli.errors import CliError
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import (
+    EXIT_BROKEN_PIPE,
+    EXIT_FAIL,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    EXIT_USAGE,
+)
 from archivey.cli.extract_cmd import run_extract
 from archivey.cli.format import (
     escape_member_name,
@@ -635,7 +641,12 @@ def main(
 
     try:
         with cli_logging(verbose=bool(args.verbose), err=err_stream):
-            return _dispatch(args, out=out_stream, err=err_stream)
+            code = _dispatch(args, out=out_stream, err=err_stream)
+            # Flush here, not at interpreter exit, so a reader that closed the pipe
+            # after the last write is still a broken pipe handled below.
+            out_stream.flush()
+            err_stream.flush()
+            return code
     except CliError as exc:
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not
         # escape its own message the way ArchiveyError does — and an archive-derived name
@@ -647,8 +658,10 @@ def main(
         return EXIT_FAIL
     except BrokenPipeError:
         # BrokenPipeError ⊂ OSError — must precede the OSError handler (F2).
+        # Not 0: the reader left before the verb finished, so `test` did not verify
+        # the whole archive and `list` did not print it all.
         _silence_broken_pipe()
-        return EXIT_OK
+        return EXIT_BROKEN_PIPE
     except OSError as exc:
         print(escape_member_name(_format_os_error(exc)), file=err_stream)
         return EXIT_FAIL
@@ -684,12 +697,30 @@ class _BackslashReplacingWriter:
 
 
 def _silence_broken_pipe() -> None:
-    """Avoid a secondary BrokenPipeError when the interpreter flushes closed pipes."""
+    """Point a closed standard stream at the null device, with no message.
+
+    The interpreter flushes ``sys.stdout`` and ``sys.stderr`` as it exits. Output
+    still buffered for a closed pipe would raise ``BrokenPipeError`` again there and
+    print "Exception ignored". A stream that still flushes is left as it is.
+    """
     for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
         try:
-            stream.close()
-        except BrokenPipeError:
+            stream.flush()
+            continue
+        except (OSError, ValueError):
             pass
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+        except OSError:
+            return
+        try:
+            os.dup2(devnull, stream.fileno())
+        except (OSError, ValueError):
+            pass
+        finally:
+            os.close(devnull)
 
 
 if __name__ == "__main__":
