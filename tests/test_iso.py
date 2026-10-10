@@ -1171,6 +1171,103 @@ def test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list() -> 
             assert [ar.read(m) for m in members] == expected
 
 
+def test_records_sharing_an_extent_keep_their_own_multi_extent_flags() -> None:
+    """The flag is matched to a record by its position among the records with its
+    identifier, not by its extent. Here the first two records share an extent and
+    only the first is flagged: the second ends the file, and the third, at its own
+    extent, is a second member. Matched by extent, the second record read as flagged
+    and the third was swallowed into the first member."""
+    import pycdlib
+
+    from archivey.exceptions import UnsupportedFeatureError
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    content = b"a" * 2048 + b"b" * 2048 + b"c" * 1000
+    iso.add_fp(io.BytesIO(content), len(content), "/BIG.BIN;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = bytearray(
+        _split_into_extents(out.getvalue(), b"BIG.BIN;1", flags=(True, False))
+    )
+    first = image.index(b"BIG.BIN;1") - 33
+    second = first + image[first]
+    assert image[second + 33 : second + 42] == b"BIG.BIN;1"
+    image[second + 2 : second + 10] = image[first + 2 : first + 10]
+
+    with open_archive(io.BytesIO(bytes(image))) as ar:
+        first_member, second_member = ar.members()
+        assert [first_member.size, second_member.size] == [4096, 1000]
+        assert ar.read(second_member) == b"c" * 1000
+        # The first member's two extents are the same block, so not back to back.
+        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
+            ar.read(first_member)
+
+
+def test_a_repeated_superseded_version_stays_not_current(tmp_path: Path) -> None:
+    """Two records ``FOO.;1`` beside ``FOO.;2``: both older records list under their
+    stored identifier and stay not current, though they share a name. The shared
+    last-entry-wins pass keeps a backend's own "not current", so extraction writes
+    only the newest version."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_fp(io.BytesIO(b"a" * 2048 + b"b" * 1000), 3048, "/FOO.;1")
+    iso.add_fp(io.BytesIO(b"NEW"), 3, "/FOO.;2")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    image = _split_into_extents(out.getvalue(), b"FOO.;1", flags=(False,))
+
+    with open_archive(io.BytesIO(image)) as ar:
+        rows = [(m.name, m.size, m.is_current) for m in ar.members()]
+        assert rows == [
+            ("FOO.;1", 2048, False),
+            ("FOO.;1", 1000, False),
+            ("FOO", 3, True),
+        ]
+        ar.extract_all(tmp_path)
+    assert [p.name for p in tmp_path.iterdir()] == ["FOO"]
+    assert (tmp_path / "FOO").read_bytes() == b"NEW"
+
+
+def test_a_directory_and_a_file_with_one_identifier_both_list() -> None:
+    """pycdlib links a file record to the record just before it when the two share an
+    identifier, even when that record is a directory. A directory is never part of
+    a file, so both list, as 7-Zip lists them. The reverse order, and two directories
+    with one identifier, are refused by pycdlib at open."""
+    import pycdlib
+
+    from archivey.exceptions import CorruptionError
+
+    def build(first: str) -> bytes:
+        iso = pycdlib.PyCdlib()
+        iso.new(interchange_level=4)
+        directory, file = ("/DUP", "/DUQ") if first == "dir" else ("/DUQ", "/DUP")
+        iso.add_directory(directory)
+        iso.add_fp(io.BytesIO(b"x"), 1, file)
+        iso.add_fp(io.BytesIO(b"inner"), 5, directory + "/IN")
+        out = io.BytesIO()
+        iso.write_fp(out)
+        iso.close()
+        # The directory record and both path tables spell the identifier.
+        return out.getvalue().replace(b"DUQ", b"DUP")
+
+    with open_archive(io.BytesIO(build("dir"))) as ar:
+        rows = [(m.name, m.type, m.is_current) for m in ar.members()]
+        assert rows == [
+            ("DUP/", MemberType.DIRECTORY, True),
+            ("DUP", MemberType.FILE, True),
+            ("DUP/IN", MemberType.FILE, True),
+        ]
+        assert ar.read("DUP") == b"x"
+        assert ar.read("DUP/IN") == b"inner"
+    with pytest.raises(CorruptionError, match="duplicate name"):
+        open_archive(io.BytesIO(build("file"))).close()
+
+
 def test_a_boot_catalog_declared_past_the_image_end_reads_short() -> None:
     """pycdlib clamps a record running past the image only when it gives it an
     inode, and the boot catalog gets none; the inode built for it stops at the end
@@ -1283,7 +1380,7 @@ def test_the_raw_directory_walk_crosses_sector_padding() -> None:
     data = first.ljust(2048, b"\0") + second.ljust(2048, b"\0")
 
     raw = _parse_raw_directory(data, 2048, image_length=201 * 2048 + 5000)
-    assert raw.flagged == {100, 200}
+    assert raw.multi_extent == {b"BIG;1": (True, False), b"HUGE;1": (True, False)}
     assert raw.lengths_to_end == {(201, b"HUGE;1"): 9000}
 
 

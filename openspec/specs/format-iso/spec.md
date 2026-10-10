@@ -150,15 +150,19 @@ presented name of a file together with the `.` of an empty extension (`FOO.;1`
 is `FOO`), and recorded as `extra["iso.version"]`. When a directory holds several
 versions of one name, the highest takes the bare name and the others SHALL be
 presented by their stored identifier (`FOO.;1`) with `is_current=False`, the RAR
-file-version history shape. A directory identifier has no version: a `;N` at its
-end SHALL stay in the directory's name, as it does in its children's paths.
+file-version history shape, also when the same stored identifier is repeated. In
+the plain namespace a directory's presented name keeps a `;N` at its end, as its
+children's paths do, and the directory has no `extra["iso.version"]`.
 
 Records that share an identifier in one directory SHALL be one file only while
-each record but the last carries the multi-extent flag as written in the image.
-A record that repeats the identifier of a record without that flag SHALL start a
-file of its own and SHALL be listed as its own member. Members with one name
-then follow the shared duplicate-name rule (`archive-data-model`): the later one
-is current.
+each record but the last is a file record carrying the multi-extent flag as
+written in the image; each record's flag is the one stored at its own position,
+not at its extent. A record that pycdlib linked to a previous record with its
+identifier, and that the flags do not join to it, SHALL be listed as its own
+member; this includes a file record that follows a directory record with its
+identifier. Members with one name then follow the shared duplicate-name rule
+(`archive-data-model`): the later one is current. A repeated record that pycdlib
+does not link (an associated file) is not listed.
 
 In the Rock Ridge namespace a record whose System Use area carries no Rock Ridge
 entries SHALL still be listed, under its ISO 9660 identifier (version and
@@ -180,6 +184,10 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | Plain directory identifier `DI;1` holding `X.TXT;1` | `DI;1/` and `DI;1/X.TXT` (version 1); the directory has no `iso.version` |
 | Two file records with one identifier, the first without the multi-extent flag | Two members with that name, each with its own size and data; the later one is current; no diagnostic |
 | Three records with one identifier, flagged, not flagged, not flagged | The first two are one member; the third is a second member with the same name |
+| As above, but the first two records share one extent | The same two members; the first raises `UnsupportedFeatureError` on read (extents not back to back), the second reads |
+| Plain `FOO.;1` twice, then `FOO.;2` | `FOO` (version 2, current) and two `FOO.;1` rows, both `is_current=False`; extraction writes only `FOO` |
+| Directory record `DUP`, then a file record `DUP` | `DUP/` and the file `DUP` both list, as 7-Zip lists them |
+| File record `DUP` then directory `DUP`, or two directories `DUP` | `CorruptionError` at open (pycdlib refuses the duplicate name) |
 | Rock Ridge image, one record with its System Use area zeroed | Listed under its ISO 9660 name; `MEMBER_HEADER_RECORD_SKIPPED` attached |
 | Directory record pointing back at an ancestor extent | Listed once there; not descended again |
 | Rock Ridge tree 12 directories deep | Logical tree lists in full; no `rr_moved` member |

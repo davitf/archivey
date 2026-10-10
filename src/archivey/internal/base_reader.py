@@ -189,17 +189,20 @@ The extension code is also the empty-listing code, which
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
     """Stamp is_current for duplicate names (last same-name entry wins).
 
-    Members whose ``name`` appears only once are left unchanged so format-specific
-    non-current rows (RAR ``path;N`` file-version history) keep the flag the backend
-    already set.
+    A member the backend already marked not current (a RAR ``path;N`` file-version
+    history row, an older plain ISO 9660 version) keeps that flag and takes no part
+    in the count: a superseded version stays superseded even when a crafted archive
+    repeats it. Members whose ``name`` appears only once among the rest are left
+    unchanged.
     """
     counts: dict[str, int] = {}
     for member in members:
-        counts[member.name] = counts.get(member.name, 0) + 1
+        if member.is_current:
+            counts[member.name] = counts.get(member.name, 0) + 1
 
     seen: set[str] = set()
     for member in reversed(members):
-        if counts[member.name] < 2:
+        if counts.get(member.name, 0) < 2 or not member.is_current:
             continue
         if member.name in seen:
             member.is_current = False
