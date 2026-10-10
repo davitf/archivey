@@ -111,7 +111,7 @@ in the repository measures what each limit costs in time and memory on your mach
 | `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands, checked once it has written 5 MiB | None of its own |
 | `listing_limits.max_members` | 1,048,576 | Members an archive can list | About 25-50 µs and 1.5 KiB of memory per member, under a minute and 1.5 GiB at the default |
 | `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets | About 1.7 MiB of memory per MiB counted, 110 MiB at the default |
-| `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for | The memory itself |
+| `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE | The memory itself |
 | `decoder_limits.max_key_derivation_rounds` | 2^27 | Password-hashing work per open archive | 0.2-0.7 µs per round, 30-100 s at the default |
 | `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process | Up to twice the limit in memory while a PPMd member decodes, 32 MiB at the default |
 | `spool_limits.max_bytes` | 1 GiB | Temporary disk space, used when archivey needs a copy of the source, such as a pipe | The disk space itself |

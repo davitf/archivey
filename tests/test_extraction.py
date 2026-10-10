@@ -11,7 +11,9 @@ import errno
 import gzip
 import io
 import os
+import struct
 import tarfile
+import time
 import unicodedata
 import warnings
 import zipfile
@@ -40,6 +42,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
+    TruncatedError,
 )
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.extraction import (
@@ -53,6 +56,7 @@ from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     apply_name_policy,
     check_universal,
+    resolve_or_raise_on_loop,
     transform_standard,
     transform_strict,
 )
@@ -60,6 +64,7 @@ from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
+from tests.streams_util import SizedNonSeekable
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -237,6 +242,27 @@ def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> 
 def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
     m = _member("sub/link", type=MemberType.SYMLINK, link_target="../file.txt")
     check_universal(m, tmp_path)  # resolves to <dest>/file.txt, inside root
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    ("name", "in_loop"),
+    [("p/f", False), ("f", True), ("", True)],
+    ids=["parent", "dest", "dest-root-member"],
+)
+def test_check_universal_names_a_loop_in_the_destination(
+    tmp_path: Path, name: str, in_loop: bool
+) -> None:
+    # A loop the destination already had, below dest or at dest itself. Path.resolve()
+    # raises on it before Python 3.13 and returns a path from 3.13; the answer must not
+    # depend on which.
+    os.symlink("p", tmp_path / "p")
+    dest = tmp_path / "p" if in_loop else tmp_path
+    member = _member(name, type=MemberType.DIRECTORY) if name == "" else _member(name)
+    with pytest.raises(ExtractionError) as info:
+        check_universal(member, dest)
+    assert type(info.value) is ExtractionError
+    assert "A path in the destination does not resolve" in str(info.value)
 
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
@@ -743,6 +769,17 @@ def test_directory_metadata_is_applied_after_its_children(
         _restore_modes(dest)
 
 
+def _case_sensitive(path: Path) -> bool:
+    """Whether the filesystem at ``path`` tells ``CaseProbe`` from ``caseprobe``. Writes
+    and removes ``path / "CaseProbe"``, so ``path`` is left as it was."""
+    probe = path / "CaseProbe"
+    probe.write_bytes(b"")
+    try:
+        return not (path / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
 class _NoInode:
     """A stat result that reports inode 0, as some FUSE and network mounts do."""
 
@@ -841,6 +878,261 @@ def test_deferred_directory_metadata_never_follows_a_symlink(tmp_path: Path) -> 
     assert (dest / "d").is_symlink()
     assert (dest / "t").stat().st_mode & 0o7777 == 0o755
     assert int((dest / "t").stat().st_mtime) != _DIR_MTIME
+
+
+def _extract_removing_a_directory(
+    dest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    specs: list[tuple[str, int | None, int]],
+    policy: ExtractionPolicy = ExtractionPolicy.STANDARD,
+) -> list[ExtractionStatus]:
+    """Extract ``specs`` under ``policy`` and REPLACE, where a symlink member named ``d``
+    is refused after REPLACE has removed the empty directory at its name.
+
+    Python 3.11 and 3.12 refuse the loop ``d -> d`` because ``Path.resolve()`` raises
+    on it; from 3.13 it does not raise, and the link is kept. The re-check is patched
+    to refuse it on every version. Inodes are reported as 0, so the identity check
+    cannot tell two directories at one place apart, as on a filesystem that reuses a
+    freed inode."""
+    import archivey.internal.extraction as extraction_mod
+
+    escapes = extraction_mod._symlink_escapes
+    monkeypatch.setattr(
+        extraction_mod,
+        "_symlink_escapes",
+        lambda link, target, root: link.name == "d" or escapes(link, target, root),
+    )
+    lstat, fstat = os.lstat, os.fstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    monkeypatch.setattr(os, "fstat", lambda fd: _NoInode(fstat(fd)))
+    try:
+        report = open_and_extract(
+            io.BytesIO(_tar_with_dir_modes(specs)),
+            dest,
+            policy=policy,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error="continue",
+        )
+    finally:
+        monkeypatch.undo()
+    return [r.status for r in report.results]
+
+
+def _assert_plain_parent(directory: Path) -> None:
+    """``directory`` was made as a parent: the creation default and the current time."""
+    umask = os.umask(0)
+    os.umask(umask)
+    st = directory.stat()
+    assert st.st_mode & 0o7777 == 0o777 & ~umask
+    assert abs(st.st_mtime - time.time()) < 300
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_metadata_of_a_directory_removed_by_another_spelling_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``s/d/`` is written through the archive's own ``s -> .``, so it is the
+    directory ``d``. REPLACE removes that empty directory for the symlink ``d -> d``,
+    which is then refused, and ``d/x`` creates ``d`` again as a plain parent. The
+    removed member's mode and mtime must not land on that new directory: the removal
+    names ``d``, and the pending metadata has to be found from that name."""
+    dest = tmp_path / "out"
+    statuses = _extract_removing_a_directory(
+        dest,
+        monkeypatch,
+        [
+            ("s->.", None, 0),
+            ("s/d/", 0o700, _DIR_MTIME),
+            ("d->d", None, 0),
+            ("d/x", 0o644, 0),
+        ],
+    )
+    assert statuses == [
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    _assert_plain_parent(dest / "d")
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize(
+    ("policy", "removed_status"),
+    [
+        (ExtractionPolicy.STANDARD, ExtractionStatus.OVERWRITTEN),
+        # TRUSTED keys results on the exact name, so ``D/``'s result is not revised;
+        # its pending metadata is still dropped.
+        (ExtractionPolicy.TRUSTED, ExtractionStatus.EXTRACTED),
+    ],
+    ids=["standard", "trusted"],
+)
+def test_deferred_metadata_of_a_directory_removed_by_a_case_variant_is_dropped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: ExtractionPolicy,
+    removed_status: ExtractionStatus,
+) -> None:
+    """On a case-insensitive filesystem ``D/`` and ``d`` are one entry. REPLACE removes
+    the empty ``D/`` for the refused symlink ``d``, and ``d/x`` creates ``d`` again as a
+    plain parent, which must not get ``D/``'s mode and mtime."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if _case_sensitive(dest):
+        pytest.skip("needs a case-insensitive filesystem, where D/ and d are one entry")
+    statuses = _extract_removing_a_directory(
+        dest,
+        monkeypatch,
+        [("D/", 0o700, _DIR_MTIME), ("d->d", None, 0), ("d/x", 0o644, 0)],
+        policy,
+    )
+    assert statuses == [
+        removed_status,
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    _assert_plain_parent(dest / "d")
+
+
+@_posix_perms
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+    ids=["standard", "trusted"],
+)
+def test_deferred_metadata_of_a_case_variant_directory_still_there_is_kept(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """On a case-sensitive filesystem ``X/`` and ``x/`` are two directories under one
+    casefolded key. REPLACE removing ``x/`` for the file ``x`` must not drop the
+    pending metadata of ``X/``, which is still there."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if not _case_sensitive(dest):
+        pytest.skip(
+            "needs a case-sensitive filesystem, where X/ and x/ are two entries"
+        )
+    archive = _tar_with_dir_modes(
+        [("X/", 0o700, _DIR_MTIME), ("x/", 0o750, _SUB_MTIME), ("x", 0o644, 0)]
+    )
+    open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=policy,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    st = (dest / "X").stat()
+    assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o700, _DIR_MTIME)
+    assert (dest / "x").read_bytes() == b"x"
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize(
+    ("specs", "mode", "mtime"),
+    [
+        # The run creates ``d`` as the parent of ``s/d/f``; ``d/`` names it again.
+        (
+            [("s->.", None, 0), ("s/d/f", 0o644, 0), ("d/", 0o700, _DIR_MTIME)],
+            0o700,
+            _DIR_MTIME,
+        ),
+        # Two directory members reach one directory: the one written last applies.
+        (
+            [("s->.", None, 0), ("d/", 0o700, _DIR_MTIME), ("s/d/", 0o750, _SUB_MTIME)],
+            0o750,
+            _SUB_MTIME,
+        ),
+        (
+            [("s->.", None, 0), ("s/d/", 0o750, _SUB_MTIME), ("d/", 0o700, _DIR_MTIME)],
+            0o700,
+            _DIR_MTIME,
+        ),
+    ],
+    ids=["created-as-parent", "written-then-through-link", "through-link-then-written"],
+)
+def test_a_directory_this_run_made_is_ours_under_every_spelling(
+    tmp_path: Path, specs: list[tuple[str, int | None, int]], mode: int, mtime: int
+) -> None:
+    """A directory member that names, under another spelling, a directory this run
+    already wrote or created is not the caller's directory: its stored mode and mtime
+    are applied, and no ``kept_mode`` is reported."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(_tar_with_dir_modes(specs)), dest, policy=ExtractionPolicy.STANDARD
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    assert all(r.kept_mode is None for r in report.results)
+    st = (dest / "d").stat()
+    assert (st.st_mode & 0o7777, int(st.st_mtime)) == (mode, mtime)
+
+
+@_posix_perms
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+    ids=["standard", "trusted"],
+)
+def test_a_directory_this_run_made_is_ours_under_a_case_variant(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """On a case-insensitive filesystem ``D/`` and ``d/`` are one directory, under
+    every policy. ``d/`` names the directory ``D/`` wrote, so it is not the caller's:
+    no ``kept_mode`` is reported, and its stored mode and mtime, written last, apply."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if _case_sensitive(dest):
+        pytest.skip(
+            "needs a case-insensitive filesystem, where D/ and d/ are one entry"
+        )
+    archive = _tar_with_dir_modes(
+        [("D/", 0o700, _DIR_MTIME), ("d/", 0o750, _SUB_MTIME)]
+    )
+    report = open_and_extract(io.BytesIO(archive), dest, policy=policy)
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert all(r.kept_mode is None for r in report.results)
+    st = (dest / "d").stat()
+    assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _SUB_MTIME)
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_metadata_reaches_a_directory_through_a_locked_spelling(
+    tmp_path: Path,
+) -> None:
+    """``a/b/c/s/u/`` is written through the archive's own ``a/b/c/s -> ../../../t``,
+    so it is the directory ``t/u``. ``a/b/c`` is stored ``0o000`` and is deeper, so
+    its mode is applied first. ``t/u`` still gets its stored mode and mtime: it is
+    opened as ``t/u``, not through ``a/b/c``, which the owner can no longer search."""
+    probe = tmp_path / "probe"
+    probe.mkdir(mode=0o000)
+    try:
+        os.listdir(probe)
+    except PermissionError:
+        pass
+    else:
+        pytest.skip("permission checks are bypassed here (root with DAC override)")
+    archive = _tar_with_dir_modes(
+        [
+            ("t/", 0o755, 0),
+            ("a/b/c/", 0o000, _SUB_MTIME),
+            ("a/b/c/s->../../../t", None, 0),
+            ("a/b/c/s/u/", 0o750, _DIR_MTIME),
+        ]
+    )
+    dest = tmp_path / "out"
+    try:
+        report = open_and_extract(
+            io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
+        )
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 4
+        st = (dest / "t" / "u").stat()
+        assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _DIR_MTIME)
+        assert (dest / "a" / "b" / "c").stat().st_mode & 0o7777 == 0o000
+    finally:
+        _restore_modes(dest)
 
 
 @_posix_perms
@@ -1445,6 +1737,145 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
     assert (dest / "ok.txt").read_bytes() == b"ok"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize(
+    "links",
+    [
+        [("d", "d")],
+        [("a", "b"), ("b", "a")],
+        [("a", "b"), ("b", "c"), ("c", "a")],
+        [("x/a", "../y/b"), ("y/b", "../x/a")],
+    ],
+    ids=["self", "pair", "triple", "across-dirs"],
+)
+def test_tar_symlink_closing_a_loop_is_rejected(
+    tmp_path: Path, links: list[tuple[str, str]]
+) -> None:
+    # The link that closes the loop is refused, on every Python version: Path.resolve()
+    # raises on a loop before 3.13 and returns a path from 3.13, so the check must
+    # not depend on it raising.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("sym", name, target) for name, target in links]))
+    dest = tmp_path / "out"
+    results = open_and_extract(src, dest, on_error=OnError.CONTINUE).results
+    statuses = {r.member.name: r.status for r in results}
+    closing = links[-1][0]
+    assert statuses == {
+        name: ExtractionStatus.BLOCKED
+        if name == closing
+        else ExtractionStatus.EXTRACTED
+        for name, _ in links
+    }
+    error = next(r.error for r in results if r.member.name == closing)
+    assert isinstance(error, FilterRejectionError)
+    assert error.message == "Symlink target escapes destination"
+    assert not os.path.lexists(dest / closing)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_under_a_symlink_loop_raises_eloop(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest below a looping link is refused with the OSError mkdir raises, for every
+    # backend and on every Python version. Before 3.13 Path.resolve() raised
+    # RuntimeError there, and the directory backend's into-itself check let it out.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(OSError) as info:
+            reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+    assert info.value.errno == errno.ELOOP
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest that is itself a looping link exists and is not a directory, so every
+    # backend refuses it as it refuses a regular file there. The directory backend's
+    # into-itself check must not answer first with the loop's OSError.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(ExtractionError, match="exists and is not a directory"):
+            reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("shape", ["self", "ancestor"])
+def test_resolve_or_raise_on_loop_raises_eloop(tmp_path: Path, shape: str) -> None:
+    # One OSError on every Python version, naming the path asked about: before 3.13
+    # resolve() raises RuntimeError itself, from 3.13 only the stat sees the loop.
+    os.symlink("loop", tmp_path / "loop")
+    path = tmp_path / "loop" if shape == "self" else tmp_path / "loop" / "x" / "y"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
+    assert info.value.filename == str(path)
+
+
+def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> None:
+    (tmp_path / "d").mkdir()
+    path = tmp_path / "d" / "missing" / "f"
+    assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
+    tmp_path: Path,
+) -> None:
+    # A dangling link inside dest must resolve to its target name, not count as a loop
+    # (an escape, at the call sites).
+    os.symlink("nowhere", tmp_path / "dangling")
+    assert resolve_or_raise_on_loop(tmp_path / "dangling") == (
+        tmp_path.resolve() / "nowhere"
+    )
+
+
+def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows reports a loop as ERROR_CANT_RESOLVE_FILENAME, not ELOOP. Raised here by
+    # a stubbed stat so the branch runs on every platform.
+    def stat(self: Path, **kwargs: object) -> os.stat_result:
+        exc = OSError(errno.EINVAL, "The name of the file cannot be resolved")
+        exc.winerror = 1921  # type: ignore[attr-defined]
+        raise exc
+
+    # resolve() is stubbed to return the path as 3.13+ does on a loop: before 3.13
+    # resolve() calls stat itself and would turn the stub's error into RuntimeError,
+    # so the stat branch would never run.
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(Path, "stat", stat)
+    path = tmp_path / "x"
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
+    assert info.value.filename == str(path)
+    # The Windows code stays visible on the chained original.
+    assert getattr(info.value.__cause__, "winerror", None) == 1921
+
+
 # ---------------------------------------------------------------------------
 # Chained-symlink attack (task 5a.4, ported from the DEV oracle suite)
 #
@@ -1575,6 +2006,63 @@ def test_tar_hardlink_shares_inode(tmp_path: Path) -> None:
     assert (dest / "file.txt").read_bytes() == b"data"
     assert (dest / "hard.txt").read_bytes() == b"data"
     assert os.path.samefile(dest / "file.txt", dest / "hard.txt")
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("second_link", "overwrite"),
+    [
+        # A tar that lists the same hard link twice: the second copy supersedes the
+        # first, whose parked name is already the same file as the source.
+        ("h", OverwritePolicy.ERROR),
+        # Under REPLACE, STANDARD folds ``H`` onto ``h``, a link to the same file.
+        ("H", OverwritePolicy.REPLACE),
+    ],
+)
+def test_link_onto_a_name_of_the_same_file_leaves_no_temp(
+    tmp_path: Path, streaming: bool, second_link: str, overwrite: OverwritePolicy
+) -> None:
+    # POSIX rename(2) does nothing, and reports success, when the temp link and the
+    # destination are already names of the same file. The temp name then stayed in the
+    # destination as a stray ``.archivey-tmp-*`` entry.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "f", b"data"), ("hard", "h", "f"), ("hard", second_link, "f")]
+        )
+    )
+    dest = tmp_path / "out"
+
+    report = open_and_extract(src, dest, streaming=streaming, overwrite=overwrite)
+
+    assert report.results[-1].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in dest.iterdir()) == ["f", "h"]
+    assert (dest / "h").read_bytes() == b"data"
+    assert os.path.samefile(dest / "f", dest / "h")
+
+
+def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The swap removes the temp name after ``os.replace``. When that unlink fails (on
+    # Windows, a scanner holding the file open), the member is already in place, so the
+    # failure must not turn a completed write into FAILED.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(path).startswith(".archivey-tmp-"):
+            raise PermissionError(errno.EACCES, "held open", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    with open_archive(src) as r:
+        report = r.extract_all(dest)
+
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
+    assert (dest / "f").read_bytes() == b"AAA"
 
 
 def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
@@ -1956,6 +2444,93 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
                     max_extracted_bytes=100 * 2**20,
                 ),
             )
+
+
+@pytest.mark.parametrize("mode", ["gz", "tar.gz"])
+def test_pipe_size_claim_does_not_switch_off_live_ratio(
+    tmp_path: Path, mode: str
+) -> None:
+    # Regression: a non-seekable caller stream's ``size`` attribute became the static
+    # archive-wide denominator, and because a static denominator existed the live byte
+    # counter was not installed. An inflated claim (1 GB for a ~1 KiB gzip) therefore
+    # switched off both archive-wide ratio guards. Nothing can check a pipe's claim, so
+    # the claim is not a denominator: the live counter stays.
+    payload = b"\x00" * (1024 * 1024)
+    if mode == "gz":
+        raw = gzip.compress(payload)
+    else:
+        raw = _tar_bytes([("file", "z.bin", payload)], mode="w:gz")
+    limits = ExtractionLimits(
+        max_ratio=10.0,
+        ratio_activation_threshold=1024,
+        max_extracted_bytes=100 * 2**20,  # high, so the cap is not what trips
+    )
+    with open_archive(SizedNonSeekable(raw, size=10**9), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is not None
+        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
+            r.extract_all(tmp_path / "out", limits=limits)
+
+
+def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
+    # A member stream is non-seekable without ``seekable_members``, but its ``size`` is
+    # the length its container declares, not a caller's claim: it stays the static
+    # denominator, and no live counter is installed.
+    inner = gzip.compress(b"\x00" * 4096)
+    outer = tmp_path / "outer.tar"
+    with tarfile.open(outer, "w") as t:
+        info = tarfile.TarInfo("inner.gz")
+        info.size = len(inner)
+        t.addfile(info, io.BytesIO(inner))
+    with open_archive(outer) as outer_ar:
+        with outer_ar.open("inner.gz") as member_stream:
+            assert not member_stream.seekable()
+            with open_archive(member_stream, streaming=True) as inner_ar:
+                assert inner_ar.compressed_source_size == len(inner)
+                assert inner_ar.compressed_bytes_consumed is None
+
+
+def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:
+    # Pins the documented gap: a plain tar from a non-seekable caller stream has no
+    # trusted size, and only a compressed container installs the live counter, so
+    # neither archive-wide denominator exists and only max_extracted_bytes applies.
+    raw = _tar_bytes([("file", "a.bin", b"x" * 4096)])
+    with open_archive(SizedNonSeekable(raw, size=len(raw)), streaming=True) as r:
+        assert r.compressed_source_size is None
+        assert r.compressed_bytes_consumed is None
+
+
+def test_forged_member_declaration_is_refused_only_after_the_decode(
+    tmp_path: Path,
+) -> None:
+    # Pins the documented gap: a nested archive's static denominator is the length
+    # its container declares, unchecked until the member ends. An outer ZIP declaring
+    # 1 GB for a ~4 KiB inner.gz makes the ratio unreachable, so the inner payload
+    # decodes to its end; the container's end-of-member check then refuses it, and
+    # the failed extraction leaves no file behind.
+    inner = gzip.compress(b"\x00" * (4 * 2**20))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("inner.gz", inner)
+    raw = bytearray(buf.getvalue())
+    forged = 10**9
+    struct.pack_into("<I", raw, 22, forged)  # local header: uncompressed size
+    cd = raw.index(b"PK\x01\x02")
+    struct.pack_into("<I", raw, cd + 24, forged)  # central directory: same field
+    outer = tmp_path / "outer.zip"
+    outer.write_bytes(bytes(raw))
+    limits = ExtractionLimits(
+        max_ratio=10.0, ratio_activation_threshold=1024, max_extracted_bytes=100 * 2**20
+    )
+    out = tmp_path / "out"
+    with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
+        assert not member_stream.seekable()
+        with open_archive(member_stream, streaming=True) as inner_ar:
+            assert inner_ar.compressed_source_size == forged
+            assert inner_ar.compressed_bytes_consumed is None
+            with pytest.raises(TruncatedError):
+                inner_ar.extract_all(out, limits=limits)
+    assert not out.exists() or not any(out.iterdir())
 
 
 # ---------------------------------------------------------------------------
@@ -3331,15 +3906,6 @@ def test_replace_revises_a_directory_reached_through_the_archives_symlink(
     assert (dest / "d" / "sub").read_bytes() == b"file"
 
 
-def _case_sensitive(path: Path) -> bool:
-    probe = path / "CaseProbe"
-    probe.write_bytes(b"")
-    try:
-        return not (path / "caseprobe").exists()
-    finally:
-        probe.unlink()
-
-
 @pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
 def test_replace_keeps_a_case_variant_directory_that_is_still_there(
     tmp_path: Path, build
@@ -3507,6 +4073,80 @@ def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> Non
             members=lambda m: m.name != "src.bin",
         )
     assert not _overwritten(report)
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_o2_hardlink_folded_onto_its_own_source(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # `A` folds onto `a` under STRICT and STANDARD, so REPLACE routes the link onto the
+    # path its own source was written to. The link wins that path as any later member
+    # would: the source is revised to OVERWRITTEN, and the file keeps its content.
+    archive = _tar_bytes([("file", "a", b"data"), ("hard", "A", "a")])
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest, overwrite=OverwritePolicy.REPLACE, on_error=OnError.CONTINUE
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("a", ExtractionStatus.OVERWRITTEN),
+        ("A", ExtractionStatus.EXTRACTED),
+    ]
+    assert report.results[1].path == dest / "a"
+    assert sorted(p.name for p in dest.iterdir()) == ["a"]
+    assert (dest / "a").read_bytes() == b"data"
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_duplicate_hardlink_name_under_replace_leaves_no_temp(
+    tmp_path: Path, streaming: bool, policy: ExtractionPolicy
+) -> None:
+    # The first `b` is superseded and parked at its name, which keeps the source's
+    # inode but is no longer a recorded source path. The second `b` is then linked
+    # onto another name of the same file, where rename(2) does nothing; the temp
+    # name was left behind.
+    archive = _tar_bytes(
+        [("file", "a", b"data"), ("hard", "b", "a"), ("hard", "b", "a")]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            policy=policy,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("a", ExtractionStatus.EXTRACTED),
+        ("b", ExtractionStatus.SUPERSEDED),
+        ("b", ExtractionStatus.EXTRACTED),
+    ]
+    assert sorted(p.name for p in dest.iterdir()) == ["a", "b"]
+    assert os.path.samefile(dest / "a", dest / "b")
+
+
+def test_o2_orphan_hardlinks_folded_onto_each_other(tmp_path: Path) -> None:
+    # The second pass writes the excluded source's content at `L`; `l` folds onto it.
+    # Under REPLACE `l` takes that path, and `L` is revised to OVERWRITTEN.
+    archive = _tar_bytes(
+        [("file", "src", b"data"), ("hard", "L", "src"), ("hard", "l", "src")]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            members=["L", "l"],
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("L", ExtractionStatus.OVERWRITTEN),
+        ("l", ExtractionStatus.EXTRACTED),
+    ]
+    assert report.results[1].path == dest / "L"
+    assert sorted(p.name for p in dest.iterdir()) == ["L"]
+    assert (dest / "L").read_bytes() == b"data"
 
 
 # ---------------------------------------------------------------------------

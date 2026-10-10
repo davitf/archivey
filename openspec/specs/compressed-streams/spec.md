@@ -51,6 +51,35 @@ parameter because the API returns one stream.
 | Open compressed source without `seekable=True` | Reads forward; `seekable()` false; `seek()` unsupported; no index |
 | Open same source with `seekable=True` | Seekable behavior follows `seekable-decompressor-streams` |
 
+### Requirement: open_stream peels the compression layer of a compressed tar
+
+When `open_stream` is given a compressed tar — any `(TAR, <codec>)` pair whose codec is
+not `UNCOMPRESSED`, such as `TAR_GZ`, `TAR_XZ` or `(TAR, LZIP)` — it SHALL open that
+codec's stream and return the decompressed tar bytes, the same bytes the raw-stream
+format of the same codec returns (`format="gz"` for a `.tar.gz`). This SHALL hold
+whether auto-detection (`format=None`) found the pair or the caller passed it as
+`format=`: how the format was chosen does not change what the file is. The codec SHALL
+be the pair's stream half, the one the detector built the pair from, read through one
+shared rule rather than a second table. This is what `gzip.open` does for a `.tar.gz`,
+and the migration guide offers `open_stream` as its replacement.
+
+Any other container — ZIP, 7z, RAR, ISO, DMG, or an uncompressed tar — has no
+compression layer to remove. Detecting one SHALL raise `FormatDetectionError`; passing
+one as `format=` SHALL raise `ArchiveyUsageError` (`backend-registry`). A directory path
+is refused as `ArchiveyUsageError` before detection runs, and so is
+`format=ArchiveFormat.DIRECTORY`.
+
+#### Scenario: compressed tar through open_stream
+
+| Case | Expected |
+| --- | --- |
+| `open_stream("a.tar.gz")` | Returns the tar bytes; equal to `open_stream("a.tar.gz", format="gz").read()` |
+| `open_stream("a.tar.gz", format=ArchiveFormat.TAR_GZ)` or `format="tar.gz"` | The same tar bytes |
+| `open_archive(open_stream(p, seekable=True))` for every compressed-tar corpus fixture | Same members (every compared field) and data as `open_archive(p)`; `format` is `TAR` |
+| `open_archive(open_stream(p), streaming=True)` | Same `stream_members()` pass as `open_archive(p, streaming=True)` |
+| `open_stream("a.tar")`, `open_stream("a.zip")` | `FormatDetectionError` |
+| `open_stream(p, format=ArchiveFormat.TAR)`, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError` |
+
 ### Requirement: One StreamCodec descriptor describes each codec
 
 The system SHALL register each single-stream codec through one descriptor
@@ -88,7 +117,11 @@ a facility exists, it SHALL be optional, absent by default, and bounded in both 
 range (forward-only ceiling today: 1 MiB) and number of links walked; a probe that does not
 take it SHALL behave exactly as it does today. This exception exists for the self-describing
 block chain in `format-detection`, whose successor offsets frequently sit past a 4 KiB
-prefix, and it does not license open-ended reading.
+prefix, and for the decode up to the first compressed block of that chain (within the
+same 1 MiB reach). It does not license open-ended reading. A probe that decodes past its
+sample SHALL first ask a second optional facility, `charge_decode(n)`, which the detector
+backs with its decode allowance; when the answer is no, the probe keeps the verdict it
+has.
 
 Registering a standalone codec descriptor SHALL make detection, the single-file
 reader, and availability reporting work without edits elsewhere.
@@ -107,7 +140,7 @@ reader, and availability reporting work without edits elsewhere.
 | Any probe, `source_length <= len(prefix)`, decode wants more input within the output drain | Reject — the whole source is visible and the stream does not terminate |
 | Any probe, `source_length <= len(prefix)`, decode completes within the output drain | Accept |
 | Probe offered no bounded read facility | Behaves exactly as today; prefix is its whole world |
-| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk only |
+| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk and the Brotli decode to its first compressed block only |
 | Probe given one, attempts an unbounded or unlimited-count read | Not permitted |
 
 ### Requirement: Each supported codec has a default backend
@@ -250,9 +283,12 @@ expected hashes) when a read **reaches the member's end**:
 - **Size-declared** (`expected_size` set): the read that consumes the declared
   size is a verifying event (checksum and over-run). On digest mismatch or
   over-run it SHALL raise `CorruptionError` and return **no bytes** for that call
-  (withhold the final chunk). On truncation-shaped EOF before the declared size,
-  the first read that asks past available output returns the remaining prefix
-  (short return); the next empty `read` raises `TruncatedError`.
+  (withhold the final chunk). When the data past the declared size fails to
+  decode, that read SHALL raise the decoder's error as the verdict and return no
+  bytes, even when the declared bytes match their checksum; the translator above
+  the verifier types it as `CorruptionError`. On truncation-shaped EOF before the
+  declared size, the first read that asks past available output returns the
+  remaining prefix (short return); the next empty `read` raises `TruncatedError`.
 - **Size-unknown**: every data chunk MAY be returned first; `CorruptionError`
   SHALL raise on the read that observes end-of-stream (typically the terminal
   empty `read`) — no mandatory one-chunk delayed-release lookahead.
@@ -350,6 +386,7 @@ fresh stream.
 | Seek to/past declared size on a **complete** member, then `read` (incl. `seek(size); read(1)`) | Returns `b""`; no fabricated `TruncatedError` (checksum forfeited by the seek) |
 | Seek to/past declared size on a **truncated** member, then `read` | Concluding reads the skipped gap; `TruncatedError` with the true recoverable length |
 | Seek to/past declared size on an **over-long** member, then `read` | Concluding reads the gap and probes past the declared size; `CorruptionError` (over-run), not a silent `b""` |
+| Declared size met; the compressed bytes after it are damaged (a ZIP DEFLATE member declared empty, body not DEFLATE) | `CorruptionError` from the probe past the declared size, not a silent end |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
 | `ArchiveStream` raised a content verdict; caller catches it, then `read()` | Raises the same error object again; no bytes returned |
@@ -534,9 +571,11 @@ the standard-library decoder on stream-boundary malformations they cannot see:
 - for a container member that declares its size and CRC (a ZIP member, a 7z coder
   under a CRC-checked file), a second stream or
   trailing bytes inside the member's compressed data, which the accelerator MAY read as
-  content where the standard-library decoder stops at the first stream's end; the
-  declared size and CRC then decide, so output that matches both reads and output that
-  breaks either raises;
+  content where the standard-library decoder stops at the first stream's end (and, in a
+  ZIP member, raises `CorruptionError` for the bytes after it); the declared size and
+  CRC then decide, so output that matches both reads and output that breaks either
+  raises. The bzip2 accelerator checks a ZIP member's stream ends from its block index,
+  so there only rapidgzip's DEFLATE MAY differ;
 - for a standalone multi-member gzip, a wrong ISIZE on a member other than the last,
   when every member's CRC-32 is still checked.
 
@@ -581,6 +620,7 @@ no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
 
 | Member | Accelerator `OFF` | Accelerator `ON` |
 | --- | --- | --- |
-| Two DEFLATE or bzip2 streams; declared size and CRC cover both | `TruncatedError` (decoder stops after the first) | Both streams' content |
-| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `TruncatedError` | `CorruptionError` (CRC) |
-| Two bzip2 streams; declared size and CRC cover the first | First stream's content | `CorruptionError` (output past the declared size) |
+| Two DEFLATE streams; declared size and CRC cover both | `CorruptionError` (input after the first stream's end) | Both streams' content |
+| Two bzip2 streams; declared size and CRC cover both | `CorruptionError` (input after the first stream's end) | `CorruptionError` (the end check finds input after the first stream) |
+| Two streams; declared size and CRC cover both sizes but the CRC is the first stream's | `CorruptionError` | `CorruptionError` (CRC) |
+| Two DEFLATE or bzip2 streams; declared size and CRC cover the first | `CorruptionError` (input after the first stream's end) | `CorruptionError` |

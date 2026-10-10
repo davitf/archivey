@@ -28,13 +28,14 @@ from archivey.exceptions import (
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFolder,
-    encoded_folder_slices,
+    encoded_header_slice,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
     _Bcj2Stage,
-    parse_sevenzip_archive,
     plan_folder,
 )
+from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import bcj2_filter as bcj2_mod
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
@@ -88,9 +89,9 @@ def _seven_zip(archive: Path, switches: list[str], inputs: list[Path]) -> None:
 
 
 def _bcj2_folder_count(archive: Path, password: str | None = None) -> int:
-    kdf = password.encode("utf-16le") if password else None
+    passwords = _PasswordCandidates.from_input(password)
     with archive.open("rb") as fh:
-        parsed = parse_sevenzip_archive(fh, password=kdf)
+        parsed = load_sevenzip_archive(fh, passwords=passwords)
     return sum(
         1
         for folder in parsed.folders
@@ -301,7 +302,7 @@ def branches(inputs: dict[str, Path]) -> tuple[list[bytes], int, bytes]:
     if not archive.exists():
         _seven_zip(archive, _FORCED, [inputs["code.bin"]])
     with archive.open("rb") as fh:
-        parsed = parse_sevenzip_archive(fh)
+        parsed = load_sevenzip_archive(fh)
         raw = fh.seek(0) or fh.read()
     (folder,) = parsed.folders
     plan = plan_folder(folder)
@@ -666,7 +667,7 @@ def test_encoded_header_stays_linear_only() -> None:
         )
     )
     with pytest.raises(UnsupportedFeatureError, match="multi-pack"):
-        encoded_folder_slices(encoded)  # type: ignore[arg-type]
+        encoded_header_slice(encoded)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +758,7 @@ def test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap(
     archive = tmp_path / "forced.7z"
     _seven_zip(archive, _FORCED, [inputs["code.bin"]])
     with archive.open("rb") as fh:
-        (folder,) = parse_sevenzip_archive(fh).folders
+        (folder,) = load_sevenzip_archive(fh).folders
     plan = plan_folder(folder)
     assert isinstance(plan.source, _Bcj2Stage)
     sizes = [

@@ -28,7 +28,7 @@ shape.
 |---|---|---|---|
 | **Cleanup and re-raise** | `BaseException` | the original | `core.open_archive`, `TarReader.__init__`, `_bounded_member_pipe` |
 | **Error combination** | `Exception` (or `BaseException` when an interrupt must not skip the mandatory step) | the first error, or an `ExceptionGroup`; never nothing | `ArchiveStream.close`, `_maybe_teardown`, `ProcessOutputStream.close` |
-| **Primary error wins** | `Exception` | the error already in flight; the cleanup failure is attached as a note or dropped | `BaseArchiveReader.open`, `ArchiveStream._note_raised_seek` |
+| **Primary error wins** | `Exception` | the error already in flight; the cleanup failure is attached as a note or dropped | `BaseArchiveReader.open`, `note_raised_seek` |
 | **Translator handoff** | `Exception` | a translated `ArchiveyError` `from` the original, or the original unchanged | `ArchiveStream._fail`, `_TranslatedErrorBoundary` |
 | **Teardown hygiene** | `Exception` | nothing | finalizers, `PpmdDecoder._quiesce_worker` |
 | **C-boundary trap** | `Exception` | nothing now; the parked exception later | `RapidgzipChildStream._answer_source` |
@@ -85,9 +85,13 @@ accelerator that reads a caller-owned stream would need the same guard.
 
 ### Diagnostic probe
 
-A probe answers a side question (a cost estimate, "is there a byte past the end?") and
-must not break the read it serves. Narrow it: let `ArchiveyError`, `OSError` and
-`MemoryError` through, and say what verdict the fallback gives up.
+A probe answers a side question (a cost estimate) and must not break the read it serves.
+Narrow it: let `ArchiveyError`, `OSError` and `MemoryError` through, and say what verdict
+the fallback gives up. A probe whose answer is a content verdict narrows further. The
+verifier's read of one byte past a member's declared size (`_probe_past_declared`) lets
+every decoder error through, because an error there is damage and a fallback of "no more
+data" would hand the member over as verified. It catches only a closed source, which
+another thread's `close()` can cause once every declared byte was delivered.
 
 ## 3. `BaseException`
 

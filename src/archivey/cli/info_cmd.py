@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import TextIO
 
 from archivey import FormatInfo, detect_format, open_archive
-from archivey.cli.common import reject_stdin_token
+from archivey.cli.common import is_read_once, read_once_refusal, reject_stdin_token
 from archivey.cli.format import (
     escape_path,
     format_access_summary,
@@ -68,6 +69,18 @@ def _print_identity(archive: str, detected: FormatInfo, out: TextIO) -> None:
         _line("sfx_offset", detected.payload_offset, out)
 
 
+def _can_reread(path: str) -> bool:
+    """Whether opening ``path`` again reads the same bytes.
+
+    False for a FIFO, a character device or a socket, the same set that
+    ``ArchiveSource.for_path`` treats as non-seekable; a block device rereads fine.
+    Also false for a path that cannot be stat'ed, which the existence check is for:
+    ``is_read_once`` reports ``False`` for such a path, so without the check it would
+    count as rereadable and detection would run on a path the open already failed on.
+    """
+    return os.path.exists(path) and not is_read_once(path)
+
+
 def run_info(
     *,
     archive: str,
@@ -85,8 +98,11 @@ def run_info(
 
     pwd: PasswordInput = resolve_password(password)
     identity_printed = False
+    # A read-once path opens in streaming mode, as in the other verbs: nothing below
+    # needs random access, and a random-access open of a pipe always fails.
+    streaming = is_read_once(archive)
     try:
-        with open_archive(archive, password=pwd) as reader:
+        with open_archive(archive, password=pwd, streaming=streaming) as reader:
             # The open already detected the format; print what it found rather than
             # detecting a second time. No format= is passed, so it is never None.
             detected = reader.format_info
@@ -114,9 +130,16 @@ def run_info(
     except ArchiveyError as exc:
         # When the open itself failed, identity comes from detection alone: printed
         # when the format was recognised (the open error is still a failure), and when
-        # it was not, detection's own error is the one to report.
-        if not identity_printed:
+        # it was not, detection's own error is the one to report. Detection opens the
+        # path again, so it is skipped for a pipe, a character device or a socket: those
+        # are read once, so a second open gets different bytes or waits for a writer
+        # that never comes.
+        if not identity_printed and _can_reread(archive):
             _print_identity(archive, detect_format(archive), out)
-        _field("open", format_error_detail(exc), err)
+        refusal = read_once_refusal(archive, exc, streaming=streaming)
+        if refusal is not None:
+            _field("open", escape_control_chars(refusal), err)
+        else:
+            _field("open", format_error_detail(exc), err)
         return 1
     return 0

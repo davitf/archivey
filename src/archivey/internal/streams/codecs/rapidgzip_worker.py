@@ -18,9 +18,11 @@ and then the payload. All integers are little-endian.
 
 Parent to child:
 
-- ``OPEN`` once, first. Argument 0: the payload is a file-system path, which the child
-  opens itself. Argument 1: the source is the parent's stream, read through ``SRC_*``
-  frames (below).
+- ``OPEN`` once, first. The payload starts with ``OPEN_LIMIT``: the memory limit in
+  bytes, or ``NO_MEMORY_LIMIT`` (see Memory, below). Argument 0: the rest of the
+  payload is a file-system path, which the child opens itself. Argument 1: the source
+  is the parent's stream, read through ``SRC_*`` frames (below), and nothing follows
+  the limit.
 - ``READ`` (argument: at most this many bytes), ``SEEK`` (argument: offset; payload: one
   byte, ``whence``), ``RESUME`` (argument: a decompressed offset; the reply's argument is
   the largest index point at or before it, or -1), ``POINTS`` (argument: a
@@ -46,10 +48,16 @@ Child to parent:
   to any request, since rapidgzip's own threads read ahead in the background.
 
 The parent closes its end of the pipes to stop the child.
+
+Memory. When ``OPEN`` carries a limit, the child watches its own peak resident memory
+once the source is open (``watch_memory``), and checks it again before each ``READ``
+reply. When the peak has grown by more than the limit, the child exits at once with
+status ``MEMORY_LIMIT_EXIT``.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib
 import io
 import os
@@ -58,6 +66,8 @@ import signal
 import struct
 import sys
 import threading
+import time
+from collections.abc import Callable
 from typing import IO, Any
 
 FRAME = struct.Struct("<BqI")
@@ -75,6 +85,14 @@ OK, ERR = 1, 2
 SRC_READ, SRC_SEEK, SRC_TELL = 10, 11, 12
 
 OPEN_PATH, OPEN_STREAM = 0, 1
+
+# The start of the OPEN payload: the memory limit in bytes, or NO_MEMORY_LIMIT. And the
+# exit status of a child that went over it. See ``watch_memory``.
+OPEN_LIMIT = struct.Struct("<q")
+NO_MEMORY_LIMIT = -1
+MEMORY_LIMIT_EXIT = 86
+# How often the child checks its peak memory, in seconds.
+_MEMORY_POLL_INTERVAL = 0.001
 
 _EOF = (0, 0, b"")
 
@@ -224,7 +242,10 @@ def _points_around(stream: Any, offset: int) -> tuple[int, bytes]:
     return len(points), POINTS_REPLY.pack(*before, *after)
 
 
-def _serve(channel: _Channel, stream: Any) -> None:
+def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
+    """Answer the parent's requests until it goes away. ``ceiling`` is from
+    ``watch_memory``: each ``READ`` and ``SEEK`` reply waits for one more check
+    against it."""
     while True:
         tag, arg, payload = channel.requests.get()
         if tag == 0:
@@ -232,9 +253,12 @@ def _serve(channel: _Channel, stream: Any) -> None:
         try:
             if tag == READ:
                 data = stream.read(arg)
+                check_memory(ceiling)
                 ok = channel.send(OK, len(data), data)
             elif tag == SEEK:
-                ok = channel.send(OK, stream.seek(arg, payload[0] if payload else 0))
+                position = stream.seek(arg, payload[0] if payload else 0)
+                check_memory(ceiling)
+                ok = channel.send(OK, position)
             elif tag == RESUME:
                 offsets = stream.available_block_offsets().values()
                 preceding = [value for value in offsets if value <= arg]
@@ -292,6 +316,154 @@ def disable_core_dumps() -> None:
             pass
 
 
+def _peak_memory() -> int | None:
+    """This process's peak resident memory in bytes, or ``None`` where it is unknown.
+
+    On Linux only ``VmHWM`` counts: where ``/proc`` cannot be read the answer is
+    ``None``, never ``getrusage``, whose start is the parent's peak (see
+    ``_linux_peak_memory``).
+    """
+    if sys.platform.startswith("linux"):
+        return _linux_peak_memory()
+    return _rusage_peak_memory()
+
+
+def _rusage_peak_memory() -> int | None:
+    """``ru_maxrss`` from ``getrusage`` in bytes (macOS, the BSDs), or the Windows
+    peak where there is no ``resource`` module."""
+    try:
+        import resource
+    except ImportError:
+        return _windows_peak_memory()
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # The BSDs give kilobytes, macOS gives bytes.
+    return peak if sys.platform == "darwin" else peak * 1024
+
+
+def _linux_peak_memory() -> int | None:
+    """``VmHWM`` from ``/proc/self/status`` in bytes, or ``None`` where there is none.
+
+    Not ``getrusage`` on Linux: its ``ru_maxrss`` starts at the parent's peak, because
+    ``exec`` keeps the high-water mark of the memory it replaces, and that memory was
+    the parent's. In a parent that once held 300 MB, the child's peak read 300 MB
+    before it allocated anything, so its own growth stayed under that and the limit
+    never fired. ``VmHWM`` belongs to the memory ``exec`` made and counts only this
+    program.
+    """
+    try:
+        with open("/proc/self/status", "rb") as status:
+            for line in status:
+                if line.startswith(b"VmHWM:"):
+                    # "VmHWM:   13256 kB"
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+@functools.cache
+def _windows_memory_query() -> Callable[[], int | None] | None:
+    """A function that reads ``PeakWorkingSetSize``, or ``None`` where ctypes cannot.
+
+    Built once: the watching thread calls it a thousand times a second, so loading
+    ``kernel32``, setting the prototypes and making the structure type stay out of it.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [  # noqa: RUF012 - the ctypes layout of PROCESS_MEMORY_COUNTERS
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32")  # noqa: B009 - Windows only
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.argtypes = []
+        get_memory_info = kernel32.K32GetProcessMemoryInfo
+        get_memory_info.restype = wintypes.BOOL
+        get_memory_info.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(Counters),
+            wintypes.DWORD,
+        ]
+        process = kernel32.GetCurrentProcess()
+        size = ctypes.sizeof(Counters)
+    except (ImportError, OSError, AttributeError):
+        return None
+
+    def query() -> int | None:
+        # A new structure per call: the watching thread and the serving thread both ask.
+        counters = Counters()
+        counters.cb = size
+        if not get_memory_info(process, ctypes.byref(counters), size):
+            return None
+        return int(counters.PeakWorkingSetSize)
+
+    return query
+
+
+def _windows_peak_memory() -> int | None:
+    """``PeakWorkingSetSize`` from ``GetProcessMemoryInfo``, or ``None`` if it fails."""
+    query = _windows_memory_query()
+    return None if query is None else query()
+
+
+def check_memory(ceiling: int | None) -> None:
+    """End this process with ``MEMORY_LIMIT_EXIT`` when its peak memory is past
+    ``ceiling`` bytes. ``None`` checks nothing."""
+    if ceiling is None:
+        return
+    peak = _peak_memory()
+    if peak is not None and peak > ceiling:
+        # os._exit: rapidgzip's threads are running, and a normal exit with them
+        # running aborts the process.
+        os._exit(MEMORY_LIMIT_EXIT)
+
+
+def watch_memory(limit: int) -> int | None:
+    """End this process when its peak memory grows by more than ``limit`` bytes, and
+    return the ceiling that ``check_memory`` compares with.
+
+    rapidgzip keeps decoded chunks in memory, and a chunk is as large as its output:
+    a gzip file of 1 MB that decodes to 1 GiB held close to 1 GiB. No rapidgzip
+    setting bounds that, and an address-space limit cannot: rapidgzip's allocator
+    reserves about 2 GB of address space before it decodes anything, and a decode
+    under a smaller limit ends in a segmentation fault. So a thread checks the peak
+    resident memory every ``_MEMORY_POLL_INTERVAL`` and exits with
+    ``MEMORY_LIMIT_EXIT`` when it has grown by more than ``limit`` since this call.
+    ``_serve`` checks again before each ``READ`` and ``SEEK`` reply, so a watching
+    thread that waits for a processor delays the stop by one request at most. The
+    parent then reads the rest of the stream with the standard library, which decodes
+    in bounded memory.
+    The peak can pass the limit by what the decoder allocates between two checks:
+    measured on four cores, about 17 MB.
+
+    Where the peak cannot be read, nothing is watched, and this returns ``None``.
+    """
+    start = _peak_memory()
+    if start is None:
+        return None
+    ceiling = start + limit
+
+    def watch() -> None:
+        while True:
+            check_memory(ceiling)
+            time.sleep(_MEMORY_POLL_INTERVAL)
+
+    threading.Thread(target=watch, daemon=True).start()
+    return ceiling
+
+
 def main() -> None:
     disable_core_dumps()
     # A terminal's Ctrl-C signals the whole foreground process group, this child too.
@@ -303,6 +475,8 @@ def main() -> None:
     if tag != OPEN:
         return
     try:
+        (limit,) = OPEN_LIMIT.unpack_from(payload)
+        payload = payload[OPEN_LIMIT.size :]
         # import_module: rapidgzip has no type stubs, and the type checkers read this
         # file as part of the package.
         rapidgzip = importlib.import_module("rapidgzip")
@@ -325,8 +499,11 @@ def main() -> None:
         channel.send(ERR, 0, _error_payload(exc))
         return
     try:
+        # Started after the open, so the limit counts what the decode holds and not the
+        # interpreter and rapidgzip's start-up.
+        ceiling = None if limit == NO_MEMORY_LIMIT else watch_memory(limit)
         if channel.send(OK):
-            _serve(channel, stream)
+            _serve(channel, stream, ceiling)
     finally:
         # close(), not join_threads(), stops rapidgzip's threads; one still running
         # when the interpreter finalizes aborts the process.

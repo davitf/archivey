@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import sys
-from typing import TextIO
+from collections.abc import Generator, Iterator
+from contextlib import closing
+from typing import TextIO, TypeVar, cast
 
 from archivey import ArchiveReader, ExtractionProgress
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
-from archivey.cli.filters import (
-    count_selected,
-    member_predicate,
-    members_for_include_check,
-    unmatched_include_patterns,
-    warn_unmatched_includes,
-)
+from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
@@ -54,25 +50,23 @@ def run_test(
     reject_salvage(salvage)
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
-    pred = member_predicate(patterns, exclude)
+    selection = MemberSelection(patterns, exclude)
+    pred = selection.predicate
 
     ok = 0
     failed = 0
     members_total: int | None = None
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         indexed = reader.members_report_if_available()
-        # None on forward-only readers: do not consume the sole pass before streaming.
-        members_for_filter = members_for_include_check(reader) if patterns else None
-        if patterns and members_for_filter is not None:
-            unmatched = unmatched_include_patterns(patterns, members_for_filter)
-            if unmatched:
-                warn_unmatched_includes(unmatched, err=err)
-            if count_selected(members_for_filter, pred) == 0:
-                return EXIT_FAIL
-
         total_bytes: int | None = None
         if indexed is not None:
-            selected = [m for m in indexed if pred is None or pred(m)]
+            # A complete free index settles the patterns before the run. One that ends
+            # in damage settles nothing, but its members still give the totals. When
+            # the patterns are not settled, the run's own pass offers each member to
+            # them (see the end of the pass).
+            selected = selection.settle_from(indexed, err=err)
+            if selection.settled and selection.selects_nothing:
+                return EXIT_FAIL
             file_members = [m for m in selected if m.is_file]
             members_total = len(file_members)
             sizes = [m.size for m in file_members if m.size is not None]
@@ -84,83 +78,91 @@ def run_test(
         )
         bytes_done = 0
         files_done = 0
-        saw_selected = False
         pending_links: list[ArchiveMember] = []
+        pass_ended_early = False
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
             # count as FAIL and still reach the summary (F4). Once the generator raises,
             # further next() yields StopIteration — remaining members are lost (library
             # limitation for solid / poisoned streams); report them as "not tested" (P8).
-            it = iter(reader.stream_members(pred))
-            while True:
-                try:
-                    member, stream = next(it)
-                except StopIteration:
-                    break
-                except (ArchiveyError, OSError) as exc:
-                    failed += 1
-                    print(f"FAIL: {format_error_detail(exc)}", file=err)
-                    continue
+            # ``closing`` ends the pass here, deterministically, whatever leaves the
+            # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
+            # pass for ``reader.close()`` or the garbage collector to end while the
+            # error travels up to ``main()``.
+            with closing(_closable(reader.stream_members(pred))) as it:
+                while True:
+                    try:
+                        member, stream = next(it)
+                    except StopIteration:
+                        break
+                    except (ArchiveyError, OSError) as exc:
+                        failed += 1
+                        pass_ended_early = True
+                        print(f"FAIL: {format_error_detail(exc)}", file=err)
+                        continue
 
-                saw_selected = True
-                if stream is None and _link_needs_verification(member):
-                    # Verified after the pass: the reader refuses an open() while
-                    # stream_members() is running.
-                    pending_links.append(member)
-                    continue
-                if stream is None:
-                    # Directories / links / non-file: no body to verify — omit from counts
-                    # so "N OK" matches unzip -t style (files only).
-                    if verbose:
-                        print(f"skip {escape_member_name(member.name)}", file=err)
-                    continue
-                member_written = 0
-                try:
-                    with stream:
-                        while True:
-                            chunk = stream.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            n = len(chunk)
-                            member_written += n
-                            bytes_done += n
-                            if on_progress is not None:
-                                on_progress(
-                                    ExtractionProgress(
-                                        member=member,
-                                        bytes_written=bytes_done,
-                                        total_bytes_estimated=total_bytes,
-                                        members_done=files_done,
-                                        members_total=members_total,
-                                        member_bytes_written=member_written,
-                                        members_extracted=0,
-                                        members_blocked=0,
+                    if stream is None and _link_needs_verification(member):
+                        # Verified after the pass: the reader refuses an open() while
+                        # stream_members() is running.
+                        pending_links.append(member)
+                        continue
+                    if stream is None:
+                        # Directories / links / non-file: no body to verify — omit from counts
+                        # so "N OK" matches unzip -t style (files only).
+                        if verbose:
+                            print(f"skip {escape_member_name(member.name)}", file=err)
+                        continue
+                    member_written = 0
+                    try:
+                        with stream:
+                            while True:
+                                chunk = stream.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                n = len(chunk)
+                                member_written += n
+                                bytes_done += n
+                                if on_progress is not None:
+                                    on_progress(
+                                        ExtractionProgress(
+                                            member=member,
+                                            bytes_written=bytes_done,
+                                            total_bytes_estimated=total_bytes,
+                                            members_done=files_done,
+                                            members_total=members_total,
+                                            member_bytes_written=member_written,
+                                            members_extracted=0,
+                                            members_blocked=0,
+                                        )
                                     )
+                        ok += 1
+                        files_done += 1
+                        if on_progress is not None:
+                            on_progress(
+                                ExtractionProgress(
+                                    member=member,
+                                    bytes_written=bytes_done,
+                                    total_bytes_estimated=total_bytes,
+                                    members_done=files_done,
+                                    members_total=members_total,
+                                    member_bytes_written=member_written,
+                                    members_extracted=0,
+                                    members_blocked=0,
                                 )
-                    ok += 1
-                    files_done += 1
-                    if on_progress is not None:
-                        on_progress(
-                            ExtractionProgress(
-                                member=member,
-                                bytes_written=bytes_done,
-                                total_bytes_estimated=total_bytes,
-                                members_done=files_done,
-                                members_total=members_total,
-                                member_bytes_written=member_written,
-                                members_extracted=0,
-                                members_blocked=0,
                             )
+                        if verbose:
+                            print(f"OK   {escape_member_name(member.name)}", file=err)
+                    except BrokenPipeError:
+                        # The -v line or the progress bar lost its reader: not a
+                        # member failure. main() exits 141 for it, with no message.
+                        raise
+                    except (ArchiveyError, OSError) as exc:
+                        failed += 1
+                        print(
+                            f"FAIL {escape_member_name(member.name)}: "
+                            f"{format_error_detail(exc)}",
+                            file=err,
                         )
-                    if verbose:
-                        print(f"OK   {escape_member_name(member.name)}", file=err)
-                except (ArchiveyError, OSError) as exc:
-                    failed += 1
-                    print(
-                        f"FAIL {escape_member_name(member.name)}: "
-                        f"{format_error_detail(exc)}",
-                        file=err,
-                    )
         finally:
             if on_progress is not None:
                 on_progress.close()
@@ -180,8 +182,14 @@ def run_test(
             members_total += len(unverified)
         for link in unverified:
             try:
-                _verify_link(reader, link)
-            except (ArchiveyError, OSError) as exc:
+                # Only 7z and RAR4 leave a link to verify, and neither opens in the
+                # streaming mode the CLI uses for a pipe, so ``reader`` is open for
+                # random access here. The cast states that for the type checker only.
+                # If that stops holding, ``open()`` on the streaming reader raises
+                # ``ArchiveyUsageError``, which is caught here so the link counts as
+                # a FAIL instead of ending the run with a traceback.
+                _verify_link(cast(ArchiveReader, reader), link)
+            except (ArchiveyError, ArchiveyUsageError, OSError) as exc:
                 failed += 1
                 print(
                     f"FAIL {escape_member_name(link.name)}: {format_error_detail(exc)}",
@@ -192,9 +200,11 @@ def run_test(
                 if verbose:
                     print(f"OK   {escape_member_name(link.name)}", file=err)
 
-        # Streaming + patterns: no pre-scan — empty selection if nothing was yielded.
-        if patterns and members_for_filter is None and not saw_selected:
-            warn_unmatched_includes(patterns, err=err)
+        # Without a complete index, the pass that just ran offered every member to the
+        # patterns. Only the generator raising ends that pass early and leaves later
+        # members unseen; a failure inside one member's read does not. So the
+        # patterns are judged after any pass that reached its end.
+        if not selection.settled and not pass_ended_early and selection.report(err=err):
             return EXIT_FAIL
 
         # Read before the reader closes; each such diagnostic was already logged with
@@ -214,6 +224,19 @@ def run_test(
     # An untested remainder or an unchecked digest is an incomplete verification.
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
     return EXIT_FAIL if failed or not_tested or not_verified else EXIT_OK
+
+
+_T = TypeVar("_T")
+
+
+def _closable(items: Iterator[_T]) -> Generator[_T, None, None]:
+    """``items`` as a generator, so ``contextlib.closing`` can end it.
+
+    ``stream_members()`` is typed as a plain ``Iterator``, which has no ``close()``.
+    Closing this generator closes ``items`` too: ``yield from`` passes ``close()`` on
+    to the iterator it delegates to.
+    """
+    yield from items
 
 
 def _link_needs_verification(member: ArchiveMember) -> bool:
@@ -262,7 +285,7 @@ def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
     if isinstance(exc, LinkTargetNotFoundError):
         return True
     if type(exc) is ReadError:
-        return exc.raw_message.startswith("Link cycle detected at ")
+        return exc.raw_message == "Link cycle detected"
     # A link to a directory, an anti-item or an OTHER member: ``open()`` refuses to
     # return bytes for it, as a usage error, after following the link.
     return isinstance(exc, ArchiveyUsageError) and str(exc).endswith("(not a file)")

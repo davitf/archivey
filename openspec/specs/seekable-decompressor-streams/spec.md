@@ -133,9 +133,14 @@ its last block, with no error. Where rapidgzip's output of a raw DEFLATE stream 
 system SHALL check with zlib that the stream reaches a final block, decoding from the last
 DEFLATE block boundary the stream keeps at or before that end (or from the start where it
 keeps none). Where it does not, the read SHALL be handed to the stdlib backend, which gives
-the verdict, also when a declared size equals the output before the cut. Once the stdlib
+the verdict, also when a declared size equals the output before the cut. A seek that stops at
+the end of rapidgzip's output (a seek to the end, or one rapidgzip clamped short of its
+target) SHALL run this check there as a read does; after a handover the stdlib backend SHALL
+seek to the caller's target, so the seek raises or returns what it does with the accelerator
+off. Once the stdlib
 backend has taken over from rapidgzip, its errors SHALL leave as the codec's typed errors, so
-the over-run probe of a declared size never takes a data error for the end of the data.
+the verdict does not depend on whether rapidgzip was engaged: with rapidgzip off, the codec's
+own translator types the same error.
 
 rapidgzip 0.16 aborts the process on a DEFLATE-family stream that ends early, so the system
 SHALL run the gzip, zlib and deflate decoders in a child process and MUST NOT decode those
@@ -153,6 +158,16 @@ warning per process on the `archivey.streams` logger naming the reason and
 `use_rapidgzip=OFF` (none where rapidgzip is absent). `ON` in that case SHALL raise
 `ResourceLimitError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
 in-process.
+
+rapidgzip keeps decoded chunks in memory, so its memory grows with what the data decodes to,
+not with the size of the file. The child's memory SHALL be capped by
+`DecoderLimits.max_decoder_memory`, counted from when the child has opened the source: a child
+whose peak resident memory grows past the cap SHALL be stopped, and the stdlib backend SHALL
+read the rest of the stream, so the bytes delivered and the errors match `OFF`. The check MAY
+run at intervals, so the peak MAY pass the cap by what the decoder allocates between two
+checks, but it SHALL also run before the child answers each read. `None` sets no cap, and
+nothing outside the caller's configuration, such as an environment variable, SHALL set one.
+Where the platform does not report the child's peak memory, no cap applies.
 
 rapidgzip over-reads past a DEFLATE end-of-stream looking for a concatenated member, so the
 codec SHALL feed it an exactly-bounded input (e.g. the container's `SlicingStream` sized to
@@ -173,6 +188,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | A raw DEFLATE stream cut before any output (`03`), `ON`, with or without a declared size | `TruncatedError`, as with `OFF` |
 | A raw DEFLATE stream cut after a whole block or inside its last one, `ON`, with or without a declared size equal to the output before the cut | `TruncatedError`, as with `OFF` |
 | A `deflate` or `zlib` stream declared empty that does not decode, `ON` | `CorruptionError`, as with `OFF` |
+| A gzip, zlib or `deflate` stream whose decode takes the child past `max_decoder_memory`, `ON` | The child is stopped; the stdlib backend delivers the rest, the same bytes as `OFF` |
 
 ### Requirement: Accelerator errors translate uniformly
 
@@ -198,19 +214,27 @@ occurrence; a copy more than 56 bytes after the end of the real trailer is not e
 needs rapidgzip to read past those bytes without an error, which rapidgzip 0.16 does not do
 for ten or more. Where rapidgzip reaches EOF having delivered zero bytes, the system SHALL
 rewind the seekable source and re-decode through the stdlib gzip engine so recoverable
-prefixes stream and truncation still raises from a read (never `close()`). A seek SHALL NOT
-turn the backstop off: the length compared is that of rapidgzip's whole output, which the
-read that meets its end gives whatever seeks came before. On a mismatch the read SHALL be
-handed to the standard library decoder, whose verdict it then gives (`TruncatedError` for a
-cut, `CorruptionError` for a wrong ISIZE, a trailing-data report for appended bytes), except
-where a further gzip member follows the first: then the trailer records only the last
-member, and the backstop SHALL stand down. Before it compares the length or stands down, the
-backstop SHALL check that rapidgzip's decode reached the end of the source; a decode that
-stopped short of it SHALL be handed to the standard library decoder the same way. A
-`1f 8b 08` in the file SHALL count as a further member only when zlib's gzip decoder accepts
-the header there and decodes from it without an error, to the member's verified end or
-through a bounded probe; three bytes that turn up by chance in a compressed body, or a
-member the source ends inside, SHALL NOT silence the backstop.
+prefixes stream and truncation still raises from a read (never `close()`). The backstop SHALL
+run once, on the first read or seek that meets the end of rapidgzip's output, and is spent
+after it; a seek short of that end SHALL leave it armed. The length compared is the position
+at that end, which a read that meets the end has whatever seeks came before. A seek that stops
+at the end of rapidgzip's output (a seek to the end, or one rapidgzip clamped short of its
+target) SHALL run the backstop there, the empty-EOF arm included. It SHALL first read the
+output from the end of the CRC-32 to the end of the output, so that the trailer is found by
+its CRC-32 as on a read, not by the ISIZE comparison alone. After a handover, at the backstop
+or during that read, the stdlib engine SHALL seek to the caller's target. So
+`seek(0, SEEK_END)` on a cut file raises as with the accelerator off and never returns a
+short size, and a read after a seek past the end never returns bytes from offset 0. On a
+mismatch the read SHALL be handed to the standard library decoder, whose verdict it then
+gives (`TruncatedError` for a cut, `CorruptionError` for a wrong ISIZE, a trailing-data
+report for appended bytes), except where a further gzip member follows the first: then the
+trailer records only the last member, and the backstop SHALL stand down. Before it compares
+the length or stands down, the backstop SHALL check that rapidgzip's decode reached the end
+of the source; a decode that stopped short of it SHALL be handed to the standard library
+decoder the same way. A `1f 8b 08` in the file SHALL count as a further member only when
+zlib's gzip decoder accepts the header there and decodes from it without an error, to the
+member's verified end or through a bounded probe; three bytes that turn up by chance in a
+compressed body, or a member the source ends inside, SHALL NOT silence the backstop.
 
 A **caller-owned** source driven through the accelerator SHALL NOT be closed by the accelerator
 or its truncation wrapper (archivey never closes a source the caller owns); the accelerator's
@@ -284,6 +308,7 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Corrupt gzip/bzip2/deflate/zlib through rapidgzip | `CorruptionError`; raw accelerator exception never escapes |
 | Truncated gzip through rapidgzip from a seekable **path** | `TruncatedError` via ISIZE backstop / empty→stdlib, or `CorruptionError` from accelerator; never silent short read |
 | Truncated gzip through rapidgzip from a seekable **non-path** `BinaryIO` | Same as the path case — backstop active; caller source left open afterward |
+| Cut gzip or raw DEFLATE through rapidgzip: `seek(0, SEEK_END)`, or a seek past the end then a read | What the accelerator off gives (`TruncatedError`); never a short size, never bytes from offset 0 at the caller's position |
 | Truncated gzip/zlib/deflate that aborts rapidgzip, any source, any access pattern | The process survives; the bytes and the error of the standard library decoder (`TruncatedError`) |
 | A fault signal ends the child on a valid stream | The standard library reads on from the delivered position; the caller loses nothing |
 | A resumed standard-library decode reaches the end of a DEFLATE stream (a later member, bytes after the data) | It starts over from the start of the stream; the stream's checksum is checked |
@@ -297,7 +322,8 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
-| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek that skipped output, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
+| Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek short of the end that skipped output, then a read to the end, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
+| Cut gzip whose last four bytes are forged to the length rapidgzip delivers: `seek(0, SEEK_END)`, or that seek, then `seek(0)` and a read | `TruncatedError`, as with the accelerator `OFF` |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
 | bzip2 through the accelerator with junk, a damaged stream header, or a stream whose block and end-of-stream magics are damaged, before or between streams | The bytes and the error of the accelerator `OFF`; no byte from after the skipped region reaches the caller, also after a seek past it |
 | bzip2 through the accelerator with a stream after zero padding, or a cut or damaged stream after the data | The bytes and the error of the accelerator `OFF`; past a bounded stretch (1 MiB) of padding and empty streams between two streams, the standard library takes over and decodes the stretch itself, with the same result |

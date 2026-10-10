@@ -672,7 +672,7 @@ def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
     for minutes on CI, and a worker died at the 60 s timeout. The child turns its dumps
     off: a core limit of 0, and not dumpable, which is what stops a piped dump."""
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
-    with RapidgzipChildStream(str(path), label="gzip") as stream:
+    with RapidgzipChildStream(str(path), label="gzip", max_memory=None) as stream:
         assert stream._proc is not None
         limits = Path(f"/proc/{stream._proc.pid}/limits").read_text()
     core = next(line for line in limits.splitlines() if line.startswith("Max core"))
@@ -839,7 +839,9 @@ def test_an_offset_past_the_frame_range_is_refused_and_the_stream_survives(
     """A seek the protocol cannot carry is refused before anything is sent, so the
     child is still in step and the stream goes on reading."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         with pytest.raises(OverflowError):
@@ -871,7 +873,9 @@ def test_a_refused_seek_keeps_the_position_and_buffer(offset: int, whence: int) 
     """A seek refused before the child moves, here or by the child itself, leaves the
     read-ahead buffer and the position as they were (review round 2, K8)."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         assert child.read(10) == payload[10:20]  # fills the read-ahead buffer
@@ -912,7 +916,9 @@ def test_a_failed_read_leaves_the_position_where_it_started(failing_read: int) -
     count bytes the caller never got and the next read returns them (round 3, K15)."""
     payload = _payload()
     assert len(payload) > rapidgzip_child._CHUNK  # read() takes two chunks
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         _fail_the_nth_read(child, failing_read)
@@ -930,7 +936,9 @@ def test_a_failed_read_that_cannot_move_back_leaves_the_stream_unusable() -> Non
     position: the read raises its own error, the child is stopped, and every later
     call raises ``ReadError`` (round 4, K18)."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         _fail_the_nth_read(child, 1, fail_seeks=True)
@@ -949,7 +957,9 @@ def test_a_negative_seek_after_a_failed_read_is_refused() -> None:
     position, so a failed read cannot let ``seek(-1)`` reach the child, which would
     clamp it to 0 (round 3, K13)."""
     payload = _payload()
-    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    child = RapidgzipChildStream(
+        io.BytesIO(gzip.compress(payload)), label="gzip", max_memory=None
+    )
     try:
         assert child.read(10) == payload[:10]
         _fail_the_nth_read(child, 1)
