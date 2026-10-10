@@ -124,7 +124,9 @@ class FilterDecoder(BaseDecoder):
 
 
 class Arm64FilterDecoder(BaseDecoder):
-    """Apply the ARM64 branch filter in Python (:mod:`archivey.internal.streams.codecs.arm64_filter`).
+    """Apply the ARM64 branch filter in Python.
+
+    The filter itself is :mod:`archivey.internal.streams.codecs.arm64_filter`.
 
     The :class:`FilterDecoder` counterpart for the one branch filter Python's ``lzma``
     will not build. Each fed chunk is decoded in whole 4-byte words as it arrives; up

@@ -233,6 +233,7 @@ The truncation gap is the format's, not an open question;
 - [`uncompresspy`](https://github.com/kYwzor/uncompresspy), BSD 3-Clause, the origin of the
   LZW kernel (notice at the end of `unix_compress_decoder.py`)
 - Decisions: [`library-analysis.md`](../library-analysis.md) §unix-compress
-- Code: `internal/streams/codecs/unix_compress_decoder.py` (`LzwState`, `UnixCompressDecoder`,
-  `UnixCompressDecompressorStream`) · `internal/streams/codecs/unix_compress_codec.py` (`UnixCompressCodec`)
+- Code: `internal/streams/codecs/` (`unix_compress_decoder.py`: `LzwState`,
+  `UnixCompressDecoder`, `UnixCompressDecompressorStream`; `unix_compress_codec.py`:
+  `UnixCompressCodec`)
 - Handbook: [`single-file.md`](single-file.md) · [`tar.md`](tar.md)

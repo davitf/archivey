@@ -1,4 +1,4 @@
-"""Child-process side of :class:`~archivey.internal.streams.codecs.rapidgzip_child.RapidgzipChildStream`.
+"""Child-process side of ``RapidgzipChildStream`` (``rapidgzip_child.py``).
 
 rapidgzip 0.16 aborts the whole process (``std::terminate``) when it decodes a gzip,
 zlib or raw DEFLATE stream that ends early; see ``dev-docs/known-issues.md``. So

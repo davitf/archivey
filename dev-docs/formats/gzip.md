@@ -539,8 +539,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   [`library-analysis.md`](../library-analysis.md) §gzip, §raw Deflate / zlib
 - Code: `internal/streams/codecs/` (`gzip_codec.py`: `GzipCodec`,
   `_GzipTruncationCheckStream`; `zlib_codec.py`: `ZlibCodec`, `DeflateCodec`;
-  `rapidgzip_select.py`: the accelerator selection; `stdlib_takeover.py`) · `internal/streams/codecs/deflate_decoder.py`
-  (`GzipDecoder`, `ZlibDecoder`) · `internal/streams/codecs/rapidgzip_child.py`,
-  `rapidgzip_worker.py`
+  `rapidgzip_select.py`: the accelerator selection; `stdlib_takeover.py`;
+  `deflate_decoder.py`: `GzipDecoder`, `ZlibDecoder`; `rapidgzip_child.py`,
+  `rapidgzip_worker.py`)
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (DEFLATE members) ·
   [`tar.md`](tar.md) (`.tar.gz`)
