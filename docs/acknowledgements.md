@@ -6,7 +6,7 @@ or just used their project to check our own work. This page is where we say than
 give credit properly.
 
 License texts for adapted kernels live next to the code
-(`src/archivey/internal/streams/unix_compress.py`,
+(`src/archivey/internal/streams/codecs/unix_compress_decoder.py`,
 `src/archivey/internal/backends/rar_parser.py`). Packaging extras and codec rationale:
 [Formats](formats.md), [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
 
@@ -50,7 +50,7 @@ lifecycle notes are in the [rapidgzip investigation](https://github.com/davitf/a
 
 | Project | Role |
 | --- | --- |
-| [python-xz](https://github.com/Rogdham/python-xz) (Rogdham) | Design reference for native XZ block-index seeking / synthetic single-block streams (`xz.py` over stdlib `lzma`). Evaluated and **not** used as a dependency (was briefly pinned dead in `[all]`, then removed). |
+| [python-xz](https://github.com/Rogdham/python-xz) (Rogdham) | Design reference for native XZ block-index seeking / synthetic single-block streams (`xz_decoder.py` over stdlib `lzma`). Evaluated and **not** used as a dependency (was briefly pinned dead in `[all]`, then removed). |
 | [rapidgzip](https://github.com/mxmlnkn/rapidgzip) (mxmlnkn) | Runtime `[seekable]` accelerator for gzip **and** bzip2 (`IndexedBzip2File` bundled inside rapidgzip). |
 | [indexed_bzip2](https://github.com/mxmlnkn/indexed_bzip2) / [indexed_gzip](https://github.com/pauldmccarthy/indexed_gzip) | Evaluated for random access; standalone `indexed_bzip2` is **deliberately not** imported (macOS dual-load heap corruption with rapidgzip). Same author lineage as rapidgzip; also relevant via [ratarmount](https://github.com/mxmlnkn/ratarmount). |
 | [indexed_zstd](https://github.com/martinellimarco/indexed_zstd) (martinellimarco) | Evaluated for efficient seeking over arbitrary `.zst`; **deferred** (frame-granularity only; C++ coexistence risk). |

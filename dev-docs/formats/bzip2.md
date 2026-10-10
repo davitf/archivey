@@ -329,7 +329,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   [`threat-model.md`](../threat-model.md) O5, O11
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §bzip2
-- Code: `internal/streams/codecs.py` (`Bzip2Codec`, `_Bzip2EmptyStreamCheck`,
-  `_TrappingSource`, `_AcceleratorStream`, `_bound_rapidgzip_source`)
+- Code: `internal/streams/codecs/bzip2_codec.py` (`Bzip2Codec`, `_Bzip2EmptyStreamCheck`),
+  `rapidgzip_inprocess.py` (`_TrappingSource`, `_AcceleratorStream`),
+  `rapidgzip_select.py` (`_bound_rapidgzip_source`)
 - Handbook: [`single-file.md`](single-file.md) · [`gzip.md`](gzip.md) (the DEFLATE side of
   `rapidgzip`) · [`tar.md`](tar.md) (`.tar.bz2`)
