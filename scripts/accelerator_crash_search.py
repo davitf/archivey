@@ -3,15 +3,17 @@
 
 archivey runs rapidgzip in a child process for every codec it decodes (gzip, zlib, raw
 DEFLATE and bzip2; ``src/archivey/internal/streams/codecs/rapidgzip_child.py``), so a
-crash in its C++ code costs one stream and not the caller's program. This script answers whether
-that isolation is still needed: it runs the decoders **in-process**, the way a caller
+crash in its C++ code costs one stream and not the caller's program. This script answers
+whether that isolation is still needed: it runs the decoders **in-process**, the way a caller
 without archivey would, on damaged input, and reports every crash by its signature.
 
 - DEFLATE family (gzip, zlib, deflate): rapidgzip 0.16 aborts on a stream that ends
   early (``dev-docs/known-issues.md`` Bug 4). That signature is listed as known, and so
-  is an abort with no message (Windows writes none) on an input the standard library
-  reads as ending early. When a run with cut inputs no longer finds it, the abort may be
-  fixed upstream.
+  is an abort with no message on an input the standard library reads as ending early.
+  Windows writes no message at all, so there an abort on any input the standard library
+  does not read cleanly is filed as known too; the Linux and macOS runs, which see the
+  message, are the ones that can name a new DEFLATE crash. When a run with cut inputs
+  no longer finds it, the abort may be fixed upstream.
 - bzip2 (``rapidgzip.IndexedBzip2File``): no crash has been seen. Any crash is new.
 
 How it works. Each case is a valid stream (payload shape, size and compression level
@@ -84,8 +86,15 @@ KNOWN_SIGNATURES: dict[str, tuple[str, ...]] = {
 
 # What a DEFLATE-family abort that left no message is filed under, when the standard
 # library confirms the input ends early: that is Bug 4's trigger, and Windows aborts
-# without writing the message (exit code 3).
+# without writing the message (exit code 3, or 0xc0000409 from a fail-fast).
 _UNNAMED_TRUNCATION_ABORT = "abort without a message, on a stream that ends early"
+# On Windows, where no abort has a message, one on input the standard library rejects
+# for another reason first. A flipped bit before a cut is the usual case: the Linux run
+# of the same input names Bug 4's message.
+_UNNAMED_DAMAGED_ABORT = (
+    "abort without a message, on damaged input (Windows writes none; the Linux and "
+    "macOS runs name it)"
+)
 _WBITS = {"gzip": 31, "zlib": 15, "deflate": -15}
 
 # The most decoded bytes a case reads, so a small input that expands a lot (a
@@ -158,6 +167,14 @@ def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
 def worker_main(codec: str, parallelization: int) -> None:
     import io
 
+    if sys.platform == "win32":
+        # No error dialog for a crash: on a desktop it would hold the dead worker open.
+        import ctypes
+
+        sem_failcriticalerrors, sem_nogpfaulterrorbox = 0x1, 0x2
+        ctypes.windll.kernel32.SetErrorMode(  # type: ignore[attr-defined]
+            sem_failcriticalerrors | sem_nogpfaulterrorbox
+        )
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     tmpdir = tempfile.mkdtemp(prefix="accel-crash-search-")
     path = os.path.join(tmpdir, f"case.{codec}")
@@ -331,12 +348,11 @@ def signature_of(returncode: int | None, stderr: bytes) -> str:
     return f"exit code {returncode} ({returncode & 0xFFFFFFFF:#x})"
 
 
-def ends_early(codec: str, data: bytes) -> bool:
-    """Whether the standard library reads ``data`` as a DEFLATE-family stream that ends
-    before its end marker, with no error before that (gzip: in any member)."""
-    wbits = _WBITS.get(codec)
-    if wbits is None:
-        return False
+def _stdlib_reading(codec: str, data: bytes) -> str:
+    """How the standard library reads ``data`` as a DEFLATE-family stream: ``"clean"``,
+    ``"ends early"`` (before its end marker, with no error before that; gzip: in any
+    member) or ``"error"``."""
+    wbits = _WBITS[codec]
     rest = data
     while True:
         decompressor = zlib.decompressobj(wbits)
@@ -345,23 +361,41 @@ def ends_early(codec: str, data: bytes) -> bool:
                 decompressor.decompress(rest, 1 << 20)
                 rest = decompressor.unconsumed_tail
         except zlib.error:
-            return False
+            return "error"
         if not decompressor.eof:
-            return True
+            return "ends early"
         rest = decompressor.unused_data
         if codec != "gzip" or not rest.startswith(b"\x1f\x8b"):
-            return False
+            return "clean"
 
 
-def _classify(codec: str, signature: str, data: bytes) -> tuple[str, bool]:
-    """The signature a crash is filed under, and whether it is known."""
+def ends_early(codec: str, data: bytes) -> bool:
+    """Whether the standard library reads ``data`` as a DEFLATE-family stream that ends
+    before its end marker, with no error before that (gzip: in any member)."""
+    return codec in _WBITS and _stdlib_reading(codec, data) == "ends early"
+
+
+def _classify(
+    codec: str,
+    signature: str,
+    data: bytes,
+    *,
+    messageless: bool = sys.platform == "win32",
+) -> tuple[str, bool]:
+    """The signature a crash is filed under, and whether it is known. ``messageless``:
+    this platform's aborts never carry a message (Windows)."""
     if signature in KNOWN_SIGNATURES[codec]:
         return signature, True
     unnamed = signature.startswith(
         ("exit code", "killed by signal", "terminate called")
     )
-    if unnamed and KNOWN_SIGNATURES[codec] and ends_early(codec, data):
+    if not unnamed or not KNOWN_SIGNATURES[codec]:
+        return signature, False
+    reading = _stdlib_reading(codec, data)
+    if reading == "ends early":
         return _UNNAMED_TRUNCATION_ABORT, True
+    if messageless and reading == "error":
+        return _UNNAMED_DAMAGED_ABORT, True
     return signature, False
 
 
@@ -388,15 +422,29 @@ class _Worker:
             if not byte:
                 return
 
-    def send(self, kind: int, data: bytes) -> bool:
+    def send(self, kind: int, data: bytes, timeout: float) -> bool | None:
+        """Write one case. ``False`` if the worker died, ``None`` if it did not take the
+        input in ``timeout`` seconds. The write runs on a thread: a pipe holds less than
+        most inputs, so a worker that stopped reading would block it for good (seen on
+        Windows after a crash, 2026-10-10)."""
         assert self.proc.stdin is not None
-        try:
-            self.proc.stdin.write(_CASE.pack(kind, len(data)))
-            self.proc.stdin.write(data)
-            self.proc.stdin.flush()
-        except (BrokenPipeError, OSError):
-            return False
-        return True
+        stdin = self.proc.stdin
+        result: list[bool] = []
+
+        def write() -> None:
+            try:
+                stdin.write(_CASE.pack(kind, len(data)))
+                stdin.write(data)
+                stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                result.append(False)
+            else:
+                result.append(True)
+
+        writer = threading.Thread(target=write, daemon=True)
+        writer.start()
+        writer.join(timeout)
+        return result[0] if result else None
 
     def answer(self, timeout: float) -> bytes | None:
         """The next byte from the worker, ``b""`` if it died, ``None`` on a timeout."""
@@ -407,11 +455,7 @@ class _Worker:
 
     def death(self) -> tuple[int | None, bytes]:
         """Wait for a worker that died (or kill a hung one); its exit code and stderr."""
-        try:
-            returncode = self.proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            returncode = self.proc.wait()
+        returncode = self._wait_or_kill()
         self.stderr.seek(0)
         text = self.stderr.read()
         self.close()
@@ -424,13 +468,23 @@ class _Worker:
                     pipe.close()
             except OSError:
                 pass
-        if self.proc.poll() is None:
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
+        self._wait_or_kill()
         self.stderr.close()
+
+    def _wait_or_kill(self) -> int | None:
+        """The worker's exit code once it has exited; killed after 10 seconds. ``None``
+        if even a kill does not end it in 10 more: the search goes on without it."""
+        for kill in (False, True):
+            if kill:
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            try:
+                return self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                continue
+        return None
 
 
 def _save(out: Path | None, codec: str, data: bytes, sha1: str) -> str | None:
@@ -478,8 +532,15 @@ def search(
                 worker = _Worker(codec, parallelization)
             report.cases += 1
             report.mutations[mutation] += 1
-            started = worker.send(kind, data) and worker.answer(timeout=60) == _STARTED
-            answer = worker.answer(timeout=timeout) if started else b""
+            sent = worker.send(kind, data, timeout=60)
+            if sent:
+                started = worker.answer(timeout=60)
+                if started == _STARTED:
+                    answer = worker.answer(timeout=timeout)
+                else:
+                    answer = started if started is None else b""
+            else:
+                answer = None if sent is None else b""
             if answer and answer[0] < len(_OUTCOMES):
                 report.outcomes[_OUTCOMES[answer[0]]] += 1
             else:

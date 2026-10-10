@@ -119,3 +119,45 @@ def test_an_abort_with_no_message_on_a_cut_deflate_stream_is_known() -> None:
     )
     assert search._classify("gzip", "exit code 3 (0x3)", whole)[1] is False
     assert search._classify("bzip2", "exit code 3 (0x3)", cut)[1] is False
+
+
+def test_on_windows_an_abort_with_no_message_on_damaged_deflate_is_known() -> None:
+    """Windows writes no message for any abort, and a bit flipped before a cut makes the
+    standard library reject the input before it reaches the cut. On Linux the same
+    input names the known message (seen on CI, 2026-10-10), so where aborts carry no
+    message it is filed as known; where they do, it stays new."""
+    data = bytearray(
+        gzip.compress(base64.encodebytes(random.Random(1).randbytes(4000)))
+    )
+    data[20] ^= 0xFF
+    damaged = bytes(data[:-200])
+    assert search._stdlib_reading("gzip", damaged) == "error"
+    signature = "exit code 3221226505 (0xc0000409)"
+    assert search._classify("gzip", signature, damaged, messageless=True) == (
+        search._UNNAMED_DAMAGED_ABORT,
+        True,
+    )
+    assert search._classify("gzip", signature, damaged, messageless=False)[1] is False
+    whole = gzip.compress(b"payload " * 10_000)
+    assert search._classify("gzip", signature, whole, messageless=True)[1] is False
+    assert search._classify("bzip2", signature, damaged, messageless=True)[1] is False
+
+
+def test_a_worker_that_stops_reading_is_a_hang_not_a_stall() -> None:
+    """A case is written on a thread with a timeout: a worker that never reads its input
+    is reported as a hang and replaced, and the search ends."""
+
+    class _Stuck:
+        def __init__(self) -> None:
+            self.proc = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                stdin=subprocess.PIPE,
+            )
+
+    stuck = _Stuck()
+    try:
+        sent = search._Worker.send(stuck, 1, b"x" * (4 << 20), timeout=1)  # type: ignore[arg-type]
+        assert sent is None
+    finally:
+        stuck.proc.kill()
+        stuck.proc.wait()
