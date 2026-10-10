@@ -103,7 +103,10 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     anything else is :func:`gzip_corruption`.
     """
     if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
-        return UnsupportedFeatureError(f"Unsupported gzip member header: {exc!r}")
+        return UnsupportedFeatureError(
+            f"Unsupported gzip member header: {exc!r}; a damaged header reads the "
+            "same way"
+        )
     return gzip_corruption(exc)
 
 
