@@ -34,7 +34,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.xz import XzDecompressorStream
+from archivey.internal.streams.codecs.xz_decoder import XzDecompressorStream
 from tests.conftest import requires
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse, _member
 

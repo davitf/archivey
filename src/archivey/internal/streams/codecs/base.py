@@ -28,7 +28,7 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
-from archivey.internal.streams.arm64 import FILTER_ARM64
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,

@@ -31,14 +31,14 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
 )
-from archivey.internal.streams.decompressor_stream import _StreamChecksumError
-from archivey.internal.streams.rapidgzip_child import (
+from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,
     from_callers_source,
     rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
+from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
