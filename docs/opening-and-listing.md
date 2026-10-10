@@ -113,8 +113,8 @@ Its other limitations:
 Passing a `format=` that says anything other than a directory, for a path that is one,
 raises `ArchiveyUsageError` rather than quietly reading the directory tree instead. The
 reverse, `format=ArchiveFormat.DIRECTORY` for a file or a stream, raises
-`ArchiveyUsageError` too; for a path that does not exist it raises `FileNotFoundError`,
-as any missing path does.
+`ArchiveyUsageError` too. A path that cannot be reached at all raises the operating
+system's own error, such as `FileNotFoundError`, whatever `format=` says.
 
 **A seekable stream is read from wherever it currently is**, through to the end.
 Archivey treats the current position as byte 0 of the archive, so an archive stored

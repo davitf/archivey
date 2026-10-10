@@ -23,6 +23,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.types import ContainerFormat, StreamFormat
 from tests.scandir_util import patch_dir_entry_stat
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,15 @@ def test_conflicting_format_on_directory_raises(simple_dir: Path) -> None:
 
 
 @pytest.mark.parametrize("form", ["path", "str", "stream"])
-@pytest.mark.parametrize("fmt", [ArchiveFormat.DIRECTORY, "directory"])
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        ArchiveFormat.DIRECTORY,
+        "directory",
+        # An unnamed pair is refused on the container, not reported as a missing backend.
+        ArchiveFormat(ContainerFormat.DIRECTORY, StreamFormat.GZIP),
+    ],
+)
 def test_directory_format_on_a_file_raises_a_usage_error(
     tmp_path: Path, form: str, fmt: object
 ) -> None:
@@ -121,6 +130,21 @@ def test_directory_format_on_a_missing_path_raises_file_not_found(
         with pytest.raises(FileNotFoundError) as exc_info:
             open_archive(missing, format=fmt)
         assert exc_info.value.errno == errno.ENOENT
+
+
+def test_directory_format_on_a_path_under_a_file_raises_what_the_os_reports(
+    tmp_path: Path,
+) -> None:
+    """The OS's own error, the same class under every format=.
+
+    ``Path.exists()`` is False for this path too, and a check built on it reported
+    ENOENT under ``DIRECTORY`` while ``ZIP`` and ``None`` raised ``NotADirectoryError``.
+    """
+    (tmp_path / "a.txt").write_bytes(b"x")
+    under_a_file = tmp_path / "a.txt" / "sub"
+    for fmt in (ArchiveFormat.DIRECTORY, ArchiveFormat.ZIP, None):
+        with pytest.raises(NotADirectoryError):
+            open_archive(under_a_file, format=fmt)
 
 
 def test_archive_info_format(simple_dir: Path) -> None:

@@ -188,7 +188,14 @@ def test_open_archive_refuses_any_pair_with_an_unknown_container() -> None:
         open_archive(io.BytesIO(b"x"), format=fmt)
 
 
-@pytest.mark.parametrize("value", [ArchiveFormat.UNKNOWN, "unknown"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        ArchiveFormat.UNKNOWN,
+        "unknown",
+        ArchiveFormat(ContainerFormat.UNKNOWN, StreamFormat.GZIP),
+    ],
+)
 def test_open_stream_refuses_unknown_without_sending_the_caller_to_open_archive(
     value: object, gz_path: Path
 ) -> None:
@@ -200,6 +207,24 @@ def test_open_stream_refuses_unknown_without_sending_the_caller_to_open_archive(
     assert "UNKNOWN" in message
     assert "open_archive" not in message
     assert "container format" not in message
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "unread stream"])
+def test_open_stream_refuses_unknown_before_any_io(kind: str, tmp_path: Path) -> None:
+    """The argument bug is reported first, as ``open_archive`` reports it.
+
+    Checked after the source probe, a missing path said "not found" and a directory said
+    "use open_archive()", which refuses the same ``format=``.
+    """
+    stream = io.BytesIO(gzip.compress(CONTENT))
+    source: object = {
+        "missing": tmp_path / "absent.gz",
+        "directory": tmp_path,
+        "unread stream": stream,
+    }[kind]
+    with pytest.raises(ArchiveyUsageError, match="names no format"):
+        open_stream(source, format="unknown")  # type: ignore[arg-type]
+    assert stream.tell() == 0
 
 
 def test_open_archive_still_accepts_an_archive_format_and_none(zip_path: Path) -> None:
