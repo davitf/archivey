@@ -287,7 +287,14 @@ def _pax_sparse(
 
     0.0 repeats the ``GNU.sparse.offset`` / ``GNU.sparse.numbytes`` keys, which
     tarfile's ``pax_headers`` dict cannot hold, so the 0.x extended headers are
-    written by hand. 1.0 stores the map as text at the head of the data."""
+    written by hand. 1.0 stores the map as text at the head of the data.
+
+    The 0.x data member's header has GNU magic (``_member`` writes
+    ``tarfile.GNU_FORMAT``). tarfile applies the ``GNU.sparse.*`` records whatever
+    the magic, so the tests are sound. GNU tar applies them only on a ustar header:
+    it does not read these 0.x fixtures ("Unexpected EOF in archive", even for a
+    valid map). To compare against GNU tar, write the data member with
+    ``tarfile.USTAR_FORMAT``."""
     if version == "1.0":
         body = b"%d\n" % len(entries)
         body += b"".join(b"%d\n%d\n" % entry for entry in entries)
@@ -377,7 +384,7 @@ _PACKED = b"A" * 512 + b"B" * 512
         "under-stored",
     ],
 )
-def test_sparse_map_that_tarfile_would_misread_is_refused(
+def test_sparse_map_damaged_or_out_of_order_is_refused(
     entries: list[tuple[int, int]],
     realsize: int,
     error: type[ArchiveyError],
@@ -385,15 +392,22 @@ def test_sparse_map_that_tarfile_would_misread_is_refused(
     encoding: str,
     streaming: bool,
 ) -> None:
-    """tarfile serves each of these maps with no error, and each answer is wrong.
+    """tarfile serves each of these maps with no error. Archivey refuses each one.
 
-    It stitches out-of-order or overlapping chunks into one run, where GNU tar 1.35
-    places each chunk at its own offset: the map is valid data that archivey cannot
-    serve, so ``UnsupportedFeatureError`` (DR-4). A chunk past the logical size, even
-    an empty one, and stored bytes that no chunk accounts for (``B`` in the last
-    case) are dropped by tarfile: that is damage, ``CorruptionError`` (DR-3). GNU tar
-    refuses a chunk past the logical size in old GNU and PAX 1.0, reads it in PAX
-    0.1, and extracts the under-stored member without the leftover bytes."""
+    tarfile stitches out-of-order or overlapping chunks into one run, where GNU tar
+    1.35 places each chunk at its own offset: the map is valid data that archivey
+    cannot serve, so ``UnsupportedFeatureError`` (DR-4).
+
+    tarfile drops the stored bytes of a non-empty chunk past the logical size, and
+    stored bytes that no chunk accounts for (``B`` in the last case): that is
+    damage, ``CorruptionError`` (DR-3). An empty entry past the logical size loses
+    no bytes in tarfile. It is ``CorruptionError`` because the map contradicts its
+    own declared size, and because tarfile and GNU tar disagree on the extracted
+    length (DR-1).
+
+    GNU tar 1.35 refuses a chunk past the logical size in old GNU and PAX 1.0, and
+    reads it in PAX 0.0 and 0.1. It extracts the under-stored member without the
+    leftover bytes."""
     data = (
         _sparse_member(encoding, entries, realsize, _PACKED)
         + _member("b", b"SECRET")

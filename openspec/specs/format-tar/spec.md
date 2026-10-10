@@ -294,9 +294,15 @@ unaffected).
 The backend SHALL raise `CorruptionError` if the map has a negative entry, if its
 chunks add up to more bytes than the member stores, if they add up to more than 511
 bytes fewer than the member stores, if a chunk (empty or not) ends past the member's
-logical size, or if the logical size is past 2**63 - 1. tarfile would read another
-member's bytes, or drop stored bytes, for each of these (DR-3). GNU tar 1.35 refuses a
-chunk past the logical size in old GNU and PAX 1.0, and reads it in PAX 0.1.
+logical size, or if the logical size is past 2**63 - 1. For a map that claims too many
+bytes, tarfile reads another member's bytes; for a map that claims too few, or a
+non-empty chunk past the logical size, tarfile drops stored bytes (DR-3). A negative
+entry makes tarfile read backwards. For a logical size past 2**63 - 1, tarfile raises a
+raw `OverflowError` or `MemoryError`. An empty entry past the logical size loses no
+bytes in tarfile; it is refused because the map contradicts its own declared size, and
+because tarfile and GNU tar disagree on the extracted length (DR-1). GNU tar 1.35
+refuses a chunk past the logical size in old GNU and PAX 1.0, and reads it in PAX 0.0
+and 0.1.
 
 The backend SHALL raise `UnsupportedFeatureError` if a non-empty chunk starts before
 the previous non-empty chunk ends (out of order or overlapping), and the map has none

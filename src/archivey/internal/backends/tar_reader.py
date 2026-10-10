@@ -366,7 +366,7 @@ class _TarInfo(tarfile.TarInfo):
 def _sparse_map_error(
     info: tarfile.TarInfo,
 ) -> CorruptionError | UnsupportedFeatureError | None:
-    """Refuse a sparse map that ``tarfile`` would serve as the wrong bytes.
+    """Refuse a sparse map that is damaged, or that ``tarfile`` cannot serve right.
 
     ``tarfile`` reads the map's data chunks one after another from the start of the
     data area. A map whose chunks add up to more than the member stores reads the
@@ -378,9 +378,14 @@ def _sparse_map_error(
     bytes that no chunk names are never served, and leftover bytes inside a member's
     data are damage (DR-3). GNU tar 1.35 extracts such a member without them.
 
-    A chunk must end at or before the logical size, since ``tarfile`` drops the
-    stored bytes of one that does not. GNU tar 1.35 refuses that map in the old GNU
-    and PAX 1.0 encodings and reads it in PAX 0.1. Both are ``CorruptionError``.
+    A chunk must end at or before the logical size. For a non-empty chunk past it,
+    ``tarfile`` drops the stored bytes of that chunk (DR-3). An empty entry past it
+    loses no bytes in ``tarfile``, which serves the same bytes as for the valid map.
+    The empty entry is refused because the map contradicts its own declared size,
+    and because the readers then disagree on the extracted length (DR-1): GNU tar
+    1.35 refuses such a map in the old GNU and PAX 1.0 encodings, and in PAX 0.0 and
+    0.1 it extracts a file longer than the size ``tarfile`` serves. A chunk past the
+    logical size raises ``CorruptionError``, whether it is empty or not.
 
     A non-empty chunk must start at or after the end of the previous one. GNU tar
     1.35 reads an out-of-order or overlapping map, writing each chunk at the offset
