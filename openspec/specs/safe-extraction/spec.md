@@ -563,15 +563,15 @@ member reaches through a directory symlink the archive created SHALL be taken by
 physically is, with its parents resolved: that place sets its depth, and the change
 reaches it from the root through that place only. Where several members reach one
 directory, the one written last SHALL be applied last. A later member that removes the
-directory SHALL drop its pending metadata under any spelling that reaches it, as for the
-`OVERWRITTEN` revision in the Overwrite Policy requirement: through such a symlink under
-every policy, or a case variant on a case-insensitive filesystem under `STRICT` and
-`STANDARD`. GNU tar, bsdtar and Python's `tarfile` order these changes the same way. With
-the mode applied at once, a stored mode without owner write or search permission refused
-every member inside the directory to a non-root user, and each member written inside
-changed the directory's modification time. One consequence, which GNU tar shares: under
-`TRUSTED`, the only policy that keeps setgid, a setgid directory gets the bit only after
-its members are written, so a non-root run does not give them the directory's group.
+directory SHALL drop its pending metadata under any spelling that reaches it, under
+every policy: through such a symlink, or a case variant on a case-insensitive
+filesystem. GNU tar, bsdtar and Python's `tarfile` order these changes the same way.
+With the mode applied at once, a stored mode without owner write or search permission
+refused every member inside the directory to a non-root user, and each member written
+inside changed the directory's modification time. One consequence, which GNU tar shares:
+under `TRUSTED`, the only policy that keeps setgid, a setgid directory gets the bit only
+after its members are written, so a non-root run does not give them the directory's
+group.
 
 #### Scenario: metadata policy matrix
 
@@ -648,11 +648,11 @@ this run neither wrote nor created as a parent) SHALL leave that directory's mod
 ownership and times unchanged. When the member's effective mode differs from the
 directory's, the result SHALL carry the mode the directory kept in
 `ExtractionResult.kept_mode`; otherwise `kept_mode` is `None`, and the times were still
-left alone. A directory this run wrote or created is recognized under the same spellings
-as above: through a directory symlink the archive created, and a case variant on a
-case-insensitive filesystem under `STRICT` and `STANDARD`. A case variant on a filesystem
-that reports inode 0 for every entry cannot be told from another directory, and is taken
-for one that was there before the run.
+left alone. A directory this run wrote or created is recognized under any spelling that
+reaches it, under every policy: through a directory symlink the archive created, and a
+case variant on a case-insensitive filesystem. A case variant on a filesystem that
+reports inode 0 for every entry cannot be told from another directory, and is taken for
+one that was there before the run.
 
 A HARDLINK is made against the path its source member was written to only while that
 path still holds the source's content. Once a later member replaces that path, the path

@@ -744,6 +744,17 @@ def test_directory_metadata_is_applied_after_its_children(
         _restore_modes(dest)
 
 
+def _case_sensitive(path: Path) -> bool:
+    """Whether the filesystem at ``path`` tells ``CaseProbe`` from ``caseprobe``. Writes
+    and removes ``path / "CaseProbe"``, so ``path`` is left as it was."""
+    probe = path / "CaseProbe"
+    probe.write_bytes(b"")
+    try:
+        return not (path / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
 class _NoInode:
     """A stat result that reports inode 0, as some FUSE and network mounts do."""
 
@@ -848,8 +859,9 @@ def _extract_removing_a_directory(
     dest: Path,
     monkeypatch: pytest.MonkeyPatch,
     specs: list[tuple[str, int | None, int]],
+    policy: ExtractionPolicy = ExtractionPolicy.STANDARD,
 ) -> list[ExtractionStatus]:
-    """Extract ``specs`` under STANDARD and REPLACE, where a symlink member named ``d``
+    """Extract ``specs`` under ``policy`` and REPLACE, where a symlink member named ``d``
     is refused after REPLACE has removed the empty directory at its name.
 
     Python 3.11 and 3.12 refuse the loop ``d -> d`` because ``Path.resolve()`` raises
@@ -872,7 +884,7 @@ def _extract_removing_a_directory(
         report = open_and_extract(
             io.BytesIO(_tar_with_dir_modes(specs)),
             dest,
-            policy=ExtractionPolicy.STANDARD,
+            policy=policy,
             overwrite=OverwritePolicy.REPLACE,
             on_error="continue",
         )
@@ -922,8 +934,21 @@ def test_deferred_metadata_of_a_directory_removed_by_another_spelling_is_dropped
 
 @_posix_perms
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize(
+    ("policy", "removed_status"),
+    [
+        (ExtractionPolicy.STANDARD, ExtractionStatus.OVERWRITTEN),
+        # TRUSTED keys results on the exact name, so ``D/``'s result is not revised;
+        # its pending metadata is still dropped.
+        (ExtractionPolicy.TRUSTED, ExtractionStatus.EXTRACTED),
+    ],
+    ids=["standard", "trusted"],
+)
 def test_deferred_metadata_of_a_directory_removed_by_a_case_variant_is_dropped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: ExtractionPolicy,
+    removed_status: ExtractionStatus,
 ) -> None:
     """On a case-insensitive filesystem ``D/`` and ``d`` are one entry. REPLACE removes
     the empty ``D/`` for the refused symlink ``d``, and ``d/x`` creates ``d`` again as a
@@ -936,9 +961,10 @@ def test_deferred_metadata_of_a_directory_removed_by_a_case_variant_is_dropped(
         dest,
         monkeypatch,
         [("D/", 0o700, _DIR_MTIME), ("d->d", None, 0), ("d/x", 0o644, 0)],
+        policy,
     )
     assert statuses == [
-        ExtractionStatus.OVERWRITTEN,
+        removed_status,
         ExtractionStatus.BLOCKED,
         ExtractionStatus.EXTRACTED,
     ]
@@ -946,8 +972,13 @@ def test_deferred_metadata_of_a_directory_removed_by_a_case_variant_is_dropped(
 
 
 @_posix_perms
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+    ids=["standard", "trusted"],
+)
 def test_deferred_metadata_of_a_case_variant_directory_still_there_is_kept(
-    tmp_path: Path,
+    tmp_path: Path, policy: ExtractionPolicy
 ) -> None:
     """On a case-sensitive filesystem ``X/`` and ``x/`` are two directories under one
     casefolded key. REPLACE removing ``x/`` for the file ``x`` must not drop the
@@ -964,7 +995,7 @@ def test_deferred_metadata_of_a_case_variant_directory_still_there_is_kept(
     open_and_extract(
         io.BytesIO(archive),
         dest,
-        policy=ExtractionPolicy.STANDARD,
+        policy=policy,
         overwrite=OverwritePolicy.REPLACE,
     )
     st = (dest / "X").stat()
@@ -1011,6 +1042,34 @@ def test_a_directory_this_run_made_is_ours_under_every_spelling(
     assert all(r.kept_mode is None for r in report.results)
     st = (dest / "d").stat()
     assert (st.st_mode & 0o7777, int(st.st_mtime)) == (mode, mtime)
+
+
+@_posix_perms
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+    ids=["standard", "trusted"],
+)
+def test_a_directory_this_run_made_is_ours_under_a_case_variant(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """On a case-insensitive filesystem ``D/`` and ``d/`` are one directory, under
+    every policy. ``d/`` names the directory ``D/`` wrote, so it is not the caller's:
+    no ``kept_mode`` is reported, and its stored mode and mtime, written last, apply."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if _case_sensitive(dest):
+        pytest.skip(
+            "needs a case-insensitive filesystem, where D/ and d/ are one entry"
+        )
+    archive = _tar_with_dir_modes(
+        [("D/", 0o700, _DIR_MTIME), ("d/", 0o750, _SUB_MTIME)]
+    )
+    report = open_and_extract(io.BytesIO(archive), dest, policy=policy)
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert all(r.kept_mode is None for r in report.results)
+    st = (dest / "d").stat()
+    assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _SUB_MTIME)
 
 
 @_posix_perms
@@ -3537,15 +3596,6 @@ def test_replace_revises_a_directory_reached_through_the_archives_symlink(
     assert link.status is ExtractionStatus.EXTRACTED
     assert member.status is ExtractionStatus.EXTRACTED
     assert (dest / "d" / "sub").read_bytes() == b"file"
-
-
-def _case_sensitive(path: Path) -> bool:
-    probe = path / "CaseProbe"
-    probe.write_bytes(b"")
-    try:
-        return not (path / "caseprobe").exists()
-    finally:
-        probe.unlink()
 
 
 @pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])

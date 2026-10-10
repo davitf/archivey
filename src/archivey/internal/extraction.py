@@ -623,12 +623,12 @@ class _RunState:
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
     # Directories ``_makedirs`` created this run, as parents of what it wrote.
     created_dirs: set[Path] = field(default_factory=set)
-    # Every directory this run wrote or created, by collision key -> where each one
+    # Every directory this run wrote or created, by ``_physical_key`` -> where each one
     # physically is (``_physical_path``), so a member that names one under another
     # spelling is not taken for the caller's (``_is_run_directory``).
     run_dirs: dict[str, set[Path]] = field(default_factory=dict)
     # Directory members whose ownership, mode and times wait for the end of the run
-    # (``_apply_directory_metadata``): collision key -> where the directory physically
+    # (``_apply_directory_metadata``): ``_physical_key`` -> where the directory physically
     # is -> the directory's identity on disk (device, inode) when it was written, the
     # number of ``/`` in that physical path relative to the root (so a deeper
     # directory sorts first), and the transformed member. In each key, in the order
@@ -636,7 +636,7 @@ class _RunState:
     # inode 0 for every entry (``_Identity.of`` in the directory reader). By the
     # physical path, not the spelled one: two spellings through a symlink of the
     # archive's share one entry, and the metadata pass opens the directory through
-    # shallower directories only, which it has not changed yet. Under the collision
+    # shallower directories only, which it has not changed yet. Under a casefolded
     # key, so a removal by a case variant finds the entry (``_drop_pending_dir``).
     pending_dirs: dict[str, dict[Path, tuple[tuple[int, int], int, ArchiveMember]]] = (
         field(default_factory=dict)
@@ -2118,6 +2118,23 @@ class ExtractionCoordinator:
             rel = self._rel_name(path)
         return collision_key(rel, self._policy)
 
+    def _physical_key(self, path: Path) -> str:
+        """The key of the directory at ``path`` in ``run_dirs`` and ``pending_dirs``:
+        where it physically is, with case and Unicode normalization folded under every
+        policy.
+
+        ``_collision_key`` folds only under ``STRICT`` and ``STANDARD``, because it
+        decides which member's result a name reaches. These two maps ask whether a
+        directory is one this run made, which does not depend on how the archive spelled
+        it: on a case-insensitive filesystem ``D/`` and ``d/`` are one directory under
+        ``TRUSTED`` too. Where the folded key covers two directories (``X/`` beside
+        ``x/`` on a case-sensitive filesystem), the readers tell them apart on disk.
+        """
+        rel = self._physical_rel(path)
+        if rel is None:
+            rel = self._rel_name(path)
+        return collision_key(rel, ExtractionPolicy.STANDARD)
+
     def _derive_free_name(self, requested: Path, transformed: ArchiveMember) -> Path:
         """The first ``name (N)`` (N = 1, 2, …) free both in the collision map and on disk.
 
@@ -3024,7 +3041,7 @@ class ExtractionCoordinator:
 
     def _note_run_directory(self, path: Path) -> None:
         """Record that this run wrote or created the directory at ``path``."""
-        self._state.run_dirs.setdefault(self._collision_key(path), set()).add(
+        self._state.run_dirs.setdefault(self._physical_key(path), set()).add(
             self._physical_path(path)
         )
 
@@ -3032,10 +3049,11 @@ class ExtractionCoordinator:
         """Whether the directory at ``path`` (``st`` its ``lstat``) is one this run
         wrote or created, under any spelling: through a symlink the archive created
         (the same physical path), or a case variant on a case-insensitive filesystem
-        (one recorded under the same collision key that is the same directory). Where
+        under every policy (one recorded under the same ``_physical_key`` that is the
+        same directory). Where
         the filesystem reports inode 0, a case variant cannot be told from another
         directory and is taken for the caller's, which keeps its mode."""
-        recorded = self._state.run_dirs.get(self._collision_key(path))
+        recorded = self._state.run_dirs.get(self._physical_key(path))
         if not recorded:
             return False
         if self._physical_path(path) in recorded:
@@ -3345,7 +3363,7 @@ class ExtractionCoordinator:
             return
         physical = self._physical_path(path)
         depth = self._rel_name(physical).count("/")
-        pending = self._state.pending_dirs.setdefault(self._collision_key(path), {})
+        pending = self._state.pending_dirs.setdefault(self._physical_key(path), {})
         # Moved to the end, so where two spellings reach one directory (a case
         # variant), the member written last is applied last.
         pending.pop(physical, None)
@@ -3355,12 +3373,12 @@ class ExtractionCoordinator:
         """Drop the deferred metadata of the directory at ``path``, which is being
         removed, under whichever spelling it was written.
 
-        Found by collision key, as ``_revise_removed_directory`` finds the result: the
-        entry at the same physical path is dropped, and so is one under a case variant
-        that is gone from disk. A casefolded key also covers another directory on a
+        Found by ``_physical_key``, under every policy: the entry at the same physical
+        path is dropped, and so is one under a case variant that is gone from disk. A
+        casefolded key also covers another directory on a
         case-sensitive filesystem (``X/`` beside ``x/``); that one is still there, and
         keeps its entry."""
-        key = self._collision_key(path)
+        key = self._physical_key(path)
         pending = self._state.pending_dirs.get(key)
         if not pending:
             return
