@@ -300,7 +300,7 @@ read `ExtractionResult.presented_name` and let extraction finish.
 | --- | --- |
 | `STRICT` | Untrusted archives (default) |
 | `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute and group or other write included (the umask does not apply, so a stored `0o666` file stays `0o666`), but strips setuid, setgid and sticky and never applies ownership. A member with no stored mode, such as every member of a ZIP written on Windows, gets `0o644` (file) or `0o755` (directory). Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
-| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
+| `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal. A member with no stored mode keeps the creation default, so the umask decides, not `0o644` / `0o755` |
 
 Selective extract:
 
