@@ -111,7 +111,7 @@ _PLUGIN = textwrap.dedent(
 
     def pytest_configure(config):
         try:
-            from archivey.internal.streams import rapidgzip_child as rc
+            from archivey.internal.streams.codecs import rapidgzip_child as rc
         except ImportError:
             return
         real_spawn, real_died, real_reap = rc.spawn, rc.RapidgzipChildStream._child_died, rc._reap

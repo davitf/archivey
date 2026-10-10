@@ -11,7 +11,7 @@ interpreter finalizes trips their guard and aborts the process with SIGABRT (exi
 
 We found that ``join_threads()`` does NOT stop the thread — only ``close()`` does — and fixed
 archivey's ``weakref.finalize`` guard to close the object (``_AcceleratorStream`` in
-``archivey.internal.streams.codecs``). In isolation that makes leaked / cyclically-collected /
+``archivey.internal.streams.codecs.rapidgzip_inprocess``). In isolation that makes leaked / cyclically-collected /
 never-closed streams shut down cleanly on Linux **and** macOS.
 
 But the *full* test suite on macOS still aborts at shutdown once accelerators are active

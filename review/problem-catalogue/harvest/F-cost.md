@@ -81,7 +81,7 @@ investigation beyond what the claim rows already touched.
   upstream” for the Python-source-raises abort.
 - **Symptom:** Maintainer doc contradicts shipped containment +
   `tests/test_accelerator_bug3_trap.py`.
-- **Evidence:** `dev-docs/known-issues.md` Bug 3; `codecs.py` `_TrappingSource`;
+- **Evidence:** `dev-docs/known-issues.md` Bug 3; `codecs/rapidgzip_inprocess.py` `_TrappingSource`;
   F-33 / F-34 (tests green under **`[all]`**).
 - **Today:** Spec requires containment; residual path truncations/CRC remain
   upstream (F-35).

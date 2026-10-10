@@ -27,7 +27,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from archivey.internal.streams.decompress import _OneStreamDecompressor
+    from archivey.internal.streams.codecs.framed_decoder import _OneStreamDecompressor
 
 LEGACY_MAGIC = b"\x02\x21\x4c\x18"
 LEGACY_BLOCK_SIZE = 8 * 2**20

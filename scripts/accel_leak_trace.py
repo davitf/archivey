@@ -57,8 +57,8 @@ _config._ACCELERATORS_UNSAFE_PLATFORM = False
 # id(wrapper) -> {"stack": str, "ref": weakref, "closed": bool}
 _RECORDS: dict[int, dict[str, object]] = {}
 
-_orig_init = _codecs._AcceleratorStream.__init__
-_orig_close = _codecs._AcceleratorStream.close
+_orig_init = _codecs.rapidgzip_inprocess._AcceleratorStream.__init__
+_orig_close = _codecs.rapidgzip_inprocess._AcceleratorStream.close
 
 
 def _traced_init(self, inner):  # noqa: ANN001
@@ -77,8 +77,8 @@ def _traced_close(self):  # noqa: ANN001
     _orig_close(self)
 
 
-_codecs._AcceleratorStream.__init__ = _traced_init
-_codecs._AcceleratorStream.close = _traced_close
+_codecs.rapidgzip_inprocess._AcceleratorStream.__init__ = _traced_init
+_codecs.rapidgzip_inprocess._AcceleratorStream.close = _traced_close
 
 
 @atexit.register

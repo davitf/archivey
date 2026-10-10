@@ -14,12 +14,15 @@ import random
 import pytest
 
 from archivey.exceptions import TruncatedError
-from archivey.internal.streams.bzip2_resume import (
+from archivey.internal.streams.codecs.bzip2_resume import (
     BitShifter,
     Bzip2Resume,
     Bzip2ResumeDecoder,
 )
-from archivey.internal.streams.decompress import FramedDecompressorStream, stream_magic
+from archivey.internal.streams.codecs.framed_decoder import (
+    FramedDecompressorStream,
+    stream_magic,
+)
 from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 from tests.conftest import requires
