@@ -927,6 +927,11 @@ def run_extract(
         # the extraction's own pass offers each member to them, and they are judged
         # after it: a separate pass would decompress the archive a second time.
         indexed = reader.members_report_if_available() if pred is not None else None
+        if indexed is not None and indexed.error is not None:
+            # A free list that ends in damage holds only the members before it, so
+            # it cannot say a pattern matches nothing. The extraction's own pass
+            # judges the patterns instead, and reaches the damage itself.
+            indexed = None
         if indexed is not None:
             for member in indexed:
                 selection(member)

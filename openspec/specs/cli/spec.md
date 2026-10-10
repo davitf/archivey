@@ -63,25 +63,30 @@ matching members; a member SHALL be processed when it matches an include (or non
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
 `--include` flag. When one or more include patterns are given, each pattern that
 matches no member SHALL produce a stderr warning
-(`warning: pattern matched no members: '…'`). When the includes match members
-but `--exclude` removes every one of them, or when there is no include and
-`--exclude` removes every member, the system SHALL warn
+(`warning: pattern matched no members: '…'`). When the includes match members but
+`--exclude` removes every one of them, or when there is no include and `--exclude`
+removes every member, the system SHALL warn
 `warning: no members selected: --exclude removed every member…` instead. When the
 patterns select no member in either way on `extract` or `test`, the command SHALL
 exit `1` after the warning(s) and SHALL write nothing, not even the destination
 directory; an archive with no members and only `--exclude` patterns is not such a
 case. On `list`, the same warnings SHALL be emitted but the exit code SHALL remain
-`0` when the archive otherwise listed successfully. The patterns SHALL be checked
-against a member index when the archive has one without a scan, before anything
-is read or written. Otherwise they SHALL be checked in the same pass that tests or
-extracts the members, with the warnings after that pass, and SHALL NOT cost a
-separate pass: on a compressed TAR such a pass decompresses the whole archive. On `extract`, when there is exactly one
-unmatched include that names an existing directory or ends with `/`, the warning
-SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL accept
-exactly **one** archive positional (multi-archive is out of scope for this
-capability). `--password` SHALL be accepted for encrypted archives; when an
-encrypted archive is opened, no `--password` was supplied, and stdin is a TTY,
-the system SHALL prompt for the password without echoing it.
+`0` when the archive otherwise listed successfully. On `extract` and `test`, the
+patterns SHALL be checked against a member index when the archive has a complete
+one without a scan, before anything is read or written. Otherwise they SHALL be
+checked in the same pass that tests or extracts the members, with the warnings
+after that pass, and SHALL NOT cost a separate pass: on a compressed TAR such a
+pass decompresses the whole archive. An index that ends in damage holds only the
+members before the damage, so it is not complete; and a pass that ends early SHALL
+NOT report its patterns, while a pass that reaches its end SHALL, whatever members
+failed in it. On `list`, the patterns SHALL be checked against the member listing
+the command reads anyway, with the warnings before the member lines. On `extract`,
+when there is exactly one unmatched include that names an existing directory or
+ends with `/`, the warning SHALL include a hint `(did you mean -d PATTERN?)`. Each
+invocation SHALL accept exactly **one** archive positional (multi-archive is out
+of scope for this capability). `--password` SHALL be accepted for encrypted
+archives; when an encrypted archive is opened, no `--password` was supplied, and
+stdin is a TTY, the system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be

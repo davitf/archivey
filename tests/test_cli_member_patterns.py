@@ -290,3 +290,89 @@ def test_exclude_on_an_empty_archive_is_not_an_empty_selection(
         args += ["-d", str(tmp_path / "out")]
     assert main(args) == EXIT_OK
     assert "no members selected" not in capsys.readouterr().err
+
+
+def _chmod_denies_reads(path: Path) -> bool:
+    """Whether ``chmod 000`` stops this process reading ``path`` (not as root, not on
+    Windows)."""
+    try:
+        path.read_bytes()
+    except PermissionError:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_an_unmatched_pattern_is_reported_after_a_member_fails(
+    verb: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A member that fails does not end the pass: every member was still offered to
+    the patterns, so the unmatched one is reported. A directory has no index, and its
+    pass goes on past a file it cannot open."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tree / name).write_bytes(name.encode())
+    unreadable = tree / "b.txt"
+    unreadable.chmod(0)
+    try:
+        if not _chmod_denies_reads(unreadable):
+            pytest.skip("chmod 000 does not deny reads here")
+        args = [verb, str(tree), "*.txt", "nosuch"]
+        if verb == "x":
+            args += ["-d", str(tmp_path / "out")]
+        assert main(args) == EXIT_FAIL
+        err = capsys.readouterr().err
+        assert "1 failed" in err
+        assert "warning: pattern matched no members: 'nosuch'" in err
+    finally:
+        unreadable.chmod(0o644)
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_a_damaged_index_does_not_settle_the_patterns(
+    verb: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A free member list that ends in damage holds only the members before it. A
+    pattern naming a later member is not known to match nothing, so it is not
+    reported as such; the run's own pass reaches the damage and reports it."""
+    archive = tmp_path / "tinyvol_cut.part1.rar"
+    archive.write_bytes((_FIXTURES / "rar" / "tinyvol_cut.part1.rar").read_bytes())
+    monkeypatch.chdir(tmp_path)
+    args = [verb, archive.name, "c.txt"]
+    if verb == "x":
+        args += ["-d", "out"]
+    assert main(args) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "pattern matched no members" not in err
+    assert "volume 2" in err
+
+
+def test_the_dash_d_hint_skips_a_directory_the_run_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With no index, ``extract`` creates ``-d out`` before the patterns are judged.
+    It removes that directory before the warning, so the hint does not point at it;
+    a directory that was already there is the operator's and gets the hint."""
+    archive = _tar(tmp_path / "t.tar.gz", [("docs", None), ("docs/a.txt", b"a")])
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    args = ["x", str(archive), "out", "-d", "out"]
+    assert main(args) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'out'" in err
+    assert "did you mean" not in err
+    assert list(work.iterdir()) == []
+
+    (work / "out").mkdir()
+    assert main(args) == EXIT_FAIL
+    assert "(did you mean -d out?)" in capsys.readouterr().err
