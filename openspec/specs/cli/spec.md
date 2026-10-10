@@ -416,7 +416,9 @@ the destination (the folder was already there, the entry is a symlink, a symlink
 leaves it, or part of the entry could not be listed, which here means part of the
 scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
 reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
-already at that place.
+already at that place, nor whether an existing directory there can be written into: a
+real run whose hoist is refused by that directory's permissions fails where the dry run
+predicted the move.
 
 #### Scenario: extract dry-run matrix
 

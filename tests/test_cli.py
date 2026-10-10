@@ -1026,9 +1026,9 @@ def _tar_with_locked_dirs(path: Path, names: list[str]) -> Path:
 
 def _refuse_renames_as_non_root(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ``os.rename`` refuse what POSIX refuses a non-root user: moving an entry
-    out of a directory without owner write, or a directory without owner write to
-    another parent (its ``..`` changes). Root skips these checks, and CI may run as
-    either."""
+    out of or into a directory without owner write, or a directory without owner
+    write to another parent (its ``..`` changes). Root skips these checks, and CI may
+    run as either."""
     rename = os.rename
 
     def no_write(path: Path) -> bool:
@@ -1038,7 +1038,7 @@ def _refuse_renames_as_non_root(monkeypatch: pytest.MonkeyPatch) -> None:
     def checked(src: str | Path, dst: str | Path) -> None:
         src, dst = Path(src), Path(dst)
         moves_dir = no_write(src) and src.parent.resolve() != dst.parent.resolve()
-        if no_write(src.parent) or moves_dir:
+        if no_write(src.parent) or no_write(dst.parent) or moves_dir:
             raise PermissionError(13, "Permission denied", str(src))
         rename(src, dst)
 
@@ -1091,6 +1091,29 @@ def test_hoist_merges_a_root_stored_without_write_permission(
         assert stat.S_IMODE((tmp_path / "pkg" / "sub").stat().st_mode) == 0o555
         assert (tmp_path / "pkg" / "sub" / "b").read_bytes() == b"x"
         assert not (tmp_path / "bundle").exists()
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_a_failed_hoist_leaves_the_stored_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cwd's own ``pkg`` has no owner write, so the merge cannot move ``sub``
+    into it. The hoist fails, and the directories left under the wrapper keep the
+    ``0o555`` the archive stored: the hoist opened them up only for the move."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    (tmp_path / "pkg").mkdir(mode=0o555)
+    archive = _tar_with_locked_dirs(
+        tmp_path / "bundle.tar", ["pkg/", "pkg/sub/", "pkg/sub/b"]
+    )
+    try:
+        assert main(["extract", str(archive), "--policy", "standard"]) == EXIT_FAIL
+        left = tmp_path / "bundle" / "pkg"
+        assert stat.S_IMODE(left.stat().st_mode) == 0o555
+        assert stat.S_IMODE((left / "sub").stat().st_mode) == 0o555
+        assert (left / "sub" / "b").read_bytes() == b"x"
     finally:
         _unlock(tmp_path)
 
