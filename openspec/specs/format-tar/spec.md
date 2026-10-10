@@ -59,6 +59,7 @@ rules:
 | `uname`, `gname`, `uid`, `gid` | Directly from `TarInfo` |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType` |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from `linkname` |
+| `extra["tar.pax_headers"]` | The member's PAX records, the global (`g`) records in force included. Read-only: a change raises `TypeError`. Members with no records of their own share one per set of global records: one copy per member cost the global records again for every 512-byte member header. Read-only so the sharing cannot be seen: a change through one member could otherwise show on the others. It is a `dict` subclass, so `json.dumps` takes it, and a copy, deep copy or pickle round trip gives a plain `dict` |
 | old-style directory | An `AREGTYPE` (typeflag NUL) header whose final name (after a PAX `path` or a GNU long name) ends in `/` is a `DIRECTORY`, on every Python version, and the data blocks its `size` declares are skipped, as GNU tar does. `extra["tar.type"]` is the stored `b"\x00"`. A `DIRTYPE` header that declares a size makes the listing raise `CorruptionError`; in random access no member is listed. GNU tar reports an error and keeps listing; 7-Zip stops |
 | `raw_name` | The stored name bytes: a PAX `path` record as UTF-8 (the codec tarfile decoded it with; under `hdrcharset=BINARY`, or when the name holds surrogateescape bytes from tarfile's fallback decode, the archive `encoding`); a ustar or GNU long name with the archive `encoding`. `None` when no codec reproduces the name — never an exception out of the listing |
 
@@ -88,6 +89,8 @@ in every format; the record name appears only in the message.
 | Out-of-range `mtime` | `modified is None`; `MEMBER_TIMESTAMP_INVALID` counted and may attach |
 | PAX `atime`, `ctime` or `LIBARCHIVE.creationtime` not a number or out of range | That field is `None`; `MEMBER_TIMESTAMP_INVALID` counted with `field` set to the member attribute it would have filled |
 | PAX `mtime` not a number | `modified is None`, not the Unix epoch; `MEMBER_TIMESTAMP_INVALID` counted |
+| PAX global header, then members with no records of their own | Each member's `extra["tar.pax_headers"]` holds the global records, and a later global header does not change it. Changing it raises `TypeError` |
+| PAX sparse 1.0 map holding a number longer than 20 digits | `CorruptionError` while the header is parsed. GNU tar reads each number into a 20-digit buffer and refuses a longer one; this structural bound keeps a number with no newline from growing one buffer for the rest of the archive |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 
 ### Requirement: Extract TAR hardlinks with a pull-based coordinator
@@ -283,9 +286,50 @@ does not gain random concurrent open.
 | Multiple threads open/read distinct TAR members under `MemberStreams.CONCURRENT` after materialization | No data races on the shared handle |
 | Materialization then strict EOF verification | `getmembers()` scan and EOF `fileobj.read()` use the same lock |
 | Member operation raises/closes | Translation/logging/lifecycle/callback work runs without the TAR handle lock held |
-| GNU sparse member opened | Stream yields the same logical bytes as stdlib sparse handling |
+| Well-formed GNU sparse member opened | Stream yields the same logical bytes as stdlib sparse handling |
 | `streaming=True` TAR | Forward-only contract unchanged; no concurrent random-open behavior |
 | Contention on shared handle | Correctness guaranteed; no correctness speed threshold |
+
+### Requirement: Refuse a sparse map tarfile would misread
+
+A TAR sparse member (old GNU `S` typeflag, or PAX sparse 0.0, 0.1 or 1.0) SHALL have
+its map checked before any of its data is returned. The check SHALL raise when the
+member is opened (streaming: on its first read, so a consumer that skips the member is
+unaffected).
+
+The backend SHALL raise `CorruptionError` if the map has a negative entry, if its
+chunks add up to more bytes than the member stores, if they add up to more than 511
+bytes fewer than the member stores, if a chunk (empty or not) ends past the member's
+logical size, or if the logical size is past 2**63 - 1. For a map that claims too many
+bytes, tarfile reads another member's bytes; for a map that claims too few, or a
+non-empty chunk past the logical size, tarfile drops stored bytes (DR-3). A negative
+entry makes tarfile read backwards. For a logical size past 2**63 - 1, tarfile raises a
+raw `OverflowError` or `MemoryError`. An empty entry past the logical size loses no
+bytes in tarfile; it is refused because the map contradicts its own declared size, and
+because tarfile and GNU tar disagree on the extracted length (DR-1). GNU tar 1.35
+refuses a chunk past the logical size in old GNU and PAX 1.0, and reads it in PAX 0.0
+and 0.1.
+
+The backend SHALL raise `UnsupportedFeatureError` if a non-empty chunk starts before
+the previous non-empty chunk ends (out of order or overlapping), and the map has none
+of the damage above. GNU tar 1.35 reads such a map, placing each chunk at the offset
+the map gives; tarfile stitches the chunks into one run, a wrong answer (DR-1), and
+serving them in logical order on the streaming path would need buffering up to the
+logical size (DR-9). The map is valid data archivey cannot serve (DR-4). An empty entry
+is exempt from the order check, because GNU tar ends a map with `(realsize, 0)` when the
+file ends in a hole and the old GNU header pads its unused slots with `(0, 0)`.
+
+#### Scenario: TAR sparse map matrix
+
+| Map (every encoding, both modes) | Expected |
+| --- | --- |
+| Chunks in file order, ending at or before the logical size, optional trailing empty entries, accounting for every stored byte but block padding | Stream yields the logical bytes |
+| A chunk at a lower offset than the previous one | `UnsupportedFeatureError` |
+| Two chunks that overlap | `UnsupportedFeatureError` |
+| A chunk, empty or not, that ends past the logical size | `CorruptionError` |
+| Chunks that add up to more than the member stores | `CorruptionError` |
+| Chunks that add up to more than 511 bytes fewer than the member stores | `CorruptionError` |
+| A negative offset or length | `CorruptionError` |
 
 ### Requirement: Report non-zero bytes past the trailer
 

@@ -10,13 +10,7 @@ from typing import TextIO, TypeVar
 from archivey import ArchiveReader, ExtractionProgress
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
-from archivey.cli.filters import (
-    count_selected,
-    member_predicate,
-    members_for_include_check,
-    unmatched_include_patterns,
-    warn_unmatched_includes,
-)
+from archivey.cli.filters import MemberSelection
 from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
@@ -56,25 +50,23 @@ def run_test(
     reject_salvage(salvage)
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
-    pred = member_predicate(patterns, exclude)
+    selection = MemberSelection(patterns, exclude)
+    pred = selection.predicate
 
     ok = 0
     failed = 0
     members_total: int | None = None
     with open_for_cli(archive, password=pwd, track_io=track_io, err=err) as reader:
         indexed = reader.members_report_if_available()
-        # None on forward-only readers: do not consume the sole pass before streaming.
-        members_for_filter = members_for_include_check(reader) if patterns else None
-        if patterns and members_for_filter is not None:
-            unmatched = unmatched_include_patterns(patterns, members_for_filter)
-            if unmatched:
-                warn_unmatched_includes(unmatched, err=err)
-            if count_selected(members_for_filter, pred) == 0:
-                return EXIT_FAIL
-
         total_bytes: int | None = None
         if indexed is not None:
-            selected = [m for m in indexed if pred is None or pred(m)]
+            # A complete free index settles the patterns before the run. One that ends
+            # in damage settles nothing, but its members still give the totals. When
+            # the patterns are not settled, the run's own pass offers each member to
+            # them (see the end of the pass).
+            selected = selection.settle_from(indexed, err=err)
+            if selection.settled and selection.selects_nothing:
+                return EXIT_FAIL
             file_members = [m for m in selected if m.is_file]
             members_total = len(file_members)
             sizes = [m.size for m in file_members if m.size is not None]
@@ -86,8 +78,8 @@ def run_test(
         )
         bytes_done = 0
         files_done = 0
-        saw_selected = False
         pending_links: list[ArchiveMember] = []
+        pass_ended_early = False
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
             # count as FAIL and still reach the summary (F4). Once the generator raises,
@@ -105,10 +97,10 @@ def run_test(
                         break
                     except (ArchiveyError, OSError) as exc:
                         failed += 1
+                        pass_ended_early = True
                         print(f"FAIL: {format_error_detail(exc)}", file=err)
                         continue
 
-                    saw_selected = True
                     if stream is None and _link_needs_verification(member):
                         # Verified after the pass: the reader refuses an open() while
                         # stream_members() is running.
@@ -198,9 +190,11 @@ def run_test(
                 if verbose:
                     print(f"OK   {escape_member_name(link.name)}", file=err)
 
-        # Streaming + patterns: no pre-scan — empty selection if nothing was yielded.
-        if patterns and members_for_filter is None and not saw_selected:
-            warn_unmatched_includes(patterns, err=err)
+        # Without a complete index, the pass that just ran offered every member to the
+        # patterns. Only the generator raising ends that pass early and leaves later
+        # members unseen; a failure inside one member's read does not. So the
+        # patterns are judged after any pass that reached its end.
+        if not selection.settled and not pass_ended_early and selection.report(err=err):
             return EXIT_FAIL
 
         # Read before the reader closes; each such diagnostic was already logged with
