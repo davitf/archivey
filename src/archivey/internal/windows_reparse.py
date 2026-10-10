@@ -145,8 +145,9 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
 
     ``None`` means "this is not a link buffer I understand" — too short to hold the
     header and the name offsets, or a tag that is not a symlink or a junction. Callers
-    treat that as "no link target here" and leave the member as they found it, because
-    the alternative is reporting arbitrary bytes as a filesystem path.
+    treat that as "no link target here" rather than report arbitrary bytes as a
+    filesystem path: a member with data becomes its fallback type (normally a file),
+    and a directory-shaped one stays a link with no target.
 
     A payload length that runs past the end of ``data`` is cut to the bytes present,
     and the buffer still parses: a name that then falls outside those bytes decodes as
