@@ -367,6 +367,7 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
+| Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` (the shell's code for SIGINT, not one of the reserved codes) |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 

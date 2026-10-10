@@ -867,6 +867,54 @@ def test_test_early_abort_reports_not_tested(
     assert "1 OK, 1 failed, 1 not tested" in err
 
 
+class _StderrFailingAtFirstOk(io.StringIO):
+    """A stderr that raises ``exc`` when the first ``OK`` line is written: once, as
+    Ctrl-C arrives, or on that write and every later one, as a closed pipe does.
+    """
+
+    def __init__(self, exc: BaseException, *, every_later_write: bool) -> None:
+        super().__init__()
+        self._exc = exc
+        self._every_later_write = every_later_write
+        self._failed = False
+
+    def write(self, s: str) -> int:
+        if (s.startswith("OK   ") and not self._failed) or (
+            self._failed and self._every_later_write
+        ):
+            self._failed = True
+            raise self._exc
+        return super().write(s)
+
+
+def test_test_ctrl_c_mid_pass_exits_interrupted(sample_zip: Path) -> None:
+    """Ctrl-C during the read pass ends as ``interrupted`` and 130, as in ``extract``.
+
+    The interrupt leaves the loop while the member pass is suspended between members;
+    that pass must not then stop the reader from closing.
+    """
+    err = _StderrFailingAtFirstOk(KeyboardInterrupt(), every_later_write=False)
+    assert main(["test", "-v", str(sample_zip)], err=err) == 130
+    assert "interrupted" in err.getvalue()
+    assert "ArchiveyUsageError" not in err.getvalue()
+
+
+def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
+    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stderr pipe closed during the pass gets the broken-pipe exit, not a usage
+    error about closing the reader while its member pass is active.
+    """
+    from archivey.cli import main as main_mod
+
+    # The real one closes sys.stdout / sys.stderr, which pytest's capture owns.
+    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    err = _StderrFailingAtFirstOk(
+        BrokenPipeError(32, "Broken pipe"), every_later_write=True
+    )
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+
+
 def test_test_summary_helper() -> None:
     from archivey.cli.test_cmd import _test_summary
 
