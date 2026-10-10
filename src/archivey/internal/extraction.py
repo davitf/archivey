@@ -89,12 +89,6 @@ _TMP_PREFIX = ".archivey-tmp-"
 # ``ExtractionCoordinator.run``). Removed when the run ends, like the temp files above.
 _DRY_RUN_PREFIX = "archivey-dry-run-"
 
-# Defaults (see the safe-extraction spec); callers override via extract_all().
-DEFAULT_MAX_EXTRACTED_BYTES = 2 * 2**30  # 2 GiB
-DEFAULT_MAX_RATIO = 1000.0
-DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
-DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
-
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
 # on POSIX.
@@ -304,8 +298,9 @@ class BombTracker:
         self,
         max_bytes: int | None,
         max_ratio: float | None,
-        ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
-        max_entries: int | None = DEFAULT_MAX_ENTRIES,
+        # The defaults come from ExtractionLimits, the one place the limits are set.
+        ratio_activation_threshold: int = ExtractionLimits.ratio_activation_threshold,
+        max_entries: int | None = ExtractionLimits.max_entries,
         *,
         source: BaseArchiveReader | None = None,
     ) -> None:
