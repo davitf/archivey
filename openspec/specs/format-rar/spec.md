@@ -67,7 +67,9 @@ encrypted, CRC-invalid, or behind header encryption SHALL fall back to the
 walk. Only the first MAIN header of a volume SHALL have its locator followed: a
 repeated MAIN SHALL still be parsed for its flags, but SHALL NOT read the `QO`
 payload again, so the payload is read at most once per volume however many MAIN
-headers point at it.
+headers point at it. A RAR 1.5-4 FILE or SUB header's data area SHALL be skipped by
+its PACK_SIZE (with HIGH_PACK_SIZE when set) whether or not LONG_BLOCK is set, as
+`unrar` does, so a member's data is never parsed as further headers.
 
 #### Scenario: native header matrix
 
@@ -80,6 +82,7 @@ headers point at it.
 | Open RAR5 with a stored unencrypted `QO` reachable from MAIN's locator | FILE headers in `QO` are emitted from the copies and skipped on the walk; omitted FILE headers and `CMT` after MAIN are parsed |
 | Open RAR5 with no `QO`, locator offset 0, packed/encrypted/`QO` CRC failure, or header encryption | Member table is filled by the FILE-header walk |
 | Open RAR5 whose MAIN header is repeated, each copy's locator pointing at one `QO` | The `QO` payload is read once; later MAIN headers are parsed for their flags only |
+| Open RAR4 whose FILE header has LONG_BLOCK clear and whose data holds another FILE header | Only the outer member is listed, as `unrar lb` lists it |
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 

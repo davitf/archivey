@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import struct
+import subprocess
 import zlib
 from pathlib import Path
 
@@ -777,3 +778,71 @@ def test_a_rar3_comment_is_read_only_from_the_bytes_the_walk_skips() -> None:
     archive = parse_rar_archive(source)
     assert archive.members == []
     assert source.bytes_read < 2 * len(data)
+
+
+def _rar3_stored_file(name: bytes, data: bytes, *, flags: int) -> bytes:
+    """One RAR 1.5-4 FILE header for a stored member, CRC16 correct."""
+    fixed = struct.pack(
+        "<LLBLLBBHL",
+        len(data),  # PACK_SIZE
+        len(data),  # UNP_SIZE
+        3,  # host OS: Unix
+        zlib.crc32(data) & 0xFFFFFFFF,
+        0x21 << 9 | 1 << 5,  # DOS time
+        29,  # extract version
+        0x30,  # method: stored
+        len(name),
+        0o100644,
+    )
+    body = struct.pack("<BHH", 0x74, flags, 7 + len(fixed) + len(name)) + fixed + name
+    return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body
+
+
+def _rar4_member_carrying_a_member() -> bytes:
+    """``carrier.bin`` holds a complete FILE header and data for ``hidden.txt``.
+
+    The carrier's header has LONG_BLOCK (0x8000) clear. Its PACK_SIZE still covers
+    ``hidden.txt``, and unrar takes a FILE header's data size from PACK_SIZE whatever
+    LONG_BLOCK says, so for unrar ``hidden.txt`` is only bytes inside ``carrier.bin``.
+    No writer clears LONG_BLOCK on a FILE header, so the archive is crafted.
+    """
+    hidden = _rar3_stored_file(b"hidden.txt", b"smuggled\n", flags=0x8000)
+    hidden += b"smuggled\n"
+    main_body = struct.pack("<BHH", 0x73, 0, 13) + bytes(6)
+    end_body = struct.pack("<BHH", 0x7B, 0x4000, 7)
+    return (
+        b"Rar!\x1a\x07\x00"
+        + struct.pack("<H", zlib.crc32(main_body) & 0xFFFF)
+        + main_body
+        + _rar3_stored_file(b"carrier.bin", hidden, flags=0)
+        + hidden
+        + struct.pack("<H", zlib.crc32(end_body) & 0xFFFF)
+        + end_body
+    )
+
+
+def test_a_rar4_file_header_skips_its_pack_size_without_long_block() -> None:
+    """A member's data must not be listed as more members.
+
+    The walk skipped a FILE header's data only when LONG_BLOCK was set, so with the
+    flag clear it parsed ``carrier.bin``'s data as headers and listed (and read)
+    ``hidden.txt``, a member unrar does not have.
+    """
+    archive = parse_rar_archive(io.BytesIO(_rar4_member_carrying_a_member()))
+    assert [m.filename for m in archive.members] == ["carrier.bin"]
+    assert archive.members[0].compress_size == 51
+
+
+@requires_binary("unrar")
+def test_unrar_skips_a_rar4_file_headers_pack_size_without_long_block(
+    tmp_path: Path,
+) -> None:
+    """The rule above is unrar's: it lists only the carrier and has no ``hidden.txt``."""
+    path = tmp_path / "carrier.rar"
+    path.write_bytes(_rar4_member_carrying_a_member())
+    listed = subprocess.run(
+        ["unrar", "lb", str(path)], capture_output=True, text=True, check=True
+    )
+    assert listed.stdout.split() == ["carrier.bin"]
+    with open_archive(path) as archive:
+        assert [m.name for m in archive.members_report().members] == ["carrier.bin"]

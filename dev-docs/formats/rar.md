@@ -111,7 +111,12 @@ Everything about that boundary is a consequence:
   alternating two `PATH`s does not re-probe. The lookup does not key cwd or `PATHEXT`.
 
 **Blocks chain forward and each header states its own size.** Without a usable RAR5 `QO`
-the walk reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
+the walk reads a header, uses its declared size to find the next, and stops at `ENDARC`.
+In RAR 1.5-4 a FILE or SUB header's data size is its PACK_SIZE (plus HIGH_PACK_SIZE),
+whether or not the header sets LONG_BLOCK (0x8000), as `unrar` reads it; other blocks
+have data only with LONG_BLOCK. Skipping nothing when a FILE header cleared the flag
+parsed the member's data as headers, so a crafted member could carry extra members that
+`unrar` does not list (measured, `unrar` 7.00). So:
 reading the structure needs seek, and a non-seekable source is refused in both access modes
 (§2.1); the whole member table is built at open — walking every header, or reading `QO`
 and skipping the FILE headers it already holds (§1.1) — which is why
@@ -658,10 +663,9 @@ UTF-16LE, for the reason names are not: an even-length `caf\xe9 ok!` used to lis
 CJK. `encoding=` does not apply to comments. A compressed `CMT` SERVICE header is not
 decoded: the parser reads only a stored one, so such an archive lists with no comment
 and no diagnostic. A stored `CMT` is read from the span the walk skips after its
-header, not from PACK_SIZE alone: with LONG_BLOCK clear the walk skips nothing and
-parses those bytes as the next headers, and reading PACK_SIZE there let a stack of
-37-byte `CMT` headers each re-read the rest of the archive (DR-9a). Such a `CMT` lists
-no comment, since a byte is either comment data or a header, not both.
+header, so no byte is read both as comment data and as a later header. When the walk
+skipped only the LONG_BLOCK size, reading PACK_SIZE there let a stack of 37-byte `CMT`
+headers each re-read the rest of the archive (DR-9a).
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.

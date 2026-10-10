@@ -2097,13 +2097,12 @@ def _parse_rar3(
                 proven=password_proven,
             )
 
-            # For a >4 GiB packed member the LONG_BLOCK ``add_size`` holds only the low
-            # 32 bits; ``member.compress_size`` carries the full 64-bit size (with
-            # HIGH_PACK_SIZE) so the walk skips the whole packed region and does not land
-            # mid-data on the next header.
-            packed_size = (
-                member.compress_size if (flags & _RAR3_FILE_LARGE) else add_size
-            )
+            # The data size is PACK_SIZE (with HIGH_PACK_SIZE for a >4 GiB member),
+            # whatever LONG_BLOCK says, as unrar reads it. ``add_size`` is the same
+            # low 32 bits when LONG_BLOCK is set and 0 when it is clear, and skipping
+            # 0 parsed a member's data as more headers, listing members unrar does
+            # not have.
+            packed_size = member.compress_size
             if block_type == _RAR3_FILE:
                 # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
                 # care about; member data is always left to RARLAB ``unrar``.
@@ -2124,10 +2123,9 @@ def _parse_rar3(
                 and not member.split_after
                 and packed_size > 0
             ):
-                # The span the walk skips below, not PACK_SIZE alone: without
-                # LONG_BLOCK the walk skips nothing and parses those bytes as the
-                # next headers, so reading PACK_SIZE here would let a stack of
-                # small CMT headers each re-read the rest of the archive.
+                # The span the walk skips below, so no byte is read both as
+                # comment data and as a later header, which let a stack of small
+                # CMT headers each re-read the rest of the archive.
                 source.seek(data_offset)
                 raw = _read_stored_comment(source, packed_size, "RAR3 comment")
                 if member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE:
