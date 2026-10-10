@@ -58,6 +58,12 @@ rulings, written as rules — check one before calling something a maintainer de
 boundaries and open design gaps), [`review/README.md`](../../../review/README.md)
 (deep-review conventions; open reviews are the top level of `review/`).
 
+**Lessons already written down — read for every format the change touches:** its
+handbook page in [`dev-docs/formats/`](../../../dev-docs/formats/) (§5 Sharp edges,
+§6 Decisions) and [`dev-docs/known-issues.md`](../../../dev-docs/known-issues.md). A
+change that repeats a recorded trap, or contradicts a recorded decision without saying
+so, is a finding.
+
 **Optional guides**, archivey-scoped — open one only when a finding needs it:
 [Architecture](reference/architecture-review-guide.md) ·
 [Performance](reference/performance-review-guide.md) ·
@@ -90,6 +96,11 @@ decides:
 
 Low confidence lowers the *confidence tag*, never the decision to report: a
 🔴 `PLAUSIBLE` finding is still reported.
+
+**`CONFIRMED` means quoted:** the finding quotes the lines that fail, from the reviewed
+HEAD. An absence found only by grep ("nothing calls this", "no backend sets it") is
+`PLAUSIBLE` at most, because the lazy `__getattr__` exports in `archivey/__init__.py` and
+`BackendRegistry` lookups hide uses from a grep. Say what you searched.
 
 ### Verification routes findings; it never silently culls them
 

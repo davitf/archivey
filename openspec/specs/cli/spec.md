@@ -404,6 +404,21 @@ filesystem entry literally named `-`.
 | `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
 | `archivey extract -` | Same |
 
+### Requirement: an empty path argument is a usage error
+
+The system SHALL refuse an empty string given as the archive argument of any verb, or
+as `extract --dest`, with a usage error (exit `2`) and a message, before anything is
+read or written. `Path("")` is `Path(".")`, so an unset shell variable
+(`"$ARCHIVE"`, `-d "$OUT"`) would otherwise read or extract into the working
+directory; `.` remains the way to name it.
+
+#### Scenario: empty path
+
+| Case | Expected |
+| --- | --- |
+| `archivey list ""`, `test ""`, `info ""`, `extract ""` | Exit `2`; message names the empty path; no traceback |
+| `archivey extract a.zip -d ""` | Exit `2`; nothing is written to the working directory |
+
 ### Requirement: The CLI uses only public API
 
 The `archivey.cli` package SHALL import nothing from `archivey.internal`, with two
