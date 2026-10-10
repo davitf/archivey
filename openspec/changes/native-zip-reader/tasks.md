@@ -47,7 +47,8 @@
 - [ ] 2.6 Version needed above 6.3 lists and reads (test first).
 - [ ] 2.6a Trailing bytes after the end record report `ARCHIVE_TRAILING_DATA` as
       `design.md` §"Trailing bytes" states (1 MiB bound shared with TAR,
-      `expected_marker="zeros_to_eof"`, zeros silent, strict refuses); tests first,
+      `expected_marker="zeros_to_eof"`, zeros silent, strict refuses; the constant and
+      zero-byte loop move to `internal/trailing_scan.py`); tests first,
       including a first non-zero byte past 1 MiB (silent) and a pipe.
 - [ ] 2.7 Remove every row of `design.md` §"What the parser removes" except the name
       decode; tests that read `ZipInfo` off `member._raw` move to `CentralEntry`.
@@ -112,6 +113,19 @@
       sentence); `docs/access-and-cost.md`, `docs/formats.md`; handbook §1, §2.2, §5,
       §6; `dev-docs/formats/tar.md`, `7z.md` and `rar.md` for which fields
       `member_state_final` covers there.
+- [ ] 3.5a The other live statements of the two contracts stage 3 moves (grep
+      `"7z, RAR and ISO"` and `"ZIP, 7z, RAR and ISO"` before finishing; the list below
+      is the 2026-10-10 result):
+      - `max_members` at parse, ZIP joins: `docs/gotchas.md` (§Limits; the
+        `documentation` spec requires that residual there),
+        `docs/opening-and-listing.md`, `docs/extracting.md` (the limits table and two sentences),
+        `dev-docs/threat-model.md` (the recorded residual shrinks; say so),
+        `exceptions.py` (`ResourceLimitError` docstring), `config.py` (both docstrings).
+      - ZIP no longer has to seek: `docs/reading-members.md` (a member stream handed to
+        `open_archive()`), `docs/opening-and-listing.md` (index at the end),
+        `tests/test_nested_archives.py` (module docstring),
+        `openspec/changes/bounded-source-spooling/proposal.md` if that change is
+        still open.
 
 ## 4. Names (PR 4)
 

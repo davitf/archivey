@@ -180,6 +180,10 @@ ZIP reports bytes after its end record as TAR reports bytes after its trailer
   `ARCHIVE_TRAILING_DATA` with `observed_bytes` its offset past the comment; zeros are
   silent; past the bound the scan stops and reports nothing. The bound is TAR's
   `_MAX_TRAILING_SCAN` (measured there at about 5 ms), shared, not a second constant.
+  No backend imports another format's module, so stage 2 moves the constant, its
+  measured note and the zero-byte loop to a new `internal/trailing_scan.py` that TAR and
+  ZIP both import; 7z, RAR and ISO use the same module when they take the ruling. TAR's
+  codec-checksum handling around the loop stays in `tar_reader.py`.
 - A seekable source skips the scan when `EndRecord.trailing` is 0, which is free from
   the file size. A forward pass has no size, so it reads; a pipe held open after the
   ZIP ends blocks there until more bytes or end of file, as a TAR pipe does today
@@ -339,6 +343,11 @@ other (the `OnError` requirement):
   - Under `OnError.CONTINUE` the report completes. Under `OnError.STOP` the first such
     failure raises `CorruptionError` naming the member, at the end of the pass, which is
     the earliest point it is known; the revisions and removals above are made first.
+- In `stream_members()`, which has no results and no `OnError`, the descriptor mismatch
+  and the missing local entry raise `CorruptionError` from the iterator at the end of
+  the pass. The reversed pair raises nothing: the members are updated in place and
+  `member_state_final` said they might be. Nothing is on disk to settle.
+
 The first two make a streaming extraction fail a member that the seekable extraction of
 the same archive writes. That is the only place the two access modes differ on disk.
 Both shapes come only from crafted or hand-edited archives, which DR-5a allows to differ
@@ -457,7 +466,9 @@ One PR each, in order; every PR goes through the review label.
    `archive-reading` (ZIP applies `max_members` at parse, in every mode) and the
    `ListingLimits` docstring in `config.py` that restates it, `docs/formats.md`, handbook
    §1, §2.2, §5, §6, and the TAR, 7z and RAR handbook pages for which of their fields
-   `member_state_final` covers.
+   `member_state_final` covers. The user docs, threat model and docstrings that restate
+   either contract ("7z, RAR and ISO" apply `max_members`; "ZIP, 7z, RAR and ISO" have
+   to seek) are listed in task 3.5a, found by that grep, which stage 3 reruns.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
    (question B, answered). Format-zip spec, handbook §2.2 and §5, `docs/formats.md`,
    and the DR-21 ruling in `design-rules.md`, which says the refusal lasts until this
@@ -540,6 +551,10 @@ target).
 - Info-ZIP spanned sets (`.z01`…`.zip`). The parser exposes `disk_start`, which is what a
   later reader would follow; they stay refused.
 - Writing.
+- Spooling a pipe (the open `bounded-source-spooling` change). Its proposal says ZIP,
+  7z, RAR and ISO refuse a pipe under both `streaming` values; after stage 3 that holds
+  for ZIP under `streaming=False` only, and whichever change lands second updates the
+  other's text. Stage 3 edits that proposal's sentence if it is still open then.
 
 ## Decisions
 
