@@ -39,6 +39,7 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_config,
     check_encoding,
+    check_path_not_empty,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
 from archivey.internal.backends.zip_detect import (
@@ -753,6 +754,7 @@ def open_stream(
     collector = collector_from_config(effective_config)
 
     if isinstance(source, (str, Path)):
+        check_path_not_empty(source, call="open_stream()")
         path = Path(source)
         if path.is_dir():
             # Split out of the is_file() check: a directory exists, so "not found" sends

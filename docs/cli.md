@@ -102,7 +102,7 @@ encrypted members fail as if no password had been given.
   hostile name cannot rewrite the terminal line that reports it
   (see [Errors and diagnostics](errors-and-diagnostics.md#the-exception-tree)).
 - Exit codes: `0` success, `1` operation failed or extract aborted on a member
-  failure (`--stop-on-error`), `2` usage error (argparse), `3` extract
+  failure (`--stop-on-error`), `2` usage error, `3` extract
   **completed** with ≥1 safety-policy block and no member failure (safe members
   on disk; under CONTINUE or STOP), `130` interrupted by Ctrl-C (it prints
   `interrupted`; `130` is 128 + 2, the shell's code for SIGINT). Codes `4` to
@@ -120,3 +120,5 @@ encrypted members fail as if no password had been given.
   works the same way. The same format limits apply.
 - `--salvage`, the `-` token for stdin, and `hash` / `create` / `convert` are reserved
   for later.
+- An empty archive path or `--dest ""` is a usage error, not the current
+  directory. Write `.` for the current directory.

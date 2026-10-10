@@ -52,6 +52,7 @@ from archivey.internal.filters import (
     collision_key,
     disk_spelled,
     reroot_absolute,
+    resolve_or_raise_on_loop,
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
@@ -127,13 +128,13 @@ def _at_link_limit(exc: OSError) -> bool:
 def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
     """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
 
-    Resolved through the real filesystem, so links on the way are followed. A
-    cyclic or adversarial link makes ``resolve()`` raise ELOOP or ``RuntimeError``,
-    which counts as an escape: fail safe rather than crash.
+    Resolved through the real filesystem, so links on the way are followed. A link
+    that cannot be resolved counts as an escape: fail safe rather than crash. That
+    includes a symlink loop, on every Python version (``resolve_or_raise_on_loop``).
     """
     try:
-        resolved = (link_path.parent / target).resolve()
-    except (OSError, RuntimeError):
+        resolved = resolve_or_raise_on_loop(link_path.parent / target)
+    except OSError:
         return True
     return not (resolved == dest_root or resolved.is_relative_to(dest_root))
 
@@ -904,8 +905,8 @@ class ExtractionCoordinator:
             return self._run(reader, dest)
         given = Path(os.path.abspath(dest))
         try:
-            resolved = given.resolve()
-        except (OSError, RuntimeError):
+            resolved = resolve_or_raise_on_loop(given)
+        except OSError:
             resolved = given
         # Resolved, so a path built from the resolved root (``dest_root``) and one built
         # from ``dest`` translate the same way (macOS's /var -> /private/var). The pass
@@ -1027,7 +1028,7 @@ class ExtractionCoordinator:
                 unmatched_pending = selector
         # Created only after that report, so a refusal leaves no directory behind.
         created_root = self._ensure_dest_root(dest)
-        dest_root = dest.resolve()
+        dest_root = resolve_or_raise_on_loop(dest)
         members_total = len(all_members) if all_members is not None else None
         self._state = _RunState(
             dest=dest,
@@ -2077,8 +2078,8 @@ class ExtractionCoordinator:
         if rel_parent is None:
             root = os.fspath(self._state.dest_root)
             try:
-                resolved = os.fspath(Path(parent).resolve())
-            except (OSError, RuntimeError):
+                resolved = os.fspath(resolve_or_raise_on_loop(Path(parent)))
+            except OSError:
                 return None
             prefix = root if root.endswith(os.sep) else root + os.sep
             if os.path.normcase(resolved) == os.path.normcase(root):
@@ -2385,12 +2386,12 @@ class ExtractionCoordinator:
         # escape the planning check cannot see. We can't do this "just before" creating the
         # link because there is no link to resolve until it exists; and resolving the *bare
         # target string* would only repeat check_universal. So: create, resolve, and unlink
-        # if it escaped. A cyclic/adversarial link makes resolve() raise ELOOP/RuntimeError,
-        # which we also treat as an escape (fail safe rather than crash). This is the third
-        # of the three defense-in-depth layers named in the `safe-extraction` spec
-        # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
-        # check_universal. A *later* member can still change what this link resolves
-        # to; the caller records the link in ``links`` for that.
+        # if it escaped. A link that cannot be resolved, a symlink loop included on
+        # every Python version, also counts as an escape (fail safe rather than crash).
+        # This is the third of the three defense-in-depth layers named in the
+        # `safe-extraction` spec ("Symlink Escape Re-Validated at Extraction Time");
+        # layers 1-2 are in check_universal. A *later* member can still change what
+        # this link resolves to; the caller records the link in ``links`` for that.
         if _symlink_escapes(dest_path, on_disk, self._state.dest_root):
             try:
                 dest_path.unlink()
