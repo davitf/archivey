@@ -720,6 +720,10 @@ class ArchiveMember:
 
     Duplicate names keep earlier rows with ``is_current=False`` (history /
     superseded). :meth:`~archivey.ArchiveReader.get` returns the current one.
+
+    Stamped when the listing is complete. A ``stream_members()`` pass sets it after
+    its last member; one that went past ``ListingLimits`` stamps only the members it
+    kept, so a copy it yields after the limit cannot mark an earlier one superseded.
     """
 
     is_sparse: bool = False

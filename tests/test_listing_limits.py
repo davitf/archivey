@@ -483,7 +483,12 @@ def test_listing_after_an_unguarded_pass_past_the_caps_raises(
             reader.scan_members()
         with pytest.raises(ResourceLimitError, match="max_members"):
             reader.members_report()
+        # The scan-free peek keeps its contract: nothing is cached, so no report.
+        assert reader.members_report_if_available() is None
         if not streaming:
+            with pytest.raises(ResourceLimitError, match="max_members"):
+                reader.extract_all(tmp_path / "out")
+            assert not (tmp_path / "out" / "f000000").exists()
             with pytest.raises(ResourceLimitError, match="max_members"):
                 reader.members()
             with pytest.raises(ResourceLimitError, match="max_members"):
@@ -512,3 +517,50 @@ def test_unguarded_pass_within_the_caps_keeps_the_listing(tmp_path: Path) -> Non
     with open_archive(tar_path, config=cfg, streaming=True) as reader:
         yielded = [m for m, _ in reader.stream_members()]
         assert reader.scan_members() == yielded
+
+
+def _tar_of(path: Path, entries: list[tuple[str, str | None]]) -> Path:
+    """A tar of empty files, plus hard links where the entry names a link target."""
+    import tarfile
+
+    with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as tf:
+        for name, link in entries:
+            info = tarfile.TarInfo(name=name)
+            if link is not None:
+                info.type = tarfile.LNKTYPE
+                info.linkname = link
+            tf.addfile(info)
+    return path
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
+def test_discarded_pass_still_stamps_duplicates_listed_before_the_cap(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """A duplicate name listed before the cap is still marked superseded by its later
+    copy in the prefix, not left at the default ``is_current=True``."""
+    names = ["dup", "f0", "dup", "f1", "f2", "f3", "z"]
+    tar_path = _tar_of(tmp_path / "dup.tar", [(n, None) for n in names])
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=4))
+    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
+        yielded = [m for m, _ in reader.stream_members()]
+    assert [(m.name, m.is_current) for m in yielded if m.name == "dup"] == [
+        ("dup", False),
+        ("dup", True),
+    ]
+
+
+@pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
+def test_member_that_crosses_the_cap_still_resolves_its_link(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The listing is discarded after the crossing member, not before it."""
+    entries: list[tuple[str, str | None]] = [(f"f{i}", None) for i in range(5)]
+    entries.append(("link", "f0"))
+    tar_path = _tar_of(tmp_path / "link.tar", entries)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
+    with open_archive(tar_path, config=cfg, streaming=streaming) as reader:
+        yielded = [m for m, _ in reader.stream_members()]
+    link = yielded[-1]
+    assert link.link_target == "f0"
+    assert link.link_target_member is yielded[0]

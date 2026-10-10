@@ -143,7 +143,8 @@ class ForwardArchiveReader(ABC):
     def members_report_if_available(self) -> MemberListReport | None:
         """A member-list report if available without scanning, else ``None``.
         Never scans or consumes the forward pass, so it is safe to call on any reader
-        (including a streaming one)."""
+        (including a streaming one). It is ``None`` too after a :meth:`stream_members`
+        pass that went past ``ListingLimits``, which keeps no listing."""
         ...
 
     @abstractmethod

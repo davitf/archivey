@@ -276,10 +276,11 @@ class _TarFile(tarfile.TarFile):
     seeing the read.
 
     ``TarFile.next()`` appends every header it parses to ``members``: in random-access
-    mode, and on Python before 3.13 in streaming mode too. With ``keep_members`` off, ``next()`` empties that list instead, so
-    an unguarded pass past ``ListingLimits`` keeps no header (``_discard_listing``).
-    ``TarFile.__iter__`` then always finds its index past the list's end and parses
-    the next header, which is the order it would have served anyway.
+    mode, and on Python before 3.13 in streaming mode too. With ``keep_members`` off,
+    ``next()`` empties that list instead, so an unguarded pass past ``ListingLimits``
+    keeps no header (``_discard_listing``). ``TarFile.__iter__`` then always finds its
+    index past the list's end and parses the next header, which is the order it would
+    have served anyway.
     """
 
     stopped_on_zero_block: bool = False
@@ -924,7 +925,9 @@ class TarReader(BaseArchiveReader):
         # header parsing with member construction measured about 1.3x slower on an
         # ordinary 100 000-member listing; at 1 024 the difference is within noise.
         # ``iter(self._tar)`` rather than bare next() calls, because it serves headers
-        # tarfile already loaded from its own list before reading more.
+        # tarfile already loaded from its own list before reading more. Once a pass
+        # discards the listing (``_TarFile.keep_members`` off) that list stays empty,
+        # and the iterator parses each next header itself, in the same order.
         #
         # A member is opened while this walk runs only in a one-pass
         # stream_members() (_iter_with_data_random_access), which parses one header

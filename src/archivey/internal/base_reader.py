@@ -1248,7 +1248,8 @@ class BaseArchiveReader(ArchiveReader):
         Eager materialization uses a child scope + internal-open exemption for
         link-data reads; a streaming pass's finalization does not open a child scope.
         ``is_current`` is not stamped here: the walk stamps it once, when it ends
-        (``_end_walk``), and link resolution never reads it.
+        (``_end_walk``) or when a pass discards it (``_discard_listing``), and link
+        resolution never reads it.
 
         Targets stored as member data are read here only under
         ``ArchiveyConfig.read_link_targets``. With it off this is listing, or a pass
@@ -1453,8 +1454,9 @@ class BaseArchiveReader(ArchiveReader):
     def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
 
-        This is the only place ``is_current`` is stamped for duplicate names, whichever
-        consumer ended the walk. On terminal damage it covers the recovered prefix the
+        This is where ``is_current`` is stamped for duplicate names, whichever consumer
+        ended the walk; the only other place is ``_discard_listing``, over the prefix it
+        drops. On terminal damage it covers the recovered prefix the
         incomplete report holds: ``is_current`` defaults to ``True``, so an unstamped
         prefix would read every shadowed duplicate as current.
         """
@@ -1509,12 +1511,15 @@ class BaseArchiveReader(ArchiveReader):
         over the limits (``_refuse_discarded_listing``). The pass that crossed them
         keeps yielding, but the walk keeps no member, name index or replay log from
         here on. So links in members the pass yields later resolve against no earlier
-        member, the pass publishes nothing when it ends (``_finalize_pass_links``), and
-        ``is_current`` is not stamped. Members already yielded keep what they had.
+        member, and the pass publishes nothing when it ends (``_finalize_pass_links``).
+        Last-entry-wins is stamped over the kept prefix first, as ``_end_walk`` would
+        stamp it, so a duplicate name in the prefix is superseded by a later copy in
+        the prefix; a copy the pass yields after the discard cannot supersede it.
 
         A backend that keeps its own record of the walk (TAR's ``tarfile``) extends
         this to drop it too.
         """
+        _apply_last_entry_wins_is_current(self._listed)
         self._listing_discarded = True
         self._listed = []
         self._listed_by_name = {}
@@ -2641,8 +2646,14 @@ class BaseArchiveReader(ArchiveReader):
         On an upfront index this drains the reader's one member walk, which reads no
         member data. A walk that ends in terminal archive damage is returned as the
         incomplete report (prefix plus ``error``), not raised.
+
+        After a ``stream_members()`` pass that went past ``ListingLimits`` and so
+        discarded its listing (``_discard_listing``), nothing is cached: this returns
+        ``None``, and the listing methods raise the limit error.
         """
         self._state.require_open("members_report_if_available()")
+        if self._listing_discarded:
+            return None
         published = self._published_within_limits(enforce=True)
         if published is not None:
             return published.report
@@ -3181,14 +3192,15 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         if self._finished:
             raise StopIteration
         reader = self._reader
+        # Whether this step pulled a member without enforcing the limits.
+        unguarded = False
         try:
             if not reader._listing_discarded and self._pos < len(reader._listed):
                 member: ArchiveMember | None = reader._listed[self._pos]
             else:
                 enforce = reader._progressive_enforce_listing_limits
                 member = reader._pull_member(enforce=enforce)
-                if member is not None and not enforce:
-                    reader._keep_listing_within_limits()
+                unguarded = not enforce
         except BaseException as exc:
             # A failed pull poisons the walk as well (``_abandon_walk``); this keeps the
             # pass's own answer the same whichever of the two a retry reaches first.
@@ -3214,6 +3226,10 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
         self._pos += 1
         try:
             reader._link_progressive_member(member)
+            if unguarded:
+                # After the link: the member that crosses a limit still resolves
+                # against the listing kept so far, which the caps bound.
+                reader._keep_listing_within_limits()
         except BaseException as exc:
             self._error = exc
             raise
