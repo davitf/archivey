@@ -164,6 +164,16 @@ def test_gpt_with_unused_entries_after_the_partition() -> None:
 _FAR = 1_000_000_000  # a partition end far past any test image
 
 
+@pytest.mark.parametrize("entry_size", [128, 1024, 4096])
+def test_gpt_partition_reaching_past_the_file_still_counts(entry_size: int) -> None:
+    # A hybrid image cut inside its EFI partition (a partial download): the bytes that
+    # survived belong to the partition, so nothing is reported. UEFI allows entry sizes
+    # of 128 times a power of two.
+    efi = b"\xeb\x3c\x90EFI" * 100
+    data = _far_gpt(_iso(), entry_size=entry_size) + efi
+    assert _trailing(data) == []
+
+
 def _far_gpt(image: bytes, **kwargs: object) -> bytes:
     return _with_gpt(image, backup_lba=_FAR, partitions=[(1, _FAR)], **kwargs)  # type: ignore[arg-type]
 
@@ -187,11 +197,14 @@ def _patch_gpt_header(data: bytes, offset: int, value: bytes) -> bytes:
             lambda i: _far_gpt(i, break_entries_crc=True), id="gpt-entries-crc"
         ),
         pytest.param(lambda i: _far_gpt(i, entry_size=64), id="gpt-entry-too-small"),
-        pytest.param(lambda i: _far_gpt(i, entry_size=1024), id="gpt-entry-too-large"),
         pytest.param(lambda i: _far_gpt(i, entry_size=132), id="gpt-entry-not-aligned"),
         pytest.param(
-            lambda i: _patch_gpt_header(_far_gpt(i), 80, struct.pack("<I", 1025)),
-            id="gpt-too-many-entries",
+            lambda i: _far_gpt(i, entry_size=384), id="gpt-entry-not-power-of-two"
+        ),
+        pytest.param(
+            # 4097 entries of 128 bytes: one entry past the 512 KiB array bound.
+            lambda i: _patch_gpt_header(_far_gpt(i), 80, struct.pack("<I", 4097)),
+            id="gpt-array-too-large",
         ),
         pytest.param(
             lambda i: _far_gpt(i)[:_SECTOR] + b"NOT PART" + _far_gpt(i)[_SECTOR + 8 :],

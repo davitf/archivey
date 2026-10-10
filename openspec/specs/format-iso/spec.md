@@ -275,16 +275,18 @@ end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 or a `Z
 
 ### Requirement: Report bytes after the end of an ISO image
 
-An ISO image SHALL be taken to end at the furthest of: the end of its volume space
-(the primary volume descriptor's volume space size times its logical block size), the
-end of every partition its MBR lists (signature `0x55AA` at byte 510, entries neither
-empty nor of the protective type `0xEE`, 512-byte sectors), and, when a GPT header
-(`EFI PART`) is at byte 512 and both its header CRC and its entry-array CRC match, its
-backup header's sector and the last sector of every used GPT entry. A GPT declaring
-more than 1024 entries, or entries outside 128 to 512 bytes, SHALL NOT count, so the
-entry array read at open is at most 512 KiB. A hybrid image appends an EFI partition and a GPT backup header
-after the volume space; those bytes are the disk image's, so they SHALL NOT be
-reported. 7-Zip 23.01 warns on them; archivey departs from it here.
+An ISO image SHALL be taken to end at the furthest of: the end of its volume space (the
+primary volume descriptor's volume space size times its logical block size), the end of
+every partition its MBR lists (signature `0x55AA` at byte 510, entries neither empty nor
+of the protective type `0xEE`, 512-byte sectors), and, when a GPT header (`EFI PART`) is
+at byte 512 and both its header CRC and its entry-array CRC match, its backup header's
+sector and the last sector of every used GPT entry. A GPT whose entry size is not 128
+times a power of two, or whose entry array is larger than 512 KiB, SHALL NOT count, so
+the array read at open is at most 512 KiB. A partition or backup header reaching past
+the end of the file SHALL still count: a hybrid image cut inside its EFI partition
+reports nothing. A hybrid image appends an EFI partition and a GPT backup header after
+the volume space; those bytes are the disk image's, so they SHALL NOT be reported. 7-Zip
+23.01 warns on them; archivey departs from it here.
 
 At open, the reader SHALL look at most 1 MiB past that end, and a non-zero byte there
 SHALL emit one `ARCHIVE_TRAILING_DATA` with `format="iso"`,

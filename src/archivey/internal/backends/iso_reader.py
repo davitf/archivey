@@ -709,13 +709,12 @@ def _install_pycdlib_path_table_bound() -> None:
 
 
 # MBR and GPT count in 512-byte sectors, whatever the ISO's logical block size. A GPT
-# lists 128 entries of 128 bytes in the usual layout; a header declaring more than
-# 1024 entries, or entries larger than 512 bytes, is not taken, so the entry array read
-# at open is at most 512 KiB, on top of the trailing scan's 1 MiB.
+# lists 128 entries of 128 bytes in the usual layout; UEFI allows any entry size of 128
+# times a power of two. A header whose entry array is larger than 512 KiB is not taken,
+# so the array read at open is at most that, on top of the trailing scan's 1 MiB.
 _PARTITION_SECTOR = 512
-_MAX_GPT_ENTRIES = 1024
 _MIN_GPT_ENTRY_SIZE = 128
-_MAX_GPT_ENTRY_SIZE = 512
+_MAX_GPT_ARRAY = 512 * 1024
 _MIN_GPT_HEADER_SIZE = 92
 # An MBR entry of this type says "a GPT describes this disk" and spans the whole
 # medium, often as 0xFFFFFFFF sectors; it lists no partition of its own.
@@ -764,10 +763,12 @@ def _gpt_end(fp: BinaryIO, gpt: bytes, *, image_length: int) -> int:
     (backup_lba,) = struct.unpack_from("<Q", gpt, 32)
     (entries_lba,) = struct.unpack_from("<Q", gpt, 72)
     entry_count, entry_size, entries_crc = struct.unpack_from("<III", gpt, 80)
+    multiple, remainder = divmod(entry_size, _MIN_GPT_ENTRY_SIZE)
     if not (
-        _MIN_GPT_ENTRY_SIZE <= entry_size <= _MAX_GPT_ENTRY_SIZE
-        and entry_size % 8 == 0
-        and entry_count <= _MAX_GPT_ENTRIES
+        multiple > 0
+        and remainder == 0
+        and multiple & (multiple - 1) == 0  # 128 times a power of two
+        and entry_count * entry_size <= _MAX_GPT_ARRAY
         and entries_lba * _PARTITION_SECTOR < image_length
     ):
         return 0
