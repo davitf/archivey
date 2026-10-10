@@ -341,7 +341,9 @@ class RarMemberInfo:
     orig_filename: bytes | None
     file_size: int
     compress_size: int
-    compress_type: int | None  # 0x30..0x35
+    # RAR3: the stored method byte as written, which a crafted header can set to
+    # any value. RAR5: 0x30 plus its 3-bit method field (0x30..0x37).
+    compress_type: int
     crc32: int | None
     blake2sp_hash: bytes | None
     mtime: datetime | None  # RAR4 naive; RAR5 aware UTC
@@ -2120,7 +2122,7 @@ def _parse_rar3(
             elif (
                 block_type == _RAR3_SUB
                 and member.filename == "CMT"
-                and member.compress_type == _RAR3_M0
+                and member.is_stored
                 and not member.is_encrypted
                 and not member.split_before
                 and not member.split_after
@@ -2501,7 +2503,7 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
     # answer; that would be a wrong one.
     return (
         member.filename == _RAR5_CMT_NAME
-        and member.compress_type == _RAR3_M0
+        and member.is_stored
         and not member.split_before
         and not member.split_after
         and member.compress_size > 0
@@ -2659,7 +2661,7 @@ def _try_list_via_rar5_qo(
         )
         if (
             member.filename != _RAR5_QO_NAME
-            or member.compress_type != _RAR3_M0
+            or not member.is_stored
             or member.is_encrypted
             # Same slice-and-parse hazard as the CMT gate above: an unsettled
             # header would have this parse a member table out of bytes that may

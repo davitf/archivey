@@ -637,10 +637,7 @@ def _password_as_str(password: bytes | str | None) -> str | None:
 
 
 def _compression_for(info: RarMemberInfo) -> tuple[CompressionMethod, ...]:
-    method = info.compress_type
-    if method is None:
-        return ()
-    cached = _COMPRESSION_BY_METHOD.get(method)
+    cached = _COMPRESSION_BY_METHOD.get(info.compress_type)
     if cached is not None:
         return cached
     # Outside M0–M5: UNKNOWN with no level. ``level`` is the M1–M5 method-byte
