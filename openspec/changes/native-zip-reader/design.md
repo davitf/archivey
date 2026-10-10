@@ -217,9 +217,9 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 
 ### Seekable sources under `streaming=True`
 
-**Open question C** below: whether a seekable source in streaming mode reads the
-directory first (one read at the tail, then forward reads only, every member complete
-when yielded) or takes the same local-header walk as a pipe.
+A seekable source in streaming mode reads the directory first: one read at the tail,
+then forward reads only, and every member is complete when yielded (question C,
+answered). The local-header walk is for non-seekable sources.
 
 ## What the parser removes
 
@@ -273,7 +273,7 @@ One PR each, in order; every PR goes through the review label.
    behaviour table. ADR 0006 is superseded by a new ADR; format-zip spec, handbook §2.2,
    §5 and §6 updated.
 3. **Streaming.** The forward local-header walk and the end-of-pass reconciliation,
-   for non-seekable sources (and seekable ones, per question C). `stream_members()` and
+   for non-seekable sources (seekable ones read the directory first, question C). `stream_members()` and
    `extract_all()` over a pipe, tested against the same archives read seekably: the
    files on disk must match.
 4. **Names.** The lying UTF-8 flag. Name collisions stay ordinary duplicates
@@ -317,14 +317,10 @@ per-name decode can turn `c3 a9` (valid UTF-8) and `82` (cp437) into the same `�
 the later member supersedes the earlier one like any duplicate (`is_current=False`,
 `SUPERSEDED` on extraction, the two `raw_name`s differ). No new public name.
 
-**C. A seekable source under `streaming=True`.** Two options:
-
-- **Directory first (recommended).** One read at the tail, then forward reads only.
-  Every member is complete when yielded (DR-8), and nothing needs fixing at the end.
-  One seek is what a remote object pays per archive.
-- **The local-header walk, like a pipe.** No seek at all, one code path for streaming;
-  members are complete only at the end of the pass, and a planted local entry is
-  written then removed.
+**C. A seekable source under `streaming=True`.** Answered 2026-10-10: directory first.
+One read at the tail, then forward reads only; every member is complete when yielded
+(DR-8), and nothing needs fixing at the end. The local-header walk is for non-seekable
+sources only.
 
 ## Out of scope
 

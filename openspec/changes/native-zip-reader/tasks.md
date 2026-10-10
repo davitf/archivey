@@ -5,7 +5,7 @@
 - [ ] 0.1 The three ZIP fix PRs from the October code sweep have merged (trailing bytes
       after a codec's end, malformed Unicode Path field, comment decoding). Rebase on
       main; their tests are acceptance tests from here on.
-- [ ] 0.2 Open question C in `design.md` has an answer, or stage 3 waits (A and B are answered).
+- [x] 0.2 Open questions A, B and C in `design.md` are answered (2026-10-10).
 - [ ] 0.3 `openspec validate --strict native-zip-reader`.
 
 ## 1. Parser (PR 1)
@@ -41,7 +41,8 @@
 
 ## 3. Streaming (PR 3)
 
-- [ ] 3.0 Question C answered (seekable sources under `streaming=True`).
+- [ ] 3.0 A seekable source under `streaming=True` reads the directory first, then
+      forward only (question C); a test counts its seeks.
 - [ ] 3.1 `parse_local_header` / `parse_central_header` on bytes, shared by both walks;
       `LocalHeaderWalk` over a forward reader; data descriptor parsing (signature
       optional, 4- or 8-byte sizes).
