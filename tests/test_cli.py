@@ -2285,17 +2285,20 @@ def _hoist_and_direct(
     archive_name: str,
     entries: dict[str, bytes],
     mine: dict[str, bytes],
+    overwrite: str = "rename",
 ) -> tuple[tuple[dict[str, bytes | None], str], tuple[dict[str, bytes | None], str]]:
     """Extract ``entries`` once through the wrapper and hoist, and once with ``-d .``,
-    each into a fresh directory that holds ``mine``; return each tree and stderr.
+    each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``;
+    return each tree and stderr. Both runs must exit 0.
 
     A name ending in ``/`` is stored as a directory. A root directory that collides
     with a file is stored, because a direct extraction fails on an implied one."""
     runs = []
     for how, extra in (("hoist", []), ("direct", ["-d", "."])):
-        cwd = tmp_path / how
-        cwd.mkdir()
+        cwd = tmp_path / overwrite / how
+        cwd.mkdir(parents=True)
         for name, data in mine.items():
+            (cwd / name).parent.mkdir(parents=True, exist_ok=True)
             (cwd / name).write_bytes(data)
         archive = tmp_path / archive_name
         with tarfile.open(archive, "w") as tf:
@@ -2309,7 +2312,7 @@ def _hoist_and_direct(
                     info.size = len(data)
                     tf.addfile(info, io.BytesIO(data))
         monkeypatch.chdir(cwd)
-        assert main(["x", str(archive), *extra]) == EXIT_OK
+        assert main(["x", str(archive), "--overwrite", overwrite, *extra]) == EXIT_OK
         runs.append((_tree(cwd), capsys.readouterr().err))
     return runs[0], runs[1]
 
@@ -2325,16 +2328,18 @@ def test_hoist_renames_a_root_as_a_direct_extraction_does(
     capsys: pytest.CaptureFixture[str],
     entries: dict[str, bytes],
 ) -> None:
-    """``foo.tar`` holding ``foo``, with the operator's own ``foo`` in the cwd.
+    """``foo.tar`` holding ``foo``, with the operator's own ``foo`` in the cwd: the
+    hoist renames the root to ``foo (1)``, the name ``-d .`` gives it.
 
-    The wrapper took ``foo (1)``, the first free name; the hoist then saw that name
-    taken by its own wrapper and moved the root to ``foo (2)``, where a direct
-    extraction writes ``foo (1)``.
+    It used to move the root to ``foo (2)``, as its own wrapper held ``foo (1)``.
     """
     (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
         tmp_path, monkeypatch, capsys, "foo.tar", entries, {"foo": b"MINE"}
     )
     assert "extracting into foo (1)/" in hoist_err
+    # Nothing was flattened: the root moved, under a new name.
+    assert "moved to foo (1)" in hoist_err
+    assert "removed wrapper" not in hoist_err
     assert hoisted == direct
     assert hoisted["foo"] == b"MINE"
     assert _report_lines(hoist_err, "renamed: ") == ["renamed: foo -> foo (1)"]
@@ -2372,6 +2377,74 @@ def test_hoist_reports_member_paths_where_they_landed(
     assert _report_lines(hoist_err, "renamed: ") == _report_lines(
         direct_err, "renamed: "
     )
+
+
+@pytest.mark.parametrize("overwrite", ["rename", "skip", "replace"])
+@pytest.mark.parametrize(
+    ("archive_name", "entries", "mine"),
+    [
+        ("t.tar", {"top/": b"", "top/c\x02": b"ARCHIVE"}, {"top/c%02": b"MINE"}),
+        ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}),
+    ],
+    ids=["collision-inside-root", "collision-at-root"],
+)
+def test_hoist_reports_what_the_merge_did_under_each_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    archive_name: str,
+    entries: dict[str, bytes],
+    mine: dict[str, bytes],
+) -> None:
+    """A member whose rewritten name collides with the operator's file while the
+    hoist merges: the layout and the per-member lines are those of ``-d .``.
+
+    Under ``rename`` the line names ``c%02 (1)``, where the member is; under ``skip``
+    the hoist discarded the member, so no ``name rewritten:`` line names the operator's
+    ``c%02`` as if it were the member (the hoist's ``skipped:`` line stands for
+    ``-d .``'s ``not overwritten:``). Both used to name ``c%02``.
+    """
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path, monkeypatch, capsys, archive_name, entries, mine, overwrite
+    )
+    assert hoisted == direct
+    for prefix in ("name rewritten: ", "renamed: "):
+        assert _report_lines(hoist_err, prefix) == _report_lines(direct_err, prefix)
+    if overwrite == "skip":
+        (where,) = mine
+        assert _report_lines(hoist_err, "skipped: ") == [f"skipped: {where}"]
+        assert _report_lines(direct_err, "not overwritten: ") == [
+            f"not overwritten: {where}"
+        ]
+    assert _summary_lines(hoist_err) == _summary_lines(direct_err)
+
+
+def test_stopped_hoist_names_members_left_in_the_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Under ``--overwrite error`` the hoist stops at the operator's ``c%02`` and
+    leaves the member in the wrapper: its line names ``c/c%02``, where it is, not the
+    operator's ``c%02``."""
+    archive = tmp_path / "c.tar"
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("c\x02")
+        info.size = 7
+        tf.addfile(info, io.BytesIO(b"ARCHIVE"))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "c%02").write_bytes(b"MINE")
+    monkeypatch.chdir(cwd)
+    assert main(["x", str(archive), "--overwrite", "error"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "hoist stopped; remaining files left in c/" in err
+    assert _report_lines(err, "name rewritten: ") == [
+        "name rewritten: c\\x02 -> c/c%02"
+    ]
+    assert (cwd / "c" / "c%02").read_bytes() == b"ARCHIVE"
+    assert (cwd / "c%02").read_bytes() == b"MINE"
 
 
 def test_relative_name_falls_back_to_forward_slashes() -> None:

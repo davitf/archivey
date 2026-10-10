@@ -616,12 +616,16 @@ class _PrintTracer:
     def _function(
         self, name: str, scope: ast.AST
     ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-        """The function a bare ``name(...)`` in *scope* calls: a helper defined inside
-        *scope* shadows a module-level one, as Python resolves it."""
-        for child in ast.walk(scope):
+        """The function a bare ``name(...)`` in *scope* calls: one defined in *scope*'s
+        own body, else a module-level one.
+
+        A def nested deeper (inside a branch, a loop or another function) is not looked
+        at: a call to one resolves to the module-level function of that name if there is
+        one, and is otherwise left unresolved, which reports it as unescaped. The nested
+        helper the CLI has, ``shown``, sits in its function's body."""
+        for child in getattr(scope, "body", []):
             if (
                 isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and child is not scope
                 and child.name == name
             ):
                 return child

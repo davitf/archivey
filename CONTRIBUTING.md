@@ -283,11 +283,12 @@ maintainer.
   enforces this; `ArchiveStream` is the one listed exception.
 - **The CLI uses only public API.** Nothing under `src/archivey/cli/` imports from
   `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. Two
-  imports are allowlisted in that test. `--track-io` imports `archivey.internal.measurement`:
-  the CLI is also a debugging tool for the library, and IO measurement is deliberately
-  not public API. `extract` imports two naming rules from `archivey.internal.filters`
-  that its report and hoist must apply exactly as extraction does. Otherwise, the CLI needing something internal means the
-  public API has a gap. Close the gap through the ordinary `__all__` decision above, or
+  imports are allowlisted in that test. `--track-io` imports
+  `archivey.internal.measurement`: the CLI is also a debugging tool for the library, and
+  IO measurement is deliberately not public API. `extract` imports two naming rules
+  from `archivey.internal.filters` that its report and hoist must apply exactly as
+  extraction does. Otherwise, the CLI needing something internal means the public API
+  has a gap. Close the gap through the ordinary `__all__` decision above, or
   in a public module that is not re-exported (`archivey.terminal` holds the display
   helpers any front end needs), or do without: the library's enum-spelling helpers are
   internal, so the CLI derives its option choices from the enums and maps a parsed

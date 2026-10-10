@@ -138,7 +138,11 @@ wrapper and why. When it runs, the hoist SHALL produce the same final layout as
 extracting directly into the cwd: directories merge into existing directories, and
 per-file collisions resolve by the overwrite policy (`rename` derives the library's
 `name (N)` spelling; `replace` replaces only the individual files being extracted;
-`skip` keeps the existing file). The hoist MUST NOT delete pre-existing files or
+`skip` keeps the existing file). One exception stands: an archive that stores
+`foo/x.txt` without a `foo/` directory member, extracted where the operator's file
+`foo` exists, hoists to `foo (1)/x.txt` where a direct extraction fails on `foo`,
+because the implied parent directory is created, not extracted, so no collision policy
+applies to it. The hoist MUST NOT delete pre-existing files or
 directories under any policy. A collision
 the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
@@ -151,7 +155,10 @@ and search permission for the move and then puts its mode back, as a direct extr
 into the cwd would have succeeded. After a hoist, the per-member lines (`renamed:`,
 `name rewritten:`, `not overwritten:` and the others) SHALL name each member where it
 is after the move, as a direct extraction into the cwd names it, never a path inside
-the removed wrapper.
+the removed wrapper: a member the merge renamed is named under its new name, and a
+member the merge discarded under `skip` gets no line of its own beyond the hoist's
+`skipped:` line, since its path is the operator's entry. When the hoist stops, a member
+left behind is named inside the wrapper.
 Container-name collisions SHALL be resolved by the overwrite policy, with one
 exception: a symlink at the container name, dangling or live, SHALL be treated
 as taken under every overwrite policy and the next free `<stem> (N)` used,
@@ -190,6 +197,8 @@ other processed statuses are omitted from that line).
 | `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
 | `archivey extract foo.tar` holding only `foo`, with the operator's `foo` in the cwd | Wraps in `foo (1)/`, then hoists the root to `foo (1)`, as `-d .` does; prints `renamed: foo -> foo (1)` |
 | `archivey extract <no-index-archive>` with a single root `top/` holding `c\x02` | Prints `name rewritten: top/c\x02 -> top/c%02`, the path after the hoist |
+| As above, with the operator's `top/c%02` in the cwd | Prints `name rewritten: top/c\x02 -> top/c%02 (1)`, as `-d .` does |
+| `archivey extract c.tar --overwrite skip` holding `c\x02`, with the operator's `c%02` | Prints `skipped: c%02` and no `name rewritten:` line |
 | `archivey extract <no-index-archive>` with multiple top-level entries | Extracts into `./<archive-stem>/` (no hoist) |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a symlink (dangling or to a directory), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written through the link |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |

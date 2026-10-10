@@ -170,16 +170,66 @@ def resolve_smart_dest(
 class _HoistResult:
     """Outcome of :func:`maybe_hoist_single_root` for reporting and exit code."""
 
-    target: Path  # where the content ended up (the wrapper when not hoisted)
+    # Where the content is: the wrapper when not hoisted. Read only by
+    # :func:`maybe_hoist_single_root`, for its own closing line.
+    target: Path
     # Terminal-safe summary destination when the hoist decided it; ``None`` leaves it
     # to :func:`_summary_dest_label`.
     dest_label: str | None = None
     ok: bool = True  # False → collision/failure; caller exits nonzero
     renamed: int = 0
     skipped: int = 0
-    # The sole root's name in the wrapper and the name it has in the wrapper's parent
-    # after the move, so the report can name each member where it is now.
-    moved_root: tuple[str, str] | None = None
+    # What the move did to each entry, so the report can name each member where it is
+    # now; ``None`` when nothing moved.
+    moves: _Moves | None = None
+
+
+@dataclass(frozen=True)
+class _Moves:
+    """Where the hoist put each entry it moved out of the wrapper.
+
+    ``names`` maps an entry's name in the wrapper (``/``-separated) to its name in the
+    wrapper's parent after the move. A name that is not a key moved with its nearest
+    ancestor that is. ``discarded`` holds the keys whose entry ``SKIP`` unlinked rather than moved:
+    their ``names`` value is the operator's entry that was kept, not the member.
+    ``left_in`` is the wrapper's name when the hoist stopped part-way: a name under no
+    key is still in the wrapper.
+    """
+
+    names: dict[str, str]
+    discarded: frozenset[str] = frozenset()
+    left_in: str | None = None
+
+    def place(self, relative: str) -> tuple[str, bool]:
+        """``relative``'s name after the move, and whether the move discarded it."""
+        parts = relative.split("/")
+        for end in range(len(parts), 0, -1):
+            key = "/".join(parts[:end])
+            moved = self.names.get(key)
+            if moved is not None:
+                return "/".join([moved, *parts[end:]]), key in self.discarded
+        if self.left_in is not None:
+            return f"{self.left_in}/{relative}", False
+        return relative, False
+
+    @classmethod
+    def of(
+        cls,
+        moved: dict[str, tuple[Path, bool]],
+        wrapper: Path,
+        *,
+        stopped: bool = False,
+    ) -> _Moves:
+        """What :func:`_merge_move` recorded in ``moved``, named from ``wrapper``'s
+        parent; ``stopped`` when the merge did not finish."""
+        return cls(
+            {
+                name: path.relative_to(wrapper.parent).as_posix()
+                for name, (path, _) in moved.items()
+            },
+            frozenset(name for name, (_, gone) in moved.items() if gone),
+            wrapper.name if stopped else None,
+        )
 
 
 class _HoistConflict(Exception):
@@ -243,6 +293,8 @@ def _merge_move(
     overwrite: OverwritePolicy,
     result: _HoistResult,
     err: TextIO,
+    name: str,
+    moved: dict[str, tuple[Path, bool]],
 ) -> Path | None:
     """Move ``src`` to ``dest`` with the same per-file semantics as extracting
     directly into ``dest``'s parent: directories merge, file/symlink collisions
@@ -251,11 +303,17 @@ def _merge_move(
     extraction would never have written. Symlinks are moved as links and never
     descended into (on either side).
 
+    ``name`` is ``src``'s name in the wrapper. Each entry moved, merged or discarded
+    is recorded in ``moved`` under its name in the wrapper, with the path it took (the
+    operator's path that was kept, for a discard) and whether it was discarded. A
+    merged directory is recorded once all of it has moved, so a name under one the
+    merge stopped in is still in the wrapper.
+
     Returns where ``src`` landed — ``dest``, or the free name a rename chose — and
-    ``None`` when SKIP discarded it. Only the caller's top-level call reads this: it is
-    where the hoisted root ended up, which a collision can move off ``dest``."""
+    ``None`` when SKIP discarded it."""
     if not os.path.lexists(dest):
         _rename(src, dest)
+        moved[name] = (dest, False)
         return dest
     src_is_dir = src.is_dir() and not src.is_symlink()
     dest_is_dir = dest.is_dir() and not dest.is_symlink()
@@ -265,7 +323,16 @@ def _merge_move(
         mode = _open_up(src)
         try:
             for entry in sorted(src.iterdir()):
-                _merge_move(entry, dest / entry.name, overwrite, result, err)
+                _merge_move(
+                    entry,
+                    dest / entry.name,
+                    overwrite,
+                    result,
+                    err,
+                    f"{name}/{entry.name}",
+                    moved,
+                )
+            moved[name] = (dest, False)
             src.rmdir()
         except BaseException:
             _put_back(src, mode)
@@ -274,6 +341,7 @@ def _merge_move(
     if overwrite is OverwritePolicy.RENAME:
         free = _free_name(dest, is_dir=src_is_dir)
         _rename(src, free)
+        moved[name] = (free, False)
         result.renamed += 1
         print(
             f"renamed: {escape_path(dest)} -> {escape_path(free)}",
@@ -282,9 +350,11 @@ def _merge_move(
         return free
     if overwrite is OverwritePolicy.REPLACE and not src_is_dir and not dest_is_dir:
         os.replace(src, dest)  # replaces exactly the file being extracted
+        moved[name] = (dest, False)
         return dest
     if overwrite is OverwritePolicy.SKIP and not src_is_dir:
         src.unlink()
+        moved[name] = (dest, True)
         result.skipped += 1
         print(f"skipped: {escape_path(dest)}", file=err)
         return None
@@ -479,8 +549,12 @@ def maybe_hoist_single_root(
         return _HoistResult(wrapper)
     dest = wrapper.parent / child.name
     result = _HoistResult(dest)
+    moved: dict[str, tuple[Path, bool]] = {}
+    # The sole root shares the wrapper's name, so the wrapper is removed and the root
+    # takes its place under that same name; otherwise the root is merged into the cwd.
+    in_place = dest == wrapper
     try:
-        if dest == wrapper:
+        if in_place:
             if child.is_dir() and not child.is_symlink():
                 # Flatten: wrapper/src/* → wrapper/*. The wrapper held only this
                 # child, so the moves cannot collide. The wrapper takes the child's
@@ -514,22 +588,23 @@ def maybe_hoist_single_root(
             side = _free_name(wrapper, is_dir=True)
             wrapper.rename(side)
             try:
-                landed = _merge_move(side / child.name, dest, overwrite, result, err)
+                landed = _merge_move(
+                    side / child.name, dest, overwrite, result, err, child.name, moved
+                )
             except BaseException:
                 # Leave the remainder where the messages say it is.
                 with contextlib.suppress(OSError):
                     side.rename(wrapper)
                 raise
             side.rmdir()
+            result.moves = _Moves.of(moved, wrapper)
             if landed is None:
                 # SKIP kept the operator's entry and discarded ours; ``skipped:``
                 # already said so, and nothing was moved anywhere. ``dest`` is the
-                # operator's own entry, so neither line may name it.
-                result.target = wrapper.parent
+                # operator's own entry, so the summary may not name it.
                 result.dest_label = "."
                 return result
             result.target = landed
-            result.moved_root = (child.name, landed.name)
     except _HoistConflict as conflict:
         print(
             f"Destination already exists: {escape_path(conflict.dest)}",
@@ -540,22 +615,30 @@ def maybe_hoist_single_root(
             file=err,
         )
         return _HoistResult(
-            wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
+            wrapper,
+            ok=False,
+            renamed=result.renamed,
+            skipped=result.skipped,
+            moves=_Moves.of(moved, wrapper, stopped=True),
         )
     except OSError as exc:
         print(f"hoist failed: {format_error_detail(exc)}", file=err)
         print(f"files left in {escape_path(wrapper)}/", file=err)
         return _HoistResult(
-            wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
+            wrapper,
+            ok=False,
+            renamed=result.renamed,
+            skipped=result.skipped,
+            moves=_Moves.of(moved, wrapper, stopped=True),
         )
-    if result.moved_root is None:
-        result.moved_root = (child.name, child.name)  # flattened in place
+    if result.moves is None:
+        result.moves = _Moves({child.name: child.name})  # in place: name unchanged
     is_dir = result.target.is_dir() and not result.target.is_symlink()
     # The target is the sole root's own name, which the archive chose.
     label = f"{escape_path(result.target)}{'/' if is_dir else ''}"
     result.dest_label = label
-    if result.target == wrapper:
-        # In-place flatten (src.tar → src/ containing src/): name unchanged.
+    if in_place:
+        # src.tar → src/ containing src/: the wrapper is gone, the name unchanged.
         print(f"removed wrapper; content at {label}", file=err)
     else:
         print(f"moved to {label}", file=err)
@@ -608,7 +691,7 @@ def predict_hoist(
         )
     else:
         print(f"would move to {label}", file=err)
-    return _HoistResult(dest, dest_label=label, moved_root=(name, name))
+    return _HoistResult(dest, dest_label=label, moves=_Moves({name: name}))
 
 
 def _summary_dest_label(
@@ -677,15 +760,17 @@ def _report_extraction(
     extra_renamed: int = 0,
     extra_skipped: int = 0,
     dest_label: str | None = None,
-    moved_root: tuple[str, str] | None = None,
+    moves: _Moves | None = None,
     dry_run: bool = False,
 ) -> tuple[int, int]:
     """Print rename notices + a closing summary from the library report (F3/D2).
 
     Per-member paths are named relative to ``target``, the directory extracted into.
-    ``moved_root`` is the hoist's ``(name in target, name after the move)``: the hoist
-    moved that entry up next to ``target``, so a path under it is named from the new
-    name, which is where it is relative to the working directory.
+    ``moves`` is what the hoist did to the entries it moved out of ``target``
+    (:class:`_Moves`): a path under one is named where the move put it, relative to
+    ``target``'s parent. A member the hoist discarded under ``SKIP`` gets no line of its
+    own (the hoist's ``skipped:`` line is its line), as its path names the operator's
+    entry, not the member.
 
     ``extra_renamed`` / ``extra_skipped`` fold in collisions resolved during the
     post-extract hoist (the library report covers only the wrapper extraction,
@@ -721,8 +806,11 @@ def _report_extraction(
         and r.requested_path != r.path
     }
 
-    def shown(path: Path | None) -> str:
-        return escape_member_name(_relative_name(path, target, moved_root))
+    def shown(path: Path | None) -> str | None:
+        """``path`` as the line names it, or ``None`` when the hoist discarded it."""
+        if path is not None and moves is not None and _discarded(path, target, moves):
+            return None
+        return escape_member_name(_relative_name(path, target, moves))
 
     for result in report:
         status = result.status
@@ -738,13 +826,15 @@ def _report_extraction(
                     result.requested_path, result.path, renamed_dirs
                 )
             )
+            landed = shown(result.path)
             if was_renamed:
                 renamed += 1
                 # Renames change where data lives — always report them.
-                print(
-                    f"renamed: {shown(result.requested_path)} -> {shown(result.path)}",
-                    file=err,
-                )
+                if landed is not None:
+                    print(
+                        f"renamed: {shown(result.requested_path)} -> {landed}",
+                        file=err,
+                    )
             elif verbose:
                 print(
                     f"extracted: {escape_member_name(result.member.name)}",
@@ -755,7 +845,7 @@ def _report_extraction(
                 # archive's. Reported because the tree differs from the archive.
                 print(
                     f"kept existing directory's mode {result.kept_mode:04o}: "
-                    f"{shown(result.path) or '.'}",
+                    f"{landed or '.'}",
                     file=err,
                 )
             # A portable rewrite is a different event from a collision rename: the member
@@ -771,33 +861,33 @@ def _report_extraction(
                 rerooted_name = is_rooted(result.presented_name)
                 if rerooted_name:
                     rerooted += 1
-                if not rerooted_name or verbose:
+                if landed is not None and (not rerooted_name or verbose):
                     # ``presented_name`` is the full relative name, so the arrow's other
                     # side must be too: a basename would print ``dir/foo. -> foo`` and
                     # invent a destination the member never had.
                     label = "re-rooted" if rerooted_name else "name rewritten"
                     print(
                         f"{label}: {escape_member_name(result.presented_name)} -> "
-                        f"{shown(result.path)}",
+                        f"{landed}",
                         file=err,
                     )
         elif status is ExtractionStatus.OVERWRITTEN:
             # Written, then clobbered by a later member. Not counted as extracted: its
             # content is not what is on disk. Always reported — data was lost.
             skipped += 1
-            where = _escaped_where(result, target, moved_root)
+            where = _escaped_where(result, target, moves)
             print(f"overwritten: {where}", file=err)
         elif status is ExtractionStatus.NOT_OVERWRITTEN:
             skipped += 1
             # Overwrite-skips change outcomes under --overwrite skip; always note.
-            where = _escaped_where(result, target, moved_root)
+            where = _escaped_where(result, target, moves)
             print(f"not overwritten: {where}", file=err)
         elif status is ExtractionStatus.LINK_TARGET_UNAVAILABLE:
             skipped += 1
             # The archive described a link it never recorded a target for, so there was
             # nothing to write. Always reported: the tree the user gets is missing an
             # entry the listing showed them.
-            where = _escaped_where(result, target, moved_root)
+            where = _escaped_where(result, target, moves)
             print(f"link target unavailable: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
@@ -852,9 +942,7 @@ def _report_extraction(
     return blocked, failed
 
 
-def _escaped_where(
-    result: ExtractionResult, target: Path, moved_root: tuple[str, str] | None
-) -> str:
+def _escaped_where(result: ExtractionResult, target: Path, moves: _Moves | None) -> str:
     """The destination to report for a member that did not keep it, terminal-safe.
 
     ``requested_path`` is built from the member's own name. STRICT and STANDARD write the
@@ -869,22 +957,20 @@ def _escaped_where(
     name is ``/``-separated, so a backslash surviving into it is a real character in a
     member name — which is exactly what should be escaped."""
     if result.requested_path is not None:
-        return escape_member_name(
-            _relative_name(result.requested_path, target, moved_root)
-        )
+        return escape_member_name(_relative_name(result.requested_path, target, moves))
     return escape_member_name(result.member.name)
 
 
 def _relative_name(
     path: PurePath | None,
     target: PurePath,
-    moved_root: tuple[str, str] | None = None,
+    moves: _Moves | None = None,
 ) -> str:
     """The on-disk name relative to the extraction root, for reporting.
 
-    ``moved_root`` is the hoist's ``(old, new)`` name for the entry it moved out of
-    ``target``: a name under ``old`` is given under ``new`` instead, which is where it
-    is relative to ``target``'s parent after the move. Falls back to the full path,
+    With ``moves``, a name the hoist moved out of ``target`` is given where the move
+    put it, relative to ``target``'s parent (:meth:`_Moves.place`); for an entry the
+    hoist discarded, that is the operator's entry it kept. Falls back to the full path,
     still ``/``-separated, when the member landed outside ``target``, and to ``""`` when
     nothing was written."""
     if path is None:
@@ -893,12 +979,18 @@ def _relative_name(
         relative = path.relative_to(target).as_posix()
     except ValueError:
         return path.as_posix()
-    if moved_root is not None:
-        old, new = moved_root
-        first, sep, rest = relative.partition("/")
-        if first == old:
-            return f"{new}{sep}{rest}"
+    if moves is not None:
+        return moves.place(relative)[0]
     return relative
+
+
+def _discarded(path: PurePath, target: PurePath, moves: _Moves) -> bool:
+    """Whether the hoist discarded the entry at ``path`` under ``SKIP``."""
+    try:
+        relative = path.relative_to(target).as_posix()
+    except ValueError:
+        return False
+    return moves.place(relative)[1]
 
 
 def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
@@ -1041,7 +1133,7 @@ def run_extract(
                 extra_renamed=hoist.renamed,
                 extra_skipped=hoist.skipped,
                 dest_label=hoist.dest_label,
-                moved_root=hoist.moved_root,
+                moves=hoist.moves,
                 dry_run=dry_run,
             )
             return _exit_for_outcomes(blocked=blocked, failed=failed, hoist_ok=hoist.ok)
