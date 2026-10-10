@@ -137,7 +137,7 @@ def _tar_sparse_gnu(logical: int = 1024 * 1024) -> bytes:
     BSD/Windows ``tar`` reject ``--sparse``). One 3-byte sparse region carried by a
     ``logical``-byte file (1 MiB by default): the physical next-header offset
     (``offset_data + roundup(3)``) is far below ``offset_data + roundup(logical size)``,
-    which is exactly the layout that used to false-negative the RA EOF probe. Verified
+    which is exactly the layout an offset-based end check gets wrong. Verified
     read back through stdlib ``tarfile``.
     """
     physical = b"xyz"
@@ -172,7 +172,7 @@ def _tar_sparse_gnu(logical: int = 1024 * 1024) -> bytes:
 
 
 def _tar_corrupt_final_header_sparse() -> bytes:
-    """Sparse member + rejected final header (nothing after) — the probe false-negative."""
+    """Sparse member + rejected final header (nothing after)."""
     full = _tar_sparse_gnu()
     eof_start = _tar_content_end(full)
     return full[:eof_start] + b"\xff" * 512
@@ -740,9 +740,9 @@ def test_minimal_eof_trailer_strict_does_not_raise() -> None:
 
 def test_corrupt_final_header_raises_corruption_by_default() -> None:
     # A rejected header in the archive's final block: tarfile treats it as a clean end,
-    # and the trailing-block check reads past it. The random-access EOF probe inspects
-    # the block tarfile stopped on and raises CorruptionError — even under the default
-    # (non-strict) config, because a non-null block there is unambiguous corruption.
+    # and the trailing-block check reads past it. The error tarfile's last header parse
+    # raised says the header was rejected, so it is CorruptionError — even under the
+    # default (non-strict) config, because a complete tar never stops on one.
     data = _tar_corrupt_final_header()
     with raises_corruption_not_truncation():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
@@ -759,8 +759,7 @@ def test_corrupt_mid_header_raises_corruption_by_default() -> None:
 
 
 def test_corrupt_mid_header_streaming_raises_corruption() -> None:
-    # Streaming has no probe, but a rejected mid-archive header leaves valid bytes after
-    # the stop, so the trailing-block heuristic still surfaces it as corruption.
+    # The same rejected mid-archive header over the forward-only path.
     data = _tar_corrupt_mid_header()
     with raises_corruption_not_truncation():
         with open_archive(
@@ -769,20 +768,116 @@ def test_corrupt_mid_header_streaming_raises_corruption() -> None:
             list(ar.stream_members())
 
 
-def test_corrupt_final_header_streaming_warns_not_corruption(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # Documented streaming limitation: with nothing after the rejected final block, the
-    # forward-only path cannot recover it and surfaces a missing-trailer warning instead
-    # of CorruptionError. Random access catches this case (test above); native TAR would
-    # close the streaming gap.
+def test_corrupt_final_header_streaming_raises_corruption() -> None:
+    # With nothing after the rejected final block, the block after tarfile's stop is
+    # absent, so only the error tarfile's last header parse raised tells this from a
+    # missing trailer. Streaming used to warn here; it now agrees with random access.
     data = _tar_corrupt_final_header()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
+    with raises_corruption_not_truncation():
         with open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
         ) as ar:
             list(ar.stream_members())
-    assert len(_eof_warnings(caplog)) == 1
+
+
+def _tar_rejected_header_then_zero_block(tail: list[str]) -> bytes:
+    """Members ``a`` and ``b``, then one 1-byte member per name in ``tail``; ``b``'s
+    header checksum is wrong, so tarfile rejects it.
+
+    ``b``'s data starts with a whole zero block, as a disk image or many binaries do.
+    The block after the rejected header is therefore zero, which is what a good
+    end-of-archive trailer looks like from there.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        payload = bytes(512) + b"B" * 100
+        for name, data in [("a", b"abc"), ("b", payload)] + [
+            (name, b"c") for name in tail
+        ]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    data = bytearray(buf.getvalue())
+    data[1024 + 148 : 1024 + 156] = b"0000000\0"
+    return bytes(data)
+
+
+def _tar_negative_size(kind: str) -> bytes:
+    """Members ``a`` and ``b``, where ``b``'s size is negative: through a PAX ``size``
+    record, or through a GNU base-256 size field. tarfile rejects that header."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        a = tarfile.TarInfo("a")
+        a.size = 3
+        t.addfile(a, io.BytesIO(b"abc"))
+        b = tarfile.TarInfo("b")
+        if kind == "pax":
+            b.pax_headers = {"size": "-2048"}
+        t.addfile(b, io.BytesIO(b""))
+    data = bytearray(buf.getvalue())
+    if kind == "base256":
+        offset = 1024  # a's header and its one data block come first
+        assert data[offset : offset + 2] == b"b\0"
+        data[offset + 124 : offset + 136] = b"\xff" * 8 + (-2048 % 2**32).to_bytes(
+            4, "big"
+        )
+        data[offset + 148 : offset + 156] = b" " * 8
+        checksum = sum(data[offset : offset + 512])
+        data[offset + 148 : offset + 156] = b"%06o\0 " % checksum
+    return bytes(data)
+
+
+def _tar_malformed_pax_header_last() -> bytes:
+    """One member, then a PAX ``x`` header whose records do not parse and whose data
+    is longer than one block, and nothing after it: no member header, no trailer."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        a = tarfile.TarInfo("a")
+        a.size = 3
+        t.addfile(a, io.BytesIO(b"abc"))
+    good = buf.getvalue()
+    end = _tar_content_end(good)
+    payload = b"not a pax record " * 40  # 680 bytes, two blocks
+    xhdr = tarfile.TarInfo("./PaxHeaders/x")
+    xhdr.type = tarfile.XHDTYPE
+    xhdr.size = len(payload)
+    return (
+        good[:end]
+        + xhdr.tobuf(format=tarfile.USTAR_FORMAT)
+        + payload
+        + bytes(-len(payload) % 512)
+    )
+
+
+_REJECTED_HEADER_CASES = {
+    "zero_block_after_last_member": lambda: _tar_rejected_header_then_zero_block([]),
+    "zero_block_then_members": lambda: _tar_rejected_header_then_zero_block(["c", "d"]),
+    "negative_pax_size": lambda: _tar_negative_size("pax"),
+    "negative_base256_size": lambda: _tar_negative_size("base256"),
+    "malformed_pax_header_last": _tar_malformed_pax_header_last,
+}
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    "build", list(_REJECTED_HEADER_CASES.values()), ids=list(_REJECTED_HEADER_CASES)
+)
+def test_rejected_header_raises_corruption_in_both_modes(
+    build: Any, streaming: bool
+) -> None:
+    # tarfile ends the walk on a rejected header after the first as if the archive had
+    # ended. Whatever follows the rejected header (a zero block, a member, nothing),
+    # both modes raise after the members before it, as GNU tar exits 2 on all of these.
+    # Streaming used to read the next block and take a zero block for the trailer,
+    # dropping every later member with at most a trailing-data warning.
+    data = build()
+    source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
+    names: list[str] = []
+    with raises_corruption_not_truncation():
+        with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming) as ar:
+            for member, _stream in ar.stream_members():
+                names.append(member.name)
+    assert names == ["a"]
 
 
 def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
@@ -798,7 +893,7 @@ def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
 
 
 def test_corrupt_final_header_sparse_raises_corruption() -> None:
-    # Regression: logical size ≫ packed size used to make the probe's
+    # Regression: logical size ≫ packed size once made an
     # offset_data+roundup(size) check miss the stop block, so a rejected final header
     # after a GNU sparse member warned as absent instead of raising CorruptionError.
     data = _tar_corrupt_final_header_sparse()
@@ -935,7 +1030,7 @@ def test_pax_sparse_member_is_reported_sparse(build: Any) -> None:
 
 
 def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
-    # Compressed path also carries the EOF probe (no re-decompression / backward seek).
+    # The compressed path classifies the end the same way, with no backward seek.
     import gzip
 
     path = tmp_path / "bad.tar.gz"
@@ -1160,7 +1255,7 @@ def test_zero_block_then_junk_with_no_member_stays_corruption(
 
 def test_padded_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> None:
     # tarfile writes 10240-byte record padding (many trailing null blocks past the two
-    # required ones). The probe must not read that padding as a rejected block.
+    # required ones). The end check must not read that padding as a rejected block.
     data = _build_tar()  # full tarfile output, padded
     with caplog.at_level(logging.WARNING, logger="archivey.backends"):
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
@@ -1205,7 +1300,7 @@ def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
 def test_corrupt_path_open_releases_owned_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Path opens always use fileobj= with an owned fp for the EOF probe. On open failure
+    # Path opens always use fileobj= with an owned fp. On open failure
     # the owned handle must be closed before re-raising — otherwise the exception
     # traceback pins the frame (and the fd) until the caller drops the exception.
     import builtins
@@ -1824,12 +1919,12 @@ def test_extended_header_over_the_metadata_cap_is_refused_unread(
 def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) -> None:
     """The bound must not cut a legitimate read short.
 
-    A member past ``_EofProbeStream._UNKNOWN_LENGTH_READ_STEP`` is the case where the
+    A member past ``_BoundedTarFileobj._UNKNOWN_LENGTH_READ_STEP`` is the case where the
     wrapper stops handing the request straight down, so it is the one that would show
     a truncation or a stitching bug. Compressed, because that is the path with no
     cheap length and therefore the one that takes the stepped route.
     """
-    step = tar_reader_module._EofProbeStream._UNKNOWN_LENGTH_READ_STEP
+    step = tar_reader_module._BoundedTarFileobj._UNKNOWN_LENGTH_READ_STEP
     payload = bytes(range(256)) * ((step // 256) + 1024)
     assert len(payload) > step
 
