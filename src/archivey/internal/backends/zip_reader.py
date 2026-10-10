@@ -65,6 +65,7 @@ from archivey.cost import (
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
+    DigestContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -222,9 +223,24 @@ _ZIP_COMPRESSION_TUPLES: dict[int, tuple[CompressionMethod, ...]] = {
 }
 
 # ZIP method id -> shared codec-layer Codec for member decode, after any decrypt stage.
+_ZIP_METHOD_CODECS: dict[int, Codec] = {
+    0: Codec.STORED,
+    8: Codec.DEFLATE,
+    9: Codec.DEFLATE64,
+    12: Codec.BZIP2,
+    14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
+    93: Codec.ZSTD,
+    98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
+}
+
 # Compressed size of an *empty* body per method, as ``zipfile`` writes one for a
 # directory ``ZipInfo`` given no data (the Java ``jar`` tool deflates every directory's
 # empty body: 2 bytes). ``tests/test_zip.py`` checks the table against ``zipfile``.
+# The sizes are those of a known, unencrypted method: an encrypted entry's body also
+# carries the cipher's framing (12 bytes for ZipCrypto, salt plus verifier plus auth
+# code for WinZip AES, under method 99), and DEFLATE64, zstd and PPMd have no 0-byte
+# empty frame, so a directory entry in either shape errs toward being reported. No
+# writer measured (zip, 7-Zip, zipfile) encrypts or compresses a directory's body.
 _ZIP_EMPTY_BODY_SIZES: dict[int, int] = {
     zipfile.ZIP_STORED: 0,
     zipfile.ZIP_DEFLATED: 2,
@@ -242,16 +258,6 @@ def _zip_directory_stores_data(info: zipfile.ZipInfo) -> bool:
         return True
     return info.compress_size > _ZIP_EMPTY_BODY_SIZES.get(info.compress_type, 0)
 
-
-_ZIP_METHOD_CODECS: dict[int, Codec] = {
-    0: Codec.STORED,
-    8: Codec.DEFLATE,
-    9: Codec.DEFLATE64,
-    12: Codec.BZIP2,
-    14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
-    93: Codec.ZSTD,
-    98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
-}
 
 # Local name/extra lengths are uint16; 65535 is the format maximum, so a separate
 # cap cannot fire (S1-F2). Absurd *offsets* are this bound, same discipline as
@@ -1091,12 +1097,18 @@ class ZipReader(BaseArchiveReader):
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for
         # members with data: FILE and SYMLINK, and a directory whose header declares
-        # some (``open()`` delivers it, so the read is digest-checked like a file's);
-        # a directory with no data stores a meaningless 0. AE-2 stores CRC as 0 and
-        # relies on the HMAC — do not surface a fake crc32.
+        # some (``open()`` delivers it, so the read is digest-checked like a file's).
+        # A directory's CRC field is 0 by convention, so a zero there over declared
+        # data is no digest, not a failing one: the member gets no crc32 and
+        # ``DIGEST_UNVERIFIABLE`` below says the read is unchecked (design principle
+        # 1: say so instead of implying the bytes were checked; DR-4: CorruptionError
+        # is for damage). AE-2 stores CRC as 0 and relies on the HMAC — do not surface
+        # a fake crc32.
         hashes: dict[HashAlgorithm, bytes] = {}
+        directory_data = member_type is MemberType.DIRECTORY and info.file_size > 0
+        directory_without_crc = directory_data and info.CRC == 0
         if member_type in (MemberType.FILE, MemberType.SYMLINK) or (
-            member_type is MemberType.DIRECTORY and info.file_size > 0
+            directory_data and not directory_without_crc
         ):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
@@ -1182,6 +1194,26 @@ class ZipReader(BaseArchiveReader):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
+            if directory_without_crc:
+                self._diagnostics_collector.emit(
+                    code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+                    message=(
+                        f"Directory {quoted(member.name)} declares {info.file_size} "
+                        "bytes of data but its CRC-32 field is 0, a directory's "
+                        "conventional value; the bytes open() delivers are not "
+                        "checked against any digest."
+                    ),
+                    context=DigestContext(
+                        archive_name=self._archive_name,
+                        member_name=member.name,
+                        member_id=index,
+                        algorithm="crc32",
+                        reason="no_integrity_anchor",
+                    ),
+                    member=member,
+                    attach_to_member=True,
+                    logger=logger,
+                )
         for issue in ts_issues:
             field = _zip_timestamp_field(create_system, issue.field)
             self._emit_timestamp_invalid(member, index, replace(issue, field=field))

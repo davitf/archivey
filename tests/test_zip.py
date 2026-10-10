@@ -1983,6 +1983,38 @@ def test_corrupted_directory_data_fails_its_digest_check(tmp_path: Path) -> None
         assert ar.read("d/f.txt") == b"visible"
 
 
+def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
+    """A directory entry's CRC field is 0 by convention, so a zero over declared data
+    is no digest: the member carries none, ``DIGEST_UNVERIFIABLE`` says the read is
+    unchecked, and the bytes come back instead of a ``CorruptionError``."""
+    path = tmp_path / "zerocrc.zip"
+    _zip_with_directory_data(path, zipfile.ZIP_STORED)
+    data = bytearray(path.read_bytes())
+    crc = zlib.crc32(b"hidden data!")
+    assert data[:4] == b"PK\x03\x04"
+    assert struct.unpack_from("<I", data, 14)[0] == crc
+    struct.pack_into("<I", data, 14, 0)  # local header: CRC-32
+    central = data.index(b"PK\x01\x02")
+    assert struct.unpack_from("<I", data, central + 16)[0] == crc
+    struct.pack_into("<I", data, central + 16, 0)  # central directory: CRC-32
+    path.write_bytes(bytes(data))
+    with open_archive(path) as ar:
+        member = ar.get("d/")
+        assert member.hashes == {}
+        codes = [d.code for d in member.diagnostics]
+        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        [diag] = [
+            d
+            for d in member.diagnostics
+            if d.code is DiagnosticCode.DIGEST_UNVERIFIABLE
+        ]
+        assert diag.context is not None
+        assert diag.context.to_dict()["reason"] == "no_integrity_anchor"
+        assert "CRC-32 field is 0" in diag.message
+        assert ar.read("d/") == b"hidden data!"
+        assert HashAlgorithm.CRC32 in ar.get("d/f.txt").hashes
+
+
 def _zip_with_declared_empty_directory_body(path: Path) -> None:
     """``d/`` storing 2000 bytes with its uncompressed size field set to 0 in both the
     local header and the central directory: a body hidden one field away from the

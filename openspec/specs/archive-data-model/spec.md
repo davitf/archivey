@@ -98,7 +98,10 @@ does. `open()` SHALL refuse a member for having no data rather than for its type
 directory declaring data opens and delivers the bytes where the backend can decode
 them (ZIP decodes any method; RAR delivers stored, unencrypted directory data and
 raises `UnsupportedFeatureError` for the rest, since `unrar` emits nothing for a
-directory entry), checked against the stored digest like a file's. `stream_members()`
+directory entry), checked against the stored digest like a file's when the header
+carries one: a ZIP directory entry whose CRC-32 field is 0, the conventional value for a
+directory, carries no digest, and `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`)
+SHALL say so instead of refusing the bytes as damaged. `stream_members()`
 SHALL still yield `None` for a directory. A directory whose declared size is zero SHALL
 also be reported when its body is larger than an empty one of its method takes (ZIP:
 0 stored, 2 deflated, 14 bzip2, 19 LZMA, any body for a method not in that table; RAR:
@@ -126,6 +129,7 @@ link keeps the flag alongside its re-typed `MemberType`.
 | ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set) | `member.type == MemberType.OTHER`; `size` keeps the stored value |
 | ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes; extraction creates the directory; `strict()` raises |
 | ZIP directory entry declaring 12 bytes whose stored body was altered | `read()` raises `CorruptionError` (CRC-32 mismatch), as for a file |
+| ZIP directory entry declaring 12 bytes with a CRC-32 field of 0 | `hashes` empty; `MEMBER_DIRECTORY_DATA_IGNORED` and `DIGEST_UNVERIFIABLE`; `read()` returns the 12 bytes |
 | ZIP directory entry with compressed size 2 and size 0 (the `jar` shape) | `DIRECTORY`; no diagnostic; `read()` → `ArchiveyUsageError` |
 | ZIP or RAR directory entry with size 0 over a 2000-byte stored body | `DIRECTORY`, `size == 0`, `compressed_size == 2000`; `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; `read()` → `ArchiveyUsageError`; `strict()` raises |
 | RAR directory entry with compressed or encrypted data | `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` → `UnsupportedFeatureError` |

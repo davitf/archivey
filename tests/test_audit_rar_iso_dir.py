@@ -1050,33 +1050,26 @@ def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> Non
             archive.read("-inul/")
 
 
-@requires_binary("rar")
 @requires_binary("unrar")
 def test_encrypted_stored_directory_data_is_refused_as_unsupported(
     tmp_path: Path,
 ) -> None:
     """An encrypted stored body under a directory flag is not sliceable by archivey
     and unrar emits nothing for a directory, so ``open()`` refuses it as unsupported
-    instead of handing it to unrar and reporting whatever comes back."""
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "f.txt").write_bytes(b"encrypted dir data")
-    built = tmp_path / "enc.rar"
-    subprocess.run(
-        ["rar", "a", "-idq", "-ep1", "-m0", "-psecret", str(built), "f.txt"],
-        cwd=src,
-        check=True,
-        timeout=60,
-    )
-    blocks = _rar5_parse(built.read_bytes())
+    instead of handing it to unrar and reporting whatever comes back.
+
+    The committed ``encryption_stored__.rar`` (``-m0 -ppassword``) supplies the
+    encrypted stored body; only the directory flag is set on its header."""
+    blocks = _rar5_parse(_fixture("encryption_stored__.rar").read_bytes())
     [entry] = _rar5_file_blocks(blocks)
+    assert entry["cinfo"] == 0 and entry["data"]  # stored, with a body
     entry["file_flags"] |= 1  # FHFL_DIRECTORY
     path = tmp_path / "enc_dir.rar"
     path.write_bytes(_rar5_build(blocks))
-    with open_archive(path, password="secret", config=_UNRAR_ONLY) as archive:
+    with open_archive(path, password="password", config=_UNRAR_ONLY) as archive:
         [member] = archive.members()
         assert member.type is MemberType.DIRECTORY
-        assert member.size == 18
+        assert member.size == 14
         assert member.is_encrypted
         codes = [d.code for d in archive.diagnostics.retained]
         assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
