@@ -279,6 +279,9 @@ class _TarFile(tarfile.TarFile):
     stopped_on_zero_block: bool = False
 
 
+_BLOCK = tarfile.BLOCKSIZE
+
+
 class _TarInfo(tarfile.TarInfo):
     """A ``TarInfo`` that records where its member's stored data ends, and refuses an
     extended header larger than the listing's metadata budget before reading it.
@@ -287,12 +290,56 @@ class _TarInfo(tarfile.TarInfo):
     ``size`` with the logical size and reads the data through the sparse map, even
     where the map claims more than the member stores and the read runs on into the
     next header. :func:`_sparse_map_error` compares the map to this end.
+
+    It also skips the data of an old-style directory, as GNU tar does: see
+    :meth:`_note_old_style_directory`.
     """
 
-    __slots__ = ("stored_end",)
+    __slots__ = ("old_style_directory", "stored_end")
 
     stored_end: int
     """The offset where the member's data area ends, rounded up to whole blocks."""
+
+    old_style_directory: bool
+    """The header is a regular file (``AREGTYPE``, typeflag NUL) whose name ends in
+    ``/``, which ``tarfile`` turned into a directory."""
+
+    @classmethod
+    def frombuf(cls, buf: bytes | bytearray, encoding: str, errors: str) -> Self:
+        # Python versions before the 2025 tarfile security fixes call this one.
+        info = super().frombuf(buf, encoding, errors)
+        info._note_old_style_directory(buf)
+        return info
+
+    @classmethod
+    def _frombuf(
+        cls,
+        buf: bytes | bytearray,
+        encoding: str,
+        errors: str,
+        *,
+        dircheck: bool = True,
+    ) -> Self:
+        # Later versions call this one, with ``dircheck=False`` for the header after a
+        # GNU long name or a PAX header, where no AREGTYPE becomes a directory.
+        # typeshed does not declare tarfile's private TarInfo._frombuf.
+        info: Self = super()._frombuf(buf, encoding, errors, dircheck=dircheck)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        info._note_old_style_directory(buf)
+        return info
+
+    def _note_old_style_directory(self, buf: bytes | bytearray) -> None:
+        """Record whether ``tarfile`` turned an AREGTYPE header into a directory.
+
+        Old (v7) tars mark a directory as a regular file whose name ends in ``/``.
+        ``tarfile`` lists such a header as a directory, and then does not skip its
+        data, because a directory has none: a header that declares a size has its data
+        blocks read as the next header. GNU tar 1.35 and 7-Zip list it as a directory
+        and skip the data. A ``DIRTYPE`` header that declares a size is not marked:
+        GNU tar reports that one as an error too.
+        """
+        self.old_style_directory = (
+            buf[156:157] == tarfile.AREGTYPE and self.type == tarfile.DIRTYPE
+        )
 
     @classmethod
     def fromtarfile(cls, tarfile: tarfile.TarFile) -> Self:
@@ -336,7 +383,12 @@ class _TarInfo(tarfile.TarInfo):
                     f"{max(left, 0)} left)"
                 )
         # typeshed does not declare tarfile's private TarInfo._proc_member.
-        return super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        info = super()._proc_member(tarfile)  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        # Runs again for the outer PAX header, after its ``size`` record has reset the
+        # offset, so the skip uses the final size.
+        if isinstance(info, _TarInfo) and info.old_style_directory:
+            tarfile.offset = info.offset_data + -(-info.size // _BLOCK) * _BLOCK
+        return info
 
 
 def _sparse_map_error(info: tarfile.TarInfo) -> CorruptionError | None:

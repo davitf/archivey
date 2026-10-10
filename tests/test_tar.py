@@ -1194,6 +1194,80 @@ def test_corrupt_tar_header_raises() -> None:
     assert isinstance(excinfo.value.__cause__, tarfile.ReadError)
 
 
+def _tar_slash_entry_with_data(typeflag: bytes) -> bytes:
+    """A ustar entry named ``d/`` with the given typeflag and 15 bytes of data, then a
+    regular file ``after.txt``. GNU tar 1.35 and 7-Zip list ``d/`` as a directory and
+    skip its data when the typeflag is NUL (old-style ``AREGTYPE``) or ``0``; they report
+    an error when it is ``5`` (``DIRTYPE``), which carries no data."""
+    data = b"hello directory"
+    info = tarfile.TarInfo("d/")
+    info.size = len(data)
+    info.mode = 0o755
+    header = bytearray(info.tobuf(format=tarfile.USTAR_FORMAT))
+    header[156:157] = typeflag
+    header[148:156] = b" " * 8
+    header[148:156] = b"%06o\0 " % sum(header)
+    after = tarfile.TarInfo("after.txt")
+    after.size = 6
+    return (
+        bytes(header)
+        + data.ljust(512, b"\0")
+        + after.tobuf(format=tarfile.USTAR_FORMAT)
+        + b"after\n".ljust(512, b"\0")
+        + b"\0" * 1024
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_old_style_directory_with_data_is_skipped(streaming: bool) -> None:
+    # stdlib tarfile turns an AREGTYPE header whose name ends in "/" into a directory
+    # and then reads its data blocks as the next header. GNU tar skips the data.
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        members = [
+            (m.name, m.type, stream.read() if stream is not None else None)
+            for m, stream in ar.stream_members()
+        ]
+    assert members == [
+        ("d/", MemberType.DIRECTORY, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("typeflag", "expected"),
+    [(tarfile.AREGTYPE, True), (tarfile.DIRTYPE, False), (tarfile.REGTYPE, False)],
+)
+def test_old_style_directory_marked_by_public_frombuf(
+    typeflag: bytes, expected: bool
+) -> None:
+    # Python versions before the 2025 tarfile fixes parse headers through the public
+    # frombuf(), not _frombuf(); the mark must be set on that path too.
+    header = _tar_slash_entry_with_data(typeflag)[:512]
+    info = tar_reader_module._TarInfo.frombuf(header, "utf-8", "surrogateescape")
+    assert info.old_style_directory is expected
+
+
+def test_old_style_directory_with_data_extracts(tmp_path: Path) -> None:
+    data = _tar_slash_entry_with_data(tarfile.AREGTYPE)
+    open_and_extract(io.BytesIO(data), tmp_path, format=ArchiveFormat.TAR)
+    assert (tmp_path / "d").is_dir()
+    assert (tmp_path / "after.txt").read_bytes() == b"after\n"
+
+
+def test_dirtype_with_data_stays_corruption() -> None:
+    # A DIRTYPE header has no data area, so its "data" is read as the next header.
+    # GNU tar reports that as an error too ("Skipping to next header").
+    data = _tar_slash_entry_with_data(tarfile.DIRTYPE)
+    with raises_corruption_not_truncation():
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            ar.members()
+
+
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
     # A genuine OSError (missing file) is not archive corruption: it must propagate
     # unchanged, not be reclassified as CorruptionError (error-handling spec).
