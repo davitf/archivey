@@ -43,6 +43,9 @@ from tests.streams_util import (
 
 _PAYLOAD = random.Random(178).randbytes(50_000) * 3
 _JUNK = b"appended signature\n"
+# zlib, LZMA Alone and Brotli have no magic, so a nameless source reaches them only with
+# every content probe on.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 def _zstd(data: bytes) -> bytes:
@@ -157,7 +160,7 @@ def test_a_pipe_reads_and_reports_the_same(suffix: str) -> None:
     _name, compress, _marks = _CODECS[suffix]
     compressed = compress(_PAYLOAD)
     source = NonSeekableBytesIO(compressed + _JUNK)
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, streaming=True, config=_ALWAYS_PROBE) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
             assert stream.read() == _PAYLOAD
@@ -767,5 +770,6 @@ def test_inside_a_container_the_codec_stops_silently(
 
 
 def _format(suffix: str):  # noqa: ANN202 - an ArchiveFormat
-    with open_archive(io.BytesIO(_CODECS[suffix][1](b"probe"))) as reader:
+    data = _CODECS[suffix][1](b"probe")
+    with open_archive(io.BytesIO(data), config=_ALWAYS_PROBE) as reader:
         return reader.format

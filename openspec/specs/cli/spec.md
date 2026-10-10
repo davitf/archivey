@@ -139,7 +139,7 @@ avoid tarbombs. When a cheap member index is available without a streaming scan
 multiple top-level entries; extract into `.` when it already has a single
 top-level directory (no redundant nesting) or the archive is a
 single-file/single-stream archive. When no cheap index is available (plain TAR,
-future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
+an archive read from a pipe, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
 the cwd and remove the wrapper. Whether the hoist runs SHALL depend only on what
@@ -327,7 +327,7 @@ a writer that never comes; on those `info` prints the open error alone.
 | `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey info <archive>` that opens | Detection runs once, inside the open |
-| `archivey info <fifo>` whose open fails | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
+| `archivey info <fifo>` whose open fails (a ZIP, say) | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 
 ### Requirement: version reports package identity and optional format matrix
@@ -420,17 +420,50 @@ a failure and MUST NOT assume `1` is the only failure code.
 | Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `141`, so a `test` that had not finished verifying does not report success |
 | `archivey --help \| true`, or a usage error whose stderr pipe is closed | No message or traceback; exit `141` (not `0` or `2`) |
 
-### Requirement: stdin archives are reserved, not supported in v1
+### Requirement: read-once paths open in streaming mode
+
+When the archive path is a pipe (FIFO), a character device or a socket, which can be
+read only once, every verb that opens the archive (`list`, `test`, `extract`, `info`)
+SHALL open it in streaming mode, because the user has no option to choose the mode.
+`list` SHALL list the members in one pass, `test` SHALL verify them in one pass and
+`extract` SHALL extract them in one pass. When the format cannot be read in one
+forward pass (ZIP, 7z, RAR, ISO), the verb SHALL exit `1` with a message that names
+the format by its file extension (`zip`, `7z`, `rar`, `iso`) and tells the user to
+copy the input to a regular file first. When the format's optional package is not
+installed, the verb SHALL report the missing package first, as it does for a regular
+file. The message MUST NOT suggest `streaming=True` or a `BytesIO`, which a CLI user
+cannot pass. A block device rereads the same bytes and
+opens as a regular file does.
+
+A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
+pipe, so an archive piped on stdin is read through this requirement. The `-` token is
+separate and stays reserved (below).
+
+#### Scenario: read-once paths
+
+| Case | Expected |
+| --- | --- |
+| `archivey list <tar-fifo>` | Lists every member; exit `0` |
+| `archivey test <tar-fifo>` | Verifies every file member in one pass; exit `0` |
+| `archivey extract <tar-fifo> -d out` | Extracts every member into `out`; exit `0` |
+| `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
+| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first. When the format's optional package is not installed (ISO without `pycdlib`), the message names the missing package instead |
+| `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
+
+### Requirement: the stdin token `-` is reserved, not supported in v1
 
 The system SHALL treat `-` as a reserved token meaning "read archive from stdin"
 and SHALL fail fast with a clear "not supported yet" message rather than opening a
-filesystem entry literally named `-`.
+filesystem entry literally named `-`. Outside Windows, the message SHALL name
+`/dev/stdin`, through which a piped archive is read as a read-once path (above). On
+Windows, which has no `/dev/stdin`, the message SHALL tell the user to copy the archive
+to a regular file instead.
 
 #### Scenario: stdin reserved
 
 | Case | Expected |
 | --- | --- |
-| `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
+| `archivey list -` | Non-zero exit; message says the `-` token is not supported yet and names `/dev/stdin` (on Windows: says to copy the archive to a regular file) |
 | `archivey extract -` | Same |
 
 ### Requirement: an empty path argument is a usage error

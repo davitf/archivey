@@ -116,8 +116,13 @@ The system SHALL execute format detection with this algorithm:
    held in the detection prefix still matches. A source shorter than the block SHALL NOT
    be read for it.
 6. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
+   Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
+   the source's extension names SHALL run (see *Magic-less formats are detected by a
+   content probe*); `open_stream` SHALL run every probe.
 7. **Extension** — `Path` with a known extension → `GUESS` / `detected_by="extension"`.
-8. `FormatDetectionError` when nothing matched.
+8. `FormatDetectionError` when nothing matched. When step 6 ran only the probes the
+   extension allows, the message SHALL name the three ways to read a nameless
+   probe-only stream: `format=`, `open_stream()` and `always_probe_content=True`.
 
 Steps are ordered attempts, not alternatives: a step that produces no match falls through,
 and attempting one never prevents a later one from running.
@@ -146,7 +151,7 @@ part of the prefix has (`access-mode-and-cost`, "a non-blocking read is not end 
 | ISO with a zeroed system area | `ISO` / `CERTAIN` / `magic`; unchanged |
 | Source smaller than the extended window, size known | Step 4 skipped without an extended peek; falls through |
 | Source too short for the window, size unknown | Short peek, no match, falls through — never an error for being short |
-| Real Brotli stream larger than the window, no extension | One bounded peek misses at step 4, then step 6 detects it |
+| Real Brotli stream larger than the window, no extension, `always_probe_content=True` | One bounded peek misses at step 4, then step 6 detects it |
 
 ### Requirement: Conflict resolution — magic wins and warning is emitted
 
@@ -171,6 +176,11 @@ Detector tables SHALL come from container backends (`ReadBackend.MAGIC` /
 `EXTENSIONS` / `CONTENT_PROBES`) and stream-codec descriptors — no per-format
 `detect()` logic. Stream-codec rows come from descriptors (not hand-listed on
 `SingleFileBackend`). A content probe is the codec's `content_probe` function.
+A codec's extensions are its canonical one, derived from its format, then its
+`extension_aliases`; today `.zlib` for zlib and `.brotli` for Brotli, each with a `.tar.`
+form. Both formats are found only by a probe, which runs only for a name that claims
+the format, so a common alias is the difference between a file that opens and one
+that is refused.
 Detected formats and `detected_by` MUST match prior behavior. Confidence MUST also
 match prior behavior **except** for an uncorroborated Brotli content-probe match,
 which reports `GUESS` (see the magic-less-formats requirement).
@@ -185,6 +195,8 @@ which reports `GUESS` (see the magic-less-formats requirement).
 | Brotli, first meta-block compressed, no corroborating extension | `PROBABLE` / `content_probe` |
 | Brotli, first meta-block uncompressed/metadata, no corroborating extension | `GUESS` / `content_probe` |
 | ZIP / TAR / ISO | Container backend `MAGIC`, merged into the same table |
+| `x.brotli` / `x.tar.brotli` holding Brotli | Brotli probe runs; `BROTLI` / `TAR` × `BROTLI`, corroborated |
+| `x.zlib` / `x.tar.zlib` holding zlib | zlib probe runs; `ZLIB` / `TAR` × `ZLIB`, corroborated |
 
 ### Requirement: Magic-byte table
 
@@ -242,16 +254,32 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 
 ### Requirement: Magic-less formats are detected by a content probe
 
-When the magic-byte table yields no match, the system SHALL run each registered
-content probe on the peeked prefix (consumes nothing), except after a strong executable
-cue or a known non-archive signature (see *A known non-archive signature stops the content
-probes*). This covers Brotli (no
+When the magic-byte table yields no match, the system SHALL run the registered content
+probes on the peeked prefix (consumes nothing), except after a strong executable cue or a
+known non-archive signature (see *A known non-archive signature stops the content
+probes*).
+
+**Which probes run.** A probe is the weakest evidence detection has, and on a source with
+no name it is the only evidence: real binary files pass the LZMA Alone and Brotli probes
+(a backup-drive scan: 435 of 437 Brotli hits and 51 of 55 Alone hits were other files;
+26 681 zlib hits were git loose objects). So by default `open_archive` and
+`detect_format` SHALL run only the probe of a stream format the source's extension
+names: the extension map's format (`.br`, `.tar.br`, `.zz`, `.lzma`, …), plus LZMA Alone
+for `.tlz` (see *Keep `.tlz` as TAR × LZIP*). Any other source SHALL run no probe.
+Whenever the name leaves out at least one probe, whether or not another one runs, the
+step SHALL be recorded in `unavailable_tiers` as `content_probe` /
+`NOT_ENABLED_BY_POLICY`. `ArchiveyConfig.always_probe_content=True` SHALL run every
+probe whatever the name. `open_stream` SHALL always run every probe: its caller says the
+source is a compressed stream, so a probe only picks the codec. The internal detections
+`open_archive` runs under `format=` (stub check, empty-listing rescan) SHALL follow the
+caller's `always_probe_content`. This covers Brotli (no
 signature), zlib (too-unspecific CMF/FLG), and LZMA Alone (13-byte header whose
 properties byte is too weak for exact magic). Probes typically decode a bounded
 prefix; MAY gate on cheap structural bytes first; and MAY consult the source length
 when detection knows it (see the framing requirement below). Skip when the
-decompressor backend is missing (fall through to extension). Extension MAY override
-a disagreeing probe (false-positive risk on short/adversarial input).
+decompressor backend is missing (fall through to extension). A probe the extension's
+format does not name does not run, so the extension decides between them; a stream
+named for another format falls through to that extension's `GUESS`.
 
 A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
 confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**
@@ -332,8 +360,13 @@ here still opens through a `.lzma` name.
 | Case | Expected |
 | --- | --- |
 | No magic; bounded prefix decompresses as Brotli, name is `x.br` | `BROTLI`, `PROBABLE`, `content_probe` |
-| No magic; bounded prefix decompresses as Brotli, first meta-block compressed, no corroborating extension | `BROTLI`, `PROBABLE`, `content_probe` |
-| No magic; bounded prefix decompresses as Brotli, first meta-block uncompressed/metadata, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
+| No magic, no name, probe-only bytes, default config | No probe runs; `FormatDetectionError` naming `always_probe_content` |
+| Same through `open_stream` | Every probe runs; the codec is detected |
+| LZMA Alone bytes named `x.zz` | Only the zlib probe runs; it declines; `ZLIB` / `GUESS` / `extension` |
+| zlib bytes named `x.gz` | No probe runs (`content_probe` / `NOT_ENABLED_BY_POLICY`); `GZ` / `GUESS` / `extension` |
+| Any of the above with `always_probe_content=True` | Every probe runs, as listed in the rows below |
+| `always_probe_content=True`; no magic; bounded prefix decompresses as Brotli, first meta-block compressed, no corroborating extension | `BROTLI`, `PROBABLE`, `content_probe` |
+| `always_probe_content=True`; no magic; bounded prefix decompresses as Brotli, first meta-block uncompressed/metadata, no corroborating extension | `BROTLI`, `GUESS`, `content_probe` |
 | zlib CMF/FLG + clean zlib decode | `ZLIB`, `PROBABLE`, `content_probe` — unchanged |
 | zlib-looking header, decode fails | No zlib claim; fall through to extension / fail |
 | `.br`, Brotli extra missing | Probe skipped; extension guess `BROTLI`/`GUESS` |

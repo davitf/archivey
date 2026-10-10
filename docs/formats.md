@@ -699,10 +699,21 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
   a source too small for it never pays) → the 512-byte `koly` block at the end of a
   seekable source (a UDIF disk image; see Disk images) → content probes for the formats
-  with no magic → the extension. A bzip2 or xz header that is the first block of such
+  with no magic (see the next item) → the extension. A bzip2 or xz header that is the first block of such
   an image loses to that block. A step that matches nothing falls through to the next;
   nothing is ever rejected for failing an earlier one. A pipe is not rewound to read
   the block at the end.
+- **Content probes run only for a matching name by default.** LZMA Alone, zlib and
+  Brotli have no magic, so a trial decode of the first bytes (a content probe) is the
+  only thing that recognises them, and ordinary binary files sometimes pass one. By
+  default `open_archive` and `detect_format` run a probe only when the name ends in one of
+  that format's extensions: `.lzma` or `.tlz` for LZMA Alone, `.zz` or `.zlib` for zlib,
+  `.br` or `.brotli` for Brotli, and the `.tar.` form of each except `.tlz`. A matching probe confirms the name and still finds a TAR inside. A source with
+  no name, or another extension, runs no probe: a nameless raw stream of these formats
+  raises `FormatDetectionError`, and one named for another format gets that format's
+  guess. If you read such sources, give the file its format's extension, pass `format=`,
+  use `open_stream()` (which always runs every probe), or set
+  `ArchiveyConfig(always_probe_content=True)`.
 - **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
   size — may precede the first real frame, so detection walks past them by their declared
   sizes within the peeked bytes and matches the regular frame behind. Skippable frames
@@ -732,7 +743,8 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   later (a two-byte magic such as gzip's reported below `CERTAIN`, say). Branch on
   `format`, not on `confidence`. **`detected_by` is an open set**: new detection steps
   may add values, so handle an unknown one rather than matching every value.
-- **Brotli** has no magic, so detection uses a content probe plus framing checks
+- **Brotli** has no magic, so detection uses a content probe (when it runs; see above)
+  plus framing checks
   **when the source length is known** (paths, `BytesIO`, and short non-seekable
   peeks): a first meta-block that *declares* more bytes than the source holds is
   rejected; when the source is 64 KiB or less, the whole of it is decoded and a stream

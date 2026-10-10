@@ -27,7 +27,13 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import ArchiveReader, ArchiveyError, open_archive, open_stream
+from archivey import (
+    ArchiveReader,
+    ArchiveyConfig,
+    ArchiveyError,
+    open_archive,
+    open_stream,
+)
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.volumes import resolve_source
 from tests.sample_archives import (
@@ -41,6 +47,9 @@ _BASIC = next(entry for entry in CORPUS if entry.id == "basic")
 # Every format the entry is built in except ``dir``, which is a directory tree: there is
 # no stream to hand over, so there is nothing here to close.
 _STREAM_KEYS = [key for key in _BASIC.formats if key != "dir"]
+# The BytesIO shape has no name, so the magic-less formats (``tar.zz``, ``tar.br``,
+# ``tar.lzma``) are recognised only with every content probe on.
+_ALWAYS_PROBE = ArchiveyConfig(always_probe_content=True)
 
 
 class _CallerBytesIO(io.BytesIO):
@@ -92,10 +101,10 @@ def test_open_archive_never_closes_a_caller_stream(
     for shape, stream in _caller_streams(path):
         if measure:
             with enable_measurement():
-                with open_archive(stream) as reader:
+                with open_archive(stream, config=_ALWAYS_PROBE) as reader:
                     _read_everything(reader)
         else:
-            with open_archive(stream) as reader:
+            with open_archive(stream, config=_ALWAYS_PROBE) as reader:
                 _read_everything(reader)
         _assert_still_the_caller_s(stream, head, shape)
 

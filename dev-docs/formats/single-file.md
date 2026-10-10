@@ -98,7 +98,10 @@ zstd also matches behind a run of skippable frames ([`zstd-lz4.md`](zstd-lz4.md)
 The other three have none that is safe to trust, and are found by a **content probe**
 that decodes a bounded sample: LZMA Alone, then zlib, then Brotli, in that order. The
 steps run strongest signal first — near magic, the SFX scan, far magic, content probes,
-extension — so a probe only sees what nothing stronger claimed.
+extension — so a probe only sees what nothing stronger claimed. By default a probe runs
+only when the source's extension names its format; `always_probe_content=True` and
+`open_stream` run them all
+([`topics/detection.md`](../topics/detection.md) §2.5).
 [`topics/detection.md`](../topics/detection.md) has the order and why.
 
 What is codec-specific about a probe: it runs with accelerators off and decoder memory

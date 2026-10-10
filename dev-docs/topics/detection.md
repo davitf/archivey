@@ -34,6 +34,9 @@ Three other pages own parts of this, and this page links them rather than repeat
   not run, with the reason for each.
 - **A filename never overrules the bytes.** When they disagree, the bytes win and
   `FORMAT_EXTENSION_CONFLICT` is emitted.
+- **A content probe runs only for a name that claims its format**, unless
+  `ArchiveyConfig.always_probe_content` is set or the caller is `open_stream` (§2.5). A
+  nameless raw LZMA Alone, zlib or Brotli source is refused by default.
 - **`confidence` is provisional and `detected_by` is an open set** (`docs/formats.md`
   §Detection). No behaviour in the library branches on `confidence`.
 - **What you might expect and will not find:**
@@ -83,7 +86,7 @@ extension is the last step, and it is used only when every content signal declin
 | 2. SFX scan | Leading bytes look like a prefix; a validated archive needle behind it | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
 | 3. Far magic | Exact magic past 4 KiB (ISO `CD001` at 32 769) | `CERTAIN` | `magic` | 32 774 bytes, once |
 | 4. Trailer magic | Exact magic at the start of a fixed block at EOF (UDIF `koly`, 512 bytes) | `CERTAIN` | `magic` | 512 bytes, on a cheap seek |
-| 5. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
+| 5. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes; by default only the probe the extension names runs | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
 | 6. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
 
 A near-magic or content-probe match on a single-file compressor is then offered to the
@@ -180,7 +183,23 @@ ZIP appended to a JPEG is still not found (§5).
 
 ### 2.5 Content probes
 
-The probes run in registry order (LZMA Alone, zlib, Brotli), and the first to accept wins.
+**Which probes run.** By default only the probe of a stream format the source's extension
+names: `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, their `.tar.` forms, and LZMA Alone for
+`.tlz`, which lzma-utils used before lzip took the name. A source with no name or another
+extension runs no probe. Whenever the name leaves a probe out, even if another one runs,
+the step is recorded as `content_probe` / `NOT_ENABLED_BY_POLICY`.
+`ArchiveyConfig.always_probe_content=True` runs every probe, and `open_stream` always does,
+because its caller already says the source is a compressed stream; there a probe only
+picks the codec. The reason is evidence, not cost: on a nameless source a probe is the
+only evidence, and real files pass it. A scan of a backup drive
+([`investigations/2026-10-backup-scan.md`](../investigations/2026-10-backup-scan.md))
+found about 27 300 of its 57 390 "archives" through the probes: 26 681 git loose objects,
+435 non-Brotli files claimed as Brotli and 51 non-LZMA files claimed as LZMA Alone. A raw
+stream with no name is rare as a file and common as `open_stream` input. With a matching
+name the probe can only confirm the name, so it adds no false claim, and its hit still
+gets the inner-TAR check that an extension guess does not.
+
+When probes run, they run in registry order (LZMA Alone, zlib, Brotli), and the first to accept wins.
 Five guards keep a probe from claiming bytes that are not its format. The codec side of each
 guard is on [`formats/single-file.md`](../formats/single-file.md) §2.1.
 
@@ -467,6 +486,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | `confidence` provisional, `detected_by` an open set | Lets a later release grade more finely or add a step without breaking callers | Freezing the grades and values in 0.2.0; renaming `sfx_scan` to `prefixed_scan` |
 | A short 7z hit keeps the scan going to the end of the window | The short hit's own end would stop before a real payload that follows a decoy | Stopping at the first hit; bounding at the PE overlay now (an idea in [`IDEAS.md`](../IDEAS.md)) |
 | The reader keeps the `FormatInfo` its open detected (`reader.format_info`) | `archivey info` prints it instead of detecting a second time, and a second detection could differ from the first | Detecting again in the CLI |
+| Content probes run only for a name that claims the format, unless `always_probe_content` is set; `open_stream` always probes | On a nameless source a probe is the only evidence, and the backup scan found it wrong more often than right outside git objects (§2.5). Fixing one false-positive shape at a time (an OLE veto, the libmagic sweep) does not end the class | Probes on by default with more vetoes; probes off with no extension exception, which would lose the `.br`-holds-a-tar check |
 | Internal detections run under `probe_config(config)` | They spend what the caller allowed, but their diagnostics are not the caller's | Passing the caller's config through |
 
 ## 7. Open questions
