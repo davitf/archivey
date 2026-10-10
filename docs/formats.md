@@ -163,10 +163,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   corrupt member header *after the first* as a clean end of archive — no exception is
   raised; iteration just stops early. Archivey backstops this with its end-of-archive
   marker check:
-    - When the shortened scan stops on a **rejected (non-null) header block**, archivey
-      raises `CorruptionError` **by default** — a well-formed tar never ends that way. In
-      random-access reads this holds even when the bad header is the archive's *final*
-      block.
+    - When the shortened scan stops on a **header `tarfile` rejected**, archivey raises
+      `CorruptionError` **by default** — a well-formed tar never ends that way. This
+      holds in random-access and streaming reads alike, whatever follows the bad header:
+      more members, nothing (it is the archive's *final* block), or a block of zeros.
     - A tar that merely **ends cleanly on a member boundary without the two-block null
       trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
@@ -194,9 +194,6 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       listing.
     - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
       whatever the policy.
-  - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access
-    reads but not in forward-only streaming, where it surfaces as the missing-trailer
-    warning instead. A future native TAR reader may close this gap.
 
 ## 7z
 
