@@ -124,7 +124,9 @@ completion (no streaming `__iter__` cache-replay). Early `break` still consumes.
 Member selection for extraction is `extract_all(members=...)` (`safe-extraction`).
 
 `scan_members()` MAY run before the pass (starts+finishes it), after an interrupted
-pass (drains remainder), or after completion (returns cache). Starting the pass
+pass (drains remainder), or after completion (returns cache). A pass that went past
+`ListingLimits` keeps no cache (`archive-reading` §listing limits), so
+`scan_members()` after it raises `ResourceLimitError`. Starting the pass
 consumes it. `members_report()` MAY likewise start or finish the pass and consumes
 it; it returns `MemberListReport` instead of raising on terminal archive-level
 listing errors (`archive-reading`). `members_report_if_available()` never
@@ -143,6 +145,7 @@ recovered member before propagating a terminal archive-level listing error
 | Terminal archive error after prefix (either mode) | Prefix yielded; then raise |
 | Second forward-pass method after begin/complete | `ArchiveyUsageError` (all formats) |
 | Early `break` then `scan_members()` | Drains remainder; fully-resolved list or raise; later pass methods raise |
+| `scan_members()` after a pass that went past `ListingLimits` | `ResourceLimitError` |
 | `scan_members()` then `stream_members()` on fresh streaming reader | List returned when complete; subsequent pass raises (any index topology) |
 | `members_report()` on streaming with terminal archive error after prefix | Report with prefix + `error`; pass consumed; no raise from `members_report` |
 

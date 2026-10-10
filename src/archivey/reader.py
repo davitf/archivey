@@ -62,7 +62,8 @@ class ForwardArchiveReader(ABC):
       completeness (preferred for damaged archives).
     - :meth:`scan_members` — :meth:`members_report` that raises the report's error:
       random-access, same as ``members``; streaming, start or finish the forward pass
-      and return the resolved list (also OK after a completed pass).
+      and return the resolved list (also OK after a completed pass, unless that pass
+      went past ``ListingLimits``).
     - :meth:`members_report_if_available` — never scans; ``None`` if not yet cached.
     """
 
@@ -129,7 +130,13 @@ class ForwardArchiveReader(ABC):
         does not consume the reader. On a streaming reader it finishes the single
         forward pass (running it from the start, or completing an interrupted one) and
         returns the resolved list; it may also be called after a completed pass to
-        return the cached list."""
+        return the cached list.
+
+        It enforces ``ListingLimits`` as :meth:`~ArchiveReader.members` does. A
+        :meth:`stream_members` or ``for member in reader`` pass does not, but on a
+        streaming reader it stops keeping the listing once the totals cross a limit,
+        so its memory stays bounded by the limits. After such a pass this raises the
+        same ``ResourceLimitError`` that ``members()`` raises on the archive."""
         ...
 
     @abstractmethod
@@ -159,6 +166,13 @@ class ForwardArchiveReader(ABC):
         ``members`` is an optional selector (predicate, name/member collection, or
         ``None`` for all). The yielded stream is valid only until the iterator advances;
         it is ``None`` for non-file members.
+
+        The pass does not enforce ``ListingLimits``: it yields every member, and on an
+        archive over a limit the listing calls after it raise ``ResourceLimitError``.
+        A pass that lists as it goes (every streaming reader, and TAR) stops keeping
+        members once they cross a limit, so its memory stays bounded by the limits and
+        a link it yields after that point gets no ``link_target_member``.
+        ``ListingLimits.UNLIMITED`` keeps them all.
 
         ``file_copy_streams=False`` also yields ``None`` for a file that the archive
         stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file

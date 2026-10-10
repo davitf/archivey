@@ -265,7 +265,7 @@ _EOFHeaderError: type[Exception] = tarfile.EOFHeaderError  # pyrefly: ignore[mis
 
 
 class _TarFile(tarfile.TarFile):
-    """A ``TarFile`` that remembers why its walk stopped.
+    """A ``TarFile`` that remembers why its walk stopped, and can stop keeping headers.
 
     ``TarFile.next()`` returns ``None`` both on a zero block (the first end-of-archive
     block) and on a header it rejects after the first member, and swallows the error
@@ -274,9 +274,24 @@ class _TarFile(tarfile.TarFile):
     which one the last parse hit. This works in both access modes, unlike the
     random-access probe (:class:`_EofProbeStream`), because it does not depend on
     seeing the read.
+
+    ``TarFile.next()`` appends every header it parses to ``members``: in random-access
+    mode, and on Python before 3.13 in streaming mode too. With ``keep_members`` off, ``next()`` empties that list instead, so
+    an unguarded pass past ``ListingLimits`` keeps no header (``_discard_listing``).
+    ``TarFile.__iter__`` then always finds its index past the list's end and parses
+    the next header, which is the order it would have served anyway.
     """
 
     stopped_on_zero_block: bool = False
+    keep_members: bool = True
+    # Set by ``TarFile.__init__``; typeshed does not declare it.
+    members: list[tarfile.TarInfo]
+
+    def next(self) -> tarfile.TarInfo | None:
+        info = super().next()
+        if not self.keep_members:
+            self.members.clear()
+        return info
 
 
 class _TarInfo(tarfile.TarInfo):
@@ -745,7 +760,7 @@ class TarReader(BaseArchiveReader):
         streaming: bool,
         *,
         member_streams: MemberStreams,
-    ) -> tarfile.TarFile:
+    ) -> _TarFile:
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
             codec_source: str | BinaryIO
@@ -825,7 +840,7 @@ class TarReader(BaseArchiveReader):
         name: str | None = None,
         fileobj: BinaryIO | None = None,
         streaming: bool = False,
-    ) -> tarfile.TarFile:
+    ) -> _TarFile:
         # mode="r:" reads an *uncompressed* tar stream with random access; mode="r|" is
         # forward-only (required for non-seekable sources). We feed either the raw file
         # (plain tar) or our own decompressor (compressed tar), never tarfile's native
@@ -1059,6 +1074,12 @@ class TarReader(BaseArchiveReader):
             )
         finally:
             self._one_header_at_a_time = False
+
+    def _discard_listing(self) -> None:
+        """Discard the listing, and stop ``tarfile`` keeping the headers it parses."""
+        super()._discard_listing()
+        self._tar.keep_members = False
+        self._tar.members.clear()
 
     def _extraction_listing(self) -> AbstractContextManager[None]:
         """Enforce ``ListingLimits`` as members arrive in the extraction's one pass.
