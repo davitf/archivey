@@ -83,6 +83,9 @@ jobs:
 
       - name: Upload report and crashing inputs
         if: always()
+        # An upload that times out (seen on macOS) is not a finding; the report is in
+        # the log and the step summary too.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: accel-crash-search-${{ matrix.os }}
