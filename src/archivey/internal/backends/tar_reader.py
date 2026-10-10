@@ -493,7 +493,18 @@ def _raised_by_tarfile(exc: BaseException) -> bool:
     (the GNU sparse PAX records and the PAX sparse 1.0 map), so a malformed value
     escapes as a plain ``ValueError``. Where it was raised is what separates that from
     a ``ValueError`` of the stream under ``tarfile``, which is raised in that stream's
-    own code and must propagate unchanged.
+    own code and is not this translator's to map. The closed-handle case among those
+    (``I/O operation on closed file``) is mapped to ``ArchiveyUsageError`` by the
+    error boundary above this translator before this check runs:
+    ``ArchiveStream._raise_translated`` for a member read,
+    ``BaseArchiveReader._raise_translated`` for the reader's own work. The check is
+    also reached from ``_translate_open_error`` while the reader is constructed,
+    behind neither boundary; it returns ``False`` there on its own, because the stream
+    under ``tarfile`` is always one of archivey's own wrappers (``_BoundedTarFileobj``
+    for ``r:``, the ``ArchiveSource`` for ``r|``), so a closed-handle ``ValueError``
+    is raised in that wrapper's frame, not ``tarfile``'s. What is left for this check
+    is ``tarfile``'s own header-parse ``ValueError``s; any other stream ``ValueError``
+    propagates unchanged.
     """
     tb = exc.__traceback__
     if tb is None:

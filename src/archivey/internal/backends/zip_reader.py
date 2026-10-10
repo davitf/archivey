@@ -969,9 +969,11 @@ class ZipReader(BaseArchiveReader):
             # A corrupt local-header offset makes stdlib zipfile seek to a bad position
             # ("negative seek value -N") before reading the member. That is archive
             # corruption, surfaced as a typed error rather than a raw ValueError.
-            # The closed-handle ValueError is *not* corruption and is carved out ahead of
-            # this arm, in _reraise_member_error (it cannot be returned from here:
-            # ArchiveyUsageError is deliberately not an ArchiveyError).
+            # A closed handle is *not* corruption and never reaches this arm: the
+            # shared boundary (BaseArchiveReader._raise_translated) maps a closed
+            # source ahead of this translator, and _reraise_member_error maps
+            # zipfile's own closed-archive wording (neither can be returned from
+            # here: ArchiveyUsageError is deliberately not an ArchiveyError).
             return CorruptionError(f"Corrupt ZIP member offset/structure: {exc!r}")
         if isinstance(exc, EOFError):
             # Short input, from any decoder a member read reaches. The codec layer maps
@@ -2025,9 +2027,10 @@ class ZipReader(BaseArchiveReader):
         reclassified). Shared by the member-open and compressed-confirm decrypt paths
         so their translate/stamp/raise tail stays identical.
 
-        The closed-handle ``ValueError`` is intercepted here rather than in
+        zipfile's closed-archive ``ValueError`` is intercepted here rather than in
         ``_translate_exception``, which can only return an ``ArchiveyError``; a lifecycle
-        fault is deliberately not one.
+        fault is deliberately not one. A closed source (``I/O operation on closed
+        file``) is mapped by the shared base boundary for every format.
         """
         if isinstance(exc, ValueError) and _CLOSED_ARCHIVE_MESSAGE in str(exc):
             raise _closed_archive_error() from exc
