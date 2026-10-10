@@ -861,6 +861,60 @@ def test_rar_volume_set_damaged_endarc_in_every_volume_reports_each_volume(
         assert diagnostic.context.observed_bytes == offset
 
 
+def _flip_endarc_type(data: bytes, version: int) -> bytes:
+    """Overwrite the end block's type byte with a FILE header's, so its CRC fails
+    and the walk does not take it for an end block: a damaged header after the
+    last member."""
+    block_pos, _header_end = _endarc_block(data, version)
+    if version == 4:
+        type_at, file_type = block_pos + 2, 0x74
+    else:
+        type_at, file_type = block_pos + 4 + 1, 2  # CRC32, one-byte size vint
+    out = bytearray(data)
+    out[type_at] = file_type
+    return bytes(out)
+
+
+@pytest.mark.parametrize(
+    ("names", "version"),
+    [
+        pytest.param(("tinyvol.part1.rar", "tinyvol.part2.rar"), 5, id="rar5"),
+        pytest.param(("tinyvol_rnn.rar", "tinyvol_rnn.r00"), 4, id="rar4"),
+    ],
+)
+def test_rar_volume_set_damaged_header_follows_a_split_member(
+    tmp_path: Path, names: tuple[str, str], version: int
+) -> None:
+    """Volume 1's last header is damaged and not recognised as an end block, but
+    the member header before it (CRC intact) says its data continues. The walk
+    follows it into volume 2, as for a recognised damaged end block and a missing
+    middle volume (DR-2): the next volume's first header is at its own offset 0,
+    so the damaged header's size is not needed to find it. The whole set lists and
+    reads, then CorruptionError names volume 1. Fails if the walk drops the
+    next-volume signal of a volume that ended at a damaged header."""
+    for name in names:
+        (tmp_path / name).write_bytes((_RAR_FIXTURES / name).read_bytes())
+    with open_archive(tmp_path / names[0]) as reader:
+        expected = {m.name: reader.read(m) for m in reader.members() if m.is_file}
+    first = tmp_path / names[0]
+    first.write_bytes(_flip_endarc_type(first.read_bytes(), version))
+    with open_archive(first) as reader:
+        report = reader.members_report()
+        assert {m.name: reader.read(m) for m in report if m.is_file} == expected
+    assert isinstance(report.error, CorruptionError)
+    assert not isinstance(report.error, TruncatedError)
+    assert "header CRC mismatch" in str(report.error)
+    assert "(volume 1 of the set" in str(report.error)
+    # Without volume 2 the split member cannot be read, and both faults are named.
+    (tmp_path / names[1]).unlink()
+    with open_archive(first) as reader:
+        report = reader.members_report()
+    assert [m.name for m in report] == list(expected)
+    assert isinstance(report.error, TruncatedError)
+    assert "volume 2 is missing" in str(report.error)
+    assert "header CRC mismatch" in str(report.error)
+
+
 def _rar3_hp_damaged_endarc(data: bytes) -> bytes:
     """Flip a CRC16 byte inside the encrypted end block, the file's last 24 bytes
     (8 salt bytes, then one cipher block)."""
@@ -1001,7 +1055,7 @@ def _flip_block_type_to_endarc(data: bytes, version: int, which: str) -> bytes:
 @pytest.mark.parametrize("which", ["main", "second_file"])
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
-def test_rar_header_whose_type_byte_reads_as_endarc_stays_corruption(
+def test_rar_header_whose_type_byte_reads_as_endarc_is_a_damaged_header(
     fixture: str, version: int, streaming: bool, which: str
 ) -> None:
     """The type of a header whose CRC failed is not data either: one flipped byte

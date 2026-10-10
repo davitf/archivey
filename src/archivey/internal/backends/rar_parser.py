@@ -552,7 +552,12 @@ class RarArchive:
     #: searches for it; archivey does not. Not set for a damaged main header, which
     #: still raises at open, nor where the header password is unproven: there a CRC
     #: mismatch reads the same as a wrong key, so the walk raises the wrong-password
-    #: ``EncryptionError``. The walk does not follow a next-volume flag once it is set.
+    #: ``EncryptionError``. In a set, ``needs_next_volume`` is still set by a member
+    #: header before the damage (CRC intact) whose data continues, and the walk
+    #: follows it: the next volume's first header is at its own offset 0, so the
+    #: damaged header's size is not needed to find it. Its members are listed and
+    #: the error follows the whole listing, as for a missing middle volume (DR-2).
+    #: The first damaged volume's text is kept.
     damaged: str | None = None
     #: 0-based indices of the RAR5 volumes whose block walk reached end of file
     #: without an end-of-archive block. RAR5 writers always close a volume with one,
@@ -2152,6 +2157,13 @@ def _parse_rar3(
                 # The fields are parsed before the CRC can be checked, since they
                 # say how many bytes it covers. A field that does not parse in a
                 # header whose CRC also fails is the same damage as a bad CRC.
+                # Once the fields failed, the true end of the CRC is unknown, so
+                # this checks the whole header: a deliberate approximation. It is
+                # exact except for a FILE_COMMENT header, whose CRC stops before
+                # the comment, so there the check cannot match and invalid fields
+                # under a valid CRC read as damage too. Either way it is a
+                # CorruptionError; only its timing differs (after the listing,
+                # not at open), and reaching it needs a crafted CRC.
                 if header_crc == _crc32(hdata[2:header_size]) & 0xFFFF:
                     raise
                 crc_pos = header_size
@@ -2228,7 +2240,7 @@ def _parse_rar3(
         members=members,
         sfx_offset=sfx_offset,
         is_volume=is_volume,
-        needs_next_volume=needs_next_volume and damaged is None,
+        needs_next_volume=needs_next_volume,
         old_volume_naming=old_volume_naming,
         truncated=truncated,
         damaged=damaged,
@@ -3051,7 +3063,7 @@ def _parse_rar5(
         members=members,
         sfx_offset=sfx_offset,
         is_volume=is_volume,
-        needs_next_volume=needs_next_volume and damaged is None,
+        needs_next_volume=needs_next_volume,
         damaged_service_headers=damaged_service_headers,
         damaged_service_headers_omitted=damaged_service_headers_omitted,
         truncated=truncated,

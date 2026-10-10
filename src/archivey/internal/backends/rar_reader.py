@@ -2415,9 +2415,14 @@ class RarReader(BaseArchiveReader):
             # holds and reports the rest as missing (``members_report().error``).
             # Raised before the end-block diagnostics below: under a strict policy
             # emitting them first would replace this with a DiagnosticRaisedError
-            # about lesser damage.
+            # about lesser damage. A set can also have a damaged header (the walk
+            # follows a split member past one): one error is raised, so its message
+            # names both.
+            message = self._archive.truncated
+            if self._archive.damaged is not None:
+                message += f"; also {self._archive.damaged}"
             raise TruncatedError(
-                self._archive.truncated,
+                message,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )

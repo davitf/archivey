@@ -1247,9 +1247,14 @@ precede it. The damage SHALL then be reported as `CorruptionError`, not
 `TruncatedError`: as `members_report().error`, and raised by `members()` and
 `stream_members()` after the listed members. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes (DR-2: TAR lists the members before a damaged header and then raises).
-In a multi-volume set the message SHALL name the volume, the walk SHALL NOT read later
-volumes, and a listed member whose data continues past the damaged volume keeps
-`split_after`, so its read is refused.
+In a multi-volume set the message SHALL name the first damaged volume. The walk SHALL
+go on to the next volume only when a member header before the damage (CRC intact) says
+its data continues there, as for a damaged end block: the next volume's first header is
+at its own offset 0, so the damaged header's size is not needed to find it. That
+volume's members SHALL be listed, and the `CorruptionError` SHALL follow the whole
+listing (DR-2, as for a missing middle volume). With no continuing member the set ends at
+the damaged volume. When the next volume is missing, the open SHALL end with the
+incomplete-set `TruncatedError`, whose message also names the damaged header.
 
 The walk SHALL stop at the damaged header. Its size field is not data once the CRC
 fails, so the position of the next header is unknown. `unrar` 7.00 searches past the
@@ -1274,6 +1279,8 @@ the open SHALL raise the wrong-password `EncryptionError`.
 | --- | --- |
 | Plain RAR 1.5-4 or RAR5, one byte of the second FILE header flipped | First member listed and read; `CorruptionError` after it |
 | Plain, one byte of the MAIN header flipped | `CorruptionError` at open |
+| Plain two-volume set, volume 1's end block damaged and not taken as one, its last member continues into volume 2 | Full set listing; members read; `CorruptionError` naming volume 1 after them |
+| The same set with volume 2 missing | Volume 1's members listed; `TruncatedError` naming volume 2 and the damaged header |
 | `-hp` RAR 1.5-4, a FILE header damaged after one whose CRC16 matched | Members before it listed; `CorruptionError` after them |
 | `-hp` RAR 1.5-4 set, volume 2's first header damaged after volume 1 proved the key | `CorruptionError` naming volume 2 |
 | The same damage with a wrong password | `EncryptionError` ("wrong password?") at open |
