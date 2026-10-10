@@ -31,6 +31,7 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -149,7 +150,6 @@ def _is_junction(entry: os.DirEntry[str]) -> bool:
 class DirectoryReader(BaseArchiveReader):
     """Reads a filesystem directory as an archive."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     # A filesystem directory has no O(1) upfront index: enumerating members is an
     # os.scandir walk (a scan). So this is False (like plain TAR) — members_report_if_available()
     # returns None rather than triggering an uncached walk on every call, and the walk only runs
@@ -187,8 +187,19 @@ class DirectoryReader(BaseArchiveReader):
         # streaming walk descends into what it just wrote (`copy/copy/copy/...`)
         # until a path is too long, and a listing taken later includes it. `cp -r`
         # refuses the same request.
-        root = self._root.resolve()
-        target = dest.resolve()
+        #
+        # A dest that does not resolve is left to the shared path, so it fails as on
+        # every other backend: under a symlink loop, mkdir raises OSError (ELOOP); a
+        # dest that is itself a looping link exists and is not a directory, so it is
+        # refused with ExtractionError. A source root that does not resolve skips the
+        # check too, and the walk fails on it a moment later. So neither case writes
+        # members into the source, but in the second the dest directory itself may
+        # already be created inside the source, as it was with 3.13's resolve().
+        try:
+            root = resolve_or_raise_on_loop(self._root)
+            target = resolve_or_raise_on_loop(dest)
+        except OSError:
+            return
         if target == root or target.is_relative_to(root):
             raise ExtractionError(
                 f"Cannot extract a directory into itself: {display_path(dest)} is "

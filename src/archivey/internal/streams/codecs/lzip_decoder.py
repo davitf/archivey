@@ -81,11 +81,11 @@ def _check_version(header: bytes, offset: int) -> None:
     if len(header) >= _HEADER_SIZE and header[4] != _VERSION:
         raise UnsupportedFeatureError(
             f"Unsupported lzip version {header[4]} in the member at offset {offset}: "
-            f"only version {_VERSION} is read"
+            f"only version {_VERSION} is read; a damaged header reads the same way"
         )
 
 
-@dataclass
+@dataclass(slots=True)
 class _MemberBounds:
     compressed_start: int
     decompressed_start: int

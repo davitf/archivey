@@ -393,6 +393,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.rar_copy_sources as rar_copy_sources
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
+    import archivey.internal.backends.sevenzip_reader as sevenzip_reader
     import archivey.internal.backends.tar_parser as tar_parser
     import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
@@ -478,6 +479,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # (for .tar.gz, the decompressed stream). TAR stores member data as is, so
         # no codec above it has a table, and a forward-only walk resumes nowhere.
         tar_parser._ForwardSlice,
+        # A 7z pass's member stream, forward-only like the folder decode under it:
+        # nothing seeks it, so nothing asks it for a resume offset.
+        sevenzip_reader._ReadAheadStream,
     }
 
     found = _readonly_stream_subclasses()

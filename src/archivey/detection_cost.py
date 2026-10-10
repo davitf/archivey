@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from archivey.internal.arg_checks import check_limit_fields
+
 
 class DetectionBudgetPreset(Enum):
     """Named detection budgets. ``BALANCED`` is the ``detect_format`` default."""
@@ -78,6 +80,10 @@ class DetectionBudget:
     max_decode_input: int
     max_decode_output: int
     completion_window_bytes: int
+
+    def __post_init__(self) -> None:
+        # Every field is a non-negative int; there is no ``None`` to mean "off".
+        check_limit_fields(self, cls="DetectionBudget")
 
     @classmethod
     def for_preset(cls, preset: DetectionBudgetPreset) -> DetectionBudget:
