@@ -1009,7 +1009,8 @@ def _rar3_end_block_shaped(flags: int, header_size: int) -> bool:
 
     An end block has no data area, so no ``LONG_BLOCK`` flag, and its header is 7
     bytes plus at most a data CRC (4), a volume number (2) and 7 reserved bytes:
-    20 at most. Every FILE header carries ``LONG_BLOCK`` and is larger than that.
+    20 at most. A FILE header's fixed fields are 25 bytes past the 7-byte common
+    header, so even one with ``LONG_BLOCK`` clear is larger than that.
     """
     return not flags & _RAR3_LONG_BLOCK and header_size <= _RAR3_ENDARC_MAX_HEADER
 
@@ -2097,6 +2098,12 @@ def _parse_rar3(
                 proven=password_proven,
             )
 
+            # The data size is PACK_SIZE (with HIGH_PACK_SIZE for a >4 GiB member),
+            # whatever LONG_BLOCK says, as unrar reads it. ``add_size`` is the same
+            # low 32 bits when LONG_BLOCK is set and 0 when it is clear, and skipping
+            # 0 parsed a member's data as more headers, listing members unrar does
+            # not have.
+            packed_size = member.compress_size
             if block_type == _RAR3_FILE:
                 # RAR 1.5 / 2.x use the same block layout as RAR3 for headers we
                 # care about; member data is always left to RARLAB ``unrar``.
@@ -2115,10 +2122,13 @@ def _parse_rar3(
                 and not member.is_encrypted
                 and not member.split_before
                 and not member.split_after
-                and member.compress_size > 0
+                and packed_size > 0
             ):
+                # The span the walk skips below, so no byte is read both as
+                # comment data and as a later header, which let a stack of small
+                # CMT headers each re-read the rest of the archive.
                 source.seek(data_offset)
-                raw = _read_stored_comment(source, member.compress_size, "RAR3 comment")
+                raw = _read_stored_comment(source, packed_size, "RAR3 comment")
                 if member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE:
                     # unrar converts ``CmtSize / 2`` units, so an odd trailing byte
                     # is dropped rather than shown as U+FFFD. Cut at the first NUL
@@ -2133,13 +2143,6 @@ def _parse_rar3(
                 else:
                     comment = cmt
 
-            # For a >4 GiB packed member the LONG_BLOCK ``add_size`` holds only the low
-            # 32 bits; ``member.compress_size`` carries the full 64-bit size (with
-            # HIGH_PACK_SIZE) so the walk skips the whole packed region and does not land
-            # mid-data on the next header.
-            packed_size = (
-                member.compress_size if (flags & _RAR3_FILE_LARGE) else add_size
-            )
             _seek_after_packed(source, data_offset, packed_size)
             continue
 
@@ -2771,6 +2774,11 @@ def _parse_rar5(
     truncated: str | None = None
     end_block_seen = False
     end_block_damaged_at: int | None = None
+    # Only the first MAIN of a volume is asked for the quick-open table. unrar
+    # accepts a repeated MAIN, and each try reads a QO payload of up to
+    # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
+    # that read again.
+    qo_tried = not use_qo
 
     while True:
         header_fd: _Readable = source
@@ -2860,7 +2868,8 @@ def _parse_rar5(
             # Header-encrypted QO stores IV+ciphertext header copies and
             # file-encrypts the QO payload; reconstructed data_offset then
             # misses AES padding. Treat that QO as unreadable (FILE walk).
-            if hdr_enc is None and use_qo:
+            if hdr_enc is None and not qo_tried:
+                qo_tried = True
                 qopen_abs = _rar5_locator_qopen_abs(hdata, extra_size, header_offset)
                 if qopen_abs is not None:
                     resume_pos = source.tell()

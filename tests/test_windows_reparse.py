@@ -18,6 +18,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -29,8 +30,8 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import FilterRejectionError, LinkTargetNotFoundError
-from archivey.internal.backends import directory_reader
-from archivey.internal.backends.rar_parser import RarMemberInfo
+from archivey.internal.backends import directory_reader, rar_parser
+from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
 from archivey.internal.backends.zip_reader import ZipReader
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
@@ -1053,16 +1054,22 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
     all, and each flag here is the only thing that would differ between this fixture
     and the archive a RAR4 writer would emit. The branch reads nothing else off the
     member. Only the symlinks are touched, so the rest of the listing stays honest.
+
+    The fields are patched after the header walk, not in the member's constructor:
+    the walk skips a FILE header's data by its parsed ``compress_size``, so zeroing
+    it any earlier would also move the walk into the link's data.
     """
-    original_init = RarMemberInfo.__init__
+    original_walk = rar_parser._parse_rar3
 
-    def patched_init(self: RarMemberInfo, *args: object, **kwargs: object) -> None:
-        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
-        if self.is_symlink:
-            for name in fields:
-                setattr(self, name, value)
+    def patched_walk(*args: Any, **kwargs: Any) -> RarArchive:
+        archive = original_walk(*args, **kwargs)
+        for member in archive.members:
+            if member.is_symlink:
+                for name in fields:
+                    setattr(member, name, value)
+        return archive
 
-    monkeypatch.setattr(RarMemberInfo, "__init__", patched_init)
+    monkeypatch.setattr(rar_parser, "_parse_rar3", patched_walk)
 
     fixture = Path(__file__).parent / "fixtures" / "rar" / "symlinks_solid__rar4.rar"
     with open_archive(fixture) as opened:
