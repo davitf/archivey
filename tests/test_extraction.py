@@ -242,14 +242,24 @@ def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
-def test_check_universal_names_a_parent_loop_in_the_destination(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("name", "in_loop"),
+    [("p/f", False), ("f", True), ("", True)],
+    ids=["parent", "dest", "dest-root-member"],
+)
+def test_check_universal_names_a_loop_in_the_destination(
+    tmp_path: Path, name: str, in_loop: bool
 ) -> None:
-    # A loop the destination already had. Path.resolve() raises on it before Python
-    # 3.13 and returns a path from 3.13; the answer must not depend on which.
+    # A loop the destination already had, below dest or at dest itself. Path.resolve()
+    # raises on it before Python 3.13 and returns a path from 3.13; the answer must not
+    # depend on which.
     os.symlink("p", tmp_path / "p")
-    with pytest.raises(ExtractionError, match="does not resolve in the destination"):
-        check_universal(_member("p/f"), tmp_path)
+    dest = tmp_path / "p" if in_loop else tmp_path
+    member = _member(name, type=MemberType.DIRECTORY) if name == "" else _member(name)
+    with pytest.raises(ExtractionError) as info:
+        check_universal(member, dest)
+    assert type(info.value) is ExtractionError
+    assert "A path in the destination does not resolve" in str(info.value)
 
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
@@ -1784,6 +1794,29 @@ def test_extracting_under_a_symlink_loop_raises_eloop(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("source", ["directory", "tar"])
+def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
+    tmp_path: Path, source: str, dry_run: bool
+) -> None:
+    # A dest that is itself a looping link exists and is not a directory, so every
+    # backend refuses it as it refuses a regular file there. The directory backend's
+    # into-itself check must not answer first with the loop's OSError.
+    if source == "directory":
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f.txt").write_bytes(b"x")
+    else:
+        src = tmp_path / "a.tar"
+        src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
+    os.symlink("loop", tmp_path / "loop")
+    with open_archive(src) as reader:
+        with pytest.raises(ExtractionError, match="exists and is not a directory"):
+            reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 @pytest.mark.parametrize("shape", ["self", "ancestor"])
 def test_resolve_or_raise_on_loop_raises_eloop(tmp_path: Path, shape: str) -> None:
     # One OSError on every Python version, naming the path asked about: before 3.13
@@ -1825,11 +1858,19 @@ def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
         exc.winerror = 1921  # type: ignore[attr-defined]
         raise exc
 
+    # resolve() is stubbed to return the path as 3.13+ does on a loop: before 3.13
+    # resolve() calls stat itself and would turn the stub's error into RuntimeError,
+    # so the stat branch would never run.
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
     monkeypatch.setattr(Path, "stat", stat)
     path = tmp_path / "x"
     with pytest.raises(OSError) as info:
         resolve_or_raise_on_loop(path)
+    assert type(info.value) is OSError
+    assert info.value.errno == errno.ELOOP
     assert info.value.filename == str(path)
+    # The Windows code stays visible on the chained original.
+    assert getattr(info.value.__cause__, "winerror", None) == 1921
 
 
 # ---------------------------------------------------------------------------

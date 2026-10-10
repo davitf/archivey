@@ -187,10 +187,18 @@ class DirectoryReader(BaseArchiveReader):
         # Extracting a tree into a directory inside it reads its own output: a
         # streaming walk descends into what it just wrote (`copy/copy/copy/...`)
         # until a path is too long, and a listing taken later includes it. `cp -r`
-        # refuses the same request. A dest under a symlink loop raises the OSError
-        # (ELOOP) mkdir would, as it does for every other backend.
-        root = resolve_or_raise_on_loop(self._root)
-        target = resolve_or_raise_on_loop(dest)
+        # refuses the same request.
+        #
+        # A dest that does not resolve is left to the shared path, so it fails as on
+        # every other backend: under a symlink loop, mkdir raises OSError (ELOOP); a
+        # dest that is itself a looping link exists and is not a directory, so it is
+        # refused with ExtractionError. Nothing can be created inside the source
+        # through a path that does not resolve.
+        try:
+            root = resolve_or_raise_on_loop(self._root)
+            target = resolve_or_raise_on_loop(dest)
+        except OSError:
+            return
         if target == root or target.is_relative_to(root):
             raise ExtractionError(
                 f"Cannot extract a directory into itself: {display_path(dest)} is "

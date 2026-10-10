@@ -1004,6 +1004,7 @@ are the per-result outcome.
 | User filter returns anything but an `ArchiveMember` or `None` | `TypeError` naming what it returned; the call ends (a caller bug, not a member outcome) |
 | `extract_all()` on a directory source with `dest` inside that directory | `ExtractionError` before anything is created (the pass would read its own output) |
 | `extract_all()` with `dest` under a symlink loop, any format | `OSError` (`ELOOP`), as `mkdir` raises it, before anything is created |
+| `extract_all()` with `dest` itself a symlink loop, any format | `ExtractionError`, as for any `dest` that exists and is not a directory; nothing created |
 | Selector excludes member | No `ExtractionResult`; no result-count impact |
 | Member blocked by `FilterRejectionError` under `CONTINUE` | Result is `BLOCKED` with matching error; no diagnostic emitted |
 | Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error; no diagnostic emitted |

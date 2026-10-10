@@ -151,18 +151,22 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
     still contains the looping link. The ``RuntimeError`` is turned into an ``OSError``
     and the ``stat`` finds the loop on 3.13+, so callers catch ``OSError`` alone and
     one archive gets the same outcome on every version. The error names ``path``.
+
+    The errno is ``ELOOP`` on every platform too: Windows reports a loop as
+    ``ERROR_CANT_RESOLVE_FILENAME``, which Python maps to ``EINVAL``. The platform's
+    own error stays on the chain as ``__cause__``.
     """
     try:
         resolved = path.resolve()
-    except RuntimeError:
-        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from None
+    except RuntimeError as exc:
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from exc
     try:
         resolved.stat()
     except OSError as exc:
         if exc.errno == errno.ELOOP or (
             getattr(exc, "winerror", None) == _ERROR_CANT_RESOLVE_FILENAME
         ):
-            raise OSError(exc.errno, exc.strerror, str(path)) from None
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from exc
     return resolved
 
 
@@ -363,23 +367,22 @@ def check_universal(
     is_root = rel in ("", ".")  # "" / "." is the root dir member itself
     try:
         dest_root = resolve_or_raise_on_loop(dest)
-        parent = (
-            dest_root if is_root else resolve_or_raise_on_loop((dest_root / rel).parent)
-        )
+        # The root member has no parent to place, so only other members are checked.
+        if not is_root:
+            parent = resolve_or_raise_on_loop((dest_root / rel).parent)
+            if not _within(parent, dest_root):
+                raise FilterRejectionError(
+                    "Member resolves outside the destination root",
+                    member_name=name,
+                )
     except OSError as exc:
         # A symlink loop the destination already had, in dest or below it. Links this
         # run creates never loop: one that would is removed as an escape. The member
         # cannot be placed, and that is the destination's state, not a policy decision.
         raise ExtractionError(
-            "Member's parent directory does not resolve in the destination "
-            f"(a symlink loop?): {exc}",
+            f"A path in the destination does not resolve (a symlink loop?): {exc}",
             member_name=name,
         ) from exc
-    if not is_root and not _within(parent, dest_root):
-        raise FilterRejectionError(
-            "Member resolves outside the destination root",
-            member_name=name,
-        )
 
     # Symlink-target escape at planning time (the authoritative check is re-run
     # post-creation in the coordinator). The target is relative to the link's own
