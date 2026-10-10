@@ -85,6 +85,9 @@ from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
 _WORKER = Path(__file__).with_name("rapidgzip_worker.py")
 
+# The largest memory limit the OPEN frame holds (OPEN_LIMIT is a signed 64-bit integer).
+_MAX_LIMIT = (1 << 63) - 1
+
 # The least a READ asks for once reads are sequential (see ``read``). Measured over a
 # tar.gz, whose reader reads in small pieces, a round trip per piece was the cost.
 _MIN_AHEAD = 64 << 10
@@ -371,9 +374,12 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             self._source = source
             open_kind, open_path = OPEN_STREAM, b""
         # The limit goes in the OPEN frame, not the environment, so a variable the
-        # caller's process happens to hold cannot set one.
+        # caller's process happens to hold cannot set one. A cap past what the frame
+        # holds is past any address space, so the largest it holds means the same.
         open_payload = (
-            OPEN_LIMIT.pack(NO_MEMORY_LIMIT if max_memory is None else max_memory)
+            OPEN_LIMIT.pack(
+                NO_MEMORY_LIMIT if max_memory is None else min(max_memory, _MAX_LIMIT)
+            )
             + open_path
         )
         super().__init__()

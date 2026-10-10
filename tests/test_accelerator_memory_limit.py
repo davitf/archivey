@@ -27,7 +27,11 @@ import pytest
 from archivey.config import DecoderLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.streams.codecs import Codec, open_codec_stream
+from archivey.internal.streams.codecs import (
+    Codec,
+    open_codec_stream,
+    rapidgzip_worker,
+)
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStream,
     crashed_on_data,
@@ -151,6 +155,36 @@ def test_a_child_under_its_memory_limit_reads_the_whole_stream() -> None:
         io.BytesIO(_zeros(31)), label="gzip", max_memory=1 << 30
     ) as child:
         assert _read_in_chunks(child.read) == _OUTPUT_SIZE
+
+
+def test_a_limit_past_what_the_open_frame_holds_reads_the_whole_stream() -> None:
+    """``DecoderLimits`` puts no upper bound on ``max_decoder_memory``, but the ``OPEN``
+    frame carries a signed 64-bit integer. A larger cap, such as ``10**20`` written to
+    mean "effectively unlimited", raised ``struct.error`` out of the open. It is now
+    sent as the largest value the frame holds, which is still a cap and not "none"."""
+    with RapidgzipChildStream(
+        io.BytesIO(_zeros(31)), label="gzip", max_memory=1 << 63
+    ) as child:
+        assert _read_in_chunks(child.read) == _OUTPUT_SIZE
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the /proc fallback is Linux only"
+)
+def test_on_linux_an_unreadable_proc_reports_no_peak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where ``/proc/self/status`` cannot be read (``/proc`` not mounted, ``hidepid``,
+    a sandbox), the child reports no peak, so no cap applies. It does not fall back to
+    ``getrusage``, whose peak on Linux starts at the parent's (see the test above), so
+    a cap counted from it would leave the child as much extra room as the parent once
+    held."""
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise PermissionError(13, "Permission denied", "/proc/self/status")
+
+    monkeypatch.setattr(rapidgzip_worker, "open", refuse, raising=False)
+    assert rapidgzip_worker._peak_memory() is None
 
 
 _CODECS = pytest.mark.parametrize(

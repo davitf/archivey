@@ -223,7 +223,8 @@ def _points_around(stream: Any, offset: int) -> tuple[int, bytes]:
 
 def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
     """Answer the parent's requests until it goes away. ``ceiling`` is from
-    ``watch_memory``: each ``READ`` reply waits for one more check against it."""
+    ``watch_memory``: each ``READ`` and ``SEEK`` reply waits for one more check
+    against it."""
     while True:
         tag, arg, payload = channel.requests.get()
         if tag == 0:
@@ -234,7 +235,9 @@ def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
                 check_memory(ceiling)
                 ok = channel.send(OK, len(data), data)
             elif tag == SEEK:
-                ok = channel.send(OK, stream.seek(arg, payload[0] if payload else 0))
+                position = stream.seek(arg, payload[0] if payload else 0)
+                check_memory(ceiling)
+                ok = channel.send(OK, position)
             elif tag == RESUME:
                 offsets = stream.available_block_offsets().values()
                 preceding = [value for value in offsets if value <= arg]
@@ -286,16 +289,26 @@ def disable_core_dumps() -> None:
 
 
 def _peak_memory() -> int | None:
-    """This process's peak resident memory in bytes, or ``None`` where it is unknown."""
-    linux_peak = _linux_peak_memory()
-    if linux_peak is not None:
-        return linux_peak
+    """This process's peak resident memory in bytes, or ``None`` where it is unknown.
+
+    On Linux only ``VmHWM`` counts: where ``/proc`` cannot be read the answer is
+    ``None``, never ``getrusage``, whose start is the parent's peak (see
+    ``_linux_peak_memory``).
+    """
+    if sys.platform.startswith("linux"):
+        return _linux_peak_memory()
+    return _rusage_peak_memory()
+
+
+def _rusage_peak_memory() -> int | None:
+    """``ru_maxrss`` from ``getrusage`` in bytes (macOS, the BSDs), or the Windows
+    peak where there is no ``resource`` module."""
     try:
         import resource
     except ImportError:
         return _windows_peak_memory()
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # Linux and the BSDs give kilobytes, macOS gives bytes.
+    # The BSDs give kilobytes, macOS gives bytes.
     return peak if sys.platform == "darwin" else peak * 1024
 
 
@@ -400,9 +413,10 @@ def watch_memory(limit: int) -> int | None:
     under a smaller limit ends in a segmentation fault. So a thread checks the peak
     resident memory every ``_MEMORY_POLL_INTERVAL`` and exits with
     ``MEMORY_LIMIT_EXIT`` when it has grown by more than ``limit`` since this call.
-    ``_serve`` checks again before each ``READ`` reply, so a watching thread that waits
-    for a processor delays the stop by one read request at most. The parent then reads
-    the rest of the stream with the standard library, which decodes in bounded memory.
+    ``_serve`` checks again before each ``READ`` and ``SEEK`` reply, so a watching
+    thread that waits for a processor delays the stop by one request at most. The
+    parent then reads the rest of the stream with the standard library, which decodes
+    in bounded memory.
     The peak can pass the limit by what the decoder allocates between two checks:
     measured on four cores, about 17 MB.
 
