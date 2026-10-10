@@ -28,6 +28,15 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
+    _RAR3_FILE,
+    _RAR3_FILE_PASSWORD,
+    _RAR3_FILE_SALT,
+    _RAR3_LONG_BLOCK,
+    _RAR3_M0,
+    _RAR3_MAIN,
+    _S_BLK_HDR,
+    _S_FILE_HDR,
+    RAR_ID,
     _normalize_password_utf8,
     _normalize_password_utf16le,
 )
@@ -128,16 +137,6 @@ _NOT_INSTALLED_MSG = (
     "on PATH (or the unrar/rar on PATH is not a RARLAB binary). Install RARLAB unrar "
     "or rar — unrar-free / unar / 7z / 7zz are not supported as substitutes."
 )
-
-_RAR3_ID = b"Rar!\x1a\x07\x00"
-_RAR3_MAIN = 0x73
-_RAR3_FILE = 0x74
-_RAR3_FILE_PASSWORD = 0x0004
-_RAR3_FILE_SALT = 0x0400
-_RAR3_LONG_BLOCK = 0x8000
-_RAR3_M0 = 0x30
-_RAR3_BLOCK_HEADER = struct.Struct("<HBHH")
-_RAR3_FILE_HEADER = struct.Struct("<LLBLLBBHL")
 
 
 def _parse_unrar_banner(text: str) -> _UnrarBanner:
@@ -1305,7 +1304,7 @@ def decompress_rar3_blob(
     file_flags = _RAR3_LONG_BLOCK
     filename = b"data"
     file_body = (
-        _RAR3_FILE_HEADER.pack(
+        _S_FILE_HDR.pack(
             len(packed),
             unpacked_size,
             0,  # MS-DOS
@@ -1319,9 +1318,7 @@ def decompress_rar3_blob(
         + filename
     )
     file_without_crc = (
-        struct.pack(
-            "<BHH", _RAR3_FILE, file_flags, _RAR3_BLOCK_HEADER.size + len(file_body)
-        )
+        struct.pack("<BHH", _RAR3_FILE, file_flags, _S_BLK_HDR.size + len(file_body))
         + file_body
     )
     file_header = (
@@ -1330,8 +1327,7 @@ def decompress_rar3_blob(
 
     main_body = b"\0" * 6
     main_without_crc = (
-        struct.pack("<BHH", _RAR3_MAIN, 0, _RAR3_BLOCK_HEADER.size + len(main_body))
-        + main_body
+        struct.pack("<BHH", _RAR3_MAIN, 0, _S_BLK_HDR.size + len(main_body)) + main_body
     )
     main_header = (
         struct.pack("<H", zlib.crc32(main_without_crc) & 0xFFFF) + main_without_crc
@@ -1341,7 +1337,7 @@ def decompress_rar3_blob(
     path = Path(name)
     try:
         with os.fdopen(fd, "wb") as archive:
-            archive.write(_RAR3_ID + main_header + file_header + packed)
+            archive.write(RAR_ID + main_header + file_header + packed)
         proc, stdout = (open_pipe or open_unrar_p)(path)
         try:
             # A comment's declared unpacked length is a uint16. Bound the

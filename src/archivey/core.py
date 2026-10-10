@@ -40,7 +40,6 @@ from archivey.internal.arg_checks import (
     check_encoding,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
-from archivey.internal.backends.udif import UDIF_UNSUPPORTED_MESSAGE
 from archivey.internal.backends.zip_detect import (
     ZIP_MULTI_VOLUME_MSG,
     is_zip_split_segment_name,
@@ -199,25 +198,31 @@ def _follow_stub_volume(
     alt = first_volume_for_stub(stub)
     if alt is None:
         return None
-    if format is not None:
-        try:
-            info = detect_format(
-                alt, config=probe_config(config), follow_stub_volumes=False
-            )
-        except FormatDetectionError:
-            # This probe only catches a confident container mismatch. A volume it
-            # cannot identify proves no conflict; the real detection after the
-            # switch reports it, to the caller's own collector.
-            pass
-        else:
-            if info.format.container != format.container:
-                raise ArchiveyUsageError(
-                    f"{display_path(stub)} has no archive magic; "
-                    f"the split first volume beside it is {info.format.display_name}, "
-                    f"but format={format!r} was requested."
-                )
     resolved = resolve_source(alt)
-    _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
+    try:
+        if format is not None:
+            try:
+                info = detect_format(
+                    resolved.source,
+                    config=probe_config(config),
+                    follow_stub_volumes=False,
+                )
+            except FormatDetectionError:
+                # This probe only catches a confident container mismatch. A volume
+                # it cannot identify proves no conflict; the real detection after the
+                # switch reports it, to the caller's own collector.
+                pass
+            else:
+                if info.format.container != format.container:
+                    raise ArchiveyUsageError(
+                        f"{display_path(stub)} has no archive magic; the split first "
+                        f"volume beside it is {info.format.display_name}, but "
+                        f"format={format!r} was requested."
+                    )
+        _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
+    except BaseException:
+        resolved.source.close()
+        raise
     slot.replace(resolved.source)
     return resolved
 
@@ -514,7 +519,7 @@ def _open_resolved(
         # bytes as ZIP/7z while auto-detect joined the split set.
         try:
             detect_format(
-                archive_source.path,
+                archive_source,
                 config=probe_config(config),
                 follow_stub_volumes=False,
             )
@@ -540,17 +545,19 @@ def _open_resolved(
     if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
-    # Detection claims DMG so this refusal can name the image and carry
-    # ``archive_name``. ``reader_for_format`` and ``UdifBackend.open_read`` raise
-    # the same error for a caller that reaches them, and neither has the name.
-    if resolved_format == ArchiveFormat.DMG:
+    # Detection claims a recognised-only format (DMG) so this refusal can name it and
+    # carry ``archive_name``. It comes before ``reader_for_format``, which raises the
+    # same text but takes no archive name. Such a backend's own ``open_read`` must
+    # raise the same refusal too, as ``UdifBackend`` does; nothing provides that.
+    registry = get_registry()
+    unread_message = registry.unread_format_message(resolved_format)
+    if unread_message is not None:
         raise UnsupportedFeatureError(
-            UDIF_UNSUPPORTED_MESSAGE,
+            unread_message,
             source_format=resolved_format,
             archive_name=archive_name,
         )
 
-    registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)
 
     # `password=` and `encoding=` are *resources offered for use if needed*, not
@@ -603,7 +610,7 @@ def _open_resolved(
         # a second refusal explaining the retry could never have worked.
         if not backend_cls.SUPPORTS_STREAMING_NON_SEEKABLE:
             raise StreamNotSeekableError(
-                f"Format {resolved_format!r} cannot be read from a non-seekable source "
+                f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
                 f"in either access mode (its index/metadata is not at the front of "
                 f"the stream). Buffer it to disk or a BytesIO and reopen.",
                 source_format=resolved_format,
@@ -613,7 +620,7 @@ def _open_resolved(
             raise StreamNotSeekableError(
                 f"Random access (streaming=False) requires a seekable source. Open with "
                 f"streaming=True for a single forward pass over this "
-                f"{resolved_format!r} stream, "
+                f"{resolved_format.display_name} stream, "
                 f"or buffer it to disk or a BytesIO and reopen.",
                 source_format=resolved_format,
                 archive_name=archive_name,

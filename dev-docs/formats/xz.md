@@ -18,7 +18,7 @@ this page states the behaviour and links the row.
 | Backends | The standard library's `lzma`, always available. `streams/codecs/xz_decoder.py` and `streams/codecs/lzip_decoder.py` are archivey's own framing parsers over it |
 | Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
 | Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source |
-| Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE` |
+| Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE`. LZMA Alone has no check at all (§4), and reports nothing |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
 | Refuses | A declared dictionary over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`); an xz filter liblzma cannot decode (`UnsupportedFeatureError`) |
@@ -91,7 +91,10 @@ is not exactly zero. The dictionary size is not checked: every value is legal, a
 specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
 are a valid, complete, empty Alone stream, so without it a run of zero padding would be
 claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
-Then the probe decodes the sample and requires at least one byte of output
+So is a run of 16 zero bytes starting in the first 32 bytes after the header: a range
+coder fed zeros decodes zero literals without error, so a header followed by zeros
+decodes, but no measured encoder writes that run (the longest measured is 7 bytes, from 7-Zip;
+liblzma's is 3). Then the probe decodes the sample and requires at least one byte of output
 ([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
 probe-only match is stamped `format_unconfirmed`.
 
@@ -235,7 +238,8 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
 | An lzip member followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and the CRC-32 from the trailers. The lzip manual allows trailing data |
-| COFF object files, MP3s whose ID3 tag starts with padding | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
+| COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
+| MP3s whose ID3 tag starts with padding, any plausible header followed by zeros | Not claimed: the zero run after the header is refused |
 | OLE files (`.msi`, old `.doc`, `Thumbs.db`) | Not probed: the OLE signature stops the content probes ([`detection.md`](../topics/detection.md) §2.5) |
 
 ## 4. Threat surface
@@ -257,8 +261,9 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   megabytes of zeros costs a few reads, not one per four bytes.
 - **LZMA Alone has no check.** Corrupt data that the range coder accepts decodes to wrong
   bytes with no error. That is the format.
-- **The Alone probe claims foreign files.** COFF headers and ID3 tags followed by padding
-  pass its gate. OLE headers pass it too, but the OLE signature stops the probes first.
+- **The Alone probe claims foreign files.** COFF headers pass its gate. A header
+  followed by zeros, such as an ID3 tag with padding or an OLE header, is refused for
+  the zero run, and the OLE signature also stops the probes first.
   The claim is `PROBABLE`, and every error from it is stamped `format_unconfirmed`, so a
   caller can tell a misread file from a damaged one (threat-model O10).
 
