@@ -45,6 +45,7 @@ import tarfile
 import tempfile
 import threading
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -282,8 +283,15 @@ def _walk(
             if len(chain) == 1:
                 _check_stream(stream, SINGLE_LEAF[0].contents, seek=seek)
             else:
+                # An open_stream output has no name, so a level below it that only a
+                # content probe recognises (tar.zz, tar.br) needs every probe on. A
+                # member stream carries its member's name, so archive levels do not.
                 _walk(
-                    stream, chain[1:], seekable=seekable, config=config, access=access
+                    stream,
+                    chain[1:],
+                    seekable=seekable,
+                    config=replace(config, always_probe_content=True),
+                    access=access,
                 )
         return
 

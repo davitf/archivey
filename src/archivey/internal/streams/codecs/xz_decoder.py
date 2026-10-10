@@ -56,6 +56,8 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     SpacedCollector,
     build_index_backwards,
+    damaged_stream_error,
+    near_stream_magic,
 )
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
@@ -391,7 +393,9 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     A footer followed (after any stream padding) by a stream header's magic is not the
     last one: the forward decoder starts a stream there, so the later stream's own
     footer is damaged. That is corruption, not appended data, and is raised so the
-    last stream is never dropped from the size and the seek range.
+    last stream is never dropped from the size and the seek range. A header magic
+    damaged in a few places (:func:`near_stream_magic`) is corruption too, as the
+    forward decoder finds it.
     """
     if _ends_with_footer(stream, file_size, stop_at):
         return file_size
@@ -411,12 +415,17 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
                 pass
             else:
                 after = at + 2
+                # Same padding rule as _XzState._process (_NEED_HEADER); the two
+                # must agree on where the next header starts.
                 after += _stream_padding_length(window, after)
-                if window[after : after + 6] == _XZ_STREAM_MAGIC:
+                header = window[after : after + 6]
+                if header == _XZ_STREAM_MAGIC:
                     raise CorruptionError(
                         f"XZ stream starting at offset {start + after} has no valid "
                         "footer at the end of the file"
                     )
+                if near_stream_magic(header, _XZ_STREAM_MAGIC):
+                    raise damaged_stream_error(start + after)
                 return end
         at -= 1
         if at < 0:
@@ -666,10 +675,12 @@ class _XzState:
         on_check: Callable[[int], None],
         *,
         after_stream: bool = False,
+        start_offset: int = 0,
     ) -> None:
         """``after_stream``: start just past a stream decoded elsewhere, where padding,
         more streams or the end of the data may follow, as after any stream here.
-        ``on_check`` is given each stream's check ID once its header has decoded."""
+        ``on_check`` is given each stream's check ID once its header has decoded.
+        ``start_offset`` is the source offset of the first byte fed, for errors."""
         self._limits = limits
         self._on_check = on_check
         self._state = self._NEED_HEADER
@@ -683,6 +694,8 @@ class _XzState:
         # next stream's compressed size so that XzDecoder's compressed cursor stays on
         # real file offsets; the per-stream backward scan reads the footer from there.
         self._padding_before_stream = 0
+        # The source offset where the current stream, or its padding, starts.
+        self._stream_offset = start_offset
         self.truncated = False
         # Bytes fed past the last stream that start no further one (see Decoder).
         self.trailing_bytes: int | None = None
@@ -722,6 +735,8 @@ class _XzState:
             if len(self._buf) >= 6 and bytes(self._buf[:6]) == _XZ_STREAM_MAGIC:
                 self.truncated = True
                 return b"", []
+            if near_stream_magic(bytes(self._buf), _XZ_STREAM_MAGIC):
+                raise damaged_stream_error(self._header_offset())
             self._end_at(bytes(self._buf))
             return b"", []
         # Mid-stream: drain any remaining buffered input for a recoverable prefix,
@@ -742,6 +757,10 @@ class _XzState:
                     raise failure from e
         self.truncated = True
         return out, units
+
+    def _header_offset(self) -> int:
+        """The source offset of ``_buf[0]`` while a stream header is awaited."""
+        return self._stream_offset + self._padding_before_stream
 
     def is_finished(self) -> bool:
         return self._finished
@@ -778,6 +797,8 @@ class _XzState:
                             f"Not a valid XZ file: expected magic {_XZ_STREAM_MAGIC!r}, "
                             f"got {header[:6]!r}"
                         )
+                    if near_stream_magic(header, _XZ_STREAM_MAGIC):
+                        raise damaged_stream_error(self._header_offset())
                     self._end_at(bytes(self._buf))
                     break
                 del self._buf[:_STREAM_HEADER_SIZE]
@@ -818,6 +839,7 @@ class _XzState:
                         self._padding_before_stream + self._bytes_fed - len(unused)
                     )
                     self._padding_before_stream = 0
+                    self._stream_offset += compressed_size
                     new_streams.append((self._stream_decomp_bytes, compressed_size))
                     self._streams_seen += 1
                     self._dec = None
@@ -972,7 +994,9 @@ class XzDecoder(BaseDecoder):
 
         handoff: SeekPoint | None = None
         if point.state is None:
-            engine: _XzState | _XzBlockResume = _XzState(limits, on_check)
+            engine: _XzState | _XzBlockResume = _XzState(
+                limits, on_check, start_offset=point.compressed_offset
+            )
         else:
             start: _XzBlockBounds = point.state
             engine = _XzBlockResume(start, inner, limits, on_check)
@@ -1040,6 +1064,7 @@ class XzDecoder(BaseDecoder):
                 check, self._reported_checks, self._collector
             ),
             after_stream=True,
+            start_offset=point.compressed_offset,
         )
         self._comp_cursor = point.compressed_offset
         self._decomp_cursor = point.decompressed_offset

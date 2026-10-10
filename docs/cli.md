@@ -119,6 +119,16 @@ encrypted members fail as if no password had been given.
 - When the pipe that stdout or stderr writes to closes (`archivey t big.zip 2>&1 |
   head -1`), every verb stops quietly with exit `0`. For `test` that means the
   archive was not fully verified.
-- `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.
+- When the archive path is a pipe (FIFO) or a character device, which can be read
+  only once, every verb reads it in one forward pass. That works for TAR (also
+  compressed) and single-file formats such as `.gz`. ZIP, 7z, RAR and ISO need to
+  seek, so for those the verb exits `1` and says to copy the input to a regular file
+  first. If the format's optional package is not installed, the verb reports that
+  first.
+- Such a path can be `/dev/stdin`, so on Linux and macOS an archive piped on stdin
+  can be read: `cat a.tar | archivey list /dev/stdin`. On Linux, `/proc/self/fd/N`
+  works the same way. The same format limits apply.
+- `--salvage`, the `-` token for stdin, and `hash` / `create` / `convert` are reserved
+  for later.
 - An empty archive path or `--dest ""` is a usage error, not the current
   directory. Write `.` for the current directory.

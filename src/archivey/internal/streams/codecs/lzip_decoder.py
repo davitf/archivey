@@ -60,6 +60,8 @@ from archivey.internal.streams.decompressor_stream import (
     SpacedCollector,
     _StreamChecksumError,
     build_index_backwards,
+    damaged_stream_error,
+    near_stream_magic,
 )
 
 _MAGIC = b"LZIP"
@@ -155,6 +157,8 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     trailing data on both paths. A member there whose version is not 1 is refused as
     unsupported (:func:`_check_version`), as the forward decoder refuses it, before its
     trailer is judged: a version-0 trailer has no member size, so it is never found.
+    A magic damaged in a few places (:func:`near_stream_magic`) after the member is
+    corruption too, as the forward decoder finds it, and as ``lzip`` reports it.
     """
     if _member_ends_at(stream, file_size, stop_at):
         return file_size
@@ -179,6 +183,8 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
                     f"Lzip member starting at offset {base + end} has no valid "
                     "trailer at the end of the file"
                 )
+            if near_stream_magic(window[end : end + len(_MAGIC)], _MAGIC):
+                raise damaged_stream_error(base + end)
             return base + end
     raise CorruptionError(
         "Lzip trailer not found at the end of the file or in the "
@@ -353,6 +359,8 @@ class _LzipState:
             if head == _MAGIC:
                 self.truncated = True
                 return b"", []
+            if near_stream_magic(head, _MAGIC):
+                raise damaged_stream_error(self._comp_offset)
             self._end_at(bytes(self._buf))
             return b"", []
         out, units = self._process(max_length=-1)
@@ -451,6 +459,9 @@ class _LzipState:
                 raise CorruptionError(
                     f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
                 )
+            if near_stream_magic(header, _MAGIC):
+                # lzip's own rule: "corrupt header in multimember file".
+                raise damaged_stream_error(self._comp_offset)
             return False  # lzip spec §7: trailing data after members is allowed
         _check_version(header, self._comp_offset)
         exp = header[5] & 0x1F
