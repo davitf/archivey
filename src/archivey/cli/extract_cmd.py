@@ -324,7 +324,10 @@ def _merge_move(
     if src_is_dir and dest_is_dir:
         # ``dest`` keeps its own mode, as a directory that was already there does
         # when extracting into it, and the line is the one extraction prints then.
-        # ``src`` holds the archive's mode, as extraction applied it.
+        # ``src`` holds the archive's mode as extraction applied it, which is the
+        # mode the library compares for ``-d .``: the member's, as the platform
+        # stores it (on Windows only the read-only attribute, ``0o777`` or
+        # ``0o555``; see ``_dir_mode_as_stored``).
         kept = stat.S_IMODE(os.stat(dest).st_mode)
         if kept != stat.S_IMODE(os.lstat(src).st_mode):
             print(
@@ -830,11 +833,7 @@ def _report_extraction(
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
             extracted += 1
-            if (
-                result.path is not None
-                and moves is not None
-                and _discarded(result.path, target, moves)
-            ):
+            if _discarded(result.path, target, moves):
                 # The hoist discarded this member under ``SKIP``. Its ``skipped:`` line
                 # is the member's only line: it was not extracted, and not re-rooted
                 # either. ``extracted -= extra_skipped`` below takes it off the count.
@@ -859,11 +858,7 @@ def _report_extraction(
                     f"renamed: {shown(result.requested_path)} -> {landed}",
                     file=err,
                 )
-            elif verbose and not (
-                result.path is not None
-                and moves is not None
-                and _hoist_renamed(result.path, target, moves)
-            ):
+            elif verbose and not _hoist_renamed(result.path, target, moves):
                 # A member the hoist renamed has the hoist's ``renamed:`` line instead,
                 # as a member that extraction renamed has its own.
                 print(
@@ -1014,21 +1009,34 @@ def _relative_name(
     return relative
 
 
-def _hoist_renamed(path: PurePath, target: PurePath, moves: _Moves) -> bool:
-    """Whether the hoist moved the entry at ``path`` itself to a new name. An entry
-    inside a renamed directory only follows it, as in :func:`_follows_renamed_dir`."""
+def _in_target(path: PurePath | None, target: PurePath) -> str | None:
+    """``path`` relative to ``target``, ``/``-separated; ``None`` when nothing was
+    written or the entry is not under ``target``, so no hoist moved it."""
+    if path is None:
+        return None
     try:
-        relative = path.relative_to(target).as_posix()
+        return path.relative_to(target).as_posix()
     except ValueError:
+        return None
+
+
+def _hoist_renamed(
+    path: PurePath | None, target: PurePath, moves: _Moves | None
+) -> bool:
+    """Whether the hoist moved the entry at ``path`` itself to a new name. An entry
+    inside a renamed directory only follows it, as in :func:`_follows_renamed_dir`.
+    ``False`` when no hoist ran (``moves`` is ``None``) or nothing was written."""
+    relative = _in_target(path, target)
+    if relative is None or moves is None:
         return False
     return moves.names.get(relative, relative) != relative
 
 
-def _discarded(path: PurePath, target: PurePath, moves: _Moves) -> bool:
-    """Whether the hoist discarded the entry at ``path`` under ``SKIP``."""
-    try:
-        relative = path.relative_to(target).as_posix()
-    except ValueError:
+def _discarded(path: PurePath | None, target: PurePath, moves: _Moves | None) -> bool:
+    """Whether the hoist discarded the entry at ``path`` under ``SKIP``. ``False``
+    when no hoist ran (``moves`` is ``None``) or nothing was written."""
+    relative = _in_target(path, target)
+    if relative is None or moves is None:
         return False
     return moves.place(relative)[1]
 

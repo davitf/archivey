@@ -156,8 +156,15 @@ into the cwd would have succeeded. After a hoist, the per-member lines (`renamed
 SHALL name each member where it is after the move, as a direct extraction into the cwd
 names it, never a path inside the removed wrapper: a member the merge renamed is named
 under its new name, and a member the merge discarded under `skip` gets no line of its
-own beyond the hoist's `skipped:` line, since its path is the operator's entry. When
-the hoist stops, a member left behind is named inside the wrapper.
+own beyond the hoist's `skipped:` line, since its path is the operator's entry. The
+lines the merge itself prints (`renamed:` and `skipped:` for its own collisions, and
+`kept existing directory's mode`) come before the per-member lines, where a direct
+extraction prints every line in member order: the hoist prints the same lines, not in
+the same order. `kept existing directory's mode` is printed when the archive's
+directory mode, as the platform stores it, differs from the operator's directory's
+mode, on both paths. Windows stores only a read-only attribute, so there the line is
+printed only when that attribute differs. When the hoist stops, a member left behind
+is named inside the wrapper.
 Container-name collisions SHALL be resolved by the overwrite policy, with one
 exception: a symlink at the container name, dangling or live, SHALL be treated
 as taken under every overwrite policy and the next free `<stem> (N)` used,

@@ -2549,12 +2549,13 @@ def _hoist_and_direct(
     overwrite: str = "rename",
     args: tuple[str, ...] = (),
     mine_modes: dict[str, int] | None = None,
+    dir_mode: int = 0o755,
 ) -> tuple[tuple[dict[str, bytes | None], str], tuple[dict[str, bytes | None], str]]:
     """Extract ``entries`` once through the wrapper and hoist, and once with ``-d .``,
     each into a fresh directory that holds ``mine``, under ``--overwrite overwrite``
     and ``args``; return each tree and stderr. Both runs must exit 0.
 
-    A name ending in ``/`` is stored as a directory, at mode 0755. A root directory
+    A name ending in ``/`` is stored as a directory, at ``dir_mode``. A root directory
     that collides with a file is stored, because a direct extraction fails on an
     implied one. ``mine_modes`` sets the mode of the operator's entries it names."""
     runs = []
@@ -2572,7 +2573,7 @@ def _hoist_and_direct(
                 info = tarfile.TarInfo(name.rstrip("/"))
                 if name.endswith("/"):
                     info.type = tarfile.DIRTYPE
-                    info.mode = 0o755
+                    info.mode = dir_mode
                     tf.addfile(info)
                 else:
                     info.size = len(data)
@@ -2589,16 +2590,20 @@ _HOIST_ONLY = ("extracting into ", "moved to ", "removed wrapper")
 
 
 def _as_direct(hoist_err: str) -> list[str]:
-    """The hoist's stderr lines as ``-d .`` would print them: without the lines about
-    the wrapper, and with the hoist's ``skipped:`` (it discarded its own copy) as
-    ``not overwritten:`` (extraction did not write it)."""
-    return [
+    """The hoist's stderr lines as ``-d .`` would print them, sorted: without the lines
+    about the wrapper, and with the hoist's ``skipped:`` (it discarded its own copy) as
+    ``not overwritten:`` (extraction did not write it).
+
+    Sorted because the order differs: the merge prints its own lines while it moves,
+    before the per-member lines, and ``-d .`` prints every line in member order. Pass
+    ``-d .``'s stderr through it too."""
+    return sorted(
         f"not overwritten: {ln.removeprefix('skipped: ')}"
         if ln.startswith("skipped: ")
         else ln
         for ln in hoist_err.split("\n")
         if ln and not ln.startswith(_HOIST_ONLY)
-    ]
+    )
 
 
 @pytest.mark.parametrize(
@@ -2673,6 +2678,12 @@ def test_hoist_reports_member_paths_where_they_landed(
             {"top/c%02": b"MINE"},
             (),
         ),
+        (
+            "t3.tar",
+            {"top/": b"", "top/a\x01": b"A", "top/c\x02": b"ARCHIVE"},
+            {"top/c%02": b"MINE"},
+            (),
+        ),
         ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ()),
         ("c.tar", {"c\x02": b"ARCHIVE"}, {"c%02": b"MINE"}, ("-v",)),
         (
@@ -2684,6 +2695,7 @@ def test_hoist_reports_member_paths_where_they_landed(
     ],
     ids=[
         "collision-inside-root",
+        "collision-inside-root-after-another-line",
         "collision-at-root",
         "collision-at-root-verbose",
         "collision-at-rerooted-root",
@@ -2748,6 +2760,64 @@ def test_hoist_reports_an_existing_directory_keeping_its_mode(
     assert _report_lines(direct_err, "kept ") == [line]
     assert _report_lines(hoist_err, "kept ") == [line]
     assert _as_direct(hoist_err) == _as_direct(direct_err)
+    for how in ("hoist", "direct"):
+        assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == shown
+
+
+@pytest.mark.skipif(os.name == "nt", reason="simulates Windows modes with chmod")
+@pytest.mark.parametrize(
+    ("mine_mode", "member_mode", "kept"),
+    [
+        (0o700, 0o755, None),
+        (0o500, 0o755, 0o555),
+        (0o700, 0o555, 0o777),
+        (0o500, 0o555, None),
+    ],
+    ids=["both-writable", "mine-read-only", "member-read-only", "both-read-only"],
+)
+def test_hoist_and_direct_agree_on_a_kept_mode_under_windows_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine_mode: int,
+    member_mode: int,
+    kept: int | None,
+) -> None:
+    """Simulated on POSIX: on Windows a directory's mode is only its read-only
+    attribute, which ``os.stat`` shows as ``0o777`` or ``0o555``. The hoist compares
+    the mode extraction gave the archive's ``top/``; ``-d .`` compares the member's
+    mode as Windows stores it. Both print the line exactly when the read-only
+    attribute differs, and with the same mode. STANDARD keeps a directory's stored
+    mode; STRICT would make every one 0755."""
+    from archivey.internal import extraction
+
+    real_chmod = os.chmod
+
+    def windows_chmod(path, mode, *args, **kwargs):  # type: ignore[no-untyped-def]
+        st = os.stat(path, dir_fd=kwargs.get("dir_fd"))
+        if stat.S_ISDIR(st.st_mode):
+            mode = 0o777 if mode & stat.S_IWUSR else 0o555
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(extraction, "_WINDOWS", True)
+    monkeypatch.setattr(os, "chmod", windows_chmod)
+    (hoisted, hoist_err), (direct, direct_err) = _hoist_and_direct(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        "t.tar",
+        {"top/": b""},
+        {"top/m": b"MINE"},
+        args=("--policy", "standard"),
+        mine_modes={"top": mine_mode},
+        dir_mode=member_mode,
+    )
+    assert hoisted == direct
+    lines = [] if kept is None else [f"kept existing directory's mode {kept:04o}: top"]
+    assert _report_lines(direct_err, "kept ") == lines
+    assert _report_lines(hoist_err, "kept ") == lines
+    assert _as_direct(hoist_err) == _as_direct(direct_err)
+    shown = 0o777 if mine_mode & stat.S_IWUSR else 0o555
     for how in ("hoist", "direct"):
         assert (tmp_path / "rename" / how / "top").stat().st_mode & 0o777 == shown
 
