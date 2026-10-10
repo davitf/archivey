@@ -847,7 +847,9 @@ member as fact.
 - The candidate search is linear in the window: `internal/sfx.py` `_EarliestFinder`
   carries each needle's next position forward.
 - Brotli has no magic, so it is found by a content probe, which without gates accepted
-  about 8% of random data. The probe rejects a first meta-block larger than a
+  about 8% of random data. `open_archive` and `detect_format` run that probe only for a
+  `.br` or `.brotli` name unless `always_probe_content` is set; `open_stream` always runs
+  it ([`topics/detection.md`](topics/detection.md) §2.5). The probe rejects a first meta-block larger than a
   known-length source, a fully visible source that does not decode to completion, and
   later overruns or trailing bytes found by a bounded block-chain walk, and decodes up
   to the first compressed block that walk reaches (within 1 MiB and the decode allowance),

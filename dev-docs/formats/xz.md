@@ -85,9 +85,11 @@ xz is the magic `fd 37 7a 58 5a 00` at offset 0 and lzip `LZIP`, each `CERTAIN`.
 inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_XZ`, or
 to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
 
-LZMA Alone is found by the first of the three content probes. `_alone_header_plausible`
-checks that the properties byte encodes a legal `(lc, lp, pb)` and that the declared size
-is not exactly zero. The dictionary size is not checked: every value is legal, and the
+LZMA Alone is found by the first of the three content probes. That probe runs only for a
+`.lzma`, `.tar.lzma` or `.tlz` name, under `open_stream`, or with
+`ArchiveyConfig.always_probe_content` ([`detection.md`](../topics/detection.md) §2.5).
+`_alone_header_plausible` checks that the properties byte encodes a legal `(lc, lp, pb)`
+and that the declared size is not exactly zero. The dictionary size is not checked: every value is legal, and the
 specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
 are a valid, complete, empty Alone stream, so without it a run of zero padding would be
 claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
@@ -98,8 +100,9 @@ liblzma's is 3). Then the probe decodes the sample and requires at least one byt
 ([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
 probe-only match is stamped `format_unconfirmed`.
 
-`.tlz` is an lzip extension. An LZMA Alone file named `.tlz` is identified by content as
-TAR over LZMA Alone, with an extension-conflict warning.
+`.tlz` is an lzip extension, and it also runs the LZMA Alone probe. An LZMA Alone file
+named `.tlz` is identified by content as TAR over LZMA Alone, with an extension-conflict
+warning.
 
 ### 2.2 Open and list
 

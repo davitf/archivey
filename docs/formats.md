@@ -679,13 +679,14 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 - **Content probes run only for a matching name by default.** LZMA Alone, zlib and
   Brotli have no magic, so a trial decode of the first bytes (a content probe) is the
   only thing that recognises them, and ordinary binary files sometimes pass one. By
-  default `open_archive` and `detect_format` run a probe only when the name ends in that
-  format's extension (`.lzma`, `.zz`, `.br`, a `.tar.` form of one, or `.tlz` for LZMA
-  Alone). A matching probe confirms the name and still finds a TAR inside. A source with
+  default `open_archive` and `detect_format` run a probe only when the name ends in one of
+  that format's extensions: `.lzma` or `.tlz` for LZMA Alone, `.zz` or `.zlib` for zlib,
+  `.br` or `.brotli` for Brotli, and the `.tar.` form of each except `.tlz`. A matching probe confirms the name and still finds a TAR inside. A source with
   no name, or another extension, runs no probe: a nameless raw stream of these formats
   raises `FormatDetectionError`, and one named for another format gets that format's
-  guess. If you read such sources, pass `format=`, use `open_stream()` (which always runs
-  every probe), or set `ArchiveyConfig(always_probe_content=True)`.
+  guess. If you read such sources, give the file its format's extension, pass `format=`,
+  use `open_stream()` (which always runs every probe), or set
+  `ArchiveyConfig(always_probe_content=True)`.
 - **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
   size — may precede the first real frame, so detection walks past them by their declared
   sizes within the peeked bytes and matches the regular frame behind. Skippable frames

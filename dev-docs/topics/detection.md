@@ -184,9 +184,10 @@ ZIP appended to a JPEG is still not found (§5).
 ### 2.5 Content probes
 
 **Which probes run.** By default only the probe of a stream format the source's extension
-names: `.lzma`, `.zz`, `.br`, their `.tar.` forms, and LZMA Alone for `.tlz`, which
-lzma-utils used before lzip took the name. A source with no name or another extension runs
-no probe, and the step is recorded as `content_probe` / `NOT_ENABLED_BY_POLICY`.
+names: `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, their `.tar.` forms, and LZMA Alone for
+`.tlz`, which lzma-utils used before lzip took the name. A source with no name or another
+extension runs no probe. Whenever the name leaves a probe out, even if another one runs,
+the step is recorded as `content_probe` / `NOT_ENABLED_BY_POLICY`.
 `ArchiveyConfig.always_probe_content=True` runs every probe, and `open_stream` always does,
 because its caller already says the source is a compressed stream; there a probe only
 picks the codec. The reason is evidence, not cost: on a nameless source a probe is the

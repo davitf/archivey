@@ -734,10 +734,11 @@ class ArchiveyConfig:
     LZMA Alone, zlib and Brotli have no magic that detection can trust, so only a
     content probe (a trial decode of the first bytes) recognises them. Arbitrary binary
     files sometimes pass a probe, so by default :func:`~archivey.open_archive` and
-    :func:`~archivey.detect_format` run a probe only when the source's name ends in that
-    format's extension (``.lzma``, ``.zz``, ``.br``, or a ``.tar.`` form of one). An
-    extensionless raw stream of these formats is then refused with
-    :class:`~archivey.FormatDetectionError`. If you read such sources, set this to
+    :func:`~archivey.detect_format` run a probe only when the source's name ends in one
+    of that format's extensions: ``.lzma`` or ``.tlz`` for LZMA Alone, ``.zz`` or
+    ``.zlib`` for zlib, ``.br`` or ``.brotli`` for Brotli, and the ``.tar.`` form of
+    each except ``.tlz``. An extensionless raw stream of these formats is then refused
+    with :class:`~archivey.FormatDetectionError`. If you read such sources, set this to
     ``True``, pass ``format=``, or use :func:`~archivey.open_stream`, which always tries
     every probe because its caller already says the source is a compressed stream.
     """

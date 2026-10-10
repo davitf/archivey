@@ -61,8 +61,10 @@ def _tar_bytes() -> bytes:
     ],
 )
 def test_a_nameless_probe_only_stream_is_refused_by_default(make, fmt) -> None:
-    with pytest.raises(FormatDetectionError, match="always_probe_content=True"):
+    with pytest.raises(FormatDetectionError, match="always_probe_content=True") as exc:
         detect_format(io.BytesIO(make()))
+    # Renaming the file is the one remedy the command line has.
+    assert "give the file one (.lzma, .zz, .br)" in str(exc.value)
     with pytest.raises(FormatDetectionError, match="always_probe_content=True"):
         archivey.open_archive(io.BytesIO(make()))
 
@@ -102,7 +104,8 @@ def test_open_stream_probes_a_nameless_stream_without_the_switch(make) -> None:
 )
 def test_a_matching_extension_runs_its_probe(tmp_path: Path, name, make, fmt) -> None:
     # The probe confirms the name, so the answer is PROBABLE and corroborated, not the
-    # GUESS the extension alone would give.
+    # GUESS the extension alone would give. The other probes did not run, and the
+    # receipt says so.
     path = tmp_path / name
     path.write_bytes(make())
     info = detect_format(path)
@@ -110,6 +113,10 @@ def test_a_matching_extension_runs_its_probe(tmp_path: Path, name, make, fmt) ->
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
     assert info.corroborated
+    assert info.unavailable_tiers == (_SKIPPED_BY_POLICY,)
+
+    info = detect_format(path, config=PROBE_ALL)
+    assert info.format == fmt
     assert info.unavailable_tiers == ()
 
 

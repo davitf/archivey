@@ -263,8 +263,9 @@ no name it is the only evidence: real binary files pass the LZMA Alone and Brotl
 26 681 zlib hits were git loose objects). So by default `open_archive` and
 `detect_format` SHALL run only the probe of a stream format the source's extension
 names: the extension map's format (`.br`, `.tar.br`, `.zz`, `.lzma`, …), plus LZMA Alone
-for `.tlz` (see *Keep `.tlz` as TAR × LZIP*). Any other source SHALL run no probe, and
-the step SHALL be recorded in `unavailable_tiers` as `content_probe` /
+for `.tlz` (see *Keep `.tlz` as TAR × LZIP*). Any other source SHALL run no probe.
+Whenever the name leaves out at least one probe, whether or not another one runs, the
+step SHALL be recorded in `unavailable_tiers` as `content_probe` /
 `NOT_ENABLED_BY_POLICY`. `ArchiveyConfig.always_probe_content=True` SHALL run every
 probe whatever the name. `open_stream` SHALL always run every probe: its caller says the
 source is a compressed stream, so a probe only picks the codec. The internal detections

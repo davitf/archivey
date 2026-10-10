@@ -1039,11 +1039,14 @@ def _detect_format_body(
         probes = registry.content_probes()
         if not always_probe:
             named = _streams_named_by(ext_match)
-            probes = [(f, p) for f, p in probes if f.stream in named]
-            if not probes:
+            named_probes = [(f, p) for f, p in probes if f.stream in named]
+            # Recorded whenever the name left a probe out, even if another one runs: a
+            # .zz source still skips the LZMA Alone and Brotli probes.
+            if len(named_probes) < len(probes):
                 workspace.record_skip(
                     "content_probe", TierSkipReason.NOT_ENABLED_BY_POLICY
                 )
+            probes = named_probes
         if probes_stopped_by is None:
 
             def read_at(offset: int, n: int) -> bytes | None:
@@ -1127,7 +1130,8 @@ def _detect_format_body(
             message = (
                 "Could not detect archive format: no magic bytes or file extension "
                 "matched. A raw LZMA Alone, zlib or Brotli stream has no magic and is "
-                "only recognised by its extension; pass format=, use open_stream(), "
-                "or set ArchiveyConfig(always_probe_content=True)."
+                "only recognised by its extension: give the file one (.lzma, .zz, "
+                ".br), pass format=, use open_stream(), or set "
+                "ArchiveyConfig(always_probe_content=True)."
             )
         raise FormatDetectionError(message, archive_name=name)

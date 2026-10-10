@@ -476,9 +476,11 @@ def test_tlz_alone_content_wins_with_extension_conflict(tmp_path: Path) -> None:
     from archivey.diagnostics import DiagnosticCode
     from archivey.types import ContainerFormat, StreamFormat
 
+    # Default config: .tlz names LZIP, yet it also runs the LZMA Alone probe, so the
+    # content still wins here without always_probe_content.
     path = tmp_path / "compat_lzma.tlz"
     path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
-    info = detect_format(path, config=ALWAYS_PROBE)
+    info = detect_format(path)
     assert info.format == ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)
     assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in info.diagnostics.counts
 
@@ -1070,11 +1072,11 @@ def test_unknown_length_short_source_falls_through_to_the_extension(
 # so the wording cannot drift back to a single hardcoded claim.
 
 
-def _conflict_message(path: Path, config: ArchiveyConfig | None = None) -> str:
+def _conflict_message(path: Path) -> str:
     """The one ``FORMAT_EXTENSION_CONFLICT`` message ``detect_format`` emitted."""
     from archivey.diagnostics import DiagnosticCode
 
-    info = detect_format(path, config=config)
+    info = detect_format(path)
     messages = [
         d.message
         for d in info.diagnostics.retained
@@ -1113,7 +1115,7 @@ def test_content_probe_conflict_names_the_probe_not_magic(tmp_path: Path) -> Non
     # one a reader deciding whether to believe us is most entitled to doubt.
     path = tmp_path / "compat_lzma.tlz"  # the extension says TAR_LZIP
     path.write_bytes(lzma.compress(_tar_bytes(), format=lzma.FORMAT_ALONE))
-    message = _conflict_message(path, ALWAYS_PROBE)
+    message = _conflict_message(path)
     _assert_names_only(message, "content inspection indicates")
     # Stricter than the shared check on this branch alone: the word itself is the lie.
     assert "magic" not in message
