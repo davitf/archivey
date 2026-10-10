@@ -30,7 +30,7 @@ from archivey.exceptions import (
     ResourceLimitError,
 )
 from archivey.internal.detection import _extension_corroborates
-from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
+from archivey.internal.streams.codecs.brotli_framing import BrotliBlock, parse_metablock
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
 from tests.corruption_util import raises_corruption_not_truncation

@@ -144,9 +144,9 @@ def test_zip_deflate64_without_inflate64_raises(
 ) -> None:
     archive = _7z_zip(tmp_path, "Deflate64", _PAYLOAD)
     monkeypatch.setattr(
-        codecs_module,
-        "_inflate64",
-        codecs_module._LazyOptional("inflate64", present=False),
+        codecs_module.deps,
+        "inflate64",
+        codecs_module.deps.LazyOptional("inflate64", present=False),
     )
     with open_archive(archive) as ar:
         (member,) = ar.members()
@@ -160,7 +160,9 @@ def test_zip_ppmd_without_pyppmd_raises(
 ) -> None:
     archive = _7z_zip(tmp_path, "PPMd", _PAYLOAD)
     monkeypatch.setattr(
-        codecs_module, "_pyppmd", codecs_module._LazyOptional("pyppmd", present=False)
+        codecs_module.deps,
+        "pyppmd",
+        codecs_module.deps.LazyOptional("pyppmd", present=False),
     )
     with open_archive(archive) as ar:
         (member,) = ar.members()
@@ -173,7 +175,7 @@ def test_zip_zstd_without_backend_raises(monkeypatch: pytest.MonkeyPatch) -> Non
     # presence is gated.
     compressed = b"not-real-zstd"  # never decoded — open fails on missing backend first
     data = _build_minimal_zip(b"z.txt", compressed, b"x" * 10, 93)
-    monkeypatch.setattr(codecs_module, "_zstd", None)
+    monkeypatch.setattr(codecs_module.deps, "zstd", None)
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
         with pytest.raises(PackageNotInstalledError):
