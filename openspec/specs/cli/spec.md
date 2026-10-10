@@ -63,16 +63,36 @@ matching members; a member SHALL be processed when it matches an include (or non
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
 `--include` flag. When one or more include patterns are given, each pattern that
 matches no member SHALL produce a stderr warning
-(`warning: pattern matched no members: '…'`). When every include misses on
-`extract` or `test`, the command SHALL exit `1` after the warning(s). On `list`,
-the same warnings SHALL be emitted but the exit code SHALL remain `0` when the
-archive otherwise listed successfully. On `extract`, when there is exactly one
-unmatched include that names an existing directory or ends with `/`, the warning
-SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL accept
-exactly **one** archive positional (multi-archive is out of scope for this
+(`warning: pattern matched no members: '…'`). When the includes match members but
+`--exclude` removes every one of them, or when there is no include and `--exclude`
+removes every member, the system SHALL warn
+`warning: no members selected: --exclude removed every member…` instead. When the
+patterns select no member in either way on `extract` or `test`, the command SHALL
+exit `1` after the warning(s) and SHALL write nothing, not even the destination
+directory; an archive with no members and only `--exclude` patterns is not such a
+case. On `list`, the same warnings SHALL be emitted but the exit code SHALL remain
+`0` when the archive otherwise listed successfully. On `extract` and `test`, the
+patterns SHALL be checked against a member index when the archive has a complete
+one without a scan, before anything is read or written. Otherwise they SHALL be
+checked in the same pass that tests or extracts the members, with the warnings
+after that pass, and SHALL NOT cost a separate pass: on a compressed TAR such a
+pass decompresses the whole archive. An index that ends in damage holds only the
+members before the damage, so it is not complete; and a pass that ends early SHALL
+NOT report its patterns, while a pass that reaches its end SHALL, whatever members
+failed in it. A pass that ends early SHALL exit `1` and SHALL NOT claim that the
+patterns matched nothing. The "write nothing" rule above does not apply to it: an
+`extract` that aborts this way MAY leave the destination directory it created, as
+an aborted `extract` with no patterns does. On `list`, the patterns SHALL be
+checked against the member listing the command reads anyway, with the warnings
+before the member lines. A listing that ends in damage SHALL produce no pattern
+warning on `list`, because the members after the damage are unknown; `list` SHALL
+print the listing error and exit `1` instead. On `extract`, when there is exactly
+one unmatched include that names an existing directory or ends with `/`, the
+warning SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL
+accept exactly **one** archive positional (multi-archive is out of scope for this
 capability). `--password` SHALL be accepted for encrypted archives; when an
-encrypted archive is opened, no `--password` was supplied, and stdin is a TTY,
-the system SHALL prompt for the password without echoing it.
+encrypted archive is opened, no `--password` was supplied, and stdin is a TTY, the
+system SHALL prompt for the password without echoing it.
 
 Command data output (member listings, info summaries) SHALL be written to
 **stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
@@ -122,10 +142,12 @@ single-file/single-stream archive. When no cheap index is available (plain TAR,
 future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
-the cwd and remove the wrapper. The hoist SHALL NOT run when the wrapper was
-already there before the extraction (its only entry may be the operator's own),
-when the only entry is a symlink (the move changes the directory its target is
-read from), or when a symlink in the entry leaves the entry on the way to its target
+the cwd and remove the wrapper. Whether the hoist runs SHALL depend only on what
+the run extracted, never on what was at the wrapper's name before; what the hoist
+does (flatten in place, or merge under the overwrite policy) can still depend on it,
+as described below. The hoist SHALL NOT run when the only entry is a symlink (the move
+changes the directory its target is read from), or when a symlink in the entry leaves
+the entry on the way to its target
 or part of the entry could not be listed (it may hold such a link).
 Extraction checked those links against the wrapper, and a path that climbs above the
 hoisted entry and back down through the wrapper's name (`top/k ->
@@ -143,17 +165,24 @@ directories under any policy. A collision
 the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
 under the wrapper, and exit nonzero — mirroring the failure a direct extraction
-would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
-containing `src/`) SHALL be flattened in place, not treated as a collision, and the
-wrapper SHALL then take that root's mode and times. A directory stored without owner
+would have hit. When the container got the plain stem name, a sole root sharing the
+wrapper's own name (`src.tar.gz` containing `src/`) SHALL be flattened in place, not
+treated as a collision, and the wrapper SHALL then take that root's mode and times.
+When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`, the
+sole root no longer shares its name, and the hoist merges the root into the existing
+`./<archive-stem>/` under the overwrite policy like any other root. A directory stored without owner
 write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
 and search permission for the move and then puts its mode back, as a direct extraction
 into the cwd would have succeeded.
-Container-name collisions SHALL be resolved by the overwrite policy, with one
-exception: a symlink at the container name, dangling or live, SHALL be treated
-as taken under every overwrite policy and the next free `<stem> (N)` used,
-because the CLI chose that name rather than the operator. `-d` remains the way
-to extract through a link deliberately.
+The container (`./<archive-stem>/`) SHALL always be a new directory that the run
+creates. When anything exists at the container name (a directory, a regular file, or a
+symlink, dangling or live), the name SHALL be treated as taken under every overwrite
+policy and the next free `<stem> (N)` used, because the CLI chose that name rather than
+the operator. An existing directory SHALL NOT be reused as the container. The overwrite
+policy SHALL apply where the content lands: inside the new container, or, after a
+hoist, in the cwd. `-d` remains the way to extract into an existing directory or
+through a link deliberately: `-d backup --overwrite replace` re-extracts a multi-root
+archive into an existing `backup/`.
 Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
 (`--overwrite` may select `error` / `skip` / `replace` / `rename`).
 `extract` SHALL pass `OnError.CONTINUE` by default so policy rejections and
@@ -187,6 +216,10 @@ other processed statuses are omitted from that line).
 | `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
 | `archivey extract <no-index-archive>` with multiple top-level entries | Extracts into `./<archive-stem>/` (no hoist) |
 | `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a symlink (dangling or to a directory), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written through the link |
+| `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a regular file (for example the archive itself, when it has no extension), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; the file is untouched |
+| `archivey extract <archive>` needing a wrapper when `./<archive-stem>/` is an existing directory, any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written into the existing directory |
+| `archivey extract <no-index-archive>` with a single top-level dir `root/` when `./<archive-stem>/` is an existing directory, any `--overwrite` | Extracts into `./<archive-stem> (N)/`, then hoists `root/` to the cwd and removes the wrapper; the existing directory is untouched |
+| `archivey extract <no-index-archive>` whose single top-level dir is named like the stem (`src.tar` holding `src/`) when `./src/` is an existing directory | Extracts into `./src (N)/`, then hoists `src/` into the existing `./src/` under the overwrite policy: `replace` replaces colliding files, `skip` keeps them, `rename` writes `name (N)` beside them; under `--overwrite error` a colliding file stops the hoist, the remainder stays under `./src (N)/src/`, and the exit code is `1` |
 | `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
@@ -198,6 +231,8 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
+| `archivey test <archive> 'a*' --exclude 'a*'` or `archivey extract <archive> --exclude '*'` | stderr `warning: no members selected: …`; exit `1`; `extract` creates no directory |
+| `archivey test <archive.tar.gz> a.txt` | The archive is decompressed once; no backward-seek warning |
 | `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
 | `[recommended]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
 | `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
@@ -437,10 +472,10 @@ say that nothing was written. With no `-d`, it SHALL name the smart default dest
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,
 and use that place in the closing summary. Where a real run would keep that entry in
-the destination (the folder was already there, the entry is a symlink, a symlink in it
-leaves it, or part of the entry could not be listed, which here means part of the
-scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
-reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
+the destination (the entry is a symlink, a symlink in it leaves it, or part of the
+entry could not be listed, which here means part of the scratch tree could not be
+read), it SHALL print `would keep in <stem>/:` with the same reason, judged from the
+symlinks the dry run created. It SHALL NOT check for collisions with entries
 already at that place, nor whether an existing directory there can be written into: a
 real run whose hoist is refused by that directory's permissions fails where the dry run
 predicted the move.

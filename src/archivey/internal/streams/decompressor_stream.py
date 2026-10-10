@@ -10,7 +10,9 @@ The decoders live next to their codec in :mod:`archivey.internal.streams.codecs`
 ``framed_decoder`` for the one-shot decompressors (bzip2, zstd, LZ4).
 
 ``codecs.StreamCodec.open`` wires those into an ``ArchiveStream``; this module is
-only the shared engine underneath.
+only the shared engine underneath. One exception: above :class:`SeekPoint` sit the
+DEFLATE family's shared helpers, the ``zlib.error`` translators, the truncation message
+and the inflate step, used by the zlib, gzip, raw DEFLATE and resume decoders.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import bisect
 import io
 import os
+import zlib
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
@@ -127,6 +130,58 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
             "same way"
         )
     return gzip_corruption(exc)
+
+
+def zlib_error(exc: Exception, label: str) -> CorruptionError:
+    """The error for a ``zlib.error`` from a zlib (``label`` "zlib") or raw DEFLATE
+    ("deflate") stream: always :func:`gzip_corruption`.
+
+    Unlike :func:`gzip_error`, a refused header is not unsupported. zlib refuses a zlib
+    header whose method is not deflate ("unknown compression method"), but RFC 1950
+    defines no method other than 8, so that header is damage, not a valid feature
+    archivey cannot decode (DR-4).
+    """
+    return gzip_corruption(exc, label)
+
+
+def truncated_message(label: str) -> str:
+    """The message of the :class:`TruncatedError` a decoder gives a ``label`` stream
+    that ends before its end marker."""
+    return f"{label} stream is truncated"
+
+
+def _inflate(
+    decomp: zlib._Decompress,
+    data: bytes,
+    max_length: int,
+    error: Callable[[zlib.error], Exception],
+) -> bytes:
+    """One inflate step: ``data`` to at most ``max_length`` output bytes, the rest kept
+    in ``unconsumed_tail``. A negative ``max_length`` is no limit, and so is 0 (zlib's
+    reading): ``DecompressorStream`` never asks for 0 bytes. A ``zlib.error`` leaves
+    as ``error`` maps it."""
+    try:
+        if max_length < 0:
+            return decomp.decompress(data)
+        return decomp.decompress(data, max_length)
+    except zlib.error as exc:
+        raise error(exc) from exc
+
+
+def _inflate_rest(
+    decomp: zlib._Decompress, error: Callable[[zlib.error], Exception]
+) -> bytes:
+    """At the end of the input: the output of what ``decomp`` still holds.
+
+    The caller checks ``decomp.eof`` after: when it is false, the stream is truncated.
+    """
+    out = b""
+    if decomp.unconsumed_tail:
+        out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
+    try:
+        return out + decomp.flush()
+    except zlib.error as exc:
+        raise error(exc) from exc
 
 
 @dataclass(order=True, slots=True)

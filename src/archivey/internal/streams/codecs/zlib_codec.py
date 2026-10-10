@@ -36,8 +36,8 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 )
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
-    gzip_corruption,
     input_after_end_error,
+    zlib_error,
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
@@ -461,20 +461,21 @@ class _DeflateEndCheckStream(DelegatingStream):
 class _ZlibErrorCodec(_DeflateFamilyCodec):
     """Shared zlib/deflate error taxonomy for raw deflate and zlib-wrapped deflate."""
 
+    # The stream's name in messages.
+    _label: str
+
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, zlib.error):
-            text = str(exc)
-            if "incomplete" in text or "truncated" in text:
-                return TruncatedError(f"deflate stream is truncated: {exc!r}")
             # A zlib stream's Adler-32 failing is a whole-stream checksum.
-            return gzip_corruption(exc, "deflate")
+            return zlib_error(exc, self._label)
         if isinstance(exc, EOFError):
-            return TruncatedError(f"deflate stream is truncated: {exc!r}")
+            return TruncatedError(f"{self._label} stream is truncated: {exc!r}")
         return None
 
 
 class DeflateCodec(_ZlibErrorCodec):
     codec = Codec.DEFLATE
+    _label = "deflate"
     _empty_to_stdlib = True
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
@@ -548,6 +549,7 @@ def _zlib_header_plausible(prefix: bytes) -> bool:
 
 class ZlibCodec(_ZlibErrorCodec):
     codec = Codec.ZLIB
+    _label = "zlib"
     stream_format = StreamFormat.ZLIB
     # No exact magic: zlib's 2-byte header is too unspecific, so it is recognized by a content
     # probe that gates on that header before decoding.

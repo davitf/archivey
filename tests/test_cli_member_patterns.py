@@ -4,20 +4,27 @@ from __future__ import annotations
 
 import io
 import tarfile
+import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from archivey import open_archive
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
-from archivey.cli.filters import member_predicate, unmatched_include_patterns
+from archivey.cli.filters import MemberSelection
 from archivey.cli.main import main
+from archivey.exceptions import ReadError
+from archivey.internal.base_reader import BaseArchiveReader
 from archivey.types import ArchiveMember
+from tests.test_extraction_damaged_listing import _rar_cut
 
 
 def _tar(path: Path, entries: list[tuple[str, bytes | None]]) -> Path:
-    """Write a TAR of ``(name, content)``; ``None`` content is a directory."""
-    with tarfile.open(path, "w") as tar:
+    """Write a TAR of ``(name, content)``; ``None`` content is a directory. A
+    ``.tar.gz`` path gets a gzip-compressed TAR, which has no member index."""
+    mode = "w:gz" if path.name.endswith(".tar.gz") else "w"
+    with tarfile.open(path, mode) as tar:
         for name, content in entries:
             info = tarfile.TarInfo(name)
             if content is None:
@@ -51,7 +58,7 @@ def _selected(
     *,
     windows: bool = False,
 ) -> list[str]:
-    pred = member_predicate(includes, excludes, backslash_is_separator=windows)
+    pred = MemberSelection(includes, excludes, backslash_is_separator=windows).predicate
     assert pred is not None
     return [m.name for m in members if pred(m)]
 
@@ -99,12 +106,14 @@ def test_a_backslash_is_a_separator_only_on_windows(tmp_path: Path) -> None:
 
 
 def test_unmatched_patterns_use_the_same_rule(tmp_path: Path) -> None:
-    members = _members(tmp_path)
-    assert unmatched_include_patterns(
-        ["docs", "src", "docs.txt/", "missing"],
-        members,
+    selection = MemberSelection(
+        ["docs", "src", "docs.txt/", "missing", "docs"],
+        None,
         backslash_is_separator=False,
-    ) == ["docs.txt/", "missing"]
+    )
+    for member in _members(tmp_path):
+        selection(member)
+    assert selection.unmatched_includes() == ["docs.txt/", "missing"]
 
 
 @pytest.mark.parametrize("pattern", ["docs", "docs/"])
@@ -165,3 +174,276 @@ def test_a_pattern_written_with_the_slash_compiles_no_duplicate_form() -> None:
         "docs/",
         "docs/*",
     )
+
+
+# --- One pass, and an empty selection fails the same way -------------------------
+
+# Larger than the 1 MiB rewind that the library warns about, so a second pass over
+# the compressed TAR shows on stderr. Zeros, so the file stays small.
+_BIG = b"\0" * (2 * 1024 * 1024)
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_a_pattern_on_a_compressed_tar_reads_it_once(
+    verb: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A TAR inside gzip has no member index. Finding unmatched patterns must not cost
+    a scan of its own, which then has to seek back and decompress everything again."""
+    archive = _tar(
+        tmp_path / "t.tar.gz", [("a.txt", b"a"), ("big.bin", _BIG), ("z.txt", b"z")]
+    )
+    dest = tmp_path / "out"
+    args = [verb, str(archive), "a.txt", "missing"]
+    if verb == "x":
+        args += ["-d", str(dest)]
+    assert main(args) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "Backward seek" not in err
+    assert "warning: pattern matched no members: 'missing'" in err
+    if verb == "x":
+        assert sorted(p.name for p in dest.iterdir()) == ["a.txt"]
+
+
+_EMPTY_SELECTIONS = {
+    "every include match excluded": (
+        ["docs"],
+        ["docs"],
+        "warning: no members selected: --exclude removed every member the "
+        "patterns matched",
+    ),
+    "exclude only": (
+        [],
+        ["*"],
+        "warning: no members selected: --exclude removed every member",
+    ),
+    "include misses": (
+        ["missing"],
+        [],
+        "warning: pattern matched no members: 'missing'",
+    ),
+}
+
+
+def _zip(path: Path, entries: list[tuple[str, bytes | None]]) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in entries:
+            if content is None:
+                archive.writestr(name + "/", b"")
+            else:
+                archive.writestr(name, content)
+    return path
+
+
+@pytest.mark.parametrize("case", sorted(_EMPTY_SELECTIONS))
+@pytest.mark.parametrize("kind", ["zip", "tar.gz"])
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_patterns_that_select_nothing_fail_with_a_message(
+    verb: str,
+    kind: str,
+    case: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Exit 1 and a warning, whatever emptied the selection, with an index (ZIP) or
+    without one (TAR inside gzip). ``extract`` leaves nothing on disk, not even the
+    directory it would have extracted into."""
+    includes, excludes, message = _EMPTY_SELECTIONS[case]
+    make = _zip if kind == "zip" else _tar
+    archive = make(tmp_path / f"a.{kind}", [("docs", None), ("docs/a.txt", b"a")])
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    args = [verb, str(archive), *includes]
+    for pattern in excludes:
+        args += ["--exclude", pattern]
+    assert main(args) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert message in err
+    assert "OK," not in err
+    assert "extracted" not in err
+    # A dest named with -d is not left behind either, nor the parents made for it.
+    if verb == "x":
+        assert main([*args, "-d", "made/for/it"]) == EXIT_FAIL
+    assert list(work.iterdir()) == []
+
+
+def test_list_warns_when_patterns_select_nothing_and_exits_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive = _tar(tmp_path / "t.tar", _TREE)
+    assert main(["list", str(archive), "docs", "--exclude", "docs"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "warning: no members selected: --exclude removed every member the "
+        "patterns matched" in captured.err
+    )
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_exclude_on_an_empty_archive_is_not_an_empty_selection(
+    verb: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no members, ``--exclude`` removed nothing: the run is as without it.
+
+    (A TAR with no members has nothing to detect it by, so this uses a ZIP.)"""
+    archive = _zip(tmp_path / "empty.zip", [])
+    args = [verb, str(archive), "--exclude", "*"]
+    if verb == "x":
+        args += ["-d", str(tmp_path / "out")]
+    assert main(args) == EXIT_OK
+    assert "no members selected" not in capsys.readouterr().err
+
+
+def _chmod_denies_reads(path: Path) -> bool:
+    """Whether ``chmod 000`` stops this process reading ``path`` (not as root, not on
+    Windows)."""
+    try:
+        path.read_bytes()
+    except PermissionError:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_an_unmatched_pattern_is_reported_after_a_member_fails(
+    verb: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A member that fails does not end the pass: every member was still offered to
+    the patterns, so the unmatched one is reported. A directory has no index, and its
+    pass goes on past a file it cannot open."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tree / name).write_bytes(name.encode())
+    unreadable = tree / "b.txt"
+    unreadable.chmod(0)
+    try:
+        if not _chmod_denies_reads(unreadable):
+            pytest.skip("chmod 000 does not deny reads here")
+        args = [verb, str(tree), "*.txt", "nosuch"]
+        if verb == "x":
+            args += ["-d", str(tmp_path / "out")]
+        assert main(args) == EXIT_FAIL
+        err = capsys.readouterr().err
+        assert "1 failed" in err
+        assert "warning: pattern matched no members: 'nosuch'" in err
+    finally:
+        unreadable.chmod(0o644)
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.mark.parametrize("verb", ["t", "x"])
+def test_a_damaged_index_does_not_settle_the_patterns(
+    verb: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A free member list that ends in damage holds only the members before it. A
+    pattern naming a later member is not known to match nothing, so it is not
+    reported as such; the run's own pass reaches the damage and reports it."""
+    archive = tmp_path / "tinyvol_cut.part1.rar"
+    archive.write_bytes((_FIXTURES / "rar" / "tinyvol_cut.part1.rar").read_bytes())
+    monkeypatch.chdir(tmp_path)
+    args = [verb, archive.name, "c.txt"]
+    if verb == "x":
+        args += ["-d", "out"]
+    assert main(args) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "pattern matched no members" not in err
+    assert "volume 2" in err
+
+
+def test_the_dash_d_hint_skips_a_directory_the_run_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With no index, ``extract`` creates ``-d out`` before the patterns are judged.
+    It removes that directory before the warning, so the hint does not point at it;
+    a directory that was already there is the operator's and gets the hint."""
+    archive = _tar(tmp_path / "t.tar.gz", [("docs", None), ("docs/a.txt", b"a")])
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    args = ["x", str(archive), "out", "-d", "out"]
+    assert main(args) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "warning: pattern matched no members: 'out'" in err
+    assert "did you mean" not in err
+    assert list(work.iterdir()) == []
+
+    (work / "out").mkdir()
+    assert main(args) == EXIT_FAIL
+    assert "(did you mean -d out?)" in capsys.readouterr().err
+
+
+def _cut_rar(tmp_path: Path, *, file_index: int) -> Path:
+    """``basic_nonsolid__.rar`` cut inside the header of its ``file_index``-th FILE
+    block: the listing is the files before the cut, then a truncation error."""
+    archive = tmp_path / "cut.rar"
+    archive.write_bytes(
+        _rar_cut("basic_nonsolid__.rar", rar4=False, file_index=file_index)
+    )
+    return archive
+
+
+def test_a_damaged_index_still_counts_the_untested_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A listing that ends in damage does not settle the patterns, but its members
+    are still the totals. When the pass dies after the first of the three listed
+    files, the summary reports the one it never reached."""
+    archive = _cut_rar(tmp_path, file_index=3)
+    original = BaseArchiveReader.stream_members
+
+    def _dies_after_first(
+        self: BaseArchiveReader, *args: object, **kwargs: object
+    ) -> Iterator[object]:
+        members = original(self, *args, **kwargs)  # type: ignore[arg-type]
+        yield next(members)
+        raise ReadError("simulated stream failure")
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _dies_after_first)
+    assert main(["t", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "1 OK, 1 failed, 1 not tested" in err
+
+
+def test_extract_aborted_on_a_damaged_index_claims_no_unmatched_pattern(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The pass reaches the damage and aborts, so the patterns are never judged: the
+    command exits 1 with the listing error and no "matched no members" claim. The
+    spec lets the aborted run leave the ``-d`` directory it created; nothing is
+    written into it."""
+    archive = _cut_rar(tmp_path, file_index=2)
+    monkeypatch.chdir(tmp_path)
+    assert main(["x", archive.name, "nosuch", "-d", "out"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "pattern matched no members" not in err
+    assert "truncated" in err
+    assert "extraction stopped" in err
+    out = tmp_path / "out"
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_list_on_a_damaged_index_claims_no_unmatched_pattern(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``list`` has no pass after its listing. A pattern may name a member after the
+    damage, so ``list`` gives no pattern warning and prints the listing error."""
+    archive = _cut_rar(tmp_path, file_index=2)
+    assert main(["list", str(archive), "nosuch"]) == EXIT_FAIL
+    captured = capsys.readouterr()
+    assert "pattern matched no members" not in captured.err
+    assert "truncated" in captured.err
+    assert captured.out == ""
