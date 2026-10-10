@@ -185,10 +185,12 @@ def test_fixup_rar5_restores_crcs_after_bitflip(basic_rar5: bytes) -> None:
     from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
 
     flipped = bytearray(basic_rar5)
-    flipped[24] ^= 0x01
+    flipped[24] ^= 0x01  # in the first FILE header, after MAIN
     broken = bytes(flipped)
-    with raises_corruption_not_truncation(match="RAR5 header CRC"):
-        parse_rar_archive(io.BytesIO(broken))
+    damaged = parse_rar_archive(io.BytesIO(broken))
+    assert damaged.members == []
+    assert damaged.damaged is not None
+    assert "RAR5 header CRC" in damaged.damaged
 
     fixed = fixup_rar_header_crcs(broken, broken=False)
     arc = parse_rar_archive(io.BytesIO(fixed))
