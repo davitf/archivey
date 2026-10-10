@@ -17,7 +17,7 @@ from archivey.cli.format import (
 from archivey.cli.password import resolve_password
 from archivey.config import PasswordInput
 from archivey.cost import CostReceipt
-from archivey.exceptions import ArchiveyError, StreamNotSeekableError
+from archivey.exceptions import ArchiveyError
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveFormat
 
@@ -74,6 +74,9 @@ def _can_reread(path: str) -> bool:
 
     False for a FIFO, a character device or a socket, the same set that
     ``ArchiveSource.for_path`` treats as non-seekable; a block device rereads fine.
+    Also false for a path that cannot be stat'ed, which the existence check is for:
+    ``is_read_once`` reports ``False`` for such a path, so without the check it would
+    count as rereadable and detection would run on a path the open already failed on.
     """
     return os.path.exists(path) and not is_read_once(path)
 
@@ -133,8 +136,9 @@ def run_info(
         # that never comes.
         if not identity_printed and _can_reread(archive):
             _print_identity(archive, detect_format(archive), out)
-        if streaming and isinstance(exc, StreamNotSeekableError):
-            _field("open", escape_control_chars(read_once_refusal(archive, exc)), err)
+        refusal = read_once_refusal(archive, exc, streaming=streaming)
+        if refusal is not None:
+            _field("open", escape_control_chars(refusal), err)
         else:
             _field("open", format_error_detail(exc), err)
         return 1

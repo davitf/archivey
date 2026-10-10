@@ -139,8 +139,9 @@ def resolve_smart_dest(
 
     - Single-file / raw-stream → cwd.
     - Indexed archive → tops on the **filtered** member set (wrap / reuse / cwd).
-    - No cheap index (tar, future stdin, …) → always ``./<stem>/``, then
-      :func:`maybe_hoist_single_root` may lift a single extracted top entry to cwd.
+    - No cheap index (tar, an archive read from a pipe, …) → always ``./<stem>/``,
+      then :func:`maybe_hoist_single_root` may lift a single extracted top entry to
+      cwd.
     """
     fmt = reader.format
     if fmt.container == ContainerFormat.RAW_STREAM:

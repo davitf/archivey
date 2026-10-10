@@ -115,4 +115,8 @@ encrypted members fail as if no password had been given.
   compressed) and single-file formats such as `.gz`. ZIP, 7z, RAR and ISO need to
   seek, so for those the verb exits `1` and says to copy the input to a regular file
   first.
-- `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.
+- Such a path can be `/dev/stdin`, so on Linux and macOS an archive piped on stdin
+  can be read: `cat a.tar | archivey list /dev/stdin`. On Linux, `/proc/self/fd/N`
+  works the same way. The same format limits apply.
+- `--salvage`, the `-` token for stdin, and `hash` / `create` / `convert` are reserved
+  for later.

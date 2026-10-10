@@ -171,10 +171,11 @@ def members_for_include_check(
     """Member list for unmatched-include / empty-selection checks, if safe.
 
     Prefer a cheap index. On a forward-only (streaming) reader, return ``None``
-    instead of calling :meth:`~archivey.reader.ArchiveReader.members_report` —
-    that would consume the sole forward pass and break a following
-    ``extract_all`` / ``stream_members``. Callers then defer empty-selection
-    handling to the operation outcome.
+    instead of calling
+    :meth:`~archivey.reader.ForwardArchiveReader.members_report` — that would
+    consume the sole forward pass and break a following ``extract_all`` /
+    ``stream_members``. Callers then defer empty-selection handling to the
+    operation outcome.
     """
     indexed = reader.members_report_if_available()
     if indexed is not None:

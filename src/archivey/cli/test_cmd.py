@@ -189,8 +189,11 @@ def run_test(
                 # Only 7z and RAR4 leave a link to verify, and neither opens in the
                 # streaming mode the CLI uses for a pipe, so ``reader`` is open for
                 # random access here. The cast states that for the type checker only.
+                # If that stops holding, ``open()`` on the streaming reader raises
+                # ``ArchiveyUsageError``, which is caught here so the link counts as
+                # a FAIL instead of ending the run with a traceback.
                 _verify_link(cast(ArchiveReader, reader), link)
-            except (ArchiveyError, OSError) as exc:
+            except (ArchiveyError, ArchiveyUsageError, OSError) as exc:
                 failed += 1
                 print(
                     f"FAIL {escape_member_name(link.name)}: {format_error_detail(exc)}",

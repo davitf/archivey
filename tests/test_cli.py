@@ -241,9 +241,11 @@ def test_dash_prefixed_verb_rejected(sample_zip: Path) -> None:
     assert main(["-x", str(sample_zip)]) == EXIT_USAGE
 
 
-def test_stdin_token_reserved() -> None:
+def test_stdin_token_reserved(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["list", "-"]) == EXIT_USAGE
     assert main(["-"]) == EXIT_USAGE
+    # The token is reserved, but a piped archive is readable through /dev/stdin.
+    assert "/dev/stdin" in capsys.readouterr().err
 
 
 def test_reserved_verbs(sample_zip: Path) -> None:
@@ -582,27 +584,173 @@ def test_extract_on_a_tar_fifo_streams_the_members_out(
     assert (dest / "a.txt").exists() == (not patterns)
 
 
+# Only the magic bytes: the refusal comes right after detection, before the backend
+# reads anything else, so no real archive of these formats is needed.
+_SEEK_ONLY_PAYLOADS = {
+    "zip": b"PK\x03\x04" + bytes(1024),
+    "7z": b"7z\xbc\xaf\x27\x1c\x00\x04" + bytes(1024),
+    "rar": b"Rar!\x1a\x07\x01\x00" + bytes(1024),
+    "iso": bytes(0x8001) + b"CD001\x01" + bytes(4096),
+}
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
-@pytest.mark.parametrize("verb", ["list", "test", "extract"])
-def test_verbs_on_a_zip_fifo_say_to_copy_it_to_a_file(
+@pytest.mark.parametrize("fmt", sorted(_SEEK_ONLY_PAYLOADS))
+@pytest.mark.parametrize("verb", ["list", "test", "extract", "info"])
+def test_verbs_on_a_seek_only_fifo_say_to_copy_it_to_a_file(
     tmp_path: Path,
     named_fifo_with_writer: Callable[[Path, bytes], None],
     capsys: pytest.CaptureFixture[str],
     verb: str,
+    fmt: str,
 ) -> None:
-    """A ZIP needs to seek, so no mode can read it from a pipe: the message must name
-    what a CLI user can do, not a ``streaming=True`` they cannot pass.
+    """ZIP, 7z, RAR and ISO need to seek, so no mode can read them from a pipe: the
+    message must name the format as the user knows it (``7z``, not the enum's
+    ``SEVEN_Z``) and what a CLI user can do, not a ``streaming=True`` they cannot pass.
     """
-    fifo = tmp_path / "pipe.zip"
-    named_fifo_with_writer(fifo, _zip_bytes({"a.txt": b"hello"}))
+    fifo = tmp_path / f"pipe.{fmt}"
+    named_fifo_with_writer(fifo, _SEEK_ONLY_PAYLOADS[fmt])
     argv = [verb, str(fifo)]
     if verb == "extract":
         argv += ["-d", str(tmp_path / "out")]
     assert _main_on_fifo(fifo, argv) == EXIT_FAIL
     err = capsys.readouterr().err
-    assert "ZIP cannot be read from a pipe or device" in err
+    assert f"the {fmt} format cannot be read from a pipe or device" in err
     assert "Copy the archive to a regular file first" in err
     assert "streaming=True" not in err
+
+
+def _gz_bytes(data: bytes) -> bytes:
+    import gzip
+
+    return gzip.compress(data, mtime=0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_verbs_on_a_gz_fifo_read_the_single_member(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A single-file format has no member name of its own: it comes from the FIFO's
+    filename, and ``extract`` writes it into the destination without a wrapper.
+    """
+    payload = _gz_bytes(b"hello gz")
+
+    listed = tmp_path / "list.gz"
+    named_fifo_with_writer(listed, payload)
+    assert _main_on_fifo(listed, ["list", str(listed)]) == EXIT_OK
+    assert "list" in capsys.readouterr().out
+
+    tested = tmp_path / "test.gz"
+    named_fifo_with_writer(tested, payload)
+    argv = ["test", "--hide-progress", str(tested)]
+    assert _main_on_fifo(tested, argv) == EXIT_OK
+    assert "1 OK, 0 failed" in capsys.readouterr().err
+
+    extracted = tmp_path / "data.gz"
+    named_fifo_with_writer(extracted, payload)
+    dest = tmp_path / "out"
+    argv = ["extract", "--hide-progress", str(extracted), "-d", str(dest)]
+    assert _main_on_fifo(extracted, argv) == EXIT_OK
+    assert (dest / "data").read_bytes() == b"hello gz"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_extract_on_a_tar_fifo_without_dest_wraps_in_the_stem(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no ``-d``, a forward-only reader has no index to choose a destination
+    from, so the members go into ``./<stem>/``.
+    """
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    argv = ["extract", "--hide-progress", str(fifo)]
+    assert _main_on_fifo(fifo, argv) == EXIT_OK
+    assert (work / "pipe" / "a.txt").read_bytes() == b"hello"
+    assert (work / "pipe" / "b" / "c.txt").read_bytes() == b"see"
+    assert sorted(p.name for p in work.iterdir()) == ["pipe"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("verb", ["test", "extract"])
+def test_no_match_pattern_on_a_tar_fifo_fails(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+) -> None:
+    """A forward-only reader has no member list to check a pattern against before the
+    pass, so the empty selection is reported after it.
+    """
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, _tar_bytes(_FIFO_TAR))
+    argv = [verb, "--hide-progress", str(fifo)]
+    if verb == "extract":
+        argv += ["-d", str(tmp_path / "out")]
+    argv.append("nomatch*")
+    assert _main_on_fifo(fifo, argv) == EXIT_FAIL
+    assert "pattern matched no members: 'nomatch*'" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no /dev/stdin on Windows")
+def test_list_reads_a_tar_piped_on_dev_stdin(tmp_path: Path) -> None:
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "archivey", "list", "/dev/stdin"],
+        input=_tar_bytes(_FIFO_TAR),
+        capture_output=True,
+        timeout=60,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert result.returncode == EXIT_OK, result.stderr
+    assert b"a.txt" in result.stdout
+    assert b"b/c.txt" in result.stdout
+
+
+def test_link_verify_on_a_streaming_reader_is_a_fail_not_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``test`` re-opens a link it could not verify during the pass, which needs a
+    random-access reader. No format the CLI streams leaves such a link today; if one
+    does, the usage error from ``open()`` must count as a FAIL.
+
+    A stub reaches the path: every link counts as unverified, and a regular TAR is
+    opened in streaming mode as if it were a pipe.
+    """
+    from archivey.cli import common
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        member = tarfile.TarInfo("a.txt")
+        member.size = 5
+        tf.addfile(member, io.BytesIO(b"hello"))
+        link = tarfile.TarInfo("l")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "a.txt"
+        tf.addfile(link)
+    archive = tmp_path / "links.tar"
+    archive.write_bytes(buf.getvalue())
+
+    monkeypatch.setattr(common, "is_read_once", lambda _path: True)
+    monkeypatch.setattr(
+        test_cmd,
+        "_link_needs_verification",
+        lambda m: m.type is MemberType.SYMLINK,
+    )
+    assert main(["test", "--hide-progress", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "FAIL l:" in err
+    assert "1 OK, 1 failed" in err
 
 
 def test_can_reread_skips_only_read_once_paths(tmp_path: Path) -> None:

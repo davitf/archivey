@@ -386,9 +386,14 @@ SHALL open it in streaming mode, because the user has no option to choose the mo
 `list` SHALL list the members in one pass, `test` SHALL verify them in one pass and
 `extract` SHALL extract them in one pass. When the format cannot be read in one
 forward pass (ZIP, 7z, RAR, ISO), the verb SHALL exit `1` with a message that names
-the format and tells the user to copy the input to a regular file first. The message
-MUST NOT suggest `streaming=True` or a `BytesIO`, which a CLI user cannot pass. A
-block device rereads the same bytes and opens as a regular file does.
+the format by its file extension (`zip`, `7z`, `rar`, `iso`) and tells the user to
+copy the input to a regular file first. The message MUST NOT suggest `streaming=True`
+or a `BytesIO`, which a CLI user cannot pass. A block device rereads the same bytes and
+opens as a regular file does.
+
+A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
+pipe, so an archive piped on stdin is read through this requirement. The `-` token is
+separate and stays reserved (below).
 
 #### Scenario: read-once paths
 
@@ -398,19 +403,21 @@ block device rereads the same bytes and opens as a regular file does.
 | `archivey test <tar-fifo>` | Verifies every file member in one pass; exit `0` |
 | `archivey extract <tar-fifo> -d out` | Extracts every member into `out`; exit `0` |
 | `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
-| `archivey list <zip-fifo>` (also `test`, `extract`, `info`) | Exit `1`; message names ZIP and says to copy the input to a regular file first |
+| `archivey list <zip-fifo>` (also `test`, `extract`, `info`; also 7z, RAR, ISO) | Exit `1`; message names the format as `zip` (`7z`, `rar`, `iso`) and says to copy the input to a regular file first |
+| `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
 
-### Requirement: stdin archives are reserved, not supported in v1
+### Requirement: the stdin token `-` is reserved, not supported in v1
 
 The system SHALL treat `-` as a reserved token meaning "read archive from stdin"
 and SHALL fail fast with a clear "not supported yet" message rather than opening a
-filesystem entry literally named `-`.
+filesystem entry literally named `-`. The message SHALL name `/dev/stdin`, through
+which a piped archive is read as a read-once path (above).
 
 #### Scenario: stdin reserved
 
 | Case | Expected |
 | --- | --- |
-| `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
+| `archivey list -` | Non-zero exit; message says the `-` token is not supported yet and names `/dev/stdin` |
 | `archivey extract -` | Same |
 
 ### Requirement: The CLI uses only public API

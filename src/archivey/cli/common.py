@@ -13,6 +13,7 @@ from typing import TextIO
 from archivey import open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
+from archivey.cli.format import format_format_label
 from archivey.config import PasswordInput
 from archivey.exceptions import StreamNotSeekableError
 
@@ -20,14 +21,21 @@ from archivey.exceptions import StreamNotSeekableError
 # --track-io is a debugging aid for the library, and IO measurement is not public API.
 from archivey.internal.measurement import enable_measurement, io_stats
 from archivey.reader import ForwardArchiveReader
+from archivey.terminal import display_path
 
 
 def reject_stdin_token(archive: str) -> None:
-    """Fail fast when ``-`` is used (stdin archives reserved, not supported)."""
+    """Fail fast when ``-`` is used: the token is reserved, not supported.
+
+    A pipe on stdin is still readable through its path, ``/dev/stdin``, which
+    :func:`is_read_once` treats as any other pipe, so the message names that path.
+    """
     if archive == "-":
         # Grammar-level "not available yet" → usage exit (D7), matching reserved verbs.
         raise CliError(
-            "stdin archives are not supported yet (the '-' token is reserved)",
+            "the '-' token for stdin is reserved and not supported yet; "
+            "to read an archive piped on stdin, pass /dev/stdin instead "
+            "(not on Windows)",
             code=EXIT_USAGE,
         )
 
@@ -70,17 +78,19 @@ def _open(
     try:
         return open_archive(archive, password=password, streaming=streaming)
     except StreamNotSeekableError as exc:
-        if not streaming:
+        message = read_once_refusal(archive, exc, streaming=streaming)
+        if message is None:
             raise
-        raise CliError(read_once_refusal(archive, exc)) from exc
+        raise CliError(message) from exc
 
 
 def is_read_once(archive: str | Path) -> bool:
     """Whether ``archive`` is a FIFO, a character device or a socket.
 
     These are the paths that ``ArchiveSource.for_path`` treats as non-seekable: a
-    second open reads different bytes, or waits for a writer that never comes. A block
-    device rereads fine. A path that cannot be stat'ed is not read-once; the open
+    second open reads different bytes, or waits for a writer that never comes. They
+    include ``/dev/stdin`` and ``/proc/self/fd/N`` when that descriptor is a pipe. A
+    block device rereads fine. A path that cannot be stat'ed is not read-once; the open
     reports its error.
     """
     try:
@@ -90,17 +100,33 @@ def is_read_once(archive: str | Path) -> bool:
     return stat.S_ISFIFO(mode) or stat.S_ISCHR(mode) or stat.S_ISSOCK(mode)
 
 
-def read_once_refusal(archive: str | Path, exc: StreamNotSeekableError) -> str:
-    """The CLI message for a read-once path whose format needs to seek.
+def read_once_refusal(
+    archive: str | Path, exc: BaseException, *, streaming: bool
+) -> str | None:
+    """The CLI message for a read-once path whose format needs to seek, or ``None``.
 
-    The library's own message suggests ``streaming=True`` or a ``BytesIO``, which a CLI
-    user cannot pass; this one names what the user can do.
+    ``None`` unless the open was in streaming mode and raised
+    ``StreamNotSeekableError``: any other failure keeps its own message. The library's
+    message suggests ``streaming=True`` or a ``BytesIO``, which a CLI user cannot pass;
+    this one names what the user can do. The one place that makes this decision:
+    ``open_for_cli`` raises the message as a ``CliError``, and ``info`` prints it as its
+    ``open:`` field.
+
+    The path is ``/``-separated here, because the caller escapes the whole message and
+    an escaped native Windows path would have every separator doubled.
     """
-    fmt = exc.source_format.display_name if exc.source_format else "this format"
+    if not streaming or not isinstance(exc, StreamNotSeekableError):
+        return None
+    fmt = exc.source_format
+    subject = (
+        f"the {format_format_label(fmt)} format"
+        if fmt is not None
+        else "this archive's format"
+    )
     return (
-        f"{archive}: {fmt} cannot be read from a pipe or device. {fmt} needs to seek, "
-        f"and a pipe or device can be read only once. Copy the archive to a regular "
-        f"file first, then run archivey on that file."
+        f"{display_path(archive)}: {subject} cannot be read from a pipe or device. "
+        f"It needs to seek, and a pipe or device can be read only once. Copy the "
+        f"archive to a regular file first, then run archivey on that file."
     )
 
 
