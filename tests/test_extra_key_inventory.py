@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import re
+import types
 import typing
 from pathlib import Path
 
@@ -75,11 +76,18 @@ def _literal_keys(mapping_cls: type) -> set[str]:
 
 
 def _type_as_doc(ann: object) -> str:
-    """Render an annotation as the docstring writes it: bare class names, so the text
-    is the same on every Python (3.14 and some 3.11 builds render ``Mapping[str, str]``
-    with its module)."""
+    """Render an annotation as the ``Known keys:`` bullets write it: bare class names.
+
+    ``typing.get_type_hints`` resolves ``Mapping[str, str]`` to a ``collections.abc``
+    generic alias, and ``str()`` of that alias is module-qualified on every Python
+    (``collections.abc.Mapping[str, str]``). So the bare-name form is rebuilt from the
+    origin and its args instead of taken from ``str()``. A union is not a generic
+    alias; it falls through to ``str()``, which already renders ``int | None``.
+    """
+    if isinstance(ann, list):  # the parameter list of a Callable
+        return "[" + ", ".join(_type_as_doc(arg) for arg in ann) + "]"
     origin = typing.get_origin(ann)
-    if isinstance(origin, type):
+    if isinstance(origin, type) and origin is not types.UnionType:
         args = ", ".join(
             "..." if arg is Ellipsis else _type_as_doc(arg)
             for arg in typing.get_args(ann)

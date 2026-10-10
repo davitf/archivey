@@ -205,16 +205,16 @@ are parsed (`_charge_sparse_map`): a 0.0 map by its offset records, a 0.1 map by
 commas, a 1.0 map by its count line (`_proc_gnusparse_10` replaces tarfile's parse), and
 an old GNU map block by block (`_proc_sparse` copies tarfile's). tarfile also copies the
 PAX global records into every later member; members with no records of their own share
-one copy instead, which is why `extra["tar.pax_headers"]` is read-only. Past a cap that is not enforced (`stream_members()`
-on a random-access reader) the batches go back to full size. Batching keeps the walk a
-dense pass; one header per lock hold was measurably slower on ordinary listings. When
-the walk fails partway through a batch, the headers already parsed are handed out first,
-so `members_report()` keeps its salvaged prefix. tarfile still keeps every header it has
-parsed in `TarFile.members`, so a listing holds each header twice: once as tarfile's
-`TarInfo` and once as the `ArchiveMember`. On a streaming reader, `scan_members()` and
-`members_report()` count members against the cap as they arrive and raise at the one
-past it. `stream_members()` and forward-only iteration are not capped, by design, and
-there both lists grow for the whole pass.
+one copy instead, which is why `extra["tar.pax_headers"]` is read-only. Past a cap that
+is not enforced (`stream_members()` on a random-access reader) the batches go back to
+full size. Batching keeps the walk a dense pass; one header per lock hold was measurably
+slower on ordinary listings. When the walk fails partway through a batch, the headers
+already parsed are handed out first, so `members_report()` keeps its salvaged prefix.
+tarfile still keeps every header it has parsed in `TarFile.members`, so a listing holds
+each header twice: once as tarfile's `TarInfo` and once as the `ArchiveMember`. On a
+streaming reader, `scan_members()` and `members_report()` count members against the cap
+as they arrive and raise at the one past it. `stream_members()` and forward-only
+iteration are not capped, by design, and there both lists grow for the whole pass.
 
 **Member metadata** is mapped in `_to_member`:
 
