@@ -1,10 +1,10 @@
 # Choosing how to read
 
-With no options, `open_archive` lets you read any member at any time, one at a time. That
-suits most programs. Three options change it for the cases where the default is slow or not
-enough: `streaming`, `seekable_members` and `concurrent_members`. Opening an archive also applies
-a few limits, such as how many members it may list, which
-[Archives you trust](extracting.md#archives-you-trust) explains how to raise.
+With no options, `open_archive` lets you read members in any order, with one member open at a time.
+That suits most programs. Three options change it for the cases where the default is slow or not
+enough: `streaming`, `seekable_members` and `concurrent_members`. Opening an archive also applies a
+few limits, such as how many members it may list, which [Archives you
+trust](extracting.md#archives-you-trust) explains how to raise.
 
 ## Solid archives
 
@@ -21,6 +21,8 @@ decompresses it once.
 ## Reading once
 
 ```python
+import sys
+
 with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
     for member, stream in archive.stream_members():
         ...
@@ -33,17 +35,22 @@ even on an ordinary file. You get one pass, through `stream_members` or `extract
 is used up even if you leave the loop early.
 
 A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
-compressed files can come from one. ZIP, 7z, RAR and ISO keep their index at the end of the
-file, or jump around in it, so they need a file or another source that can seek.
+compressed files can come from one. ZIP and 7z keep their index at the end of the file, and reading
+a RAR or an ISO means jumping between places in the file, so all four need a file or another source
+that can seek.
 
 ## Seeking inside a member
 
-Some code needs to seek inside a member: a library that reads a ZIP stored inside the archive,
-a Parquet reader, an image decoder. By default a member stream only moves forward, and `seek`
-raises. With `seekable_members=True`, streams from `open` can seek. Moving backwards in
-compressed data can mean decompressing the member again from its start. Reading a member from
-start to end lets archivey notice if its data is damaged, but after a seek, damage may go
-unnoticed. If you'll seek a lot, extracting the member to a file first is often faster.
+Some code needs to seek inside a member: a library that reads a ZIP stored inside the archive, a
+Parquet reader, an image decoder. By default a member stream only moves forward, and `seek` raises.
+With `seekable_members=True`, streams from `open` can seek. Moving backwards in compressed data can
+mean decompressing the member again from its start. If you install the `seekable` extra, archivey
+reads bzip2 data, and large DEFLATE data, through an
+[accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
+reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
+compression in gzip files and in most ZIP members. Reading a member from start to end lets archivey
+notice if its data is damaged, but after a seek, damage may go unnoticed. If you'll seek a lot,
+extracting the member to a file first is often faster.
 
 ## Several members at once
 
@@ -60,8 +67,9 @@ source jump back and forth, and each jump throws away what it had buffered.
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off
-out-of-order reads. Each of these can be slow in some cases, or let damaged data go unnoticed,
-in ways the code doesn't show. With these defaults, the risky pattern raises instead of running.
+out-of-order reads. Each of these can be slow in some cases, or let damaged data go unnoticed, and
+nothing in the calling code shows it. With these defaults, the risky pattern raises instead of
+running.
 
 A ZIP can be read out of order at no cost, but a `.tar.gz` can't. If archivey raised only on the
 `.tar.gz`, code tested on ZIPs would first fail in production. So archivey raises on every
