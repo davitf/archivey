@@ -56,6 +56,10 @@ Consequences to implement:
 
 ## Q2 — Where should the wall budget be *enforced*? — **DECIDED (2026-07-20)**
 
+> **Superseded in part (davitf, 2026-10-10, #655):** the drift baseline is now the
+> last *measured* run, pass or fail, not the last successful one, and a drift must
+> cost ≥1 ms of wall time. Reasons and reopen conditions: `benchmarks/RESULTS.md`.
+
 **Decision: (a) (+ (c) already paid).** Nightly compares wall ratios against the
 *previous successful nightly's* JSON artifact and fails on relative drift
 (`WALL_RATIO_DRIFT_FACTOR` / `WALL_RATIO_DRIFT_MIN_ABS` in `harness.py`). Quiet

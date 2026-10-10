@@ -389,6 +389,9 @@ def test_wall_drift_checks_regressions_and_noise() -> None:
             wall_s=0.02,
             bytes_decompressed=100,
             source_seek_count=1,
+            # run_cases always sets stdlib_wall_s with wall_ratio; 20 ms keeps the
+            # 1 ms time floor out of the way, so these cases test the ratio rules.
+            stdlib_wall_s=0.02,
             wall_ratio=ratio,
         )
 
@@ -445,6 +448,18 @@ def test_wall_drift_checks_regressions_and_noise() -> None:
 
     # New case not in previous — skip.
     assert _wall_drift_checks([_case("brand_new_case", 5.0)], previous) == []
+
+    # A hand-built result with no stdlib time is judged on the ratio rules alone.
+    no_stdlib = CaseResult(
+        case="zip_read_all",
+        format="zip",
+        operation="read_all",
+        wall_s=0.000_1,
+        bytes_decompressed=100,
+        source_seek_count=1,
+        wall_ratio=1.80,
+    )
+    assert len(_wall_drift_checks([no_stdlib], previous)) == 1
 
 
 def test_wall_drift_checks_ignore_drift_that_costs_under_a_millisecond() -> None:
@@ -543,3 +558,49 @@ def test_wall_baseline_provenance_and_republish(tmp_path: Path) -> None:
 
     assert wall_ratio_map({"results": [{"case": "a", "wall_ratio": True}]}) == {}
     assert measured_at_age_seconds({"results": []}) is None
+
+
+def test_main_passes_wall_drift_min_extra_ms_as_milliseconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--wall-drift-min-extra-ms`` reaches the drift gate in milliseconds.
+
+    The case below drifts 1.00 → 2.00 on a 2 ms stdlib peer: +2 ms of wall time. A
+    1 ms floor fails it and a 5 ms floor passes it. Read as seconds, both floors
+    would pass it, and the nightly drift gate could never fail.
+    """
+    from types import SimpleNamespace
+
+    from benchmarks import harness
+    from benchmarks.fixtures import SCALES
+    from benchmarks.harness import CaseResult
+
+    current = CaseResult(
+        case="zip_read_all",
+        format="zip",
+        operation="read_all",
+        wall_s=0.004,
+        bytes_decompressed=100,
+        source_seek_count=1,
+        stdlib_wall_s=0.002,
+        wall_ratio=2.0,
+    )
+    monkeypatch.setattr(
+        harness,
+        "materialize_fixtures",
+        lambda *_a, **_k: SimpleNamespace(root=tmp_path, scale=SCALES["ci"]),
+    )
+    monkeypatch.setattr(harness, "run_cases", lambda *_a, **_k: [current])
+    monkeypatch.setattr(harness, "_structural_checks", lambda *_a, **_k: [])
+    baseline = tmp_path / "prev.json"
+    baseline.write_text(
+        json.dumps({"results": [{"case": "zip_read_all", "wall_ratio": 1.0}]})
+    )
+
+    def run(*extra: str) -> int:
+        argv = ["--mode", "full", "--scale", "ci", "--wall-drift-baseline"]
+        return harness.main([*argv, str(baseline), *extra])
+
+    assert run() == 1  # default floor: 1 ms
+    assert run("--wall-drift-min-extra-ms", "1") == 1
+    assert run("--wall-drift-min-extra-ms", "5") == 0

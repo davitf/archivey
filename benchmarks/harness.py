@@ -124,10 +124,10 @@ WALL_RATIO_DRIFT_FACTOR = 1.25
 WALL_RATIO_DRIFT_MIN_ABS = 0.15
 # Third drift condition: the drift must also cost at least this much wall time,
 # (new − old ratio) × this run's stdlib time. A sub-millisecond listing case can move
-# its ratio by 2× on scheduler noise alone (rar_open_list: 0.2 ms peer, 2.60 → 5.71
-# between two runs with no change to RAR listing cost that large); one such night
-# froze the nightly baseline for a month. Gross slowdowns of tiny cases still fail
-# on the 10× ceiling.
+# its ratio by 2× on scheduler noise alone: rar_open_list went 2.60 → 5.71 (1.0 ms vs
+# a 0.2 ms peer) between the 2026-09-06 run and nightly run 34122511826 on 2026-09-07,
+# with no change to RAR listing cost that large. That one night froze the nightly
+# baseline for a month. Gross slowdowns of tiny cases still fail on the 10× ceiling.
 WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP/TAR wrap stdlib → 2–3×/member; native 7z/RAR → ≈parity with py7zr/rarfile.
@@ -1432,8 +1432,10 @@ def _wall_drift_checks(
     only when all three hold: ``new > old × factor``, ``new − old ≥ min_abs``, and
     ``(new − old) × stdlib_wall_s ≥ min_extra_s`` — the extra wall time the drift
     costs at this run's machine speed. The last condition keeps sub-millisecond
-    cases from failing on timer noise; it is skipped when ``stdlib_wall_s`` is
-    unknown. Absolute wall seconds are not compared across runs — machine skew
+    cases from failing on timer noise. ``run_cases`` sets ``stdlib_wall_s`` whenever
+    it sets ``wall_ratio``, so the nightly always applies it; a hand-built
+    ``CaseResult`` without ``stdlib_wall_s`` is judged on the two ratio conditions
+    alone. Absolute wall seconds are not compared across runs — machine skew
     dominates; the ratio cancels most of it. Missing previous / new cases / dropped
     cases are skipped (seed or rename).
     Callers that *require* a baseline should fail closed when

@@ -61,7 +61,9 @@ jobs:
           # The newest completed prior run on the default branch that uploaded our
           # artifact, pass or fail: a failed measurement still uploads its JSON
           # (the upload step runs on always()). Runs with no artifact (cancelled,
-          # or stopped before the report) are skipped by the loop below.
+          # or stopped before the report) are skipped by the loop below. 100 runs is
+          # about 100 days at one scheduled run a day, longer than GitHub's default
+          # 90-day artifact retention, so older runs would have nothing to download.
           mapfile -t runs < <(
             gh run list \
               --workflow benchmark-wall.yml \
@@ -77,6 +79,10 @@ jobs:
             if gh run download "$id" -n benchmark-wall-realistic -D previous-wall 2>/dev/null; then
               if [ -f previous-wall/benchmark-wall-realistic.json ]; then
                 echo "Found wall artifact from run $id"
+                # Say whether the baseline was a red night: after a regression
+                # the next green summary otherwise looks like any other.
+                conclusion=$(gh run view "$id" --json conclusion --jq .conclusion || echo unknown)
+                echo "Drift baseline: run [$id]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id) (conclusion: $conclusion)." >> "$GITHUB_STEP_SUMMARY"
                 echo "found=true" >> "$GITHUB_OUTPUT"
                 echo "baseline=previous-wall/benchmark-wall-realistic.json" >> "$GITHUB_OUTPUT"
                 echo "source_run_id=$id" >> "$GITHUB_OUTPUT"

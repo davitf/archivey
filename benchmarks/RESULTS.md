@@ -13,12 +13,25 @@ run fires it:
   `measured_at` / source provenance;
 - hard-fails on the ~10× sanity ceiling **or** on **wall-ratio drift** vs the
   JSON of the last run that measured, pass or fail (relative regression gate —
-  debt-ledger Q1 / perf Q2 option (a)). A case drifts when its ratio rises by more
-  than 1.25× **and** by +0.15 **and** the rise costs ≥1 ms of wall time at this
-  run's stdlib speed, so sub-millisecond listing cases do not fail on timer noise.
-  Because a failed run's JSON becomes the next baseline, a real regression fails
-  the first night that measures it and not every night after;
+  debt-ledger Q1 / perf Q2 option (a)). A case drifts when its ratio rises to
+  more than 1.25× the baseline ratio **and** by at least +0.15 in absolute terms
+  **and** the rise costs ≥1 ms of wall time at this run's stdlib speed, so
+  sub-millisecond listing cases do not fail on timer noise. Because a failed run's
+  JSON becomes the next baseline, a real regression fails the first night that
+  measures it and not every night after;
 - prints absolute VISION / Q1 listing bands as informational only.
+
+**Maintainer decision (davitf, 2026-10-10, #655):** compare against the last
+measured run, pass or fail, and add the 1 ms floor. This supersedes the
+"previous successful nightly" baseline of performance review Q2 (decided
+2026-07-20). Reasons: on 2026-09-07 one sub-millisecond case failed on timer noise
+(`rar_open_list`, 1.0 ms vs a 0.2 ms peer, 2.60× → 5.71×). With a successful-only
+baseline that one night froze the 2026-09-06 numbers until 2026-10-09, and every
+later change added up against them until each measured night failed. The cost: a
+real regression is red for one night, then becomes the baseline unless someone
+acts on that night's failure. Reopen if a regression is accepted that way without
+anyone seeing it, or if a sub-millisecond case shows a real regression the 1 ms
+floor hides.
 
 `workflow_dispatch` can pass `skip_drift=true` to accept the current ratios as a
 new baseline after an intentional slowdown.
