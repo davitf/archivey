@@ -19,10 +19,11 @@ import sys
 import tarfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-from archivey import open_archive
+from archivey import detect_format, open_archive
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -40,6 +41,9 @@ from tests.streams_util import (
     ShortReadBytesIO,
     ShortReadNonSeekable,
 )
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # Larger than BufferedReader's default so the over-read contrast is a partial
 # fill, not EOF. 3.14 raised DEFAULT_BUFFER_SIZE from 8 KiB to 128 KiB (gh-117151);
@@ -150,6 +154,79 @@ def test_over_returning_inner_raises() -> None:
     wrapped = ArchiveSource.for_stream(_OverRead())  # type: ignore[arg-type]  # RawIOBase double
     with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(4\\)"):
         wrapped.read(4)
+
+
+def test_over_returning_inner_after_a_short_read_raises() -> None:
+    """The gathered follow-up is held to the same "at most ``n``" contract."""
+
+    class _ShortThenOverlong(io.RawIOBase):
+        def __init__(self) -> None:
+            super().__init__()
+            self._chunks = [b"abcd", b"EFGHIJKLM"]
+
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1) -> bytes:  # type: ignore[override]
+            return self._chunks.pop(0) if self._chunks else b""
+
+    wrapped = ArchiveSource.for_stream(_ShortThenOverlong())  # type: ignore[arg-type]  # RawIOBase double
+    # The follow-up asks for the missing 6 bytes and gets 9.
+    with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(6\\)"):
+        wrapped.read(10)
+
+
+def test_over_returning_inner_with_a_fact_length_raises() -> None:
+    """The fact-length fast path refuses an over-read too, rather than passing it on."""
+
+    class _OverReadBuffer(io.BytesIO):
+        def read(self, n: int | None = -1, /) -> bytes:
+            return super().read(-1 if n is None or n < 0 else n + 5)
+
+    wrapped = ArchiveSource.for_stream(_OverReadBuffer(b"abcdefghij"))
+    assert wrapped._length is not None
+    with pytest.raises(ValueError, match="inner returned 9 bytes for read\\(4\\)"):
+        wrapped.read(4)
+
+
+class _OverCountingReadinto(io.BytesIO):
+    """Fills the buffer correctly, then reports ``extra`` more bytes than it wrote.
+
+    With ``short_first``, the first call fills only 2 bytes and reports them
+    truthfully, so the over-count arrives on the follow-up fill.
+    """
+
+    def __init__(self, data: bytes, *, extra: int, short_first: bool = False) -> None:
+        super().__init__(data)
+        self._extra = extra
+        self._short_first = short_first
+
+    def readinto(self, b: WriteableBuffer, /) -> int:  # type: ignore[override]
+        view = memoryview(b).cast("B")
+        if self._short_first:
+            self._short_first = False
+            return super().readinto(view[:2])
+        return super().readinto(view) + self._extra
+
+
+def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
+    """The count is checked, not only the bytes: a lie would move the position past EOF."""
+    wrapped = ArchiveSource.for_stream(_OverCountingReadinto(b"abcdefghij", extra=100))
+    assert wrapped._length is not None
+    with pytest.raises(
+        ValueError, match="inner returned 104 bytes for readinto\\(4\\)"
+    ):
+        wrapped.readinto(bytearray(4))
+
+
+def test_readinto_refuses_an_over_count_on_the_follow_up_fill() -> None:
+    """A short first fill, then an over-count on the re-ask, raises the same way."""
+    inner = _OverCountingReadinto(b"abcdefghij", extra=100, short_first=True)
+    wrapped = ArchiveSource.for_stream(inner)
+    with pytest.raises(
+        ValueError, match="inner returned 102 bytes for readinto\\(2\\)"
+    ):
+        wrapped.readinto(bytearray(4))
 
 
 def test_sized_read_past_eof_returns_the_remainder() -> None:
@@ -348,17 +425,21 @@ def test_open_archive_refuses_a_buffered_gzip_followed_by_none() -> None:
         _read_non_blocking(_BufferedThenNothing(gzip.compress(b"hello")))
 
 
-def _nonblocking_pipe(payload: bytes | None = None) -> tuple[io.BufferedReader, int]:
+def _nonblocking_pipe(
+    payload: bytes | None = None, *, buffered: bool = True
+) -> tuple[io.BufferedReader, int]:
     """Read end of a pipe with nothing more ready. The write end stays open.
 
     Closing it would be a real EOF (``b""``). Leaving it open and writing
-    nothing — or only ``payload`` — is the stall ``None`` means.
+    nothing — or only ``payload`` — is the stall ``None`` means. With
+    ``buffered=False`` the read end is a ``FileIO``, typed as the buffered
+    reader for the callers' sake.
     """
     read_fd, write_fd = os.pipe()
     os.set_blocking(read_fd, False)
     if payload:
         os.write(write_fd, payload)
-    return open(read_fd, "rb"), write_fd
+    return open(read_fd, "rb", buffering=-1 if buffered else 0), write_fd  # type: ignore[return-value]  # FileIO when unbuffered
 
 
 @pytest.mark.skipif(
@@ -418,18 +499,41 @@ def test_open_archive_refuses_a_nonblocking_pipe_after_a_complete_gzip() -> None
         os.close(write_fd)
 
 
-def test_blocking_reads_refuses_a_negative_count() -> None:
-    """The follow-up adapter does not forward ``read(-1)`` to the inner.
+def test_detect_format_refuses_a_raw_stream_with_nothing_ready() -> None:
+    """``None`` on the first detection read is not an empty source."""
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        detect_format(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
 
-    ``read_exact`` never asks for a drain. The default stays, because that
-    function's ``read`` protocol has one, and a negative count is refused
-    before the inner is touched.
+
+def test_detect_format_refuses_a_short_chunk_then_none() -> None:
+    """A partial prefix, then ``None``, is not the whole source.
+
+    Detection asks for more than 100 bytes, so it must ask again, and the
+    ``None`` it then gets must not end the prefix as if it were EOF.
     """
-    from archivey.internal.source import _BlockingReads
+    inner = _ShortThenNothing(b"x" * 100)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        detect_format(inner)  # type: ignore[arg-type]  # RawIOBase double
+    assert inner.calls == 2
 
-    adapter = _BlockingReads(_NothingReady())  # type: ignore[arg-type]  # RawIOBase double
-    with pytest.raises(ValueError, match="non-negative"):
-        adapter.read(-1)
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a POSIX non-blocking pipe read returns None; Windows does not",
+)
+@pytest.mark.parametrize("payload", [None, b"x" * 100], ids=["empty", "partial"])
+@pytest.mark.parametrize("buffered", [True, False], ids=["buffered", "raw"])
+def test_detect_format_refuses_a_nonblocking_pipe(
+    payload: bytes | None, buffered: bool
+) -> None:
+    """A pipe with nothing more ready is not a short or empty source."""
+    stream, write_fd = _nonblocking_pipe(payload, buffered=buffered)
+    try:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            detect_format(stream)
+    finally:
+        stream.close()
+        os.close(write_fd)
 
 
 class _BufferedShortThenStall(io.BufferedIOBase):
@@ -741,6 +845,63 @@ def test_a_joined_set_closes_with_the_source_and_borrows_its_stream_parts() -> N
     source.close()
     assert joined.closed
     assert not any(c.closed for c in callers)
+
+
+def test_seek_is_expensive_sees_a_member_stream_under_every_pass_through_layer(
+    tmp_path: Path,
+) -> None:
+    """A member stream re-decodes on a seek however it is wrapped; a file never does.
+
+    Fails against a predicate that type-tests only the outermost object (the buffered
+    shapes answer ``False``), against a source or a join that drops the fact, and
+    against a predicate that does not ask a join for its own answer (a join handed to
+    ``for_stream`` or straight to the predicate is neither peeled nor a member stream).
+    """
+    import zipfile
+
+    from archivey.internal.measurement import SeekCounter
+    from archivey.internal.source import seek_is_expensive
+    from archivey.internal.streams.counting import SeekCountingStream
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("m", DATA)
+    path = tmp_path / "f.bin"
+    path.write_bytes(DATA)
+    buf.seek(0)
+    with (
+        open_archive(buf, seekable_members=True) as reader,
+        reader.open("m") as member,
+    ):
+        expensive = {
+            "bare": member,
+            "source": ArchiveSource.for_stream(member),
+            "buffered": io.BufferedReader(member),  # type: ignore[arg-type]
+            "source over buffer": ArchiveSource.for_stream(
+                io.BufferedReader(member)  # type: ignore[arg-type]
+            ),
+            "seek counter": SeekCountingStream(member, SeekCounter()),
+            "join": ArchiveSource.for_volumes(
+                ConcatenatedFile([io.BytesIO(b"x"), member])
+            ),
+            "bare join": ConcatenatedFile([io.BytesIO(b"x"), member]),
+            "join as a stream": ArchiveSource.for_stream(
+                ConcatenatedFile([io.BytesIO(b"x"), member])  # type: ignore[arg-type]
+            ),
+        }
+        for label, stream in expensive.items():
+            assert seek_is_expensive(stream), label
+        cheap = {
+            "BytesIO": io.BytesIO(DATA),
+            "source over BytesIO": ArchiveSource.for_stream(io.BytesIO(DATA)),
+            "path source": ArchiveSource.for_path(path),
+            "join of files": ArchiveSource.for_volumes(ConcatenatedFile([path, path])),
+        }
+        for label, stream in cheap.items():
+            assert not seek_is_expensive(stream), label
+        for stream in (*expensive.values(), *cheap.values()):
+            if isinstance(stream, (ArchiveSource, ConcatenatedFile)):
+                stream.close()
 
 
 def test_close_is_idempotent(tmp_path: Path) -> None:

@@ -528,6 +528,8 @@ def test_reader_surface_is_uniform_across_formats(key: str, tmp_path: Path) -> N
 
     with pytest.raises(ArchiveyUsageError):
         reader.format  # noqa: B018 - property access after close must raise
+    with pytest.raises(ArchiveyUsageError):
+        member in reader  # noqa: B015 - membership test after close must raise
 
 
 @pytest.mark.parametrize("key", _UNIFORM_KEYS)

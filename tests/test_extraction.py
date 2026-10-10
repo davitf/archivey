@@ -12,6 +12,7 @@ import gzip
 import io
 import os
 import tarfile
+import time
 import unicodedata
 import warnings
 import zipfile
@@ -650,6 +651,463 @@ def test_filter_dropping_the_mode_still_gets_the_policy_default(
         os.umask(old)
     assert (dest / "d" / "f.txt").stat().st_mode & 0o7777 == 0o644
     assert (dest / "d").stat().st_mode & 0o7777 == 0o755
+
+
+def _tar_with_dir_modes(specs: list[tuple[str, int | None, int]]) -> bytes:
+    """A tar from ``(name, mode, mtime)`` specs: a name ending in ``/`` is a
+    directory, anything else a one-byte file; a ``mode`` of ``None`` is a symlink
+    whose target is that name with the ``->`` part split off (``"l->t"``)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, mode, mtime in specs:
+            if mode is None:
+                link, target = name.split("->")
+                info = tarfile.TarInfo(link)
+                info.type = tarfile.SYMTYPE
+                info.linkname = target
+                tf.addfile(info)
+                continue
+            info = tarfile.TarInfo(name.rstrip("/"))
+            info.mode = mode
+            info.mtime = mtime
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                tf.addfile(info)
+            else:
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
+def _restore_modes(root: Path) -> None:
+    """Make every directory under ``root`` writable again, so pytest can remove it."""
+    for path in [root, *root.rglob("*")]:
+        if path.is_dir() and not path.is_symlink():
+            os.chmod(path, 0o700)
+
+
+_DIR_MTIME = 1_500_000_000
+_SUB_MTIME = 1_400_000_000
+
+
+@_posix_perms
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    ("policy", "stored", "expected"),
+    [
+        (ExtractionPolicy.STANDARD, 0o644, 0o644),
+        (ExtractionPolicy.STANDARD, 0o555, 0o555),
+        (ExtractionPolicy.TRUSTED, 0o000, 0o000),
+        (ExtractionPolicy.STRICT, 0o500, 0o755),
+    ],
+)
+def test_directory_metadata_is_applied_after_its_children(
+    tmp_path: Path,
+    streaming: bool,
+    policy: ExtractionPolicy,
+    stored: int,
+    expected: int,
+) -> None:
+    """A directory stored without owner write or search permission still gets its
+    children, and ends with its stored mode and mtime, as with GNU tar and bsdtar.
+
+    The directory's mode and mtime are applied once the run is done, deepest first:
+    applied at once, the mode refused every child to a non-root user, and every child
+    written moved the mtime. Root skips the permission checks, so there only the
+    final mode and mtime show the order.
+    """
+    archive = _tar_with_dir_modes(
+        [
+            ("etc/", stored, _DIR_MTIME),
+            ("etc/a", 0o644, 0),
+            ("etc/sub/", stored, _SUB_MTIME),
+            ("etc/sub/b", 0o644, 0),
+        ]
+    )
+    dest = tmp_path / "out"
+    try:
+        report = open_and_extract(
+            io.BytesIO(archive), dest, policy=policy, streaming=streaming
+        )
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 4
+        # Each directory is read, then opened up so the one below it can be read: a
+        # chmod leaves the mtime alone.
+        etc, sub = dest / "etc", dest / "etc" / "sub"
+        for directory, mtime in ((etc, _DIR_MTIME), (sub, _SUB_MTIME)):
+            st = directory.stat()
+            assert st.st_mode & 0o7777 == expected
+            assert int(st.st_mtime) == mtime
+            os.chmod(directory, 0o700)
+        assert (etc / "a").read_bytes() == b"x"
+        assert (sub / "b").read_bytes() == b"x"
+    finally:
+        _restore_modes(dest)
+
+
+def _case_sensitive(path: Path) -> bool:
+    """Whether the filesystem at ``path`` tells ``CaseProbe`` from ``caseprobe``. Writes
+    and removes ``path / "CaseProbe"``, so ``path`` is left as it was."""
+    probe = path / "CaseProbe"
+    probe.write_bytes(b"")
+    try:
+        return not (path / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
+class _NoInode:
+    """A stat result that reports inode 0, as some FUSE and network mounts do."""
+
+    def __init__(self, st: os.stat_result) -> None:
+        self._st = st
+
+    @property
+    def st_ino(self) -> int:
+        return 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._st, name)
+
+
+@_posix_perms
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_directory_metadata_is_applied_where_inodes_are_zero(
+    tmp_path: Path, streaming: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every directory gets its own member's metadata on a filesystem that reports
+    inode 0 for every entry: two directories are not taken for one."""
+    lstat, fstat = os.lstat, os.fstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    monkeypatch.setattr(os, "fstat", lambda fd: _NoInode(fstat(fd)))
+    archive = _tar_with_dir_modes(
+        [("one/", 0o555, _DIR_MTIME), ("two/", 0o551, _SUB_MTIME)]
+    )
+    dest = tmp_path / "out"
+    try:
+        open_and_extract(
+            io.BytesIO(archive),
+            dest,
+            policy=ExtractionPolicy.STANDARD,
+            streaming=streaming,
+        )
+        monkeypatch.undo()
+        for name, mode, mtime in (
+            ("one", 0o555, _DIR_MTIME),
+            ("two", 0o551, _SUB_MTIME),
+        ):
+            st = (dest / name).stat()
+            assert (name, st.st_mode & 0o7777, int(st.st_mtime)) == (name, mode, mtime)
+    finally:
+        monkeypatch.undo()
+        _restore_modes(dest)
+
+
+@_posix_perms
+def test_directory_metadata_is_applied_when_the_run_stops(tmp_path: Path) -> None:
+    """A refused member stops the run (``AbortOn.BLOCKED_MEMBER``), and the
+    directories written before it still end with their stored mode and mtime."""
+    archive = _tar_with_dir_modes(
+        [("d/", 0o555, _DIR_MTIME), ("d/f", 0o644, 0), ("../x", 0o644, 0)]
+    )
+    dest = tmp_path / "out"
+    try:
+        with pytest.raises(FilterRejectionError):
+            open_and_extract(
+                io.BytesIO(archive),
+                dest,
+                policy=ExtractionPolicy.STANDARD,
+                abort_on=[AbortOn.BLOCKED_MEMBER],
+                streaming=True,
+            )
+        assert (dest / "d").stat().st_mode & 0o7777 == 0o555
+        assert int((dest / "d").stat().st_mtime) == _DIR_MTIME
+        assert (dest / "d" / "f").read_bytes() == b"x"
+    finally:
+        _restore_modes(dest)
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_directory_metadata_never_follows_a_symlink(tmp_path: Path) -> None:
+    """A directory replaced by a symlink before the run ends keeps nothing of its
+    member's metadata: the symlink's target is not changed."""
+    archive = _tar_with_dir_modes(
+        [
+            ("t/", 0o755, 0),
+            ("d/", 0o700, _DIR_MTIME),
+            ("d->t", None, 0),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "d").is_symlink()
+    assert (dest / "t").stat().st_mode & 0o7777 == 0o755
+    assert int((dest / "t").stat().st_mtime) != _DIR_MTIME
+
+
+def _extract_removing_a_directory(
+    dest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    specs: list[tuple[str, int | None, int]],
+    policy: ExtractionPolicy = ExtractionPolicy.STANDARD,
+) -> list[ExtractionStatus]:
+    """Extract ``specs`` under ``policy`` and REPLACE, where a symlink member named ``d``
+    is refused after REPLACE has removed the empty directory at its name.
+
+    Python 3.11 and 3.12 refuse the loop ``d -> d`` because ``Path.resolve()`` raises
+    on it; from 3.13 it does not raise, and the link is kept. The re-check is patched
+    to refuse it on every version. Inodes are reported as 0, so the identity check
+    cannot tell two directories at one place apart, as on a filesystem that reuses a
+    freed inode."""
+    import archivey.internal.extraction as extraction_mod
+
+    escapes = extraction_mod._symlink_escapes
+    monkeypatch.setattr(
+        extraction_mod,
+        "_symlink_escapes",
+        lambda link, target, root: link.name == "d" or escapes(link, target, root),
+    )
+    lstat, fstat = os.lstat, os.fstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    monkeypatch.setattr(os, "fstat", lambda fd: _NoInode(fstat(fd)))
+    try:
+        report = open_and_extract(
+            io.BytesIO(_tar_with_dir_modes(specs)),
+            dest,
+            policy=policy,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error="continue",
+        )
+    finally:
+        monkeypatch.undo()
+    return [r.status for r in report.results]
+
+
+def _assert_plain_parent(directory: Path) -> None:
+    """``directory`` was made as a parent: the creation default and the current time."""
+    umask = os.umask(0)
+    os.umask(umask)
+    st = directory.stat()
+    assert st.st_mode & 0o7777 == 0o777 & ~umask
+    assert abs(st.st_mtime - time.time()) < 300
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_metadata_of_a_directory_removed_by_another_spelling_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``s/d/`` is written through the archive's own ``s -> .``, so it is the
+    directory ``d``. REPLACE removes that empty directory for the symlink ``d -> d``,
+    which is then refused, and ``d/x`` creates ``d`` again as a plain parent. The
+    removed member's mode and mtime must not land on that new directory: the removal
+    names ``d``, and the pending metadata has to be found from that name."""
+    dest = tmp_path / "out"
+    statuses = _extract_removing_a_directory(
+        dest,
+        monkeypatch,
+        [
+            ("s->.", None, 0),
+            ("s/d/", 0o700, _DIR_MTIME),
+            ("d->d", None, 0),
+            ("d/x", 0o644, 0),
+        ],
+    )
+    assert statuses == [
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    _assert_plain_parent(dest / "d")
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize(
+    ("policy", "removed_status"),
+    [
+        (ExtractionPolicy.STANDARD, ExtractionStatus.OVERWRITTEN),
+        # TRUSTED keys results on the exact name, so ``D/``'s result is not revised;
+        # its pending metadata is still dropped.
+        (ExtractionPolicy.TRUSTED, ExtractionStatus.EXTRACTED),
+    ],
+    ids=["standard", "trusted"],
+)
+def test_deferred_metadata_of_a_directory_removed_by_a_case_variant_is_dropped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: ExtractionPolicy,
+    removed_status: ExtractionStatus,
+) -> None:
+    """On a case-insensitive filesystem ``D/`` and ``d`` are one entry. REPLACE removes
+    the empty ``D/`` for the refused symlink ``d``, and ``d/x`` creates ``d`` again as a
+    plain parent, which must not get ``D/``'s mode and mtime."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if _case_sensitive(dest):
+        pytest.skip("needs a case-insensitive filesystem, where D/ and d are one entry")
+    statuses = _extract_removing_a_directory(
+        dest,
+        monkeypatch,
+        [("D/", 0o700, _DIR_MTIME), ("d->d", None, 0), ("d/x", 0o644, 0)],
+        policy,
+    )
+    assert statuses == [
+        removed_status,
+        ExtractionStatus.BLOCKED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    _assert_plain_parent(dest / "d")
+
+
+@_posix_perms
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+    ids=["standard", "trusted"],
+)
+def test_deferred_metadata_of_a_case_variant_directory_still_there_is_kept(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """On a case-sensitive filesystem ``X/`` and ``x/`` are two directories under one
+    casefolded key. REPLACE removing ``x/`` for the file ``x`` must not drop the
+    pending metadata of ``X/``, which is still there."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if not _case_sensitive(dest):
+        pytest.skip(
+            "needs a case-sensitive filesystem, where X/ and x/ are two entries"
+        )
+    archive = _tar_with_dir_modes(
+        [("X/", 0o700, _DIR_MTIME), ("x/", 0o750, _SUB_MTIME), ("x", 0o644, 0)]
+    )
+    open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=policy,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    st = (dest / "X").stat()
+    assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o700, _DIR_MTIME)
+    assert (dest / "x").read_bytes() == b"x"
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize(
+    ("specs", "mode", "mtime"),
+    [
+        # The run creates ``d`` as the parent of ``s/d/f``; ``d/`` names it again.
+        (
+            [("s->.", None, 0), ("s/d/f", 0o644, 0), ("d/", 0o700, _DIR_MTIME)],
+            0o700,
+            _DIR_MTIME,
+        ),
+        # Two directory members reach one directory: the one written last applies.
+        (
+            [("s->.", None, 0), ("d/", 0o700, _DIR_MTIME), ("s/d/", 0o750, _SUB_MTIME)],
+            0o750,
+            _SUB_MTIME,
+        ),
+        (
+            [("s->.", None, 0), ("s/d/", 0o750, _SUB_MTIME), ("d/", 0o700, _DIR_MTIME)],
+            0o700,
+            _DIR_MTIME,
+        ),
+    ],
+    ids=["created-as-parent", "written-then-through-link", "through-link-then-written"],
+)
+def test_a_directory_this_run_made_is_ours_under_every_spelling(
+    tmp_path: Path, specs: list[tuple[str, int | None, int]], mode: int, mtime: int
+) -> None:
+    """A directory member that names, under another spelling, a directory this run
+    already wrote or created is not the caller's directory: its stored mode and mtime
+    are applied, and no ``kept_mode`` is reported."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(_tar_with_dir_modes(specs)), dest, policy=ExtractionPolicy.STANDARD
+    )
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    assert all(r.kept_mode is None for r in report.results)
+    st = (dest / "d").stat()
+    assert (st.st_mode & 0o7777, int(st.st_mtime)) == (mode, mtime)
+
+
+@_posix_perms
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+    ids=["standard", "trusted"],
+)
+def test_a_directory_this_run_made_is_ours_under_a_case_variant(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """On a case-insensitive filesystem ``D/`` and ``d/`` are one directory, under
+    every policy. ``d/`` names the directory ``D/`` wrote, so it is not the caller's:
+    no ``kept_mode`` is reported, and its stored mode and mtime, written last, apply."""
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if _case_sensitive(dest):
+        pytest.skip(
+            "needs a case-insensitive filesystem, where D/ and d/ are one entry"
+        )
+    archive = _tar_with_dir_modes(
+        [("D/", 0o700, _DIR_MTIME), ("d/", 0o750, _SUB_MTIME)]
+    )
+    report = open_and_extract(io.BytesIO(archive), dest, policy=policy)
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
+    assert all(r.kept_mode is None for r in report.results)
+    st = (dest / "d").stat()
+    assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _SUB_MTIME)
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_deferred_metadata_reaches_a_directory_through_a_locked_spelling(
+    tmp_path: Path,
+) -> None:
+    """``a/b/c/s/u/`` is written through the archive's own ``a/b/c/s -> ../../../t``,
+    so it is the directory ``t/u``. ``a/b/c`` is stored ``0o000`` and is deeper, so
+    its mode is applied first. ``t/u`` still gets its stored mode and mtime: it is
+    opened as ``t/u``, not through ``a/b/c``, which the owner can no longer search."""
+    probe = tmp_path / "probe"
+    probe.mkdir(mode=0o000)
+    try:
+        os.listdir(probe)
+    except PermissionError:
+        pass
+    else:
+        pytest.skip("permission checks are bypassed here (root with DAC override)")
+    archive = _tar_with_dir_modes(
+        [
+            ("t/", 0o755, 0),
+            ("a/b/c/", 0o000, _SUB_MTIME),
+            ("a/b/c/s->../../../t", None, 0),
+            ("a/b/c/s/u/", 0o750, _DIR_MTIME),
+        ]
+    )
+    dest = tmp_path / "out"
+    try:
+        report = open_and_extract(
+            io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
+        )
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 4
+        st = (dest / "t" / "u").stat()
+        assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _DIR_MTIME)
+        assert (dest / "a" / "b" / "c").stat().st_mode & 0o7777 == 0o000
+    finally:
+        _restore_modes(dest)
 
 
 @_posix_perms
@@ -1384,6 +1842,63 @@ def test_tar_hardlink_shares_inode(tmp_path: Path) -> None:
     assert (dest / "file.txt").read_bytes() == b"data"
     assert (dest / "hard.txt").read_bytes() == b"data"
     assert os.path.samefile(dest / "file.txt", dest / "hard.txt")
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("second_link", "overwrite"),
+    [
+        # A tar that lists the same hard link twice: the second copy supersedes the
+        # first, whose parked name is already the same file as the source.
+        ("h", OverwritePolicy.ERROR),
+        # Under REPLACE, STANDARD folds ``H`` onto ``h``, a link to the same file.
+        ("H", OverwritePolicy.REPLACE),
+    ],
+)
+def test_link_onto_a_name_of_the_same_file_leaves_no_temp(
+    tmp_path: Path, streaming: bool, second_link: str, overwrite: OverwritePolicy
+) -> None:
+    # POSIX rename(2) does nothing, and reports success, when the temp link and the
+    # destination are already names of the same file. The temp name then stayed in the
+    # destination as a stray ``.archivey-tmp-*`` entry.
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "f", b"data"), ("hard", "h", "f"), ("hard", second_link, "f")]
+        )
+    )
+    dest = tmp_path / "out"
+
+    report = open_and_extract(src, dest, streaming=streaming, overwrite=overwrite)
+
+    assert report.results[-1].status is ExtractionStatus.EXTRACTED
+    assert sorted(p.name for p in dest.iterdir()) == ["f", "h"]
+    assert (dest / "h").read_bytes() == b"data"
+    assert os.path.samefile(dest / "f", dest / "h")
+
+
+def test_a_temp_that_cannot_be_removed_does_not_fail_the_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The swap removes the temp name after ``os.replace``. When that unlink fails (on
+    # Windows, a scanner holding the file open), the member is already in place, so the
+    # failure must not turn a completed write into FAILED.
+    src = tmp_path / "a.tar"
+    src.write_bytes(_tar_bytes([("file", "f", b"AAA")]))
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(path).startswith(".archivey-tmp-"):
+            raise PermissionError(errno.EACCES, "held open", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    with open_archive(src) as r:
+        report = r.extract_all(dest)
+
+    assert [res.status for res in report.results] == [ExtractionStatus.EXTRACTED]
+    assert (dest / "f").read_bytes() == b"AAA"
 
 
 def test_tar_hardlink_orphan_recovered_seekable(tmp_path: Path) -> None:
@@ -3138,15 +3653,6 @@ def test_replace_revises_a_directory_reached_through_the_archives_symlink(
     assert link.status is ExtractionStatus.EXTRACTED
     assert member.status is ExtractionStatus.EXTRACTED
     assert (dest / "d" / "sub").read_bytes() == b"file"
-
-
-def _case_sensitive(path: Path) -> bool:
-    probe = path / "CaseProbe"
-    probe.write_bytes(b"")
-    try:
-        return not (path / "caseprobe").exists()
-    finally:
-        probe.unlink()
 
 
 @pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])

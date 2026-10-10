@@ -500,7 +500,7 @@ escape hatch there.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records and path tables it parses against `max_metadata_bytes` and its count of path-table entries against `max_members` (more than `max_members + 1` entries; each is a directory, a member anyway), which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z, RAR and ISO), which raise at `open_archive`, RAR's compressed-comment budget and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`, which also raise there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -848,8 +848,10 @@ candidates, then provider repeatedly until `None`. Successful passwords SHALL jo
 known-good for the rest of the operation so a provider is consulted once per *new*
 password rather than once per member. A provider answer that already failed for the
 unit SHALL NOT be decrypted again; the provider SHALL be asked again, with the next
-`attempt`. A provider that gives an answer it already gave for the unit SHALL be
-treated as having no more answers, the same as `None`. Exhaustion (or provider `None`) →
+`attempt`. An answer the provider already gave for the unit SHALL NOT be decrypted
+again either, and the provider SHALL be asked again; after three such answers in a row
+the provider SHALL be treated as having no more answers, the same as `None`. A new
+answer resets that count. Exhaustion (or provider `None`) →
 `EncryptionError`. No per-call password on `open()`/`read()`.
 
 **Concurrent use (observable):** After materialization, workers MAY open
@@ -868,7 +870,9 @@ helper thread gets, is in `reader-concurrency`.
 | Provider + unknown password needed | Called with that member's `PasswordRequest`; success → known-good; later same-pw members skip provider |
 | Provider password fails, consulted again | New request has incremented `attempt` |
 | Provider answers with a password that already failed for this unit (known-good from an earlier unit, or a listed candidate) | Not decrypted again; provider asked again with incremented `attempt` |
-| Provider gives the same answer twice for one unit | Treated as `None`: `EncryptionError` for that unit, no second decrypt |
+| Provider gives a wrong answer, then the same answer again, then the right one | Second answer not decrypted; provider asked a third time; unit opens |
+| Provider re-types each wrong answer once (`a, a, b, b, c, c, right`) | Repeats never reach three in a row; each wrong answer decrypted once; unit opens |
+| Provider returns the same wrong answer on every call | Four calls, one decrypt; then treated as `None`: `EncryptionError` for that unit |
 | Provider returns `None` | `EncryptionError` for that unit |
 | Header-encrypted archive, provider only | Request with `member is None` |
 | Concurrent opens of different encrypted units (post-materialization) | Each decrypts correctly; promotions shared without races |
@@ -1183,8 +1187,9 @@ Value shape, retention budget, watermarks, and attachment rules: `diagnostics`.
 
 ### Requirement: Collection form of MemberSelector
 
-`MemberSelector` SHALL accept a predicate or `Collection[str | ArchiveMember]`,
-normalized to a predicate at the API boundary:
+`MemberSelector` SHALL accept a predicate or any `Iterable[str | ArchiveMember]`,
+normalized to a predicate at the API boundary. The boundary SHALL read the iterable
+exactly once, so a generator selects the same members as the equivalent list:
 
 - `str` matches **every** member with that normalized name (duplicates all match;
   extraction keeps sequential last-wins-on-disk)

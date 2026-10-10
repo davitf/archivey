@@ -20,14 +20,18 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
 )
-from archivey.internal.streams.brotli_framing import (
+from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
+from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     first_block_overruns_source,
     parse_metablock,
 )
-from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
 from tests.conftest import requires
-from tests.streams_util import brotli_compressed_metablock_header, truncated_brotli
+from tests.streams_util import (
+    brotli_compressed_metablock_header,
+    brotli_link_cap_residual,
+    truncated_brotli,
+)
 
 # The sources below are unnamed, and detection runs content probes on an unnamed source
 # only when the config asks for all of them.
@@ -50,11 +54,12 @@ def test_partial_output_then_error_on_fitting_uncompressed_prefix() -> None:
 
 
 def _chain_surviving_guess_residual() -> bytes:
-    """Uncompressed-first FP that passes framing + chain (compressed second link)."""
-    framing = parse_metablock(b"/**\n")
-    assert framing.consumed is not None and framing.declared_length is not None
-    second = brotli_compressed_metablock_header(first=False)
-    return b"/**\n" + b"x" * framing.declared_length + second + b"Z" * 32
+    """Uncompressed-first FP that every probe check accepts (a chain past the link cap).
+
+    A chain that reaches a compressed block is decoded up to it, which rejects the
+    fabrications this used to be built from (``/**\n`` + padding + a compressed link).
+    """
+    return brotli_link_cap_residual()
 
 
 @requires("brotli")
@@ -141,15 +146,16 @@ def test_lzma_alone_rejects_header_only_source() -> None:
 def test_ole_and_coff_residuals_honest_detect_format() -> None:
     # Named residual families survive the Brotli first-block gate *and* the chain walk
     # when the source is larger than the detection peek (completeness does not apply).
-    # End-to-end detect_format claims them by probe order, and *which* probe claims each
-    # is what this pins — both are fabrications either way.
+    # The walk stops at a compressed block, and the probe's decode up to that block is
+    # what turns them away. What end-to-end detect_format does with each is pinned.
     #
-    # The two families split since `detection-format-gaps`: the Alone probe now refuses a
-    # header declaring an uncompressed size of exactly zero (bytes 5..12), because such a
-    # stream carries no payload to open. OLE's are `B1 1A E1 00 …` — nonzero, so it still
-    # goes to Alone. COFF's are all zero, so Alone declines and Brotli takes it instead,
-    # at GUESS rather than PROBABLE: a weaker claim on the same fabrication, still
-    # probe-only and so still stamping `format_unconfirmed` on a read failure.
+    # OLE: the probe rejects it, and detection does not run the probes on it anyway.
+    # Its signature is a known non-archive signature, which stops the content probes,
+    # so with no extension detection fails instead of claiming a stream.
+    #
+    # COFF: the Alone probe refuses a header declaring an uncompressed size of exactly
+    # zero (bytes 5..12), because such a stream carries no payload to open. COFF's are
+    # all zero, so Alone declines, and the Brotli probe rejects it as for OLE.
     from archivey.internal.detection_workspace import DETECTION_LIMIT
 
     ole = bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
@@ -161,11 +167,10 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
 
     assert (
         BrotliCodec().content_probe(prefix, source_length=len(ole), read_at=read_at)
-        is True
+        is False
     )
-    ole_info = detect_format(io.BytesIO(ole), config=PROBE_ALL)
-    assert ole_info.format == ArchiveFormat.LZMA_ALONE
-    assert ole_info.confidence == DetectionConfidence.PROBABLE
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(ole), config=PROBE_ALL)
 
     # COFF AMD64 machine word + crafted trailer that is a fitting uncompressed Brotli
     # first block (IMAGE_FILE_MACHINE_AMD64 = 0x8664 little-endian).
@@ -193,14 +198,11 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
         BrotliCodec().content_probe(
             coff_prefix, source_length=len(coff), read_at=coff_read_at
         )
-        is True
+        is False
     )
     assert int.from_bytes(coff[5:13], "little") == 0  # why Alone declines this one
-    coff_info = detect_format(io.BytesIO(coff), config=PROBE_ALL)
-    assert coff_info.format == ArchiveFormat.BROTLI
-    assert coff_info.confidence == DetectionConfidence.GUESS
-    assert coff_info.detected_by == "content_probe"
-    assert coff_info.corroborated is False  # probe-only: a read failure still stamps
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(coff), config=PROBE_ALL)
 
 
 @requires("brotli")

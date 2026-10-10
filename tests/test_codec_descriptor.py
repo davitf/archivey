@@ -84,12 +84,12 @@ def _install_synthetic(
     # registry's _readers/_reader_classes are copied so register_reader's mutation is undone.
     new_stream = codecs.STREAM_CODECS + (obj,)
     new_single = codecs.SINGLE_FILE_CODECS + (obj,)
-    monkeypatch.setattr(codecs, "STREAM_CODECS", new_stream)
-    monkeypatch.setattr(codecs, "SINGLE_FILE_CODECS", new_single)
+    monkeypatch.setattr(codecs.registry, "STREAM_CODECS", new_stream)
+    monkeypatch.setattr(codecs.registry, "SINGLE_FILE_CODECS", new_single)
     monkeypatch.setattr(registry_module, "STREAM_CODECS", new_stream)
     monkeypatch.setattr(registry_module, "SINGLE_FILE_CODECS", new_single)
-    monkeypatch.setitem(codecs._BY_CODEC, obj.codec, obj)
-    monkeypatch.setitem(codecs._BY_STREAM_FORMAT, obj.stream_format, obj)
+    monkeypatch.setitem(codecs.registry._BY_CODEC, obj.codec, obj)
+    monkeypatch.setitem(codecs.registry._BY_STREAM_FORMAT, obj.stream_format, obj)
     monkeypatch.setattr(reg, "_readers", dict(reg._readers))
     monkeypatch.setattr(reg, "_reader_classes", list(reg._reader_classes))
     monkeypatch.setattr(

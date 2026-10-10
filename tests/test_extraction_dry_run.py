@@ -38,7 +38,7 @@ from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
 from archivey.terminal import display_path
 from tests.create_adversarial import adversarial_archives
-from tests.extract_util import open_and_extract
+from tests.extract_util import lock_directories_at_once, open_and_extract
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
 
 _POLICIES = list(ExtractionPolicy)
@@ -465,8 +465,9 @@ def test_destination_that_cannot_be_created_is_refused_alike(
     "dest_name", ["out", "link/out", "x/../out"], ids=["plain", "symlink", "dotdot"]
 )
 def test_member_errors_match_with_either_dest_spelling(
-    relative: bool, dest_name: str, tmp_path: Path
+    relative: bool, dest_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    lock_directories_at_once(monkeypatch)
     for kind in ("real", "dry"):
         cwd = tmp_path / kind
         (cwd / "realdir").mkdir(parents=True)
@@ -489,8 +490,9 @@ def test_member_errors_match_with_either_dest_spelling(
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
 @_NON_ROOT
 def test_errors_and_warnings_name_dest(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    lock_directories_at_once(monkeypatch)
     # The directory is locked before its file is written, so the write fails.
     blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
     dest = tmp_path / "out"
@@ -526,8 +528,8 @@ def test_errors_and_warnings_name_dest(
 def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     tmp_path: Path,
 ) -> None:
-    # The file comes first: as a non-root user, nothing can be written into a
-    # directory once it is 0o555, in a dry run or a real one.
+    # The directories get their modes when the run ends; the scratch directory is
+    # removed after that.
     blob = _tar([("ro/f", "file", 0), ("ro", "dir", 0o555), ("zero", "dir", 0)])
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:

@@ -40,10 +40,15 @@ from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     check_read_size,
     check_seek_args,
+    is_closed_file_error,
     is_seekable,
     readinto_via_read,
 )
-from archivey.internal.streams.verify import MemberVerifier, build_member_verifier
+from archivey.internal.streams.verify import (
+    MemberVerifier,
+    build_member_verifier,
+    note_raised_seek,
+)
 from archivey.types import HashAlgorithm
 
 if TYPE_CHECKING:
@@ -457,7 +462,7 @@ class ArchiveStream(ReadOnlyIOStream):
         if isinstance(e, ArchiveyError):
             self._stamp(e)
             raise e
-        if isinstance(e, ValueError) and "closed file" in str(e):
+        if is_closed_file_error(e):
             # The *inner* stream hit a closed handle underneath it — typically the
             # caller closed their supplied BinaryIO early. Mapped here, before the
             # per-library translator, so a backend's generic ValueError mapping cannot
@@ -567,19 +572,13 @@ class ArchiveStream(ReadOnlyIOStream):
     def _note_raised_seek(self, inner: BinaryIO, before: int | None) -> None:
         """Keep the bookkeeping true to where a seek that raised left ``inner``.
 
-        A seek can raise after it moved: a decompressor stream raises an escalated
-        report once its own seek has finished (see ``DecompressorStream``), so a
-        caller that catches it reads on from the new position. The verifier must
-        know, or it keeps hashing as if the read were still linear and checks length
-        against a frontier the stream has left. The seek's own error is the one that
-        propagates, so a rewind report that would raise here is dropped.
+        The verifier learns the new position (:func:`note_raised_seek`). The seek's
+        own error is the one that propagates, so a rewind report that would raise
+        here is dropped.
         """
-        try:
-            after = inner.tell()
-        except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+        after = note_raised_seek(self._verifier, inner)
+        if after is None:
             return
-        if self._verifier is not None:
-            self._verifier.note_seek(after)
         if before is not None:
             try:
                 self._maybe_warn_rewind(before, after)

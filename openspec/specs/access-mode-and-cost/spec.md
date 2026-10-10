@@ -90,6 +90,9 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | `open_archive(..., streaming=True)` on a stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
 | `open_archive(..., streaming=True)` on an already-buffered stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
 | `open_archive(..., streaming=True)` on an already-buffered stream that has delivered the first 100 bytes of a tar and then stalls | `BlockingIOError`, not a format detection error |
+| `detect_format` on a raw or already-buffered stream with nothing ready | `BlockingIOError`, not "there are no bytes to read" |
+| `detect_format` on a raw or already-buffered stream that returns 100 bytes and then `None` | `BlockingIOError`, not a format detection error over the 100 bytes |
+| A volume list with a caller stream whose `read` returns `None` | `BlockingIOError`, not `TruncatedError` |
 
 #### Scenario: open mode matrix
 
@@ -207,8 +210,6 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | at `open_archive()` | fail fast if source not RA-capable | any source |
 
 In streaming mode, `__iter__` / `stream_members` / `extract_all` share one pass.
-Backend `_SUPPORTS_RANDOM_ACCESS` may also force `open`/`read` to raise; it
-composes with — does not replace — these rules.
 
 #### Scenario: summary checks
 

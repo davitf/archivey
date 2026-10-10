@@ -144,7 +144,11 @@ the policy cannot resolve without deleting data (`error`, or a dir-vs-file
 shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
 under the wrapper, and exit nonzero — mirroring the failure a direct extraction
 would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
-containing `src/`) SHALL be flattened in place, not treated as a collision.
+containing `src/`) SHALL be flattened in place, not treated as a collision, and the
+wrapper SHALL then take that root's mode and times. A directory stored without owner
+write permission (`0o555`) SHALL still be moved: the hoist gives it owner read, write
+and search permission for the move and then puts its mode back, as a direct extraction
+into the cwd would have succeeded.
 Container-name collisions SHALL be resolved by the overwrite policy, with one
 exception: a symlink at the container name, dangling or live, SHALL be treated
 as taken under every overwrite policy and the next free `<stem> (N)` used,
@@ -274,7 +278,10 @@ also print the raw cost axes (`listing`, `access_cost`, `stream`,
 
 `info` SHALL detect once: the identity lines come from the reader's
 `format_info`, not from a separate `detect_format` call before the open. Only
-when the open fails does it call `detect_format`, to print what it can.
+when the open fails does it call `detect_format`, to print what it can, and not
+when the path is a pipe, a character device or a socket. Detection opens the path
+again, and those are read once, so a second open gets different bytes or waits for
+a writer that never comes; on those `info` prints the open error alone.
 
 #### Scenario: info vs list
 
@@ -285,6 +292,7 @@ when the open fails does it call `detect_format`, to print what it can.
 | `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey info <archive>` that opens | Detection runs once, inside the open |
+| `archivey info <fifo>` whose open fails | Exit `1`; prints the open error; does not open the FIFO again, so it does not block |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 
 ### Requirement: version reports package identity and optional format matrix
@@ -343,9 +351,13 @@ always-stop / hoist failure) SHALL exit `1`. When `extract` **completes**
 and no member `FAILED`, the system SHALL exit `3` (refused by safety policy —
 safe members are on disk). Because `OnError.STOP` / `--stop-on-error` never
 halts on a policy block, a STOP+policy abort cannot occur; exit `3` MUST NOT
-be used for an aborted STOP-path failure. Exit codes `≥4` SHALL remain
-reserved. Documentation SHALL direct callers to treat any nonzero code other
-than `2` as a failure and MUST NOT assume `1` is the only failure code.
+be used for an aborted STOP-path failure. Exit codes `4` to `127` SHALL remain
+reserved.
+Codes `128` and above follow the shell's `128 + N` convention for signal `N`
+and are not in the reserved range: a command interrupted by Ctrl-C (SIGINT)
+SHALL print `interrupted` and exit `130`.
+Documentation SHALL direct callers to treat any nonzero code other than `2` as
+a failure and MUST NOT assume `1` is the only failure code.
 
 #### Scenario: exit codes
 
@@ -363,6 +375,8 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
+| Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
+| Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `0`, even when `test` had not finished verifying |
 
 ### Requirement: stdin archives are reserved, not supported in v1
 
@@ -412,7 +426,9 @@ the destination (the folder was already there, the entry is a symlink, a symlink
 leaves it, or part of the entry could not be listed, which here means part of the
 scratch tree could not be read), it SHALL print `would keep in <stem>/:` with the same
 reason, judged from the symlinks the dry run created. It SHALL NOT check for collisions with entries
-already at that place.
+already at that place, nor whether an existing directory there can be written into: a
+real run whose hoist is refused by that directory's permissions fails where the dry run
+predicted the move.
 
 #### Scenario: extract dry-run matrix
 

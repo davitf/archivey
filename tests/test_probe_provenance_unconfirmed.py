@@ -7,6 +7,8 @@ evidence — at any ``DetectionConfidence`` — and leaves corroborated hits alo
 from __future__ import annotations
 
 import io
+import lzma
+import random
 import tarfile
 from dataclasses import replace
 from pathlib import Path
@@ -30,7 +32,7 @@ from archivey.exceptions import (
     ResourceLimitError,
 )
 from archivey.internal.detection import _extension_corroborates
-from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
+from archivey.internal.streams.codecs.brotli_framing import BrotliBlock, parse_metablock
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
 from tests.corruption_util import raises_corruption_not_truncation
@@ -76,19 +78,32 @@ def _probable_brotli_probe_only_residual() -> bytes:
     return blob
 
 
-def _ole_lzma_alone_residual() -> bytes:
-    """OLE/CFB header padded past the detection peek — Alone at ``PROBABLE``."""
-    return bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
+def _lzma_alone_probe_only_residual() -> bytes:
+    """An LZMA Alone claim that turns corrupt past the detection window — ``PROBABLE``.
+
+    The header is the first five bytes of an OLE header (the full OLE signature is not
+    used, because it stops the content probes): properties ``0xD0`` are legal (lc=1,
+    lp=3, pb=4) and bytes 1-4 declare a 2.5 GiB dictionary. Under it is a real LZMA1
+    stream with those properties, which the probe's window decodes, cut at 80 000 bytes
+    and followed by ``ff`` bytes, which the full read fails on. A zero run after the
+    header would be shorter, but the probe refuses one.
+
+    The blob must stay over the 64 KiB probe-completion window
+    (``completion_window_bytes`` under ``BALANCED``). A shorter one is re-probed whole,
+    the re-probe reaches the ``ff`` tail, and the claim the tests need is gone.
+    """
+    data = random.Random(5).randbytes(100_000)
+    lzma1 = {"id": lzma.FILTER_LZMA1, "lc": 1, "lp": 3, "pb": 4, "dict_size": 1 << 16}
+    raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=[lzma1])
+    header = bytes.fromhex("D0CF11E0A1") + (1 << 20).to_bytes(8, "little")
+    return header + raw[:80_000] + b"\xff" * 20_000
 
 
 def _chain_surviving_guess_residual() -> bytes:
-    """Uncompressed-first FP that passes framing + chain (compressed second link)."""
-    from tests.streams_util import brotli_compressed_metablock_header
+    """Uncompressed-first fabrication every probe check accepts (a chain past the cap)."""
+    from tests.streams_util import brotli_link_cap_residual
 
-    framing = parse_metablock(b"/**\n")
-    assert framing.consumed is not None and framing.declared_length is not None
-    second = brotli_compressed_metablock_header(first=False)
-    return b"/**\n" + b"x" * framing.declared_length + second + b"Z" * 32
+    return brotli_link_cap_residual()
 
 
 @requires("brotli")
@@ -114,14 +129,14 @@ def test_compressed_first_probable_failure_sets_format_unconfirmed() -> None:
 
 
 def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
-    blob = _ole_lzma_alone_residual()
+    blob = _lzma_alone_probe_only_residual()
     info = detect_format(io.BytesIO(blob), config=PROBE_ALL)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.confidence == DetectionConfidence.PROBABLE
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
-    # The OLE header's bytes 1-4 read as a 2.7 GiB dictionary, over the default cap;
+    # Bytes 1-4 declare a 2.5 GiB dictionary, over the default cap;
     # this case lifts the cap to reach the decode failure, and the next one keeps it.
     config = replace(PROBE_ALL, decoder_limits=DecoderLimits.UNLIMITED)
     diagnostics: list[Diagnostic] = []
@@ -136,11 +151,11 @@ def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
 def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
     """A decoder-limit refusal on probe-only evidence is stamped like a decode failure.
 
-    The dictionary the refusal names is four bytes of an OLE header, so the ordinary
+    The dictionary the refusal names is four bytes of a fabrication, so the ordinary
     "raise the cap if the archive is trusted" advice would be about a file that was
     never ``.lzma``.
     """
-    blob = _ole_lzma_alone_residual()
+    blob = _lzma_alone_probe_only_residual()
     diagnostics: list[Diagnostic] = []
     with pytest.raises(ResourceLimitError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics, config=PROBE_ALL)
@@ -159,7 +174,7 @@ def test_lzma_alone_limit_refusal_with_extension_is_not_stamped(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "x.lzma"
-    path.write_bytes(_ole_lzma_alone_residual())
+    path.write_bytes(_lzma_alone_probe_only_residual())
     with pytest.raises(ResourceLimitError) as caught:
         _open_and_read(path)
     assert caught.value.format_unconfirmed is False

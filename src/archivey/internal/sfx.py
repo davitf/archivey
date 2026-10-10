@@ -726,19 +726,3 @@ def iter_magic_in_prefix(
         if len(data) < step:
             return  # the source ended inside this peek; nothing more to search
         searched = len(data)
-
-
-def find_magic_in_prefix(
-    peek_more: Callable[[int], bytes],
-    needles: Sequence[bytes | ScanNeedle],
-    *,
-    limit: int = SFX_MAX,
-) -> MagicHit | None:
-    """:func:`scan_for_magic` for a source that must not be consumed.
-
-    Returns the earliest structural hit, with no validator. Prefer
-    :func:`iter_magic_in_prefix` when a caller may reject a decoy, or
-    :func:`scan_for_magic` with ``validator=`` when the source may be consumed
-    (that path returns a :class:`MagicScan`).
-    """
-    return next(iter_magic_in_prefix(peek_more, needles, limit=limit), None)

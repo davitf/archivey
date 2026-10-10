@@ -51,8 +51,8 @@ from archivey.internal.streams.codecs import (
     resolve_codec,
     stream_codec_for_format,
 )
+from archivey.internal.streams.codecs.lzip_decoder import peek_index_summary
 from archivey.internal.streams.decompressor_stream import DecompressorStream
-from archivey.internal.streams.lzip import peek_index_summary
 from archivey.internal.streams.streamtools import (
     SharedSource,
     SlicingStream,
@@ -98,7 +98,6 @@ class SingleFileReader(BaseArchiveReader):
     non-seekable source is not validated until that read.
     """
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = True
 
     def __init__(

@@ -1122,6 +1122,128 @@ def test_stub_only_exe_opens_windows_7z_first_volume(
     assert detect_format(stub).format == ArchiveFormat.SEVEN_Z
 
 
+@pytest.mark.parametrize("part", ["001", "002", "003"])
+@pytest.mark.parametrize("extension", ["zip", "exe"])
+def test_detect_format_on_any_numbered_part_agrees_with_open_archive(
+    tmp_path: Path, part: str, extension: str
+) -> None:
+    """``detect_format`` reads the set ``open_archive`` reads, from any of its parts.
+
+    7-Zip ``-v`` cuts the archive into byte slices, so a middle or last part has no
+    magic of its own. ``open_archive`` joins the set from whichever part it is given;
+    ``detect_format`` on the same path must name the same format, not refuse it.
+    """
+    data = _zip_bytes({"payload.bin": os.urandom(3000)})
+    third = len(data) // 3
+    slices = (data[:third], data[third : 2 * third], data[2 * third :])
+    for number, chunk in enumerate(slices, start=1):
+        (tmp_path / f"set.{extension}.{number:03d}").write_bytes(chunk)
+    path = tmp_path / f"set.{extension}.{part}"
+    with open_archive(path) as archive:
+        opened = archive.format_info
+    detected = detect_format(path)
+    assert (detected.format, detected.detected_by) == (
+        opened.format,
+        opened.detected_by,
+    )
+    assert detected.format == ArchiveFormat.ZIP
+
+
+def test_detect_format_on_a_gapped_numbered_set_raises_truncated(
+    tmp_path: Path,
+) -> None:
+    """A set with a gap is refused by name before detection reads a byte.
+
+    ``detect_format`` resolves the path as ``open_archive`` does, so both raise the
+    same ``TruncatedError`` naming the missing part.
+    """
+    data = _zip_bytes({"payload.bin": os.urandom(3000)})
+    third = len(data) // 3
+    (tmp_path / "set.zip.002").write_bytes(data[third : 2 * third])
+    (tmp_path / "set.zip.003").write_bytes(data[2 * third :])
+    for opener in (detect_format, open_archive):
+        with pytest.raises(TruncatedError, match="missing part 1"):
+            opener(tmp_path / "set.zip.002")
+
+
+def test_detect_format_on_a_lone_first_part_reports_its_bytes(tmp_path: Path) -> None:
+    """A lone first part is detected as what its bytes show.
+
+    ``open_archive`` refuses it as an incomplete set; detection names the format, as
+    it does for any truncated archive whose header is intact.
+    """
+    data = _zip_bytes({"payload.bin": os.urandom(3000)})
+    lone = tmp_path / "set.zip.001"
+    lone.write_bytes(data[: len(data) // 3])
+    info = detect_format(lone)
+    assert (info.format, info.detected_by) == (ArchiveFormat.ZIP, "magic")
+    with pytest.raises(TruncatedError, match="found part 1 only"):
+        open_archive(lone)
+
+
+@pytest.mark.parametrize(
+    ("volume_one", "continuation", "fixtures"),
+    [
+        ("x.part1.rar", "x.part2.rar", ("tinyvol.part1.rar", "tinyvol.part2.rar")),
+        ("x.rar", "x.r00", ("tinyvol_rnn.rar", "tinyvol_rnn.r00")),
+    ],
+    ids=["part-n", "old-scheme-rnn"],
+)
+@pytest.mark.parametrize("volume_one_bytes", ["rar", "zip"])
+def test_detect_format_on_a_rar_continuation_agrees_with_open_archive(
+    tmp_path: Path,
+    volume_one: str,
+    continuation: str,
+    fixtures: tuple[str, str],
+    volume_one_bytes: str,
+) -> None:
+    """``detect_format`` on a RAR continuation reads volume 1, as ``open_archive`` does.
+
+    The ``zip`` case writes a ZIP under volume 1's name. No producer does that; it is
+    here because only bytes that differ from the continuation's show which file
+    detection read.
+    """
+    first_fixture, continuation_fixture = fixtures
+    if volume_one_bytes == "rar":
+        shutil.copy(_RAR_FIXTURES / first_fixture, tmp_path / volume_one)
+    else:
+        (tmp_path / volume_one).write_bytes(_zip_bytes({"a.txt": b"not rar"}))
+    shutil.copy(_RAR_FIXTURES / continuation_fixture, tmp_path / continuation)
+    path = tmp_path / continuation
+    with open_archive(path) as archive:
+        opened = archive.format_info
+    detected = detect_format(path)
+    assert (detected.format, detected.detected_by, detected.payload_offset) == (
+        opened.format,
+        opened.detected_by,
+        opened.payload_offset,
+    )
+    expected = ArchiveFormat.RAR if volume_one_bytes == "rar" else ArchiveFormat.ZIP
+    assert detected.format == expected
+
+
+def test_numbered_part_discovery_stats_only_matching_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding a numbered set costs a ``stat`` per part, not per directory entry."""
+    for number in (1, 2):
+        (tmp_path / f"set.7z.{number:03d}").write_bytes(b"")
+    for index in range(200):
+        (tmp_path / f"photo{index}.jpg").write_bytes(b"")
+    stat_calls: list[str] = []
+    real_is_file = Path.is_file
+
+    def counting_is_file(self: Path, *args: Any, **kwargs: Any) -> bool:
+        stat_calls.append(self.name)
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", counting_is_file)
+    siblings = discover_volume_siblings(tmp_path / "set.7z.001")
+    assert siblings is not None
+    assert [p.name for p in siblings] == ["set.7z.001", "set.7z.002"]
+    assert not [name for name in stat_calls if name.startswith("photo")]
+
+
 def test_stub_only_exe_without_volumes_stays_undetected(tmp_path: Path) -> None:
     stub = tmp_path / "vol.exe"
     stub.write_bytes(_mz_stub())
@@ -1261,6 +1383,40 @@ def test_short_returning_seekable_volume_item_reads_through_boundary() -> None:
     )
     assert joined.read() == b"helloworld"
     joined.close()
+
+
+class _SeekableStallsOnce(io.BytesIO):
+    """A seekable caller stream that answers its first ``read`` with ``None``.
+
+    That is a non-blocking stream with nothing ready yet; later reads serve the bytes.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self._stalled = False
+
+    def read(self, n: int | None = -1, /) -> bytes:  # type: ignore[override]  # None is the point
+        if not self._stalled:
+            self._stalled = True
+            return None  # type: ignore[return-value]  # non-blocking answer
+        return super().read(n)
+
+
+def test_concatenated_file_refuses_none_from_a_caller_volume() -> None:
+    """``None`` from a caller's volume stream is not a volume that ended early.
+
+    The read crosses from the first volume into the stalled one, so it has already
+    taken ``abc`` when the stall arrives. The position goes back to the start of the
+    read, and a retry once the data has arrived returns all six bytes.
+    """
+    joined = ConcatenatedFile([io.BytesIO(b"abc"), _SeekableStallsOnce(b"def")])
+    try:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            joined.read(6)
+        assert joined.tell() == 0
+        assert joined.read(6) == b"abcdef"
+    finally:
+        joined.close()
 
 
 def test_concatenated_file_backwards_seek_across_volume_boundaries(

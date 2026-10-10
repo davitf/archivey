@@ -22,7 +22,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.source import ArchiveSource
+from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_stream,
     raise_if_text_stream,
@@ -31,6 +31,7 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_name,
 )
+from archivey.internal.streams.streamtools.binaryio import read_blocking
 from archivey.terminal import display_path
 
 if TYPE_CHECKING:
@@ -458,14 +459,18 @@ def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
 def _siblings_with_base(
     parent: Path, pattern: re.Pattern[str], base: str
 ) -> list[Path]:
-    """The files in ``parent`` that ``pattern`` reads with ``base``, case-folded."""
+    """The files in ``parent`` that ``pattern`` reads with ``base``, case-folded.
+
+    The name tests run before ``is_file``, so a large directory costs a ``stat`` per
+    matching name, not one per entry.
+    """
     folded = base.lower()
     return [
         candidate
         for candidate in parent.iterdir()
-        if candidate.is_file()
-        and (match := pattern.match(candidate.name)) is not None
+        if (match := pattern.match(candidate.name)) is not None
         and match.group("base").lower() == folded
+        and candidate.is_file()
     ]
 
 
@@ -640,6 +645,12 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
             source for source in sources if isinstance(source, Path)
         ]
         self._volume_items: list[Path | BinaryIO] = list(sources)
+        # Every read seeks the volume it lands in, so one member stream among the
+        # parts makes a read near its end a re-decode of that member.
+        self._seek_is_expensive = any(
+            not isinstance(source, Path) and seek_is_expensive(source)
+            for source in sources
+        )
         offsets = [0]
         total = 0
         for source in sources:
@@ -696,6 +707,11 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
     def volume_items(self) -> list[Path | BinaryIO]:
         """Original volume sources in order (paths and/or streams)."""
         return list(self._volume_items)
+
+    @property
+    def seek_is_expensive(self) -> bool:
+        """Whether a stream volume may re-decode on a seek (see ``seek_is_expensive``)."""
+        return self._seek_is_expensive
 
     @property
     def volume_ranges(self) -> list[tuple[int, int]]:
@@ -831,7 +847,9 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 to_read = min(n, available)
                 stream = self._ensure_current_stream()
                 self._seek_current_stream(stream)
-                chunk = stream.read(to_read)
+                # ``None`` is a non-blocking caller stream with nothing ready, not
+                # a volume that ended early: it raises ``BlockingIOError``.
+                chunk = read_blocking(stream, to_read)
                 if not chunk:
                     source = self._volume_items[self._vol_index]
                     archive_name = (

@@ -59,6 +59,15 @@ format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt 
 bytes read). It SHALL NOT raise `IsADirectoryError` or any
 other `OSError`.
 
+A **path to a volume of a set** SHALL be detected on the source `open_archive` resolves
+for it: any part of a numbered split set (`set.7z.002`, `set.zip.003`, `set.exe.002`) on
+the parts joined in order, and a RAR continuation on volume 1. A middle part has no magic
+at offset 0, so detecting the named file alone would refuse a path `open_archive` opens.
+That resolution runs before detection reads a byte and MAY raise what `open_archive`
+raises for the same path: a numbered set with a gap SHALL raise `TruncatedError` naming the
+missing part. A lone first part (`set.zip.001` with no other part) SHALL be detected as the
+format its bytes show; `open_archive` refuses it as an incomplete set.
+
 **Collectors:**
 
 | Path | Behavior |
@@ -75,6 +84,9 @@ other `OSError`.
 | Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
 | Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
+| Any part of a numbered split set, or a RAR continuation | The format, `detected_by` and `payload_offset` `open_archive` reports for the same path |
+| Numbered set with a gap (`set.zip.002`, no `set.zip.001`) | `TruncatedError` naming the missing part, from `detect_format` and `open_archive` alike |
+| Lone first part (`set.zip.001`, no other part) | The format its bytes show; `open_archive` raises `TruncatedError` |
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring
@@ -119,7 +131,9 @@ accident of iteration: `confidence` is a provisional grade and `detected_by` an 
 so a later release may grade evidence more finely without breaking a caller that treats
 unknown values as possible. A source with no bytes left at its current position (empty,
 or already read to its end) SHALL raise `FormatDetectionError` saying there are no bytes
-to read, not that nothing matched.
+to read, not that nothing matched. A non-blocking stream whose `read` returns `None` has
+not run out of bytes; it SHALL raise `BlockingIOError`, whether nothing has arrived or only
+part of the prefix has (`access-mode-and-cost`, "a non-blocking read is not end of file").
 
 #### Scenario: unrecognised bytes, no path
 
@@ -239,7 +253,9 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 ### Requirement: Magic-less formats are detected by a content probe
 
 When the magic-byte table yields no match, the system SHALL run the registered content
-probes on the peeked prefix (consumes nothing).
+probes on the peeked prefix (consumes nothing), except after a strong executable cue or a
+known non-archive signature (see *A known non-archive signature stops the content
+probes*).
 
 **Which probes run.** A probe is the weakest evidence detection has, and on a source with
 no name it is the only evidence: real binary files pass the LZMA Alone and Brotli probes
@@ -276,7 +292,11 @@ The zlib and LZMA Alone probes keep `PROBABLE` unconditionally. Both measured **
 positives in 20 000 random blobs**, so the confidence downgrade would cost honesty rather
 than buy it. (Alone was additionally re-measured at 0 over 4 000 blobs of 64 KiB; its
 real-world residual is a framing problem, not a confidence one — see the framing
-requirement.)
+requirement.) Random blobs never hold a zero run, so that measurement does not cover a
+plausible Alone header followed by zeros, which decodes cleanly: before the zero-run rule
+in the framing requirement, 356 of 3 143 libmagic signatures followed by zeros were
+claimed, and ID3-tagged MP3s with tag padding; the libmagic scan found that refusing a
+leading zero run removes all 356.
 
 Within Brotli, a probe-only hit whose **first meta-block is compressed** SHALL keep
 `PROBABLE`: measured on random data, that class is accepted 0.014% of the time against
@@ -319,6 +339,19 @@ not about the sentinel — a header carrying a real uncompressed size, as the LZ
 encoder writes, is as welcome as one carrying the sentinel. The two header fields are
 independent: a stream with a zero dictionary size and a real payload is still detected.
 
+It SHALL refuse, before decoding, a header whose range-coder data holds a run of **16 zero
+bytes starting in its first 32 bytes**. A range coder fed zeros decodes zero literals
+without error, so any plausible header followed by a few hundred zero bytes, or by a zero
+byte, a few other bytes and then zeros, decodes as a valid stream of zeros, and reading
+it gives a member of zeros with no error. No measured encoder writes such a run: the longest zero
+run measured anywhere in real payloads is 3 bytes from liblzma and 7 from the LZMA SDK
+encoder (7-Zip), the 7 being a two-zero-byte input whose whole payload is zeros. The
+measurement and its inputs are recorded at the rule in `lzma_codec.py`. Unlike the other
+Alone rules this one rests on what encoders write, not on what the format allows: an
+encoder that coded a long run of zero bytes as literals would write such a run, and
+neither measured encoder does, because both code the third byte of a run as a match. A stream refused
+here still opens through a `.lzma` name.
+
 #### Scenario: content-probe matrix
 
 | Case | Expected |
@@ -350,6 +383,8 @@ independent: a stream with a zero dictionary size and a real payload is still de
 | Alone header carrying a real uncompressed size rather than the sentinel | `LZMA_ALONE`, `content_probe` — unaffected |
 | Zero-filled source of any length (padding, a sparse or zero-truncated file) | No Alone claim — the header declares zero output |
 | Zero-filled source with `CD001` at 32 769 | `ISO` at the far-magic step; no Alone claim |
+| Plausible Alone header (e.g. an ID3v2.3 tag) followed by a zero run, or by `00`, a few bytes and a zero run | No Alone claim — no measured encoder writes the run, though it decodes |
+| Real Alone stream of an all-zero input (liblzma or LZMA SDK, any level) | `LZMA_ALONE`, `content_probe` — unaffected |
 
 ### Requirement: Compressed streams are probed for an inner TAR
 
@@ -580,10 +615,15 @@ them as part of the prefix fetches them again. No other backward seek re-reads t
 prefix. The exit restore of a seekable caller stream is the non-consumption contract.
 
 This holds for every source kind. A network range reader pays for the prefix pass and,
-when the trailer runs, one range for that block; a member stream from a solid block is
+when the trailer runs, one range for that block; a member stream (`ArchiveStream`) is
 not asked for the trailer, because a rewind would re-decode, and it decodes the prefix
-forward once. The rule is stated flatly rather than derived from a cost model because
-`StreamCapability` cannot distinguish a cheap seek from an expensive one.
+forward once. That holds whether the member stream reaches detection bare, under a
+pass-through buffer, wrapped in the `ArchiveSource` that `open_archive` builds, or as a
+volume in a list passed to `open_archive`. A source that is not asked records `trailer`
+as *capability unavailable* (detection-cost), unless it is shorter than the 512-byte
+block: then there is no block to miss and nothing is recorded. The rule is stated flatly rather than
+derived from a cost model because `StreamCapability` cannot distinguish a cheap seek
+from an expensive one.
 
 Resolving an exact `payload_offset` through a central-directory walk does not fit this
 shape — the directory is reached backwards from the end and points backwards again. Offset
@@ -598,6 +638,7 @@ resolution is therefore separable from identification, and no tier does it today
 | Seekable bzip2 or xz larger than the prefix, no `koly` block | 1 pass, then the rest of the file for the inner-TAR probe, which fetches the trailer bytes again | 1 | 1, back to the end of the prefix |
 | `koly` hit on a seekable image larger than the prefix | 1 prefix pass; the trailer bytes are fetched once | 1 | 1, back to the end of the prefix |
 | Non-seekable source, any tier | 1 pass | 0 | **0** |
+| Member stream (`ArchiveStream`), bare, buffered, through `open_archive`, or one volume of a list, any tier | 1 pass | 0 | **0** |
 
 The backward-seek column does not count the exit restore of a seekable caller stream.
 
@@ -706,8 +747,8 @@ prohibition on knobs.
 | `MZ` + `\x90`×4094 (declares 2 171 061 bytes, file is 4096) | Rejected — declared framing overruns the source |
 | A `/**\n…` C header (declares an uncompressed block past EOF) | Rejected |
 | Arbitrary data whose first declared block happens to fit | Probe may still accept at *this* requirement's floor; the residual is then narrowed by *A content probe SHALL follow a format's self-describing block chain* below |
-| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate / `BrotliCodec.content_probe` still accept (MLEN 7422 always fits). End-to-end `detect_format` today claims **LZMA Alone at `PROBABLE`** (Alone wins probe order) — not a Brotli residual at the detection layer |
-| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer) | Same split: Brotli gate accepts; end-to-end Alone at `PROBABLE` |
+| OLE/CFB file (`D0 CF 11 E0 A1 B1 1A E1`, ≥ 7425 bytes) | Brotli first-block gate accepts (MLEN 7422 always fits); `BrotliCodec.content_probe` rejects it by decoding to the compressed block that follows (*A content probe SHALL follow a format's self-describing block chain*). End-to-end `detect_format` does not run the probes: the OLE signature stops them (*A known non-archive signature stops the content probes*) |
+| COFF-shaped prefix (`64 86 …` with a fitting uncompressed trailer, then a compressed header) | Brotli gate accepts; the probe rejects it as for OLE. The Alone probe declines the header's zero uncompressed size, so detection fails |
 | A 13-byte text file, LZMA Alone probe | **Rejected** — a source that is only the 13-byte header cannot be an Alone stream (removes the entire measured real-world Alone residual, 4 of 4) |
 | Non-seekable source of unknown length (≥ `DETECTION_LIMIT` peek) | Gate skipped; today's behaviour |
 | Non-seekable source shorter than the detection peek | Length inferred from the short peek; gate applies |
@@ -799,8 +840,24 @@ On a real Brotli file whose first meta-block is compressed — 79 of 150 in the 
 therefore terminates immediately, having read four bytes.
 
 Following the chain requires bytes at offsets that may lie past the peeked prefix.
-However a probe reaches them, the reads SHALL stay within the declared bounds and
+However a probe reaches them, the header reads SHALL stay within the declared bounds and
 SHALL NOT decompress.
+
+**When the walk stops at a compressed block the window decode did not reach, the probe
+SHALL decode the source from offset 0 to a declared margin past that block's header
+(today: 4 KiB), and SHALL reject on a decode error there.** The walk alone leaves a gap:
+data whose first bytes declare a long uncompressed or metadata block passes the walk and
+the 4 KiB window decode, and on a source over the completion window nothing else looks
+at it. Measured: CPython 3.11/3.14 `.pyc` files over ~269 KiB, a Type 1 font, about 100
+libmagic signature bodies, and 1.2–1.3 % of uniform random data over 64 KiB were claimed
+this way, and a real decoder rejects each within 256 bytes of the compressed header. The
+decode is a sequential read of `[0, end)`, mostly a copy of the declared bytes. It SHALL
+stay inside the reach of the walk's reads (`end` at most 1 MiB, the non-seekable
+`read_at` ceiling, applied to every source) and inside the detection budget: it is
+charged to `max_decode_input` and SHALL NOT read past the budget's prefix/far/scan
+ceiling (see `detection-cost`). When `end` is out of reach, the budget cannot cover it,
+or the read is declined, the walk's verdict stands (*cannot disprove*). A real stream
+decodes cleanly or runs out of input there, and both SHALL be accepted.
 
 #### Scenario: chain walk matrix
 
@@ -808,12 +865,15 @@ SHALL NOT decompress.
 | --- | --- |
 | Real `.br` file, first meta-block compressed | Walk stops at once; accepted |
 | Real `.br` file, uncompressed first block, all links fit | Accepted — every declared length is honoured |
+| Real stream over 64 KiB whose compressed block follows a long uncompressed or metadata run | Decoded to just past that block's header; accepted |
+| Data whose declared chain fits, compressed header past the window, decode fails there (`.pyc`, random data) | **Rejected** |
+| The same, compressed header past the 1 MiB reach, or the budget cannot cover the decode | Not decoded; verdict unchanged — **not** a rejection |
 | Fabrication whose first block fits but whose second link overruns the source | **Rejected** |
 | Fabrication whose chain reaches a declared end with bytes left over | **Rejected** |
 | 16 MiB source whose first declared block fits trivially (MLEN ceiling) | Walk decides; first-block check alone would have accepted |
 | Chain longer than the link bound | Verdict unchanged from the earlier rules; **not** a rejection |
 | Non-seekable `read_at` past the 1 MiB offset ceiling | Declined → cannot disprove; earlier verdict stands |
-| OLE/CFB file ≥ 7425 bytes | Still accepted — its constant magic yields a fitting chain. Known residual, unchanged |
+| OLE/CFB file ≥ 7425 bytes | Its constant magic yields a fitting chain that stops at a compressed header at 7 426; the decode there rejects it. Detection does not run the probe on it in any case (*A known non-archive signature stops the content probes*) |
 
 ### Requirement: A read failure on probe-only evidence names its provenance
 
@@ -917,3 +977,29 @@ not supported, nothing to install. The `.dmg` suffix SHALL NOT select the format
 | `format=DMG` or `format="dmg"` | `UnsupportedFeatureError` naming UDIF |
 | Non-seekable source longer than the far-magic window, zlib first block, `koly` at the end | `ZLIB`; the trailer is not seeked to |
 | `format_availability(DMG)` | `NONE`, `missing` empty; in `list_known_formats()`, absent from `list_supported_formats()` |
+
+### Requirement: A known non-archive signature stops the content probes
+
+When the source starts with a recognized **non-archive signature**, detection SHALL NOT run
+the content probes or the SFX scan, whatever executable cue the bytes raise, and SHALL fall
+through to the extension guess. The magic tiers run as before. With no extension, the
+`FormatDetectionError` SHALL name the evidence that stopped the probes, as it SHALL after
+a strong executable cue. Today the one signature is OLE / Compound File Binary,
+`D0 CF 11 E0 A1 B1 1A E1` at offset 0.
+
+#### Scenario: non-archive signature
+
+Both the Brotli and the LZMA Alone probe accept an OLE header followed by zeros (`.doc`,
+`.xls`, `.ppt`, `.msi`, `Thumbs.db`), and neither can reject it on its own framing: the
+header is a fitting Brotli chain, and a range coder decodes zero bytes without error.
+This is not the threshold that *Executable-looking prefixes must not silently become a
+wrong stream format* forbids: it is positive evidence of another format, and an
+eight-byte signature at offset 0 is as specific as an archive's exact magic. A two-byte
+prefix such as `MZ` is not specific enough. The SFX scan is skipped because these files
+are not stubs: an archive stored inside one is part of the document, not its payload.
+
+The cases are pinned in `tests/test_audit_backup_scan.py`: an OLE header over zeros is
+`FormatDetectionError` naming the OLE signature, not `BROTLI` or `LZMA_ALONE`; an OLE file
+named `x.br` is `BROTLI` / `GUESS` / `extension`; a ZIP inside an OLE file is not
+reported; and a signature whose bytes raise an executable cue does not start the SFX
+scan. The measurement is in `dev-docs/investigations/2026-10-backup-scan.md` §3.2.

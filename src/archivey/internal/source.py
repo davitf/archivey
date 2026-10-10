@@ -28,8 +28,8 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
   ``read``, not a separate one. The bound runs over the full-count strategy, never over
   the raw inner: ``read_within_reach`` takes one ``read`` as final.
 - **Cheap facts.** ``path`` when a real file exists, ``volume_paths`` for a joined set of
-  files, ``size`` when it is a fact, ``size_hint``, ``name``, all settled at
-  construction.
+  files, ``size`` when it is a fact, ``size_hint``, ``name``, ``seek_is_expensive``,
+  all settled at construction.
 
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
@@ -61,6 +61,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
+# ``archive_stream`` imports nothing back from the source boundary (this module, the
+# detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
+# without a lazy import.
+from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ReadOnlyIOStream,
@@ -73,6 +77,7 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
     source_name,
     source_size_fact,
+    underlying_stream,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
 
@@ -93,34 +98,12 @@ class JoinedVolumes(Protocol):
     def volume_count(self) -> int: ...
     @property
     def volume_paths(self) -> list[Path]: ...
+    @property
+    def seek_is_expensive(self) -> bool: ...
     def read(self, n: int = -1, /) -> bytes: ...
     def seek(self, offset: int, whence: int = 0, /) -> int: ...
     def tell(self) -> int: ...
     def close(self) -> None: ...
-
-
-class _BlockingReads:
-    """``read`` that raises when a non-blocking stream returns ``None``.
-
-    :func:`read_exact` treats a falsy return, ``None`` included, as the end of the
-    stream. The gathering reader uses it for the bytes still missing after a short
-    read, and a ``None`` there would end the archive. Routing the follow-up through
-    :func:`read_blocking` is the same refusal the first read makes.
-
-    ``read_exact`` only ever asks for a positive remainder, so a negative count is a
-    caller bug and is refused rather than forwarded. The default stays so this still
-    matches the ``read`` protocol that function expects.
-    """
-
-    __slots__ = ("_inner",)
-
-    def __init__(self, inner: BinaryIO) -> None:
-        self._inner = inner
-
-    def read(self, n: int = -1, /) -> bytes:
-        if n < 0:
-            raise ValueError("n must be non-negative")
-        return read_blocking(self._inner, n)
 
 
 class _GatheringReader:
@@ -185,7 +168,9 @@ class _GatheringReader:
             )
         if got == 0:
             return b""
-        return data + read_exact(_BlockingReads(self._inner), n - got)
+        # ``read_exact`` refuses an over-read in the follow-up, as the check above
+        # does for the first read.
+        return data + read_exact(self._inner, n - got)
 
 
 class ArchiveSource(ReadOnlyIOStream):
@@ -256,6 +241,7 @@ class ArchiveSource(ReadOnlyIOStream):
         is_directory: bool = False,
         position: int = 0,
         open_path: Path | None = None,
+        seek_is_expensive: bool = False,
     ) -> None:
         super().__init__()
         self._path = path
@@ -272,6 +258,7 @@ class ArchiveSource(ReadOnlyIOStream):
         self._length = length
         self._name = name
         self._caller_stream = caller_stream
+        self._seek_is_expensive = seek_is_expensive
         self._owned = owned
         self._buffer = buffer
         self._volume_paths = list(volume_paths)
@@ -361,6 +348,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # Where the caller left it: the archive starts there (see
         # :meth:`rebase_to_current_position`), and the clamp counts from it.
         position = stream.tell() if seekable else 0
+        expensive = seek_is_expensive(stream)
         if isinstance(stream, io.BufferedIOBase):
             # Already full-count when the stream blocks: ``BufferedIOBase.read(n)``
             # keeps asking its raw until it has ``n`` or reaches EOF. No second
@@ -377,6 +365,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 name=name,
                 caller_stream=stream,
                 position=position,
+                seek_is_expensive=expensive,
             )
         if not seekable:
             return cls(
@@ -388,6 +377,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 length=None,
                 name=name,
                 caller_stream=stream,
+                seek_is_expensive=expensive,
             )
         # A seekable raw source: a fixed-size buffer is full-count and its read-ahead is
         # recoverable by seeking. It is archivey's, so it closes with this object — by
@@ -404,6 +394,7 @@ class ArchiveSource(ReadOnlyIOStream):
             caller_stream=stream,
             buffer=buffer,
             position=position,
+            seek_is_expensive=expensive,
         )
 
     @classmethod
@@ -431,6 +422,7 @@ class ArchiveSource(ReadOnlyIOStream):
             volume_paths=joined.volume_paths,
             volume_count=joined.volume_count,
             joined=joined,
+            seek_is_expensive=joined.seek_is_expensive,
         )
 
     # --- cheap facts ---------------------------------------------------------------------
@@ -483,6 +475,18 @@ class ArchiveSource(ReadOnlyIOStream):
         it, and by detection's total size; never for bounding a read.
         """
         return self._size
+
+    @property
+    def seek_is_expensive(self) -> bool:
+        """Whether a seek on this source may re-decode what it skips.
+
+        True when the caller's stream is an :class:`~archivey.ArchiveStream`, under any
+        pass-through buffer (see :func:`seek_is_expensive`), and for a joined set with
+        such a stream among its volumes: a read near the end of the set seeks that
+        volume. A path, and a caller stream that is a file or a ``BytesIO``, answer
+        ``False``.
+        """
+        return self._seek_is_expensive
 
     @property
     def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a source has a path when the caller gave one
@@ -538,6 +542,14 @@ class ArchiveSource(ReadOnlyIOStream):
             if avail <= 0:
                 return b""
             data = read_blocking(reader, avail)
+            if len(data) > avail:
+                # The excess is already consumed and cannot be given back, so this
+                # refuses rather than clamps, as the gathering reader does. Measured
+                # in this method on a ``BytesIO``: 3-10 ns a read (1-2% at 64 B and
+                # 4 KiB), inside run-to-run noise.
+                raise ValueError(
+                    f"inner returned {len(data)} bytes for read({avail}): {reader!r}"
+                )
             self._pos += len(data)
             return data
         if n == 0:
@@ -619,10 +631,22 @@ class ArchiveSource(ReadOnlyIOStream):
         # ``try_readinto`` answers ``None`` only for an object with no usable
         # ``readinto``, a property of its type: once the first call has filled
         # bytes, a later ``None`` would be the object contradicting itself.
+        # The buffer bounds what the inner writes, not the count it returns, and
+        # that count moves ``_pos``: a count past the buffer is refused, not
+        # clamped, as ``read`` refuses an over-read.
+        if got > len(view):
+            raise ValueError(
+                f"inner returned {got} bytes for readinto({len(view)}): {reader!r}"
+            )
         total = got
         while 0 < got and total < len(view):
+            want = len(view) - total
             got = try_readinto(reader, view[total:])
             assert got is not None, f"readinto refused after serving: {reader!r}"
+            if got > want:
+                raise ValueError(
+                    f"inner returned {got} bytes for readinto({want}): {reader!r}"
+                )
             total += got
         self._pos += total
         return total
@@ -748,4 +772,27 @@ class ArchiveSource(ReadOnlyIOStream):
         return f"ArchiveSource({self._caller_stream!r})"
 
 
-__all__ = ["ArchiveSource", "JoinedVolumes"]
+def seek_is_expensive(stream: BinaryIO) -> bool:
+    """Whether repositioning ``stream`` may cost a re-decode rather than a pointer move.
+
+    True for an :class:`~archivey.ArchiveStream`: many codecs serve a backward seek by
+    decoding again from the start, and a seek to the end decodes everything before it.
+    The same holds under a pass-through layer (a ``BufferedReader``, a seek counter),
+    which :func:`underlying_stream` peels the way :func:`source_byte_size` does. True as
+    well for an :class:`ArchiveSource` that borrows one, which is how ``open_archive``
+    hands a member stream to detection, and for a joined set with such a volume. Those
+    two record the fact when they are built, so they are asked for it first, before
+    any type test: a join handed to ``for_stream`` or passed here directly is neither
+    peeled nor a member stream, and must still give the answer it gives itself. The
+    peel is the fallback for everything else. Detection reads this to keep its trailer
+    and probe reads off such a stream (``dev-docs/topics/detection.md`` §4.2).
+    """
+    # ``ArchiveSource`` and ``JoinedVolumes`` both carry the fact as a bool property;
+    # anything else that does not is answered by the peel.
+    own = getattr(stream, "seek_is_expensive", None)
+    if isinstance(own, bool):
+        return own
+    return isinstance(underlying_stream(stream), ArchiveStream)
+
+
+__all__ = ["ArchiveSource", "JoinedVolumes", "seek_is_expensive"]

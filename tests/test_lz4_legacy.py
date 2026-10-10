@@ -1,7 +1,7 @@
 """The legacy LZ4 stream (``lz4 -l``, Linux kernel images): detected and decoded.
 
 ``lz4.frame`` does not read this format, so archivey decodes its blocks with
-``lz4.block`` (``internal/streams/lz4_legacy.py``). The streams here are built the way
+``lz4.block`` (``internal/streams/codecs/lz4_legacy.py``). The streams here are built the way
 the ``lz4`` command builds them: the magic, then each block of at most 8 MiB of input
 compressed on its own, after its little-endian compressed size.
 """
@@ -18,7 +18,7 @@ import pytest
 from archivey import ArchiveFormat, detect_format, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.internal.streams.lz4_legacy import (
+from archivey.internal.streams.codecs.lz4_legacy import (
     LEGACY_BLOCK_BOUND,
     LEGACY_BLOCK_SIZE,
     LEGACY_MAGIC,

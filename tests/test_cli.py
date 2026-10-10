@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import os
+import stat
 import sys
 import tarfile
 import zipfile
@@ -18,8 +20,9 @@ from archivey import (
     open_archive,
 )
 from archivey.cli import test_cmd
-from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
+from archivey.cli.exit_codes import EXIT_FAIL, EXIT_INTERRUPTED, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import _report_extraction
+from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, main
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError
@@ -455,6 +458,68 @@ def test_info_prints_identity_once_when_the_open_fails(
     assert "open:" in captured.err
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is Unix-only")
+def test_info_on_a_fifo_reports_the_open_error_without_reopening(
+    tmp_path: Path,
+    named_fifo_with_writer: Callable[[Path, bytes], None],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed open on a FIFO must not run ``detect_format`` on the path again.
+
+    A pipe is read once, so a second open waits for a writer that never comes.
+    ``info`` must print the open error and return.
+    """
+    import threading
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        member = tarfile.TarInfo("a.txt")
+        member.size = 5
+        tf.addfile(member, io.BytesIO(b"hello"))
+    fifo = tmp_path / "pipe.tar"
+    named_fifo_with_writer(fifo, buf.getvalue())
+
+    result: list[int] = []
+    worker = threading.Thread(
+        target=lambda: result.append(main(["info", str(fifo)])), daemon=True
+    )
+    worker.start()
+    worker.join(10)
+    if worker.is_alive():
+        # Unblock the stuck second open so the thread can finish, then fail.
+        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(5)
+        pytest.fail("archivey info blocked on a FIFO")
+    assert result == [EXIT_FAIL]
+    captured = capsys.readouterr()
+    assert "open:" in captured.err
+    # The detected format is named plainly, not as an enum repr.
+    assert "ArchiveFormat." not in captured.err
+
+
+def test_can_reread_skips_only_read_once_paths(tmp_path: Path) -> None:
+    """The fallback detection runs on anything but a FIFO, char device or socket.
+
+    A block device rereads the same bytes, so it stays eligible; the case needs root and
+    is not in the suite, so the predicate is pinned directly here.
+    """
+    regular = tmp_path / "a.zip"
+    regular.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    assert _can_reread(str(regular))
+    assert _can_reread(str(tmp_path))
+    assert not _can_reread(str(tmp_path / "missing"))
+    if os.path.exists(os.devnull) and stat.S_ISCHR(os.stat(os.devnull).st_mode):
+        assert not _can_reread(os.devnull)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_can_reread_rejects_a_fifo(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    assert not _can_reread(str(fifo))
+
+
 def test_info_on_a_directory_reports_the_directory_format(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -865,6 +930,93 @@ def test_test_early_abort_reports_not_tested(
     assert "1 OK, 1 failed, 1 not tested" in err
 
 
+class _StderrFailingAtFirstOk(io.StringIO):
+    """A stderr that raises ``exc`` when the first ``OK`` line is written: once, as
+    Ctrl-C arrives, or on that write and every later one, as a closed pipe does.
+    """
+
+    def __init__(self, exc: BaseException, *, every_later_write: bool) -> None:
+        super().__init__()
+        self._exc = exc
+        self._every_later_write = every_later_write
+        self._failed = False
+
+    @property
+    def failed(self) -> bool:
+        """Whether the injected error has been raised."""
+        return self._failed
+
+    def write(self, s: str) -> int:
+        if (s.startswith("OK   ") and not self._failed) or (
+            self._failed and self._every_later_write
+        ):
+            self._failed = True
+            raise self._exc
+        return super().write(s)
+
+
+def test_test_ctrl_c_mid_pass_exits_interrupted(sample_zip: Path) -> None:
+    """Ctrl-C during the read pass ends as ``interrupted`` and 130, as in ``extract``.
+
+    The interrupt leaves the loop while the member pass is suspended between members;
+    that pass must not then stop the reader from closing.
+    """
+    err = _StderrFailingAtFirstOk(KeyboardInterrupt(), every_later_write=False)
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_INTERRUPTED
+    assert "interrupted" in err.getvalue()
+    assert "Cannot close the archive reader" not in err.getvalue()
+
+
+def test_extract_ctrl_c_mid_pass_exits_interrupted(
+    sample_zip: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ctrl-C during the extraction pass ends as ``interrupted`` and 130.
+
+    The progress callback runs inside the extraction loop while the member pass is
+    suspended, so an interrupt raised there must not leave that pass blocking the
+    reader's close.
+    """
+    import archivey.cli.extract_cmd as extract_mod
+
+    class _InterruptingProgress:
+        calls = 0
+
+        def __call__(self, progress: object) -> None:
+            self.calls += 1
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            pass
+
+    progress = _InterruptingProgress()
+    monkeypatch.setattr(extract_mod, "make_progress_callback", lambda **_: progress)
+    dest = tmp_path / "out"
+    assert main(["extract", str(sample_zip), "-d", str(dest)]) == EXIT_INTERRUPTED
+    assert progress.calls == 1
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_test_closed_stderr_pipe_mid_pass_exits_quietly(
+    sample_zip: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stderr pipe closed during the pass gets the broken-pipe exit, not a usage
+    error about closing the reader while its member pass is active.
+    """
+    from archivey.cli import main as main_mod
+
+    # The real one closes sys.stdout / sys.stderr, which pytest's capture owns.
+    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    err = _StderrFailingAtFirstOk(
+        BrokenPipeError(32, "Broken pipe"), every_later_write=True
+    )
+    assert main(["test", "-v", str(sample_zip)], err=err) == EXIT_OK
+    # The pipe did close mid-pass: without this, a clean run passes the test too.
+    assert err.failed
+
+
 def test_test_summary_helper() -> None:
     from archivey.cli.test_cmd import _test_summary
 
@@ -1005,6 +1157,153 @@ def test_hoist_single_file_named_like_wrapper(
     assert main(["extract", str(archive)]) == EXIT_OK
     assert (tmp_path / "src").read_bytes() == b"solo"
     assert not (tmp_path / "src (1)").exists()
+
+
+def _tar_with_locked_dirs(path: Path, names: list[str]) -> Path:
+    """A tar whose directory members (a trailing ``/``) are stored ``0o555``."""
+    with tarfile.open(path, "w") as tf:
+        for name in names:
+            info = tarfile.TarInfo(name.rstrip("/"))
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o555
+                tf.addfile(info)
+            else:
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+    return path
+
+
+def _refuse_renames_as_non_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``os.rename`` refuse what POSIX refuses a non-root user: moving an entry
+    out of or into a directory without owner write, or a directory without owner
+    write to another parent (its ``..`` changes). Root skips these checks, and CI may
+    run as either."""
+    rename = os.rename
+
+    def no_write(path: Path) -> bool:
+        st = os.lstat(path)
+        return stat.S_ISDIR(st.st_mode) and not st.st_mode & stat.S_IWUSR
+
+    def checked(src: str | Path, dst: str | Path) -> None:
+        src, dst = Path(src), Path(dst)
+        moves_dir = no_write(src) and src.parent.resolve() != dst.parent.resolve()
+        if no_write(src.parent) or no_write(dst.parent) or moves_dir:
+            raise PermissionError(13, "Permission denied", str(src))
+        rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", checked)
+
+
+def _unlock(root: Path) -> None:
+    for path in [root, *root.rglob("*")]:
+        if path.is_dir() and not path.is_symlink():
+            os.chmod(path, 0o755)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "real"])
+def test_hoist_moves_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    """The root's stored ``0o555`` is applied when extraction ends, before the hoist
+    moves it: the move still succeeds, as the dry run says, and the root keeps the
+    mode."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    archive = _tar_with_locked_dirs(tmp_path / "bundle.tar", ["pkg/", "pkg/a"])
+    args = ["extract", str(archive), "--policy", "standard"]
+    try:
+        assert main([*args, "--dry-run"] if dry_run else args) == EXIT_OK
+        if not dry_run:
+            assert stat.S_IMODE((tmp_path / "pkg").stat().st_mode) == 0o555
+            assert (tmp_path / "pkg" / "a").read_bytes() == b"x"
+            assert not (tmp_path / "bundle").exists()
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_hoist_merges_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merged into a directory that was there: the entries move out of the locked
+    root, and the existing directory keeps its own mode."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    (tmp_path / "pkg").mkdir(mode=0o750)
+    archive = _tar_with_locked_dirs(
+        tmp_path / "bundle.tar", ["pkg/", "pkg/a", "pkg/sub/", "pkg/sub/b"]
+    )
+    try:
+        assert main(["extract", str(archive), "--policy", "standard"]) == EXIT_OK
+        assert stat.S_IMODE((tmp_path / "pkg").stat().st_mode) == 0o750
+        assert stat.S_IMODE((tmp_path / "pkg" / "sub").stat().st_mode) == 0o555
+        assert (tmp_path / "pkg" / "sub" / "b").read_bytes() == b"x"
+        assert not (tmp_path / "bundle").exists()
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_a_failed_hoist_leaves_the_stored_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cwd's own ``pkg`` has no owner write, so the merge cannot move ``sub``
+    into it. The hoist fails, and the directories left under the wrapper keep the
+    ``0o555`` the archive stored: the hoist opened them up only for the move."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    (tmp_path / "pkg").mkdir(mode=0o555)
+    archive = _tar_with_locked_dirs(
+        tmp_path / "bundle.tar", ["pkg/", "pkg/sub/", "pkg/sub/b"]
+    )
+    try:
+        assert main(["extract", str(archive), "--policy", "standard"]) == EXIT_FAIL
+        left = tmp_path / "bundle" / "pkg"
+        assert stat.S_IMODE(left.stat().st_mode) == 0o555
+        assert stat.S_IMODE((left / "sub").stat().st_mode) == 0o555
+        assert (left / "sub" / "b").read_bytes() == b"x"
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_hoist_renames_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    (tmp_path / "pkg").write_bytes(b"MINE")
+    archive = _tar_with_locked_dirs(tmp_path / "bundle.tar", ["pkg/", "pkg/a"])
+    try:
+        args = ["extract", str(archive), "--policy", "standard", "--overwrite"]
+        assert main([*args, "rename"]) == EXIT_OK
+        assert stat.S_IMODE((tmp_path / "pkg (1)").stat().st_mode) == 0o555
+        assert (tmp_path / "pkg (1)" / "a").read_bytes() == b"x"
+    finally:
+        _unlock(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_hoist_flattens_a_root_stored_without_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``pkg.tar`` holding ``pkg/``: the wrapper takes the root's place, and its
+    mode."""
+    monkeypatch.chdir(tmp_path)
+    _refuse_renames_as_non_root(monkeypatch)
+    archive = _tar_with_locked_dirs(
+        tmp_path / "pkg.tar", ["pkg/", "pkg/a", "pkg/sub/", "pkg/sub/b"]
+    )
+    try:
+        assert main(["extract", str(archive), "--policy", "standard"]) == EXIT_OK
+        assert stat.S_IMODE((tmp_path / "pkg").stat().st_mode) == 0o555
+        assert stat.S_IMODE((tmp_path / "pkg" / "sub").stat().st_mode) == 0o555
+        assert (tmp_path / "pkg" / "sub" / "b").read_bytes() == b"x"
+        assert (tmp_path / "pkg" / "a").read_bytes() == b"x"
+    finally:
+        _unlock(tmp_path)
 
 
 def _seed_existing_root(tmp_path: Path) -> None:
@@ -1199,6 +1498,27 @@ def test_password_eof_treated_as_no_password(
     assert "Traceback" not in text
     assert "EOFError" not in text
     assert "Password required" in text
+
+
+def test_password_prompt_says_a_retry_follows_a_wrong_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.cli import password as password_mod
+    from archivey.config import PasswordRequest
+
+    monkeypatch.setattr(password_mod.sys.stdin, "isatty", lambda: True)
+    prompts: list[str] = []
+
+    def _record(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return "pw"
+
+    monkeypatch.setattr(password_mod.getpass, "getpass", _record)
+    provider = password_mod.resolve_password(None)
+    assert callable(provider)
+    provider(PasswordRequest(member=None, attempt=1))
+    provider(PasswordRequest(member=None, attempt=2))
+    assert prompts == ["Password: ", "Wrong password, try again: "]
 
 
 def test_format_access_summary() -> None:
@@ -2620,10 +2940,9 @@ def _tar_with_dirs(path: Path, names: list[str]) -> Path:
         for name in names:
             info = tarfile.TarInfo(name)
             if name.endswith("/"):
+                # TarInfo's default mode is 0o644, without search permission.
+                # archivey applies it only after the directory's members are written.
                 info.type = tarfile.DIRTYPE
-                # TarInfo defaults to 0o644, and archivey chmods a directory as soon as
-                # it creates it, so a non-root run could not write its children.
-                info.mode = 0o755
                 tf.addfile(info)
             else:
                 info.size = 1

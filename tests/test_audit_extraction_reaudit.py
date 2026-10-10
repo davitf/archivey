@@ -411,14 +411,9 @@ def test_a_destination_this_run_created_gets_the_root_members_mode(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.xfail(
-    strict=True,
-    reason="Known, tracked internally with the directory-permission deferral: a "
-    "directory's stored mtime is applied when it is created, and every child "
-    "written after it moves the mtime to now. tar and tarfile set directory "
-    "metadata last",
-)
 def test_a_directory_keeps_its_stored_mtime(tmp_path: Path, streaming: bool) -> None:
+    """Directory metadata is applied once the run ends, so the child written after
+    the directory does not move its mtime to now."""
     archive = _build_tar(
         tmp_path / "a.tar",
         [
