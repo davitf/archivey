@@ -7,7 +7,10 @@ decodes no more than its :class:`~archivey.detection_cost.DetectionBudget` decla
 from __future__ import annotations
 
 from archivey.detection_cost import DetectionBudget, DetectionCostReceipt
-from archivey.internal.streams.brotli_framing import CHAIN_HEADER_READ, CHAIN_MAX_LINKS
+from archivey.internal.streams.codecs.brotli_framing import (
+    CHAIN_HEADER_READ,
+    CHAIN_MAX_LINKS,
+)
 
 
 def trailer_allowance() -> int:
@@ -26,8 +29,10 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
 
     Seek-based content-probe ``read_at`` charges ``unique_bytes_read`` without growing
     the prefix. Those bytes are allowed up to ``CHAIN_MAX_LINKS * CHAIN_HEADER_READ``,
-    the Brotli walk's own cap, on top of the prefix/far/scan ceiling. A trailer block
-    is the same kind of extra read: :func:`trailer_allowance` bytes, once.
+    the Brotli walk's own cap, on top of the prefix/far/scan ceiling. The Brotli chain
+    decode reads ``[0, n)`` only when ``n`` is within that ceiling, and takes what the
+    prefix holds from the prefix. A trailer block is the same kind of extra read:
+    :func:`trailer_allowance` bytes, once.
 
     ``prefix_bytes`` is the one counter not compared: it bills overlapping requests in
     full, so ``unique_bytes_read`` stands in for it.

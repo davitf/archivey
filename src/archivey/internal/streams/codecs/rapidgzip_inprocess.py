@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import ReadError
 from archivey.internal.streams.codecs.base import CodecSource
-from archivey.internal.streams.rapidgzip_child import mark_callers_source
+from archivey.internal.streams.codecs.rapidgzip_child import mark_callers_source
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,

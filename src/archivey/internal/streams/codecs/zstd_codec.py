@@ -27,13 +27,17 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.decompress import (
+from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     stream_magic,
 )
+from archivey.internal.streams.codecs.zstd_framing import (
+    FRAME_MAGIC as ZSTD_FRAME_MAGIC,
+)
+from archivey.internal.streams.codecs.zstd_framing import (
+    regular_frame_behind_skippable_frames,
+)
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
-from archivey.internal.streams.zstd_framing import FRAME_MAGIC as ZSTD_FRAME_MAGIC
-from archivey.internal.streams.zstd_framing import regular_frame_behind_skippable_frames
 from archivey.types import (
     ArchiveFormat,
     MagicSignature,

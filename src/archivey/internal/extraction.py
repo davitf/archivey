@@ -55,10 +55,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
-from archivey.internal.selection import (
-    CollectionSelector,
-    normalize_member_selector,
-)
+from archivey.internal.selection import CollectionSelector
 from archivey.terminal import display_path, quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -69,7 +66,6 @@ from archivey.types import (
     ExtractionResult,
     ExtractionStatus,
     MemberFilter,
-    MemberSelectorArg,
     MemberType,
     OnError,
     OverwritePolicy,
@@ -92,12 +88,6 @@ _TMP_PREFIX = ".archivey-tmp-"
 # Prefix of the private scratch directory a dry run extracts into (see
 # ``ExtractionCoordinator.run``). Removed when the run ends, like the temp files above.
 _DRY_RUN_PREFIX = "archivey-dry-run-"
-
-# Defaults (see the safe-extraction spec); callers override via extract_all().
-DEFAULT_MAX_EXTRACTED_BYTES = 2 * 2**30  # 2 GiB
-DEFAULT_MAX_RATIO = 1000.0
-DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
-DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
 
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
@@ -308,8 +298,9 @@ class BombTracker:
         self,
         max_bytes: int | None,
         max_ratio: float | None,
-        ratio_activation_threshold: int = DEFAULT_RATIO_ACTIVATION_THRESHOLD,
-        max_entries: int | None = DEFAULT_MAX_ENTRIES,
+        # The defaults come from ExtractionLimits, the one place the limits are set.
+        ratio_activation_threshold: int = ExtractionLimits.ratio_activation_threshold,
+        max_entries: int | None = ExtractionLimits.max_entries,
         *,
         source: BaseArchiveReader | None = None,
     ) -> None:
@@ -842,7 +833,7 @@ class ExtractionCoordinator:
         overwrite: OverwritePolicy = OverwritePolicy.ERROR,
         on_error: OnError = OnError.STOP,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
-        members: MemberSelectorArg = None,
+        selector: Callable[[ArchiveMember], bool] | None = None,
         filter: MemberFilter | None = None,
         limits: ExtractionLimits | None = None,
         abort_on: Collection[AbortOn] = (),
@@ -854,7 +845,10 @@ class ExtractionCoordinator:
         self._on_error = on_error
         self._abort_on = frozenset(abort_on)
         self._on_progress = on_progress
-        self._members = members
+        # A predicate, never the caller's raw ``members=``: that argument may be a
+        # one-shot iterable, so only the public entry point reads it, and the caller
+        # passes the normalized result here.
+        self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
         # Placeholders until ``run()`` builds the run's state, so the attribute is never
@@ -992,7 +986,7 @@ class ExtractionCoordinator:
             source=reader,
         )
 
-        selector = normalize_member_selector(self._members)
+        selector = self._selector
 
         # Progress totals cover what this call will actually attempt: when a member list
         # is free (an upfront index) and a selector is given, totals count only the
@@ -1106,7 +1100,7 @@ class ExtractionCoordinator:
     def _run_pass(
         self,
         reader: BaseArchiveReader,
-        stream_selector: MemberSelectorArg,
+        stream_selector: Callable[[ArchiveMember], bool] | None,
         selected_total: int | None,
     ) -> None:
         """The forward pass and the orphan second pass, appending into the results.
@@ -3138,8 +3132,7 @@ class ExtractionCoordinator:
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
-            with self._readonly_cleared(dest_path):
-                os.replace(tmp, dest_path)
+            self._swap_into_place(tmp, dest_path)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -3192,7 +3185,10 @@ class ExtractionCoordinator:
         (see ``_link_refused_here``), copy from an existing path. Appends ``new_path``
         so a later same-device link can reuse it — which is what keeps a fan-out across
         one device boundary to a single copy per device rather than one per link, and a
-        fan-out past the link-count limit to one copy per full file.
+        fan-out past the link-count limit to one copy per full file. When
+        ``new_path`` already named the source's file, the append does not record it
+        twice: the name existed, so ``_prepare_destination`` dropped it from the list
+        (``_forget_source_path``) before this method ran.
 
         The first path at the link-count limit ends the search with a copy. The paths
         recorded before it are older names of the same file, of a file that filled up
@@ -3268,13 +3264,39 @@ class ExtractionCoordinator:
                 # Applied before the swap, so the final name never appears with the
                 # source's metadata instead of this member's.
                 self._apply_metadata(tmp, member)
-            with self._readonly_cleared(new_path):
-                os.replace(tmp, new_path)
+            self._swap_into_place(tmp, new_path)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
         existing.append(new_path)
+
+    def _swap_into_place(self, tmp: Path, dest: Path) -> None:
+        """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
+        of every atomic write (``_write_file_atomic``, ``_place_link``).
+
+        POSIX ``rename(2)`` does nothing, and reports success, when ``tmp`` and ``dest``
+        are already names of the same file. That happens when ``_place_link`` links a
+        file onto another of its own names (a hard link listed twice, or one REPLACE
+        routes onto a link to the same file). ``dest`` then already names the right
+        file, so only the temp name is left, and it is removed here. After a real
+        rename the temp name is gone and the unlink finds nothing.
+
+        On Windows the same call does not fail: the tests for this case
+        (``test_link_onto_a_name_of_the_same_file_leaves_no_temp``) pass there. Whether
+        Windows really renames or leaves the temp as POSIX does is not pinned; the
+        unlink below covers both.
+
+        Any error from the unlink is ignored: ``os.replace`` has already put the member
+        in place, and a temp name left behind is a stray the docs call safe to delete,
+        not a failed write. The unlink stays inside the ``_readonly_cleared`` block. On
+        Windows that block's exit puts the read-only attribute back on the other names of
+        ``dest``'s file, and in the same-file case the temp is one of them, so an unlink
+        after the block would fail."""
+        with self._readonly_cleared(dest):
+            os.replace(tmp, dest)
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
 
     @staticmethod
     def _temp_sibling(parent: Path) -> Path:

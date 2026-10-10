@@ -18,23 +18,24 @@ from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
     CodecSource,
+    ProbeChargeDecode,
     ProbeReadAt,
     _restoring_position,
     _source_tail,
     _stream_prefix,
 )
+from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
+from archivey.internal.streams.codecs.deflate_resume import stream_end
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _OutputChecksum,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
-from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     gzip_corruption,
 )
-from archivey.internal.streams.deflate_resume import stream_end
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.types import StreamFormat
@@ -70,10 +71,12 @@ def _rapidgzip_reads_as_zlib(source: CodecSource) -> bool:
     return _zlib_header_plausible(prefix) and not prefix[1] & 0x20
 
 
-def _stdlib_zlib(source: CodecSource, config: StreamConfig) -> BinaryIO:
+def _stdlib_zlib(
+    source: CodecSource, config: StreamConfig, *, wbits: int = zlib.MAX_WBITS
+) -> BinaryIO:
     return ZlibDecompressorStream(
         source,
-        wbits=zlib.MAX_WBITS,
+        wbits=wbits,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
     )
@@ -354,7 +357,7 @@ class _DeflateEndCheckStream(DelegatingStream):
 
     So when rapidgzip's output ends, this wrapper decodes the end of the stream again
     with zlib, from the newest resume point at or before that offset
-    (:func:`~archivey.internal.streams.deflate_resume.stream_end`), or from the start
+    (:func:`~archivey.internal.streams.codecs.deflate_resume.stream_end`), or from the start
     when there is none. Raw DEFLATE has no checksum, so the resumed decode is a full
     answer:
 
@@ -457,7 +460,7 @@ class DeflateCodec(_ZlibErrorCodec):
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
-        return ZlibDecompressorStream(source, wbits=-15)
+        return _stdlib_zlib(source, config, wbits=-15)
 
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
@@ -560,6 +563,7 @@ class ZlibCodec(_ZlibErrorCodec):
         *,
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
+        charge_decode: ProbeChargeDecode | None = None,
     ) -> bool:
         """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
         return _zlib_header_plausible(prefix) and self._decodes_sample(

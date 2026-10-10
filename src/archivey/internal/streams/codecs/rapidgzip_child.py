@@ -53,9 +53,8 @@ from archivey.internal.streams.child_process import (
     reap,
     spawn,
 )
-from archivey.internal.streams.decompressor_stream import SeekPoint
-from archivey.internal.streams.deflate_resume import WINDOW_SIZE, DeflateResume
-from archivey.internal.streams.rapidgzip_worker import (
+from archivey.internal.streams.codecs.deflate_resume import WINDOW_SIZE, DeflateResume
+from archivey.internal.streams.codecs.rapidgzip_worker import (
     ARG_MAX,
     ARG_MIN,
     ERR,
@@ -78,6 +77,7 @@ from archivey.internal.streams.rapidgzip_worker import (
     TELL_COMPRESSED,
     read_exact_or_none,
 )
+from archivey.internal.streams.decompressor_stream import SeekPoint
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
 _WORKER = Path(__file__).with_name("rapidgzip_worker.py")

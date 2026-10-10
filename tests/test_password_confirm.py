@@ -32,7 +32,7 @@ from archivey.internal.streams.codecs import (
     is_codec_available,
     open_codec_stream,
 )
-from archivey.internal.streams.decompress import FilterStream
+from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from tests.conftest import ReadSizeSpy
 
 BUDGET = 64 * 1024

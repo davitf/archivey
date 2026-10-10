@@ -14,15 +14,15 @@ from typing import BinaryIO, TypeVar
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal.streams.codecs.base import CodecSource
+from archivey.internal.streams.codecs.rapidgzip_child import (
+    RapidgzipChildStream,
+    crashed_on_data,
+    from_callers_source,
+)
 from archivey.internal.streams.codecs.rapidgzip_select import _translate_rapidgzip
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
-)
-from archivey.internal.streams.rapidgzip_child import (
-    RapidgzipChildStream,
-    crashed_on_data,
-    from_callers_source,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd, ask_resume_offset
 from archivey.internal.streams.streamtools import (
@@ -136,7 +136,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     is wrapped by ``_wrap_accelerated_length``, whose ``VerifyingStream`` has the same
     size as its ``expected_size`` and bounds each of its reads to what remains of it.
     There the only read that reaches past ``limit`` is that verifier's one-byte
-    over-run probe at the declared size (``_probe_past_declared``): this branch is
+    over-run probe at the declared size (``MemberVerifier._conclude``): this branch is
     what decides an over-run on the accelerated path. A 7z coder is the other case.
     It declares an unpack size but no ``expected_decompressed_size``, so
     ``_wrap_accelerated_length`` adds no verifier: ``limit`` is the coder's unpack
@@ -174,15 +174,15 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     ``bzip2_resume``).
 
     Once switched, a data error of the standard library leaves as the codec's typed
-    error (``translate``), as it does from the outer translator with the accelerator
-    off. A raw ``zlib.error`` would be taken for the accelerator's opaque end-of-input
-    error by the over-run probe of a declared size (``_probe_past_declared``), which
-    reads it as "no more data": a ZIP member declared empty with a body that is not
-    DEFLATE read as empty, where the accelerator off raises. Only the DEFLATE family
-    passes ``translate``: bzip2's accelerated path adds no ``_wrap_accelerated_length``
-    verifier, so no over-run probe sits inside it, and its translator maps every
-    ``ValueError`` to ``TruncatedError``, which inside the stream would claim a usage
-    error (a closed source) that ``ArchiveStream`` reports as one.
+    error (``translate``), as it does from the codec's own translator with the
+    accelerator off. ``translate`` stays for that reason: without it the raw error
+    travels on to a different translator (the member's or the enclosing reader's),
+    which need not classify it the same way, so the verdict would depend on whether
+    rapidgzip was engaged. The tests do not pin it while both translators type a
+    ``zlib.error`` alike. Only the DEFLATE family passes ``translate``:
+    bzip2's translator maps every ``ValueError`` to ``TruncatedError``, which inside
+    the stream would claim a usage error (a closed source) that ``ArchiveStream``
+    reports as one.
 
     ``empty_to_stdlib`` hands a stream that ends before its first byte to the standard
     library, which decodes a valid empty stream to nothing as well and raises on a cut

@@ -345,13 +345,65 @@ def brotli_compressed_metablock_header(*, first: bool = False) -> bytes:
     Used by framing / completeness / SFX tests that need a chain walk to stop at a
     successor link without depending on a real Brotli encoder for that header alone.
     """
-    from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
+    from archivey.internal.streams.codecs.brotli_framing import (
+        BrotliBlock,
+        parse_metablock,
+    )
 
     for seed in range(4096):
         hdr = bytes([(seed + j * 13) % 256 for j in range(24)])
         if parse_metablock(hdr, first=first).outcome is BrotliBlock.COMPRESSED:
             return hdr
     raise RuntimeError("no compressed meta-block header pattern found")
+
+
+def _pack_bits(fields: list[tuple[int, int]]) -> bytes:
+    """Pack ``(value, width)`` fields LSB-first, as Brotli does, zero-padded to a byte."""
+    acc = pos = 0
+    for value, width in fields:
+        acc |= value << pos
+        pos += width
+    return acc.to_bytes((pos + 7) // 8, "little")
+
+
+def brotli_declared_metablock_header(
+    length: int, *, metadata: bool = False, first: bool = False
+) -> bytes:
+    """A non-last uncompressed (or metadata) meta-block header declaring ``length`` bytes.
+
+    ``first`` prepends a one-bit WBITS field (window 16). The header ends byte-aligned,
+    so the declared bytes follow it directly (RFC 7932 §9.2).
+    """
+    fields: list[tuple[int, int]] = [(0, 1)] if first else []
+    fields.append((0, 1))  # ISLAST
+    if metadata:
+        nbytes = (max(length - 1, 1).bit_length() + 7) // 8 if length else 0
+        fields += [(3, 2), (0, 1), (nbytes, 2)]  # MNIBBLES = 0, reserved, MSKIPBYTES
+        if nbytes:
+            fields.append((length - 1, nbytes * 8))
+    else:
+        nibbles = max(4, ((length - 1).bit_length() + 3) // 4)
+        fields += [(nibbles - 4, 2), (length - 1, nibbles * 4), (1, 1)]
+    return _pack_bits(fields)
+
+
+def brotli_link_cap_residual() -> bytes:
+    """Random data that every Brotli probe check accepts and a decoder rejects.
+
+    Nine uncompressed meta-blocks of 8 KiB each: the chain walk gives up at its link
+    cap (``CHAIN_MAX_LINKS``) and cannot disprove, the source is over the 64 KiB
+    completion window, and nothing past the walk is decoded. A garbage compressed
+    header follows, so a read copies about 72 KiB and then fails. The first block is
+    uncompressed, so detection reports ``BROTLI`` / ``GUESS``.
+    """
+    from archivey.internal.streams.codecs.brotli_framing import CHAIN_MAX_LINKS
+
+    rng = random.Random(7)
+    parts = [
+        brotli_declared_metablock_header(8192, first=(i == 0)) + rng.randbytes(8192)
+        for i in range(CHAIN_MAX_LINKS + 1)
+    ]
+    return b"".join(parts) + brotli_compressed_metablock_header() + b"Z" * 32
 
 
 def assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:

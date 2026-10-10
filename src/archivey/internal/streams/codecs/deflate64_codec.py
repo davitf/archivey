@@ -18,7 +18,9 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.decompress import Deflate64DecompressorStream
+from archivey.internal.streams.codecs.deflate64_decoder import (
+    Deflate64DecompressorStream,
+)
 from archivey.types import MissingComponent
 
 
@@ -36,7 +38,7 @@ class Deflate64Codec(StreamCodec):
     ) -> BinaryIO:
         if deps.inflate64.load() is None:
             raise self._missing("Deflate64 streams")
-        return Deflate64DecompressorStream(source)
+        return Deflate64DecompressorStream(source, collector=config.collector)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, EOFError):
