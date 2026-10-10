@@ -104,5 +104,10 @@ encrypted members fail as if no password had been given.
 - Exit codes: `0` success, `1` operation failed or extract aborted on a member
   failure (`--stop-on-error`), `2` usage error (argparse), `3` extract
   **completed** with ≥1 safety-policy block and no member failure (safe members
-  on disk; under CONTINUE or STOP). Codes `≥4` are reserved.
+  on disk; under CONTINUE or STOP), `130` interrupted by Ctrl-C (it prints
+  `interrupted`; `130` is 128 + 2, the shell's code for SIGINT). Codes `4` to
+  `127` are reserved.
+- When the pipe that stdout or stderr writes to closes (`archivey t big.zip 2>&1 |
+  head -1`), every verb stops quietly with exit `0`. For `test` that means the
+  archive was not fully verified.
 - `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are reserved for later.

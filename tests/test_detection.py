@@ -10,6 +10,7 @@ import logging
 import lzma
 import random
 import struct
+import subprocess
 import zipfile
 import zlib
 from pathlib import Path
@@ -19,9 +20,11 @@ import pytest
 from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
 from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams import codecs as codecs_module
+from archivey.internal.streams.streamtools import source_name
 from archivey.types import MagicSignature
-from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
 
@@ -820,6 +823,119 @@ def test_lzma_alone_header_gate_admits_the_formats_full_properties_range(
     assert codecs_module.lzma_codec._alone_header_plausible(header) is legal
 
 
+@pytest.mark.parametrize(
+    ("head", "run", "refused"),
+    [
+        (0, 16, True),
+        (0, 15, False),  # one short of the run
+        (31, 16, True),  # the last start inside the 32-byte span
+        (32, 16, False),  # the first start outside it
+    ],
+)
+def test_lzma_alone_zero_run_rule_boundaries(
+    head: int, run: int, refused: bool
+) -> None:
+    header = bytes([0x5D]) + (1 << 16).to_bytes(4, "little") + b"\xff" * 8
+    prefix = header + b"\x01" * head + b"\0" * run + b"\x01" * 64
+    has_run = codecs_module.lzma_codec._alone_payload_has_zero_run(prefix)
+    assert has_run is refused
+
+
+_ALONE_HEADERS = [
+    # props 0x5D, 64 KiB dictionary, unknown size: what liblzma writes.
+    bytes([0x5D]) + (1 << 16).to_bytes(4, "little") + b"\xff" * 8,
+    # ``ID3\x03\x00\x00`` + a syncsafe size: an ID3v2.3 tag read as an Alone header.
+    b"ID3\x03\x00\x00\x00\x00\x10\x00\x00\x00\x00",
+    # props 0 (lc=lp=pb=0), 16 MiB dictionary, a known size: what the LZMA SDK writes.
+    bytes([0x00]) + (1 << 24).to_bytes(4, "little") + (1 << 20).to_bytes(8, "little"),
+]
+
+
+@pytest.mark.parametrize("header", _ALONE_HEADERS, ids=["liblzma", "id3", "sdk"])
+@pytest.mark.parametrize("head", [b"", b"\x00\x01\x70"], ids=["zeros", "short-head"])
+@pytest.mark.parametrize("size", [4096, 256 * 1024])
+def test_lzma_alone_header_then_zero_run_is_not_claimed(
+    header: bytes, head: bytes, size: int
+) -> None:
+    # A range coder fed zeros decodes zero literals without error, so these decode as a
+    # valid stream; a short head before the run, as in ``00 01 70``, does not change that.
+    # No measured encoder writes such a payload, so a zero run near the start is refused.
+    data = header + head + b"\0" * (size - len(header) - len(head))
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+    assert len(decoder.decompress(data, max_length=4096)) == 4096  # no error
+    with pytest.raises(FormatDetectionError):
+        detect_format(io.BytesIO(data))
+
+
+@pytest.mark.parametrize("size", [1, 2, 3, 100, 1 << 20])
+@pytest.mark.parametrize("preset", [0, 6, 9 | lzma.PRESET_EXTREME])
+def test_lzma_alone_of_zeros_from_liblzma_is_still_detected(
+    size: int, preset: int
+) -> None:
+    data = lzma.compress(b"\0" * size, format=lzma.FORMAT_ALONE, preset=preset)
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "content_probe"
+
+
+def test_lzma_alone_whose_payload_is_all_zeros_is_still_detected() -> None:
+    # The LZMA SDK encoder (7-Zip) codes two zero bytes as seven zero bytes of payload:
+    # two zero literals are all-zero bits, and the flush writes the still-zero low. It
+    # is the longest zero run measured from a real encoder. Bytes as 7-Zip 23.01 wrote
+    # them (``-m0=LZMA:d=64k``), under the header its lzma_alone tool would add.
+    data = (
+        bytes([0x5D])
+        + (1 << 16).to_bytes(4, "little")
+        + (2).to_bytes(8, "little")
+        + b"\0" * 7
+    )
+    assert lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(data) == b"\0\0"
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "content_probe"
+
+
+def _sdk_lzma_alone(tmp_path: Path, payload: bytes, level: int) -> bytes:
+    """An Alone file holding the LZMA SDK encoder's output for ``payload``.
+
+    7-Zip cannot write ``.lzma`` itself, so this takes the LZMA1 packed stream out of a
+    one-file ``.7z`` (it sits between the 32-byte signature header and the next header,
+    which ``-mhc=off`` leaves uncompressed) and puts the 13-byte header in front.
+    """
+    src = tmp_path / "in.bin"
+    src.write_bytes(payload)
+    out = tmp_path / f"out{level}.7z"
+    subprocess.run(
+        [
+            "7z", "a", "-t7z", f"-mx={level}", "-mhc=off", "-mf=off",
+            "-m0=LZMA:d=64k:lc=3:lp=0:pb=2", str(out), str(src),
+        ],
+        check=True,
+        capture_output=True,
+    )  # fmt: skip
+    archive = out.read_bytes()
+    packed = archive[32 : 32 + struct.unpack_from("<Q", archive, 12)[0]]
+    header = bytes([0x5D]) + (1 << 16).to_bytes(4, "little")
+    return header + len(payload).to_bytes(8, "little") + packed
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    "payload",
+    [b"\0", b"\0\0", b"\0" * 1000, b"\0" * (1 << 20), b"A" * (1 << 20)],
+    ids=["1-zero", "2-zeros", "1k-zeros", "1m-zeros", "1m-A"],
+)
+@pytest.mark.parametrize("level", [1, 5, 9])
+def test_lzma_alone_of_zeros_from_the_lzma_sdk_is_still_detected(
+    tmp_path: Path, payload: bytes, level: int
+) -> None:
+    data = _sdk_lzma_alone(tmp_path, payload, level)
+    assert lzma.decompress(data, format=lzma.FORMAT_ALONE) == payload
+    info = detect_format(io.BytesIO(data))
+    assert info.format == ArchiveFormat.LZMA_ALONE
+    assert info.detected_by == "content_probe"
+
+
 # --- far magic ahead of the content probes ---------------------------------------------
 
 _ISO_SYSTEM_AREA = 32768
@@ -1428,14 +1544,19 @@ def _budget_config() -> ArchiveyConfig:
 def _record_detect(
     monkeypatch: pytest.MonkeyPatch, module: object
 ) -> list[tuple[str, ArchiveyConfig | None]]:
-    """Record each call through ``module.detect_format`` as (source name, config)."""
+    """Record each call through ``module.detect_format`` as (source name, config).
+
+    A resolved source is named as ``open_archive`` names it: a joined split set by
+    its first part.
+    """
     calls: list[tuple[str, ArchiveyConfig | None]] = []
     real = getattr(module, "detect_format")
 
     def recording(source: object, *args: object, **kwargs: object) -> FormatInfo:
         config = kwargs.get("config")
         assert config is None or isinstance(config, ArchiveyConfig)
-        calls.append((Path(str(getattr(source, "path", None) or source)).name, config))
+        name = source_name(source) if isinstance(source, ArchiveSource) else source
+        calls.append((Path(str(name)).name, config))
         return real(source, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(module, "detect_format", recording)

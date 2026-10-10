@@ -26,7 +26,8 @@ tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. I
 confined to pycdlib and transparent on well-formed images, but a program that also uses
 pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
 is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
-``dev-docs/formats/iso.md`` §4. The same import wraps four pycdlib methods:
+``dev-docs/formats/iso.md`` §4. The guard covers the UDF walk too. The same import wraps
+four pycdlib methods and two pycdlib functions:
 
 - ``pycdlib.rockridge.RockRidge.parse`` (:func:`_install_pycdlib_system_use_filter`),
   which filters each System Use area and refuses a Rock Ridge ``CE`` area past its
@@ -37,7 +38,10 @@ is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever
   ``pycdlib.path_table_record.PathTableRecord.parse``
   (:func:`_install_pycdlib_path_table_bound`), which bound a path table by the image
   and the same budget before pycdlib reads it, and count its entries as pycdlib parses
-  them.
+  them;
+- ``pycdlib.udf.parse_file_ident`` and ``pycdlib.udf.parse_file_entry``
+  (:func:`_install_pycdlib_udf_counter`), which weigh the UDF tree against the same
+  budget.
 
 Every wrapper acts only inside this module's own ``open_fp`` call, so other users of
 pycdlib see no change.
@@ -73,6 +77,7 @@ if TYPE_CHECKING:
     from pycdlib.pycdlib import PyCdlib
     from pycdlib.pycdlibio import PyCdlibIO
     from pycdlib.rockridge import RockRidge, RockRidgeEntries, RRCERecord
+    from pycdlib.udf import UDFFileEntry, UDFFileIdentifierDescriptor
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import (
@@ -176,22 +181,30 @@ class _DequeGuardedCollections:
 
 
 def _install_pycdlib_directory_cycle_guard() -> None:
-    """Prevent pycdlib from hanging on cyclic ISO/Joliet directory trees.
+    """Prevent pycdlib from hanging on cyclic ISO, Joliet or UDF directory trees.
 
     pycdlib walks directory trees with a plain ``collections.deque`` and no visit tracking,
     so corrupt directory records that close a cycle (a child extent pointing back at an
     ancestor) loop forever — in any namespace ``open_fp`` walks (plain ISO 9660 PVD, Rock
     Ridge PVD, Joliet SVD, …). The mutation harness found a Joliet case on ``basic-iso``; the
     same mechanism reproduces on plain and Rock Ridge trees (see
-    ``test_pycdlib_directory_cycle_does_not_hang``).
+    ``test_pycdlib_directory_cycle_does_not_hang``). The UDF walk
+    (``_walk_udf_directories``) uses the same ``deque`` for UDF File Entries, and a File
+    Identifier naming an ancestor's ICB loops it the same way, allocating as it goes
+    (``test_pycdlib_udf_directory_cycle_does_not_hang``).
 
-    The guard is a ``deque`` subclass that tracks the directory extents scheduled on *that
-    instance* and skips re-enqueueing one already seen — valid trees never revisit an extent,
-    so this is transparent on well-formed images and no-ops entirely for deques that hold
-    anything other than directory records. Because the visit set lives on the instance (not a
-    per-walk closure), the subclass is installed **once, permanently**, confined to pycdlib's
-    ``collections`` reference: no per-walk swap, no shared mutable state, and concurrent ISO
-    opens on separate threads never interfere (each walk builds its own deque instance).
+    The guard is a ``deque`` subclass that tracks the extents scheduled on *that instance*
+    and skips re-enqueueing one already seen — valid trees never revisit an extent, so this
+    is transparent on well-formed images and no-ops entirely for deques that hold anything
+    other than directory records or UDF File Entries. Directory records and UDF File Entries
+    are tracked in separate sets. Both report absolute logical blocks of the same image,
+    but they are different kinds of object in different trees, and a crafted image can
+    give a UDF File Entry the block of an ISO directory extent; one shared set would then
+    let one tree's guard drop the other tree's entry. Because
+    the visit sets live on the instance (not a per-walk closure), the subclass is installed
+    **once, permanently**, confined to pycdlib's ``collections`` reference: no per-walk swap,
+    no shared mutable state, and concurrent ISO opens on separate threads never interfere
+    (each walk builds its own deque instance).
     """
     if pycdlib is None:
         return
@@ -203,11 +216,12 @@ def _install_pycdlib_directory_cycle_guard() -> None:
 
     import pycdlib.pycdlib as pcd_module
     from pycdlib import dr as dr_mod
+    from pycdlib import udf as udf_mod
 
     real_deque = collections.deque
 
     class _ExtentGuardedDeque(real_deque):
-        """A ``deque`` that drops a directory record whose extent it has already scheduled."""
+        """A ``deque`` that drops a directory record or UDF File Entry already scheduled."""
 
         def __init__(
             self, iterable: Iterable[object] = (), maxlen: int | None = None
@@ -221,14 +235,25 @@ def _install_pycdlib_directory_cycle_guard() -> None:
                 for item in items
                 if isinstance(item, dr_mod.DirectoryRecord)
             }
+            self._visited_udf_extents: set[int] = {
+                item.extent_location()
+                for item in items
+                if isinstance(item, udf_mod.UDFFileEntry)
+            }
 
-        def append(self, dir_record: object) -> None:
-            if isinstance(dir_record, dr_mod.DirectoryRecord):
-                extent = dir_record.extent_location()
-                if extent in self._visited_extents:
-                    return
-                self._visited_extents.add(extent)
-            super().append(dir_record)
+        def append(self, item: object) -> None:
+            if isinstance(item, dr_mod.DirectoryRecord):
+                visited = self._visited_extents
+            elif isinstance(item, udf_mod.UDFFileEntry):
+                visited = self._visited_udf_extents
+            else:
+                super().append(item)
+                return
+            extent = item.extent_location()
+            if extent in visited:
+                return
+            visited.add(extent)
+            super().append(item)
 
     # setattr (not a direct assignment) so the type checkers don't flag the deliberate
     # module -> proxy substitution against pcd_module.collections's declared Module type.
@@ -487,6 +512,13 @@ class _ParseBudget:
     continuation area every time pycdlib parses it, plus the tree's little- and
     big-endian path tables, which pycdlib reads whole and parses into one object per
     record (at least 8 bytes each). That is more than the text a listing keeps.
+
+    The UDF tree, when the image has one, is counted as one more tree, although
+    archivey does not list it: pycdlib parses it inside ``open_fp`` all the same. Every
+    File Identifier but the parent entry counts as a member, and the bytes are each
+    File Identifier as stored plus each File Entry's fixed part, extended attributes and
+    allocation descriptors as the entry declares them, weighed before pycdlib parses it
+    into one object per descriptor.
     """
 
     def __init__(self, limits: ListingLimits) -> None:
@@ -495,35 +527,36 @@ class _ParseBudget:
         # walks for the life of the ``PyCdlib`` object, so an id is not reused here.
         self._members: dict[int, int] = {}
         self._bytes: dict[int, int] = {}
-        # The tree of the record parsed last: pycdlib parses a record's continuation
-        # area right after the record, and ``RockRidge.parse`` is not told the tree.
+        # The ISO 9660 or Joliet tree of the record parsed last: pycdlib parses a
+        # record's continuation area right after the record, and ``RockRidge.parse``
+        # is not told the tree. Only ``add_continuation`` reads it; the UDF hooks name
+        # their tree and leave it alone.
         self._tree = 0
         # Entries pycdlib has parsed from the path table it is parsing now.
         self._path_table_entries = 0
 
     def add_record(self, vd: object, nbytes: int) -> None:
         self._tree = id(vd)
-        self._add_bytes(nbytes)
+        self._add_bytes(self._tree, nbytes)
 
     def add_member(self) -> None:
-        count = self._members.get(self._tree, 0) + 1
-        self._members[self._tree] = count
-        max_members = self._limits.max_members
-        if max_members is not None and count > max_members:
-            raise ResourceLimitError(
-                f"Listing limit reached: max_members={max_members} "
-                f"(ISO directory tree holds more than {max_members} records)"
-            )
+        self._add_member(self._tree)
+
+    def add_udf_bytes(self, nbytes: int) -> None:
+        self._add_bytes(_UDF_TREE, nbytes)
+
+    def add_udf_member(self) -> None:
+        self._add_member(_UDF_TREE)
 
     def add_continuation(self, nbytes: int) -> None:
-        self._add_bytes(nbytes)
+        self._add_bytes(self._tree, nbytes)
 
     def add_path_table(self, vd: object, nbytes: int) -> None:
         # Called before pycdlib reads the table, so an over-budget size is refused
         # before the read and the parse, not after.
         self._tree = id(vd)
         self._path_table_entries = 0
-        self._add_bytes(nbytes)
+        self._add_bytes(self._tree, nbytes)
 
     def add_path_table_entry(self) -> None:
         """Count one path-table entry pycdlib parsed against ``max_members``.
@@ -544,17 +577,36 @@ class _ParseBudget:
                 f"(ISO path table holds more than {max_members + 1} directories)"
             )
 
-    def _add_bytes(self, nbytes: int) -> None:
-        total = self._bytes.get(self._tree, 0) + nbytes
-        self._bytes[self._tree] = total
+    def _add_member(self, tree: int) -> None:
+        count = self._members.get(tree, 0) + 1
+        self._members[tree] = count
+        max_members = self._limits.max_members
+        if max_members is not None and count > max_members:
+            name = "UDF directory tree" if tree == _UDF_TREE else "ISO directory tree"
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} "
+                f"({name} holds more than {max_members} records)"
+            )
+
+    def _add_bytes(self, tree: int, nbytes: int) -> None:
+        total = self._bytes.get(tree, 0) + nbytes
+        self._bytes[tree] = total
         check_metadata_budget(
             self._limits,
             total,
             detail=(
-                f"ISO directory tree has {total} bytes of path tables and "
+                f"UDF directory tree has {total} bytes of File Identifiers and "
+                "File Entries"
+                if tree == _UDF_TREE
+                else f"ISO directory tree has {total} bytes of path tables and "
                 "directory records"
             ),
         )
+
+
+# The key the UDF tree is counted under in ``_ParseBudget``: pycdlib walks one UDF file
+# set per image, and no ``id()`` is negative.
+_UDF_TREE = -1
 
 
 # Set only while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``; ``None``
@@ -681,6 +733,86 @@ def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
 
 
 _install_pycdlib_path_table_bound()
+
+# The fixed size of a UDF File Entry (ECMA-167 4/14.9, tag 261) and Extended File Entry
+# (4/14.17, tag 266), keyed by tag. Both end with the little-endian L_EA and L_AD
+# fields, which the extended attributes and allocation descriptors follow. Filled from
+# pycdlib's own struct formats when the counter is installed, so the weight reads the
+# fields where the installed pycdlib reads them.
+_UDF_FILE_ENTRY_FIXED_SIZE: dict[int, int] = {}
+_PYCDLIB_UDF_COUNTER_INSTALLED = False
+
+
+def _udf_file_entry_size(icbdata: bytes) -> int:
+    """The bytes pycdlib parses from one UDF File Entry, from its own length fields.
+
+    pycdlib reads the ICB's whole extent and parses ``L_AD`` bytes of it into one
+    object per allocation descriptor, so the cost is the fixed part plus ``L_EA`` plus
+    ``L_AD``, capped by what was read. An all-zero entry (which pycdlib keeps as no
+    entry) or any other tag costs nothing here; pycdlib refuses the other tags itself.
+    """
+    fixed = _UDF_FILE_ENTRY_FIXED_SIZE.get(int.from_bytes(icbdata[:2], "little"))
+    if fixed is None or len(icbdata) < fixed:
+        return 0
+    extended_attrs, alloc_descs = struct.unpack_from("<LL", icbdata, fixed - 8)
+    return min(len(icbdata), fixed + extended_attrs + alloc_descs)
+
+
+def _install_pycdlib_udf_counter() -> None:
+    """Weigh the UDF tree pycdlib parses in ``open_fp`` against ``_PARSE_BUDGET``.
+
+    pycdlib's ``_walk_udf_directories`` calls ``pycdlib.udf.parse_file_ident`` for each
+    File Identifier and ``pycdlib.udf.parse_file_entry`` for each File Entry it names;
+    both are looked up on the module at each call, so wrapping them there counts
+    every one. A File Entry is weighed before pycdlib parses it, from the lengths it
+    declares; a File Identifier after, because its size is bounded by its own 8- and
+    16-bit length fields and only the parse says whether it is the parent entry, which
+    is not a member. Installed once and transparent outside ``IsoReader``'s
+    ``open_fp``, like the hooks above.
+    """
+    global _PYCDLIB_UDF_COUNTER_INSTALLED
+    if pycdlib is None or _PYCDLIB_UDF_COUNTER_INSTALLED:
+        return
+    from pycdlib import udf as udf_mod
+
+    for tag, entry_cls in (
+        (261, udf_mod.UDFFileEntry),
+        (266, udf_mod.UDFExtendedFileEntry),
+    ):
+        _UDF_FILE_ENTRY_FIXED_SIZE[tag] = struct.calcsize(entry_cls.FMT)
+
+    original_ident = udf_mod.parse_file_ident
+    original_entry = udf_mod.parse_file_entry
+
+    def parse_file_ident(
+        data: bytes, current_extent: int, part_start: int, udf_file_entry: object
+    ) -> tuple[UDFFileIdentifierDescriptor, int]:
+        result = original_ident(data, current_extent, part_start, udf_file_entry)
+        budget = _PARSE_BUDGET.get()
+        if budget is not None:
+            file_ident, nbytes = result
+            budget.add_udf_bytes(nbytes)
+            if not file_ident.is_parent():
+                budget.add_udf_member()
+        return result
+
+    def parse_file_entry(
+        icbdata: bytes,
+        abs_file_entry_extent: int,
+        icb_log_block_num: int,
+        parent: UDFFileEntry | None,
+    ) -> UDFFileEntry | None:
+        budget = _PARSE_BUDGET.get()
+        if budget is not None:
+            budget.add_udf_bytes(_udf_file_entry_size(icbdata))
+        return original_entry(icbdata, abs_file_entry_extent, icb_log_block_num, parent)
+
+    setattr(udf_mod, "parse_file_ident", parse_file_ident)
+    setattr(udf_mod, "parse_file_entry", parse_file_entry)
+    _PYCDLIB_UDF_COUNTER_INSTALLED = True
+
+
+_install_pycdlib_udf_counter()
 
 # Exceptions that mean "this ISO structure is bad", translated to CorruptionError.
 # pycdlib wraps *most* format errors in PyCdlibException, but it is not hardened against
@@ -1182,7 +1314,6 @@ class _PyCdlibStream(DelegatingStream):
 class IsoReader(BaseArchiveReader):
     """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain)."""
 
-    _SUPPORTS_RANDOM_ACCESS = True
     _MEMBER_LIST_UPFRONT = (
         True  # the directory tree is an in-header index (O(1) listing)
     )

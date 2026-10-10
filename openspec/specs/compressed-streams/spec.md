@@ -115,7 +115,11 @@ a facility exists, it SHALL be optional, absent by default, and bounded in both 
 range (forward-only ceiling today: 1 MiB) and number of links walked; a probe that does not
 take it SHALL behave exactly as it does today. This exception exists for the self-describing
 block chain in `format-detection`, whose successor offsets frequently sit past a 4 KiB
-prefix, and it does not license open-ended reading.
+prefix, and for the decode up to the first compressed block of that chain (within the
+same 1 MiB reach). It does not license open-ended reading. A probe that decodes past its
+sample SHALL first ask a second optional facility, `charge_decode(n)`, which the detector
+backs with its decode allowance; when the answer is no, the probe keeps the verdict it
+has.
 
 Registering a standalone codec descriptor SHALL make detection, the single-file
 reader, and availability reporting work without edits elsewhere.
@@ -134,7 +138,7 @@ reader, and availability reporting work without edits elsewhere.
 | Any probe, `source_length <= len(prefix)`, decode wants more input within the output drain | Reject — the whole source is visible and the stream does not terminate |
 | Any probe, `source_length <= len(prefix)`, decode completes within the output drain | Accept |
 | Probe offered no bounded read facility | Behaves exactly as today; prefix is its whole world |
-| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk only |
+| Probe given one, reads past the prefix within its bound | Permitted, for the block-chain walk and the Brotli decode to its first compressed block only |
 | Probe given one, attempts an unbounded or unlimited-count read | Not permitted |
 
 ### Requirement: Each supported codec has a default backend
@@ -277,9 +281,12 @@ expected hashes) when a read **reaches the member's end**:
 - **Size-declared** (`expected_size` set): the read that consumes the declared
   size is a verifying event (checksum and over-run). On digest mismatch or
   over-run it SHALL raise `CorruptionError` and return **no bytes** for that call
-  (withhold the final chunk). On truncation-shaped EOF before the declared size,
-  the first read that asks past available output returns the remaining prefix
-  (short return); the next empty `read` raises `TruncatedError`.
+  (withhold the final chunk). When the data past the declared size fails to
+  decode, that read SHALL raise the decoder's error as the verdict and return no
+  bytes, even when the declared bytes match their checksum; the translator above
+  the verifier types it as `CorruptionError`. On truncation-shaped EOF before the
+  declared size, the first read that asks past available output returns the
+  remaining prefix (short return); the next empty `read` raises `TruncatedError`.
 - **Size-unknown**: every data chunk MAY be returned first; `CorruptionError`
   SHALL raise on the read that observes end-of-stream (typically the terminal
   empty `read`) — no mandatory one-chunk delayed-release lookahead.
