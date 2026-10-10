@@ -81,8 +81,7 @@ def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
 # zlib's gzip-window errors for a member header that gzip(1) refuses as unsupported,
 # not as damaged: "unknown method 7 -- not supported" (CM other than 8 = deflate), and
 # "has flags 0x80 -- not supported" / "is encrypted -- not supported" (a reserved FLG
-# bit, which RFC 1952 says a decoder must refuse). zlib gives the first text for a zlib
-# header too (CM other than 8), see :func:`zlib_error`.
+# bit, which RFC 1952 says a decoder must refuse).
 _GZIP_UNSUPPORTED_HEADER = ("unknown compression method", "unknown header flags set")
 
 
@@ -97,15 +96,15 @@ def gzip_error(exc: Exception) -> CorruptionError | UnsupportedFeatureError:
     return gzip_corruption(exc)
 
 
-def zlib_error(exc: Exception, label: str) -> CorruptionError | UnsupportedFeatureError:
+def zlib_error(exc: Exception, label: str) -> CorruptionError:
     """The error for a ``zlib.error`` from a zlib (``label`` "zlib") or raw DEFLATE
-    ("deflate") stream, sorted as :func:`gzip_error` sorts it.
+    ("deflate") stream: always :func:`gzip_corruption`.
 
-    zlib refuses a zlib header whose method is not deflate with the gzip text
-    ("unknown compression method"), so that is :class:`UnsupportedFeatureError` too.
+    Unlike :func:`gzip_error`, a refused header is not unsupported. zlib refuses a zlib
+    header whose method is not deflate ("unknown compression method"), but RFC 1950
+    defines no method other than 8, so that header is damage, not a valid feature
+    archivey cannot decode (DR-4).
     """
-    if any(text in str(exc) for text in _GZIP_UNSUPPORTED_HEADER):
-        return UnsupportedFeatureError(f"Unsupported {label} stream header: {exc!r}")
     return gzip_corruption(exc, label)
 
 

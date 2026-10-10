@@ -2511,30 +2511,28 @@ def _zlib_with_method(method: int) -> bytes:
     return bytes(data)
 
 
-def test_zlib_unknown_compression_method_is_unsupported() -> None:
-    """zlib: "unknown compression method" (CM other than 8) is the gzip refusal, and
-    the message names the stream zlib."""
+def test_zlib_unknown_compression_method_is_corruption() -> None:
+    """zlib: "unknown compression method" (CM other than 8) is damage, not an
+    unsupported feature as gzip's refused method is: RFC 1950 defines no zlib method
+    but 8. The message names the stream zlib."""
     source = io.BytesIO(_zlib_with_method(7))
     with open_codec_stream(Codec.ZLIB, source, config=_STDLIB_GZIP) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="zlib"):
+        with pytest.raises(CorruptionError, match="zlib stream") as excinfo:
             stream.read()
+    assert is_corruption_not_truncation(excinfo.value)
 
 
 @pytest.mark.parametrize(
     ("codec", "label"), [(Codec.ZLIB, "zlib"), (Codec.DEFLATE, "deflate")]
 )
-def test_zlib_family_translates_like_gzip(codec: Codec, label: str) -> None:
-    """The zlib and raw DEFLATE translators sort a ``zlib.error`` as gzip's does."""
+def test_zlib_family_translator_names_the_stream(codec: Codec, label: str) -> None:
+    """The zlib and raw DEFLATE translators give every ``zlib.error`` as corruption
+    naming their own stream, a refused header included."""
     translate = resolve_codec(codec, _STDLIB_GZIP).translate
-    refused = translate(
-        zlib.error("Error -3 while decompressing data: unknown compression method")
-    )
-    assert isinstance(refused, UnsupportedFeatureError)
-    damaged = translate(
-        zlib.error("Error -3 while decompressing data: invalid block type")
-    )
-    assert is_corruption_not_truncation(damaged)
-    assert f"{label} stream" in str(damaged)
+    for text in ("unknown compression method", "invalid block type"):
+        error = translate(zlib.error(f"Error -3 while decompressing data: {text}"))
+        assert is_corruption_not_truncation(error)
+        assert f"{label} stream" in str(error)
 
 
 @pytest.mark.parametrize("wbits", [-15, zlib.MAX_WBITS])
