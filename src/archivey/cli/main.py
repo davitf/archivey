@@ -692,13 +692,16 @@ def main(
         # reader left before all the output arrived, so `test` may not have
         # verified the whole archive and `list` may not have printed it all. A
         # usage error whose message is lost also lands here, as 141 rather than 2.
-        _silence_broken_pipe()
+        _silence_dead_streams()
         return EXIT_BROKEN_PIPE
     except OSError as exc:
         # The final flush failed for another reason (a full disk, a quota, a
         # network share that went away). _parse_and_dispatch handles the same
         # error the same way when a write inside the verb raises it.
         _report_quietly(escape_member_name(_format_os_error(exc)), err_stream)
+        # The output that failed to flush is still buffered; without this, the
+        # interpreter's exit flush fails on it again and exits 120.
+        _silence_dead_streams()
         return EXIT_FAIL
     except KeyboardInterrupt:
         _report_quietly("interrupted", err_stream)
@@ -849,12 +852,13 @@ class _DeadPipeWriter:
         return getattr(self._stream, name)
 
 
-def _silence_broken_pipe() -> None:
-    """Point a closed standard stream at the null device, with no message.
+def _silence_dead_streams() -> None:
+    """Point a standard stream that cannot flush at the null device, with no message.
 
     The interpreter flushes ``sys.stdout`` and ``sys.stderr`` as it exits. Output
-    still buffered for a closed pipe would fail again there (``BrokenPipeError``, or
-    ``EINVAL`` on Windows) and print "Exception ignored". A stream that still flushes is left as it is.
+    still buffered for a closed pipe or a full disk would fail again there
+    (``BrokenPipeError``, ``EINVAL`` on Windows, ``ENOSPC``), print "Exception
+    ignored" and exit 120. A stream that still flushes is left as it is.
     """
     for stream in (sys.stdout, sys.stderr):
         if stream is None:
@@ -866,7 +870,7 @@ def _silence_broken_pipe() -> None:
             # Wider than BrokenPipeError on purpose. ValueError is an in-process
             # caller's closed sys.stdout (a closed StringIO); any other OSError
             # (ENOSPC on a redirected stdout) would fail the exit flush the same
-            # way. The exit code is already 141, so that second error is dropped.
+            # way. The exit code is already set, so that second error is dropped.
             pass
         try:
             devnull = os.open(os.devnull, os.O_WRONLY)

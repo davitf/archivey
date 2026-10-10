@@ -1256,7 +1256,7 @@ def _dead_pipe_probe() -> str:
 
 
 @pytest.mark.parametrize(
-    ("exc", "on_windows", "elsewhere"),
+    ("exc", "on_windows", "off_windows"),
     [
         (BrokenPipeError(errno.EPIPE, "Broken pipe"), True, True),
         # What CPython raises on Windows for ERROR_NO_DATA: EINVAL, no winerror.
@@ -1265,11 +1265,12 @@ def _dead_pipe_probe() -> str:
     ],
 )
 def test_is_dead_pipe_reads_windows_einval_as_a_closed_pipe(
-    monkeypatch: pytest.MonkeyPatch, exc: OSError, on_windows: bool, elsewhere: bool
+    monkeypatch: pytest.MonkeyPatch, exc: OSError, on_windows: bool, off_windows: bool
 ) -> None:
     from archivey.cli.main import _is_dead_pipe
 
-    assert _is_dead_pipe(exc) is elsewhere
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _is_dead_pipe(exc) is off_windows
     monkeypatch.setattr(sys, "platform", "win32")
     assert _is_dead_pipe(exc) is on_windows
 
@@ -1283,6 +1284,7 @@ def test_is_dead_pipe_matches_windows_pipe_winerrors(
     # On POSIX the constructor ignores a fourth (winerror) argument, so set it.
     exc = OSError(errno.EIO, "I/O error")
     exc.winerror = winerror  # type: ignore[attr-defined]
+    monkeypatch.setattr(sys, "platform", "linux")
     assert not _is_dead_pipe(exc)
     monkeypatch.setattr(sys, "platform", "win32")
     assert _is_dead_pipe(exc)
@@ -1315,7 +1317,7 @@ def test_windows_einval_on_output_exits_141(
     """On Windows, ``EINVAL`` from the CLI's own output stream is a closed pipe."""
     from archivey.cli import main as main_mod
 
-    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    monkeypatch.setattr(main_mod, "_silence_dead_streams", lambda: None)
     monkeypatch.setattr(sys, "platform", "win32")
     dead = _EinvalStream(at_flush=at_flush)
     streams = {"out": io.StringIO(), "err": io.StringIO(), closed: dead}
@@ -1345,14 +1347,51 @@ class _FullDiskAtFlush(io.StringIO):
 
 
 def test_final_flush_os_error_prints_message_and_exits_1(tmp_path: Path) -> None:
-    """``archivey list x > /dev/full``: one line on stderr and exit 1, no traceback."""
+    """A full disk at the final flush: ``main`` prints one line and returns 1.
+
+    ``test_full_disk_on_stdout_exits_1_with_one_line`` runs the real process.
+    """
     archive = _zip(tmp_path / "a.zip", {"a.txt": b"a"})
     err = io.StringIO()
     assert main(["list", str(archive)], out=_FullDiskAtFlush(), err=err) == EXIT_FAIL
     assert err.getvalue() == "archivey: No space left on device\n"
 
 
+@pytest.mark.skipif(not os.path.exists("/dev/full"), reason="needs /dev/full")
+def test_full_disk_on_stdout_exits_1_with_one_line(tmp_path: Path) -> None:
+    """``archivey list x > /dev/full`` as a real process: one line, exit 1.
+
+    Output still buffered for stdout when ``main`` returns would fail again in the
+    interpreter's exit flush, which prints "Exception ignored" and exits 120, so
+    ``main`` points a stream that cannot flush at the null device first.
+    """
+    import subprocess
+
+    archive = _zip(tmp_path / "many.zip", {f"m{i:05d}.txt": b"x" for i in range(2000)})
+    with open("/dev/full", "wb") as full:
+        proc = subprocess.run(
+            [sys.executable, "-m", "archivey", "list", str(archive)],
+            stdin=subprocess.DEVNULL,
+            stdout=full,
+            stderr=subprocess.PIPE,
+            cwd=tmp_path,
+            timeout=120,
+            check=False,
+        )
+    stderr = proc.stderr.decode(errors="replace")
+    assert proc.returncode == EXIT_FAIL, stderr
+    assert "Exception ignored" not in stderr
+    assert stderr.splitlines() == ["archivey: No space left on device"]
+
+
 def test_final_flush_interrupted_exits_130(tmp_path: Path) -> None:
+    """Ctrl-C during the final flush: ``main`` returns 130 and prints "interrupted".
+
+    This checks the return value only. A real stream that was interrupted still
+    works, so the interpreter's exit flush writes what is left and the process
+    exits with that code.
+    """
+
     class _InterruptedAtFlush(io.StringIO):
         def flush(self) -> None:
             raise KeyboardInterrupt
@@ -1377,7 +1416,7 @@ def test_lost_log_record_exits_141(
 
     from archivey.cli import main as main_mod
 
-    monkeypatch.setattr(main_mod, "_silence_broken_pipe", lambda: None)
+    monkeypatch.setattr(main_mod, "_silence_dead_streams", lambda: None)
     # Off, as for a process whose stderr is gone: handleError writes nowhere.
     monkeypatch.setattr(logging, "raiseExceptions", False)
     archive = _zip(tmp_path / "a.zip", {f"m{i}.txt": b"x" for i in range(3)})
