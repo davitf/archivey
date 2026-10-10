@@ -327,6 +327,9 @@ class SignatureInfo:
     major_version: int
     minor_version: int
     header_data: bytes  # empty when nextHeaderSize == 0
+    # Where the archive ends, counted from the signature header: the end of the next
+    # header. Bytes after it are not part of the archive.
+    end_offset: int = SIGNATURE_HEADER_SIZE
 
 
 @dataclass(slots=True)
@@ -630,7 +633,12 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
         # crc32(b"") is 0, so this is the only value an empty next header can carry.
         if fields.next_header_crc != crc32(b""):
             raise CorruptionError("7z empty next-header CRC mismatch")
-        return SignatureInfo(fields.major_version, fields.minor_version, b"")
+        return SignatureInfo(
+            fields.major_version,
+            fields.minor_version,
+            b"",
+            SIGNATURE_HEADER_SIZE + fields.next_header_offset,
+        )
 
     try:
         fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
@@ -641,7 +649,12 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
     header_data = _read_stream_exact(fp, fields.next_header_size, "7z next header")
     if crc32(header_data) != fields.next_header_crc:
         raise CorruptionError("7z next header CRC mismatch")
-    return SignatureInfo(fields.major_version, fields.minor_version, header_data)
+    return SignatureInfo(
+        fields.major_version,
+        fields.minor_version,
+        header_data,
+        SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size,
+    )
 
 
 def parse_header_block(

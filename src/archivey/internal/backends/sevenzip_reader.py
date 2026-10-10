@@ -33,6 +33,7 @@ from typing import BinaryIO
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
 )
@@ -84,6 +85,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -120,6 +122,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.unix_mode import UNIX_FILE_TYPE_MASK, is_special_file_mode
 from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.types import (
@@ -404,10 +407,12 @@ class SevenZipReader(BaseArchiveReader):
         finally:
             probe.close()
         self._volume_count = source.volume_count
+        self._archive_end = 0
         self._archive = self._load_archive()
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
+        self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
         """A source view whose ``start`` is measured from the signature header.
@@ -422,6 +427,7 @@ class SevenZipReader(BaseArchiveReader):
         """Two-phase header load: parse → decode encoded → re-parse → materialize."""
         fp = self._view(0)
         signature = read_signature_and_next_header(fp)
+        self._archive_end = signature.end_offset
         if not signature.header_data:
             return empty_archive(signature)
 
@@ -436,6 +442,42 @@ class SevenZipReader(BaseArchiveReader):
         assert isinstance(block, PlainHeader)
         return materialize_archive(
             signature, block, is_header_encrypted=header_encrypted
+        )
+
+    def _report_trailing_data(self) -> None:
+        """Report a non-zero byte after the next header, the end of a 7z archive.
+
+        ``ARCHIVE_TRAILING_DATA`` with ``expected_marker="zeros_to_eof"``, as after a
+        TAR trailer: a warning by default, refused under ``DiagnosticPolicy.strict()``
+        (DR-3). Zero padding is silent. 7-Zip warns "There are data after the end of
+        archive" for the same bytes. Runs after the header has parsed, so a wrong
+        header password or a damaged header is reported as that, not as this. A
+        self-extractor's tail (some SFX tools append a configuration block) is
+        reported too: it is outside the archive whatever wrote it.
+        """
+        fp = self._view(self._archive_end)
+        try:
+            found = first_nonzero_offset(fp)
+        finally:
+            fp.close()
+        if found is None:
+            return
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            message=(
+                "7z archive continues past its end: a non-zero byte appears "
+                f"{found} bytes after the end of its header. The listing does not "
+                "account for it (this file may hold something appended to the archive)."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="7z",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found,
+                observed_kind="nonzero",
+            ),
+            logger=backends_logger,
         )
 
     def _decode_encoded_header_block(
