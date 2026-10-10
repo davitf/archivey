@@ -322,6 +322,20 @@ class BackendRegistry:
 
     # --- selection -----------------------------------------------------------------------
 
+    def unread_format_message(self, fmt: ArchiveFormat) -> str | None:
+        """The refusal text for a format that is recognised but not read, else ``None``.
+
+        ``open_archive`` raises it with the archive name before it asks for a reader;
+        ``reader_for_format`` raises the same text for a direct caller.
+        """
+        backend_cls = self._readers.get(fmt)
+        if backend_cls is None or backend_cls.READ_IMPLEMENTED:
+            return None
+        return (
+            backend_cls.UNSUPPORTED_MESSAGE
+            or f"Reading {fmt.display_name} is not supported."
+        )
+
     def reader_for_format(self, fmt: ArchiveFormat) -> type[ReadBackend]:
         availability = self.format_availability(fmt)
         if availability.support is FormatSupport.NONE:
@@ -331,12 +345,9 @@ class BackendRegistry:
                     f"No read backend registered for format {fmt.display_name}",
                     source_format=fmt,
                 )
-            if not backend_cls.READ_IMPLEMENTED:
-                raise UnsupportedFeatureError(
-                    backend_cls.UNSUPPORTED_MESSAGE
-                    or f"Reading {fmt.display_name} is not supported.",
-                    source_format=fmt,
-                )
+            unread_message = self.unread_format_message(fmt)
+            if unread_message is not None:
+                raise UnsupportedFeatureError(unread_message, source_format=fmt)
             hints = "; ".join(
                 f"{m.name} ({m.install_hint})" for m in availability.missing
             )
