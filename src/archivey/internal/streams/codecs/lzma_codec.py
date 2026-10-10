@@ -443,11 +443,16 @@ def _no_second_lzma_stream(data: bytes) -> bool:
     return False
 
 
-# Input held back from liblzma until the source ends (see _LzmaToSizeDecoder).
+# Input held back from liblzma until the source ends (see _LzmaToSizeDecoder): the
+# byte that may complete the output, and one zero byte 7-Zip's encoder may write after
+# it. That one byte is the whole tolerance; a stream with more input after its output
+# goes through _probe, where only an end marker may fill it.
 _LZMA_HELD_BACK = 2
 # A coder that declares no output holds at most an empty stream: five range-coder
-# bytes, or those and an end marker. More than this is input it does not use.
-_LZMA_EMPTY_STREAM_MAX = 64
+# bytes, or those and an end marker (10 bytes from liblzma). More than this is input
+# it does not use. The bound leaves a few bytes of slack over the measured length, so
+# that a producer that flushes a little more is not refused for it.
+_LZMA_EMPTY_STREAM_MAX = 16
 # Zeros fed after a stream's input to read its range coder's end, and the most output
 # asked of them (_LzmaToSizeDecoder._check_range_coder_end).
 _LZMA_ZEROS = b"\x00" * 16
@@ -562,7 +567,12 @@ class _LzmaToSizeDecoder(BaseDecoder):
     def _probe(self, data: bytes) -> None:
         """Look for an end marker in ``data``, input after the output reached size.
 
-        A decoded byte is output the coder does not declare: surplus.
+        A decoded byte is output the coder does not declare: surplus. This has no
+        range-coder test: from a zero code liblzma decodes a zero byte, so zero bytes
+        here are surplus too. That is deliberate. 7-Zip 23.01 refuses two zero bytes
+        after a stream without an end marker (and one too, unless its encoder wrote
+        it), so the only zero byte accepted is the one ``_check_range_coder_end``
+        sees, right after the byte that completes the output.
         """
         if self._empty is not None:
             self._empty += data

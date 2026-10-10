@@ -540,7 +540,10 @@ stream's end, a zero byte too, and a second stream there SHALL raise
 declared size and CRC cover, with the accelerator on or off: an accelerator that reads
 on past the first stream hands the read to the standard-library decoder there, which
 refuses it. 7-Zip 23.01 fails such a member ("There are some data after the end of the
-payload data", or "Data Error"), and the bytes may hide a second payload. A codec that
+payload data", or "Data Error"), and the bytes may hide a second payload. The
+exception is Zstd and LZ4, whose decoders read concatenated frames as one stream in a
+container too: a further frame is content that counts against the declared size and
+CRC, and only bytes after the last frame that start no frame SHALL raise. A codec that
 stops at a declared output size (LZMA1 without an end marker, PPMd) SHALL raise the
 same way when its input goes on past that size; such a cut leaves input over, so it is
 not a `TruncatedError`. A standalone compressed file keeps reporting the bytes after its

@@ -63,9 +63,12 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 _DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
 
 # Input after a member's declared output that an ``exact_input`` decoder collects
-# before its end check: room for an end mark and its range-coder flush. More is input
-# the member does not use (see ``PpmdDecoder._check_end``).
-_PPMD_TAIL_MAX = 64
+# before its end check: room for an end mark and its range-coder flush. Measured on
+# pyppmd 1.3.1 and 7-Zip 23.01, that is at most 3 bytes for PPMd8 and 1 for PPMd7; the
+# bound leaves slack over it, so that a producer that flushes a little more reaches
+# the end check rather than being refused for its length. More is input the member
+# does not use (see ``PpmdDecoder._check_end``).
+_PPMD_TAIL_MAX = 16
 
 # The five bytes 7-Zip's PPMd7 range coder writes for a stream with no symbols.
 _PPMD7_EMPTY_STREAM = b"\x00" * 5

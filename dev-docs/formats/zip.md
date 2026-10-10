@@ -405,8 +405,11 @@ after it and read that as content). The reader opens every member with
 end, a zero too, and a second stream, are `DataAfterEndError` (a `CorruptionError`),
 raised once the output before them has been read, whatever the declared size and CRC
 cover. 7-Zip 23.01 `7z t` fails every such member ("Data Error", or "There are some data
-after the end of the payload data"), and the bytes may be a side channel (maintainer
-ruling, 2026-10-07). An LZMA member with bit 1 clear, and a PPMd member, end at their
+after the end of the payload data"), and the bytes may be a side channel
+(`design-rules.md` DR-3). The exception is Zstd (method 93): its decoder reads
+concatenated frames as one stream, as for a 7z Zstd coder, so a second frame is content
+when the declared size and CRC count it, and output past the size when they stop before
+it; bytes after the last frame that start no frame are refused. An LZMA member with bit 1 clear, and a PPMd member, end at their
 declared size, and their input must end there too: right after it for LZMA (or one zero
 byte later, which 7-Zip's encoder sometimes writes), after the end mark PPMd8 must carry.
 So a declared size short of the stream's data is `CorruptionError`, not `TruncatedError`:
@@ -692,6 +695,7 @@ move.
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
 | Overlapping-entry bomb | `::test_overlapping_entries_bomb_translated_to_corruption` |
+| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is content | `tests/test_surplus_input.py`, `tests/test_audit2_zip.py::test_bytes_after_a_deflate_members_stream_are_corrupt`, `::test_bzip2_member_with_a_second_stream_is_corrupt` |
 | AE-1/AE-2, wrong password, tampered ciphertext | `tests/test_zip_aes.py` |
 | Tampered HMAC raises on a full read (STORED and DEFLATE); partial read then `close()` is quiet | `tests/test_zip_aes.py::test_aes_tampered_hmac_raises_corruption`, `::test_aes_tampered_hmac_partial_read_then_close_is_quiet` |
 | AES decrypt stream `close()` still releases the source after a partial read; a source `OSError` still marks the wrapper closed | `::test_aes_decrypt_stream_close_releases_source`, `::test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises` |

@@ -286,7 +286,10 @@ first stream's end and SHALL NOT decode a further stream after it as output. Any
 of the coder's input after that end, a zero byte included, and a further stream there,
 SHALL raise `CorruptionError` once the output before it is read, whatever the unpack
 size and CRC count, as 7-Zip 23.01 reports a data error ("Data Error", or "There are
-some data after the end of the payload data"). The coder's input is its declared input
+some data after the end of the payload data"). The exception is Zstd and LZ4, whose
+decoders read concatenated frames as one stream: a further frame is output that counts
+against the unpack size (below), and only bytes after the last frame that start no
+frame SHALL raise. The coder's input is its declared input
 size (its pack size, or the size the coder before it declares), so AES padding past it
 is not such a byte. An LZMA1 or PPMd coder ends at its declared size: its input SHALL
 end there too, or after an end marker right at that size, and a declared size short of

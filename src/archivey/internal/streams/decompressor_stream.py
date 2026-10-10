@@ -900,10 +900,12 @@ class DecompressorStream(ReadOnlyIOStream):
         if self._exact_input:
             if not self._eof:
                 self._eof = True
+                ended_at = self._pos + len(self._buffer) + len(data)
                 self._surplus = DataAfterEndError(
-                    f"The {self._codec_name or 'compressed'} stream ends before the "
-                    "coder's compressed data does: the bytes after its end are not "
-                    "part of it (7-Zip: data after the end of the payload data)"
+                    f"The {self._codec_name or 'compressed'} stream ends after "
+                    f"{ended_at} bytes of output with input left in the member's "
+                    "compressed data: bytes after the stream, or a declared size "
+                    "shorter than the stream (7-Zip: data error)"
                 )
             return data
         if not self._eof:

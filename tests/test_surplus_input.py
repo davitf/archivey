@@ -24,6 +24,7 @@ import io
 import struct
 import subprocess
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,7 @@ import archivey
 from archivey.config import AcceleratorMode, ArchiveyConfig, DecoderLimits
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.backends import sevenzip_parser
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.test_audit2_zip import _build_zip, _Entry, _raw_deflate
 from tests.test_audit_sevenzip import (
     _LZMA,
@@ -50,10 +51,29 @@ _PAYLOADS = {
 }
 
 # Bytes after the stream's end: what a member must not carry.
-_TAILS = {"junk": b"\x55", "zero": b"\x00", "zeros": bytes(16), "text": b"GARBAGE" * 3}
+_TAILS = {
+    "junk": b"\x55",
+    "zero": b"\x00",
+    "two-zeros": bytes(2),
+    "zeros": bytes(16),
+    "text": b"GARBAGE" * 3,
+}
 # After LZMA1 without an end marker, one zero byte reads: 7-Zip's encoder sometimes
-# writes it past the decoder's last read (lzma_codec._LzmaToSizeDecoder).
+# writes it past liblzma's last read (lzma_codec._LzmaToSizeDecoder). Two do not.
 _LZMA1_TAILS = sorted(set(_TAILS) - {"zero"})
+
+
+def _one_zero_byte_reads(read: Callable[[bytes], tuple[str, object]], packed: bytes):
+    """Check the one-zero-byte tolerance after LZMA1 without an end marker.
+
+    ``read`` reads a member over the given packed bytes. When 7-Zip already wrote its
+    extra zero byte (the stream reads without its last byte), one more zero byte is a
+    second one past liblzma's last read, and is refused.
+    """
+    if packed.endswith(b"\x00") and read(packed[:-1])[0] == "ok":
+        _assert_surplus(read(packed + b"\x00"))
+        pytest.skip("7-Zip wrote the extra zero byte itself")
+    assert read(packed + b"\x00") == read(packed)
 
 
 def _outcome(blob: bytes, **open_kwargs: object) -> tuple[str, object]:
@@ -163,6 +183,17 @@ def test_zip_lzma_without_marker_and_bytes_after_it_is_corrupt(
     body, flags = zip_lzma_without_marker
     blob = _zip_member(body + _TAILS[tail], payload, method=14, flags=flags)
     _assert_surplus(_outcome(blob))
+
+
+@requires_binary("7z")
+def test_zip_lzma_without_marker_and_one_zero_byte_after_it_reads(
+    zip_lzma_without_marker: tuple[bytes, int], payload: bytes
+) -> None:
+    body, flags = zip_lzma_without_marker
+    _one_zero_byte_reads(
+        lambda packed: _outcome(_zip_member(packed, payload, method=14, flags=flags)),
+        body,
+    )
 
 
 @requires_binary("7z")
@@ -300,6 +331,22 @@ def test_zip_bzip2_with_bytes_after_its_stream_is_corrupt(
     _assert_surplus(_outcome(blob, **mode))
 
 
+@requires_zstd()
+def test_zip_zstd_frames_read_as_one_stream() -> None:
+    # The Zstd decoder reads concatenated frames as one stream, so a second frame in a
+    # method-93 member is content: it reads when the declared size and CRC count it,
+    # and is output past the size when they stop at the first. Bytes after the last
+    # frame that start no frame are refused like any codec's. The 7z counterpart is
+    # test_audit_sevenzip.py::test_codec_streams_count_together_against_the_unpack_size.
+    first, second = _text(3000, seed=1), _text(2000, seed=2)
+    frames = zstd_backend().compress(first) + zstd_backend().compress(second)
+    whole = _zip_member(frames, first + second, method=93, flags=0)
+    assert _outcome(whole) == _ok(first + second)
+    _assert_surplus(_outcome(_zip_member(frames, first, method=93, flags=0)))
+    junk = _zip_member(frames + _TAILS["junk"], first + second, method=93, flags=0)
+    _assert_surplus(_outcome(junk))
+
+
 # --- 7z LZMA1 and PPMd --------------------------------------------------------------------
 
 
@@ -326,6 +373,18 @@ def test_7z_lzma1_with_bytes_after_it_is_corrupt(
     coder = _coder(_LZMA, props=props)
     blob = _codec_archive([coder], [len(payload)], packed + _TAILS[tail], payload)
     _assert_surplus(_outcome(blob))
+
+
+@requires_binary("7z")
+def test_7z_lzma1_with_one_zero_byte_after_it_reads(
+    sz_lzma1: tuple[bytes, bytes], payload: bytes
+) -> None:
+    packed, props = sz_lzma1
+    coder = _coder(_LZMA, props=props)
+    _one_zero_byte_reads(
+        lambda data: _outcome(_codec_archive([coder], [len(payload)], data, payload)),
+        packed,
+    )
 
 
 @requires_binary("7z")
