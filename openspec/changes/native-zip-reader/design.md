@@ -32,6 +32,7 @@ class EndRecord:
     base: int                 # added to every stored offset (stub before the archive)
     comment: bytes            # cut at end of file
     comment_declared: int     # the stored length, for the "comment cut short" finding
+    trailing: int             # bytes after the record and its declared comment
 
 ReadAt = Callable[[int, int], bytes]   # read_at(offset, n); the caller owns handle and lock
 
@@ -331,6 +332,8 @@ Each row lands in the stage PR that causes it, with the spec and handbook edits 
 | Malformed Unicode Path field | Depends on the Python version until the Unicode Path PR merges | Same as that PR, on every version, without the subclass | DR-5 |
 | `streaming=True` on a non-seekable source | `StreamNotSeekableError` at open | Read forward (§"Streaming") | The maintainer's request, 2026-10-10 |
 | A ZIP64 archive whose directory is Strong-Encrypted | `CorruptionError` | `UnsupportedFeatureError` | DR-4 |
+| Bytes after the end record and its comment | Nothing reported | `ARCHIVE_TRAILING_DATA` warning; strict refuses; zero padding stays silent. 7-Zip 23.01 warns on the same input, `unzip` says nothing. A forward pass reads the rest of the stream to the end to count them, keeping none | The 2026-10-07 ruling (davi): report trailing data after ZIP, 7z, RAR and ISO, as TAR and the codecs already do. Stage 2 |
+| A member flagged as a Windows reparse point whose data is not a reparse buffer, in a `stream_members()` pass | Yielded as a SYMLINK with no stream, retyped to FILE after the pass: its content is lost | Typed when the pass reaches it, by reading the bounded reparse header ahead and handing back a stream of the whole member, as 7z already does; `members()` already lists it as FILE. From a pipe the reparse bit arrives with the directory, so such a member is written as a file and stays one, and only a real reparse buffer becomes a link (§"What only the central directory says") | DR-5, DR-1. Stage 3 |
 | Open of an archive with a huge declared directory | All `ZipInfo` built at open | Members built as listed; `ListingLimits` stop the walk | DR-9a, DR-15b |
 
 Nothing else may change. The acceptance bar is the full suite as it stands once the

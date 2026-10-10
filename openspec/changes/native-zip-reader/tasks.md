@@ -26,6 +26,8 @@
       as `zipfile.infolist()` wherever `zipfile` opens it, over the fields and with the
       exceptions `design.md` §"Behaviour that changes" lists; shown to fail against the
       three mutants named there.
+- [ ] 1.5a `EndRecord.trailing` counts the bytes after the record and its declared
+      comment; a comment cut short is not trailing (tests for both).
 - [ ] 1.6 Walk findings equal what `_end_record_findings` reports today on the existing
       end-record tests.
 
@@ -43,6 +45,9 @@
 - [ ] 2.5 Damaged directory lists the entries before the damage, then raises (tests
       first: bad signature mid-directory, directory cut by end of file).
 - [ ] 2.6 Version needed above 6.3 lists and reads (test first).
+- [ ] 2.6a Trailing bytes after the end record report `ARCHIVE_TRAILING_DATA` (warning,
+      strict refuses, zero padding silent), as TAR does; tests first, with the 7z,
+      RAR and ISO counterparts' tests as the pattern if they have landed.
 - [ ] 2.7 Remove every row of `design.md` §"What the parser removes" except the name
       decode; tests that read `ZipInfo` off `member._raw` move to `CentralEntry`.
 - [ ] 2.8 New ADR superseding 0006; format-zip spec; `dev-docs/formats/zip.md` §2.2,
@@ -81,6 +86,10 @@
       in every format: false for a pipe ZIP member until the directory, for any member
       of a forward-only pass (TAR too) until the pass ends, and for a data-stored link
       target until it is read (a test for each).
+- [ ] 3.3f A reparse-flagged member whose data is not a reparse buffer is typed when
+      `stream_members()` reaches it and yields its whole content, as the 7z pass does
+      (read-ahead stream); from a pipe it stays a file (tests in both modes, red
+      first).
 - [ ] 3.4 Every fixture read through a pipe and seekably: same members after the pass,
       same files on disk.
 - [ ] 3.5 `SUPPORTS_STREAMING_NON_SEEKABLE = True`; the format-zip, `backend-registry`
