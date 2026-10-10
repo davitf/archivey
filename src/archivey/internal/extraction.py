@@ -3191,7 +3191,10 @@ class ExtractionCoordinator:
         (see ``_link_refused_here``), copy from an existing path. Appends ``new_path``
         so a later same-device link can reuse it — which is what keeps a fan-out across
         one device boundary to a single copy per device rather than one per link, and a
-        fan-out past the link-count limit to one copy per full file.
+        fan-out past the link-count limit to one copy per full file. When
+        ``new_path`` already named the source's file, the append does not record it
+        twice: the name existed, so ``_prepare_destination`` dropped it from the list
+        (``_forget_source_path``) before this method ran.
 
         The first path at the link-count limit ends the search with a copy. The paths
         recorded before it are older names of the same file, of a file that filled up
@@ -3283,10 +3286,22 @@ class ExtractionCoordinator:
         file onto another of its own names (a hard link listed twice, or one REPLACE
         routes onto a link to the same file). ``dest`` then already names the right
         file, so only the temp name is left, and it is removed here. After a real
-        rename the temp name is gone and the unlink finds nothing."""
+        rename the temp name is gone and the unlink finds nothing.
+
+        On Windows the same call does not fail: the tests for this case
+        (``test_link_onto_a_name_of_the_same_file_leaves_no_temp``) pass there. Whether
+        Windows really renames or leaves the temp as POSIX does is not pinned; the
+        unlink below covers both.
+
+        Any error from the unlink is ignored: ``os.replace`` has already put the member
+        in place, and a temp name left behind is a stray the docs call safe to delete,
+        not a failed write. The unlink stays inside the ``_readonly_cleared`` block. On
+        Windows that block's exit puts the read-only attribute back on the other names of
+        ``dest``'s file, and in the same-file case the temp is one of them, so an unlink
+        after the block would fail."""
         with self._readonly_cleared(dest):
             os.replace(tmp, dest)
-            with contextlib.suppress(FileNotFoundError):
+            with contextlib.suppress(OSError):
                 os.unlink(tmp)
 
     @staticmethod
